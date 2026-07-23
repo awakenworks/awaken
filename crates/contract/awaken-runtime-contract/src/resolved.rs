@@ -17,6 +17,14 @@ fn is_default_delegation_limits(
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CatalogFingerprint(pub String);
 
+/// Provider-facing endpoint facts frozen into a complete model candidate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InferenceEndpoint {
+    pub adapter_kind: String,
+    pub base_url: String,
+    pub upstream_model: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResolvedSpec {
     pub catalog_fingerprint: CatalogFingerprint,

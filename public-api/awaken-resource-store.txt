@@ -3,6 +3,7 @@ pub struct awaken_resource_store::SqliteResourceStore
 impl awaken_resource_store::SqliteResourceStore
 pub fn awaken_resource_store::SqliteResourceStore::ensure_schema(&self) -> core::result::Result<(), awaken_resource_contract::lifecycle::ResourcePurgeError>
 pub fn awaken_resource_store::SqliteResourceStore::in_memory() -> core::result::Result<Self, awaken_resource_contract::lifecycle::ResourcePurgeError>
+pub fn awaken_resource_store::SqliteResourceStore::migrate_legacy_unscoped_schema(&self) -> core::result::Result<(), awaken_resource_contract::lifecycle::ResourcePurgeError>
 pub fn awaken_resource_store::SqliteResourceStore::open(impl core::convert::AsRef<std::path::Path>) -> core::result::Result<Self, awaken_resource_contract::lifecycle::ResourcePurgeError>
 impl awaken_resource_contract::lifecycle::ResourcePurgeRepository for awaken_resource_store::SqliteResourceStore
 pub fn awaken_resource_store::SqliteResourceStore::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_resource_contract::lifecycle::ResourcePurgeIntent>, awaken_resource_contract::lifecycle::ResourcePurgeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait

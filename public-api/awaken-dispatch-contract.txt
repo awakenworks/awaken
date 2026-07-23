@@ -1,8 +1,7 @@
 pub mod awaken_dispatch_contract
 pub use awaken_dispatch_contract::AssignmentRejection
+pub use awaken_dispatch_contract::ExecutionLocation
 pub use awaken_dispatch_contract::ExecutionScopeRef
-pub use awaken_dispatch_contract::InferenceAccess
-pub use awaken_dispatch_contract::InferenceAccessCandidate
 pub use awaken_dispatch_contract::LeastLoadedPolicy
 pub use awaken_dispatch_contract::PlacementContext
 pub use awaken_dispatch_contract::PlacementError
@@ -14,7 +13,9 @@ pub use awaken_dispatch_contract::RegisteredWorker
 pub use awaken_dispatch_contract::RegistryError
 pub use awaken_dispatch_contract::RegistryMutation
 pub use awaken_dispatch_contract::SESSION_RESOURCES_CAPABILITY
+pub use awaken_dispatch_contract::WORKER_LOCAL_CREDENTIALS_CAPABILITY
 pub use awaken_dispatch_contract::WorkerAssignment
+pub use awaken_dispatch_contract::WorkerCredentialRevision
 pub use awaken_dispatch_contract::WorkerDirectory
 pub use awaken_dispatch_contract::WorkerHeartbeat
 pub use awaken_dispatch_contract::WorkerIdentity
@@ -25,6 +26,7 @@ pub use awaken_dispatch_contract::WorkerSnapshot
 pub use awaken_dispatch_contract::WorkerState
 pub use awaken_dispatch_contract::can_assign
 pub use awaken_dispatch_contract::can_claim
+pub use awaken_dispatch_contract::can_claim_locally
 pub use awaken_dispatch_contract::place_assignment
 pub mod awaken_dispatch_contract::dispatch
 pub enum awaken_dispatch_contract::dispatch::CasOutcome

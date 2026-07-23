@@ -25,7 +25,21 @@ pub const SESSION_RESOURCES_CAPABILITY: &str = "session-resources/v1";
 /// File/Memory/Skill and public Repository inputs.
 pub const REPOSITORY_CREDENTIALS_CAPABILITY: &str = "repository-credentials/v1";
 
+/// Worker can materialize exact private credential revisions that never cross
+/// the control plane. Eligibility additionally requires a current observation
+/// for every pinned revision, so this capability alone grants no access.
+pub const WORKER_LOCAL_CREDENTIALS_CAPABILITY: &str = "worker-local-credentials/v1";
+
 pub const CURRENT_CONTRACT_VERSION: u32 = 1;
+
+/// Non-secret worker-side observation key for one locally materializable source
+/// revision. It is derived from a published access reference at admission and is
+/// not credential configuration or secret material.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct WorkerCredentialRevision {
+    pub source_id: String,
+    pub revision: u64,
+}
 
 /// One concrete worker process. `worker_id` names the logical slot;
 /// `incarnation_id` changes on every boot; `generation` is allocated durably by
@@ -236,6 +250,10 @@ pub struct PlacementRequirements {
     pub contract_version: u32,
     #[serde(default)]
     pub required_capabilities: BTreeSet<String>,
+    /// Worker-private credential revisions required by the complete published
+    /// candidate set. Shared-vault references do not belong here.
+    #[serde(default)]
+    pub required_credentials: BTreeSet<WorkerCredentialRevision>,
     pub required_zone: Option<String>,
     pub architecture: Option<String>,
     #[serde(default = "workdir_isolation")]
@@ -267,6 +285,7 @@ impl Default for PlacementRequirements {
         Self {
             contract_version: 0,
             required_capabilities: BTreeSet::new(),
+            required_credentials: BTreeSet::new(),
             required_zone: None,
             architecture: None,
             isolation: IsolationClass::Workdir,
@@ -409,6 +428,15 @@ pub fn can_claim(
     Ok(())
 }
 
+/// Whether an unregistered in-process executor may claim this run. A
+/// worker-private credential requirement is remote-only even if a malformed or
+/// legacy producer omitted the matching location flag.
+#[must_use]
+pub fn can_claim_locally(requirements: &PlacementRequirements) -> bool {
+    requirements.location != ExecutionLocation::RemoteRequired
+        && requirements.required_credentials.is_empty()
+}
+
 /// Registry view consumed by placement. Live executor/channel handles are never
 /// stored here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -418,6 +446,11 @@ pub struct WorkerSnapshot {
     pub manifest: WorkerManifest,
     pub capability_fingerprint: String,
     pub in_flight: u32,
+    /// Latest non-secret credential observations reported by this incarnation.
+    /// The set is deliberately outside the immutable manifest: local login or
+    /// revocation may change while the worker process remains alive.
+    #[serde(default)]
+    pub available_credentials: BTreeSet<WorkerCredentialRevision>,
     pub expires_at_ms: u64,
 }
 
@@ -510,11 +543,15 @@ pub struct WorkerRegistration {
     pub manifest: WorkerManifest,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkerHeartbeat {
     pub sequence: u64,
     pub ready: bool,
     pub in_flight: u32,
+    /// Exact worker-private credential revisions currently materializable.
+    /// No secret, local path, environment name, or broker token crosses here.
+    #[serde(default)]
+    pub available_credentials: BTreeSet<WorkerCredentialRevision>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -590,6 +627,9 @@ impl WorkerSnapshot {
             && self.manifest.fingerprint().ok().as_deref()
                 == Some(self.capability_fingerprint.as_str())
             && can_claim(&self.manifest, requirements).is_ok()
+            && requirements
+                .required_credentials
+                .is_subset(&self.available_credentials)
     }
 }
 
@@ -841,6 +881,7 @@ mod tests {
             manifest,
             capability_fingerprint,
             in_flight: load,
+            available_credentials: BTreeSet::new(),
             expires_at_ms: 1_000,
         }
     }
@@ -876,6 +917,28 @@ mod tests {
     #[test]
     fn full_manifest_satisfies_full_requirements() {
         assert!(can_claim(&manifest("a", 0).manifest, &requirements()).is_ok());
+    }
+
+    #[test]
+    fn worker_private_credential_requires_the_exact_live_revision() {
+        let required = WorkerCredentialRevision {
+            source_id: "cred:worker".into(),
+            revision: 7,
+        };
+        let mut requirements = requirements();
+        requirements.required_credentials.insert(required.clone());
+
+        let mut worker = manifest("a", 0);
+        assert!(!worker.accepts(&requirements, 10));
+        worker
+            .available_credentials
+            .insert(WorkerCredentialRevision {
+                source_id: required.source_id.clone(),
+                revision: 6,
+            });
+        assert!(!worker.accepts(&requirements, 10));
+        worker.available_credentials.insert(required);
+        assert!(worker.accepts(&requirements, 10));
     }
 
     #[test]

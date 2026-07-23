@@ -588,6 +588,41 @@ async fn oauth_credentials_accept_only_the_allowlisted_gcloud_helper() {
     assert_eq!(problem["code"], "credential_invalid");
 }
 
+#[tokio::test]
+async fn worker_local_credentials_persist_only_the_non_secret_binding() {
+    let h = harness();
+    let (status, credential) = call(
+        &h.app,
+        "POST",
+        "/v1/config/credentials",
+        Some(json!({
+            "workspace_id": "ws",
+            "kind": "worker_local",
+            "provider_id": "openai"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{credential}");
+    assert_eq!(credential["kind"], "worker_local");
+    assert_eq!(credential["provider_id"], "openai");
+    assert!(credential.get("material_ref").is_none());
+
+    let (status, problem) = call(
+        &h.app,
+        "POST",
+        "/v1/config/credentials",
+        Some(json!({
+            "workspace_id": "ws",
+            "kind": "worker_local",
+            "provider_id": "openai",
+            "secret": "must-not-cross-the-control-plane", // awaken-allow: secret
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{problem}");
+    assert_eq!(problem["code"], "credential_invalid");
+}
+
 /// Agent input bindings are a versioned aggregate resolved at Session creation.
 /// Invalid revisions fail at the write boundary and never enter the repository.
 #[tokio::test]

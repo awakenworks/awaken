@@ -100,6 +100,7 @@ mod tests {
                     .with_worker_id("admin-test"),
             ),
             identity: awaken_worker_contract::WorkerIdentity::new("admin-test", "boot", 1),
+            materializer: None,
         });
         let app = worker_admin_router_with_lifecycle(lifecycle);
         assert_eq!(

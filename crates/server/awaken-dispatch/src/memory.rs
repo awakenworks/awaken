@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::{
     DispatchPlacement, PlacementPolicy, WorkerAssignment, WorkerSnapshot, can_assign,
-    policy_selects_requester,
+    can_claim_locally, policy_selects_requester,
 };
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
@@ -229,11 +229,7 @@ fn select_where(
     best.map(|(run, _)| run.clone())
 }
 
-fn select(state: &State, now_ms: u64) -> Option<RunId> {
-    select_where(state, now_ms, |_| true)
-}
-
-/// Whether one exact row is runnable under the same policy as [`select`]. The
+/// Whether one exact row is runnable under the same policy as [`select_where`]. The
 /// boolean says that the claim is crash recovery and must spend retry budget.
 fn runnable(state: &State, run_id: &RunId, now_ms: u64) -> Option<bool> {
     let row = state.rows.get(run_id)?;
@@ -274,6 +270,13 @@ fn claim_exact(
 ) -> Option<Claimed> {
     let was_recovery = runnable(state, requested_run, now_ms)?;
     let run_id = requested_run.clone();
+    let row = state.rows.get(&run_id).expect("runnable row exists");
+    if assignment.is_none()
+        && !row.cancellation_requested
+        && !can_claim_locally(&row.request.placement)
+    {
+        return None;
+    }
     let (request, sandbox, cancellation_requested, lease) = {
         let row = state.rows.get_mut(&run_id).expect("runnable row exists");
         row.lease_epoch += 1;
@@ -408,6 +411,9 @@ impl DispatchQueue for MemoryDispatchStore {
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
+        if !can_claim_locally(&request.placement) {
+            return Ok(None);
+        }
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         let run_id = request.run_id().clone();
@@ -564,7 +570,9 @@ impl DispatchQueue for MemoryDispatchStore {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
 
-        let Some(run_id) = select(&state, now_ms) else {
+        let Some(run_id) = select_where(&state, now_ms, |row| {
+            can_claim_locally(&row.request.placement)
+        }) else {
             return Ok(None);
         };
         Ok(claim_exact(

@@ -93,9 +93,10 @@ pub awaken_ext_memory::extraction::MemoryExtractionReceipt::stored_at_unix_ms: u
 pub struct awaken_ext_memory::extraction::MemoryExtractorSnapshot
 pub awaken_ext_memory::extraction::MemoryExtractorSnapshot::agent_id: alloc::string::String
 pub awaken_ext_memory::extraction::MemoryExtractorSnapshot::extraction_prompt: core::option::Option<alloc::string::String>
-pub awaken_ext_memory::extraction::MemoryExtractorSnapshot::inference_access: awaken_inference_contract::InferenceAccess
 pub awaken_ext_memory::extraction::MemoryExtractorSnapshot::instructions: core::option::Option<alloc::string::String>
-pub awaken_ext_memory::extraction::MemoryExtractorSnapshot::model_ref: alloc::string::String
+pub awaken_ext_memory::extraction::MemoryExtractorSnapshot::model: awaken_runtime_contract::resolved::ResolvedModelCandidate
+impl awaken_ext_memory::extraction::MemoryExtractorSnapshot
+pub fn awaken_ext_memory::extraction::MemoryExtractorSnapshot::host_executor(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_ext_memory::extraction::MemoryMutationReceipt
 pub awaken_ext_memory::extraction::MemoryMutationReceipt::already_applied: bool
 pub awaken_ext_memory::extraction::MemoryMutationReceipt::path: alloc::string::String
@@ -300,9 +301,10 @@ pub awaken_ext_memory::MemoryExtractionReceipt::stored_at_unix_ms: u64
 pub struct awaken_ext_memory::MemoryExtractorSnapshot
 pub awaken_ext_memory::MemoryExtractorSnapshot::agent_id: alloc::string::String
 pub awaken_ext_memory::MemoryExtractorSnapshot::extraction_prompt: core::option::Option<alloc::string::String>
-pub awaken_ext_memory::MemoryExtractorSnapshot::inference_access: awaken_inference_contract::InferenceAccess
 pub awaken_ext_memory::MemoryExtractorSnapshot::instructions: core::option::Option<alloc::string::String>
-pub awaken_ext_memory::MemoryExtractorSnapshot::model_ref: alloc::string::String
+pub awaken_ext_memory::MemoryExtractorSnapshot::model: awaken_runtime_contract::resolved::ResolvedModelCandidate
+impl awaken_ext_memory::extraction::MemoryExtractorSnapshot
+pub fn awaken_ext_memory::extraction::MemoryExtractorSnapshot::host_executor(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_ext_memory::MemoryMutationReceipt
 pub awaken_ext_memory::MemoryMutationReceipt::already_applied: bool
 pub awaken_ext_memory::MemoryMutationReceipt::path: alloc::string::String
