@@ -265,6 +265,7 @@ impl WorkerNodeBuilder {
             upstream: self.upstream,
             manifest,
             application_decorator_factory: self.application_decorator_factory,
+            application_gate: None,
             materializer: self.materializer,
             acp_credentials: self.acp_credentials,
             resources: self.resources,
@@ -288,6 +289,7 @@ pub struct WorkerNode {
     upstream: WorkerUpstream,
     manifest: WorkerManifest,
     application_decorator_factory: Option<RegisteredDecoratorFactory>,
+    application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
     acp_credentials: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
     resources: Option<WorkerResourcePlane>,
@@ -380,6 +382,7 @@ pub async fn run_with_application_credential_stores_until<F>(
     secrets: Arc<dyn awaken_credential_vault::SecretStore>,
     application_capabilities: std::collections::BTreeSet<String>,
     factory: RegisteredDecoratorFactory,
+    gate: Arc<dyn awaken_runtime_contract::permission::ToolGateHook>,
     shutdown: F,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 where
@@ -396,6 +399,7 @@ where
         true,
         application_capabilities,
         Some(factory),
+        Some(gate),
     )
     .await?
     .run_until(shutdown)
@@ -427,6 +431,7 @@ async fn build_standard_worker(
         repository_credentials,
         application_capabilities,
         application,
+        None,
     )
     .await
 }
@@ -437,6 +442,7 @@ async fn build_worker_with_materialization_stores(
     repository_credentials: bool,
     application_capabilities: std::collections::BTreeSet<String>,
     application: Option<RegisteredDecoratorFactory>,
+    application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
 ) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
     let resource_credentials = repository_credentials.then(|| stores.clone());
     let resources = shared_resource_wiring(resource_credentials).await?;
@@ -461,6 +467,7 @@ async fn build_worker_with_materialization_stores(
         )),
         resources,
         application,
+        application_gate,
     )
 }
 
@@ -508,6 +515,7 @@ pub async fn run_with_upstream_application_and_inference_materializer(
         materializer,
         application_capabilities,
         application,
+        None,
     )
     .await?
     .run_until_shutdown()
@@ -521,6 +529,7 @@ pub async fn run_with_upstream_application_and_inference_materializer_until<F>(
     materializer: Arc<dyn InferenceExecutorMaterializer>,
     application_capabilities: std::collections::BTreeSet<String>,
     application: Option<RegisteredDecoratorFactory>,
+    application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     shutdown: F,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 where
@@ -533,6 +542,7 @@ where
         materializer,
         application_capabilities,
         application,
+        application_gate,
     )
     .await?
     .run_until(shutdown)
@@ -544,6 +554,7 @@ async fn build_secretless_worker(
     materializer: Arc<dyn InferenceExecutorMaterializer>,
     application_capabilities: std::collections::BTreeSet<String>,
     application: Option<RegisteredDecoratorFactory>,
+    application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
 ) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
     let resources = shared_resource_wiring(None).await?;
     let manifest = worker_manifest(
@@ -559,6 +570,7 @@ async fn build_secretless_worker(
         None,
         resources,
         application,
+        application_gate,
     )
 }
 
@@ -569,6 +581,7 @@ fn build_configured_worker(
     acp_credentials: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
     resources: Option<WorkerResourcePlane>,
     application: Option<RegisteredDecoratorFactory>,
+    application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
 ) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
     let mut builder = WorkerNodeBuilder::new(upstream)
         .with_manifest(manifest)
@@ -581,7 +594,9 @@ fn build_configured_worker(
     if let Some(factory) = application {
         builder = builder.with_application_decorator_factory(factory);
     }
-    Ok(builder.build()?)
+    let mut worker = builder.build()?;
+    worker.application_gate = application_gate;
+    Ok(worker)
 }
 
 fn configured_admin_listen() -> String {
@@ -697,6 +712,9 @@ impl WorkerNode {
         }
         if let Some(decorator) = application_decorator {
             host = host.with_application_attempt_decorator(decorator);
+        }
+        if let Some(gate) = self.application_gate {
+            host = host.with_gate_override(gate);
         }
         awaken_server::install_platform_memory_data_plane(&host);
 
