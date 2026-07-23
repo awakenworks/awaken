@@ -707,6 +707,30 @@ pub async fn build_management_router_with_host_customizer(
     .await
 }
 
+/// Durable counterpart of [`build_management_router_with_host_customizer`].
+///
+/// This is an explicit-input composition seam for restart tests and embeddings
+/// that need a real external runtime while retaining the same management and
+/// resource-plane state across host lifetimes. The sealing key and storage root
+/// are supplied by the caller, avoiding process-global environment races.
+pub async fn build_durable_management_router_with_host_customizer(
+    dir: &std::path::Path,
+    key: &[u8; 32],
+    model: Arc<dyn LlmExecutor>,
+    model_ref: impl Into<String>,
+    customize_host: impl FnOnce(SharedHost) -> SharedHost + Send + 'static,
+) -> Router {
+    management_router_over(
+        durable_management_stores(dir, key),
+        None,
+        None,
+        model,
+        model_ref.into(),
+        Some(Box::new(customize_host)),
+    )
+    .await
+}
+
 /// Build the management router over in-memory stores with an explicit host default
 /// model injected — a **test-only** seam so an integration test can drive the real
 /// management router with a deterministic (mock) model, keeping the mock out of the

@@ -37,7 +37,14 @@ pub trait HandExecutorFactory: Send + Sync {
 pub(crate) trait AgentSandbox: Send + Sync {
     fn is_container(&self) -> bool;
 
-    fn config_home(&self) -> &'static str;
+    fn config_home(&self) -> String;
+
+    /// Workspace path understood by the ACP agent inside this environment.
+    ///
+    /// This is the host-realized absolute root for Workdir and the stable interior
+    /// path for transparent Namespace/Container tiers. It is sent on ACP
+    /// `session/new`/`session/load`, whose cwd is authoritative for CLI file tools.
+    fn workspace_cwd(&self) -> String;
 
     async fn materialize_inline(
         &self,
@@ -350,10 +357,22 @@ impl AgentSandbox for SessionEnvironment {
         matches!(self, Self::Container { .. })
     }
 
-    fn config_home(&self) -> &'static str {
+    fn config_home(&self) -> String {
         match self {
-            Self::Container { .. } => "/acp-config",
-            Self::Workdir(_) | Self::Namespace(_) => ".acp-config",
+            Self::Container { .. } => "/acp-config".to_string(),
+            Self::Namespace(_) => "/workspace/.acp-config".to_string(),
+            Self::Workdir(sandbox) => sandbox
+                .workspace_path()
+                .join(".acp-config")
+                .to_string_lossy()
+                .into_owned(),
+        }
+    }
+
+    fn workspace_cwd(&self) -> String {
+        match self {
+            Self::Workdir(sandbox) => sandbox.workspace_path().to_string_lossy().into_owned(),
+            Self::Namespace(_) | Self::Container { .. } => "/workspace".to_string(),
         }
     }
 
