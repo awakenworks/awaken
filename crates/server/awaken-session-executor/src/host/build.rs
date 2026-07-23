@@ -182,9 +182,9 @@ impl SharedHost {
             local_workspace: local_workspace.clone(),
             session_slots: session_slots.clone(),
             skills,
-            delegates: crate::delegate::Delegates::new(),
+            remote_agents: crate::delegate::RemoteAgentDirectory::new(),
             // Subagents share the parent's sandbox by default (`默认共用`).
-            agent_run_reuse_sandbox: true,
+            skill_fork_placement: crate::skills::SkillForkPlacement::SharedSession,
             plugin_ids: Vec::new(),
             plugin_config: std::collections::BTreeMap::new(),
             hub: Arc::new(ThreadEventHub::new()),
@@ -202,6 +202,7 @@ impl SharedHost {
             memory_selector,
             compaction: None,
             config_service: None,
+            agent_publications: None,
             mcp_relay: tokio::sync::OnceCell::new(),
             dispatch_resource_preparer: std::sync::RwLock::new(None),
             thread_egress: crate::sandbox_source::ThreadEgress::from_slots(session_slots.clone()),
@@ -423,7 +424,18 @@ impl SharedHost {
     /// Wire the config data plane, so a session's agent resolves to its installed
     /// (published) config (slice A).
     pub fn with_config_service(mut self, service: Arc<crate::config_plane::ConfigService>) -> Self {
+        self.agent_publications = Some(service.clone());
         self.config_service = Some(service);
+        self
+    }
+
+    /// Supply immutable executable publications without mounting the authoring
+    /// plane. Intended for embedded composition roots and scenario fixtures.
+    pub fn with_agent_publications(
+        mut self,
+        source: Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
+    ) -> Self {
+        self.agent_publications = Some(source);
         self
     }
 
@@ -434,29 +446,13 @@ impl SharedHost {
         self
     }
 
-    /// Add local delegate agents callable via `agent_run`.
-    pub fn with_delegates(mut self, delegates: HashSet<String>) -> Self {
-        self.delegates.add_local(delegates);
-        self
-    }
-
-    /// Configure the delegation roster owned by a locally runnable Agent.
-    /// A child Run uses this roster exactly as the same Agent would when started
-    /// directly; delegation never copies the initiating Agent's capabilities.
-    pub fn with_agent_delegates(
+    /// Whether `context: fork` Skills reuse the Session environment. Ordinary
+    /// delegated child Runs are unaffected and always share it.
+    pub fn with_skill_fork_placement(
         mut self,
-        agent_id: impl Into<String>,
-        delegates: HashSet<String>,
+        placement: crate::skills::SkillForkPlacement,
     ) -> Self {
-        self.delegates.set_agent_roster(agent_id.into(), delegates);
-        self
-    }
-
-    /// Whether native subagents (delegation / skill fork) reuse the parent agent's
-    /// sandbox (`true`, the default) or run in a fresh, isolated one. Housekeeping
-    /// sub-runs (judge / memory / compaction) stay isolated regardless.
-    pub fn with_agent_run_reuse_sandbox(mut self, reuse: bool) -> Self {
-        self.agent_run_reuse_sandbox = reuse;
+        self.skill_fork_placement = placement;
         self
     }
 
@@ -583,9 +579,8 @@ impl SharedHost {
         self.inference_routing.register(thread, model_ref);
     }
 
-    /// Bind the exact published delegation roster to a prepared Session.
-    /// `None` preserves the unmanaged host-composed compatibility roster.
-    pub fn register_thread_delegates(&self, thread: &str, delegates: Option<Vec<String>>) {
+    /// Bind the exact published delegation targets to a prepared Session.
+    pub fn register_thread_delegates(&self, thread: &str, delegates: Vec<String>) {
         self.session_slots
             .update(thread, |slot| slot.delegates = delegates);
     }
@@ -593,7 +588,6 @@ impl SharedHost {
     pub(crate) fn thread_delegate_ids(&self, thread: &str) -> Option<Vec<String>> {
         self.session_slots
             .read(thread, |slot| slot.delegates.clone())
-            .flatten()
     }
 
     /// Deny network egress for `thread`'s sandbox (from its environment's networking
@@ -649,9 +643,6 @@ impl SharedHost {
         &self.hub
     }
 
-    /// Register a delegate agent fulfilled over A2A: `agent_run` calls naming it
-    /// are routed to `transport` (a remote agent). The id joins the advertised
-    /// roster so the model can delegate to it.
     /// Route every run's tool calls through `hand` — a remote `ToolExecutor`
     /// (ADR-0044) — instead of the in-process registry. The brain still commits
     /// the hand's returned output. `None` (the default) keeps in-process execution.
@@ -681,31 +672,24 @@ impl SharedHost {
         delegate: Arc<dyn RemoteAgent>,
     ) -> Self {
         let agent_id = agent_id.into();
-        self.delegates.add_remote(agent_id, delegate);
+        self.remote_agents.add_remote(agent_id, delegate);
         self
     }
 
-    /// Build the delegation executor from the configured roster and remotes, or
-    /// `None` when the host has no delegates. Injected into each thread's runtime.
     /// Build the per-session delegation executor. `sandbox` is the calling thread's
-    /// live sandbox: a native delegate shares it by default (`默认共用`), so the parent
-    /// and its subagent collaborate in one workspace; `agent_run_reuse_sandbox = false`
-    /// gives each delegate a fresh, isolated root instead.
+    /// live environment: a native delegate shares it, so the parent
+    /// and its native child collaborate in one Session-owned workspace.
     pub(crate) fn run_delegation(
         &self,
         thread: &str,
         sandbox: Arc<crate::session_environment::SessionEnvironment>,
         commit: Arc<crate::store::HostCommit>,
+        allowed_targets: HashSet<awaken_runtime_contract::snapshot::AgentId>,
     ) -> Result<Option<Arc<dyn RunDelegationService>>, HostError> {
-        let root_roster = self
-            .thread_delegate_ids(thread)
-            .map(|ids| ids.into_iter().collect())
-            .unwrap_or_else(|| self.delegates.ids_set().clone());
-        if root_roster.is_empty() {
+        if allowed_targets.is_empty() {
             return Ok(None);
         }
-        let mut delegates = self.delegates.clone();
-        delegates.add_local(root_roster.clone());
+        let remote_agents = self.remote_agents.clone();
         let scheduler = if self.deployment.durable {
             Some(crate::agent_runner::RunScheduler {
                 store: crate::dispatch_backend::shared_durable_store(self.store_dir.as_deref())?,
@@ -728,14 +712,14 @@ impl SharedHost {
         };
         let service = HostRunDelegationService::new(
             self.llm.clone(),
-            self.model_ref.clone(),
-            Arc::new(LocalProvider::new(sub_base("deleg"))),
             sandbox,
-            self.agent_run_reuse_sandbox,
-            root_roster,
-            delegates,
+            allowed_targets,
+            remote_agents,
         )
-        .with_config_catalog(self.config_service.clone(), self.thread_workspace(thread))
+        .with_publications(
+            self.agent_publications.clone(),
+            self.thread_workspace(thread),
+        )
         .with_scheduler(scheduler);
         Ok(Some(Arc::new(service)))
     }

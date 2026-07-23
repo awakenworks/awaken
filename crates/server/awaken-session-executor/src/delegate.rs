@@ -15,10 +15,14 @@ use async_trait::async_trait;
 use awaken_ext_builtin_tools::AGENT_RUN;
 use awaken_runtime_contract::delegation::{
     ChildRunCancellation, DelegationExecutionError, DelegationRequest, DelegationResume,
-    DelegationStep, RemoteAgent, RunDelegationService,
+    DelegationStep, DelegationToolInput, RemoteAgent, RunDelegationService,
 };
 use awaken_runtime_contract::llm::LlmExecutor;
+use awaken_runtime_contract::resolved::CatalogFingerprint;
+use awaken_runtime_contract::resolver::PublishedAgentSnapshotSource;
 use awaken_runtime_contract::resume::ResumeResult;
+use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshot};
+#[cfg(test)]
 use awaken_sandbox_local::LocalProvider;
 
 use crate::agent_runner::{AgentRunBoundary, AgentRunSandbox, ChildRunRequest, RunScheduler};
@@ -26,62 +30,33 @@ use serde_json::Value;
 
 use crate::host::{HostError, SharedHost};
 
-/// The host's delegate agents (local + A2A-remote), behind one type owning their
-/// shared invariant: `remotes` (agents fulfilled over A2A) is a *subset* of `ids`
-/// (every advertised delegate). [`Self::add_remote`] maintains it by registering into
-/// both; [`Self::native_ids`] derives the local delegates as `ids − remotes`. Keeping
-/// the pair split let a caller register a remote delegate without also advertising
-/// the delegate, silently breaking the `multiagent` roster.
-///
-/// `remotes` holds the neutral [`RemoteAgent`] interface, not a wire type: the A2A
-/// transport + poll loop live in the adapter that implements it (Phase 2), so host
-/// state names no protocol.
-#[derive(Clone, Default)]
-pub(crate) struct Delegates {
-    /// All delegate agent ids (advertised as the agent's `multiagent` roster).
-    ids: HashSet<String>,
-    /// The subset fulfilled by a remote peer (agent id → the neutral delegate port)
-    /// instead of a local Agent Run. Invariant: every key is also in `ids`.
-    remotes: HashMap<String, Arc<dyn RemoteAgent>>,
-    /// Per-Agent delegation rosters. Absence means that Agent has no delegation
-    /// capability; being initiated by another Agent never implicitly copies the
-    /// delegation_origin's roster.
-    agent_rosters: HashMap<String, HashSet<String>>,
+#[derive(serde::Serialize)]
+struct NativeDelegationContinuation {
+    kind: &'static str,
+    child_run_id: awaken_agent_contract::agent::run::Id,
 }
 
-impl Delegates {
-    /// An empty roster.
+/// Remote placement adapters keyed by published Agent identity.
+///
+/// This directory owns routing only. Executable publications own Agent identity,
+/// delegation capability, and the targets visible to a model.
+#[derive(Clone, Default)]
+pub(crate) struct RemoteAgentDirectory {
+    /// Agent id → neutral remote placement adapter. Native identities and
+    /// capabilities are owned solely by executable publications.
+    remotes: HashMap<String, Arc<dyn RemoteAgent>>,
+}
+
+impl RemoteAgentDirectory {
+    /// An empty placement directory.
     pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    /// Add local delegate Agents (fulfilled by an in-process child Run).
-    pub(crate) fn add_local(&mut self, ids: HashSet<String>) {
-        self.ids.extend(ids);
-    }
-
-    /// Register a remote delegate: advertised in the roster AND routed to its neutral
-    /// [`RemoteAgent`] interface. Maintains the `remotes ⊆ ids` invariant via both.
+    /// Register a remote placement adapter. Publication still decides whether an
+    /// Agent may address this identity.
     pub(crate) fn add_remote(&mut self, agent_id: String, delegate: Arc<dyn RemoteAgent>) {
-        self.ids.insert(agent_id.clone());
         self.remotes.insert(agent_id, delegate);
-    }
-
-    /// Configure the delegation targets available when `agent_id` itself runs.
-    /// This is independent from whether `agent_id` appears in the root Agent's
-    /// roster: each Agent owns its ordinary capability set.
-    pub(crate) fn set_agent_roster(&mut self, agent_id: String, targets: HashSet<String>) {
-        self.agent_rosters.insert(agent_id, targets);
-    }
-
-    /// All delegate ids (the `multiagent` advertisement).
-    pub(crate) fn ids(&self) -> Vec<String> {
-        self.ids.iter().cloned().collect()
-    }
-
-    /// The advertised id set, for callers that pass it by reference (config build).
-    pub(crate) fn ids_set(&self) -> &HashSet<String> {
-        &self.ids
     }
 
     /// The remote-delegate port for `agent_id`, or `None` if it is local/unknown.
@@ -90,37 +65,20 @@ impl Delegates {
     }
 }
 
-/// The `(agent_id, input)` a delegate `agent_run` call carries.
-fn delegate_args(arguments: &Value) -> (String, String) {
-    let field = |key: &str| {
-        arguments
-            .get(key)
-            .and_then(|value| value.as_str())
-            .unwrap_or_default()
-            .to_string()
-    };
-    (field("agent_id"), field("input"))
-}
-
 /// Runs delegates behind `agent_run`: local and remote Agents share the same
 /// first-class child Run identity and lifecycle; only placement differs.
 #[derive(Clone)]
 pub(crate) struct HostRunDelegationService {
     llm: Arc<dyn LlmExecutor>,
-    model_ref: String,
-    provider: Arc<LocalProvider>,
-    /// The parent agent's sandbox, shared with a native delegate by default so the two
-    /// collaborate in one workspace (`默认共用`); bypassed when `reuse_sandbox` is off.
+    /// Native children execute in the Session-owned environment. Isolation is a
+    /// Session placement decision, not a per-delegation switch.
     sandbox: Arc<crate::session_environment::SessionEnvironment>,
-    /// Whether a native delegate reuses the parent sandbox (default) or gets a fresh,
-    /// isolated one. Sandbox placement does not change child Run semantics.
-    reuse_sandbox: bool,
-    /// Delegates this Agent may call, regardless of local/remote placement.
-    root_roster: HashSet<String>,
-    /// All configured Agent identities, per-Agent rosters, and remote adapters.
-    /// A child receives its own roster, never an implicit copy of its delegation_origin's.
-    delegates: Delegates,
-    config_service: Option<Arc<crate::config_plane::ConfigService>>,
+    /// Exact targets frozen into the snapshot of the Run using this service.
+    allowed_targets: HashSet<AgentId>,
+    /// Placement directory. It contains only remote adapters; native identity and
+    /// capabilities come from immutable publications.
+    remote_agents: RemoteAgentDirectory,
+    publications: Option<Arc<dyn PublishedAgentSnapshotSource>>,
     workspace: String,
     scheduler: Option<RunScheduler>,
 }
@@ -128,33 +86,27 @@ pub(crate) struct HostRunDelegationService {
 impl HostRunDelegationService {
     pub(crate) fn new(
         llm: Arc<dyn LlmExecutor>,
-        model_ref: String,
-        provider: Arc<LocalProvider>,
         sandbox: Arc<crate::session_environment::SessionEnvironment>,
-        reuse_sandbox: bool,
-        root_roster: HashSet<String>,
-        delegates: Delegates,
+        allowed_targets: HashSet<AgentId>,
+        remote_agents: RemoteAgentDirectory,
     ) -> Self {
         Self {
             llm,
-            model_ref,
-            provider,
             sandbox,
-            reuse_sandbox,
-            root_roster,
-            delegates,
-            config_service: None,
+            allowed_targets,
+            remote_agents,
+            publications: None,
             workspace: String::new(),
             scheduler: None,
         }
     }
 
-    pub(crate) fn with_config_catalog(
+    pub(crate) fn with_publications(
         mut self,
-        service: Option<Arc<crate::config_plane::ConfigService>>,
+        publications: Option<Arc<dyn PublishedAgentSnapshotSource>>,
         workspace: String,
     ) -> Self {
-        self.config_service = service;
+        self.publications = publications;
         self.workspace = workspace;
         self
     }
@@ -164,71 +116,77 @@ impl HostRunDelegationService {
         self
     }
 
-    fn roster_for(&self, agent_id: &str) -> HashSet<String> {
-        self.delegates
-            .agent_rosters
-            .get(agent_id)
-            .cloned()
-            .or_else(|| {
-                self.config_service
-                    .as_ref()?
-                    .delegate_ids_in(&self.workspace, agent_id)
-                    .map(|ids| ids.into_iter().collect())
+    fn current_snapshot(
+        &self,
+        agent_id: &AgentId,
+    ) -> Result<ExecutableAgentSnapshot, DelegationExecutionError> {
+        self.publications
+            .as_ref()
+            .and_then(|source| source.current(&self.workspace, agent_id))
+            .ok_or_else(|| {
+                DelegationExecutionError::new(format!(
+                    "delegate agent {:?} has no published executable snapshot",
+                    agent_id.0
+                ))
             })
-            .unwrap_or_default()
     }
 
-    fn may_delegate_to(
+    fn exact_snapshot(
         &self,
-        origin: &awaken_agent_contract::agent::delegation::DelegationOrigin,
-        target: &str,
-    ) -> bool {
-        if origin.agent_lineage.len() <= 1 {
-            self.root_roster.contains(target)
-        } else {
-            origin
-                .agent_lineage
-                .last()
-                .is_some_and(|agent| self.roster_for(agent).contains(target))
-        }
+        fingerprint: &CatalogFingerprint,
+    ) -> Result<ExecutableAgentSnapshot, DelegationExecutionError> {
+        self.publications
+            .as_ref()
+            .and_then(|source| source.exact(&self.workspace, fingerprint))
+            .ok_or_else(|| {
+                DelegationExecutionError::new(format!(
+                    "delegated Run snapshot {:?} is unavailable",
+                    fingerprint.0
+                ))
+            })
     }
 
     /// Drive a native delegate to one ordinary Run boundary.
-    /// It receives that Agent's configured delegation roster; it may recursively
+    /// It receives that Agent's configured delegation targets; it may recursively
     /// delegate when its own config allows it. Sandbox placement is the only local
     /// execution choice made here.
     async fn native_boundary(
         &self,
-        agent_id: &str,
+        snapshot: ExecutableAgentSnapshot,
         request: ChildRunRequest,
         context: awaken_runtime_contract::runtime_context::RuntimeRunContext,
     ) -> Result<DelegationStep, DelegationExecutionError> {
-        let sandbox = if self.reuse_sandbox {
-            AgentRunSandbox::Shared(self.sandbox.as_ref())
-        } else {
-            AgentRunSandbox::Fresh(&self.provider)
-        };
+        let sandbox = AgentRunSandbox::Shared(self.sandbox.as_ref());
         let child_run_id = request.run_id.clone();
         // The child keeps its own committed usage; the returned value additionally
         // rolls that usage into the initiating Run's accounting projection.
-        let delegates = self.roster_for(agent_id);
-        let run_delegation = if delegates.is_empty() {
+        let allowed_targets: HashSet<_> = snapshot
+            .resolved_spec
+            .plugin_config
+            .agent
+            .delegate_ids
+            .iter()
+            .cloned()
+            .collect();
+        let run_delegation = if allowed_targets.is_empty() {
             None
         } else {
-            Some(Arc::new(self.clone()) as Arc<dyn RunDelegationService>)
+            let mut child_service = self.clone();
+            child_service.allowed_targets = allowed_targets;
+            Some(Arc::new(child_service) as Arc<dyn RunDelegationService>)
         };
-        let boundary = crate::agent_runner::run_agent_until_boundary(
-            self.llm.clone(),
-            crate::agent_runner::AgentExecution {
-                agent_id,
-                model_ref: &self.model_ref,
-                delegates: &delegates,
-                run_delegation,
-                context: Some(context),
-                scheduler: self.scheduler.clone(),
-            },
+        let boundary = crate::agent_runner::run_configured_agent_until_boundary(
+            &snapshot,
             sandbox,
-            request,
+            self.llm.clone(),
+            request.run_id,
+            request.origin,
+            request.seed,
+            request.resume,
+            context,
+            run_delegation,
+            request.parent_thread_id,
+            self.scheduler.clone(),
         )
         .await
         .map_err(|error| {
@@ -241,11 +199,11 @@ impl HostRunDelegationService {
         Ok(match boundary {
             AgentRunBoundary::Ended { text, usage } => DelegationStep::Ended { text, usage },
             AgentRunBoundary::Awaiting => DelegationStep::Awaiting {
-                continuation: serde_json::json!({
-                    "kind": "local_run",
-                    "agent_id": agent_id,
-                    "child_run_id": child_run_id.0,
-                }),
+                continuation: serde_json::to_value(NativeDelegationContinuation {
+                    kind: "local_run",
+                    child_run_id,
+                })
+                .map_err(|error| DelegationExecutionError::new(error.to_string()))?,
             },
         })
     }
@@ -258,37 +216,54 @@ impl RunDelegationService for HostRunDelegationService {
     }
 
     fn supports_parallel_completion(&self, arguments: &Value) -> bool {
-        let (agent_id, _) = delegate_args(arguments);
         // A child is an ordinary Run and may reach HITL. Until it settles, the
         // parent cannot promise terminal-only completion to the batch barrier.
         // Independently dispatched children regain parallelism at the RunService
         // scheduler rather than by making this false promise.
-        let _ = agent_id;
+        let _ = arguments;
         false
+    }
+
+    fn target_agent_id(&self, arguments: &Value) -> Result<AgentId, DelegationExecutionError> {
+        Ok(DelegationToolInput::try_from(arguments)?.agent_id)
     }
 
     async fn start(
         &self,
         request: DelegationRequest,
     ) -> Result<DelegationStep, DelegationExecutionError> {
-        let (agent_id, input) = delegate_args(&request.arguments);
-        if !self.may_delegate_to(&request.origin, &agent_id) {
+        let input = DelegationToolInput::try_from(&request.arguments)?;
+        if input.agent_id != request.target_agent_id {
+            return Err(DelegationExecutionError::new(
+                "delegation target identity does not match its decoded input",
+            ));
+        }
+        let agent_id = input.agent_id;
+        let input = input.input;
+        if !self.allowed_targets.contains(&agent_id) {
             return Err(DelegationExecutionError::new(format!(
-                "delegate agent {agent_id:?} is not in this Agent's roster"
+                "delegate agent {:?} is not in this Agent's published targets",
+                agent_id.0
             )));
         }
-        if let Some(remote) = self.delegates.remotes.get(&agent_id) {
+        if let Some(remote) = self.remote_agents.remotes.get(&agent_id.0) {
             return remote
                 .run(
-                    &agent_id,
+                    &agent_id.0,
                     &request.child_run_id.0,
                     &input,
                     request.context.cancellation.as_ref(),
                 )
                 .await;
         }
+        let snapshot = self.current_snapshot(&agent_id)?;
+        if snapshot.root_agent_id != agent_id {
+            return Err(DelegationExecutionError::new(
+                "published delegate snapshot identity does not match its target",
+            ));
+        }
         self.native_boundary(
-            &agent_id,
+            snapshot,
             ChildRunRequest {
                 run_id: request.child_run_id,
                 origin: request.origin,
@@ -307,14 +282,7 @@ impl RunDelegationService for HostRunDelegationService {
     ) -> Result<DelegationStep, DelegationExecutionError> {
         // The continuation identifies placement only; lifecycle authority remains
         // the child Run's committed state and ResumeTicket.
-        let agent_id = request
-            .continuation
-            .get("agent_id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                DelegationExecutionError::new("delegation continuation is missing agent_id")
-            })?;
-        if let Some(remote) = self.delegates.remotes.get(agent_id) {
+        if let Some(remote) = self.remote_agents.remotes.get(&request.target_agent_id.0) {
             let input = match request.result {
                 ResumeResult::ToolResult(output) => output.content,
                 ResumeResult::Input(text) => text,
@@ -324,7 +292,7 @@ impl RunDelegationService for HostRunDelegationService {
             };
             return remote
                 .resume(
-                    agent_id,
+                    &request.target_agent_id.0,
                     &request.child_run_id.0,
                     &request.continuation,
                     &input,
@@ -332,13 +300,29 @@ impl RunDelegationService for HostRunDelegationService {
                 )
                 .await;
         }
-        if !self.may_delegate_to(&request.origin, agent_id) {
+        let agent_id = request.target_agent_id;
+        if !self.allowed_targets.contains(&agent_id) {
             return Err(DelegationExecutionError::new(format!(
-                "delegate agent {agent_id:?} is not in this Agent's roster"
+                "delegate agent {:?} is not in this Agent's published targets",
+                agent_id.0
             )));
         }
+        let ticket = request
+            .context
+            .reader
+            .as_ref()
+            .and_then(|reader| reader.resume_ticket(&request.child_run_id))
+            .ok_or_else(|| {
+                DelegationExecutionError::new("delegated child Run has no resume ticket")
+            })?;
+        let snapshot = self.exact_snapshot(&CatalogFingerprint(ticket.catalog_fingerprint))?;
+        if snapshot.root_agent_id != agent_id {
+            return Err(DelegationExecutionError::new(
+                "recovered delegate snapshot identity does not match its target",
+            ));
+        }
         self.native_boundary(
-            agent_id,
+            snapshot,
             ChildRunRequest {
                 run_id: request.child_run_id,
                 origin: request.origin,
@@ -355,7 +339,11 @@ impl RunDelegationService for HostRunDelegationService {
         &self,
         cancellation: ChildRunCancellation,
     ) -> Result<(), DelegationExecutionError> {
-        if let Some(remote) = self.delegates.remotes.get(&cancellation.target_agent_id) {
+        if let Some(remote) = self
+            .remote_agents
+            .remotes
+            .get(&cancellation.target_agent_id)
+        {
             return remote
                 .cancel(
                     &cancellation.target_agent_id,
@@ -406,7 +394,7 @@ impl SharedHost {
     /// Fails if the agent is not a registered remote. The wire card shape lives in the
     /// adapter behind the [`RemoteAgent`] interface; the host only echoes the value.
     pub async fn remote_agent_card(&self, agent_id: &str) -> Result<Value, HostError> {
-        let remote = self.delegates.remote(agent_id).ok_or_else(|| {
+        let remote = self.remote_agents.remote(agent_id).ok_or_else(|| {
             HostError::bad_request(format!("agent {agent_id:?} is not a remote agent"))
         })?;
         remote
@@ -429,6 +417,22 @@ mod durable_cancel_tests {
     use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
     struct AwaitPermission;
+
+    struct TestPublications(ExecutableAgentSnapshot);
+
+    impl PublishedAgentSnapshotSource for TestPublications {
+        fn current(&self, _workspace: &str, agent_id: &AgentId) -> Option<ExecutableAgentSnapshot> {
+            (self.0.root_agent_id == *agent_id).then(|| self.0.clone())
+        }
+
+        fn exact(
+            &self,
+            _workspace: &str,
+            fingerprint: &CatalogFingerprint,
+        ) -> Option<ExecutableAgentSnapshot> {
+            (self.0.fingerprint == *fingerprint).then(|| self.0.clone())
+        }
+    }
 
     #[async_trait]
     impl LlmExecutor for AwaitPermission {
@@ -472,18 +476,24 @@ mod durable_cancel_tests {
             claimed_commit: None,
             session_resources: None,
         };
-        let mut delegates = Delegates::new();
-        delegates.add_local(HashSet::from(["researcher".to_string()]));
+        let remote_agents = RemoteAgentDirectory::new();
+        let snapshot = crate::config::server_config(
+            "researcher",
+            "stub",
+            &HashSet::new(),
+            &HashSet::new(),
+            &[],
+            &Default::default(),
+            &[],
+            awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
+        );
         let service = HostRunDelegationService::new(
             Arc::new(AwaitPermission),
-            "stub".to_string(),
-            provider,
             sandbox,
-            true,
-            HashSet::from(["researcher".to_string()]),
-            delegates,
+            HashSet::from([AgentId("researcher".to_string())]),
+            remote_agents,
         )
-        .with_config_catalog(None, "default".into())
+        .with_publications(Some(Arc::new(TestPublications(snapshot))), "default".into())
         .with_scheduler(Some(scheduler));
         let origin = DelegationOrigin::root_for_agent(
             RunId("parent-run".into()),
@@ -499,6 +509,7 @@ mod durable_cancel_tests {
                     .with_commit(commit.clone())
                     .with_reader(commit.clone()),
                 origin: origin.clone(),
+                target_agent_id: AgentId("researcher".into()),
                 arguments: serde_json::json!({
                     "agent_id": "researcher",
                     "input": "write a file"

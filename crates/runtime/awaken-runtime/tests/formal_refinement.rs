@@ -273,8 +273,13 @@ impl RunDelegationService for CrashOnceDelegation {
         "agent_run"
     }
 
-    fn target_agent_id(&self, _: &serde_json::Value) -> Result<String, DelegationExecutionError> {
-        Ok("researcher".to_string())
+    fn target_agent_id(
+        &self,
+        _: &serde_json::Value,
+    ) -> Result<awaken_runtime_contract::snapshot::AgentId, DelegationExecutionError> {
+        Ok(awaken_runtime_contract::snapshot::AgentId(
+            "researcher".to_string(),
+        ))
     }
 
     async fn start(
@@ -308,8 +313,13 @@ impl RunDelegationService for CompletingDelegation {
         "agent_run"
     }
 
-    fn target_agent_id(&self, _: &serde_json::Value) -> Result<String, DelegationExecutionError> {
-        Ok("researcher".to_string())
+    fn target_agent_id(
+        &self,
+        _: &serde_json::Value,
+    ) -> Result<awaken_runtime_contract::snapshot::AgentId, DelegationExecutionError> {
+        Ok(awaken_runtime_contract::snapshot::AgentId(
+            "researcher".to_string(),
+        ))
     }
 
     fn supports_parallel_completion(&self, _: &serde_json::Value) -> bool {
@@ -348,8 +358,13 @@ impl RunDelegationService for AwaitingDelegation {
         "agent_run"
     }
 
-    fn target_agent_id(&self, _: &serde_json::Value) -> Result<String, DelegationExecutionError> {
-        Ok("researcher".to_string())
+    fn target_agent_id(
+        &self,
+        _: &serde_json::Value,
+    ) -> Result<awaken_runtime_contract::snapshot::AgentId, DelegationExecutionError> {
+        Ok(awaken_runtime_contract::snapshot::AgentId(
+            "researcher".to_string(),
+        ))
     }
 
     async fn start(

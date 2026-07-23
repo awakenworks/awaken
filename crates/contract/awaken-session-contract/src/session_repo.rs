@@ -25,7 +25,7 @@ use crate::SessionLifecycleFact;
 pub struct PersistedSessionRuntime {
     pub mcp_servers: Vec<crate::McpServerBinding>,
     #[serde(default)]
-    pub delegate_ids: Option<Vec<String>>,
+    pub delegate_ids: Vec<String>,
     pub runtime: Option<String>,
     pub deny_egress: bool,
     pub sandbox: Option<Value>,

@@ -1286,7 +1286,7 @@ pub use config_home::{ConfigHome, RetentionPolicy, SessionReuse};
 pub use session_home::{DirSessionHome, FsSessionBlobStore, SessionBlobStore};
 pub use subprocess::{
     AcpLaunch, AcpSettings, LaunchResolver, McpInjection, ProjectingChannelSource,
-    SubprocessChannelSource, mcp_injection, project_launch,
+    SubprocessChannelSource, mcp_injection, mcp_injection_from_servers, project_launch,
 };
 
 #[cfg(test)]

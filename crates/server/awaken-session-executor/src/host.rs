@@ -144,14 +144,12 @@ pub struct SharedHost {
     /// `/v1/skills` catalog, and its sync-read cache — grouped behind one type that
     /// owns the cache↔store coherence invariant. See [`crate::skill_catalog`].
     pub(crate) skills: crate::skill_catalog::SkillCatalog,
-    /// The delegate agent roster (local + A2A-remote) behind one type owning the
-    /// `remotes ⊆ advertised` invariant. See [`crate::delegate::Delegates`].
-    pub(crate) delegates: crate::delegate::Delegates,
-    /// Whether a native subagent (delegation / skill fork) reuses the parent agent's
-    /// sandbox (`true`, the default — `默认共用`) or runs in a fresh, isolated one.
-    /// The workspace-sharing knob for subagents; out-of-band housekeeping sub-runs
-    /// (judge / memory / compaction) are always isolated regardless.
-    pub(crate) agent_run_reuse_sandbox: bool,
+    /// Optional remote placement adapters. Published snapshots exclusively own
+    /// Agent identity and delegation capability.
+    pub(crate) remote_agents: crate::delegate::RemoteAgentDirectory,
+    /// Whether a `context: fork` Skill reuses the parent Session environment.
+    /// Ordinary delegated child Runs always share that environment.
+    pub(crate) skill_fork_placement: crate::skills::SkillForkPlacement,
     /// Runtime plugins this host activates on every thread, and their config
     /// sections (e.g. the tool state machine). Empty by default.
     pub(crate) plugin_ids: Vec<String>,
@@ -191,6 +189,10 @@ pub struct SharedHost {
     /// runtime config is the installed (published) config for its agent, if any,
     /// else the built-in default (slice A).
     pub(crate) config_service: Option<Arc<crate::config_plane::ConfigService>>,
+    /// Runtime-only view of immutable Agent publications. This is also populated
+    /// by `with_config_service`; embedded hosts may supply a static source.
+    pub(crate) agent_publications:
+        Option<Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>>,
     /// The host's loopback MCP relay (α-reference resolver), started lazily on the first
     /// sandboxed ACP session that stages an authenticated MCP server. It holds the real
     /// bearers host-side and injects them when forwarding the sandbox's MCP calls, so the

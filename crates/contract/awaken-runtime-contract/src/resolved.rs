@@ -59,7 +59,7 @@ pub struct ResolvedSpec {
     /// config type (data-only, G3). A plugin whose id is absent runs with its
     /// defaults; a plugin reads only its own section at resolve.
     #[serde(default)]
-    pub plugin_config: BTreeMap<String, serde_json::Value>,
+    pub plugin_config: crate::agent_bindings::ResolvedConfiguration,
     /// How the model-visible context window is bounded before each inference.
     /// Part of the resolved decision surface (data-only, G3). Defaults to
     /// [`ContextPolicy::KeepAll`] so an unset config sends the whole transcript
@@ -342,11 +342,29 @@ pub struct ToolDescriptor {
     /// against this; an empty object means "no declared parameters".
     pub parameters: serde_json::Value,
     pub content_hash: String,
+    /// Strong semantic role used by configuration compilation. The compiler can
+    /// select a delegation capability without naming a concrete builtin tool id.
+    #[serde(default, skip_serializing_if = "ToolKind::is_regular")]
+    pub kind: ToolKind,
     /// Execution-only recovery policy. It is never projected into the model's
     /// tool schema; the runtime validates it against the executable tool's
     /// trusted capability before any recovery action.
     #[serde(default, skip_serializing_if = "is_default_tool_recovery")]
     pub recovery_policy: crate::tool::ToolRecoveryPolicy,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolKind {
+    #[default]
+    Regular,
+    AgentDelegation,
+}
+
+impl ToolKind {
+    const fn is_regular(&self) -> bool {
+        matches!(self, Self::Regular)
+    }
 }
 
 fn is_default_tool_recovery(policy: &crate::tool::ToolRecoveryPolicy) -> bool {
@@ -371,8 +389,20 @@ impl ToolDescriptor {
             description,
             parameters,
             content_hash,
+            kind: ToolKind::Regular,
             recovery_policy: crate::tool::ToolRecoveryPolicy::default(),
         }
+    }
+
+    /// Mark the descriptor as the one Agent-delegation capability. The role is
+    /// part of its content identity even though it is not model-visible.
+    #[must_use]
+    pub fn with_kind(mut self, kind: ToolKind) -> Self {
+        if self.kind != kind {
+            self.kind = kind;
+            self.content_hash = format!("{}:kind:{kind:?}", self.content_hash);
+        }
+        self
     }
 
     /// Pin an execution recovery policy without changing the model-visible

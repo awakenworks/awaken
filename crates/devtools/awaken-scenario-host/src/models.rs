@@ -752,6 +752,7 @@ mod tests {
     fn tool(id: &str) -> ToolDescriptor {
         ToolDescriptor {
             id: id.into(),
+            kind: Default::default(),
             description: String::new(),
             parameters: serde_json::json!({}),
             content_hash: String::new(),
