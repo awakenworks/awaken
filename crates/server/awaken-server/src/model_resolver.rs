@@ -77,7 +77,13 @@ impl CatalogModelPublicationResolver {
         fallbacks: &[ModelBinding],
     ) -> Result<(ModelBinding, Vec<ModelBinding>), PublicationResolutionError> {
         if let Some(primary) = selection.resolved() {
-            return Ok((primary.clone(), fallbacks.to_vec()));
+            return Ok((
+                Self::canonical_binding(catalog, primary)?,
+                fallbacks
+                    .iter()
+                    .map(|binding| Self::canonical_binding(catalog, binding))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ));
         }
         let mut offerings = catalog
             .offerings
@@ -90,6 +96,45 @@ impl CatalogModelPublicationResolver {
             Self::binding_of(primary),
             offerings.map(Self::binding_of).collect(),
         ))
+    }
+
+    /// Normalize the public model-level selection into the one complete catalog
+    /// identity frozen in the publication. Provider/backend-qualified bindings
+    /// remain exact; an SDK/UI `{model}` selection is accepted only when the
+    /// active catalog has one matching offering.
+    fn canonical_binding(
+        catalog: &ProviderCatalog,
+        binding: &ModelBinding,
+    ) -> Result<ModelBinding, PublicationResolutionError> {
+        if Self::offering_for(catalog, binding).is_some() {
+            return Ok(binding.clone());
+        }
+        let candidates = catalog
+            .offerings
+            .iter()
+            .filter(|offering| {
+                offering.status == awaken_model_catalog::OfferingStatus::Active
+                    && offering.model_id == binding.model_ref
+                    && (binding.provider_identity_ref.is_empty()
+                        || offering.provider_id.as_str() == binding.provider_identity_ref)
+                    && (binding.backend_ref.is_empty() || binding.backend_ref == "genai")
+            })
+            .map(Self::binding_of)
+            .collect::<Vec<_>>();
+        match candidates.as_slice() {
+            [resolved] => Ok(resolved.clone()),
+            [] => Err(PublicationResolutionError::CandidateUnavailable {
+                binding: binding.clone(),
+                reason: format!("model offering {} is not published", binding.model_ref),
+            }),
+            _ => Err(PublicationResolutionError::CandidateUnavailable {
+                binding: binding.clone(),
+                reason: format!(
+                    "model {} is ambiguous; select a provider-qualified binding",
+                    binding.model_ref
+                ),
+            }),
+        }
     }
 
     fn offering_for<'a>(
@@ -341,6 +386,24 @@ mod tests {
             resolved.primary.provisioning,
             ModelProvisioning::Provider { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn model_level_selection_is_normalized_to_one_complete_catalog_binding() {
+        let resolver = resolver(&["m-first"]).await;
+        let resolved = resolver
+            .resolve_models(
+                &ScopeId::from("workspace-a"),
+                &ModelSelection::Pinned(ModelBinding::new("", "m-first", "")),
+                &[],
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            resolved.primary.binding,
+            ModelBinding::new("openai", "m-first", "genai")
+        );
     }
 
     #[tokio::test]
