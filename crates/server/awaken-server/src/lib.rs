@@ -101,10 +101,14 @@ pub fn embedded_resource_plane(root: &std::path::Path) -> awaken_runtime_host::R
             .expect("open resource file sqlite"),
         ),
         Arc::new(memory),
-        Arc::new(
-            awaken_skill_store::FsSkillStore::open(root.join("skills"))
-                .expect("open resource skill filesystem store"),
-        ),
+        Arc::new({
+            let skills = awaken_skill_store::FsSkillStore::open(root.join("skills"))
+                .expect("open resource skill filesystem store");
+            skills
+                .migrate_legacy_files()
+                .expect("migrate legacy Skill files");
+            skills
+        }),
         Arc::new({
             let lifecycle = awaken_resource_store::SqliteResourceStore::open(
                 root.join("resource-lifecycle.db"),
