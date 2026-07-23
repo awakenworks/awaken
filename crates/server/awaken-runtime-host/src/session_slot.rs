@@ -20,6 +20,7 @@ pub(crate) struct SessionRuntimeSlot {
     pub environment: Option<Arc<crate::session_environment::SessionEnvironment>>,
     pub workspace: Option<String>,
     pub model_ref: Option<String>,
+    pub runtime_adapter: Option<String>,
     pub memory: Option<Arc<BoundMemory>>,
     pub mcp: Vec<PreparedMcpServer>,
     /// Exact published delegation roster. `None` keeps unmanaged host defaults.

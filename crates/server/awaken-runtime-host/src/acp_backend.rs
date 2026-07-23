@@ -6,8 +6,7 @@
 //! peer `RunExecutor` that launches the CLI and commits through the same boundary
 //! as the native path.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use awaken_run_executor_acp::{AcpRunExecutor, LaunchObserver, SessionHomeProvider};
 
@@ -23,7 +22,7 @@ enum AcpExecutorSource {
 /// Holds the ACP executor and the per-thread runtime selection.
 pub(crate) struct AcpBackend {
     source: AcpExecutorSource,
-    thread_runtime: Mutex<HashMap<String, String>>,
+    slots: crate::session_slot::SessionRuntimeSlots,
     /// The deployment's DEFAULT backend adapter (e.g. `"acp:claude"`), applied to a
     /// thread that staged none. This is how a single-purpose ACP deployment routes
     /// every session to the CLI WITHOUT a per-session `awaken.runtime` override — the
@@ -39,10 +38,13 @@ impl AcpBackend {
         self
     }
 
-    pub(crate) fn new(executor: Arc<AcpRunExecutor>) -> Self {
+    pub(crate) fn new(
+        executor: Arc<AcpRunExecutor>,
+        slots: crate::session_slot::SessionRuntimeSlots,
+    ) -> Self {
         Self {
             source: AcpExecutorSource::Static(executor),
-            thread_runtime: Mutex::new(HashMap::new()),
+            slots,
             default_adapter: None,
         }
     }
@@ -51,6 +53,7 @@ impl AcpBackend {
         launch: crate::LaunchSource,
         observer: Option<Arc<dyn LaunchObserver>>,
         session_home: Option<Arc<dyn SessionHomeProvider>>,
+        slots: crate::session_slot::SessionRuntimeSlots,
     ) -> Self {
         Self {
             source: AcpExecutorSource::Bound {
@@ -58,7 +61,7 @@ impl AcpBackend {
                 observer,
                 session_home,
             },
-            thread_runtime: Mutex::new(HashMap::new()),
+            slots,
             default_adapter: None,
         }
     }
@@ -98,20 +101,17 @@ impl AcpBackend {
 
     /// Stage `thread`'s selected runtime adapter (e.g. `"acp:claude"` or `"awaken"`).
     pub(crate) fn register(&self, thread: &str, adapter: &str) {
-        self.thread_runtime
-            .lock()
-            .expect("acp thread-runtime mutex poisoned")
-            .insert(thread.to_string(), adapter.to_string());
+        self.slots.update(thread, |slot| {
+            slot.runtime_adapter = Some(adapter.to_string());
+        });
     }
 
     /// Resolve the effective runtime selected for a thread. An explicit Session
     /// selection wins over the deployment default.
     pub(crate) fn adapter_for(&self, thread: &str) -> Option<String> {
-        self.thread_runtime
-            .lock()
-            .expect("acp thread-runtime mutex poisoned")
-            .get(thread)
-            .cloned()
+        self.slots
+            .read(thread, |slot| slot.runtime_adapter.clone())
+            .flatten()
             .or_else(|| self.default_adapter.clone())
     }
 
@@ -167,7 +167,10 @@ impl crate::host::SharedHost {
     /// To publish bring-up progress to a UI, build the executor with
     /// `.with_launch_observer(host.acp_launch_observer())` before passing it here.
     pub fn with_acp(mut self, executor: Arc<AcpRunExecutor>) -> Self {
-        self.acp = Some(Arc::new(AcpBackend::new(executor)));
+        self.acp = Some(Arc::new(AcpBackend::new(
+            executor,
+            self.session_slots.clone(),
+        )));
         self
     }
 
@@ -181,6 +184,7 @@ impl crate::host::SharedHost {
             launch,
             Some(observer),
             session_home,
+            self.session_slots.clone(),
         )));
         self
     }
@@ -196,7 +200,8 @@ impl crate::host::SharedHost {
         default_adapter: impl Into<String>,
     ) -> Self {
         self.acp = Some(Arc::new(
-            AcpBackend::new(executor).with_default_adapter(default_adapter.into()),
+            AcpBackend::new(executor, self.session_slots.clone())
+                .with_default_adapter(default_adapter.into()),
         ));
         self
     }
