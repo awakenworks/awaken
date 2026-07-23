@@ -10,9 +10,11 @@
 
 use std::sync::Arc;
 
+use awaken_runtime_contract::CredentialRef;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resolved::ResolvedModelCandidate;
+use std::collections::BTreeSet;
 
 /// Turns an admission-pinned, secret-free inference access descriptor into a live
 /// executor. Selecting models and routes is deliberately outside this port; the
@@ -24,6 +26,13 @@ pub trait InferenceExecutorMaterializer: Send + Sync {
     /// drift. These are execution capabilities, not authorization grants.
     fn supported_access_schemes(&self) -> &'static [&'static str] {
         &[]
+    }
+
+    /// Exact worker-private credential revisions currently materializable by
+    /// this adapter. The default is empty for host executors and shared-vault
+    /// adapters. Implementations must never expose secret values or local paths.
+    fn available_credential_refs(&self) -> BTreeSet<CredentialRef> {
+        BTreeSet::new()
     }
 
     /// Materialize one configuration-pinned model/access pair. The implementation

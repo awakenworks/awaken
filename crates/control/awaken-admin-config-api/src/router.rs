@@ -1298,7 +1298,7 @@ pub struct EnterCredentialRequest {
     /// The secret to seal — required for `vault`. Environment-backed credentials
     /// are not accepted; environment discovery is exposed only as proposals.
     #[serde(default)]
-    secret: String,
+    secret: Option<String>,
     /// A server-owned OAuth refresh helper. This is an allowlisted identifier,
     /// never an operator-supplied command line.
     #[serde(default)]
@@ -1348,16 +1348,6 @@ async fn post_credential(
     headers: HeaderMap,
     Json(body): Json<EnterCredentialRequest>,
 ) -> Result<(StatusCode, Json<CredentialSourceView>), Problem> {
-    if body.kind == CredentialKind::Env {
-        return Err(cred_problem(
-            &CredentialError::EnvironmentSourceUnsupported(
-                body.env_key
-                    .clone()
-                    .unwrap_or_else(|| "<unnamed>".to_string()),
-            ),
-            &req_id(&headers),
-        ));
-    }
     let oauth_command = match (body.kind, body.oauth_helper) {
         (CredentialKind::Oauth, Some(helper)) => Some(helper.command()),
         (CredentialKind::Oauth, None) => {
@@ -1379,7 +1369,10 @@ async fn post_credential(
         kind: body.kind,
         provider_id: body.provider_id,
         env_key: body.env_key,
-        secret: Some(RedactedString::new(body.secret)),
+        secret: body
+            .secret
+            .filter(|secret| !secret.is_empty())
+            .map(RedactedString::new),
         oauth_command,
     };
     let source = enter_credential(params, &*state.secrets, &*state.credentials)
@@ -1496,6 +1489,8 @@ mod tests {
         for e in [
             CredentialError::MissingMaterialRef("s".into()),
             CredentialError::EnvironmentSourceUnsupported("s".into()),
+            CredentialError::WorkerLocalSourceUnsupported("s".into()),
+            CredentialError::InvalidSource("bad source".into()),
             CredentialError::Seal,
             CredentialError::OAuth("boom".into()),
             CredentialError::Storage("io".into()),

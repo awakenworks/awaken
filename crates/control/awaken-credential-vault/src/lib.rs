@@ -68,6 +68,10 @@ pub enum CredentialKind {
     /// long-lived grant lives inside the helper (e.g. `gcloud`), so nothing secret
     /// crosses the control plane.
     Oauth,
+    /// Secret material is installed and retained on an eligible worker. The
+    /// persisted source id and revision are the only cross-plane handle; worker
+    /// heartbeats advertise whether that exact handle is currently available.
+    WorkerLocal,
 }
 
 /// Server-owned OAuth token helper. The API carries this allowlisted id, never
@@ -365,6 +369,10 @@ pub enum CredentialError {
         "environment credential source `{0}` is not executable; persist the secret in the vault"
     )]
     EnvironmentSourceUnsupported(String),
+    #[error("worker-local credential source `{0}` must be materialized by its assigned worker")]
+    WorkerLocalSourceUnsupported(String),
+    #[error("invalid credential source: {0}")]
+    InvalidSource(String),
     #[error("secret seal/open failed (wrong key or corrupt ciphertext)")]
     Seal,
     #[error("oauth token refresh failed: {0}")]
@@ -499,7 +507,7 @@ pub async fn create_source(
     params: CredentialCreateParams,
     store: &dyn SecretStore,
 ) -> Result<CredentialSource, CredentialError> {
-    reject_environment_source(&params)?;
+    validate_create_params(&params)?;
     let (source, secret) = prepare_source(params);
     if let (Some(material_ref), Some(secret)) = (&source.material_ref, secret) {
         store.put(material_ref, secret).await?;
@@ -510,18 +518,54 @@ pub async fn create_source(
 /// Environment variables are discovery inputs, never durable or executable
 /// credential sources. Kept at the domain entry seam so every HTTP/repository
 /// composition receives the same fail-closed decision.
-pub(crate) fn reject_environment_source(
+pub(crate) fn validate_create_params(
     params: &CredentialCreateParams,
 ) -> Result<(), CredentialError> {
-    if params.kind == CredentialKind::Env {
-        return Err(CredentialError::EnvironmentSourceUnsupported(
+    match params.kind {
+        CredentialKind::Env => Err(CredentialError::EnvironmentSourceUnsupported(
             params
                 .env_key
                 .clone()
                 .unwrap_or_else(|| "<unnamed>".to_string()),
-        ));
+        )),
+        CredentialKind::Vault => {
+            if params.secret.is_none() {
+                Err(CredentialError::InvalidSource(
+                    "vault credentials require a secret".into(),
+                ))
+            } else if params.oauth_command.is_some() {
+                Err(CredentialError::InvalidSource(
+                    "vault credentials cannot configure an OAuth helper".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        CredentialKind::Oauth => {
+            if params.oauth_command.is_none() {
+                Err(CredentialError::InvalidSource(
+                    "oauth credentials require an allowlisted helper".into(),
+                ))
+            } else if params.secret.is_some() {
+                Err(CredentialError::InvalidSource(
+                    "oauth credentials cannot persist a supplied secret".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        CredentialKind::WorkerLocal => {
+            if params.secret.is_some() || params.oauth_command.is_some() || params.env_key.is_some()
+            {
+                Err(CredentialError::InvalidSource(
+                    "worker-local credentials accept only provider metadata; secret material stays on the worker"
+                        .into(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
     }
-    Ok(())
 }
 
 /// Mint the secret-free source and retain material separately so the repository
@@ -534,8 +578,9 @@ pub(crate) fn prepare_source(
         (CredentialKind::Vault, Some(secret)) => {
             (Some(SecretRef(format!("sec:{}", id.0))), Some(secret))
         }
-        // OAuth mints short-lived material through its persisted helper. The legacy
-        // Env variant is rejected before this internal constructor is reached.
+        // OAuth mints short-lived material through its persisted helper. A
+        // WorkerLocal source intentionally persists no material. The legacy Env
+        // variant is rejected before this internal constructor is reached.
         _ => (None, None),
     };
     (
@@ -598,6 +643,9 @@ pub async fn materialize(
                 )))
             }
         }
+        CredentialKind::WorkerLocal => Err(CredentialError::WorkerLocalSourceUnsupported(
+            source.id.0.clone(),
+        )),
     }
 }
 
@@ -762,6 +810,29 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn worker_local_source_persists_only_a_non_secret_binding() {
+        let store = InMemorySecretStore::new();
+        let source = create_source(
+            CredentialCreateParams {
+                workspace_id: "ws1".into(),
+                kind: CredentialKind::WorkerLocal,
+                provider_id: Some("openai".into()),
+                env_key: None,
+                secret: None,
+                oauth_command: None,
+            },
+            &store,
+        )
+        .await
+        .unwrap();
+        assert!(source.material_ref.is_none());
+        assert!(matches!(
+            materialize(&source, &store).await,
+            Err(CredentialError::WorkerLocalSourceUnsupported(id)) if id == source.id.0
+        ));
+    }
+
     #[test]
     fn selection_order_skips_disabled_and_is_stable() {
         let member = |id: &str, ordinal: u32, enabled: bool| CredentialPoolMember {
@@ -833,6 +904,7 @@ mod tests {
             (CredentialKind::Vault, "\"vault\""),
             (CredentialKind::Env, "\"env\""),
             (CredentialKind::Oauth, "\"oauth\""),
+            (CredentialKind::WorkerLocal, "\"worker_local\""),
         ] {
             assert_eq!(serde_json::to_string(&kind).unwrap(), wire);
             assert_eq!(serde_json::from_str::<CredentialKind>(wire).unwrap(), kind);
@@ -1026,8 +1098,8 @@ mod tests {
         assert!(matches!(err, CredentialError::Storage(_)));
     }
 
-    /// `Env` is rejected at the only create seam; a `Vault` with no supplied secret
-    /// remains a secret-free row and the store is untouched.
+    /// Environment rows and incomplete vault rows are both rejected at the only
+    /// create seam, so an active source can never be born unmaterializable.
     #[tokio::test]
     async fn create_without_sealed_material_has_no_ref() {
         let store = InMemorySecretStore::new();
@@ -1061,7 +1133,7 @@ mod tests {
             &store,
         )
         .await
-        .unwrap();
-        assert_eq!(vault_no_secret.material_ref, None);
+        .unwrap_err();
+        assert!(matches!(vault_no_secret, CredentialError::InvalidSource(_)));
     }
 }

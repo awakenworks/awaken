@@ -2,6 +2,7 @@
 //! an executor. Endpoint selection is already fixed; only credential injection is
 //! exercised, independent of deployment topology.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -25,11 +26,17 @@ impl LlmExecutor for GrantExecutor {
     }
 }
 
-struct ReferenceMaterializer;
+struct ReferenceMaterializer {
+    credential: awaken_runtime_contract::CredentialRef,
+}
 
 impl InferenceExecutorMaterializer for ReferenceMaterializer {
     fn supported_access_schemes(&self) -> &'static [&'static str] {
-        &["credential-reference/v1"]
+        &[awaken_worker_contract::WORKER_LOCAL_CREDENTIALS_CAPABILITY]
+    }
+
+    fn available_credential_refs(&self) -> BTreeSet<awaken_runtime_contract::CredentialRef> {
+        BTreeSet::from([self.credential.clone()])
     }
 
     fn materialize_pinned(
@@ -43,6 +50,11 @@ impl InferenceExecutorMaterializer for ReferenceMaterializer {
         else {
             return None;
         };
+        if credential.injection != awaken_runtime_contract::CredentialInjectionKind::WorkerReference
+            || credential.credential != self.credential
+        {
+            return None;
+        }
         Some({
             Arc::new(GrantExecutor {
                 reference: credential.credential.id.clone(),
@@ -55,5 +67,16 @@ impl InferenceExecutorMaterializer for ReferenceMaterializer {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     awaken_observability::init();
     let upstream = std::env::var("AWAKEN_UPSTREAM_URL")?;
-    awaken_worker::run_with_inference_materializer(&upstream, Arc::new(ReferenceMaterializer)).await
+    let credential_id = std::env::var("AWAKEN_TEST_CREDENTIAL_ID")?;
+    let credential_revision = std::env::var("AWAKEN_TEST_CREDENTIAL_REVISION")?.parse()?;
+    awaken_worker::run_with_inference_materializer(
+        &upstream,
+        Arc::new(ReferenceMaterializer {
+            credential: awaken_runtime_contract::CredentialRef {
+                id: credential_id,
+                revision: credential_revision,
+            },
+        }),
+    )
+    .await
 }

@@ -78,6 +78,7 @@ struct WorkerLifecycle {
     host: Arc<SharedHost>,
     control: WorkerControlClient,
     identity: WorkerIdentity,
+    materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
 }
 
 impl WorkerLifecycle {
@@ -198,8 +199,8 @@ async fn run_configured(
     let mut host = host
         .with_worker_upstream(upstream)
         .with_remote_attempt_executor(awaken_server::a2a_attempt_executor());
-    if let Some(materializer) = materializer {
-        host = host.with_inference_materializer(materializer);
+    if let Some(materializer) = &materializer {
+        host = host.with_inference_materializer(materializer.clone());
     }
     awaken_server::install_platform_memory_data_plane(&host);
 
@@ -226,6 +227,7 @@ async fn run_configured(
         host: host.clone(),
         control: control.clone(),
         identity: registration.snapshot.identity,
+        materializer,
     });
     // Publish Ready before starting the pull loop. Starting the pool while the
     // directory still says Starting creates a tight claim/reject race; publishing
@@ -238,6 +240,7 @@ async fn run_configured(
                 sequence: 1,
                 ready: true,
                 in_flight: 0,
+                available_credentials: credential_observations(lifecycle.materializer.as_deref()),
             },
         )
         .await
@@ -422,6 +425,9 @@ fn spawn_heartbeat(
                         sequence,
                         ready: lifecycle.host.pool_accepting_work(),
                         in_flight: lifecycle.host.pool_in_flight(),
+                        available_credentials: credential_observations(
+                            lifecycle.materializer.as_deref(),
+                        ),
                     },
                 )
                 .await;
@@ -439,6 +445,22 @@ fn spawn_heartbeat(
             }
         }
     })
+}
+
+fn credential_observations(
+    materializer: Option<&dyn InferenceExecutorMaterializer>,
+) -> std::collections::BTreeSet<awaken_worker_contract::WorkerCredentialRevision> {
+    materializer
+        .map(InferenceExecutorMaterializer::available_credential_refs)
+        .unwrap_or_default()
+        .into_iter()
+        .map(
+            |credential| awaken_worker_contract::WorkerCredentialRevision {
+                source_id: credential.id,
+                revision: credential.revision,
+            },
+        )
+        .collect()
 }
 
 async fn wait_for_in_flight(host: &SharedHost, grace: std::time::Duration) {
@@ -475,7 +497,8 @@ mod grace_tests {
     use awaken_runtime_contract::llm::LlmExecutor;
 
     use super::{
-        InferenceExecutorMaterializer, grace_window, shared_credential_backend, worker_manifest,
+        InferenceExecutorMaterializer, credential_observations, grace_window,
+        shared_credential_backend, worker_manifest,
     };
 
     struct SchemeMaterializer;
@@ -483,6 +506,15 @@ mod grace_tests {
     impl InferenceExecutorMaterializer for SchemeMaterializer {
         fn supported_access_schemes(&self) -> &'static [&'static str] {
             &["test-access/v1"]
+        }
+
+        fn available_credential_refs(
+            &self,
+        ) -> std::collections::BTreeSet<awaken_runtime_contract::CredentialRef> {
+            std::collections::BTreeSet::from([awaken_runtime_contract::CredentialRef {
+                id: "cred:worker".into(),
+                revision: 4,
+            }])
         }
 
         fn materialize_pinned(
@@ -500,6 +532,13 @@ mod grace_tests {
 
         assert!(manifest.capabilities.contains("native-runtime"));
         assert!(manifest.capabilities.contains("test-access/v1"));
+        assert_eq!(
+            credential_observations(Some(&materializer)),
+            std::collections::BTreeSet::from([awaken_worker_contract::WorkerCredentialRevision {
+                source_id: "cred:worker".into(),
+                revision: 4,
+            }])
+        );
     }
 
     #[test]

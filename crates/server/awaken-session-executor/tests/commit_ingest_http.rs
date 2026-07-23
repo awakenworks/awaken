@@ -313,6 +313,7 @@ async fn registered_claimed_commit_requires_the_current_worker_incarnation() {
             capability_fingerprint: manifest.fingerprint().unwrap(),
             manifest,
             in_flight: 0,
+            available_credentials: Default::default(),
             expires_at_ms: u64::MAX,
         },
         heartbeat_sequence: 0,
