@@ -127,6 +127,9 @@ mod tests {
     use awaken_ext_goal::state::grader_thread_id;
     use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse};
     use awaken_runtime_contract::{Message, MessageId, Role, RuntimeRunContext};
+    use awaken_runtime_contract::{
+        ThreadId, TranscriptRange, TranscriptSnapshotRef, TranscriptView,
+    };
     use std::sync::Mutex;
 
     struct FixedJudge {
@@ -155,6 +158,13 @@ mod tests {
             iteration: 0,
             description: "ship".into(),
             rubric: Rubric("all tests pass".into()),
+            transcript_snapshot: TranscriptSnapshotRef {
+                thread_id: ThreadId("worker".into()),
+                view: TranscriptView::RawCommitted,
+                version: 1,
+                end_seq: 1,
+            },
+            transcript_ranges: vec![TranscriptRange::new(0, 1)],
             transcript: vec![Message::text(
                 MessageId("worker-answer".into()),
                 Role::Assistant,

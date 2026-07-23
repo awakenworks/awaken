@@ -70,6 +70,9 @@ pub use awaken_agent_contract::thread::commit::staged::{
     CommitRecord, RunDisposition, ThreadCommit,
 };
 pub use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+pub use awaken_agent_contract::thread::read::transcript::{
+    TranscriptRange, TranscriptSliceSpec, TranscriptSnapshotRef, TranscriptView,
+};
 // The cancellation token surfaced through `RunEndContext`/`RuntimeRunContext`;
 // re-exported so an extension forwards it without a direct `tokio-util` edge.
 pub use resolution::{
