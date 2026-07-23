@@ -40,10 +40,12 @@ use awaken_runtime_contract::llm::{
 };
 use awaken_runtime_contract::permission::GateOutcome;
 use awaken_runtime_contract::plugin::{
-    AfterToolContext, ContextMessages, PhaseContext, PhaseHookPoint, PhaseKind,
+    AfterToolContext, ContextMessages, ContextWindow, PhaseContext, PhaseHookPoint, PhaseKind,
     ResolvedExecutionEnv, RunEndContext, RunEndDecision,
 };
-use awaken_runtime_contract::resolved::{CatalogFingerprint, ResolvedRun, ToolPresentation};
+use awaken_runtime_contract::resolved::{
+    CatalogFingerprint, ContextPolicy, ResolvedRun, ToolPresentation,
+};
 use awaken_runtime_contract::resolver::{self, RunResolver};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult, validate_resume};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -597,6 +599,7 @@ async fn infer_step(
     checkpoint_ref: Option<&CheckpointCtx<'_>>,
     step_resume: Option<StreamCheckpoint>,
     context: &RuntimeRunContext,
+    context_window: Option<usize>,
 ) -> std::result::Result<ChatResponse, awaken_runtime_contract::llm::Error> {
     let mut truncation_retries = 0;
     // Model-pool failover: the ordered candidate bindings (primary first, then
@@ -613,6 +616,16 @@ async fn infer_step(
             &env.dynamic_descriptors(),
             opened,
         );
+        if let Some(keep_last) = context_window {
+            // Compaction supplied complete prefix coverage in `prelude` (summary
+            // plus any bridge). Protect that request-only prefix and window only
+            // the parent transcript tail.
+            let protected = usize::from(!resolved.spec.instructions.is_empty()) + prelude.len();
+            let transcript = request.messages.split_off(protected);
+            let transcript =
+                apply_context_policy(&ContextPolicy::KeepLast { keep_last }, transcript);
+            request.messages.extend(transcript);
+        }
         request.model_binding = candidates[cand_idx].clone();
         match infer_with_retry(
             llm,
@@ -867,6 +880,8 @@ async fn drive(
             .into_values()
             .flatten()
             .collect();
+        let context_window =
+            ContextWindow::load(&store).map_err(|error| Error::Execution(error.to_string()))?;
 
         // A persisted partial resumes only this drive's first step (see above);
         // it is consumed on the first inference call of that step.
@@ -891,6 +906,7 @@ async fn drive(
             checkpoint_ref,
             step_resume,
             context,
+            context_window,
         );
         // A cancel aborts a hung or long inference in flight rather than
         // awaiting for the step boundary. Dropping the inference future drops

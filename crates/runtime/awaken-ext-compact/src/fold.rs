@@ -25,6 +25,27 @@ pub fn token_fold_point(
     fold_prefix(committed_len, keep_last, est_tokens as f64 >= budget)
 }
 
+/// Prefix eligible for background precomputation before the hard trigger.
+/// `prefetch_ratio` is relative to the configured hard threshold in either
+/// message-count or token mode.
+pub fn prefetch_fold_point(
+    committed_len: usize,
+    estimated_tokens: u64,
+    threshold: usize,
+    max_tokens: Option<u32>,
+    trigger_ratio: f64,
+    prefetch_ratio: f64,
+    keep_last: usize,
+) -> Option<usize> {
+    let triggered = max_tokens.map_or_else(
+        || committed_len as f64 >= threshold as f64 * prefetch_ratio,
+        |max_tokens| {
+            estimated_tokens as f64 >= f64::from(max_tokens) * trigger_ratio * prefetch_ratio
+        },
+    );
+    fold_prefix(committed_len, keep_last, triggered)
+}
+
 /// Shared prefix decision: once `triggered`, fold everything but the last
 /// `keep_last` messages (or nothing when that leaves an empty prefix).
 fn fold_prefix(committed_len: usize, keep_last: usize, triggered: bool) -> Option<usize> {
@@ -129,5 +150,19 @@ mod tests {
         // ratio 1.0 → budget == max; fold only once est reaches the whole window.
         assert_eq!(token_fold_point(999, 1000, 1.0, 10, 2), None);
         assert_eq!(token_fold_point(1000, 1000, 1.0, 10, 2), Some(8));
+    }
+
+    #[test]
+    fn prefetch_precedes_the_hard_trigger_in_both_modes() {
+        assert_eq!(prefetch_fold_point(6, 0, 10, None, 0.8, 0.5, 2), Some(4));
+        assert_eq!(prefetch_fold_point(4, 0, 10, None, 0.8, 0.5, 2), None);
+        assert_eq!(
+            prefetch_fold_point(10, 400, 99, Some(1000), 0.8, 0.5, 2),
+            Some(8)
+        );
+        assert_eq!(
+            prefetch_fold_point(10, 399, 99, Some(1000), 0.8, 0.5, 2),
+            None
+        );
     }
 }
