@@ -1,17 +1,11 @@
-// Tri-state secret input for editing a stored credential without ever reading it
-// back: "keep" (leave the stored secret untouched), "replace" (enter a new value),
-// or "clear" (remove it). The value is write-only — the current secret is never
-// shown. Emits the operator's intent so the caller sends the right patch.
-
-import { useState } from "react";
+import {
+  SecretField as SharedSecretField,
+  type SecretIntent,
+  type SecretMode,
+} from "@awaken/ui";
 import { useApp } from "../../lib/app-state";
 
-export type SecretMode = "keep" | "replace" | "clear";
-export interface SecretIntent {
-  mode: SecretMode;
-  /** Present only when mode === "replace". */
-  value?: string;
-}
+export type { SecretIntent, SecretMode };
 
 export function SecretField({
   label,
@@ -19,61 +13,35 @@ export function SecretField({
   onChange,
   placeholder,
 }: {
-  label: string;
-  /** Whether a secret is already stored (enables "keep" / "clear"). */
-  hasStored: boolean;
-  onChange: (intent: SecretIntent) => void;
-  placeholder?: string;
+  readonly label: string;
+  readonly hasStored: boolean;
+  readonly onChange: (intent: SecretIntent) => void;
+  readonly placeholder?: string;
 }) {
   const app = useApp();
-  const [mode, setMode] = useState<SecretMode>(hasStored ? "keep" : "replace");
-  const [value, setValue] = useState("");
-
-  const pick = (m: SecretMode) => {
-    setMode(m);
-    onChange(m === "replace" ? { mode: "replace", value } : { mode: m });
-  };
-
-  const modes: SecretMode[] = hasStored ? ["keep", "replace", "clear"] : ["replace"];
-  const modeLabel: Record<SecretMode, [string, string]> = {
-    keep: ["Keep", "保留"],
-    replace: ["Replace", "替换"],
-    clear: ["Clear", "清除"],
-  };
-
   return (
-    <div className="field">
-      <label>{label}</label>
-      {hasStored && (
-        <div className="row">
-          {modes.map((m) => (
-            <button
-              key={m}
-              type="button"
-              className={`btn ${mode === m ? "primary" : "ghost"}`}
-              style={{ height: 26 }}
-              onClick={() => pick(m)}
-            >
-              {app.t(...modeLabel[m])}
-            </button>
-          ))}
-        </div>
-      )}
-      {mode === "replace" && (
-        <input
-          className="input mono"
-          type="password"
-          autoComplete="off"
-          placeholder={placeholder ?? app.t("enter new secret…", "输入新密钥…")}
-          value={value}
-          onChange={(e) => {
-            setValue(e.target.value);
-            onChange({ mode: "replace", value: e.target.value });
-          }}
-        />
-      )}
-      {mode === "keep" && <span className="mut">{app.t("Stored secret unchanged.", "保留已存密钥不变。")}</span>}
-      {mode === "clear" && <span className="mut">{app.t("Stored secret will be removed.", "将移除已存密钥。")}</span>}
-    </div>
+    <SharedSecretField
+      classes={{
+        activeMode: "primary",
+        inactiveMode: "ghost",
+        input: "input mono",
+        modeButton: "btn",
+        modes: "row",
+        root: "field",
+        status: "mut",
+      }}
+      hasStored={hasStored}
+      label={label}
+      labels={{
+        clear: app.t("Clear", "清除"),
+        cleared: app.t("Stored secret will be removed.", "将移除已存密钥。"),
+        keep: app.t("Keep", "保留"),
+        kept: app.t("Stored secret unchanged.", "保留已存密钥不变。"),
+        placeholder: app.t("enter new secret…", "输入新密钥…"),
+        replace: app.t("Replace", "替换"),
+      }}
+      onChange={onChange}
+      {...(placeholder === undefined ? {} : { placeholder })}
+    />
   );
 }
