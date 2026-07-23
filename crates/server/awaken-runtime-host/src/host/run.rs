@@ -395,8 +395,7 @@ impl SharedHost {
             Err(e) if self.deployment.durable => {
                 use awaken_run_ingress::DispatchQueue;
                 let _ = e;
-                let store =
-                    crate::dispatch_backend::shared_durable_store(self.store_dir.as_deref())?;
+                let store = self.dispatch_store()?;
                 store
                     .enqueue(request)
                     .await

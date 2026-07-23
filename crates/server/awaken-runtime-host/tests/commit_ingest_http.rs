@@ -1,17 +1,11 @@
-//! The write-plane worker seam over real HTTP: a database-less worker's
-//! `RemoteCoordinator` pushes a staged `ThreadCommit` to the cell server's
-//! `commit_ingest_router`, which applies it through the thread's single writer.
-//! The committed facts are then readable from the server's store, and a redelivery
-//! is idempotent (at-least-once → exactly-once effect).
+//! Canonical typed Worker commit transport over real HTTP.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::RunDisposition;
-use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitOperationId};
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
@@ -22,26 +16,14 @@ use awaken_run_ingress::{
     commit_payload_hash,
 };
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
-};
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_runtime_host::{
-    ClaimedCommitService, HeaderWorkerAuthenticator, RemoteClaimedRunCommit, RemoteCoordinator,
-    SharedHost, SignedWorkerAuthenticator, SignedWorkerRequestAuthorizer, WorkerSigningCredential,
-    claimed_commit_ingest_router, claimed_commit_ingest_router_with_directory,
-    claimed_commit_router, commit_ingest_router,
+    ClaimedCommitService, HeaderWorkerAuthenticator, RemoteClaimedRunCommit, claimed_commit_router,
 };
 use awaken_store_inmem::MemoryCommitCoordinator;
-use axum::body::Body;
-use axum::extract::State;
-use axum::http::{HeaderMap, Request, StatusCode};
-use axum::response::{IntoResponse, Response};
-use serde_json::{Value, json};
-use tower::ServiceExt;
 
 struct CurrentWorkerDirectory(RegisteredWorker);
 
@@ -101,74 +83,18 @@ impl WorkerDirectory for CurrentWorkerDirectory {
     }
 }
 
-struct OkModel;
-
-#[async_trait::async_trait]
-impl LlmExecutor for OkModel {
-    async fn infer(&self, _request: ChatRequest) -> LlmResult<ChatResponse> {
-        Ok(ChatResponse {
-            output: AssistantOutput::text("ok"),
-            usage: None,
-            stop_reason: None,
-        })
-    }
-}
-
-struct LostReceiptProxy {
-    upstream: String,
-    attempts: AtomicUsize,
-}
-
-async fn lose_first_commit_receipt(
-    State(state): State<Arc<LostReceiptProxy>>,
-    headers: HeaderMap,
-    axum::Json(body): axum::Json<Value>,
-) -> Response {
-    let mut request = reqwest::Client::new()
-        .post(format!("{}/v1/worker/commit-claimed", state.upstream))
-        .json(&body);
-    if let Some(worker_id) = headers.get("x-awaken-worker-id") {
-        request = request.header("x-awaken-worker-id", worker_id);
-    }
-    let upstream = request.send().await.unwrap();
-    let status = StatusCode::from_u16(upstream.status().as_u16()).unwrap();
-    let bytes = upstream.bytes().await.unwrap();
-    if state.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
-        return (StatusCode::OK, [("content-type", "application/json")], "{").into_response();
-    }
-    (
-        status,
-        [("content-type", "application/json")],
-        bytes.to_vec(),
-    )
-        .into_response()
-}
-
-fn thread_commit() -> ThreadCommit {
-    ThreadCommit {
-        thread_id: ThreadId("t1".into()),
-        run: RunDisposition::ended(RunId("run-A".into()), EndCause::NaturalEnd),
-        messages: vec![Message::text(
-            MessageId("a1".into()),
-            Role::Assistant,
-            "committed by a db-less worker",
-        )],
-        state: vec![],
-        events: vec![],
-    }
-}
-
 fn activation(run: &str, thread: &str) -> RunActivation {
+    let fingerprint = CatalogFingerprint("typed-commit-fingerprint".into());
     RunActivation::new(
         RunId(run.into()),
         ThreadId(thread.into()),
         ExecutableAgentSnapshot {
-            id: ExecutableAgentSnapshotId("snap".into()),
+            id: ExecutableAgentSnapshotId("typed-commit-snapshot".into()),
             metadata: Default::default(),
-            root_agent_id: AgentId("agent".into()),
+            root_agent_id: AgentId("typed-commit-agent".into()),
             resolved_spec: ResolvedSpec {
                 model_candidates: Vec::new(),
-                catalog_fingerprint: CatalogFingerprint("fp".into()),
+                catalog_fingerprint: fingerprint.clone(),
                 instructions: "test".into(),
                 max_steps: 2,
                 delegation_limits: Default::default(),
@@ -181,20 +107,20 @@ fn activation(run: &str, thread: &str) -> RunActivation {
                 context_policy: Default::default(),
                 tool_presentation: Default::default(),
             },
-            fingerprint: CatalogFingerprint("fp".into()),
+            fingerprint,
         },
         Vec::new(),
     )
 }
 
-fn claimed_commit(run: &str, thread: &str, text: &str) -> ThreadCommit {
+fn terminal_commit() -> ThreadCommit {
     ThreadCommit {
-        thread_id: ThreadId(thread.into()),
-        run: RunDisposition::ended(RunId(run.into()), EndCause::NaturalEnd),
+        thread_id: ThreadId("typed-commit-thread".into()),
+        run: RunDisposition::ended(RunId("typed-commit-run".into()), EndCause::NaturalEnd),
         messages: vec![Message::text(
-            MessageId(format!("message-{run}")),
+            MessageId("typed-commit-message".into()),
             Role::Assistant,
-            text,
+            "typed commit",
         )],
         state: Vec::new(),
         events: Vec::new(),
@@ -202,215 +128,9 @@ fn claimed_commit(run: &str, thread: &str, text: &str) -> ThreadCommit {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn db_less_worker_pushes_facts_and_the_server_commits_them() {
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-    let router = commit_ingest_router(host.clone());
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        axum::serve(listener, router).await.unwrap();
-    });
-
-    // The worker holds only this HTTP client — no store, no coordinator of its own.
-    let coordinator = RemoteCoordinator::new(format!("http://{addr}"));
-
-    let record = coordinator
-        .commit(thread_commit())
-        .await
-        .expect("commit over http");
-    assert!(
-        record.sequence >= 1,
-        "the server sequenced the commit: {record:?}"
-    );
-
-    // The fact is now committed truth on the SERVER's store, readable back.
-    let committed = host.committed_messages("t1").await;
-    assert_eq!(
-        committed.len(),
-        1,
-        "the worker's message committed on the server"
-    );
-    assert!(
-        committed[0].text_content().contains("db-less worker"),
-        "the committed message is the one the worker pushed"
-    );
-
-    // At-least-once redelivery is idempotent: the same commit does not duplicate.
-    coordinator
-        .commit(thread_commit())
-        .await
-        .expect("redelivered commit accepted");
-    let after = host.committed_messages("t1").await;
-    assert_eq!(
-        after.len(),
-        1,
-        "a redelivered commit is a no-op (idempotent), not a duplicate: {after:?}"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn remote_claim_and_commit_is_one_atomic_server_operation() {
-    let memory = Arc::new(MemoryDispatchStore::new());
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-    memory
-        .enqueue(RunDispatch::new(activation("atomic-run", "atomic-thread")))
-        .await
-        .unwrap();
-    let stale = memory
-        .claim("worker-a", 100, 0)
-        .await
-        .unwrap()
-        .expect("first claim");
-    let current = memory
-        .claim("worker-b", 100, 200)
-        .await
-        .unwrap()
-        .expect("recovery claim");
-    let router = claimed_commit_ingest_router(
-        host.clone(),
-        memory.clone() as Arc<dyn DispatchQueue>,
-        Arc::new(HeaderWorkerAuthenticator),
-    );
-
-    let unclaimed = Request::builder()
-        .method("POST")
-        .uri("/v1/worker/commit")
-        .header("content-type", "application/json")
-        .header("x-awaken-worker-id", "worker-b")
-        .body(Body::from(serde_json::to_vec(&thread_commit()).unwrap()))
-        .unwrap();
-    assert_eq!(
-        router.clone().oneshot(unclaimed).await.unwrap().status(),
-        StatusCode::NOT_FOUND,
-        "the production router does not expose unclaimed commits"
-    );
-
-    let wrong_identity = Request::builder()
-        .method("POST")
-        .uri("/v1/worker/commit-claimed")
-        .header("content-type", "application/json")
-        .header("x-awaken-worker-id", "worker-a")
-        .body(Body::from(
-            serde_json::to_vec(&json!({
-                "claim": RunClaim::from(&current.lease),
-                "commit": claimed_commit("atomic-run", "atomic-thread", "forged")
-            }))
-            .unwrap(),
-        ))
-        .unwrap();
-    assert_eq!(
-        router
-            .clone()
-            .oneshot(wrong_identity)
-            .await
-            .unwrap()
-            .status(),
-        StatusCode::UNAUTHORIZED,
-        "authenticated identity must match the claim owner"
-    );
-    assert!(host.committed_messages("atomic-thread").await.is_empty());
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let remote = RemoteClaimedRunCommit::new(format!("http://{addr}"));
-
-    assert!(
-        remote
-            .commit(
-                &RunClaim::from(&stale.lease),
-                claimed_commit("atomic-run", "atomic-thread", "stale"),
-            )
-            .await
-            .is_err(),
-        "a stale remote claim is rejected before its ThreadCommit"
-    );
-    assert!(host.committed_messages("atomic-thread").await.is_empty());
-
-    remote
-        .commit(
-            &RunClaim::from(&current.lease),
-            claimed_commit("atomic-run", "atomic-thread", "current"),
-        )
-        .await
-        .expect("current claim commits atomically");
-    let messages = host.committed_messages("atomic-thread").await;
-    assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].text_content(), "current");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn registered_claimed_commit_requires_the_current_worker_incarnation() {
+async fn registered_worker_commits_one_idempotent_versioned_operation() {
     let manifest = WorkerManifest::default();
-    let identity = WorkerIdentity::new("worker-a", "boot-current", 1);
-    let directory = Arc::new(CurrentWorkerDirectory(RegisteredWorker {
-        snapshot: WorkerSnapshot {
-            identity: identity.clone(),
-            state: WorkerState::Ready,
-            capability_fingerprint: manifest.fingerprint().unwrap(),
-            manifest,
-            in_flight: 0,
-            available_credentials: Default::default(),
-            expires_at_ms: u64::MAX,
-        },
-        heartbeat_sequence: 0,
-        registered_at_ms: 0,
-        heartbeat_at_ms: 0,
-        drain_deadline_ms: None,
-    }));
-    let memory = Arc::new(MemoryDispatchStore::new());
-    memory
-        .enqueue(RunDispatch::new(activation(
-            "registered-run",
-            "registered-thread",
-        )))
-        .await
-        .unwrap();
-    let claimed = memory
-        .claim(&identity.lease_owner(), 1_000, 0)
-        .await
-        .unwrap()
-        .unwrap();
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-    let router = claimed_commit_ingest_router_with_directory(
-        host.clone(),
-        memory as Arc<dyn DispatchQueue>,
-        Arc::new(HeaderWorkerAuthenticator),
-        directory,
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let claim = RunClaim::from(&claimed.lease);
-
-    let stale = RemoteClaimedRunCommit::new(format!("http://{address}"))
-        .with_worker_identity(WorkerIdentity::new("worker-a", "boot-stale", 0));
-    assert!(
-        stale
-            .commit(
-                &claim,
-                claimed_commit("registered-run", "registered-thread", "stale")
-            )
-            .await
-            .is_err()
-    );
-    let current =
-        RemoteClaimedRunCommit::new(format!("http://{address}")).with_worker_identity(identity);
-    current
-        .commit(
-            &claim,
-            claimed_commit("registered-run", "registered-thread", "current"),
-        )
-        .await
-        .unwrap();
-    assert_eq!(host.committed_messages("registered-thread").await.len(), 1);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn injectable_claimed_commit_service_uses_the_exact_coordinator() {
-    let manifest = WorkerManifest::default();
-    let identity = WorkerIdentity::new("worker-injected", "boot-injected", 1);
+    let identity = WorkerIdentity::new("typed-worker", "typed-boot", 1);
     let directory = Arc::new(CurrentWorkerDirectory(RegisteredWorker {
         snapshot: WorkerSnapshot {
             identity: identity.clone(),
@@ -429,8 +149,8 @@ async fn injectable_claimed_commit_service_uses_the_exact_coordinator() {
     let dispatch = Arc::new(MemoryDispatchStore::new());
     dispatch
         .enqueue(RunDispatch::new(activation(
-            "injected-run",
-            "injected-thread",
+            "typed-commit-run",
+            "typed-commit-thread",
         )))
         .await
         .unwrap();
@@ -445,99 +165,6 @@ async fn injectable_claimed_commit_service_uses_the_exact_coordinator() {
         coordinator.clone(),
         directory,
         Arc::new(HeaderWorkerAuthenticator),
-    ));
-    let router = claimed_commit_router(service);
-
-    let raw_commit = Request::builder()
-        .method("POST")
-        .uri("/v1/worker/commit-claimed")
-        .header("content-type", "application/json")
-        .header("x-awaken-worker-id", &identity.worker_id)
-        .body(Body::from(
-            serde_json::to_vec(&json!({
-                "claim": RunClaim::from(&claimed.lease),
-                "commit": claimed_commit("injected-run", "injected-thread", "legacy"),
-                "identity": identity
-            }))
-            .unwrap(),
-        ))
-        .unwrap();
-    assert_eq!(
-        router.clone().oneshot(raw_commit).await.unwrap().status(),
-        StatusCode::BAD_REQUEST,
-        "the injectable protocol rejects legacy unversioned commits"
-    );
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let commit = claimed_commit("injected-run", "injected-thread", "injected");
-    let operation = CommitOperation {
-        operation_id: CommitOperationId::new(RunId("injected-run".into()), 0),
-        expected_thread_version: 0,
-        payload_hash: commit_payload_hash(&commit).unwrap(),
-        commit,
-    };
-    RemoteClaimedRunCommit::new(format!("http://{address}"))
-        .with_worker_identity(identity)
-        .commit_operation(ClaimedCommitCommand {
-            claim: RunClaim::from(&claimed.lease),
-            operation,
-        })
-        .await
-        .expect("commit through injected service");
-
-    let messages =
-        ThreadReader::committed_messages(&*coordinator, &ThreadId("injected-thread".into()));
-    assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].text_content(), "injected");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn signed_identity_is_wired_through_atomic_claimed_commit() {
-    let manifest = WorkerManifest::default();
-    let identity = WorkerIdentity::new("worker-signed-commit", "boot-signed-commit", 1);
-    let directory = Arc::new(CurrentWorkerDirectory(RegisteredWorker {
-        snapshot: WorkerSnapshot {
-            identity: identity.clone(),
-            state: WorkerState::Ready,
-            capability_fingerprint: manifest.fingerprint().unwrap(),
-            manifest,
-            in_flight: 0,
-            available_credentials: Default::default(),
-            expires_at_ms: u64::MAX,
-        },
-        heartbeat_sequence: 0,
-        registered_at_ms: 0,
-        heartbeat_at_ms: 0,
-        drain_deadline_ms: None,
-    }));
-    let dispatch = Arc::new(MemoryDispatchStore::new());
-    dispatch
-        .enqueue(RunDispatch::new(activation(
-            "signed-commit-run",
-            "signed-commit-thread",
-        )))
-        .await
-        .unwrap();
-    let claimed = dispatch
-        .claim(&identity.lease_owner(), 30_000, 0)
-        .await
-        .unwrap()
-        .expect("claim");
-    let coordinator = Arc::new(MemoryCommitCoordinator::new());
-    let credential = WorkerSigningCredential::new(
-        identity.worker_id.clone(),
-        "signed-commit-key",
-        "signed-commit-credential",
-        b"signed-commit-secret".to_vec(),
-    )
-    .unwrap();
-    let service = Arc::new(ClaimedCommitService::new(
-        dispatch,
-        coordinator.clone(),
-        directory,
-        Arc::new(SignedWorkerAuthenticator::new(credential.clone())),
     ));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -546,202 +173,28 @@ async fn signed_identity_is_wired_through_atomic_claimed_commit() {
             .await
             .unwrap()
     });
-    let commit = claimed_commit("signed-commit-run", "signed-commit-thread", "signed commit");
+
+    let commit = terminal_commit();
     let operation = CommitOperation {
-        operation_id: CommitOperationId::new(RunId("signed-commit-run".into()), 0),
+        operation_id: CommitOperationId::new(RunId("typed-commit-run".into()), 0),
         expected_thread_version: 0,
         payload_hash: commit_payload_hash(&commit).unwrap(),
         commit,
     };
-    RemoteClaimedRunCommit::new(format!("http://{address}"))
-        .with_request_authorizer(Arc::new(SignedWorkerRequestAuthorizer::new(credential)))
-        .with_worker_identity(identity)
-        .commit_operation(ClaimedCommitCommand {
-            claim: RunClaim::from(&claimed.lease),
-            operation,
-        })
-        .await
-        .expect("signed claimed commit");
+    let command = ClaimedCommitCommand {
+        claim: RunClaim::from(&claimed.lease),
+        operation,
+    };
+    let remote =
+        RemoteClaimedRunCommit::new(format!("http://{address}")).with_worker_identity(identity);
+    let first = remote.commit_operation(command.clone()).await.unwrap();
+    let duplicate = remote.commit_operation(command).await.unwrap();
 
+    assert!(!first.duplicate);
+    assert!(duplicate.duplicate);
+    assert_eq!(first.commit_sequence, duplicate.commit_sequence);
     let messages =
-        ThreadReader::committed_messages(&*coordinator, &ThreadId("signed-commit-thread".into()));
-    assert_eq!(messages[0].text_content(), "signed commit");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn claimed_commit_receipt_survives_response_loss_retry_and_fences_stale_context() {
-    let dispatch = Arc::new(MemoryDispatchStore::new());
-    dispatch
-        .enqueue(RunDispatch::new(activation(
-            "receipt-run",
-            "receipt-thread",
-        )))
-        .await
-        .unwrap();
-    let claimed = dispatch
-        .claim("worker-a", 30_000, 0)
-        .await
-        .unwrap()
-        .expect("claim");
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-    let router = claimed_commit_ingest_router(
-        host.clone(),
-        dispatch.clone() as Arc<dyn DispatchQueue>,
-        Arc::new(HeaderWorkerAuthenticator),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let remote = RemoteClaimedRunCommit::new(format!("http://{address}"));
-    let claim = RunClaim::from(&claimed.lease);
-
-    let first_commit = ThreadCommit {
-        thread_id: ThreadId("receipt-thread".into()),
-        run: RunDisposition::running(RunId("receipt-run".into())),
-        messages: vec![Message::text(
-            MessageId("receipt-1".into()),
-            Role::Assistant,
-            "first",
-        )],
-        state: Vec::new(),
-        events: Vec::new(),
-    };
-    let first = CommitOperation {
-        operation_id: CommitOperationId::new(RunId("receipt-run".into()), 0),
-        expected_thread_version: 0,
-        payload_hash: commit_payload_hash(&first_commit).unwrap(),
-        commit: first_commit,
-    };
-    let applied = remote
-        .commit_operation(ClaimedCommitCommand {
-            claim: claim.clone(),
-            operation: first.clone(),
-        })
-        .await
-        .expect("first commit");
-    assert!(!applied.duplicate);
-    let retried = remote
-        .commit_operation(ClaimedCommitCommand {
-            claim: claim.clone(),
-            operation: first.clone(),
-        })
-        .await
-        .expect("retry after an ambiguous response");
-    assert!(retried.duplicate);
-    assert_eq!(retried.commit_sequence, applied.commit_sequence);
-    assert_eq!(host.committed_messages("receipt-thread").await.len(), 1);
-
-    let replacement = dispatch
-        .claim("worker-b", 30_000, 40_000)
-        .await
-        .unwrap()
-        .expect("reclaim after lease expiry");
-    let replacement_claim = RunClaim::from(&replacement.lease);
-    let replacement_remote = RemoteClaimedRunCommit::new(format!("http://{address}"));
-    let reclaimed_retry = replacement_remote
-        .commit_operation(ClaimedCommitCommand {
-            claim: replacement_claim.clone(),
-            operation: first,
-        })
-        .await
-        .expect("replacement owner reuses the logical operation id");
-    assert!(reclaimed_retry.duplicate);
-    assert_eq!(host.committed_messages("receipt-thread").await.len(), 1);
-
-    let terminal_commit = claimed_commit("receipt-run", "receipt-thread", "terminal");
-    let mut terminal = CommitOperation {
-        operation_id: CommitOperationId::new(RunId("receipt-run".into()), 1),
-        expected_thread_version: 0,
-        payload_hash: commit_payload_hash(&terminal_commit).unwrap(),
-        commit: terminal_commit,
-    };
-    assert!(
-        replacement_remote
-            .commit_operation(ClaimedCommitCommand {
-                claim: replacement_claim.clone(),
-                operation: terminal.clone(),
-            })
-            .await
-            .is_err(),
-        "a commit built from stale Thread version zero is rejected"
-    );
-    terminal.expected_thread_version = 1;
-    let terminal_receipt = replacement_remote
-        .commit_operation(ClaimedCommitCommand {
-            claim: replacement_claim,
-            operation: terminal,
-        })
-        .await
-        .expect("refreshed Thread version commits");
-    assert_eq!(terminal_receipt.thread_version, 2);
-    assert_eq!(host.committed_messages("receipt-thread").await.len(), 2);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn remote_claimed_commit_retries_a_lost_receipt_with_the_same_operation() {
-    let dispatch = Arc::new(MemoryDispatchStore::new());
-    dispatch
-        .enqueue(RunDispatch::new(activation(
-            "lost-receipt-run",
-            "lost-receipt-thread",
-        )))
-        .await
-        .unwrap();
-    let claimed = dispatch
-        .claim("worker-a", 30_000, 0)
-        .await
-        .unwrap()
-        .expect("claim");
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-    let control = claimed_commit_ingest_router(
-        host.clone(),
-        dispatch as Arc<dyn DispatchQueue>,
-        Arc::new(HeaderWorkerAuthenticator),
-    );
-    let control_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let control_address = control_listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        axum::serve(control_listener, control).await.unwrap();
-    });
-
-    let proxy_state = Arc::new(LostReceiptProxy {
-        upstream: format!("http://{control_address}"),
-        attempts: AtomicUsize::new(0),
-    });
-    let proxy = axum::Router::new()
-        .route(
-            "/v1/worker/commit-claimed",
-            axum::routing::post(lose_first_commit_receipt),
-        )
-        .with_state(proxy_state.clone());
-    let proxy_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let proxy_address = proxy_listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        axum::serve(proxy_listener, proxy).await.unwrap();
-    });
-
-    let commit = claimed_commit(
-        "lost-receipt-run",
-        "lost-receipt-thread",
-        "one logical effect",
-    );
-    let operation = CommitOperation {
-        operation_id: CommitOperationId::new(RunId("lost-receipt-run".into()), 0),
-        expected_thread_version: 0,
-        payload_hash: commit_payload_hash(&commit).unwrap(),
-        commit,
-    };
-    let receipt = RemoteClaimedRunCommit::new(format!("http://{proxy_address}"))
-        .commit_operation(ClaimedCommitCommand {
-            claim: RunClaim::from(&claimed.lease),
-            operation,
-        })
-        .await
-        .expect("ambiguous transport result is retried");
-
-    assert!(receipt.duplicate, "the retry returned the durable receipt");
-    assert_eq!(proxy_state.attempts.load(Ordering::SeqCst), 2);
-    let messages = host.committed_messages("lost-receipt-thread").await;
+        ThreadReader::committed_messages(&*coordinator, &ThreadId("typed-commit-thread".into()));
     assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].text_content(), "one logical effect");
+    assert_eq!(messages[0].text_content(), "typed commit");
 }

@@ -412,13 +412,14 @@ mod tests {
         );
         let acp_activation = activation("acp:claude");
         assert_eq!(
-            router.resume(
-                acp_activation.clone(),
-                resume(&acp_activation),
-                RuntimeRunContext::new(),
-            )
-            .await
-            .unwrap(),
+            router
+                .resume(
+                    acp_activation.clone(),
+                    resume(&acp_activation),
+                    RuntimeRunContext::new(),
+                )
+                .await
+                .unwrap(),
             RunState::Ended(EndCause::Stopped("acp".into()))
         );
 
@@ -427,22 +428,24 @@ mod tests {
         assert_eq!(acp.executes.load(Ordering::SeqCst), 0);
         assert_eq!(acp.resumes.load(Ordering::SeqCst), 1);
         assert_eq!(
-            router.execute(
-                activation("a2a:https://agent.example"),
-                RuntimeRunContext::new(),
-            )
-            .await
-            .unwrap(),
+            router
+                .execute(
+                    activation("a2a:https://agent.example"),
+                    RuntimeRunContext::new(),
+                )
+                .await
+                .unwrap(),
             RunState::Ended(EndCause::Stopped("a2a".into()))
         );
         assert_eq!(a2a.executes.load(Ordering::SeqCst), 1);
 
-        router.cancel(
-            activation("a2a:https://agent.example"),
-            RuntimeRunContext::new(),
-        )
-        .await
-        .unwrap();
+        router
+            .cancel(
+                activation("a2a:https://agent.example"),
+                RuntimeRunContext::new(),
+            )
+            .await
+            .unwrap();
         assert_eq!(a2a.cancels.load(Ordering::SeqCst), 1);
         assert_eq!(native.cancels.load(Ordering::SeqCst), 0);
         assert_eq!(acp.cancels.load(Ordering::SeqCst), 0);

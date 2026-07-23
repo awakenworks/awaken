@@ -27,7 +27,7 @@ use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, Resolv
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_runtime_host::{SharedHost, durable_ops_router, init_shared_dispatch_store};
+use awaken_runtime_host::{SharedHost, durable_ops_router};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -112,9 +112,7 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
     let any = Arc::new(AnyDispatchStore::from_dispatch(
         mem.clone() as Arc<dyn Dispatch>
     ));
-    init_shared_dispatch_store(any);
-
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(any));
     let router = durable_ops_router(host);
     let thread = "t-dur";
     let base = format!("/v1/durable/threads/{thread}");

@@ -15,7 +15,7 @@ use awaken_runtime_contract::llm::{
 };
 use awaken_runtime_contract::resolved::{ModelBinding, ToolKind};
 use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshot};
-use awaken_runtime_host::{HostResume, SharedHost, init_shared_dispatch_store};
+use awaken_runtime_host::{HostResume, SharedHost};
 
 struct ParentChildModel {
     parent_calls: AtomicUsize,
@@ -84,9 +84,9 @@ async fn child_run_uses_the_durable_scheduler_and_returns_to_its_parent() {
     }
     let storage = tempfile::tempdir().expect("storage");
     let memory = Arc::new(MemoryDispatchStore::new());
-    init_shared_dispatch_store(Arc::new(AnyDispatchStore::from_dispatch(
+    let dispatch = Arc::new(AnyDispatchStore::from_dispatch(
         memory.clone() as Arc<dyn Dispatch>
-    )));
+    ));
 
     let host = Arc::new(
         SharedHost::new(
@@ -96,6 +96,7 @@ async fn child_run_uses_the_durable_scheduler_and_returns_to_its_parent() {
             }),
             "stub",
         )
+        .with_dispatch_store(dispatch)
         .with_store_dir(storage.path())
         .with_agent_publications(Arc::new(
             StaticPublishedAgentSnapshots::try_new([

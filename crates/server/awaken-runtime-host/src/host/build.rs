@@ -76,6 +76,22 @@ impl SharedHost {
         Self::build(llm, model_ref.into(), None)
     }
 
+    /// Install the exact dispatch transport owned by this host composition.
+    #[must_use]
+    pub fn with_dispatch_store(mut self, store: Arc<awaken_run_ingress::AnyDispatchStore>) -> Self {
+        self.dispatch_store_override = Some(store);
+        self
+    }
+
+    pub(crate) fn dispatch_store(
+        &self,
+    ) -> Result<Arc<awaken_run_ingress::AnyDispatchStore>, HostError> {
+        self.dispatch_store_override.clone().map_or_else(
+            || crate::dispatch_backend::shared_durable_store(self.store_dir.as_deref()),
+            Ok,
+        )
+    }
+
     /// Construct with an already selected resource persistence family. Unlike
     /// post-construction overrides, this never opens node-local resource stores
     /// before installing shared adapters, so there is no unused second truth.
@@ -214,6 +230,7 @@ impl SharedHost {
             memory_mounter: std::sync::RwLock::new(None),
             gate_override: None,
             dispatch_pool: std::sync::OnceLock::new(),
+            dispatch_store_override: None,
             completion: Arc::new(CompletionRegistry::default()),
             hand_placement: crate::hand_placement::HandPlacement::new(),
             capture_sink: None,
@@ -707,7 +724,7 @@ impl SharedHost {
         let scheduler = if self.deployment.durable {
             let recovery_projection = commit.recovery_projection();
             Some(crate::agent_runner::RunScheduler {
-                store: crate::dispatch_backend::shared_durable_store(self.store_dir.as_deref())?,
+                store: self.dispatch_store()?,
                 commit: commit.clone(),
                 reader: commit,
                 owner: crate::dispatch_backend::dispatch_owner(),
@@ -751,8 +768,7 @@ impl SharedHost {
         if !self.deployment.durable || self.dispatch_pool.get().is_some() {
             return;
         }
-        let Ok(store) = crate::dispatch_backend::shared_durable_store(self.store_dir.as_deref())
-        else {
+        let Ok(store) = self.dispatch_store() else {
             // Postgres backend not yet initialised — a later `mount` after
             // `init_shared_postgres_dispatch` will spawn the pool.
             return;

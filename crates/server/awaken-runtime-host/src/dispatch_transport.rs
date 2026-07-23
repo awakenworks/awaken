@@ -26,7 +26,6 @@ use awaken_run_ingress::{
     WorkerIdentity, WorkerRegistration, WorkerSnapshot, WorkerState,
 };
 
-use crate::dispatch_backend::shared_durable_store;
 use crate::host::{HostError, SharedHost};
 use crate::worker_http::respond;
 use crate::worker_security::{
@@ -183,7 +182,8 @@ async fn claim_authority(
 /// is retained for source compatibility; new compositions inject an explicit
 /// [`WorkerDispatchService`] through [`dispatch_transport_router_with_service`].
 pub fn dispatch_transport_router(host: Arc<SharedHost>) -> Router {
-    let dispatch = shared_durable_store(host.store_dir.as_deref())
+    let dispatch = host
+        .dispatch_store()
         .expect("worker dispatch router requires the durable backend initialized at startup");
     dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::local(dispatch)))
 }
@@ -204,7 +204,8 @@ pub fn dispatch_transport_router_with_directory_and_policy(
     directory: Arc<dyn WorkerDirectory>,
     policy: Arc<dyn PlacementPolicy>,
 ) -> Router {
-    let dispatch = shared_durable_store(host.store_dir.as_deref())
+    let dispatch = host
+        .dispatch_store()
         .expect("worker dispatch router requires the durable backend initialized at startup");
     let checkpoint: Arc<dyn StreamCheckpointStore> = if let Some(root) = &host.store_dir {
         Arc::new(
@@ -233,19 +234,21 @@ pub fn registered_worker_transport_router(
     directory: Arc<dyn WorkerDirectory>,
     policy: Arc<dyn PlacementPolicy>,
 ) -> Router {
-    let dispatch = shared_durable_store(host.store_dir.as_deref())
+    let dispatch = host
+        .dispatch_store()
         .expect("registered worker transport requires the durable backend at startup");
     let dispatch_router = dispatch_transport_router_with_directory_and_policy(
         host.clone(),
         directory.clone(),
         policy,
     );
-    let commit_router = crate::commit_ingest::claimed_commit_ingest_router_with_directory(
-        host,
+    let commit_service = Arc::new(crate::commit_ingest::ClaimedCommitService::for_host(
         dispatch as Arc<dyn DispatchQueue>,
-        Arc::new(HeaderWorkerAuthenticator),
+        host,
         directory,
-    );
+        Arc::new(HeaderWorkerAuthenticator),
+    ));
+    let commit_router = crate::commit_ingest::claimed_commit_router(commit_service);
     dispatch_router.merge(commit_router)
 }
 

@@ -173,6 +173,11 @@ pub struct SharedHost {
     /// once from the environment at construction. The runtime reads this typed
     /// config instead of reaching into process env at each call site.
     pub(crate) deployment: crate::deployment_config::DeploymentConfig,
+    /// Explicit Worker-side dispatch transport. Control Nodes leave this empty
+    /// and resolve the configured durable backend; Workers inject their HTTP
+    /// transport here so no process-global compatibility slot becomes a second
+    /// composition authority.
+    pub(crate) dispatch_store_override: Option<Arc<awaken_run_ingress::AnyDispatchStore>>,
     /// When set, an ACP CLI's session is harvested/restored under this durable root
     /// (keyed by thread+adapter) so it survives a move to another directory or
     /// worker. Point it at a **shared** location for cross-machine recovery; leave

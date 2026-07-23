@@ -81,7 +81,8 @@ impl HostWorkerResolver {
                 .map_err(|error| Self::execution_error(error.to_string()))?,
         );
         let recovery_projection = commit.recovery_projection();
-        let store = crate::dispatch_backend::shared_durable_store(host.store_dir.as_deref())
+        let store = host
+            .dispatch_store()
             .map_err(|error| Self::execution_error(error.to_string()))?;
         let mut worker = awaken_run_ingress::DispatchWorker::new(
             Arc::new(awaken_runtime::Runtime::new()),
@@ -218,7 +219,8 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                 .ok_or_else(|| Self::execution_error("resolved session disappeared"))?;
             let encoded = serde_json::to_string(&environment.handle())
                 .map_err(|e| Self::execution_error(e.to_string()))?;
-            let outcome = crate::dispatch_backend::shared_durable_store(host.store_dir.as_deref())
+            let outcome = host
+                .dispatch_store()
                 .map_err(|e| Self::execution_error(e.to_string()))?
                 .bind_sandbox(
                     &awaken_run_ingress::RunClaim::from(&claimed.lease),

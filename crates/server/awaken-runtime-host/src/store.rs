@@ -51,14 +51,12 @@ pub(crate) enum HostCommit {
 }
 
 pub(crate) struct RemoteHostCommit {
-    coordinator: crate::commit_ingest::RemoteCoordinator,
     projection: Arc<awaken_run_ingress::RecoveryProjection>,
 }
 
 impl RemoteHostCommit {
-    pub(crate) fn new(coordinator: crate::commit_ingest::RemoteCoordinator) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            coordinator,
             projection: Arc::new(awaken_run_ingress::RecoveryProjection::new()),
         }
     }
@@ -173,19 +171,10 @@ impl Coordinator for HostCommit {
     async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, Error> {
         match self {
             HostCommit::Local(store) => store.commit(commit).await,
-            HostCommit::Remote(remote) => {
-                let projected = commit.clone();
-                let record = remote.coordinator.commit(commit).await?;
-                // Legacy direct remote commits have no dispatch claim and therefore
-                // no recovery cache to advance. A claimed Worker installs its
-                // snapshot before executor entry; only that path projects the
-                // acknowledged delta. The non-authoritative cache must never turn
-                // an already-successful Control commit into a reported failure.
-                if remote.projection.current().is_some() {
-                    remote.projection.apply_committed(projected, &record)?;
-                }
-                Ok(record)
-            }
+            HostCommit::Remote(_) => Err(Error::Rejected(
+                "a remote Worker must commit through its claim-fenced operation coordinator"
+                    .to_string(),
+            )),
         }
     }
 }

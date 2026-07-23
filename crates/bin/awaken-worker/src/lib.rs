@@ -444,11 +444,9 @@ impl WorkerNode {
         let upstream = upstream.with_worker_identity(registration.snapshot.identity.clone());
         let control = WorkerControlClient::new(upstream.clone());
         // Route the dispatch pool's claim/settle over HTTP to the cell server.
-        awaken_runtime_host::init_shared_dispatch_store(
-            awaken_runtime_host::worker_dispatch_store_with_upstream(
-                &upstream,
-                registration.snapshot.identity.clone(),
-            ),
+        let dispatch_store = awaken_runtime_host::worker_dispatch_store_with_upstream(
+            &upstream,
+            registration.snapshot.identity.clone(),
         );
 
         let resource_validator = self
@@ -469,6 +467,7 @@ impl WorkerNode {
         };
         let mut host = host
             .with_worker_upstream(upstream)
+            .with_dispatch_store(dispatch_store)
             .with_remote_attempt_executor(awaken_server::a2a_attempt_executor());
         if let Some(materializer) = &self.materializer {
             host = host.with_inference_materializer(materializer.clone());
