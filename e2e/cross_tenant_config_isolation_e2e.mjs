@@ -106,58 +106,56 @@ async function main() {
       disabled_endpoint_ids: [],
     };
     assert.equal((await req(base, 'PUT', '/v1/config/inference-profiles/shared-profile', tokenA, profileBody)).status, 200);
-    const mcpBody = {
-      id: 'shared-mcp',
-      workspace_id: WS_A,
-      display_name: 'tenant mcp',
-      url: 'https://mcp.example.invalid/',
-      credential_binding: { type: 'exact', credential_source_id: credentialId },
-      version: 1,
-    };
-    assert.equal((await req(base, 'PUT', '/v1/config/mcp-servers/shared-mcp', tokenA, mcpBody)).status, 200);
     const agentMcpBody = {
-      workspace_id: WS_A,
-      agent_id: 'shared-mcp-agent',
-      mcp_server_ids: ['shared-mcp'],
-      version: 1,
+      name: 'tenant MCP agent',
+      system: 'Use the tenant MCP server.',
+      model: { mode: 'auto' },
+      mcp_servers: [{
+        name: 'shared-mcp',
+        url: 'https://mcp.example.invalid/',
+        credential: { id: credentialId, revision: credentialA.json.version },
+      }],
     };
-    assert.equal((await req(base, 'PUT', '/v1/config/agents/shared-mcp-agent/mcp', tokenA, agentMcpBody)).status, 200);
+    assert.equal((await req(base, 'PUT', '/v1/config/agents/shared-mcp-agent', tokenA, agentMcpBody)).status, 200);
 
     const hiddenFromB = [
       ['GET', `/v1/config/credentials/${encodeURIComponent(credentialId)}`, undefined, 404],
-      ['GET', `/v1/config/credentials/${encodeURIComponent(credentialId)}/availability`, undefined, 403],
-      ['POST', `/v1/config/credentials/${encodeURIComponent(credentialId)}/cooldown`, { kind: 'quota', retry_after_secs: 60 }, 403],
+      ['GET', `/v1/config/credentials/${encodeURIComponent(credentialId)}/availability`, undefined, 404],
+      ['POST', `/v1/config/credentials/${encodeURIComponent(credentialId)}/cooldown`, { kind: 'quota', retry_after_secs: 60 }, 404],
       ['GET', '/v1/config/credential-pools/shared-pool', undefined, 404],
-      ['GET', '/v1/config/credential-pools/shared-pool/eligible', undefined, 403],
+      ['GET', '/v1/config/credential-pools/shared-pool/eligible', undefined, 404],
       ['GET', '/v1/config/inference-profiles/shared-profile', undefined, 404],
       ['POST', '/v1/config/inference-profiles/shared-profile/resolve', { workspace_id: WS_B }, 404],
-      ['GET', '/v1/config/mcp-servers/shared-mcp', undefined, 404],
-      ['GET', '/v1/config/agents/shared-mcp-agent/mcp', undefined, 404],
-      ['POST', '/v1/config/agents/shared-mcp-agent/mcp/resolve', { workspace_id: WS_B }, 404],
+      ['GET', '/v1/config/agents/shared-mcp-agent', undefined, 404],
     ];
     for (const [method, uri, body, expectedStatus] of hiddenFromB) {
       const hidden = await req(base, method, uri, tokenB, body);
       assert.equal(hidden.status, expectedStatus, `WS-B ${method} ${uri} is fenced: ${hidden.status}`);
     }
-    const listMcpB = await req(base, 'GET', '/v1/config/mcp-servers', tokenB);
-    assert.equal(listMcpB.status, 200);
-    assert.ok(!listMcpB.json.some((row) => row.id === 'shared-mcp'), 'MCP list is workspace-filtered');
-
     const rejectedTakeovers = [
       ['PUT', '/v1/config/credential-pools/shared-pool', { ...poolBody, workspace_id: WS_B }],
       ['PUT', '/v1/config/inference-profiles/shared-profile', { ...profileBody, workspace_id: WS_B }],
-      ['PUT', '/v1/config/mcp-servers/shared-mcp', { ...mcpBody, workspace_id: WS_B }],
-      ['PUT', '/v1/config/agents/shared-mcp-agent/mcp', { ...agentMcpBody, workspace_id: WS_B }],
     ];
     for (const [method, uri, body] of rejectedTakeovers) {
       const rejected = await req(base, method, uri, tokenB, body);
       assert.equal(rejected.status, 404, `WS-B cannot take over ${uri}: ${rejected.status}`);
     }
+    assert.equal(
+      (await req(base, 'PUT', '/v1/config/agents/shared-mcp-agent', tokenB, agentMcpBody)).status,
+      200,
+      'same-id Agent write is an owner-protected no-op',
+    );
+    assert.equal(
+      (await req(base, 'GET', '/v1/config/agents/shared-mcp-agent', tokenB)).status,
+      404,
+    );
     assert.equal((await req(base, 'GET', '/v1/config/credential-pools/shared-pool', tokenA)).json.workspace_id, WS_A);
     assert.equal((await req(base, 'GET', '/v1/config/inference-profiles/shared-profile', tokenA)).json.workspace_id, WS_A);
-    assert.equal((await req(base, 'GET', '/v1/config/mcp-servers/shared-mcp', tokenA)).json.workspace_id, WS_A);
-    assert.equal((await req(base, 'GET', '/v1/config/agents/shared-mcp-agent/mcp', tokenA)).json.workspace_id, WS_A);
-    pass('credential/pool/profile/MCP aggregates persist one owner and reject cross-workspace reads, lists, resolves, cooldowns, and takeovers');
+    assert.deepEqual(
+      (await req(base, 'GET', '/v1/config/agents/shared-mcp-agent', tokenA)).json.mcp_servers[0].credential,
+      { id: credentialId, revision: credentialA.json.version },
+    );
+    pass('credential/pool/profile/typed Agent MCP bindings preserve one owner and reject cross-workspace reads, cooldowns, and takeovers');
 
     const ALPHA_STEPS = 7;
     const BETA_STEPS = 3;

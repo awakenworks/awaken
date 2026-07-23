@@ -497,17 +497,21 @@ async function main() {
       credential_binding: { type: 'exact', credential_source_id: ownedId }, disabled_endpoint_ids: [],
     };
     assert.equal((await req(base, 'PUT', scoped(WS_A, 'inference-profiles/owned-profile'), profile)).status, 200);
-    const mcp = {
-      id: 'owned-mcp', workspace_id: 'forged-body-owner', display_name: 'owned',
-      url: 'https://mcp.example.invalid/',
-      credential_binding: { type: 'exact', credential_source_id: ownedId }, version: 1,
-    };
-    assert.equal((await req(base, 'PUT', scoped(WS_A, 'mcp-servers/owned-mcp'), mcp)).status, 200);
     const agentMcp = {
-      workspace_id: 'forged-body-owner', agent_id: 'owned-agent',
-      mcp_server_ids: ['owned-mcp'], version: 1,
+      name: 'owned MCP Agent',
+      system: 'Use the owned MCP endpoint.',
+      model: {
+        provider_identity_ref: 'default',
+        model_ref: MODEL,
+        backend_ref: 'default',
+      },
+      mcp_servers: [{
+        name: 'owned',
+        url: 'https://mcp.example.invalid/',
+        credential: { id: ownedId, revision: ownedCredential.json.version },
+      }],
     };
-    assert.equal((await req(base, 'PUT', scoped(WS_A, 'agents/owned-agent/mcp'), agentMcp)).status, 200);
+    assert.equal((await req(base, 'PUT', scoped(WS_A, 'agents/owned-agent'), agentMcp)).status, 200);
 
     // Exercise the owning side of every scoped operational route as well as
     // cross-aggregate binding checks. A foreign credential/pool/server must not
@@ -541,53 +545,34 @@ async function main() {
     assert.equal((await req(base, 'POST', scoped(WS_A, `credentials/${ownedId}/validate`), {
       workspace_id: 'forged-body-owner', model_id: MODEL,
     })).status, 200);
-    assert.equal((await req(base, 'GET', scoped(WS_A, 'mcp-servers/owned-mcp'))).status, 200);
-    const owningMcp = await req(base, 'GET', scoped(WS_A, 'mcp-servers'));
-    assert.equal(owningMcp.status, 200);
-    assert.ok(owningMcp.json.some((entry) => entry.id === 'owned-mcp'));
-    assert.equal((await req(base, 'GET', scoped(WS_A, 'agents/owned-agent/mcp'))).status, 200);
-    const resolvedMcp = await req(base, 'POST', scoped(WS_A, 'agents/owned-agent/mcp/resolve'), {
-      workspace_id: 'forged-body-owner',
-    });
-    assert.equal(resolvedMcp.status, 200, JSON.stringify(resolvedMcp.json));
-    assert.deepEqual(resolvedMcp.json, [{
-      name: 'owned', url: 'https://mcp.example.invalid/', credential_present: true,
-    }]);
-
-    const foreignExactMcp = {
-      ...mcp, id: 'foreign-exact-mcp', workspace_id: WS_B,
-    };
-    assert.equal((await req(base, 'PUT', scoped(WS_B, 'mcp-servers/foreign-exact-mcp'), foreignExactMcp)).status, 404);
-    const foreignPoolMcp = {
-      ...mcp, id: 'foreign-pool-mcp', workspace_id: WS_B,
-      credential_binding: { type: 'one_of_credential_pool', credential_pool_id: 'owned-pool' },
-    };
-    assert.equal((await req(base, 'PUT', scoped(WS_B, 'mcp-servers/foreign-pool-mcp'), foreignPoolMcp)).status, 404);
-    assert.equal((await req(base, 'PUT', scoped(WS_B, 'agents/foreign-agent/mcp'), {
-      workspace_id: WS_B, agent_id: 'foreign-agent', mcp_server_ids: ['owned-mcp'], version: 1,
-    })).status, 404);
+    const owningAgent = await req(base, 'GET', scoped(WS_A, 'agents/owned-agent'));
+    assert.equal(owningAgent.status, 200);
+    assert.deepEqual(
+      owningAgent.json.mcp_servers[0].credential,
+      { id: ownedId, revision: ownedCredential.json.version },
+    );
 
     for (const uri of [
       scoped(WS_B, `credentials/${ownedId}`),
       scoped(WS_B, 'credential-pools/owned-pool'),
       scoped(WS_B, 'credential-pools/owned-pool/eligible'),
       scoped(WS_B, 'inference-profiles/owned-profile'),
-      scoped(WS_B, 'mcp-servers/owned-mcp'),
-      scoped(WS_B, 'agents/owned-agent/mcp'),
+      scoped(WS_B, 'agents/owned-agent'),
     ]) assert.equal((await req(base, 'GET', uri)).status, 404, `${uri} hides foreign ownership`);
     assert.equal((await req(base, 'PUT', scoped(WS_B, 'credential-pools/owned-pool'), pool)).status, 404);
     assert.equal((await req(base, 'PUT', scoped(WS_B, 'inference-profiles/owned-profile'), profile)).status, 404);
-    assert.equal((await req(base, 'PUT', scoped(WS_B, 'mcp-servers/owned-mcp'), mcp)).status, 404);
-    assert.equal((await req(base, 'PUT', scoped(WS_B, 'agents/owned-agent/mcp'), agentMcp)).status, 404);
+    assert.equal(
+      (await req(base, 'PUT', scoped(WS_B, 'agents/owned-agent'), agentMcp)).status,
+      200,
+      'same-id Agent write is an owner-protected no-op',
+    );
+    assert.equal((await req(base, 'GET', scoped(WS_B, 'agents/owned-agent'))).status, 404);
     assert.equal((await req(base, 'POST', scoped(WS_B, 'inference-profiles/owned-profile/resolve-candidates'), {
       workspace_id: WS_A,
     })).status, 404);
-    assert.equal((await req(base, 'POST', scoped(WS_B, 'agents/owned-agent/mcp/resolve'), {
-      workspace_id: WS_A,
-    })).status, 404);
-    const listedMcp = await req(base, 'GET', scoped(WS_B, 'mcp-servers'));
-    assert.equal(listedMcp.status, 200);
-    assert.ok(!listedMcp.json.some((entry) => entry.id === 'owned-mcp'));
+    const listedAgents = await req(base, 'GET', scoped(WS_B, 'agents'));
+    assert.equal(listedAgents.status, 200);
+    assert.ok(!listedAgents.json.data.some((entry) => entry.id === 'owned-agent'));
 
     const upload = new FormData();
     upload.set('file', new Blob(['workspace-owned-file']), 'owned.txt');

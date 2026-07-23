@@ -45,8 +45,8 @@ function routes(workspace) {
   ['GET', `/v1/config/credentials?workspace_id=${encodeURIComponent(workspace)}`],
   ['GET', '/v1/config/credential-pools/ghost'],
   ['GET', '/v1/config/inference-profiles/ghost'],
-  ['GET', '/v1/config/mcp-servers/ghost'],
-  ['GET', '/v1/config/mcp-servers'],
+  ['GET', '/v1/config/agents/ghost'],
+  ['GET', '/v1/config/agents'],
   ];
 }
 
