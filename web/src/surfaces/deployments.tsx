@@ -5,7 +5,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link, useParams } from "react-router";
-import { Button, Card, Pill, SelectField, TextAreaField, TextField } from "../components/ui";
+import { Button, Card, Modal, Pill, SelectField, TextAreaField, TextField } from "../components/ui";
 import { api } from "../lib/api/client";
 import type { AgentConfigList, Deployment, DeploymentRun, Environment, Page } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
@@ -47,9 +47,7 @@ function CreateModal({ onClose }: { onClose: () => void }) {
   });
 
   return (
-    <div className="overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>{app.t("New deployment", "新建部署")}</h3>
+    <Modal title={app.t("New deployment", "新建部署")} onClose={onClose}>
         <TextField
           label={app.t("Name", "名称")}
           value={name}
@@ -101,8 +99,7 @@ function CreateModal({ onClose }: { onClose: () => void }) {
             {app.t("Create", "创建")}
           </Button>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
 

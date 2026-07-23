@@ -7,7 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import Drawer from "../components/ui/Drawer";
-import { Button, Card, Pill, Segmented, TextField } from "../components/ui";
+import { Button, Card, Modal, Pill, Segmented, TextField } from "../components/ui";
 import { api, getWorkspace, ws } from "../lib/api/client";
 import type {
   AgentConfigList,
@@ -63,11 +63,8 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
     },
   });
   return (
-    <div className="overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>
-          {app.t("New session", "新建会话")} · {wsId}
-        </h3>
+    <>
+      <Modal title={<>{app.t("New session", "新建会话")} · {wsId}</>} onClose={onClose}>
         <div className="field">
           <label className="row" style={{ justifyContent: "space-between" }}>
             <span>Agent</span>
@@ -175,7 +172,7 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
             {app.t("Create", "创建")} ➤
           </Button>
         </div>
-      </div>
+      </Modal>
       {manage === "agents" && (
         <Drawer title={app.t("Agents", "Agents")} onClose={() => setManage(null)}>
           <ProjectAgentsSurface />
@@ -186,7 +183,7 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
           <EnvironmentsSurface />
         </Drawer>
       )}
-    </div>
+    </>
   );
 }
 

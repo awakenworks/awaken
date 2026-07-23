@@ -8,7 +8,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useConfirm } from "../components/ui/Confirm";
 import { useToast } from "../components/ui/Toast";
-import { Button, Card, Pill, TextAreaField } from "../components/ui";
+import { Button, Card, Modal, Pill, TextAreaField } from "../components/ui";
 import { api } from "../lib/api/client";
 import type { Page, Vault, VaultCredential } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
@@ -138,9 +138,7 @@ function VaultCard({ id, name }: { id: string; name?: string }) {
         </div>
       )}
       {adding && (
-        <div className="overlay" onClick={() => setAdding(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>{app.t("Add credential", "添加凭证")}</h3>
+        <Modal title={app.t("Add credential", "添加凭证")} onClose={() => setAdding(false)}>
             <div className="row">
               {["environment_variable", "static_bearer", "mcp_oauth"].map((t) => (
                 <Button
@@ -177,8 +175,7 @@ function VaultCard({ id, name }: { id: string; name?: string }) {
                 {app.t("Save", "保存")}
               </Button>
             </div>
-          </div>
-        </div>
+        </Modal>
       )}
     </Card>
   );

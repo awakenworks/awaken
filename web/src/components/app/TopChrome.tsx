@@ -4,9 +4,11 @@
 // picker (client-held roster).
 
 import { useState } from "react";
+import { Popover } from "@awaken/ui";
 import { useNavigate } from "react-router";
 import { getToken, setToken } from "../../lib/api/client";
 import { useApp } from "../../lib/app-state";
+import Modal from "../ui/Modal";
 
 /** Ask the command palette (in AppShell) to open. */
 export function openPalette() {
@@ -21,72 +23,63 @@ function WorkspaceSwitcher() {
   const active = app.workspaces.find((w) => w.id === app.workspaceId);
 
   return (
-    <div style={{ position: "relative", flex: "none" }}>
-      <button className="ws-crumb" onClick={() => setOpen((v) => !v)}>
+    <Popover
+      aria-label={app.t("Switch workspace", "切换工作区")}
+      className="workspace-switcher"
+      closeOnContentClick
+      contentClassName="workspace-switcher-popover"
+      open={open}
+      onOpenChange={setOpen}
+      content={
+        <>
+          <div className="nav-caption">{app.t("Switch workspace", "切换工作区")}</div>
+          {app.workspaces.map((w) => (
+            <button
+              key={w.id}
+              className="nav-item"
+              data-active={w.id === app.workspaceId}
+              onClick={() => {
+                app.setWorkspaceId(w.id);
+                setOpen(false);
+                nav(`/w/${w.id}/overview`);
+              }}
+            >
+              {w.display_name || w.id}
+              <span className="mono mut" style={{ marginLeft: "auto" }}>
+                {w.id}
+              </span>
+            </button>
+          ))}
+          <div className="nav-caption">{app.t("Add workspace (scope id)", "添加工作区(作用域 id)")}</div>
+          <div className="row" style={{ padding: "2px 6px 6px" }}>
+            <input
+              className="input mono"
+              style={{ flex: 1, height: 26 }}
+              placeholder="ws_acme"
+              value={newWs}
+              onChange={(e) => setNewWs(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && newWs.trim()) {
+                  const id = newWs.trim();
+                  app.addWorkspace(id);
+                  setNewWs("");
+                  setOpen(false);
+                  nav(`/w/${id}/overview`);
+                }
+              }}
+            />
+          </div>
+        </>
+      }
+    >
+      <button className="ws-crumb">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z" />
         </svg>
         <span>{active?.display_name || app.workspaceId}</span>
         <span className="mut" style={{ color: "inherit" }}>▾</span>
       </button>
-      {open && (
-        <>
-          <div style={{ position: "fixed", inset: 0, zIndex: 39 }} onClick={() => setOpen(false)} />
-          <div
-            style={{
-              position: "absolute",
-              top: "100%",
-              left: 0,
-              marginTop: 6,
-              minWidth: 240,
-              zIndex: 40,
-              background: "var(--surface)",
-              borderRadius: 11,
-              boxShadow: "var(--shadow-pop)",
-              padding: 5,
-            }}
-          >
-            <div className="nav-caption">{app.t("Switch workspace", "切换工作区")}</div>
-            {app.workspaces.map((w) => (
-              <button
-                key={w.id}
-                className="nav-item"
-                data-active={w.id === app.workspaceId}
-                onClick={() => {
-                  app.setWorkspaceId(w.id);
-                  setOpen(false);
-                  nav(`/w/${w.id}/overview`);
-                }}
-              >
-                {w.display_name || w.id}
-                <span className="mono mut" style={{ marginLeft: "auto" }}>
-                  {w.id}
-                </span>
-              </button>
-            ))}
-            <div className="nav-caption">{app.t("Add workspace (scope id)", "添加工作区(作用域 id)")}</div>
-            <div className="row" style={{ padding: "2px 6px 6px" }}>
-              <input
-                className="input mono"
-                style={{ flex: 1, height: 26 }}
-                placeholder="ws_acme"
-                value={newWs}
-                onChange={(e) => setNewWs(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && newWs.trim()) {
-                    const id = newWs.trim();
-                    app.addWorkspace(id);
-                    setNewWs("");
-                    setOpen(false);
-                    nav(`/w/${id}/overview`);
-                  }
-                }}
-              />
-            </div>
-          </div>
-        </>
-      )}
-    </div>
+    </Popover>
   );
 }
 
@@ -100,9 +93,7 @@ function TokenButton() {
         <span className="dot" style={{ background: getToken() ? "var(--ok)" : "var(--fg3)" }} />
       </button>
       {open && (
-        <div className="overlay" onClick={() => setOpen(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>{app.t("API token", "API 令牌")}</h3>
+        <Modal title={app.t("API token", "API 令牌")} onClose={() => setOpen(false)}>
             <p className="mut" style={{ margin: 0 }}>
               {app.t(
                 "Service bearer for management and Managed Agents APIs. Live Preview exchanges it for a narrow application token.",
@@ -130,8 +121,7 @@ function TokenButton() {
                 {app.t("Save", "保存")}
               </button>
             </div>
-          </div>
-        </div>
+        </Modal>
       )}
     </>
   );

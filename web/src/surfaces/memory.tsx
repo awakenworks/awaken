@@ -7,7 +7,7 @@ import { useState } from "react";
 import { api } from "../lib/api/client";
 import type { MemoryStore, Page } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
-import { Button, Card, Pill, TextField } from "../components/ui";
+import { Button, Card, Modal, Pill, TextField } from "../components/ui";
 
 function CreateModal({ onClose }: { onClose: () => void }) {
   const app = useApp();
@@ -26,9 +26,7 @@ function CreateModal({ onClose }: { onClose: () => void }) {
     },
   });
   return (
-    <div className="overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>{app.t("New memory store", "新建记忆库")}</h3>
+    <Modal title={app.t("New memory store", "新建记忆库")} onClose={onClose}>
         <TextField label={app.t("Name", "名称")} value={name} onChange={(e) => setName(e.target.value)} placeholder="project-memory" />
         <TextField
           label={app.t("Description", "描述")}
@@ -45,8 +43,7 @@ function CreateModal({ onClose }: { onClose: () => void }) {
             {app.t("Create", "创建")}
           </Button>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
 

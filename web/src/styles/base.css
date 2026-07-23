@@ -556,9 +556,30 @@ textarea.input {
   flex-direction: column;
   gap: 12px;
 }
+.ui-overlay__viewport:has(> .modal) {
+  align-items: flex-start;
+  padding: 10vh 24px 24px;
+}
+.ui-dialog.modal {
+  gap: 0;
+  padding: 0;
+}
 .modal h3 {
   margin: 0;
   font-size: 14.5px;
+}
+
+.workspace-switcher {
+  flex: none;
+}
+
+.workspace-switcher-popover {
+  min-width: 240px;
+  padding: 5px;
+  border: 0;
+  border-radius: 11px;
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
 }
 
 .err {

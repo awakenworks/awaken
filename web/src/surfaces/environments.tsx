@@ -7,7 +7,7 @@ import { useState } from "react";
 import { api } from "../lib/api/client";
 import type { Environment, EnvironmentConfig, Page, SandboxConfig, WorkQueueStats } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
-import { Button, Card, Pill, Segmented, Switch, TextField } from "../components/ui";
+import { Button, Card, Modal, Pill, Segmented, Switch, TextField } from "../components/ui";
 import { useCapabilities } from "../lib/useCapabilities";
 import { SandboxEditor } from "../components/environment/SandboxEditor";
 
@@ -79,9 +79,7 @@ function CreateModal({ onClose }: { onClose: () => void }) {
   });
 
   return (
-    <div className="overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>{app.t("New environment", "新建运行环境")}</h3>
+    <Modal title={app.t("New environment", "新建运行环境")} onClose={onClose}>
         <TextField label={app.t("Name", "名称")} value={name} onChange={(e) => setName(e.target.value)} placeholder="claude-sandbox-github" />
 
         <div className="field">
@@ -142,8 +140,7 @@ function CreateModal({ onClose }: { onClose: () => void }) {
             {app.t("Create", "创建")}
           </Button>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
 
