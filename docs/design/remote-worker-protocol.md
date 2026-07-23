@@ -297,10 +297,9 @@ pub fn claimed_commit_router(
 The coordinator implementation may cover one SQLite cell or a PostgreSQL-backed
 set of Threads. It is the exact instance owned by the embedding composition
 root, so a successful commit updates the same authoritative store/projection
-used by that process. The service does not construct `SharedHost`, choose a
-database, or own an application projection. The public router accepts only
-versioned `CommitOperation`; raw claimed `ThreadCommit` remains a compatibility
-surface and is not part of the embeddable protocol.
+used by that process. The service does not choose a database or own an
+application projection. The public router accepts only a versioned
+`CommitOperation`; there is no raw or unclaimed Worker commit surface.
 
 ### 4.5 Public Worker assembly
 
@@ -558,7 +557,7 @@ rolled back, and a stale owner cannot publish a false settle. `DispatchCursor`
 is exclusive and scoped to one dispatch store; `DispatchPage.next_cursor` is
 the last event actually returned, or the requested cursor for an empty page.
 The SQL outbox survives process restart. `AnyDispatchStore` exposes it for its
-built-in SQLite/PostgreSQL backends and fails explicitly when an injected legacy
+built-in SQLite/PostgreSQL backends and fails explicitly when an injected
 adapter implements only `Dispatch`.
 
 `CheckpointRunLifecycleFeed` is the portable P1 Run implementation. It reads
@@ -651,12 +650,16 @@ Completed:
 
 - core Worker and commit assembly accept explicit typed dependencies;
 - the CLI bridge parses deployment environment into `DeploymentConfig`;
-- `WorkerNode` exposes the reusable lifecycle state machine.
+- `WorkerNode` exposes the reusable lifecycle state machine;
+- every HTTP dispatch client is constructed with a registered
+  `WorkerIdentity`; the owner-string compatibility client and its local owner
+  cache are removed;
+- each `SharedHost` explicitly owns an injected Worker dispatch transport; no
+  process-global injected-dispatch slot remains.
 
-Deferred cleanup may remove remaining compatibility globals where dependency
-injection is sufficient. Optional gRPC/bidirectional streaming may batch
-renew/commit/feed traffic, but it must carry the same claim, epoch, operation
-id, version, hash, and receipt.
+Optional gRPC/bidirectional streaming may batch renew/commit/feed traffic, but
+it must carry the same identity, claim, epoch, operation id, version, hash, and
+receipt.
 
 ## 8. Storage and Component Choices
 
@@ -767,7 +770,7 @@ helpers and CLI parsing do not belong here.
 | P0 | recovery snapshot/projection, operation receipts, injectable claimed commit, public Worker assembly, topology rejection, conformance + bounded model | remote Worker is correct, recoverable, and embeddable |
 | P1 | exact executor registry, derived manifest, production identity, separated lifecycle feeds | fleet is extensible and production-operable |
 | P2 | PostgreSQL active-active with authoritative recovery/lifecycle reads and multi-process failure injection | the physical Control singleton and sticky-routing constraint are removed |
-| Deferred | recovery cache/deltas, snapshot compaction, remaining compatibility-global cleanup, optional streaming, cell sharding/rebalancing, alternative primary stores, merged business event feed | requires measured scale or a separate accepted ADR |
+| Deferred | recovery cache/deltas, snapshot compaction, optional streaming, cell sharding/rebalancing, alternative primary stores, merged business event feed | requires measured scale or a separate accepted ADR |
 
 The first vertical slice is one Worker, one Control Node, one claimed Run that
 Awaits, crashes, is reclaimed by another Worker, resumes from a consistent

@@ -247,8 +247,10 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
         .await
         .unwrap();
 
-    let client = HttpDispatchQueue::new(format!("http://{address}"))
-        .with_worker_identity(registered.snapshot.identity.clone());
+    let client = HttpDispatchQueue::new(
+        format!("http://{address}"),
+        registered.snapshot.identity.clone(),
+    );
     let claimed = client
         .claim("ignored-local-owner", 99, 99)
         .await
@@ -377,8 +379,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
         },
     )
     .await;
-    let wrong_queue =
-        HttpDispatchQueue::new(format!("http://{address}")).with_worker_identity(wrong);
+    let wrong_queue = HttpDispatchQueue::new(format!("http://{address}"), wrong);
     assert!(
         wrong_queue
             .claim("ignored", 1_000, 100)
@@ -389,8 +390,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
     );
 
     let exact = ready_worker(address, "worker-exact-revision", required).await;
-    let exact_queue =
-        HttpDispatchQueue::new(format!("http://{address}")).with_worker_identity(exact.clone());
+    let exact_queue = HttpDispatchQueue::new(format!("http://{address}"), exact.clone());
     let claimed = exact_queue
         .claim("ignored", 1_000, 100)
         .await
