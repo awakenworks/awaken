@@ -59,7 +59,7 @@ consistent vocabulary. This affects the documentation layers differently:
 | `design/neutral-waist.md` | Runtime-owned | Runtime execution ports and extension points |
 | `design/tool-and-capability.md` | Runtime-owned | Capability segmentation, neutral ToolExecutor port, builtin-tools placement, unified delegation tool, and permission boundary |
 | `design/run-ingress-message-delivery.md` | Boundary-only | Dispatch/server boundary for run ingress, durable delivery, pending input, and message handoff |
-| `design/remote-worker-protocol.md` | Boundary-only | Proposed P0/P1/P2 contract for recoverable, database-independent, embeddable remote Workers; separates logical coordinator authority from physical topology |
+| `design/remote-worker-protocol.md` | Boundary-only | Accepted P0/P1/P2 contract for recoverable, database-independent, embeddable remote Workers; PostgreSQL active-active execution is verified without sticky routing, while optional transfer optimizations remain deferred |
 | `design/anthropic-alignment-and-sessions.md` | Product-owned | Downstream product adapter guidance |
 | `design/web-ui.md` | Product-owned | Web console blueprint: Oversight two-scope shell over the management plane, session surface, design tokens, contract-first frontend engineering plan |
 | `design/awaken-server-local-overview.md` | Product-owned | Single-machine assembly overview; navigation map linking component owners; sandbox/relay, managed adapter, and goal are to-build |
