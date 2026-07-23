@@ -898,14 +898,57 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn revise_model_finalizes_only_after_goal_feedback() {
+    async fn revise_model_follows_outcome_revision_sequence() {
         let draft = infer(&ReviseModel, req(vec![msg(Role::User, "write it")])).await;
         assert_eq!(draft.output.text_content(), "a rough draft");
+
+        let rejected = infer(
+            &ReviseModel,
+            req(vec![msg(
+                Role::User,
+                r#"Evaluate this Outcome input against its rubric. {"rubric":"FINAL","input":"a rough draft"}"#,
+            )]),
+        )
+        .await;
+        assert_eq!(
+            rejected.output.text_content(),
+            r#"{"result":"needs_revision","explanation":"native judge requests the rubric deliverable"}"#
+        );
+
         let finalized = infer(
             &ReviseModel,
-            req(vec![msg(Role::User, "that did not meet the goal, revise")]),
+            req(vec![msg(
+                Role::User,
+                "Revise the deliverable for this Outcome. Grader feedback: include FINAL",
+            )]),
         )
         .await;
         assert_eq!(finalized.output.text_content(), "FINAL answer");
+
+        let accepted = infer(
+            &ReviseModel,
+            req(vec![msg(
+                Role::User,
+                r#"Evaluate this Outcome input against its rubric. {"rubric":"FINAL","input":"FINAL answer"}"#,
+            )]),
+        )
+        .await;
+        assert_eq!(
+            accepted.output.text_content(),
+            r#"{"result":"satisfied","explanation":"native judge accepted FINAL"}"#
+        );
+
+        let capped = infer(
+            &ReviseModel,
+            req(vec![msg(
+                Role::User,
+                "The Outcome iteration limit was reached. Briefly acknowledge remaining feedback.",
+            )]),
+        )
+        .await;
+        assert_eq!(
+            capped.output.text_content(),
+            "acknowledged remaining feedback"
+        );
     }
 }

@@ -206,8 +206,8 @@ async fn hitl_write_awaits_then_confirms_and_reads_rooted() {
     assert!(read_result_text(&list).contains("HELLO-SANDBOX"));
 }
 
-/// A model that replies with a draft, and revises to include "FINAL" once it sees
-/// the goal-loop's feedback. Stateless: it keys off the last user message.
+/// A model serving both Outcome roles: it grades Worker output through the
+/// pinned Judge path, and revises a rejected draft to include "FINAL".
 struct ReviseModel;
 
 #[async_trait::async_trait]
@@ -231,7 +231,13 @@ impl LlmExecutor for ReviseModel {
                     .collect::<String>()
             })
             .unwrap_or_default();
-        let reply = if last_user.contains("did not meet the goal") {
+        let reply = if last_user.contains("Evaluate this Outcome input") {
+            if last_user.contains("\"rubric\":\"FINAL\"") && last_user.contains("FINAL answer") {
+                r#"{"result":"satisfied","explanation":"accepted FINAL"}"#
+            } else {
+                r#"{"result":"needs_revision","explanation":"include FINAL"}"#
+            }
+        } else if last_user.contains("Revise the deliverable") {
             "FINAL answer"
         } else {
             "a rough draft"
@@ -320,15 +326,15 @@ impl LlmExecutor for GradedModel {
                     .collect::<String>()
             })
             .unwrap_or_default();
-        let reply = if last_user.contains("impartial grader") {
+        let reply = if last_user.contains("Evaluate this Outcome input") {
             // Judge: the deliverable is met iff it carries the FINAL marker.
-            if last_user.contains("FINAL") {
+            if last_user.contains("FINAL answer") {
                 r#"{"result": "satisfied", "explanation": "carries the marker"}"#.to_string()
             } else {
                 r#"{"result": "needs_revision", "explanation": "add the completion marker"}"#
                     .to_string()
             }
-        } else if last_user.contains("did not meet the goal") {
+        } else if last_user.contains("Revise the deliverable") {
             "FINAL answer".to_string()
         } else {
             "a rough draft".to_string()
@@ -764,15 +770,36 @@ struct GatedReviseModel {
 impl LlmExecutor for GatedReviseModel {
     async fn infer(
         &self,
-        _request: ChatRequest,
+        request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         use std::sync::atomic::Ordering;
-        if self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 2 {
             self.reached.notify_one();
             self.gate.notified().await;
         }
+        let last_user = request
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.role == Role::User)
+            .map(|message| {
+                message
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<String>()
+            })
+            .unwrap_or_default();
+        let reply = if last_user.contains("Evaluate this Outcome input") {
+            r#"{"result":"needs_revision","explanation":"include FINAL"}"#
+        } else {
+            "a rough draft"
+        };
         Ok(ChatResponse {
-            output: AssistantOutput::text("a rough draft"),
+            output: AssistantOutput::text(reply),
             usage: None,
             stop_reason: None,
         })
