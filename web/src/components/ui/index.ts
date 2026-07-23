@@ -18,15 +18,10 @@ export { SecretField, type SecretIntent, type SecretMode } from "./SecretField";
 export { ToastProvider, useToast } from "./Toast";
 export { ConfirmProvider, useConfirm } from "./Confirm";
 export {
-  SourceBadge,
-  UsedByList,
-  Sparkline,
-  StatCard,
   JsonInspector,
   EmptyState,
   Skeleton,
   SkeletonRows,
   UsageBadges,
   usageTotal,
-  type SourceState,
 } from "./primitives";
