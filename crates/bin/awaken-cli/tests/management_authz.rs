@@ -106,11 +106,18 @@ async fn resource_plane_is_guarded_without_entering_resource_services() {
     let dir = tempfile::tempdir().unwrap();
     let (app, iam) = build_secured_management_router(dir.path(), &KEY).await;
 
-    for uri in ["/v1/files", "/v1/memory_stores", "/v1/skills"] {
+    for uri in [
+        "/v1/files",
+        "/v1/memory_stores",
+        "/v1/skills",
+        "/v1/sessions",
+    ] {
         let (status, error) = call(&app, "GET", uri, None, None).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}: {error}");
         assert_eq!(error["error"]["type"], json!("authentication_error"));
     }
+    let (status, error) = call(&app, "GET", "/v1/a2a/tasks/example", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{error}");
 
     // The standard workspace_user policy can read File/Skill and Workspace-scoped
     // Memory resources, but cannot mutate any of them.
@@ -124,15 +131,34 @@ async fn resource_plane_is_guarded_without_entering_resource_services() {
             expires_at: None,
         })
         .unwrap();
-    for uri in ["/v1/files", "/v1/memory_stores", "/v1/skills"] {
+    for uri in [
+        "/v1/files",
+        "/v1/memory_stores",
+        "/v1/skills",
+        "/v1/sessions",
+    ] {
         let (status, body) = call(&app, "GET", uri, Some(&user), None).await;
         assert_eq!(status, StatusCode::OK, "{uri}: {body}");
     }
-    for uri in ["/v1/files", "/v1/memory_stores", "/v1/skills"] {
+    for uri in [
+        "/v1/files",
+        "/v1/memory_stores",
+        "/v1/skills",
+        "/v1/sessions",
+    ] {
         let (status, error) = call(&app, "POST", uri, Some(&user), Some(json!({}))).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {error}");
         assert_eq!(error["error"]["type"], json!("permission_error"));
     }
+    let (status, error) = call(
+        &app,
+        "POST",
+        "/v1/a2a/message:stream",
+        Some(&user),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{error}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

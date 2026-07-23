@@ -1046,6 +1046,34 @@ enum RouteFamilyPolicy {
 
 const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
     RoutePolicyDescriptor {
+        prefix: "/v1/sessions",
+        policy: RouteFamilyPolicy::Resource {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/a2a",
+        policy: RouteFamilyPolicy::Resource {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/message:send",
+        policy: RouteFamilyPolicy::Resource {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/message:stream",
+        policy: RouteFamilyPolicy::Resource {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
         prefix: "/v1/files",
         policy: RouteFamilyPolicy::Resource {
             read: FILE_READ,
