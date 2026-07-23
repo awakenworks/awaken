@@ -33,6 +33,7 @@ container-k8s = ["awaken-server/container-k8s"]
 # The neutral host substrate: SharedHost, the dispatch pool, and the worker dispatch
 # store that routes the drain over HTTP to the cell server.
 awaken-runtime-host = { workspace = true }
+awaken-runtime-contract = { workspace = true }
 # The data plane: the inert NoModelConfiguredExecutor placeholder + the
 # CredentialInferenceMaterializer that opens a pinned credential for an executor.
 awaken-server = { workspace = true }
@@ -57,7 +58,6 @@ tower = { version = "0.5", features = ["util"] }
 # stores and asserts exact published access materializes a real executor.
 awaken-credential-vault = { workspace = true }
 awaken-agent-contract = { workspace = true }
-awaken-runtime-contract = { workspace = true }
 async-trait = { workspace = true }
 
 [lints]

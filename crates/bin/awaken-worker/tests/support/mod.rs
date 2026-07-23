@@ -1,6 +1,7 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -8,6 +9,7 @@ use std::time::Duration;
 pub struct FakeWorkerUpstream {
     url: String,
     stop: Arc<AtomicBool>,
+    requests: Arc<Mutex<Vec<String>>>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -17,7 +19,9 @@ impl FakeWorkerUpstream {
         let addr = listener.local_addr().unwrap();
         listener.set_nonblocking(true).unwrap();
         let stop = Arc::new(AtomicBool::new(false));
+        let requests = Arc::new(Mutex::new(Vec::new()));
         let thread_stop = stop.clone();
+        let thread_requests = requests.clone();
         let thread = std::thread::spawn(move || {
             while !thread_stop.load(Ordering::Acquire) {
                 match listener.accept() {
@@ -26,7 +30,7 @@ impl FakeWorkerUpstream {
                             break;
                         }
                         stream.set_nonblocking(false).unwrap();
-                        handle(stream);
+                        handle(stream, &thread_requests);
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(2));
@@ -38,12 +42,17 @@ impl FakeWorkerUpstream {
         Self {
             url: format!("http://{addr}"),
             stop,
+            requests,
             thread: Some(thread),
         }
     }
 
     pub fn url(&self) -> &str {
         &self.url
+    }
+
+    pub fn requests(&self) -> Vec<String> {
+        self.requests.lock().unwrap().clone()
     }
 }
 
@@ -59,7 +68,7 @@ impl Drop for FakeWorkerUpstream {
     }
 }
 
-fn handle(mut stream: TcpStream) {
+fn handle(mut stream: TcpStream, requests: &Mutex<Vec<String>>) {
     let request = read_request(&mut stream);
     let header_end = request
         .windows(4)
@@ -72,6 +81,7 @@ fn handle(mut stream: TcpStream) {
         .next()
         .unwrap();
     let path = request_line.split_whitespace().nth(1).unwrap();
+    requests.lock().unwrap().push(path.to_string());
     let body = std::str::from_utf8(&request[header_end..]).unwrap();
     let response = match path {
         "/v1/worker/register" => {

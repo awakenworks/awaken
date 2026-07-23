@@ -128,6 +128,13 @@ fn run_brings_readyz_up_then_drain_flips_it_down() {
         poll_until(&admin_addr, "GET", "/readyz", 503),
         "after drain, /readyz reports 503 (draining) — the worker is no longer routable"
     );
+    assert!(
+        upstream
+            .requests()
+            .iter()
+            .any(|path| path == "/v1/worker/register"),
+        "the public process composition registered through the Worker control protocol"
+    );
 
     drop(worker); // explicit: kill the child now (also happens on panic via Drop)
 }

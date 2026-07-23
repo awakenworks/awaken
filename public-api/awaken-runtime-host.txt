@@ -291,6 +291,7 @@ pub fn awaken_runtime_host::SharedHost::thread_sandbox(&self) -> awaken_runtime_
 pub fn awaken_runtime_host::SharedHost::with_admin_tools(self, alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_agent_delegates(self, impl core::convert::Into<alloc::string::String>, std::collections::hash::set::HashSet<alloc::string::String>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_agent_run_reuse_sandbox(self, bool) -> Self
+pub fn awaken_runtime_host::SharedHost::with_attempt_executor(self, alloc::sync::Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_capture_sink(self, alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_client_tools(self, std::collections::hash::set::HashSet<alloc::string::String>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_compaction(self, usize, usize) -> Self

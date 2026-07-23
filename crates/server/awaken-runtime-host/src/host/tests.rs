@@ -530,6 +530,60 @@ async fn bound_executor_is_the_ordinary_run_execution_boundary() {
 }
 
 #[tokio::test]
+async fn host_attempt_executor_override_is_the_complete_session_boundary() {
+    use crate::run_exec::BoundRunExecutor;
+    use awaken_runtime_contract::execution::{
+        Result as ExecutionResult, RunAttemptExecutor, RunExecutor,
+    };
+    use awaken_runtime_contract::resume::ResumeCommand;
+    use std::sync::atomic::Ordering;
+
+    struct InjectedAttemptExecutor(AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl RunExecutor for InjectedAttemptExecutor {
+        async fn execute(
+            &self,
+            _activation: RunActivation,
+            _context: RuntimeRunContext,
+        ) -> ExecutionResult<RunState> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(RunState::Ended(EndCause::Stopped("injected".into())))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RunAttemptExecutor for InjectedAttemptExecutor {
+        async fn resume(
+            &self,
+            activation: RunActivation,
+            _command: ResumeCommand,
+            context: RuntimeRunContext,
+        ) -> ExecutionResult<RunState> {
+            self.execute(activation, context).await
+        }
+    }
+
+    let injected = Arc::new(InjectedAttemptExecutor(AtomicUsize::new(0)));
+    let host =
+        SharedHost::new(Arc::new(MemoryHostModel), "stub").with_attempt_executor(injected.clone());
+    let ctx = host.ctx_for("injected-attempt", None).await.unwrap();
+    let activation = RunActivation::new(
+        RunId("injected-attempt-run".into()),
+        ctx.thread_id.clone(),
+        ctx.config.clone(),
+        user("go"),
+    );
+    let state = BoundRunExecutor::new(&host, ctx)
+        .execute(activation, RuntimeRunContext::new())
+        .await
+        .unwrap();
+
+    assert_eq!(state, RunState::Ended(EndCause::Stopped("injected".into())));
+    assert_eq!(injected.0.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn tool_bearing_snapshot_can_be_restricted_at_the_run_boundary() {
     use crate::run_exec::BoundRunExecutor;
     use awaken_runtime_contract::execution::RunExecutor;

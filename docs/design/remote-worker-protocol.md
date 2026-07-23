@@ -309,11 +309,19 @@ WorkerNodeBuilder::new(upstream)
     .with_manifest(manifest)
     .with_attempt_executor(executor)
     .with_inference_materializer(materializer)
-    .with_resource_plane(resources)
+    .with_resource_plane(WorkerResourcePlane::new(resources, validator))
     .build()?
     .run_until_shutdown()
     .await
 ```
+
+`build()` is synchronous and side-effect free: it validates the upstream and
+immutable manifest before registration. `run_until_shutdown()` owns process
+signals; supervisors and conformance tests use the same `WorkerNode::run_until`
+state machine with an injected shutdown future. `SharedHost::with_attempt_executor`
+replaces the complete per-Session attempt boundary, so an application decorator
+wraps Native/ACP/A2A selection rather than accidentally decorating only one
+backend.
 
 `WorkerNode` owns:
 

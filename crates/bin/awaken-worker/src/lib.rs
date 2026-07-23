@@ -11,11 +11,11 @@
 //! `RunActivation` carrying its own `ExecutableAgentSnapshot`, whose
 //! `resolved_spec.model_binding.model_ref` is the run's model identity. The host's
 //! run loop resolves that ref through the injected [`InferenceExecutorMaterializer`]
-//! ([`CredentialInferenceMaterializer`](awaken_server::inference_materializer::CredentialInferenceMaterializer)),
+//! ([`CredentialInferenceMaterializer`]),
 //! which consumes the snapshot-pinned endpoint and credential reference and
 //! injects the credential from the shared vault — see
 //! [`awaken_control::open_inference_materialization_stores_from_env`]). The host's
-//! [`NoModelConfiguredExecutor`](awaken_server::no_model::NoModelConfiguredExecutor)
+//! [`NoModelConfiguredExecutor`]
 //! is only an inert construction placeholder: because the materializer is installed,
 //! an unavailable publication pin fails closed before that executor can run.
 
@@ -23,6 +23,7 @@ use std::sync::Arc;
 
 mod admin;
 
+use awaken_runtime_contract::execution::RunAttemptExecutor;
 use awaken_runtime_host::WorkerControlClient;
 use awaken_runtime_host::WorkerUpstream;
 use awaken_server::inference_materializer::CredentialInferenceMaterializer;
@@ -33,13 +34,37 @@ use awaken_worker_contract::{
     VersionRange, WorkerCapacity, WorkerHeartbeat, WorkerIdentity, WorkerManifest,
 };
 
-struct WorkerResourceWiring {
+/// Explicit resource-plane wiring for a database-less Worker.
+///
+/// The ports remain authoritative data-plane dependencies; the Worker only
+/// materializes their already-authorized bindings for an attempt.
+pub struct WorkerResourcePlane {
     ports: awaken_runtime_host::ResourcePlanePorts,
     validator: awaken_server::ResourceBindingValidatorPort,
     credentials: Option<awaken_control::InferenceMaterializationStores>,
 }
 
-impl WorkerResourceWiring {
+impl WorkerResourcePlane {
+    #[must_use]
+    pub fn new(
+        ports: awaken_runtime_host::ResourcePlanePorts,
+        validator: awaken_server::ResourceBindingValidatorPort,
+    ) -> Self {
+        Self {
+            ports,
+            validator,
+            credentials: None,
+        }
+    }
+
+    fn with_repository_credentials(
+        mut self,
+        credentials: awaken_control::InferenceMaterializationStores,
+    ) -> Self {
+        self.credentials = Some(credentials);
+        self
+    }
+
     fn supports_repository_credentials(&self) -> bool {
         self.credentials.is_some()
     }
@@ -47,16 +72,18 @@ impl WorkerResourceWiring {
 
 async fn shared_resource_wiring(
     credentials: Option<awaken_control::InferenceMaterializationStores>,
-) -> Result<Option<WorkerResourceWiring>, Box<dyn std::error::Error>> {
+) -> Result<Option<WorkerResourcePlane>, Box<dyn std::error::Error>> {
     let ports = awaken_server::shared_worker_resource_plane_from_env().await?;
     let validator = awaken_control::open_shared_resource_validator_from_env().await?;
     match (ports, validator) {
         (None, None) => Ok(None),
-        (Some(ports), Some(validator)) => Ok(Some(WorkerResourceWiring {
-            ports,
-            validator,
-            credentials,
-        })),
+        (Some(ports), Some(validator)) => {
+            let resources = WorkerResourcePlane::new(ports, validator);
+            Ok(Some(match credentials {
+                Some(credentials) => resources.with_repository_credentials(credentials),
+                None => resources,
+            }))
+        }
         (Some(_), None) => Err(std::io::Error::other(
             "AWAKEN_RESOURCE_DATABASE_URL requires shared AWAKEN_ADMIN_DB on a remote worker",
         )
@@ -71,6 +98,153 @@ async fn shared_resource_wiring(
 fn shared_credential_backend(value: Option<&str>) -> bool {
     value
         .is_some_and(|value| value.starts_with("postgres://") || value.starts_with("postgresql://"))
+}
+
+/// Invalid explicit Worker composition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerNodeBuildError(String);
+
+impl std::fmt::Display for WorkerNodeBuildError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for WorkerNodeBuildError {}
+
+/// Public assembly boundary for a recoverable database-less Worker.
+pub struct WorkerNodeBuilder {
+    upstream: WorkerUpstream,
+    manifest: Option<WorkerManifest>,
+    attempt_executor: Option<Arc<dyn RunAttemptExecutor>>,
+    materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
+    acp_credentials: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
+    resources: Option<WorkerResourcePlane>,
+    admin_listen: Option<String>,
+}
+
+impl WorkerNodeBuilder {
+    #[must_use]
+    pub fn new(upstream: WorkerUpstream) -> Self {
+        Self {
+            upstream,
+            manifest: None,
+            attempt_executor: None,
+            materializer: None,
+            acp_credentials: None,
+            resources: None,
+            admin_listen: Some("0.0.0.0:9090".to_string()),
+        }
+    }
+
+    #[must_use]
+    pub fn with_manifest(mut self, manifest: WorkerManifest) -> Self {
+        self.manifest = Some(manifest);
+        self
+    }
+
+    /// Install the complete attempt boundary. An application decorator can wrap
+    /// its backend router before passing it here.
+    #[must_use]
+    pub fn with_attempt_executor(mut self, executor: Arc<dyn RunAttemptExecutor>) -> Self {
+        self.attempt_executor = Some(executor);
+        self
+    }
+
+    #[must_use]
+    pub fn with_inference_materializer(
+        mut self,
+        materializer: Arc<dyn InferenceExecutorMaterializer>,
+    ) -> Self {
+        self.materializer = Some(materializer);
+        self
+    }
+
+    #[must_use]
+    pub fn with_resource_plane(mut self, resources: WorkerResourcePlane) -> Self {
+        self.resources = Some(resources);
+        self
+    }
+
+    #[must_use]
+    pub fn with_admin_listen(mut self, address: impl Into<String>) -> Self {
+        self.admin_listen = Some(address.into());
+        self
+    }
+
+    #[must_use]
+    pub fn without_admin_surface(mut self) -> Self {
+        self.admin_listen = None;
+        self
+    }
+
+    fn with_acp_credentials(
+        mut self,
+        credentials: awaken_runtime_host::PinnedCredentialMaterializer,
+    ) -> Self {
+        self.acp_credentials = Some(credentials);
+        self
+    }
+
+    /// Validate the immutable topology without registering or starting work.
+    pub fn build(self) -> Result<WorkerNode, WorkerNodeBuildError> {
+        if self.upstream.base_url().trim().is_empty() {
+            return Err(WorkerNodeBuildError(
+                "Worker upstream URL must not be empty".to_string(),
+            ));
+        }
+        let manifest = self.manifest.ok_or_else(|| {
+            WorkerNodeBuildError("Worker manifest must be supplied explicitly".to_string())
+        })?;
+        if manifest.build_digest.trim().is_empty() {
+            return Err(WorkerNodeBuildError(
+                "Worker manifest build_digest must not be empty".to_string(),
+            ));
+        }
+        if manifest.capacity.max_concurrent == 0 {
+            return Err(WorkerNodeBuildError(
+                "Worker manifest max_concurrent must be greater than zero".to_string(),
+            ));
+        }
+        if !manifest.dispatch_contract.contains(1) || !manifest.runtime_protocol.contains(1) {
+            return Err(WorkerNodeBuildError(
+                "Worker manifest must support dispatch and runtime protocol version 1".to_string(),
+            ));
+        }
+        manifest
+            .fingerprint()
+            .map_err(|error| WorkerNodeBuildError(error.to_string()))?;
+        Ok(WorkerNode {
+            upstream: self.upstream,
+            manifest,
+            attempt_executor: self.attempt_executor,
+            materializer: self.materializer,
+            acp_credentials: self.acp_credentials,
+            resources: self.resources,
+            admin_listen: self.admin_listen,
+        })
+    }
+}
+
+/// Why the Worker lifecycle is stopping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerShutdown {
+    /// Developer/foreground stop: close admission and exit without an in-flight
+    /// grace window.
+    Prompt,
+    /// Orchestrator scale-in: close admission and honor the configured grace.
+    Graceful,
+}
+
+/// One assembled remote Worker lifecycle.
+pub struct WorkerNode {
+    upstream: WorkerUpstream,
+    manifest: WorkerManifest,
+    attempt_executor: Option<Arc<dyn RunAttemptExecutor>>,
+    materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
+    acp_credentials: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
+    resources: Option<WorkerResourcePlane>,
+    admin_listen: Option<String>,
 }
 
 #[derive(Clone)]
@@ -120,16 +294,26 @@ pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
     let resources = shared_resource_wiring(resource_credentials).await?;
     let materializer =
         CredentialInferenceMaterializer::new(stores.credentials.clone(), stores.secrets.clone());
-    run_configured(
-        WorkerUpstream::new(upstream),
-        Some(Arc::new(materializer)),
-        Some(awaken_runtime_host::PinnedCredentialMaterializer::new(
+    let materializer: Arc<dyn InferenceExecutorMaterializer> = Arc::new(materializer);
+    let manifest = worker_manifest(
+        Some(materializer.as_ref()),
+        resources.is_some(),
+        resources
+            .as_ref()
+            .is_some_and(WorkerResourcePlane::supports_repository_credentials),
+    );
+    WorkerNodeBuilder::new(WorkerUpstream::new(upstream))
+        .with_manifest(manifest)
+        .with_inference_materializer(materializer)
+        .with_acp_credentials(awaken_runtime_host::PinnedCredentialMaterializer::new(
             stores.credentials,
             stores.secrets,
-        )),
-        resources,
-    )
-    .await
+        ))
+        .with_optional_resource_plane(resources)
+        .with_admin_listen(configured_admin_listen())
+        .build()?
+        .run_until_shutdown()
+        .await
 }
 
 /// Run a genuinely secretless worker with a deployment-provided materializer.
@@ -154,175 +338,222 @@ pub async fn run_with_upstream_and_inference_materializer(
     materializer: Arc<dyn InferenceExecutorMaterializer>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let resources = shared_resource_wiring(None).await?;
-    run_configured(upstream, Some(materializer), None, resources).await
+    let manifest = worker_manifest(Some(materializer.as_ref()), resources.is_some(), false);
+    WorkerNodeBuilder::new(upstream)
+        .with_manifest(manifest)
+        .with_inference_materializer(materializer)
+        .with_optional_resource_plane(resources)
+        .with_admin_listen(configured_admin_listen())
+        .build()?
+        .run_until_shutdown()
+        .await
 }
 
-async fn run_configured(
-    upstream: WorkerUpstream,
-    materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
-    acp_credentials: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
-    resources: Option<WorkerResourceWiring>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let upstream_url = upstream.base_url().to_string();
-    let control = WorkerControlClient::new(upstream.clone());
-    let resource_support = resources.is_some();
-    let repository_credential_support = resources
-        .as_ref()
-        .is_some_and(WorkerResourceWiring::supports_repository_credentials);
-    let registration = control
-        .register(
-            new_incarnation_id()?,
-            worker_manifest(
-                materializer.as_deref(),
-                resource_support,
-                repository_credential_support,
-            ),
-        )
-        .await
-        .map_err(std::io::Error::other)?;
-    let upstream = upstream.with_worker_identity(registration.snapshot.identity.clone());
-    // Route the dispatch pool's claim/settle over HTTP to the cell server.
-    awaken_runtime_host::init_shared_dispatch_store(
-        awaken_runtime_host::worker_dispatch_store_with_upstream(
-            &upstream,
-            registration.snapshot.identity.clone(),
-        ),
-    );
-
-    let resource_validator = resources
-        .as_ref()
-        .map(|resources| resources.validator.clone());
-    let resource_credentials = resources
-        .as_ref()
-        .and_then(|resources| resources.credentials.clone());
-    let host = match resources {
-        Some(resources) => SharedHost::new_with_resource_plane(
-            Arc::new(NoModelConfiguredExecutor),
-            "worker",
-            resources.ports,
-        ),
-        None => SharedHost::new(Arc::new(NoModelConfiguredExecutor), "worker"),
-    };
-    let mut host = host
-        .with_worker_upstream(upstream)
-        .with_remote_attempt_executor(awaken_server::a2a_attempt_executor());
-    if let Some(materializer) = &materializer {
-        host = host.with_inference_materializer(materializer.clone());
-    }
-    awaken_server::install_platform_memory_data_plane(&host);
-
-    // Serve only the ACP CLI capability this worker advertises. The run's snapshot
-    // selects the matching backend and supplies its published provider access.
-    host = host
-        .with_acp_from_deployment(
-            awaken_server::relay_hand_executor_factory(),
-            acp_credentials,
-        )
-        .await;
-
-    let host = Arc::new(host);
-    if let Some(validator) = resource_validator {
-        let managed =
-            awaken_server::ManagedHost::new(host.clone()).with_resource_validator(validator);
-        if let Some(credentials) = resource_credentials {
-            let _managed = managed.with_credentials(credentials.credentials, credentials.secrets);
-        } else {
-            let _managed = managed;
-        }
-    }
-    let lifecycle = Arc::new(WorkerLifecycle {
-        host: host.clone(),
-        control: control.clone(),
-        identity: registration.snapshot.identity,
-        materializer,
-    });
-    // Publish Ready before starting the pull loop. Starting the pool while the
-    // directory still says Starting creates a tight claim/reject race; publishing
-    // first is safe because any assignment remains queued until this process starts
-    // polling immediately below.
-    let initial = control
-        .heartbeat(
-            &lifecycle.identity,
-            WorkerHeartbeat {
-                sequence: 1,
-                ready: true,
-                in_flight: 0,
-                available_credentials: credential_observations(lifecycle.materializer.as_deref()),
-            },
-        )
-        .await
-        .map_err(std::io::Error::other)?;
-    if initial != RegistryMutation::Applied {
-        return Err(std::io::Error::other(format!(
-            "initial worker heartbeat rejected: {initial:?}"
-        ))
-        .into());
-    }
-    host.ensure_dispatch_pool();
-    let heartbeat = spawn_heartbeat(lifecycle.clone(), 2);
-    eprintln!("awaken-worker draining from {upstream_url}");
-
-    // The cloud-native admin surface on a SEPARATE port from any data path: an
-    // orchestrator gates routing on `/readyz` and calls `POST /admin/drain` in a
-    // `preStop` hook before SIGTERM. Best-effort — a bind failure is logged but does
-    // not stop the worker draining runs (the core job).
-    let admin_addr = std::env::var("AWAKEN_WORKER_ADMIN_LISTEN")
+fn configured_admin_listen() -> String {
+    std::env::var("AWAKEN_WORKER_ADMIN_LISTEN")
         .ok()
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| "0.0.0.0:9090".to_string());
-    match tokio::net::TcpListener::bind(&admin_addr).await {
-        Ok(listener) => {
-            let router = admin::worker_admin_router_with_lifecycle(lifecycle.clone());
-            eprintln!(
-                "awaken-worker admin surface on {admin_addr} (/readyz /metrics /admin/drain)"
-            );
-            tokio::spawn(async move {
-                if let Err(err) = axum::serve(listener, router).await {
-                    eprintln!("awaken-worker admin server exited: {err}");
-                }
-            });
-        }
-        Err(err) => eprintln!("awaken-worker admin surface disabled (bind {admin_addr}: {err})"),
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "0.0.0.0:9090".to_string())
+}
+
+impl WorkerNodeBuilder {
+    fn with_optional_resource_plane(mut self, resources: Option<WorkerResourcePlane>) -> Self {
+        self.resources = resources;
+        self
+    }
+}
+
+impl WorkerNode {
+    /// Register, enter Ready, run until SIGINT/SIGTERM, then drain, quiesce, and
+    /// deregister. Losing registry authority closes the local claim gate.
+    pub async fn run_until_shutdown(self) -> Result<(), Box<dyn std::error::Error>> {
+        self.run_until(async {
+            #[cfg(unix)]
+            {
+                use tokio::signal::unix::{SignalKind, signal};
+                let mut term = signal(SignalKind::terminate())?;
+                let mode = tokio::select! {
+                    result = tokio::signal::ctrl_c() => {
+                        result?;
+                        WorkerShutdown::Prompt
+                    },
+                    _ = term.recv() => WorkerShutdown::Graceful,
+                };
+                Ok(mode)
+            }
+            #[cfg(not(unix))]
+            {
+                tokio::signal::ctrl_c().await?;
+                Ok(WorkerShutdown::Prompt)
+            }
+        })
+        .await
     }
 
-    // Block until asked to stop. SIGINT is a developer's foreground stop (exit
-    // promptly after draining); SIGTERM is what an orchestrator sends first before
-    // SIGKILL (drain, then let in-flight runs finish within the grace window).
-    #[cfg(unix)]
-    let graceful = {
-        use tokio::signal::unix::{SignalKind, signal};
-        let mut term = signal(SignalKind::terminate())?;
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => false,
-            _ = term.recv() => true,
-        }
-    };
-    #[cfg(not(unix))]
-    let graceful = {
-        let _ = tokio::signal::ctrl_c().await;
-        false
-    };
-
-    // Stop claiming immediately so no NEW run is taken; the in-flight ones finish
-    // within the grace window before the process exits.
-    let grace = drain_grace(graceful);
-    let deadline_ms = wall_clock_ms().saturating_add(grace.as_millis() as u64);
-    if let Err(error) = lifecycle.begin_drain(Some(deadline_ms)).await {
-        eprintln!("awaken-worker drain registration failed closed: {error}");
-    }
-    if !grace.is_zero() {
-        eprintln!(
-            "awaken-worker draining: finishing in-flight runs (≤{}s)",
-            grace.as_secs()
+    /// Run the same lifecycle with an injected shutdown source. This keeps
+    /// embedding tests and supervisors independent of process signals.
+    pub async fn run_until<F>(self, shutdown: F) -> Result<(), Box<dyn std::error::Error>>
+    where
+        F: std::future::Future<Output = Result<WorkerShutdown, Box<dyn std::error::Error>>>,
+    {
+        let upstream_url = self.upstream.base_url().to_string();
+        let upstream = self.upstream;
+        let control = WorkerControlClient::new(upstream.clone());
+        let registration = control
+            .register(new_incarnation_id()?, self.manifest)
+            .await
+            .map_err(std::io::Error::other)?;
+        let upstream = upstream.with_worker_identity(registration.snapshot.identity.clone());
+        // Route the dispatch pool's claim/settle over HTTP to the cell server.
+        awaken_runtime_host::init_shared_dispatch_store(
+            awaken_runtime_host::worker_dispatch_store_with_upstream(
+                &upstream,
+                registration.snapshot.identity.clone(),
+            ),
         );
-        wait_for_in_flight(&host, grace).await;
+
+        let resource_validator = self
+            .resources
+            .as_ref()
+            .map(|resources| resources.validator.clone());
+        let resource_credentials = self
+            .resources
+            .as_ref()
+            .and_then(|resources| resources.credentials.clone());
+        let host = match self.resources {
+            Some(resources) => SharedHost::new_with_resource_plane(
+                Arc::new(NoModelConfiguredExecutor),
+                "worker",
+                resources.ports,
+            ),
+            None => SharedHost::new(Arc::new(NoModelConfiguredExecutor), "worker"),
+        };
+        let mut host = host
+            .with_worker_upstream(upstream)
+            .with_remote_attempt_executor(awaken_server::a2a_attempt_executor());
+        if let Some(materializer) = &self.materializer {
+            host = host.with_inference_materializer(materializer.clone());
+        }
+        if let Some(executor) = self.attempt_executor {
+            host = host.with_attempt_executor(executor);
+        }
+        awaken_server::install_platform_memory_data_plane(&host);
+
+        // Serve only the ACP CLI capability this worker advertises. The run's snapshot
+        // selects the matching backend and supplies its published provider access.
+        host = host
+            .with_acp_from_deployment(
+                awaken_server::relay_hand_executor_factory(),
+                self.acp_credentials,
+            )
+            .await;
+
+        let host = Arc::new(host);
+        if let Some(validator) = resource_validator {
+            let managed =
+                awaken_server::ManagedHost::new(host.clone()).with_resource_validator(validator);
+            if let Some(credentials) = resource_credentials {
+                let _managed =
+                    managed.with_credentials(credentials.credentials, credentials.secrets);
+            } else {
+                let _managed = managed;
+            }
+        }
+        let lifecycle = Arc::new(WorkerLifecycle {
+            host: host.clone(),
+            control: control.clone(),
+            identity: registration.snapshot.identity,
+            materializer: self.materializer,
+        });
+        // Publish Ready before starting the pull loop. Starting the pool while the
+        // directory still says Starting creates a tight claim/reject race; publishing
+        // first is safe because any assignment remains queued until this process starts
+        // polling immediately below.
+        let initial = control
+            .heartbeat(
+                &lifecycle.identity,
+                WorkerHeartbeat {
+                    sequence: 1,
+                    ready: true,
+                    in_flight: 0,
+                    available_credentials: credential_observations(
+                        lifecycle.materializer.as_deref(),
+                    ),
+                },
+            )
+            .await;
+        let initial = match initial {
+            Ok(initial) => initial,
+            Err(error) => {
+                let _ = control.deregister(&lifecycle.identity).await;
+                return Err(std::io::Error::other(error).into());
+            }
+        };
+        if initial != RegistryMutation::Applied {
+            let _ = control.deregister(&lifecycle.identity).await;
+            return Err(std::io::Error::other(format!(
+                "initial worker heartbeat rejected: {initial:?}"
+            ))
+            .into());
+        }
+        host.ensure_dispatch_pool();
+        let heartbeat = spawn_heartbeat(lifecycle.clone(), 2);
+        eprintln!("awaken-worker draining from {upstream_url}");
+
+        // The cloud-native admin surface on a SEPARATE port from any data path: an
+        // orchestrator gates routing on `/readyz` and calls `POST /admin/drain` in a
+        // `preStop` hook before SIGTERM. Best-effort — a bind failure is logged but does
+        // not stop the worker draining runs (the core job).
+        let mut admin_task = None;
+        if let Some(admin_addr) = self.admin_listen {
+            match tokio::net::TcpListener::bind(&admin_addr).await {
+                Ok(listener) => {
+                    let router = admin::worker_admin_router_with_lifecycle(lifecycle.clone());
+                    eprintln!(
+                        "awaken-worker admin surface on {admin_addr} (/readyz /metrics /admin/drain)"
+                    );
+                    admin_task = Some(tokio::spawn(async move {
+                        if let Err(err) = axum::serve(listener, router).await {
+                            eprintln!("awaken-worker admin server exited: {err}");
+                        }
+                    }));
+                }
+                Err(err) => {
+                    eprintln!("awaken-worker admin surface disabled (bind {admin_addr}: {err})")
+                }
+            }
+        }
+
+        let shutdown = shutdown.await;
+        let graceful = shutdown
+            .as_ref()
+            .is_ok_and(|mode| *mode == WorkerShutdown::Graceful);
+
+        // Stop claiming immediately so no NEW run is taken; the in-flight ones finish
+        // within the grace window before the process exits.
+        let grace = drain_grace(graceful);
+        let deadline_ms = wall_clock_ms().saturating_add(grace.as_millis() as u64);
+        if let Err(error) = lifecycle.begin_drain(Some(deadline_ms)).await {
+            eprintln!("awaken-worker drain registration failed closed: {error}");
+        }
+        if !grace.is_zero() {
+            eprintln!(
+                "awaken-worker draining: finishing in-flight runs (≤{}s)",
+                grace.as_secs()
+            );
+            wait_for_in_flight(&host, grace).await;
+        }
+        heartbeat.abort();
+        if let Some(admin_task) = admin_task {
+            admin_task.abort();
+        }
+        if host.pool_in_flight() == 0 {
+            let _ = control.mark_quiesced(&lifecycle.identity).await;
+        }
+        let _ = control.deregister(&lifecycle.identity).await;
+        shutdown?;
+        Ok(())
     }
-    heartbeat.abort();
-    if host.pool_in_flight() == 0 {
-        let _ = control.mark_quiesced(&lifecycle.identity).await;
-    }
-    let _ = control.deregister(&lifecycle.identity).await;
-    Ok(())
 }
 
 fn wall_clock_ms() -> u64 {

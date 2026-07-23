@@ -173,6 +173,7 @@ impl SharedHost {
             ),
             acp: None,
             remote_attempt_executor: None,
+            attempt_executor_override: None,
             provider: LocalProvider::new(sandbox_root.clone()),
             session_provider: crate::session_environment::SessionEnvironmentProvider::workdir(
                 sandbox_root.clone(),
@@ -231,6 +232,19 @@ impl SharedHost {
         executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
     ) -> Self {
         self.remote_attempt_executor = Some(executor);
+        self
+    }
+
+    /// Replace the complete per-Session attempt boundary.
+    ///
+    /// This is the embedding seam for a Worker-supplied executor or decorator.
+    /// When absent, the host constructs its built-in Native/ACP/A2A router.
+    #[must_use]
+    pub fn with_attempt_executor(
+        mut self,
+        executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
+    ) -> Self {
+        self.attempt_executor_override = Some(executor);
         self
     }
 
