@@ -109,6 +109,7 @@ pub use crate::sandbox_source::{
     AcpSandboxBindings, BoundLocalChannelSource, LaunchSource, SandboxChannelSource, ThreadEgress,
     ThreadResources, ThreadSandbox, build_acp_channel_source, resolve_sandbox_tier,
 };
+pub use crate::skills::SkillForkPlacement;
 pub use crate::skills_api::skills_router;
 // The config data plane (ADR-0036/slice A): the service + its router + the
 // advertised-tools helper the composition root builds a config host from.
@@ -120,7 +121,8 @@ pub use crate::binding_resolver::{
 };
 pub use crate::capabilities::capabilities_router;
 pub use crate::config::{
-    advertised_tools, authorable_config_sections, block_text, platform_plugin_capabilities,
+    advertised_tools, authorable_config_sections, authorable_tools, block_text,
+    platform_plugin_capabilities,
 };
 pub use crate::config_plane::{
     ConfigPlane, ConfigService, ConfigServiceAgentSource, PublishError, config_router,
@@ -1373,7 +1375,7 @@ impl ManagedHost {
                 })
                 .collect(),
             skills: self.host.skills.ids_in(workspace),
-            delegates: self.host.delegate_ids(),
+            delegates: self.host.delegate_ids_in(workspace),
         }
     }
 }

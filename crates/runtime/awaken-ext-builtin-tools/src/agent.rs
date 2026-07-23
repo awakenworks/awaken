@@ -1,7 +1,7 @@
 //! Ordinary tool-call vocabulary for invoking an Agent-backed capability.
 //!
 //! Runtime does not define a Subagent service. An integration may register any
-//! [`RawTool`] that accepts [`AgentRunArgs`]; callers invoke it exactly like every
+//! [`RawTool`] that accepts [`AuxiliaryAgentInput`]; callers invoke it exactly like every
 //! other tool. The implementation may use a local/remote [`RunService`], but that
 //! placement and lifecycle wiring stays outside the Runtime contract.
 
@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 /// Conventional payload understood by an Agent-backed ordinary tool.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AgentRunArgs {
+pub struct AuxiliaryAgentInput {
     pub agent_id: String,
     pub seed: Vec<Message>,
 }
@@ -20,10 +20,10 @@ pub struct AgentRunArgs {
 /// Invoke an Agent-backed tool through the generic tool capability. Cancellation
 /// races the ordinary tool future; dropping that future is the same cooperative
 /// cancellation mechanism used by other asynchronous tools.
-pub async fn invoke_agent_tool(
+pub async fn invoke_auxiliary_agent(
     tool: &dyn RawTool,
     call_id: impl Into<String>,
-    args: AgentRunArgs,
+    args: AuxiliaryAgentInput,
     cancellation: Option<&CancellationToken>,
 ) -> Result<ToolOutput, ToolError> {
     let call = ToolCall {
@@ -64,10 +64,10 @@ mod tests {
         let tool = RecordingAgentTool {
             call: Mutex::new(None),
         };
-        let output = invoke_agent_tool(
+        let output = invoke_auxiliary_agent(
             &tool,
             "call-1",
-            AgentRunArgs {
+            AuxiliaryAgentInput {
                 agent_id: "researcher".into(),
                 seed: Vec::new(),
             },
@@ -81,8 +81,8 @@ mod tests {
         assert_eq!(call.tool_id, "agent_capability");
         assert_eq!(call.call_id, "call-1");
         assert_eq!(
-            serde_json::from_value::<AgentRunArgs>(call.arguments).unwrap(),
-            AgentRunArgs {
+            serde_json::from_value::<AuxiliaryAgentInput>(call.arguments).unwrap(),
+            AuxiliaryAgentInput {
                 agent_id: "researcher".into(),
                 seed: Vec::new(),
             }
@@ -106,10 +106,10 @@ mod tests {
     async fn cancellation_uses_the_generic_tool_invocation_boundary() {
         let cancellation = CancellationToken::new();
         cancellation.cancel();
-        let error = invoke_agent_tool(
+        let error = invoke_auxiliary_agent(
             &PendingAgentTool,
             "call-2",
-            AgentRunArgs {
+            AuxiliaryAgentInput {
                 agent_id: "researcher".into(),
                 seed: Vec::new(),
             },

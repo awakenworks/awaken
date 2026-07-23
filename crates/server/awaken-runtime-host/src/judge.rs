@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_ext_builtin_tools::{AGENT_RUN, AgentRunArgs};
+use awaken_ext_builtin_tools::{AUXILIARY_AGENT, AuxiliaryAgentInput};
 use awaken_ext_goal::grader::AgentGrader;
 use awaken_ext_goal::outcome::{Grade, Grader, GraderError, GradingInput};
 use awaken_ext_goal::state::grader_thread_id;
@@ -49,7 +49,7 @@ impl Grader for HostAgentGrader<'_> {
 }
 
 /// Ordinary Agent-backed tool used by the compactor and memory selector.
-/// A developer can provide another `RawTool` with the same `AgentRunArgs` shape;
+/// A developer can provide another `RawTool` with the same `AuxiliaryAgentInput` shape;
 /// no subagent-specific Runtime contract exists.
 pub(crate) struct AuxAgentTool {
     pub(crate) llm: Arc<dyn LlmExecutor>,
@@ -67,11 +67,11 @@ pub(crate) struct AuxAgentTool {
 #[async_trait::async_trait]
 impl RawTool for AuxAgentTool {
     fn id(&self) -> &str {
-        AGENT_RUN
+        AUXILIARY_AGENT
     }
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
-        let request: AgentRunArgs = serde_json::from_value(call.arguments)
+        let request: AuxiliaryAgentInput = serde_json::from_value(call.arguments)
             .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
         let n = self.seq.fetch_add(1, Ordering::SeqCst);
         let name = format!("{}-agent-run-{n}", request.agent_id);

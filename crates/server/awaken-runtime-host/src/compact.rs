@@ -16,7 +16,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use awaken_ext_builtin_tools::{AgentRunArgs, invoke_agent_tool};
+use awaken_ext_builtin_tools::{AuxiliaryAgentInput, invoke_auxiliary_agent};
 use awaken_ext_compact::{COMPACT_AGENT_ID, CompactArtifact, CompactBackend, CompactRequest};
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::tool::RawTool;
@@ -85,10 +85,10 @@ impl HostCompactBackend {
         agent_tool: Arc<dyn RawTool>,
         request: CompactRequest,
     ) -> Option<CompactArtifact> {
-        let reply = invoke_agent_tool(
+        let reply = invoke_auxiliary_agent(
             agent_tool.as_ref(),
             &request.key,
-            AgentRunArgs {
+            AuxiliaryAgentInput {
                 agent_id: COMPACT_AGENT_ID.to_string(),
                 seed: request.seed,
             },
@@ -231,10 +231,10 @@ mod tests {
         // 5 user messages.
         let seed: Vec<Message> = (0..5).map(user).collect();
         for seed in [seed, vec![user(99)]] {
-            let reply = invoke_agent_tool(
+            let reply = invoke_auxiliary_agent(
                 runner.as_ref(),
                 "compact-test",
-                AgentRunArgs {
+                AuxiliaryAgentInput {
                     agent_id: COMPACT_AGENT_ID.to_string(),
                     seed,
                 },

@@ -215,6 +215,15 @@ pub fn advertised_tools(
     tools
 }
 
+/// Complete builtin catalog available to Agent publication. Unlike one
+/// Session's advertised face, this includes delegation even before targets are
+/// known; the config compiler selects or hides it from typed `MultiagentConfig`.
+pub fn authorable_tools() -> Vec<ToolDescriptor> {
+    let mut tools = hand_tool_descriptors();
+    tools.push(delegation_descriptor());
+    tools
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn server_config(
     agent_id: &str,
@@ -235,6 +244,14 @@ pub(crate) fn server_config(
         .max_steps(20)
         .plugins(plugin_ids.iter().cloned())
         .plugin_config(plugin_config.iter().map(|(k, v)| (k.clone(), v.clone())))
+        .agent_bindings(awaken_runtime_contract::agent_bindings::AgentBindings {
+            delegate_ids: delegates
+                .iter()
+                .cloned()
+                .map(awaken_runtime_contract::snapshot::AgentId)
+                .collect(),
+            ..Default::default()
+        })
         .context_policy(context_policy)
         .build()
 }

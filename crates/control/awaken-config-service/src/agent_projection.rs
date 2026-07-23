@@ -34,10 +34,7 @@ impl ConfigServiceAgentSource {
     ) -> Option<awaken_session_contract::AgentConfigView> {
         let snapshot = self.0.installed_in(workspace_id, agent_id)?;
         let spec = &snapshot.resolved_spec;
-        let bindings = awaken_runtime_contract::agent_bindings::AgentBindings::from_config(
-            &spec.plugin_config,
-        )
-        .unwrap_or_default();
+        let bindings = spec.plugin_config.agent.clone();
         let resources = self
             .0
             .resources
@@ -71,7 +68,7 @@ impl ConfigServiceAgentSource {
                 })
                 .collect(),
             skill_ids: bindings.skill_ids,
-            delegate_ids: bindings.delegate_ids,
+            delegate_ids: bindings.delegate_ids.into_iter().map(|id| id.0).collect(),
             resources,
         })
     }

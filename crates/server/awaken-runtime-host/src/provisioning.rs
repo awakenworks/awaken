@@ -549,9 +549,27 @@ impl SharedHost {
             .collect()
     }
 
-    /// The delegate agent ids (advertised as the agent's `multiagent` roster).
-    pub fn delegate_ids(&self) -> Vec<String> {
-        self.delegates.ids()
+    /// The default Agent's published delegation targets in one Workspace.
+    pub fn delegate_ids_in(&self, workspace: &str) -> Vec<String> {
+        self.agent_publications
+            .as_ref()
+            .and_then(|source| {
+                source.current(
+                    workspace,
+                    &awaken_runtime_contract::snapshot::AgentId("assistant".into()),
+                )
+            })
+            .map(|snapshot| {
+                snapshot
+                    .resolved_spec
+                    .plugin_config
+                    .agent
+                    .delegate_ids
+                    .into_iter()
+                    .map(|id| id.0)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 

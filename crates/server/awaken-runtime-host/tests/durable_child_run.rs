@@ -2,21 +2,39 @@
 //! ordinary `agent_run` tool, the child receives its own durable dispatch claim,
 //! and the result returns through the parent Run.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::RunState;
 use awaken_run_ingress::{AnyDispatchStore, Dispatch, MemoryDispatchStore};
+use awaken_runtime_contract::StaticPublishedAgentSnapshots;
+use awaken_runtime_contract::agent_bindings::AgentBindings;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult, ToolCall,
 };
+use awaken_runtime_contract::resolved::{ModelBinding, ToolKind};
+use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshot};
 use awaken_runtime_host::{HostResume, SharedHost, init_shared_dispatch_store};
 
 struct ParentChildModel {
     parent_calls: AtomicUsize,
     child_calls: AtomicUsize,
+}
+
+fn test_snapshot(agent_id: &str, delegates: Vec<AgentId>) -> ExecutableAgentSnapshot {
+    let mut tools = awaken_runtime_host::authorable_tools();
+    if delegates.is_empty() {
+        tools.retain(|tool| tool.kind != ToolKind::AgentDelegation);
+    }
+    ExecutableAgentSnapshot::builder(agent_id)
+        .model(ModelBinding::new("default", "stub", "default"))
+        .tools(tools)
+        .agent_bindings(AgentBindings {
+            delegate_ids: delegates,
+            ..Default::default()
+        })
+        .build()
 }
 
 #[async_trait::async_trait]
@@ -79,7 +97,13 @@ async fn child_run_uses_the_durable_scheduler_and_returns_to_its_parent() {
             "stub",
         )
         .with_store_dir(storage.path())
-        .with_delegates(HashSet::from(["researcher".to_string()])),
+        .with_agent_publications(Arc::new(
+            StaticPublishedAgentSnapshots::try_new([
+                test_snapshot("assistant", vec![AgentId("researcher".into())]),
+                test_snapshot("researcher", Vec::new()),
+            ])
+            .expect("valid test Agent publications"),
+        )),
     );
     host.ensure_dispatch_pool();
 

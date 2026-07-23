@@ -13,6 +13,10 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_protocol_a2a::{HttpTransport, Response, Transport};
 use awaken_run_executor_a2a::A2aRemoteAgent;
+use awaken_runtime_contract::StaticPublishedAgentSnapshots;
+use awaken_runtime_contract::agent_bindings::AgentBindings;
+use awaken_runtime_contract::resolved::ModelBinding;
+use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshot};
 use awaken_scenario_host::{DelegatingModel, EchoModel, build_router};
 use awaken_server::SharedHost;
 use axum::Router;
@@ -73,6 +77,21 @@ fn text_of(message: &Message) -> String {
         .collect()
 }
 
+fn delegating_host() -> SharedHost {
+    let snapshot = ExecutableAgentSnapshot::builder("assistant")
+        .model(ModelBinding::new("default", "parent", "default"))
+        .tools(awaken_runtime_host::authorable_tools())
+        .agent_bindings(AgentBindings {
+            delegate_ids: vec![AgentId("researcher".into())],
+            ..Default::default()
+        })
+        .build();
+    let publications =
+        StaticPublishedAgentSnapshots::try_new([snapshot]).expect("valid parent publication");
+    SharedHost::new(Arc::new(DelegatingModel), "parent")
+        .with_agent_publications(Arc::new(publications))
+}
+
 #[tokio::test]
 async fn a_delegate_call_is_fulfilled_over_the_a2a_wire() {
     // The remote agent: an awaken A2A server backed by an echo model.
@@ -82,8 +101,8 @@ async fn a_delegate_call_is_fulfilled_over_the_a2a_wire() {
     // The parent agent delegates to "researcher", which is a REMOTE A2A agent.
     // `DelegatingModel` calls `agent_run{agent_id: "researcher", input: "do the
     // research"}`, then replies "delegate said: <result>".
-    let host = SharedHost::new(Arc::new(DelegatingModel), "parent")
-        .with_remote_agent("researcher", Arc::new(A2aRemoteAgent::new(transport)));
+    let host =
+        delegating_host().with_remote_agent("researcher", Arc::new(A2aRemoteAgent::new(transport)));
 
     host.run(None, "t", vec![user("u1", "research the answer")])
         .await
@@ -119,7 +138,7 @@ async fn a_remote_transport_failure_preserves_the_open_child_run() {
         }
     }
 
-    let host = SharedHost::new(Arc::new(DelegatingModel), "parent").with_remote_agent(
+    let host = delegating_host().with_remote_agent(
         "researcher",
         Arc::new(A2aRemoteAgent::new(Arc::new(BrokenTransport))),
     );
@@ -158,8 +177,8 @@ async fn a_delegate_call_reaches_a_remote_over_real_http() {
     });
 
     let transport = Arc::new(HttpTransport::new(format!("http://{addr}")));
-    let host = SharedHost::new(Arc::new(DelegatingModel), "parent")
-        .with_remote_agent("researcher", Arc::new(A2aRemoteAgent::new(transport)));
+    let host =
+        delegating_host().with_remote_agent("researcher", Arc::new(A2aRemoteAgent::new(transport)));
 
     host.run(None, "t", vec![user("u1", "research the answer")])
         .await
@@ -215,8 +234,8 @@ async fn a_working_task_is_polled_to_completion() {
     let transport = Arc::new(PollingTransport {
         gets: AtomicUsize::new(0),
     });
-    let host = SharedHost::new(Arc::new(DelegatingModel), "parent")
-        .with_remote_agent("researcher", Arc::new(A2aRemoteAgent::new(transport)));
+    let host =
+        delegating_host().with_remote_agent("researcher", Arc::new(A2aRemoteAgent::new(transport)));
 
     host.run(None, "t", vec![user("u1", "research the answer")])
         .await
@@ -277,8 +296,7 @@ async fn a_parent_interrupt_cancels_the_remote_task() {
         cancelled: cancelled.clone(),
     });
     let host = Arc::new(
-        SharedHost::new(Arc::new(DelegatingModel), "parent")
-            .with_remote_agent("researcher", Arc::new(A2aRemoteAgent::new(transport))),
+        delegating_host().with_remote_agent("researcher", Arc::new(A2aRemoteAgent::new(transport))),
     );
 
     let driver = host.clone();
@@ -333,7 +351,7 @@ async fn a_remote_input_required_awaits_the_parent_then_resumes() {
         }
     }
 
-    let host = SharedHost::new(Arc::new(DelegatingModel), "parent").with_remote_agent(
+    let host = delegating_host().with_remote_agent(
         "researcher",
         Arc::new(A2aRemoteAgent::new(Arc::new(TwoStepTransport {
             sends: AtomicUsize::new(0),
@@ -419,7 +437,7 @@ async fn remote_artifacts_are_included_in_the_reply() {
         }
     }
 
-    let host = SharedHost::new(Arc::new(DelegatingModel), "parent").with_remote_agent(
+    let host = delegating_host().with_remote_agent(
         "researcher",
         Arc::new(A2aRemoteAgent::new(Arc::new(ArtifactTransport))),
     );

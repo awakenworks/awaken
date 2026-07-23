@@ -22,13 +22,16 @@ pub use task::{
 };
 pub use web::{WebFetchArgs, WebFetchTool, WebSearchArgs, WebSearchTool, web_hand_tools};
 
-use awaken_runtime_contract::resolved::ToolDescriptor;
+use awaken_runtime_contract::resolved::{ToolDescriptor, ToolKind};
 use awaken_runtime_contract::tool::ToolRecoveryPolicy;
 use serde::{Deserialize, Serialize};
 
 /// The delegation tool id. The model-visible descriptor and the runtime resolver
 /// that backs it (`RunDelegationService::tool_id`) must agree on this one value.
 pub const AGENT_RUN: &str = "agent_run";
+/// Internal ordinary-tool identity for housekeeping Agent capabilities. It is
+/// deliberately distinct from the model-visible delegation contract.
+pub const AUXILIARY_AGENT: &str = "auxiliary_agent";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Toolset {
@@ -103,6 +106,7 @@ pub fn builtin_tools() -> Vec<BuiltinTool> {
                 "Delegate a Run to another Agent",
                 agent_run_args(),
             )
+            .with_kind(ToolKind::AgentDelegation)
             .with_recovery(ToolRecoveryPolicy::durable_request()),
         },
     ]
@@ -169,7 +173,7 @@ fn agent_run_args() -> serde_json::Value {
     })
 }
 
-pub use agent::{AgentRunArgs, invoke_agent_tool};
+pub use agent::{AuxiliaryAgentInput, invoke_auxiliary_agent};
 
 #[cfg(test)]
 mod tests {

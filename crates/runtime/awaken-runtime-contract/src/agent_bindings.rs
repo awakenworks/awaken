@@ -1,16 +1,15 @@
 //! Published Agent bindings consumed by execution adapters.
 //!
-//! Agent authoring owns the flexible external wire unions. Compilation
-//! normalizes the executable subset into this small contract and stores it in the
-//! resolved spec's config map. Runtime code consumes only this normalized form, so it
-//! never needs to understand draft JSON or reach back into the control plane.
+//! Agent authoring owns the external wire unions. Compilation normalizes the
+//! executable subset into this typed contract. The bindings are a first-class
+//! part of the immutable resolved configuration; they are never encoded into a
+//! free-form plugin JSON section.
 
 use std::collections::BTreeMap;
+use std::ops::{Deref, DerefMut};
 
+use crate::snapshot::AgentId;
 use serde::{Deserialize, Serialize};
-
-/// Reserved resolved-config section carrying executable Agent bindings.
-pub const AGENT_BINDINGS_CONFIG_KEY: &str = "awaken.agent_bindings";
 
 /// One direct HTTP MCP server inherited by Sessions of the published Agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,40 +33,53 @@ pub struct AgentBindings {
     pub skill_ids: Vec<String>,
     /// Published Agent ids this Agent may invoke through `agent_run`.
     #[serde(default)]
-    pub delegate_ids: Vec<String>,
+    pub delegate_ids: Vec<AgentId>,
 }
 
-impl AgentBindings {
-    /// Decode bindings from a published resolved config. `None` distinguishes an
-    /// older publication (which keeps the legacy global-skill behavior) from a new
-    /// publication that intentionally selected no skills.
+/// Strongly typed resolved configuration carried by an executable snapshot.
+///
+/// Agent integration bindings have a fixed schema and therefore live in their
+/// own field. Only extension-owned sections remain open JSON because each plugin
+/// owns a different schema and validates its own section before execution.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ResolvedConfiguration {
+    #[serde(default)]
+    pub agent: AgentBindings,
+    #[serde(default)]
+    plugins: BTreeMap<String, serde_json::Value>,
+}
+
+impl ResolvedConfiguration {
     #[must_use]
-    pub fn from_config(config: &BTreeMap<String, serde_json::Value>) -> Option<Self> {
-        serde_json::from_value(config.get(AGENT_BINDINGS_CONFIG_KEY)?.clone()).ok()
+    pub fn new(agent: AgentBindings, plugins: BTreeMap<String, serde_json::Value>) -> Self {
+        Self { agent, plugins }
     }
 
-    /// Stamp normalized bindings into the resolved config, overriding any authored
-    /// value under the reserved key.
-    pub fn insert_into(self, config: &mut BTreeMap<String, serde_json::Value>) {
-        config.insert(
-            AGENT_BINDINGS_CONFIG_KEY.to_string(),
-            serde_json::to_value(self).expect("AgentBindings always serializes"),
-        );
+    #[must_use]
+    pub fn plugins(&self) -> &BTreeMap<String, serde_json::Value> {
+        &self.plugins
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+impl From<BTreeMap<String, serde_json::Value>> for ResolvedConfiguration {
+    fn from(plugins: BTreeMap<String, serde_json::Value>) -> Self {
+        Self {
+            agent: AgentBindings::default(),
+            plugins,
+        }
+    }
+}
 
-    #[test]
-    fn empty_binding_is_distinct_from_legacy_absence() {
-        let mut config = BTreeMap::new();
-        assert_eq!(AgentBindings::from_config(&config), None);
-        AgentBindings::default().insert_into(&mut config);
-        assert_eq!(
-            AgentBindings::from_config(&config),
-            Some(AgentBindings::default())
-        );
+impl Deref for ResolvedConfiguration {
+    type Target = BTreeMap<String, serde_json::Value>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.plugins
+    }
+}
+
+impl DerefMut for ResolvedConfiguration {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.plugins
     }
 }

@@ -86,7 +86,7 @@ pub(super) fn stage_delegation_requests(
             .request(RequestDelegation {
                 id: origin.delegation_id,
                 parent_call_id: call.call_id.clone(),
-                target_agent_id,
+                target_agent_id: target_agent_id.0,
                 child_run_id,
             })
             .map_err(|error| Error::Execution(error.to_string()))?;
@@ -281,11 +281,16 @@ pub(super) async fn invoke_delegation(
         }
         Err(error) => return Some(Err(DelegationExecutionError::new(error.to_string()))),
     }
+    let target_agent_id = match executor.target_agent_id(&call.arguments) {
+        Ok(agent_id) => agent_id,
+        Err(error) => return Some(Err(error)),
+    };
     let request = DelegationRequest {
         child_run_id: origin.child_run_id(),
         parent_thread_id: parent.thread_id.clone(),
         context: parent.context.for_child_run(),
         origin,
+        target_agent_id,
         arguments: call.arguments.clone(),
     };
     Some(
@@ -362,12 +367,22 @@ pub(super) async fn resume_delegation(
                     usage: result.usage,
                 })
             } else {
-                let continuation = RunDelegations::load(&store)
+                let (continuation, target_agent_id) = RunDelegations::load(&store)
                     .map_err(|error| Error::Execution(error.to_string()))?
                     .and_then(|registry| {
-                        registry
-                            .get(&id)
-                            .and_then(|relationship| relationship.cancellation_reference.clone())
+                        registry.get(&id).and_then(|relationship| {
+                            relationship
+                                .cancellation_reference
+                                .clone()
+                                .map(|reference| {
+                                    (
+                                        reference,
+                                        awaken_runtime_contract::snapshot::AgentId(
+                                            relationship.target_agent_id.clone(),
+                                        ),
+                                    )
+                                })
+                        })
                     })
                     .ok_or_else(|| {
                         Error::Execution(
@@ -378,6 +393,7 @@ pub(super) async fn resume_delegation(
                 let step = executor
                     .resume(DelegationResume {
                         child_run_id: origin.child_run_id(),
+                        target_agent_id,
                         parent_thread_id: thread_id.clone(),
                         context: context.for_child_run(),
                         origin: origin.clone(),

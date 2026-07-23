@@ -609,16 +609,16 @@ async fn delegation_runs_a_subagent_and_returns_its_result() {
 }
 
 #[tokio::test]
-async fn delegation_fails_closed_on_unrostered_agent() {
-    // `ghost` is not in the roster; the sub-run must never start.
+async fn delegation_fails_closed_on_unpublished_target() {
+    // `ghost` is not in the Agent's published targets; the child Run must never start.
     let app = build_delegation_router();
     let id = create_session(&app).await;
     let list = send_message(&app, &id, "use the ghost agent").await;
 
     let text = all_agent_text(&list);
     assert!(
-        text.contains("roster"),
-        "roster rejection is surfaced: {text}"
+        text.contains("published targets"),
+        "published-target rejection is surfaced: {text}"
     );
     assert!(
         !text.contains("researched: 42"),

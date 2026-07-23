@@ -183,9 +183,8 @@ pub struct SessionInit {
     pub workspace_id: String,
     pub agent_id: String,
     pub mcp_servers: Vec<McpServerBinding>,
-    /// `Some` is the exact roster frozen by the published Agent. `None` denotes
-    /// an unmanaged compatibility Session and keeps the host-composed roster.
-    pub delegate_ids: Option<Vec<String>>,
+    /// Exact roster frozen by the published Agent.
+    pub delegate_ids: Vec<String>,
     /// The session's mounted resources (ADR-0038), parsed from the wire `resources[]`:
     /// files, memory stores, repos. The host realizes each into the run's sandbox and
     /// appends a prompt fragment to the system prompt (A3a). Empty = no mounts.
@@ -693,7 +692,7 @@ mod tests {
             workspace_id: "ws_test".into(),
             agent_id: "a".into(),
             mcp_servers: Vec::new(),
-            delegate_ids: None,
+            delegate_ids: Vec::new(),
             resources: crate::ResolvedSessionResources::default(),
             model: None,
             runtime: None,

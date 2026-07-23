@@ -406,19 +406,32 @@ pub fn admin_tool_descriptors() -> Vec<ToolDescriptor> {
                     "context_policy": { "type": "object" },
                     "mcp_servers": {
                         "type": "array",
-                        "items": { "type": "object" },
-                        "description": "MCP server sections to attach (each an object \
-                                        conforming to the MCP config shape). Reference \
-                                        only server ids listed in capabilities."
+                        "items": {
+                            "type": "object",
+                            "properties": { "id": { "type": "string" } },
+                            "required": ["id"]
+                        },
+                        "description": "MCP server ids listed in capabilities."
                     },
                     "skills": {
                         "type": "array",
-                        "items": { "type": "object" },
-                        "description": "Skill config sections to attach."
+                        "items": {
+                            "type": "object",
+                            "properties": { "id": { "type": "string" } },
+                            "required": ["id"]
+                        },
+                        "description": "Skill ids to attach."
                     },
                     "multiagent": {
                         "type": "object",
-                        "description": "The multiagent/orchestration section, if any."
+                        "properties": {
+                            "type": { "const": "coordinator" },
+                            "agents": {
+                                "type": "array",
+                                "items": { "type": "string" }
+                            }
+                        },
+                        "required": ["type", "agents"]
                     },
                     "metadata": {
                         "type": "object",
@@ -768,6 +781,28 @@ impl RawTool for GetPlatformCapabilities {
 /// The flattened full-config input for [`CREATE_DRAFT_TOOL`]. Every field but `id`
 /// and `instructions` is optional; `model` pins a model id (omit → `Auto`).
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct McpServerSelection {
+    id: String,
+}
+
+impl From<McpServerSelection> for AgentMcpServerBinding {
+    fn from(value: McpServerSelection) -> Self {
+        Self {
+            name: value.id,
+            url: String::new(),
+            credential: None,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SkillSelection {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct DraftArgs {
     id: String,
     instructions: String,
@@ -790,69 +825,15 @@ struct DraftArgs {
     #[serde(default)]
     context_policy: Option<ContextPolicy>,
     #[serde(default)]
-    mcp_servers: Vec<serde_json::Value>,
+    mcp_servers: Vec<McpServerSelection>,
     #[serde(default)]
-    skills: Vec<serde_json::Value>,
+    skills: Vec<SkillSelection>,
     #[serde(default)]
-    multiagent: Option<serde_json::Value>,
+    multiagent: Option<MultiagentConfig>,
     #[serde(default)]
     metadata: BTreeMap<String, String>,
     #[serde(default)]
     resources: Vec<InputSpec>,
-}
-
-fn typed_mcp_servers(values: Vec<serde_json::Value>) -> Result<Vec<AgentMcpServerBinding>, String> {
-    values
-        .into_iter()
-        .enumerate()
-        .map(|(index, value)| {
-            let object = value
-                .as_object()
-                .ok_or_else(|| format!("mcp_servers entry {index} must be an object"))?;
-            let name = object
-                .get("name")
-                .or_else(|| object.get("id"))
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let url = object
-                .get("url")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let credential = object
-                .get("credential")
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|error| {
-                    format!("mcp_servers entry {index} has an invalid credential: {error}")
-                })?;
-            Ok(AgentMcpServerBinding {
-                name,
-                url,
-                credential,
-            })
-        })
-        .collect()
-}
-
-fn typed_skill_ids(values: Vec<serde_json::Value>) -> Result<Vec<String>, String> {
-    values
-        .into_iter()
-        .enumerate()
-        .map(|(index, value)| {
-            value
-                .as_str()
-                .or_else(|| value.get("id").and_then(serde_json::Value::as_str))
-                .map(str::to_string)
-                .ok_or_else(|| format!("skills entry {index} must be an id or object with `id`"))
-        })
-        .collect()
-}
-
-fn typed_multiagent(value: serde_json::Value) -> Result<MultiagentConfig, String> {
-    serde_json::from_value(value).map_err(|error| format!("invalid multiagent roster: {error}"))
 }
 
 struct DraftAgent {
@@ -895,14 +876,8 @@ impl RawTool for DraftAgent {
             .unwrap_or(ModelSelection::Auto);
         let plugin_ids = plugin_ids_of(&args.plugin_config);
         let resources = args.resources;
-        let mcp_servers = match typed_mcp_servers(args.mcp_servers) {
-            Ok(value) => value,
-            Err(error) => return Ok(ToolOutput::error(call.call_id, error)),
-        };
-        let skill_ids = match typed_skill_ids(args.skills) {
-            Ok(value) => value,
-            Err(error) => return Ok(ToolOutput::error(call.call_id, error)),
-        };
+        let mcp_servers = args.mcp_servers.into_iter().map(Into::into).collect();
+        let skill_ids = args.skills.into_iter().map(|skill| skill.id).collect();
         let config = AgentConfig {
             id: args.id,
             instructions: args.instructions,
@@ -921,10 +896,7 @@ impl RawTool for DraftAgent {
             recovery_policies: Default::default(),
             mcp_servers,
             skill_ids,
-            multiagent: match args.multiagent.map(typed_multiagent).transpose() {
-                Ok(value) => value,
-                Err(error) => return Ok(ToolOutput::error(call.call_id, error)),
-            },
+            multiagent: args.multiagent,
             archived_at: None,
             metadata: args.metadata,
             // Compaction is derived from the model at publish; the admin assistant does not
@@ -977,11 +949,11 @@ struct PatchFields {
     #[serde(default)]
     context_policy: Option<ContextPolicy>,
     #[serde(default)]
-    mcp_servers: Option<Vec<serde_json::Value>>,
+    mcp_servers: Option<Vec<McpServerSelection>>,
     #[serde(default)]
-    skills: Option<Vec<serde_json::Value>>,
+    skills: Option<Vec<SkillSelection>>,
     #[serde(default)]
-    multiagent: Option<serde_json::Value>,
+    multiagent: Option<MultiagentConfig>,
     #[serde(default)]
     metadata: Option<BTreeMap<String, String>>,
     /// When present, REPLACES the agent's whole resource-binding set (data-plane store);
@@ -1066,22 +1038,13 @@ impl RawTool for PatchAgent {
             config.context_policy = cp;
         }
         if let Some(v) = patch.mcp_servers {
-            config.mcp_servers = match typed_mcp_servers(v) {
-                Ok(value) => value,
-                Err(error) => return Ok(ToolOutput::error(call.call_id, error)),
-            };
+            config.mcp_servers = v.into_iter().map(Into::into).collect();
         }
         if let Some(v) = patch.skills {
-            config.skill_ids = match typed_skill_ids(v) {
-                Ok(value) => value,
-                Err(error) => return Ok(ToolOutput::error(call.call_id, error)),
-            };
+            config.skill_ids = v.into_iter().map(|skill| skill.id).collect();
         }
         if let Some(v) = patch.multiagent {
-            config.multiagent = match typed_multiagent(v) {
-                Ok(value) => Some(value),
-                Err(error) => return Ok(ToolOutput::error(call.call_id, error)),
-            };
+            config.multiagent = Some(v);
         }
         if let Some(v) = patch.metadata {
             config.metadata = v;

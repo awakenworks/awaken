@@ -14,7 +14,6 @@
 mod brain_admin;
 pub mod config;
 
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,7 +21,7 @@ use awaken_protocol_managed::{EnvironmentState, ManagedState, VaultState};
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_host::{
     ConfigPlane, ConfigService, ExtMcpProbe, ManagedHost, RESERVED_ADMIN_SCOPE, ScopedToolCatalog,
-    SharedHost, ToolCatalogSource, advertised_tools,
+    SharedHost, ToolCatalogSource,
 };
 use axum::Router;
 
@@ -1037,7 +1036,7 @@ async fn management_router_over(
             materializer: None,
         },
     };
-    let global = advertised_tools(&HashSet::new(), &HashSet::new(), &[]);
+    let global = awaken_runtime_host::authorable_tools();
     let tool_catalog: Arc<dyn ToolCatalogSource> = Arc::new(ScopedToolCatalog::new(
         global.clone(),
         RESERVED_ADMIN_SCOPE,

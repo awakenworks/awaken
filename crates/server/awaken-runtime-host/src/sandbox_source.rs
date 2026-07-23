@@ -48,13 +48,16 @@ impl LaunchSource {
     /// whose config-plane selection (`acp:<other>`) names a *different* CLI fails closed
     /// rather than silently running on the wrong runtime — the runtime-side of matching
     /// the declared ACP dialect to what this worker actually serves.
-    fn resolve(&self, activation: &RunActivation) -> Result<AcpLaunch, OpenError> {
+    fn resolve(
+        &self,
+        activation: &RunActivation,
+        backend: &awaken_runtime_contract::resolved::Backend,
+    ) -> Result<AcpLaunch, OpenError> {
         match self {
             LaunchSource::Fixed(launch) => Ok(launch.clone()),
             LaunchSource::Projected { cli, resolver } => {
                 use awaken_runtime_contract::resolved::Backend;
-                let selected = &activation.snapshot.resolved_spec.model_binding.backend_ref;
-                match Backend::from_ref(selected) {
+                match backend {
                     // A bare `acp` (no CLI named) or the exact CLI this worker serves.
                     Backend::Acp { cli: id } if id.is_empty() || id == cli.id => {}
                     Backend::Acp { cli: id } => {
@@ -63,7 +66,7 @@ impl LaunchSource {
                             cli.id
                         )));
                     }
-                    _ => return Err(OpenError(format!("run backend `{selected}` is not ACP"))),
+                    _ => return Err(OpenError("run backend is not ACP".to_string())),
                 }
                 project_launch(cli.as_ref(), resolver.as_ref(), activation)
             }
@@ -450,7 +453,10 @@ impl AgentChannelSource for SandboxChannelSource {
     async fn open(&self, activation: &RunActivation) -> Result<AgentSession, OpenError> {
         let thread = activation.thread_id.0.as_str();
         // The launch is fixed, or projected from this run's config-plane-selected CLI.
-        let mut launch = self.launch.resolve(activation)?;
+        let backend = awaken_runtime_contract::resolved::Backend::from_ref(
+            &activation.snapshot.resolved_spec.model_binding.backend_ref,
+        );
+        let mut launch = self.launch.resolve(activation, &backend)?;
         // Project the run's declared MCP servers once. `session/new` servers ride in-band
         // over the ACP wire the executor drives (claude/gemini/opencode); a config-file
         // CLI (codex) gets its config.toml. Fail-closed on an inline-secret credential
@@ -511,12 +517,16 @@ pub struct BoundLocalChannelSource {
     sandbox: Arc<dyn crate::session_environment::AgentSandbox>,
     launch: LaunchSource,
     codec: awaken_run_executor_acp::Codec,
+    backend: awaken_runtime_contract::resolved::Backend,
+    mcp_servers: Vec<awaken_run_executor_acp::McpServerConfig>,
 }
 
 impl BoundLocalChannelSource {
     pub(crate) fn from_environment(
         sandbox: Arc<crate::session_environment::SessionEnvironment>,
         launch: LaunchSource,
+        backend: awaken_runtime_contract::resolved::Backend,
+        mcp_servers: Vec<awaken_run_executor_acp::McpServerConfig>,
     ) -> Self {
         let codec = match &launch {
             LaunchSource::Fixed(_) => awaken_run_executor_acp::Codec::Newline,
@@ -526,6 +536,8 @@ impl BoundLocalChannelSource {
             sandbox,
             launch,
             codec,
+            backend,
+            mcp_servers,
         }
     }
 }
@@ -533,7 +545,7 @@ impl BoundLocalChannelSource {
 #[async_trait]
 impl AgentChannelSource for BoundLocalChannelSource {
     async fn open(&self, activation: &RunActivation) -> Result<AgentSession, OpenError> {
-        let mut launch = self.launch.resolve(activation)?;
+        let mut launch = self.launch.resolve(activation, &self.backend)?;
         if let Some(cli) = self.launch.cli() {
             if self.sandbox.is_container() {
                 launch.argv = cli
@@ -567,11 +579,9 @@ impl AgentChannelSource for BoundLocalChannelSource {
             launch.env.push(("HOME".to_string(), config_home));
         }
         let injection = match self.launch.cli() {
-            Some(cli) => awaken_run_executor_acp::mcp_injection(
-                cli,
-                &activation.snapshot.resolved_spec.plugin_config,
-                true,
-            )?,
+            Some(cli) => {
+                awaken_run_executor_acp::mcp_injection_from_servers(cli, &self.mcp_servers, true)?
+            }
             None => awaken_run_executor_acp::McpInjection::default(),
         };
         let config_home = self.sandbox.config_home();
@@ -873,7 +883,7 @@ mod tests {
                     ),
                     tool_descriptors: Vec::new(),
                     plugin_ids: Vec::new(),
-                    plugin_config,
+                    plugin_config: plugin_config.into(),
                     context_policy: Default::default(),
                     tool_presentation: Default::default(),
                 },
@@ -985,6 +995,10 @@ mod tests {
                 resolver: Arc::new(FakeResolver),
             },
             codec: awaken_run_executor_acp::Codec::Acp,
+            backend: awaken_runtime_contract::resolved::Backend::Acp {
+                cli: cli_id.to_string(),
+            },
+            mcp_servers: Vec::new(),
         }
     }
 
@@ -1009,7 +1023,7 @@ mod tests {
     #[tokio::test]
     async fn bound_container_delivers_session_new_mcp_servers() {
         let sandbox = Arc::new(CapturingAgentSandbox::default());
-        let source = bound_projecting_source(sandbox.clone(), "claude");
+        let mut source = bound_projecting_source(sandbox.clone(), "claude");
         let activation = acp_activation_with_plugin_config(
             "acp:claude",
             std::collections::BTreeMap::from([(
@@ -1021,6 +1035,10 @@ mod tests {
                 }] }),
             )]),
         );
+        source.mcp_servers = awaken_run_executor_acp::AcpSettings::from_plugin_config(
+            activation.snapshot.resolved_spec.plugin_config.plugins(),
+        )
+        .mcp_servers;
 
         let session = source
             .open(&activation)
@@ -1061,7 +1079,10 @@ mod tests {
     #[tokio::test]
     async fn bound_container_rejects_a_cli_other_than_the_one_it_serves() {
         let sandbox = Arc::new(CapturingAgentSandbox::default());
-        let source = bound_projecting_source(sandbox.clone(), "claude");
+        let mut source = bound_projecting_source(sandbox.clone(), "claude");
+        source.backend = awaken_runtime_contract::resolved::Backend::Acp {
+            cli: "codex".to_string(),
+        };
 
         let error = source
             .open(&acp_activation("acp:codex"))

@@ -345,8 +345,18 @@ pub fn mcp_injection(
     sandboxed: bool,
 ) -> std::result::Result<McpInjection, OpenError> {
     let servers = AcpSettings::from_plugin_config(plugin_config).mcp_servers;
+    mcp_injection_from_servers(cli, &servers, sandboxed)
+}
+
+/// Project an already-decoded, host-staged MCP set. Session execution uses this
+/// typed seam instead of rewriting an immutable Agent publication.
+pub fn mcp_injection_from_servers(
+    cli: &AcpCli,
+    servers: &[crate::McpServerConfig],
+    sandboxed: bool,
+) -> std::result::Result<McpInjection, OpenError> {
     if sandboxed {
-        for s in &servers {
+        for s in servers {
             if !s.is_sandbox_safe() {
                 return Err(OpenError(format!(
                     "MCP server `{}` carries an inline secret; only a broker reference is \
@@ -359,7 +369,7 @@ pub fn mcp_injection(
     if servers.is_empty() {
         return Ok(McpInjection::default());
     }
-    Ok(match cli.project_mcp(&servers) {
+    Ok(match cli.project_mcp(servers) {
         crate::McpDelivery::SessionServers(list) => McpInjection {
             session_servers: list.iter().map(to_session_mcp_server).collect(),
             config_file: None,

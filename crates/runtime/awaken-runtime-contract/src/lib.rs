@@ -40,8 +40,8 @@ pub use data_subject::{
 pub use delegation::{
     ChildRunCancellation, ChildRunResult, ChildRunResultInbox, DelegationExecutionError,
     DelegationFailureKind, DelegationLimits, DelegationRequest, DelegationResultError,
-    DelegationResume, DelegationStep, PendingChildRunResults, RemoteAgent, ResultRecord,
-    RunDelegationService, RunDelegations,
+    DelegationResume, DelegationStep, DelegationToolInput, PendingChildRunResults, RemoteAgent,
+    ResultRecord, RunDelegationService, RunDelegations,
 };
 pub use execution::{Cancellation, ExecutorCapabilities, RunExecutor, Wait};
 pub use live_inbox::{LiveInbox, LiveInboxMessage, LiveInboxMessageId};
@@ -78,7 +78,9 @@ pub use resolution::{
     content_fingerprint,
 };
 pub use resolved::{CatalogFingerprint, InferenceEndpoint, ModelBinding, ResolvedSpec};
-pub use resolver::{AgentSnapshotResolver, RunResolver};
+pub use resolver::{
+    AgentSnapshotResolver, PublishedAgentSnapshotSource, RunResolver, StaticPublishedAgentSnapshots,
+};
 pub use resume::{ResumeCommand, ResumeError, ResumeResult, validate_resume};
 pub use runtime_context::{CaptureContext, RuntimeRunContext};
 pub use snapshot::{

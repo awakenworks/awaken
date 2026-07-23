@@ -14,11 +14,13 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
 use awaken_protocol_managed::ManagedState;
 use awaken_provider_genai::{AdapterKind, GenaiExecutor};
+use awaken_runtime_contract::StaticPublishedAgentSnapshots;
+use awaken_runtime_contract::agent_bindings::AgentBindings;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
-use awaken_runtime_contract::resolved::ModelBinding;
-use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
+use awaken_runtime_contract::resolved::{ModelBinding, ToolKind};
+use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshot};
 use axum::Router;
 
 /// Test composition adapter: scenario models are host-installed executors, while
@@ -1398,9 +1400,27 @@ pub fn build_remote_hand_router() -> Router {
 /// Auto-allows every tool call, so an action tool (`bash`) runs without a HITL
 /// pause — the remote-hand e2e asserts the hand's execution, not the gate.
 pub fn build_delegation_router() -> Router {
-    let roster = HashSet::from(["researcher".to_string()]);
     let (model, model_ref) = scenario_model(Arc::new(DelegatingModel), "delegate");
-    let host = SharedHost::new(model, model_ref).with_delegates(roster);
+    let snapshot = |agent_id: &str, delegates: Vec<AgentId>| {
+        let mut tools = awaken_runtime_host::authorable_tools();
+        if delegates.is_empty() {
+            tools.retain(|tool| tool.kind != ToolKind::AgentDelegation);
+        }
+        ExecutableAgentSnapshot::builder(agent_id)
+            .model(ModelBinding::new("default", &model_ref, "default"))
+            .tools(tools)
+            .agent_bindings(AgentBindings {
+                delegate_ids: delegates,
+                ..Default::default()
+            })
+            .build()
+    };
+    let publications = StaticPublishedAgentSnapshots::try_new([
+        snapshot("assistant", vec![AgentId("researcher".into())]),
+        snapshot("researcher", Vec::new()),
+    ])
+    .expect("valid scenario Agent publications");
+    let host = SharedHost::new(model, model_ref).with_agent_publications(Arc::new(publications));
     mount(Arc::new(host))
 }
 
@@ -1717,7 +1737,7 @@ pub async fn build_config_router() -> Router {
     // Scope-keyed tool visibility (ADR-0052 D3): every scope sees the advertised
     // (global) tools; only the reserved admin scope additionally sees the four
     // management descriptors, so a config naming an `admin_*` tool compiles only there.
-    let global = advertised_tools(&HashSet::new(), &HashSet::new(), &[]);
+    let global = awaken_runtime_host::authorable_tools();
     let tools = Arc::new(awaken_runtime_host::ScopedToolCatalog::new(
         global.clone(),
         awaken_runtime_host::RESERVED_ADMIN_SCOPE,

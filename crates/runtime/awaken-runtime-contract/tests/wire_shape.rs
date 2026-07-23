@@ -88,7 +88,17 @@ fn resolved_spec_field_names_are_pinned() {
     assert_eq!(v["model_candidates"], json!([]));
     assert_eq!(v["tool_descriptors"], json!([]));
     assert_eq!(v["plugin_ids"], json!([]));
-    assert_eq!(v["plugin_config"], json!({}));
+    assert_eq!(
+        v["plugin_config"],
+        json!({
+            "agent": {
+                "delegate_ids": [],
+                "mcp_servers": [],
+                "skill_ids": [],
+            },
+            "plugins": {},
+        })
+    );
 
     // The default context policy is internally tagged on `kind`.
     assert_eq!(v["context_policy"], json!({ "kind": "keep_all" }));

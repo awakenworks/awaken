@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
-use awaken_ext_builtin_tools::AgentRunArgs;
+use awaken_ext_builtin_tools::AuxiliaryAgentInput;
 use awaken_ext_builtin_tools::erase;
 use awaken_ext_memory::{
     MEMORY_PLUGIN_ID, MemoryDir, MemoryPlugin, RecallBounds, WriteMemoryTool,
@@ -99,7 +99,7 @@ impl RawTool for EchoFork {
     }
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
-        let request: AgentRunArgs = serde_json::from_value(call.arguments)
+        let request: AuxiliaryAgentInput = serde_json::from_value(call.arguments)
             .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
         let prompt = request
             .seed

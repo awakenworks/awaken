@@ -44,6 +44,7 @@ pub struct ExecutableAgentSnapshotBuilder {
     tools: Vec<ToolDescriptor>,
     plugin_ids: Vec<String>,
     plugin_config: BTreeMap<String, serde_json::Value>,
+    agent_bindings: crate::agent_bindings::AgentBindings,
     context_policy: ContextPolicy,
     tool_presentation: ToolPresentation,
     fingerprint: Option<String>,
@@ -62,6 +63,7 @@ impl ExecutableAgentSnapshotBuilder {
             tools: Vec::new(),
             plugin_ids: Vec::new(),
             plugin_config: BTreeMap::new(),
+            agent_bindings: Default::default(),
             context_policy: ContextPolicy::default(),
             tool_presentation: ToolPresentation::default(),
             fingerprint: None,
@@ -162,6 +164,13 @@ impl ExecutableAgentSnapshotBuilder {
         self
     }
 
+    /// Set the typed, publication-pinned Agent integration bindings.
+    #[must_use]
+    pub fn agent_bindings(mut self, bindings: crate::agent_bindings::AgentBindings) -> Self {
+        self.agent_bindings = bindings;
+        self
+    }
+
     /// Bound the model-visible context window (default [`ContextPolicy::KeepAll`]).
     #[must_use]
     pub fn context_policy(mut self, policy: ContextPolicy) -> Self {
@@ -221,7 +230,10 @@ impl ExecutableAgentSnapshotBuilder {
                 model_candidates: self.model_candidates,
                 tool_descriptors: self.tools,
                 plugin_ids: self.plugin_ids,
-                plugin_config: self.plugin_config,
+                plugin_config: crate::agent_bindings::ResolvedConfiguration::new(
+                    self.agent_bindings,
+                    self.plugin_config,
+                ),
                 context_policy: self.context_policy,
                 tool_presentation: self.tool_presentation,
             },

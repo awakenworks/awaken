@@ -99,8 +99,7 @@ impl<'de> Deserialize<'de> for ModelSelection {
 /// The delegation roster authored for one Agent.
 ///
 /// Managed Agents keeps the public union as JSON, but the authoring aggregate
-/// stores only the executable coordinator form. The legacy `workers` spelling is
-/// accepted on read so existing drafts migrate without retaining an opaque value.
+/// stores only the executable coordinator form.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MultiagentConfig {
     pub agent_ids: Vec<String>,
@@ -118,33 +117,23 @@ impl Serialize for MultiagentConfig {
 }
 
 #[derive(Deserialize)]
-#[serde(untagged)]
-enum MultiagentConfigWire {
-    Coordinator {
-        #[serde(rename = "type")]
-        kind: Option<String>,
-        agents: Vec<String>,
-    },
-    Legacy {
-        workers: Vec<String>,
-    },
+struct MultiagentConfigWire {
+    #[serde(rename = "type")]
+    kind: String,
+    agents: Vec<String>,
 }
 
 impl<'de> Deserialize<'de> for MultiagentConfig {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let wire = MultiagentConfigWire::deserialize(deserializer)?;
-        let agent_ids = match wire {
-            MultiagentConfigWire::Coordinator { kind, agents } => {
-                if kind.as_deref().is_some_and(|kind| kind != "coordinator") {
-                    return Err(serde::de::Error::custom(
-                        "multiagent.type must be `coordinator`",
-                    ));
-                }
-                agents
-            }
-            MultiagentConfigWire::Legacy { workers } => workers,
-        };
-        Ok(Self { agent_ids })
+        if wire.kind != "coordinator" {
+            return Err(serde::de::Error::custom(
+                "multiagent.type must be `coordinator`",
+            ));
+        }
+        Ok(Self {
+            agent_ids: wire.agents,
+        })
     }
 }
 

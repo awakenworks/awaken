@@ -195,8 +195,10 @@ impl RunDelegationService for CrashOnceRunDelegationService {
     fn target_agent_id(
         &self,
         _arguments: &serde_json::Value,
-    ) -> Result<String, DelegationExecutionError> {
-        Ok("recoverable-child".into())
+    ) -> Result<awaken_runtime_contract::snapshot::AgentId, DelegationExecutionError> {
+        Ok(awaken_runtime_contract::snapshot::AgentId(
+            "recoverable-child".into(),
+        ))
     }
 
     async fn start(
@@ -232,8 +234,10 @@ impl RunDelegationService for LateResultRunDelegationService {
     fn target_agent_id(
         &self,
         _arguments: &serde_json::Value,
-    ) -> Result<String, DelegationExecutionError> {
-        Ok("remote-child".into())
+    ) -> Result<awaken_runtime_contract::snapshot::AgentId, DelegationExecutionError> {
+        Ok(awaken_runtime_contract::snapshot::AgentId(
+            "remote-child".into(),
+        ))
     }
 
     async fn start(
@@ -318,8 +322,10 @@ impl RunDelegationService for MockRunDelegationService {
     fn target_agent_id(
         &self,
         _arguments: &serde_json::Value,
-    ) -> Result<String, DelegationExecutionError> {
-        Ok("delegate".into())
+    ) -> Result<awaken_runtime_contract::snapshot::AgentId, DelegationExecutionError> {
+        Ok(awaken_runtime_contract::snapshot::AgentId(
+            "delegate".into(),
+        ))
     }
     async fn start(
         &self,

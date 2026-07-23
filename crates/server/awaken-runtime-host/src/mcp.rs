@@ -92,65 +92,6 @@ pub fn project_staged_mcp(
     }
 }
 
-/// The `plugin_config.acp.mcp_servers` value carrying the staged servers for an ACP run,
-/// or `None` when there are none. Fail-closed on a serialize error (the ACP CLI then
-/// simply gets no MCP servers rather than a corrupt config).
-#[must_use]
-pub fn acp_mcp_plugin_value(
-    staged: &[PreparedMcpServer],
-    trusted: bool,
-    relay: Option<&crate::mcp_relay::McpRelay>,
-    thread: &str,
-) -> Option<serde_json::Value> {
-    if staged.is_empty() {
-        return None;
-    }
-    let servers: Vec<_> = staged
-        .iter()
-        .map(|p| project_staged_mcp(p, trusted, relay, thread))
-        .collect();
-    serde_json::to_value(servers).ok()
-}
-
-/// Overlay a session's staged MCP servers into an **ACP** run's config so the ACP CLI
-/// executor reads them from `plugin_config.acp.mcp_servers` (D6). A no-op for a native
-/// run (those servers are already connected in-process via [`connect_staged`]) or when
-/// there are none. The managed session build is the untrusted/sandboxed path, so callers
-/// pass `trusted = false` → **α** (secretless reference); the raw bearer never leaves the
-/// host. Mutates the transient session snapshot so the plugin config rides the run
-/// without changing the durable published snapshot.
-///
-/// `is_acp` is the caller's authoritative "this run executes on an external ACP CLI"
-/// decision — the host's runtime registration (`AcpBackend::is_acp`), NOT the config's
-/// `backend_ref`. The managed `server_config` stamps a fixed `backend_ref` ("default")
-/// regardless of the selected runtime, so gating on it here would silently skip every
-/// managed ACP session; only a native run (`is_acp == false`) is left untouched, since
-/// its MCP servers are already the in-process tools connected by `connect_staged`.
-#[must_use]
-pub fn overlay_acp_mcp(
-    mut config: awaken_runtime_contract::snapshot::ExecutableAgentSnapshot,
-    staged: &[PreparedMcpServer],
-    is_acp: bool,
-    trusted: bool,
-    relay: Option<&crate::mcp_relay::McpRelay>,
-    thread: &str,
-) -> awaken_runtime_contract::snapshot::ExecutableAgentSnapshot {
-    if staged.is_empty() || !is_acp {
-        return config;
-    }
-    if let Some(value) = acp_mcp_plugin_value(staged, trusted, relay, thread) {
-        let acp = config
-            .resolved_spec
-            .plugin_config
-            .entry("acp".to_string())
-            .or_insert_with(|| serde_json::json!({}));
-        if let Some(obj) = acp.as_object_mut() {
-            obj.insert("mcp_servers".to_string(), value);
-        }
-    }
-    config
-}
-
 /// The refresh half of a prepared MCP server (an `mcp_oauth` vault credential
 /// entered with a refresh object — public or confidential client): everything
 /// [`VaultRefresher`] needs to run the `refresh_token` grant and reseal the
@@ -440,17 +381,6 @@ mod alpha_beta_tests {
         ));
     }
 
-    #[test]
-    fn the_plugin_value_never_carries_a_raw_secret_for_a_sandboxed_run() {
-        assert!(acp_mcp_plugin_value(&[], false, None, "").is_none());
-        let v = acp_mcp_plugin_value(&[prepared(Some("sk-RAW-SECRET"))], false, None, "").unwrap();
-        assert!(v.is_array());
-        assert!(
-            !v.to_string().contains("sk-RAW-SECRET"),
-            "a sandboxed projection must never serialize the raw bearer"
-        );
-    }
-
     #[tokio::test]
     async fn a_relay_resolves_alpha_to_a_loopback_url_with_no_sandbox_credential() {
         let relay = crate::mcp_relay::McpRelay::start().await.unwrap();
@@ -471,37 +401,5 @@ mod alpha_beta_tests {
         );
         assert!(url.ends_with("/t1/gh"), "routed by thread+name: {url}");
         assert!(!serde_json::to_string(&s).unwrap().contains("sk-RAW-SECRET"));
-    }
-
-    #[test]
-    fn overlay_injects_into_an_acp_run_and_leaves_a_native_run_untouched() {
-        use awaken_runtime_contract::resolved::ModelBinding;
-        use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
-
-        // ACP run (is_acp = true) → the servers land under plugin_config.acp.mcp_servers,
-        // secretless. The backend_ref is the fixed managed "default" — proving the overlay
-        // keys off the caller's runtime decision, not backend_ref.
-        let acp = ExecutableAgentSnapshot::builder("a")
-            .model(ModelBinding::new("default", "m", "default"))
-            .build();
-        let out = overlay_acp_mcp(
-            acp,
-            &[prepared(Some("sk-RAW-SECRET"))],
-            true,
-            false,
-            None,
-            "",
-        );
-        let pc = &out.resolved_spec.plugin_config;
-        assert!(pc["acp"]["mcp_servers"].is_array());
-        assert!(!serde_json::to_string(pc).unwrap().contains("sk-RAW-SECRET"));
-
-        // Native run (is_acp = false) → untouched (its MCP servers are already in-process
-        // tools), even though its backend_ref happens to read "acp:claude".
-        let native = ExecutableAgentSnapshot::builder("b")
-            .model(ModelBinding::new("p", "m", "acp:claude"))
-            .build();
-        let out2 = overlay_acp_mcp(native, &[prepared(Some("sk"))], false, false, None, "");
-        assert!(!out2.resolved_spec.plugin_config.contains_key("acp"));
     }
 }

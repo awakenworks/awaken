@@ -211,7 +211,7 @@ impl SharedHost {
 
     /// Open a session from the executable snapshot carried by a claimed dispatch.
     /// The snapshot is the publication output and therefore authoritative for the
-    /// worker; the config service is only a local/session-create compatibility path.
+    /// worker; local Session creation reads the current immutable publication.
     pub(crate) async fn ctx_for_snapshot_with_sandbox(
         &self,
         thread: &str,
@@ -320,14 +320,18 @@ impl SharedHost {
             .collect();
         // A remote worker consumes the exact snapshot distributed in the claim;
         // it must not reopen the config registry and reconstruct current state.
-        // Local session creation has no claimed snapshot yet, so it uses the
-        // installed publication as the compatibility path.
+        // Local Session creation has no claimed snapshot yet, so it resolves the
+        // current publication once.
         let workspace = self.thread_workspace(thread);
         let installed = published_snapshot.or_else(|| {
-            self.config_service
-                .as_ref()
-                .zip(agent)
-                .and_then(|(svc, agent)| svc.installed_in(&workspace, agent))
+            self.agent_publications.as_ref().and_then(|source| {
+                source.current(
+                    &workspace,
+                    &awaken_runtime_contract::snapshot::AgentId(
+                        agent.unwrap_or("assistant").to_string(),
+                    ),
+                )
+            })
         });
         // The workspace skill dir is negotiated by the agent/hand definition: its
         // `plugin_config.skills_dir` (ADR-0036) overrides the default `skills` subdir,
@@ -352,7 +356,7 @@ impl SharedHost {
         let authored_permission = config_permission_ruleset(
             installed
                 .as_ref()
-                .map(|c| &c.resolved_spec.plugin_config)
+                .map(|c| c.resolved_spec.plugin_config.plugins())
                 .unwrap_or(&self.plugin_config),
         );
         let apply_base_gate = !pre_authorized.is_empty() || authored_permission.is_some();
@@ -388,7 +392,25 @@ impl SharedHost {
         }
         // Delegation is a runtime concern: inject the executor so the kernel runs
         // `agent_run` as a sub-agent (native or remote), not the tool registry.
-        if let Some(service) = self.run_delegation(thread, env.clone(), commit.clone())? {
+        let published_delegate_targets = installed
+            .as_ref()
+            .map(|snapshot| {
+                snapshot
+                    .resolved_spec
+                    .plugin_config
+                    .agent
+                    .delegate_ids
+                    .iter()
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(service) = self.run_delegation(
+            thread,
+            env.clone(),
+            commit.clone(),
+            published_delegate_targets,
+        )? {
             runtime = runtime.with_run_delegation(service);
         }
         // Skills are fronted by two stable tools (ADR-0036); all skill behavior is
@@ -397,9 +419,8 @@ impl SharedHost {
         // `skills::wire_skills`.
         let mut skill_descriptors = Vec::new();
         let mut skill_registry: Option<Arc<dyn SkillRegistry>> = None;
-        // A managed Session consumes its exact frozen Skill versions. Direct/legacy
-        // threads without a frozen manifest retain the latest-catalog compatibility
-        // path. Presence of an empty frozen vector explicitly offers no Skills.
+        // A managed Session consumes its exact frozen Skill versions. An embedded
+        // direct Session without a manifest reads its configured Skill catalog.
         let frozen = self
             .session_slots
             .read(thread, |slot| slot.skills.clone())
@@ -415,19 +436,17 @@ impl SharedHost {
                 .has_store()
                 .then(|| self.skills.cache_snapshot_in(&workspace))
         };
-        // A newly published Agent receives exactly its selected Skills. Older
-        // publications without the normalized binding section retain the legacy
-        // global catalog behavior, which makes the migration backward compatible.
-        let selected_skills = installed.as_ref().and_then(|config| {
-            awaken_runtime_contract::agent_bindings::AgentBindings::from_config(
-                &config.resolved_spec.plugin_config,
-            )
-            .map(|bindings| {
-                bindings
-                    .skill_ids
-                    .into_iter()
-                    .collect::<std::collections::BTreeSet<_>>()
-            })
+        // A published Agent receives exactly its selected Skills. Embedded direct
+        // Sessions without a publication use the host-configured catalog.
+        let selected_skills = installed.as_ref().map(|config| {
+            config
+                .resolved_spec
+                .plugin_config
+                .agent
+                .skill_ids
+                .iter()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>()
         });
         let filtered_specs: Vec<SkillSpec> = match &selected_skills {
             Some(selected) => self
@@ -460,7 +479,7 @@ impl SharedHost {
             // pre-authorized MCP tools (identical to `server_gate()` without MCP).
             base_gate.clone(),
             sub_base("skill-fork"),
-            self.agent_run_reuse_sandbox,
+            self.skill_fork_placement,
             &skills_subdir,
         )
         .await
@@ -511,11 +530,20 @@ impl SharedHost {
         // advertise: the skill tools plus the discovered MCP tools.
         let mut dynamic_descriptors = skill_descriptors;
         dynamic_descriptors.extend(mcp_descriptors);
-        let session_delegates = self
-            .thread_delegate_ids(thread)
-            .map(|ids| ids.into_iter().collect())
-            .unwrap_or_else(|| self.delegates.ids_set().clone());
-        let mut config = installed.unwrap_or_else(|| {
+        let session_delegates: HashSet<String> = installed
+            .as_ref()
+            .map(|snapshot| {
+                snapshot
+                    .resolved_spec
+                    .plugin_config
+                    .agent
+                    .delegate_ids
+                    .iter()
+                    .map(|id| id.0.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let config = installed.unwrap_or_else(|| {
             server_config(
                 "assistant",
                 &self.inference_routing.model_ref(thread, &self.model_ref),
@@ -527,22 +555,6 @@ impl SharedHost {
                 context_policy,
             )
         });
-        // A published roster is the capability truth; the concrete builtin tool
-        // remains owned by `awaken-ext-builtin-tools` and is materialized into this
-        // transient execution plan. The durable snapshot is never rewritten and no
-        // second descriptor definition enters the neutral publication contract.
-        if !session_delegates.is_empty()
-            && !config
-                .resolved_spec
-                .tool_descriptors
-                .iter()
-                .any(|tool| tool.id == awaken_ext_builtin_tools::AGENT_RUN)
-        {
-            config
-                .resolved_spec
-                .tool_descriptors
-                .push(crate::config::delegation_descriptor());
-        }
         // D6: for an ACP run, hand the session's staged MCP servers to the CLI's own MCP
         // client via `plugin_config.acp.mcp_servers`. Whether this run executes on ACP is
         // the host's runtime registration (`AcpBackend::is_acp`), not the config's
@@ -552,7 +564,17 @@ impl SharedHost {
         // reference; the raw bearer never reaches the CLI), while a trusted-local host may
         // opt into β (`with_trusted_acp_mcp`) and hand the bearer inline. A native run is
         // untouched (its MCP servers are already the in-process tools connected above).
-        let is_acp = self.acp.as_ref().is_some_and(|a| a.is_acp(thread));
+        let execution_backend = self
+            .acp
+            .as_ref()
+            .and_then(|acp| acp.adapter_for(thread))
+            .map(|adapter| awaken_runtime_contract::resolved::Backend::from_ref(&adapter))
+            .unwrap_or_else(|| {
+                awaken_runtime_contract::resolved::Backend::from_ref(
+                    &config.resolved_spec.model_binding.backend_ref,
+                )
+            });
+        let is_acp = execution_backend.is_acp();
         // For a sandboxed (α) ACP run with authenticated MCP servers, resolve the α reference
         // through the host's loopback relay: point each server at the relay and register its
         // real bearer there, so the sandbox reaches the MCP server via loopback and the token
@@ -574,21 +596,16 @@ impl SharedHost {
         } else {
             None
         };
-        let mut config = crate::mcp::overlay_acp_mcp(
-            config,
-            &staged_mcp,
-            is_acp,
-            self.mcp_trusted_inline,
-            relay,
-            thread,
-        );
-        // Resolve the Session's brain adapter once, before this immutable snapshot
-        // is retained or dispatched. Resume/recovery must route from the same pinned
-        // backend_ref; mutating only a transient first-attempt activation would make
-        // an ACP wait resume through Native and reopen current configuration.
-        if let Some(adapter) = self.acp.as_ref().and_then(|acp| acp.adapter_for(thread)) {
-            config.resolved_spec.model_binding.backend_ref = adapter;
-        }
+        let acp_mcp_servers = if is_acp {
+            staged_mcp
+                .iter()
+                .map(|server| {
+                    crate::mcp::project_staged_mcp(server, self.mcp_trusted_inline, relay, thread)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         // Recover the session's position from committed truth: a durable store may
         // already hold this thread's history and an awaiting run after a restart.
         let mut state = SessionState::default();
@@ -599,15 +616,20 @@ impl SharedHost {
             state.awaiting_run = Some(run_id);
         }
         let runtime = Arc::new(runtime);
-        let acp_executor = self
-            .acp
-            .as_ref()
-            .map(|acp| acp.executor_for(env.clone(), permission));
+        let acp_executor = self.acp.as_ref().map(|acp| {
+            acp.executor_for(
+                env.clone(),
+                permission,
+                execution_backend.clone(),
+                acp_mcp_servers,
+            )
+        });
         let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
             Arc::new(crate::run_exec::SessionAttemptExecutor::new(
                 runtime.clone(),
                 acp_executor,
                 self.remote_attempt_executor.clone(),
+                execution_backend,
             ));
         // The foreground delivery seam (slice C/D): a turn's execution goes through
         // `RunIngress` rather than calling `runtime.start_run` directly. Direct

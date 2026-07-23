@@ -23,10 +23,10 @@ pub(crate) struct SessionRuntimeSlot {
     pub runtime_adapter: Option<String>,
     pub memory: Option<Arc<BoundMemory>>,
     pub mcp: Vec<PreparedMcpServer>,
-    /// Exact published delegation roster. `None` keeps unmanaged host defaults.
-    pub delegates: Option<Vec<String>>,
-    /// `Some([])` deliberately means that the frozen manifest delivers no Skills;
-    /// `None` is the legacy/latest-catalog compatibility path.
+    /// Exact published delegation targets projected by a managed Session.
+    pub delegates: Vec<String>,
+    /// `Some([])` means the frozen manifest delivers no Skills; `None` means this
+    /// embedded Session has no frozen Skill manifest.
     pub skills: Option<Vec<awaken_skill_store::SkillVersion>>,
     pub resources: StagedResources,
     pub manifest: Option<awaken_protocol_managed::SessionResourceManifest>,

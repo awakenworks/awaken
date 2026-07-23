@@ -110,7 +110,10 @@ impl ManagedState {
         };
         // Echo the agent version the client pinned (or overrode over), defaulting to 1.
         let agent_version = req.agent.version().unwrap_or(1);
-        let delegate_ids = config_view.as_ref().map(|view| view.delegate_ids.clone());
+        let delegate_ids = config_view
+            .as_ref()
+            .map(|view| view.delegate_ids.clone())
+            .unwrap_or_default();
         // Session-inline bindings override the Agent defaults by name or URL. The
         // effective set is used for preparation, persistence, and wire projection,
         // so the UI shows what the runtime will actually connect.
