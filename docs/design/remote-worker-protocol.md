@@ -284,7 +284,7 @@ The public assembly shape is:
 ```rust
 pub struct ClaimedCommitService {
     dispatch: Arc<dyn DispatchQueue>,
-    coordinators: Arc<dyn ThreadCoordinatorResolver>,
+    coordinator: Arc<dyn OperationCoordinator>,
     directory: Arc<dyn WorkerDirectory>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
 }
@@ -294,10 +294,13 @@ pub fn claimed_commit_router(
 ) -> Router;
 ```
 
-`ThreadCoordinatorResolver` may return one shared coordinator for a SQLite cell
-or a request-scoped database-backed coordinator for PostgreSQL. The service
-does not construct `SharedHost`, choose a database, or own an application
-projection.
+The coordinator implementation may cover one SQLite cell or a PostgreSQL-backed
+set of Threads. It is the exact instance owned by the embedding composition
+root, so a successful commit updates the same authoritative store/projection
+used by that process. The service does not construct `SharedHost`, choose a
+database, or own an application projection. The public router accepts only
+versioned `CommitOperation`; raw claimed `ThreadCommit` remains a compatibility
+surface and is not part of the embeddable protocol.
 
 ### 4.5 Public Worker assembly
 

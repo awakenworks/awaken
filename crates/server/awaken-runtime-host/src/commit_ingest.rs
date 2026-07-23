@@ -56,6 +56,57 @@ impl CommitApplier for HostCommitApplier {
     }
 }
 
+struct CoordinatorCommitApplier(Arc<dyn OperationCoordinator>);
+
+#[async_trait::async_trait]
+impl CommitApplier for CoordinatorCommitApplier {
+    async fn apply(&self, commit: ThreadCommit) -> Result<CommitRecord, HostError> {
+        self.0
+            .commit(commit)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))
+    }
+
+    async fn apply_operation(
+        &self,
+        operation: CommitOperation,
+    ) -> Result<CommitReceipt, HostError> {
+        self.0
+            .commit_operation(operation)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))
+    }
+}
+
+/// Explicit application service for the claim-fenced commit boundary.
+///
+/// The injected coordinator is the committed-truth authority used by the
+/// embedding Control Node. The service never constructs a [`SharedHost`] or
+/// selects a storage backend.
+pub struct ClaimedCommitService {
+    dispatch: Arc<dyn DispatchQueue>,
+    coordinator: Arc<dyn OperationCoordinator>,
+    directory: Arc<dyn WorkerDirectory>,
+    authenticator: Arc<dyn WorkerRequestAuthenticator>,
+}
+
+impl ClaimedCommitService {
+    #[must_use]
+    pub fn new(
+        dispatch: Arc<dyn DispatchQueue>,
+        coordinator: Arc<dyn OperationCoordinator>,
+        directory: Arc<dyn WorkerDirectory>,
+        authenticator: Arc<dyn WorkerRequestAuthenticator>,
+    ) -> Self {
+        Self {
+            dispatch,
+            coordinator,
+            directory,
+            authenticator,
+        }
+    }
+}
+
 struct CommitIngestState {
     applier: Arc<dyn CommitApplier>,
     /// An injected store is used by isolated compositions and conformance tests.
@@ -63,6 +114,7 @@ struct CommitIngestState {
     dispatch: Option<Arc<dyn DispatchQueue>>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Option<Arc<dyn WorkerDirectory>>,
+    allow_legacy_claimed_commit: bool,
 }
 
 /// The worker-facing commit-ingest router. Mount it on a cell server alongside the
@@ -74,6 +126,23 @@ pub fn commit_ingest_router(host: Arc<SharedHost>) -> Router {
         Arc::new(HeaderWorkerAuthenticator),
         None,
         true,
+        true,
+    )
+}
+
+/// Mount the injectable, registered-worker claimed-commit service.
+///
+/// This production surface accepts only versioned [`CommitOperation`] requests.
+/// The legacy raw `ThreadCommit` shape remains available only through the
+/// compatibility routers.
+pub fn claimed_commit_router(service: Arc<ClaimedCommitService>) -> Router {
+    commit_ingest_router_from_parts(
+        Arc::new(CoordinatorCommitApplier(service.coordinator.clone())),
+        Some(service.dispatch.clone()),
+        service.authenticator.clone(),
+        Some(service.directory.clone()),
+        false,
+        false,
     )
 }
 
@@ -92,6 +161,7 @@ pub fn claimed_commit_ingest_router(
         authenticator,
         None,
         false,
+        true,
     )
 }
 
@@ -109,6 +179,7 @@ pub fn claimed_commit_ingest_router_with_directory(
         authenticator,
         Some(directory),
         false,
+        true,
     )
 }
 
@@ -118,12 +189,14 @@ fn commit_ingest_router_from_parts(
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Option<Arc<dyn WorkerDirectory>>,
     allow_unclaimed: bool,
+    allow_legacy_claimed_commit: bool,
 ) -> Router {
     let state = Arc::new(CommitIngestState {
         applier,
         dispatch,
         authenticator,
         directory,
+        allow_legacy_claimed_commit,
     });
     let router = Router::new().route(
         "/v1/worker/commit-claimed",
@@ -237,6 +310,11 @@ async fn commit_claimed(
                 Ok(serde_json::to_value(receipt).expect("CommitReceipt serializes"))
             }
             (None, Some(commit)) => {
+                if !state.allow_legacy_claimed_commit {
+                    return Err(HostError::bad_request(
+                        "claimed commit requires a versioned commit operation",
+                    ));
+                }
                 let record = state.applier.apply(commit).await?;
                 Ok(serde_json::to_value(record).expect("CommitRecord serializes"))
             }
@@ -570,6 +648,7 @@ mod postgres_tests {
             Arc::new(HeaderWorkerAuthenticator),
             None,
             false,
+            true,
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await

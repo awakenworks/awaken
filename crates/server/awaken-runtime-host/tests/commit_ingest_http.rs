@@ -13,6 +13,7 @@ use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitOperationId};
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_run_ingress::{
     ClaimedCommitCommand, ClaimedRunCommit, DispatchQueue, MemoryDispatchStore, RegisteredWorker,
     RegistryError, RegistryMutation, RunClaim, RunDispatch, WorkerDirectory, WorkerHeartbeat,
@@ -28,10 +29,11 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_runtime_host::{
-    HeaderWorkerAuthenticator, RemoteClaimedRunCommit, RemoteCoordinator, SharedHost,
-    claimed_commit_ingest_router, claimed_commit_ingest_router_with_directory,
-    commit_ingest_router,
+    ClaimedCommitService, HeaderWorkerAuthenticator, RemoteClaimedRunCommit, RemoteCoordinator,
+    SharedHost, claimed_commit_ingest_router, claimed_commit_ingest_router_with_directory,
+    claimed_commit_router, commit_ingest_router,
 };
+use awaken_store_inmem::MemoryCommitCoordinator;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::json;
@@ -369,6 +371,92 @@ async fn registered_claimed_commit_requires_the_current_worker_incarnation() {
         .await
         .unwrap();
     assert_eq!(host.committed_messages("registered-thread").await.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn injectable_claimed_commit_service_uses_the_exact_coordinator() {
+    let manifest = WorkerManifest::default();
+    let identity = WorkerIdentity::new("worker-injected", "boot-injected", 1);
+    let directory = Arc::new(CurrentWorkerDirectory(RegisteredWorker {
+        snapshot: WorkerSnapshot {
+            identity: identity.clone(),
+            state: WorkerState::Ready,
+            capability_fingerprint: manifest.fingerprint().unwrap(),
+            manifest,
+            in_flight: 0,
+            available_credentials: Default::default(),
+            expires_at_ms: u64::MAX,
+        },
+        heartbeat_sequence: 0,
+        registered_at_ms: 0,
+        heartbeat_at_ms: 0,
+        drain_deadline_ms: None,
+    }));
+    let dispatch = Arc::new(MemoryDispatchStore::new());
+    dispatch
+        .enqueue(RunDispatch::new(activation(
+            "injected-run",
+            "injected-thread",
+        )))
+        .await
+        .unwrap();
+    let claimed = dispatch
+        .claim(&identity.lease_owner(), 30_000, 0)
+        .await
+        .unwrap()
+        .expect("claim");
+    let coordinator = Arc::new(MemoryCommitCoordinator::new());
+    let service = Arc::new(ClaimedCommitService::new(
+        dispatch,
+        coordinator.clone(),
+        directory,
+        Arc::new(HeaderWorkerAuthenticator),
+    ));
+    let router = claimed_commit_router(service);
+
+    let raw_commit = Request::builder()
+        .method("POST")
+        .uri("/v1/worker/commit-claimed")
+        .header("content-type", "application/json")
+        .header("x-awaken-worker-id", &identity.worker_id)
+        .body(Body::from(
+            serde_json::to_vec(&json!({
+                "claim": RunClaim::from(&claimed.lease),
+                "commit": claimed_commit("injected-run", "injected-thread", "legacy"),
+                "identity": identity
+            }))
+            .unwrap(),
+        ))
+        .unwrap();
+    assert_eq!(
+        router.clone().oneshot(raw_commit).await.unwrap().status(),
+        StatusCode::BAD_REQUEST,
+        "the injectable protocol rejects legacy unversioned commits"
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let commit = claimed_commit("injected-run", "injected-thread", "injected");
+    let operation = CommitOperation {
+        operation_id: CommitOperationId::new(RunId("injected-run".into()), 0),
+        expected_thread_version: 0,
+        payload_hash: commit_payload_hash(&commit).unwrap(),
+        commit,
+    };
+    RemoteClaimedRunCommit::new(format!("http://{address}"))
+        .with_worker_identity(identity)
+        .commit_operation(ClaimedCommitCommand {
+            claim: RunClaim::from(&claimed.lease),
+            operation,
+        })
+        .await
+        .expect("commit through injected service");
+
+    let messages =
+        ThreadReader::committed_messages(&*coordinator, &ThreadId("injected-thread".into()));
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].text_content(), "injected");
 }
 
 #[tokio::test(flavor = "multi_thread")]

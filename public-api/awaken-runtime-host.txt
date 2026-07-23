@@ -90,6 +90,9 @@ pub awaken_runtime_host::AcpTurn::stop: awaken_runtime_host::AcpStop
 pub struct awaken_runtime_host::BoundLocalChannelSource
 impl awaken_run_executor_acp::AgentChannelSource for awaken_runtime_host::BoundLocalChannelSource
 pub fn awaken_runtime_host::BoundLocalChannelSource::open<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::activation::RunActivation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_run_executor_acp::AgentSession, awaken_run_executor_acp::OpenError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub struct awaken_runtime_host::ClaimedCommitService
+impl awaken_runtime_host::ClaimedCommitService
+pub fn awaken_runtime_host::ClaimedCommitService::new(alloc::sync::Arc<dyn awaken_run_ingress_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_agent_contract::thread::commit::coordinator::OperationCoordinator>, alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>, alloc::sync::Arc<dyn awaken_runtime_host::WorkerRequestAuthenticator>) -> Self
 pub struct awaken_runtime_host::DeploymentConfig
 pub awaken_runtime_host::DeploymentConfig::container_image: core::option::Option<alloc::string::String>
 pub awaken_runtime_host::DeploymentConfig::database_url: core::option::Option<alloc::string::String>
@@ -421,6 +424,7 @@ pub fn awaken_runtime_host::block_text(&[awaken_agent_contract::agent::content::
 pub async fn awaken_runtime_host::build_acp_channel_source(awaken_runtime_host::SandboxTier, core::option::Option<&str>, awaken_runtime_host::LaunchSource, awaken_runtime_host::AcpSandboxBindings, std::path::PathBuf) -> core::result::Result<alloc::sync::Arc<dyn awaken_run_executor_acp::AgentChannelSource>, alloc::string::String>
 pub fn awaken_runtime_host::claimed_commit_ingest_router(alloc::sync::Arc<awaken_runtime_host::SharedHost>, alloc::sync::Arc<dyn awaken_run_ingress_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_runtime_host::WorkerRequestAuthenticator>) -> axum::routing::Router
 pub fn awaken_runtime_host::claimed_commit_ingest_router_with_directory(alloc::sync::Arc<awaken_runtime_host::SharedHost>, alloc::sync::Arc<dyn awaken_run_ingress_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_runtime_host::WorkerRequestAuthenticator>, alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>) -> axum::routing::Router
+pub fn awaken_runtime_host::claimed_commit_router(alloc::sync::Arc<awaken_runtime_host::ClaimedCommitService>) -> axum::routing::Router
 pub fn awaken_runtime_host::commit_ingest_router(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> axum::routing::Router
 pub fn awaken_runtime_host::consent_router(alloc::sync::Arc<dyn awaken_data_subject::DataSubjectRepo>) -> axum::routing::Router
 pub fn awaken_runtime_host::dispatch_transport_router(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> axum::routing::Router
