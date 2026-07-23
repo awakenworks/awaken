@@ -86,9 +86,19 @@ pub struct AcpCli {
     /// branches in the container mechanism.
     pub container_argv: &'static [&'static str],
     pub model_delivery: ModelDelivery,
+    /// ACP authentication method selected after initialize, when the adapter
+    /// exposes more than one protocol-level method.
+    pub auth_method_id: Option<&'static str>,
     pub mcp_interface: McpInterface,
     /// Env key naming the CLI's isolated config directory (e.g. `CLAUDE_CONFIG_DIR`).
     pub config_home_env: &'static str,
+    /// Additional standard/vendor home variables that point at the same isolated
+    /// root. Some CLIs split extensions from global config/data/cache state.
+    pub config_home_aliases: &'static [&'static str],
+    /// Native credential file relative to the config home. The host may project an
+    /// opaque credential-broker reference to this path as a durable writable Secret;
+    /// the CLI owns its JSON format and token refresh behavior.
+    pub credential_file: Option<&'static str>,
     /// The memory file the CLI reads from its config home (e.g. `CLAUDE.md`).
     pub memory_entrypoint: &'static str,
     /// Paths under the config home that survive across sessions (auth, config).
@@ -352,8 +362,11 @@ const CLAUDE: AcpCli = AcpCli {
             "ANTHROPIC_HAIKU_MODEL",
         ],
     },
+    auth_method_id: None,
     mcp_interface: McpInterface::AcpSession,
     config_home_env: "CLAUDE_CONFIG_DIR",
+    config_home_aliases: &[],
+    credential_file: Some(".credentials.json"),
     memory_entrypoint: "CLAUDE.md",
     retained_paths: &[".credentials.json", "settings.json"],
     // Claude Code stores conversations under `projects/<cwd-slug>/`, keyed by cwd.
@@ -383,10 +396,13 @@ const CODEX: AcpCli = AcpCli {
         key: "OPENAI_API_KEY",
         aliases: &[],
     },
+    auth_method_id: None,
     mcp_interface: McpInterface::ConfigFileToml {
         path: "config.toml",
     },
     config_home_env: "CODEX_HOME",
+    config_home_aliases: &[],
+    credential_file: Some("auth.json"),
     memory_entrypoint: "AGENTS.md",
     retained_paths: &["auth.json", "config.toml"],
     // Codex writes rollout files under `sessions/`, keyed by an internal id.
@@ -416,8 +432,11 @@ const GEMINI: AcpCli = AcpCli {
         key: "GEMINI_API_KEY",
         aliases: &[],
     },
+    auth_method_id: None,
     mcp_interface: McpInterface::AcpSession,
     config_home_env: "GEMINI_DIR",
+    config_home_aliases: &[],
+    credential_file: None,
     memory_entrypoint: "GEMINI.md",
     retained_paths: &[],
     // Gemini keeps chat state under `tmp/<hash>/`, keyed by an internal id
@@ -448,8 +467,16 @@ const OPENCODE: AcpCli = AcpCli {
         key: "OPENAI_API_KEY",
         aliases: &[],
     },
+    auth_method_id: None,
     mcp_interface: McpInterface::AcpSession,
     config_home_env: "OPENCODE_CONFIG_DIR",
+    config_home_aliases: &[
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_STATE_HOME",
+    ],
+    credential_file: Some("auth.json"),
     memory_entrypoint: "AGENTS.md",
     retained_paths: &["auth.json"],
     // opencode keeps conversation state in a local store, keyed by an internal id

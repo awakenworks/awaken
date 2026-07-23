@@ -850,8 +850,12 @@ pub async fn build_durable_management_router_with_host_customizer(
         durable_management_stores(dir, key),
         None,
         None,
-        model,
-        model_ref.into(),
+        ManagementModelComposition::Host {
+            executor: model,
+            binding: awaken_runtime_contract::resolved::ModelBinding::new(
+                "default", model_ref, "default",
+            ),
+        },
         Some(Box::new(customize_host)),
     )
     .await
