@@ -267,10 +267,34 @@ pub async fn run_turn_with_config(
                 LoadSessionRequest::new(SessionId::new(prior.as_str()), cwd.as_str()),
             )
             .await?;
-            let resp: LoadSessionResponse = parse(
-                pump_to_response(&mut wire, ID_NEW_SESSION, sink, &mut seq, resolver).await?,
-            )?;
-            (SessionId::new(prior.as_str()), mode_ids(resp.modes))
+            match pump_response(&mut wire, ID_NEW_SESSION, sink, &mut seq, resolver).await? {
+                RpcResponse::Result(result) => {
+                    let resp: LoadSessionResponse = parse(result)?;
+                    (SessionId::new(prior.as_str()), mode_ids(resp.modes))
+                }
+                RpcResponse::Error(error) if is_missing_session_error(&error) => {
+                    // Some agents advertise loadSession but retain ids only for the
+                    // lifetime of one ACP process (Kimi Code is one example). No
+                    // prompt has been sent yet, so opening a fresh session is a safe
+                    // compatibility fallback and cannot replay agent work.
+                    wire.send_request(
+                        ID_NEW_SESSION,
+                        AGENT_METHOD_NAMES.session_new,
+                        NewSessionRequest::new(cwd.as_str())
+                            .mcp_servers(to_acp_mcp_servers(&config.mcp_servers)),
+                    )
+                    .await?;
+                    let new_session: NewSessionResponse = parse(
+                        pump_to_response(&mut wire, ID_NEW_SESSION, sink, &mut seq, resolver)
+                            .await?,
+                    )?;
+                    let modes = mode_ids(new_session.modes);
+                    (new_session.session_id, modes)
+                }
+                RpcResponse::Error(error) => {
+                    return Err(AcpError::Frame(error.to_string()));
+                }
+            }
         }
         _ => {
             wire.send_request(
@@ -353,6 +377,38 @@ async fn pump_to_response(
     seq: &mut u64,
     resolver: &dyn PermissionResolver,
 ) -> Result<serde_json::Value, AcpError> {
+    match pump_response(wire, target_id, sink, seq, resolver).await? {
+        RpcResponse::Result(result) => Ok(result),
+        RpcResponse::Error(error) => Err(AcpError::Frame(error.to_string())),
+    }
+}
+
+enum RpcResponse {
+    Result(serde_json::Value),
+    Error(serde_json::Value),
+}
+
+fn is_missing_session_error(error: &serde_json::Value) -> bool {
+    let message = error
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    message.contains("unknown session")
+        || message.contains("session not found")
+        || message.contains("no such session")
+}
+
+/// The response pump with a typed JSON-RPC error branch. Most call sites retain
+/// fail-closed behavior through [`pump_to_response`]; `session/load` uses the
+/// explicit error branch to fall back before any prompt or side effect occurs.
+async fn pump_response(
+    wire: &mut Wire<'_>,
+    target_id: u64,
+    sink: &mut dyn RunFactAppender,
+    seq: &mut u64,
+    resolver: &dyn PermissionResolver,
+) -> Result<RpcResponse, AcpError> {
     loop {
         let Some(msg) = wire.read().await? else {
             return Err(AcpError::Truncated);
@@ -364,9 +420,11 @@ async fn pump_to_response(
                     continue; // a stale response to an earlier id
                 }
                 if let Some(error) = msg.error {
-                    return Err(AcpError::Frame(error.to_string()));
+                    return Ok(RpcResponse::Error(error));
                 }
-                return Ok(msg.result.unwrap_or(serde_json::Value::Null));
+                return Ok(RpcResponse::Result(
+                    msg.result.unwrap_or(serde_json::Value::Null),
+                ));
             }
             Some(request_id) => {
                 let method = msg.method.as_deref().unwrap_or_default();
@@ -938,6 +996,72 @@ mod tests {
             Some("sess-resume"),
             "the resumed id is reported back for the next turn"
         );
+        agent.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_process_local_session_id_falls_back_to_session_new_before_prompt() {
+        let (mut ours, theirs) = channel();
+        let methods = Arc::new(Mutex::new(Vec::<String>::new()));
+        let captured = methods.clone();
+        let agent = tokio::spawn(async move {
+            let mut io = AgentIo::new(theirs);
+            io.read().await; // initialize
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}}"#,
+            )
+            .await;
+
+            let load = io.read().await.unwrap();
+            captured.lock().unwrap().push(
+                load.get("method")
+                    .and_then(|value| value.as_str())
+                    .unwrap()
+                    .to_string(),
+            );
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"Invalid params: Unknown sessionId: old"}}"#,
+            )
+            .await;
+
+            let fresh = io.read().await.unwrap();
+            captured.lock().unwrap().push(
+                fresh
+                    .get("method")
+                    .and_then(|value| value.as_str())
+                    .unwrap()
+                    .to_string(),
+            );
+            io.write_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"fresh"}}"#)
+                .await;
+
+            let prompt = io.read().await.unwrap();
+            captured.lock().unwrap().push(
+                prompt
+                    .get("method")
+                    .and_then(|value| value.as_str())
+                    .unwrap()
+                    .to_string(),
+            );
+            io.write_line(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#)
+                .await;
+        });
+
+        let mut sink = RecordingSink::default();
+        let mut config = TurnConfig::new(&AllowAll);
+        config.session_id = Some("old".into());
+        run_turn_with_config(ours.as_mut(), "continue", &mut sink, &mut config, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            methods.lock().unwrap().as_slice(),
+            &[
+                AGENT_METHOD_NAMES.session_load.to_string(),
+                AGENT_METHOD_NAMES.session_new.to_string(),
+                AGENT_METHOD_NAMES.session_prompt.to_string(),
+            ]
+        );
+        assert_eq!(config.session_id.as_deref(), Some("fresh"));
         agent.await.unwrap();
     }
 

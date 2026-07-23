@@ -62,6 +62,10 @@ async function main() {
   // CARGO_HOME/RUSTUP_HOME to the real home first so the harness's `cargo build` (which
   // resolves them from HOME) still finds the toolchain + dep cache under the fake HOME.
   const realHome = os.homedir();
+  const runtime = process.env.ACP_RUNTIME ?? 'claude';
+  const noMcp = process.env.ACP_NO_MCP === '1';
+  const supported = new Set(['claude', 'kimi', 'opencode', 'hermes']);
+  assert.ok(supported.has(runtime), `ACP_RUNTIME must be one of ${[...supported].join(', ')}`);
   const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-acp-home-'));
   const storageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-acp-store-'));
   // The ACP adapter reads its model from the operator env (the ACP model-delivery path).
@@ -73,7 +77,42 @@ async function main() {
     ANTHROPIC_BASE_URL: kimi.base,
     ANTHROPIC_API_KEY: kimi.key,
     ANTHROPIC_MODEL: kimi.model,
+    AWAKEN_ACP_CLI: runtime,
+    AWAKEN_MODEL: kimi.model,
   });
+  if (runtime === 'kimi') {
+    Object.assign(process.env, {
+      KIMI_MODEL_BASE_URL: `${kimi.base.replace(/\/+$/, '')}/v1`,
+      KIMI_MODEL_API_KEY: kimi.key,
+      KIMI_MODEL_NAME: kimi.model,
+    });
+  } else if (runtime === 'opencode') {
+    const baseURL = `${kimi.base.replace(/\/+$/, '')}/v1`;
+    Object.assign(process.env, {
+      OPENAI_BASE_URL: baseURL,
+      OPENAI_API_KEY: kimi.key,
+      OPENAI_MODEL: kimi.model,
+      OPENCODE_CONFIG_CONTENT: JSON.stringify({
+        model: `awaken-kimi/${kimi.model}`,
+        small_model: `awaken-kimi/${kimi.model}`,
+        enabled_providers: ['awaken-kimi'],
+        provider: {
+          'awaken-kimi': {
+            npm: '@ai-sdk/openai-compatible',
+            name: 'Awaken Kimi Code',
+            options: { baseURL, apiKey: '{env:OPENAI_API_KEY}' }, // awaken-allow: secret
+            models: { [kimi.model]: { name: kimi.model } },
+          },
+        },
+      }),
+    });
+  } else if (runtime === 'hermes') {
+    Object.assign(process.env, {
+      KIMI_BASE_URL: `${kimi.base.replace(/\/+$/, '')}/v1`,
+      KIMI_API_KEY: kimi.key,
+      HERMES_MODEL: kimi.model,
+    });
+  }
 
   // The expected value exists only inside the MCP fixture. Unlike arithmetic,
   // the model cannot manufacture it from the prompt and must really call the
@@ -97,9 +136,9 @@ async function main() {
         // The ACP adapter is handed this as its ANTHROPIC_MODEL (the ACP model-delivery
         // path resolves the run's model_ref), so it must be the real KIMI model name.
         model: kimi.model,
-        metadata: { 'awaken.runtime': 'acp:claude' },
-        mcp_servers: [{ name: 'calc', type: 'url', url: fixture.url }],
-        vault_ids: [vault.id],
+        metadata: { 'awaken.runtime': `acp:${runtime}` },
+        mcp_servers: noMcp ? [] : [{ name: 'calc', type: 'url', url: fixture.url }],
+        vault_ids: noMcp ? [] : [vault.id],
         betas: BETAS,
       });
 
@@ -108,7 +147,9 @@ async function main() {
           type: 'user.message',
           content: [{
             type: 'text',
-            text: 'Use the available tool named mcp__calc__attest, then reply with only its opaque audit token. The token is not present in this prompt and must not be guessed.',
+            text: noMcp
+              ? 'Reply with only OK. Do not call tools.'
+              : 'Use the available tool named mcp__calc__attest, then reply with only its opaque audit token. The token is not present in this prompt and must not be guessed.',
           }],
         }],
         betas: BETAS,
@@ -128,6 +169,11 @@ async function main() {
       // the injected server reached the CLI. Every upstream request carries the vault token,
       // but only the host relay materializes it; the sandboxed CLI receives a loopback URL.
       const initializes = fixture.calls.filter((c) => c.method === 'initialize').length;
+      if (noMcp) {
+        assert.ok(texts.some((t) => t.trim() === 'OK'), `expected a plain ACP reply, got ${JSON.stringify(texts)}`);
+        pass(`ACP ${runtime} completed a namespace turn without MCP`);
+        return;
+      }
       assert.ok(
         initializes >= 2,
         `both the host and the real ACP CLI connected to the injected server (≥2 initialize), got ${initializes}`,
@@ -146,11 +192,13 @@ async function main() {
         ? fs.readdirSync(threadsDir).filter((t) => fs.existsSync(path.join(threadsDir, t, 'config_home')))
         : [];
       assert.ok(homes.length > 0, `an isolated per-thread config home was created under ${threadsDir}`);
-      const hostClaude = path.join(sandboxHome, '.claude');
-      const clobbered = fs.existsSync(hostClaude)
-        && fs.readdirSync(hostClaude).some((n) => n !== '.npm');
-      assert.ok(!clobbered, 'the ACP run never wrote the host default ~/.claude config');
-      pass('ACP execution used an isolated config home; the host default ~/.claude was untouched');
+      const defaultHomes = ['.claude', '.kimi-code', '.config/opencode', '.hermes'];
+      const clobbered = defaultHomes.some((relative) => {
+        const target = path.join(sandboxHome, relative);
+        return fs.existsSync(target) && fs.readdirSync(target).some((n) => n !== '.npm');
+      });
+      assert.ok(!clobbered, 'the ACP run never wrote a CLI default config home');
+      pass(`ACP ${runtime} execution used an isolated config home`);
 
       // Keep transport/config assertions independent from provider semantics so a
       // remote quota failure still diagnoses the completed portions of the chain.
@@ -163,7 +211,7 @@ async function main() {
       pass('KIMI dynamically called mcp__calc__attest and reported its fixture-only token');
     });
 
-    console.log('E2E PASS: real claude --acp + KIMI + dynamic vault-bound MCP, config-home isolated.');
+    console.log(`E2E PASS: real ${runtime} ACP + KIMI + dynamic vault-bound MCP, config-home isolated.`);
     process.exitCode = 0;
   } catch (err) {
     console.error('E2E FAIL:', err);

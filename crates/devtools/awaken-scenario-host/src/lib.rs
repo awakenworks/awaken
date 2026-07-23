@@ -576,6 +576,7 @@ const FAKE_ACP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_acp::A
     },
     mcp_interface: awaken_run_executor_acp::McpInterface::AcpSession,
     config_home_env: "CLAUDE_CONFIG_DIR",
+    config_home_aliases: &[],
     credential_file: None,
     memory_entrypoint: "CLAUDE.md",
     retained_paths: &[],
@@ -583,6 +584,7 @@ const FAKE_ACP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_acp::A
     session_persistence: awaken_run_executor_acp::SessionPersistence::None,
     context_window_env: None,
     env: &[],
+    passthrough_env: &[],
 };
 
 /// [`build_acp_router`]'s twin that drives the fake CLI through the REAL projecting
@@ -643,12 +645,14 @@ const FAKE_ACP_MCP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_ac
     },
     mcp_interface: awaken_run_executor_acp::McpInterface::AcpSession,
     config_home_env: "CLAUDE_CONFIG_DIR",
+    config_home_aliases: &[],
     credential_file: None,
     memory_entrypoint: "CLAUDE.md",
     retained_paths: &[],
     session_persistence: awaken_run_executor_acp::SessionPersistence::None,
     context_window_env: None,
     env: &[],
+    passthrough_env: &[],
 };
 
 /// A launch resolver with a fixed (dummy) model: the fake CLI ignores the model env, so
@@ -691,32 +695,55 @@ pub async fn build_acp_managed_mcp_router() -> Router {
 }
 
 /// The REAL-CLI, REAL-LLM twin of [`build_acp_managed_mcp_router`]: the managed plane
-/// with the **actual** `claude --acp` adapter (the catalog `claude` row, launched via
-/// `npx`) wired as the ACP backend, its model resolved from the operator env (KIMI:
-/// `ANTHROPIC_BASE_URL`/`ANTHROPIC_MODEL`/`ANTHROPIC_API_KEY`), and α loopback-relay MCP
-/// delivery so the sandboxed CLI receives no vault secret while the host relay authenticates
-/// upstream. Each thread's config home is isolated under
-/// `AWAKEN_STORAGE_DIR/threads/<t>/config_home` — the CLI never touches the host's real
-/// `~/.claude`. Drives a real dynamic MCP tool call end to end. `AWAKEN_MODEL_MODE=acp-real-mcp`.
+/// with the actual catalog CLI selected by `AWAKEN_ACP_CLI` (`claude` by default),
+/// its model resolved from that row's typed environment projection, and α
+/// loopback-relay MCP delivery so the sandboxed CLI receives no vault secret while
+/// the host relay authenticates upstream. Each thread's config home is isolated
+/// under `AWAKEN_STORAGE_DIR/threads/<t>/config_home`. Drives a real dynamic MCP
+/// tool call end to end. `AWAKEN_MODEL_MODE=acp-real-mcp`.
 pub async fn build_acp_real_mcp_router() -> Router {
     let store_dir = std::env::var("AWAKEN_STORAGE_DIR")
         .ok()
         .filter(|v| !v.is_empty())
         .map(std::path::PathBuf::from);
-    let cli = *awaken_run_executor_acp::acp_cli("claude").expect("claude is a catalog row");
-    // The host default model_ref mirrors the operator's `ANTHROPIC_MODEL` — the same env
-    // the ACP model-delivery reads — so a session that names no model still hands the CLI
-    // the real model name (not the scenario label). A session may still override it.
-    let model_ref = std::env::var("ANTHROPIC_MODEL")
+    let cli_id = std::env::var("AWAKEN_ACP_CLI")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "claude".to_string());
+    let cli = *awaken_run_executor_acp::acp_cli(&cli_id)
+        .unwrap_or_else(|| panic!("AWAKEN_ACP_CLI={cli_id} is not a catalog row"));
+    // AWAKEN_MODEL is protocol-neutral. Preserve the Claude-specific environment
+    // fallback for the original real-Kimi scenario.
+    let model_ref = std::env::var("AWAKEN_MODEL")
         .ok()
         .filter(|v| !v.is_empty())
+        .or_else(|| std::env::var(cli.model_delivery.model).ok())
         .unwrap_or_else(|| "acp-real-mcp".to_string());
-    awaken_cli::build_management_router_with_host_customizer(
-        Arc::new(McpToolModel),
-        model_ref,
-        move |host| host.with_projected_acp(cli, store_dir),
-    )
-    .await
+    match store_dir.clone() {
+        Some(dir) => {
+            // The scenario deliberately restarts between ACP runtimes. Keep the
+            // management/resource plane under one root so the same MemoryStore id
+            // and content survive Kimi → OpenCode → Claude → Hermes.
+            const SCENARIO_SEAL_KEY: [u8; 32] = [0xA5; 32];
+            let projection_dir = dir.clone();
+            awaken_cli::build_durable_management_router_with_host_customizer(
+                &dir,
+                &SCENARIO_SEAL_KEY,
+                Arc::new(McpToolModel),
+                model_ref,
+                move |host| host.with_projected_acp(cli, Some(projection_dir)),
+            )
+            .await
+        }
+        None => {
+            awaken_cli::build_management_router_with_host_customizer(
+                Arc::new(McpToolModel),
+                model_ref,
+                move |host| host.with_projected_acp(cli, None),
+            )
+            .await
+        }
+    }
 }
 
 /// [`FAKE_ACP_SCRIPT`]'s sandboxed twin (bash, for `/dev/tcp`), with an OS-egress

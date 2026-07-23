@@ -505,6 +505,16 @@ pub struct LocalSandbox {
 }
 
 impl LocalSandbox {
+    /// Absolute host path used as the Workdir tier's agent workspace.
+    ///
+    /// ACP carries a `cwd` independently from the child process cwd. A bound ACP
+    /// adapter must send this exact path in `session/new`; otherwise the protocol
+    /// default `/` makes the CLI's own file tools operate outside the realized
+    /// Session tree even though the process itself was launched here.
+    pub fn workspace_path(&self) -> &std::path::Path {
+        self.root.root()
+    }
+
     /// Materialize a runtime-owned, read-only file tree below the sandbox root.
     /// Every relative path is revalidated by [`IsolatedRoot`], existing symlinks are
     /// rejected, and permissions are narrowed only after the complete tree is
@@ -572,6 +582,7 @@ impl LocalSandbox {
         let mut cmd = TokioCommand::new(program);
         cmd.args(&command.argv[1..]);
         cmd.current_dir(&host_cwd);
+        cmd.env_clear();
         // Reserved, runtime-owned env: where the agent writes/works (the local tier
         // has no path fidelity, so a process finds the outputs dir via this var).
         cmd.env("AWAKEN_OUTPUTS_DIR", &host_outputs);
@@ -598,9 +609,14 @@ impl LocalSandbox {
         command: pc::Command,
     ) -> Result<(Box<dyn pc::ProcessHandle>, Box<dyn AgentChannel>), pc::SandboxError> {
         let mut cmd = self.build_command(&command)?;
+        let stderr = if std::env::var_os("AWAKEN_SANDBOX_AGENT_STDERR").is_some() {
+            ProcStdio::inherit()
+        } else {
+            ProcStdio::null()
+        };
         cmd.stdin(ProcStdio::piped())
             .stdout(ProcStdio::piped())
-            .stderr(ProcStdio::null());
+            .stderr(stderr);
         let mut child = cmd.spawn().map_err(err)?;
         let stdin = child
             .stdin
@@ -1106,6 +1122,10 @@ mod shred_tests {
         let tmp = tempfile::tempdir().unwrap();
         let provider = LocalProvider::new(tmp.path());
         let sandbox = provider.create_sandbox(&bare_spec("t-cmd")).await.unwrap();
+        assert_eq!(
+            sandbox.workspace_path(),
+            crate::sandbox_dir(tmp.path(), "t-cmd")
+        );
 
         let mut cmd = pc::Command::new(["/bin/true"]);
         cmd.cwd = "/work".into();

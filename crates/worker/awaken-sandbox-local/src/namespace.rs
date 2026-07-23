@@ -140,6 +140,7 @@ fn host_projection_path(
 #[must_use]
 pub fn bubblewrap_argv(input: &RenderInput) -> Vec<String> {
     let mut a: Vec<String> = vec![s("bwrap")];
+    a.push(s("--clearenv"));
     a.extend(
         [
             "--unshare-user",
@@ -158,10 +159,32 @@ pub fn bubblewrap_argv(input: &RenderInput) -> Vec<String> {
     a.extend(["--proc", "/proc"].into_iter().map(s));
     a.extend(["--dev", "/dev"].into_iter().map(s));
     a.extend(["--tmpfs", "/tmp"].into_iter().map(s));
-    for dir in ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"] {
+    // `/etc/resolv.conf` is commonly a symlink into one of these `/run`
+    // directories. Binding `/etc` alone leaves a dangling link and makes every
+    // otherwise-unrestricted namespace fail DNS with EAI_AGAIN. The `-try`
+    // form stays portable when either resolver runtime directory is absent.
+    for dir in [
+        "/usr",
+        "/bin",
+        "/sbin",
+        "/lib",
+        "/lib64",
+        "/etc",
+        "/run/systemd/resolve",
+        "/run/NetworkManager",
+    ] {
         a.push(s("--ro-bind-try"));
         a.push(s(dir));
         a.push(s(dir));
+    }
+    // A projected PATH may name an operator-managed runtime outside the system
+    // roots above (NVM, ~/.local/bin, etc.). Expose only those explicitly
+    // allowlisted PATH roots read-only. NVM's bin entries symlink into the
+    // sibling lib tree, so bind the complete version root.
+    for root in projected_runtime_roots(input.env) {
+        a.push(s("--ro-bind-try"));
+        a.push(root.clone());
+        a.push(root);
     }
     a.push(s("--bind"));
     a.push(input.host_workspace.to_string_lossy().into_owned());
@@ -198,6 +221,54 @@ pub fn bubblewrap_argv(input: &RenderInput) -> Vec<String> {
     a.push(s("--"));
     a.extend(input.argv.iter().cloned());
     a
+}
+
+fn projected_runtime_roots(env: &[(String, String)]) -> Vec<String> {
+    let Some(path) = env
+        .iter()
+        .rev()
+        .find_map(|(key, value)| (key == "PATH").then_some(value))
+    else {
+        return Vec::new();
+    };
+    let mut roots = Vec::new();
+    for entry in std::env::split_paths(path) {
+        if !entry.is_absolute()
+            || entry.starts_with("/usr")
+            || entry.starts_with("/bin")
+            || entry.starts_with("/sbin")
+        {
+            continue;
+        }
+        let is_bin = entry.file_name().is_some_and(|name| name == "bin");
+        let path = entry.to_string_lossy();
+        let root = if let Some((prefix, _)) = path.split_once("/.local/share/uv/python/") {
+            // uv virtualenv interpreters use absolute links through a moving
+            // version alias (for example `cpython-3.11-linux-*`) that resolves to
+            // a concrete patch directory. Project the uv Python directory so both
+            // the literal alias and its target exist inside the namespace.
+            PathBuf::from(format!("{prefix}/.local/share/uv/python"))
+        } else if is_bin && (path.contains("/venv/") || path.ends_with("/venv/bin")) {
+            // Editable Python installs resolve modules beside the virtualenv
+            // (Hermes installs `hermes_cli` this way). The application root is the
+            // virtualenv's parent, so mounting only `venv/` starts Python but loses
+            // the selected CLI's package.
+            entry
+                .parent()
+                .and_then(std::path::Path::parent)
+                .unwrap_or(&entry)
+                .to_path_buf()
+        } else if is_bin && path.contains("/.nvm/versions/node/") {
+            entry.parent().unwrap_or(&entry).to_path_buf()
+        } else {
+            entry
+        };
+        let root = root.to_string_lossy().into_owned();
+        if !roots.contains(&root) {
+            roots.push(root);
+        }
+    }
+    roots
 }
 
 fn seatbelt_string(value: &str) -> String {
@@ -874,9 +945,14 @@ impl NamespaceSandbox {
         if cfg!(target_os = "macos") {
             self.configure_macos_command(&mut cmd, &command)?;
         }
+        let stderr = if std::env::var_os("AWAKEN_SANDBOX_AGENT_STDERR").is_some() {
+            ProcStdio::inherit()
+        } else {
+            ProcStdio::null()
+        };
         cmd.stdin(ProcStdio::piped())
             .stdout(ProcStdio::piped())
-            .stderr(ProcStdio::null());
+            .stderr(stderr);
         let mut child = cmd.spawn().map_err(err)?;
         let stdin = child
             .stdin
@@ -1191,6 +1267,80 @@ mod tests {
         assert_eq!(&a[sep + 1..], &["claude", "--acp"]);
         // unrestricted net => no --unshare-net
         assert!(!a.iter().any(|x| x == "--unshare-net"));
+        assert!(
+            a.windows(3).any(|window| {
+                window
+                    == [
+                        "--ro-bind-try",
+                        "/run/systemd/resolve",
+                        "/run/systemd/resolve",
+                    ]
+            }),
+            "systemd-resolved's resolv.conf target is visible"
+        );
+        assert!(
+            a.windows(3).any(|window| {
+                window
+                    == [
+                        "--ro-bind-try",
+                        "/run/NetworkManager",
+                        "/run/NetworkManager",
+                    ]
+            }),
+            "NetworkManager's resolv.conf target is visible"
+        );
+    }
+
+    #[test]
+    fn bubblewrap_projects_explicit_non_system_path_runtimes_read_only() {
+        let ws = PathBuf::from("/host/ws");
+        let out = PathBuf::from("/host/out");
+        let argv = vec![s("npx"), s("agent")];
+        let env = vec![(
+            "PATH".to_string(),
+            "/home/u/.nvm/versions/node/v22.22.0/bin:/home/u/.local/bin:/usr/bin".to_string(),
+        )];
+        let rendered = bubblewrap_argv(&input(
+            &ws,
+            &out,
+            &[],
+            &env,
+            &pc::NetworkPolicy::Unrestricted,
+            &argv,
+        ));
+        let joined = rendered.join(" ");
+        assert!(joined.contains(
+            "--ro-bind-try /home/u/.nvm/versions/node/v22.22.0 \
+             /home/u/.nvm/versions/node/v22.22.0"
+        ));
+        assert!(joined.contains("--ro-bind-try /home/u/.local/bin /home/u/.local/bin"));
+        assert_eq!(
+            projected_runtime_roots(&env),
+            vec![
+                "/home/u/.nvm/versions/node/v22.22.0".to_string(),
+                "/home/u/.local/bin".to_string(),
+            ]
+        );
+        assert!(rendered.iter().any(|value| value == "--clearenv"));
+    }
+
+    #[test]
+    fn bubblewrap_projects_a_python_virtualenv_root_for_symlinked_clis() {
+        let env = vec![(
+            "PATH".to_string(),
+            "/home/u/.hermes/hermes-agent/venv/bin:\
+             /home/u/.local/share/uv/python/cpython-3.11/bin:\
+             /home/u/.local/bin:/usr/bin"
+                .to_string(),
+        )];
+        assert_eq!(
+            projected_runtime_roots(&env),
+            vec![
+                "/home/u/.hermes/hermes-agent".to_string(),
+                "/home/u/.local/share/uv/python".to_string(),
+                "/home/u/.local/bin".to_string(),
+            ]
+        );
     }
 
     #[test]

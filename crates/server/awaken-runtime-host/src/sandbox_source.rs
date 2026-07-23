@@ -717,19 +717,37 @@ impl BoundLocalChannelSource {
 impl AgentChannelSource for BoundLocalChannelSource {
     async fn open(&self, activation: &RunActivation) -> Result<AgentSession, OpenError> {
         let mut launch = self.launch.resolve(activation)?;
-        if self.sandbox.is_container()
-            && let Some(cli) = self.launch.cli()
-        {
-            launch.argv = cli
-                .container_argv
-                .iter()
-                .map(|part| (*part).to_string())
-                .collect();
+        if let Some(cli) = self.launch.cli() {
+            if self.sandbox.is_container() {
+                launch.argv = cli
+                    .container_argv
+                    .iter()
+                    .map(|part| (*part).to_string())
+                    .collect();
+            }
+            // The resolver's host config-home path is outside a namespace/container
+            // sandbox. Point every CLI — including AcpSession CLIs with no generated
+            // config file — at a directory realized inside the bound Session
+            // environment. A sentinel forces the directory to exist before launch.
+            let config_home = self.sandbox.config_home();
+            self.sandbox
+                .materialize_inline(&format!("{config_home}/.awaken-config-home"), b"")
+                .await
+                .map_err(|error| OpenError(format!("materialize ACP config home: {error}")))?;
             launch.env.retain(|(key, _)| key != cli.config_home_env);
-            launch.env.push((
-                cli.config_home_env.to_string(),
-                self.sandbox.config_home().to_string(),
-            ));
+            launch
+                .env
+                .push((cli.config_home_env.to_string(), config_home.to_string()));
+            for alias in cli.config_home_aliases {
+                launch.env.retain(|(key, _)| key != alias);
+                launch
+                    .env
+                    .push(((*alias).to_string(), config_home.to_string()));
+            }
+            // Do not expose the operator's home to an opaque CLI. This also gives
+            // dynamic launchers such as npx a writable, Session-isolated cache.
+            launch.env.retain(|(key, _)| key != "HOME");
+            launch.env.push(("HOME".to_string(), config_home));
         }
         let injection = match self.launch.cli() {
             Some(cli) => awaken_run_executor_acp::mcp_injection(
@@ -739,13 +757,10 @@ impl AgentChannelSource for BoundLocalChannelSource {
             )?,
             None => awaken_run_executor_acp::McpInjection::default(),
         };
+        let config_home = self.sandbox.config_home();
         if let Some(cli) = self.launch.cli()
-            && let Some((mount, (env_key, env_val))) = acp_config_mount(
-                cli,
-                injection.config_file.clone(),
-                self.sandbox.config_home(),
-                false,
-            )
+            && let Some((mount, (env_key, env_val))) =
+                acp_config_mount(cli, injection.config_file.clone(), &config_home, false)
         {
             let pc::MountSource::Inline { contents } = mount.source else {
                 return Err(OpenError(
@@ -768,7 +783,10 @@ impl AgentChannelSource for BoundLocalChannelSource {
             channel,
             process: Arc::from(process),
             codec: self.codec,
-            workspace_cwd: None,
+            // ACP's cwd is separate from the spawned process cwd and is authoritative
+            // for the CLI's own file tools. Point it at the same Session environment
+            // that owns the staged File/Repository/MemoryStore projections.
+            workspace_cwd: Some(self.sandbox.workspace_cwd()),
             mcp_session_servers: injection.session_servers,
         })
     }
@@ -1124,8 +1142,12 @@ mod tests {
             true
         }
 
-        fn config_home(&self) -> &'static str {
-            SANDBOX_CONFIG_HOME
+        fn config_home(&self) -> String {
+            SANDBOX_CONFIG_HOME.to_string()
+        }
+
+        fn workspace_cwd(&self) -> String {
+            SANDBOX_WORKSPACE.to_string()
         }
 
         async fn materialize_inline(
@@ -1195,7 +1217,7 @@ mod tests {
     #[tokio::test]
     async fn bound_container_delivers_session_new_mcp_servers() {
         let sandbox = Arc::new(CapturingAgentSandbox::default());
-        let source = bound_projecting_source(sandbox, "claude");
+        let source = bound_projecting_source(sandbox.clone(), "claude");
         let activation = acp_activation_with_plugin_config(
             "acp:claude",
             std::collections::BTreeMap::from([(
@@ -1212,8 +1234,36 @@ mod tests {
             .open(&activation)
             .await
             .expect("open bound ACP agent");
+        assert_eq!(
+            session.workspace_cwd.as_deref(),
+            Some(SANDBOX_WORKSPACE),
+            "session/new must point the CLI's file tools at the bound workspace"
+        );
         assert_eq!(session.mcp_session_servers.len(), 1);
         assert_eq!(session.mcp_session_servers[0].name, "github");
+        assert!(
+            sandbox
+                .materialized
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(path, bytes)| path == "/acp-config/.awaken-config-home" && bytes.is_empty()),
+            "an AcpSession CLI gets a realized writable config home"
+        );
+        let command = sandbox.command.lock().unwrap();
+        assert!(
+            command
+                .as_ref()
+                .unwrap()
+                .env
+                .iter()
+                .any(|entry| entry.name == "CLAUDE_CONFIG_DIR"
+                    && entry.value
+                        == pc::EnvValue::Inline {
+                            value: "/acp-config".to_string()
+                        }),
+            "the CLI points at the config home inside its sandbox"
+        );
     }
 
     #[tokio::test]

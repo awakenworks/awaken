@@ -89,6 +89,9 @@ pub struct AcpCli {
     pub mcp_interface: McpInterface,
     /// Env key naming the CLI's isolated config directory (e.g. `CLAUDE_CONFIG_DIR`).
     pub config_home_env: &'static str,
+    /// Additional standard/vendor home variables that point at the same isolated
+    /// root. Some CLIs split extensions from global config/data/cache state.
+    pub config_home_aliases: &'static [&'static str],
     /// Native credential file relative to the config home. The host may project an
     /// opaque credential-broker reference to this path as a durable writable Secret;
     /// the CLI owns its JSON format and token refresh behavior.
@@ -106,6 +109,10 @@ pub struct AcpCli {
     pub context_window_env: Option<&'static str>,
     /// Static non-secret env defaults for this CLI (lowest precedence).
     pub env: &'static [(&'static str, &'static str)],
+    /// Explicitly allowlisted operator configuration env copied into the
+    /// otherwise env-clear launch. Never list credential variables here: typed
+    /// model delivery above owns those and writes the resolved secret last.
+    pub passthrough_env: &'static [&'static str],
 }
 
 /// The host-resolved model coordinates handed to the projection: base URL and model
@@ -358,6 +365,7 @@ const CLAUDE: AcpCli = AcpCli {
     },
     mcp_interface: McpInterface::AcpSession,
     config_home_env: "CLAUDE_CONFIG_DIR",
+    config_home_aliases: &[],
     credential_file: Some(".credentials.json"),
     memory_entrypoint: "CLAUDE.md",
     retained_paths: &[".credentials.json", "settings.json"],
@@ -368,6 +376,40 @@ const CLAUDE: AcpCli = AcpCli {
     },
     context_window_env: Some("CLAUDE_CODE_AUTO_COMPACT_WINDOW"),
     env: &[],
+    passthrough_env: &[],
+};
+
+// Kimi Code speaks ACP natively through `kimi acp`. Use the published npm
+// package as the reproducible launcher: it supports the same command while
+// avoiding a dependency on a machine-global installation. The KIMI_MODEL_*
+// variables are Kimi Code's ephemeral model projection; they are applied in
+// memory and are never persisted into config.toml.
+const KIMI: AcpCli = AcpCli {
+    id: "kimi",
+    command: "npx",
+    args: &["-y", "@moonshot-ai/kimi-code@0.29", "acp"],
+    container_argv: &["kimi", "acp"],
+    model_delivery: ModelDelivery {
+        base_url: "KIMI_MODEL_BASE_URL",
+        model: "KIMI_MODEL_NAME",
+        model_config_key: None,
+        model_config_env: None,
+        key: "KIMI_MODEL_API_KEY",
+        aliases: &[],
+    },
+    mcp_interface: McpInterface::AcpSession,
+    config_home_env: "KIMI_CODE_HOME",
+    config_home_aliases: &[],
+    credential_file: None,
+    memory_entrypoint: "AGENTS.md",
+    retained_paths: &["config.toml"],
+    session_persistence: SessionPersistence::LocalDir {
+        session_subpath: "sessions",
+        keyed_by: SessionKey::InternalId,
+    },
+    context_window_env: Some("KIMI_MODEL_MAX_CONTEXT_SIZE"),
+    env: &[("KIMI_MODEL_PROVIDER_TYPE", "kimi")],
+    passthrough_env: &[],
 };
 
 // Codex is likewise fronted by the official adapter package
@@ -392,6 +434,7 @@ const CODEX: AcpCli = AcpCli {
         path: "config.toml",
     },
     config_home_env: "CODEX_HOME",
+    config_home_aliases: &[],
     credential_file: Some("auth.json"),
     memory_entrypoint: "AGENTS.md",
     retained_paths: &["auth.json", "config.toml"],
@@ -405,6 +448,7 @@ const CODEX: AcpCli = AcpCli {
         "CODEX_CONFIG",
         r#"{"approval_policy":"never","sandbox_mode":"workspace-write"}"#,
     )],
+    passthrough_env: &[],
 };
 
 // Gemini CLI speaks ACP natively via `--experimental-acp` (no npm wrapper), so it
@@ -424,6 +468,7 @@ const GEMINI: AcpCli = AcpCli {
     },
     mcp_interface: McpInterface::AcpSession,
     config_home_env: "GEMINI_DIR",
+    config_home_aliases: &[],
     credential_file: None,
     memory_entrypoint: "GEMINI.md",
     retained_paths: &[],
@@ -435,6 +480,7 @@ const GEMINI: AcpCli = AcpCli {
     },
     context_window_env: None,
     env: &[],
+    passthrough_env: &[],
 };
 
 // opencode (sst/opencode) is a native, provider-agnostic coding agent that exposes an
@@ -457,6 +503,12 @@ const OPENCODE: AcpCli = AcpCli {
     },
     mcp_interface: McpInterface::AcpSession,
     config_home_env: "OPENCODE_CONFIG_DIR",
+    config_home_aliases: &[
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_STATE_HOME",
+    ],
     credential_file: Some("auth.json"),
     memory_entrypoint: "AGENTS.md",
     retained_paths: &["auth.json"],
@@ -468,6 +520,40 @@ const OPENCODE: AcpCli = AcpCli {
     },
     context_window_env: None,
     env: &[],
+    passthrough_env: &["OPENCODE_CONFIG_CONTENT"],
+};
+
+// Hermes exposes a native ACP stdio server. Its provider resolver consumes the
+// Kimi Code API coordinates below, while HERMES_HOME keeps Hermes' own
+// MEMORY.md/USER.md/session database isolated from the operator's home. Awaken's
+// mounted MemoryStore remains the cross-runtime truth; Hermes-local memory is
+// adapter-private state and is never projected as the shared store.
+const HERMES: AcpCli = AcpCli {
+    id: "hermes",
+    command: "hermes",
+    args: &["acp"],
+    container_argv: &["hermes", "acp"],
+    model_delivery: ModelDelivery {
+        base_url: "KIMI_BASE_URL",
+        model: "HERMES_MODEL",
+        model_config_key: None,
+        model_config_env: None,
+        key: "KIMI_API_KEY",
+        aliases: &[],
+    },
+    mcp_interface: McpInterface::AcpSession,
+    config_home_env: "HERMES_HOME",
+    config_home_aliases: &[],
+    credential_file: None,
+    memory_entrypoint: "MEMORY.md",
+    retained_paths: &["config.yaml", "state.db"],
+    session_persistence: SessionPersistence::LocalDir {
+        session_subpath: "sessions",
+        keyed_by: SessionKey::InternalId,
+    },
+    context_window_env: None,
+    env: &[],
+    passthrough_env: &[],
 };
 
 /// Whether a launch command dynamically installs its agent on first run (an `npx`
@@ -481,7 +567,7 @@ pub fn is_dynamic_install(cli: &AcpCli) -> bool {
 /// The known ACP CLIs. Adding one is a row here — never a branch elsewhere.
 #[must_use]
 pub fn known_acp_clis() -> &'static [AcpCli] {
-    &[CLAUDE, CODEX, GEMINI, OPENCODE]
+    &[CLAUDE, KIMI, CODEX, GEMINI, OPENCODE, HERMES]
 }
 
 /// Resolve an ACP CLI by id (`Backend::Acp { cli }`); `None` is a fail-closed
@@ -514,9 +600,11 @@ mod tests {
     #[test]
     fn registry_holds_the_known_clis_and_unknown_fails_closed() {
         assert!(acp_cli("claude").is_some());
+        assert!(acp_cli("kimi").is_some());
         assert!(acp_cli("codex").is_some());
         assert!(acp_cli("gemini").is_some());
         assert!(acp_cli("opencode").is_some());
+        assert!(acp_cli("hermes").is_some());
         assert!(acp_cli("no_such_cli").is_none());
     }
 

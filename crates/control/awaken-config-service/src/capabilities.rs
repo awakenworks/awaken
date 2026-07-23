@@ -73,6 +73,13 @@ pub fn runtime_catalog() -> Vec<Value> {
             "Claude Code via the ACP adapter (npx @agentclientprotocol/claude-agent-acp). Reads CLAUDE.md.",
         ),
         runtime(
+            "acp:kimi",
+            "Kimi Code",
+            "acp",
+            Some("kimi"),
+            "Kimi Code CLI via its native ACP server. Reads AGENTS.md.",
+        ),
+        runtime(
             "acp:codex",
             "Codex",
             "acp",
@@ -92,6 +99,13 @@ pub fn runtime_catalog() -> Vec<Value> {
             "acp",
             Some("opencode"),
             "OpenCode via ACP.",
+        ),
+        runtime(
+            "acp:hermes",
+            "Hermes Agent",
+            "acp",
+            Some("hermes"),
+            "Hermes Agent via its native ACP server; private MEMORY.md state stays isolated.",
         ),
     ]
 }
@@ -308,9 +322,11 @@ mod tests {
             [
                 "awaken",
                 "acp:claude",
+                "acp:kimi",
                 "acp:codex",
                 "acp:gemini",
-                "acp:opencode"
+                "acp:opencode",
+                "acp:hermes"
             ]
         );
         // Native has no cli; every acp:* names its cli so the host can look it up.

@@ -88,12 +88,79 @@ impl EnvLaunchResolver {
     /// to its own default home (degraded, not broken).
     fn config_home_env(&self, thread_id: &str) -> Vec<(String, String)> {
         match ConfigHome::open(self.store_dir.as_deref(), thread_id) {
-            Ok(home) => vec![(
-                self.cli.config_home_env.to_string(),
-                home.root().display().to_string(),
-            )],
+            Ok(home) => {
+                let root = home.root().display().to_string();
+                std::iter::once((self.cli.config_home_env.to_string(), root.clone()))
+                    .chain(
+                        self.cli
+                            .config_home_aliases
+                            .iter()
+                            .map(|key| ((*key).to_string(), root.clone())),
+                    )
+                    .collect()
+            }
             Err(_) => Vec::new(),
         }
+    }
+
+    /// Put the selected CLI's resolved installation directory first in PATH.
+    ///
+    /// Operator-managed launchers are often symlinks from `~/.local/bin` into a
+    /// private runtime (Hermes uses a Python virtualenv). A namespace can mount
+    /// the PATH directory itself while the symlink target remains invisible.
+    /// Resolving only this catalog-selected executable gives the sandbox renderer
+    /// the precise runtime root it must project, without exposing the rest of the
+    /// operator's home.
+    fn runtime_path(&self) -> Option<String> {
+        let path = (self.env)("PATH")?;
+        let command = std::path::Path::new(self.cli.command);
+        let executable = if command.components().count() > 1 {
+            command.to_path_buf()
+        } else {
+            std::env::split_paths(&path)
+                .map(|dir| dir.join(command))
+                .find(|candidate| candidate.is_file())?
+        };
+        let resolved = std::fs::canonicalize(executable).ok()?;
+        let first_line = std::fs::File::open(&resolved).ok().and_then(|file| {
+            use std::io::BufRead as _;
+            let mut line = String::new();
+            std::io::BufReader::new(file)
+                .read_line(&mut line)
+                .ok()
+                .map(|_| line)
+        });
+        // `npx` is a JS script reached through the operator's NVM symlink and uses
+        // `#!/usr/bin/env node`. Its original PATH already selects the matching
+        // Node. Prefixing either the canonical npm script directory or `/usr/bin`
+        // would instead pair NVM's npm with the host's older system Node.
+        if first_line
+            .as_deref()
+            .and_then(|line| line.strip_prefix("#!"))
+            .and_then(|line| line.split_whitespace().next())
+            .and_then(|program| std::path::Path::new(program).file_name())
+            .is_some_and(|program| program == "env")
+        {
+            return Some(path);
+        }
+        let runtime_bin = resolved.parent()?;
+        let mut entries = vec![runtime_bin.to_path_buf()];
+        // A Python console script may live in a virtualenv whose interpreter is
+        // itself a symlink into an operator-managed uv Python installation. Put
+        // that resolved interpreter directory on PATH as a projection hint too.
+        if let Some(first_line) = first_line
+            && let Some(interpreter) = first_line.strip_prefix("#!")
+            && let Some(program) = interpreter.split_whitespace().next()
+            && std::path::Path::new(program).is_absolute()
+            && let Ok(program) = std::fs::canonicalize(program)
+            && let Some(bin) = program.parent()
+        {
+            entries.push(bin.to_path_buf());
+        }
+        entries.extend(std::env::split_paths(&path));
+        std::env::join_paths(entries)
+            .ok()
+            .map(|value| value.to_string_lossy().into_owned())
     }
 }
 
@@ -103,7 +170,23 @@ impl LaunchResolver for EnvLaunchResolver {
     }
 
     fn extra_env(&self, activation: &RunActivation) -> Vec<(String, String)> {
-        self.config_home_env(&activation.thread_id.0)
+        let mut projected = self.config_home_env(&activation.thread_id.0);
+        // Bound Workdir/Namespace launches clear the ambient environment. Carry
+        // only the process-discovery inputs an external CLI needs; the bound
+        // sandbox replaces HOME with its isolated config home before launch.
+        if let Some(path) = self.runtime_path().or_else(|| (self.env)("PATH")) {
+            projected.push(("PATH".to_string(), path));
+        }
+        if let Some(home) = (self.env)("HOME") {
+            projected.push(("HOME".to_string(), home));
+        }
+        projected.extend(
+            self.cli
+                .passthrough_env
+                .iter()
+                .filter_map(|key| (self.env)(key).map(|value| ((*key).to_string(), value))),
+        );
+        projected
     }
 }
 
@@ -225,7 +308,12 @@ mod tests {
         };
         let base = std::env::temp_dir().join(format!("awaken-lrt-{}", std::process::id()));
         let r = resolver_with(
-            &[("ANTHROPIC_BASE_URL", "u"), ("ANTHROPIC_API_KEY", "k")], // awaken-allow: secret
+            &[
+                ("ANTHROPIC_BASE_URL", "u"),
+                ("ANTHROPIC_API_KEY", "k"), // awaken-allow: secret
+                ("PATH", "/managed/node/bin:/usr/bin"),
+                ("HOME", "/operator/home"),
+            ],
             Some(base.clone()),
         );
         let act = RunActivation {
@@ -259,6 +347,14 @@ mod tests {
         let env = r.extra_env(&act);
         assert_eq!(env[0].0, "CLAUDE_CONFIG_DIR");
         assert!(env[0].1.contains("th"));
+        assert!(
+            env.iter()
+                .any(|(key, value)| key == "PATH" && value.ends_with("/managed/node/bin:/usr/bin"))
+        );
+        assert!(
+            env.iter()
+                .any(|(key, value)| key == "HOME" && value == "/operator/home")
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
