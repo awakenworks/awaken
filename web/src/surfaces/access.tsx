@@ -7,7 +7,7 @@ import { api, isAbsent } from "../lib/api/client";
 import type { IamTokenView } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 import GatedPage from "../components/app/GatedPage";
-import { Button, Card, Pill, TextField, SelectField } from "../components/ui";
+import { Button, Card, CopyButton, Pill, TextField, SelectField } from "../components/ui";
 
 const WORKSPACE = "wrkspc_default";
 
@@ -59,9 +59,7 @@ export default function AccessSurface() {
             {app.t("Cleartext shown ONCE — copy it now: ", "明文只显示一次——立即复制:")}
             <code>{minted}</code>
           </span>
-          <Button onClick={() => navigator.clipboard.writeText(minted)}>
-            copy
-          </Button>
+          <CopyButton value={minted} />
           <Button variant="ghost" onClick={() => setMinted(null)}>
             ✕
           </Button>

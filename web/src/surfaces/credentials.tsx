@@ -7,7 +7,7 @@ import { useState } from "react";
 import { api, ws } from "../lib/api/client";
 import type { CredentialSource, CredentialValidation } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
-import { Button, Card, Pill, SecretField, TextField } from "../components/ui";
+import { Button, Card, Modal, Pill, SecretField, TextField } from "../components/ui";
 
 function SourceRow({ source }: { source: CredentialSource }) {
   const app = useApp();
@@ -157,9 +157,7 @@ export default function CredentialsSurface() {
       </div>
 
       {entering && (
-        <div className="overlay" onClick={() => setEntering(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>{app.t("Enter credential", "录入凭证")}</h3>
+        <Modal title={app.t("Enter credential", "录入凭证")} onClose={() => setEntering(false)}>
             <div className="row">
               {["vault", "oauth", "worker_local"].map((k) => (
                 <Button key={k} variant={form.kind === k ? "primary" : "ghost"} onClick={() => setForm({ ...form, kind: k })}>
@@ -207,8 +205,7 @@ export default function CredentialsSurface() {
                 {form.kind === "vault" ? app.t("Seal & save", "密封保存") : app.t("Save binding", "保存绑定")}
               </Button>
             </div>
-          </div>
-        </div>
+        </Modal>
       )}
     </>
   );

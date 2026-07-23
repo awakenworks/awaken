@@ -2,11 +2,11 @@
 // `.switch` in base.css. Use for enabling a behavior or a boolean flag where a labeled
 // toggle reads better than a bare checkbox. All native input attrs pass through.
 
-import type { InputHTMLAttributes } from "react";
+import { Switch as SharedSwitch, type SwitchProps as SharedSwitchProps } from "@awaken/ui";
 import { cx } from "./cx";
 
-export type SwitchProps = Omit<InputHTMLAttributes<HTMLInputElement>, "type">;
+export type SwitchProps = Omit<SharedSwitchProps, "label" | "onCheckedChange">;
 
 export function Switch({ className, ...props }: SwitchProps) {
-  return <input type="checkbox" role="switch" className={cx("switch", className)} {...props} />;
+  return <SharedSwitch className={cx("switch", className)} {...props} />;
 }
