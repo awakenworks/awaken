@@ -10,6 +10,9 @@ importers:
 
   web:
     dependencies:
+      '@awaken/ui':
+        specifier: link:../../awaken-ui
+        version: link:../../awaken-ui
       '@tanstack/react-query':
         specifier: ^5.62.0
         version: 5.101.2(react@19.2.7)
