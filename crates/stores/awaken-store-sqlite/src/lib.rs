@@ -284,6 +284,7 @@ impl CheckpointReader for SqliteCommitCoordinator {
             .iter()
             .filter(|event| event.sequence > after)
             .filter(|event| match scope {
+                EventScope::All => true,
                 EventScope::Run(run_id) => &event.run_id == run_id,
                 EventScope::Thread(thread_id) => projection
                     .run_records

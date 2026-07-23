@@ -275,6 +275,7 @@ pub async fn awaken_session_executor::SharedHost::is_awaiting(&self, &str) -> bo
 pub async fn awaken_session_executor::SharedHost::pending_tool(&self, &str) -> core::option::Option<awaken_session_executor::host::types::PendingTool>
 pub async fn awaken_session_executor::SharedHost::resume(&self, &str, &str, awaken_session_executor::HostResume) -> core::result::Result<awaken_session_executor::host::types::RunResult, awaken_session_executor::host::types::HostError>
 pub async fn awaken_session_executor::SharedHost::run(&self, core::option::Option<&str>, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::result::Result<awaken_session_executor::host::types::RunResult, awaken_session_executor::host::types::HostError>
+pub async fn awaken_session_executor::SharedHost::run_lifecycle_feed(&self, &str) -> core::result::Result<awaken_agent_contract::thread::read::lifecycle::CheckpointRunLifecycleFeed, awaken_session_executor::host::types::HostError>
 pub async fn awaken_session_executor::SharedHost::run_streaming(&self, core::option::Option<&str>, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> core::result::Result<awaken_session_executor::host::types::RunResult, awaken_session_executor::host::types::HostError>
 pub async fn awaken_session_executor::SharedHost::thread_usage(&self, &str) -> awaken_runtime_contract::llm::ThreadUsage
 impl awaken_session_executor::SharedHost

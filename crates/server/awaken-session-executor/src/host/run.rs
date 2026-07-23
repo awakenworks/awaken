@@ -26,6 +26,24 @@ impl SharedHost {
         }
     }
 
+    /// Durable committed-truth lifecycle feed for the partition containing
+    /// `thread`. A database-less Worker has only a non-authoritative recovery
+    /// projection and therefore cannot expose this Control-side feed.
+    pub async fn run_lifecycle_feed(
+        &self,
+        thread: &str,
+    ) -> Result<awaken_agent_contract::CheckpointRunLifecycleFeed, HostError> {
+        self.ctx_for(thread, None)
+            .await?
+            .commit
+            .lifecycle_feed()
+            .ok_or_else(|| {
+                HostError::bad_request(
+                    "run lifecycle feed is available only from committed-truth authority",
+                )
+            })
+    }
+
     /// A thread's accumulated token usage, attributed per model (the run loop records
     /// it as committed thread state under [`THREAD_USAGE_STATE_KEY`]; each write is the
     /// running cumulative, so the last `Set` is the whole tally). Empty for a thread
