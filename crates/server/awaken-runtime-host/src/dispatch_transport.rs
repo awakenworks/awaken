@@ -252,7 +252,7 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
         .route("/v1/worker/checkpoint/put", post(put_checkpoint))
         .route("/v1/worker/checkpoint/delete", post(delete_checkpoint))
         .route("/v1/worker/recovery/snapshot", post(recovery_snapshot))
-        .layer(axum::middleware::from_fn_with_state(
+        .route_layer(axum::middleware::from_fn_with_state(
             service.clone(),
             authenticate_worker,
         ))

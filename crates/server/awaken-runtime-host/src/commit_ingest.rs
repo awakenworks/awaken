@@ -148,7 +148,7 @@ fn commit_ingest_router_from_parts(
             "/v1/worker/commit-claimed",
             axum::routing::post(commit_claimed),
         )
-        .layer(axum::middleware::from_fn_with_state(
+        .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             authenticate_commit_worker,
         ))
