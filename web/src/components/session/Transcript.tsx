@@ -4,7 +4,14 @@
 // detail, the editor Sandbox, the Admin Assistant, and the model Test modal.
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Button, Card, Pill } from "../ui";
+import {
+  ChatApproval,
+  ChatComposer,
+  ChatMessage,
+  ChatThinking,
+  ToolCallCard as SharedToolCallCard,
+} from "@awaken/ui";
+import { Button, Pill } from "../ui";
 import type { ContentBlock, InboundEvent, SessionEvent } from "../../lib/api/types";
 import { useApp } from "../../lib/app-state";
 import { sessionErrorText, textOf } from "../../lib/session-log";
@@ -26,77 +33,48 @@ function ToolCard({
   const custom = ev.type === "agent.custom_tool_use";
   const name = "name" in ev && typeof ev.name === "string" ? ev.name : "?";
   const isError = result && "is_error" in result && result.is_error === true;
+  const tone = pendingConfirm ? "pending" : result ? (isError ? "error" : "done") : "running";
+  const statusLabel = pendingConfirm
+    ? app.t("awaiting approval", "待确认")
+    : result
+      ? isError ? "error" : "done ✓"
+      : app.t("running", "运行中");
   return (
-    <details
-      style={{
-        borderRadius: 9,
-        background: "var(--soft)",
-        boxShadow: "inset 0 0 0 1px var(--line)",
-        padding: "7px 10px",
-        margin: "6px 0",
-      }}
-      open={pendingConfirm}
-    >
-      <summary style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}>
-        <span>🛠</span>
-        <code>{name}</code>
+    <div>
+      <SharedToolCallCard
+        name={name}
+        tone={tone}
+        statusLabel={statusLabel}
+        defaultOpen={pendingConfirm}
+        input={JSON.stringify("input" in ev ? ev.input : null, null, 2)}
+        output={result ? textOf("content" in result ? (result.content as ContentBlock[]) : undefined) : null}
+        labels={{
+          input: app.t("Input", "输入"),
+          output: app.t("Result", "结果"),
+          inputAriaLabel: app.t("Tool input", "工具输入"),
+          outputAriaLabel: app.t("Tool result", "工具结果"),
+        }}
+        badges={<>
         {custom && <Pill tone="neutral">client-executed</Pill>}
         {"evaluated_permission" in ev && typeof ev.evaluated_permission === "string" && (
           <Pill tone="neutral">{ev.evaluated_permission}</Pill>
         )}
-        <span style={{ marginLeft: "auto" }}>
-          {pendingConfirm ? (
-            <Pill tone="warn">{app.t("awaiting approval", "待确认")}</Pill>
-          ) : result ? (
-            <Pill tone={isError ? "danger" : "ok"}>{isError ? "error" : "done ✓"}</Pill>
-          ) : (
-            <span className="pill agent">
-              <span className="dot pulse" style={{ background: "var(--agent)" }} />
-              {app.t("running", "运行中")}
-            </span>
-          )}
-        </span>
-      </summary>
-      <pre className="mono" style={{ margin: "8px 0 0", whiteSpace: "pre-wrap", fontSize: 11.5 }}>
-        {JSON.stringify("input" in ev ? ev.input : null, null, 2)}
-      </pre>
-      {result && (
-        <pre
-          className="mono"
-          style={{
-            margin: "8px 0 0",
-            whiteSpace: "pre-wrap",
-            fontSize: 11.5,
-            color: isError ? "var(--danger)" : "var(--fg2)",
-          }}
-        >
-          {textOf("content" in result ? (result.content as ContentBlock[]) : undefined)}
-        </pre>
-      )}
+        </>}
+      />
       {pendingConfirm && (
-        <div
-          className="banner warn"
-          style={{ marginTop: 8, flexDirection: "column", alignItems: "stretch", gap: 8 }}
-        >
-          <strong>
-            ⚠ {app.t("Approve", "批准")} <code>{name}</code> {app.t("execution?", "执行?")}
-          </strong>
-          <div className="row">
-            <input
-              className="input"
-              style={{ flex: 1 }}
-              placeholder={app.t("deny note (optional)", "拒绝说明(可选)")}
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-            />
-            <Button onClick={() => onConfirm(false, note)}>{app.t("Deny", "拒绝")}</Button>
-            <Button variant="primary" onClick={() => onConfirm(true, note)}>
-              ✓ {app.t("Allow", "允许")}
-            </Button>
-          </div>
-        </div>
+        <ChatApproval
+          title={<>{app.t("Approve", "批准")} <code>{name}</code> {app.t("execution?", "执行?")}</>}
+          note={note}
+          onNoteChange={setNote}
+          noteLabel={app.t("Decision note", "处理说明")}
+          notePlaceholder={app.t("deny note (optional)", "拒绝说明(可选)")}
+          approveLabel={app.t("Allow", "允许")}
+          rejectLabel={app.t("Deny", "拒绝")}
+          onApprove={() => onConfirm(true, note)}
+          onReject={() => onConfirm(false, note)}
+        />
       )}
-    </details>
+    </div>
   );
 }
 
@@ -153,7 +131,6 @@ export default function Transcript({
   const [pendingMessage, setPendingMessage] = useState<string | null>(null);
   const [model, setModel] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
-  const composerRef = useRef<HTMLTextAreaElement>(null);
   const handledTools = useRef(new Set<string>());
   const handledAutoMessage = useRef<string | null>(null);
   const hadLocalActivity = useRef(false);
@@ -250,7 +227,6 @@ export default function Transcript({
     const userText = draft;
     sendText(userText);
     setDraft("");
-    if (composerRef.current) composerRef.current.style.height = "auto";
   };
 
   return (
@@ -267,25 +243,21 @@ export default function Transcript({
         switch (ev.type) {
           case "user.message":
             return (
-              <Card
+              <ChatMessage
                 key={ev.id}
-                style={{ padding: "8px 12px", maxWidth: "88%", alignSelf: "flex-end", background: "var(--soft)" }}
-              >
-                <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.5 }}>
-                  {textOf("content" in ev ? (ev.content as ContentBlock[]) : undefined)}
-                </div>
-              </Card>
+                role="user"
+                authorLabel={app.t("You", "你")}
+                body={textOf("content" in ev ? (ev.content as ContentBlock[]) : undefined)}
+              />
             );
           case "agent.message":
             return (
-              <Card key={ev.id} style={{ padding: "10px 14px", maxWidth: "92%" }}>
-                <span className="mut" style={{ fontSize: 10.5 }}>
-                  ⬡ agent
-                </span>
-                <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.55 }}>
-                  {textOf("content" in ev ? (ev.content as ContentBlock[]) : undefined)}
-                </div>
-              </Card>
+              <ChatMessage
+                key={ev.id}
+                role="assistant"
+                authorLabel="Agent"
+                body={textOf("content" in ev ? (ev.content as ContentBlock[]) : undefined)}
+              />
             );
           case "agent.tool_use":
           case "agent.custom_tool_use":
@@ -347,8 +319,7 @@ export default function Transcript({
         }
       })}
       {pendingMessage && !log.some((event) => event.type === "user.message" && textOf("content" in event ? (event.content as ContentBlock[]) : undefined).endsWith(pendingMessage)) && (
-        <Card className="transcript-pending-message" style={{ padding: "8px 12px", maxWidth: "88%", alignSelf: "flex-end", background: "var(--soft)" }}>
-          <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{pendingMessage}</div>
+        <ChatMessage role="user" authorLabel={app.t("You", "你")} body={pendingMessage} className="transcript-pending-message">
           <span className={sendError ? "err" : "mut"} style={{ fontSize: 10.5 }}>
             {sendError
               ? app.t("send failed — message retained", "发送失败——消息已保留")
@@ -356,37 +327,29 @@ export default function Transcript({
                 ? app.t("sending…", "发送中…")
                 : app.t("sent ✓", "已发送 ✓")}
           </span>
-        </Card>
+        </ChatMessage>
       )}
       {(running || sendPending) && (
-        <div className="agent-working row" role="status" aria-live="polite">
-          <span className="dot pulse" style={{ background: "var(--agent)" }} />
-          <span>{app.t("Agent is working…", "Agent 正在处理…")}</span>
-        </div>
+        <ChatThinking
+          className="agent-working"
+          label={app.t("Agent is working…", "Agent 正在处理…")}
+          formatElapsed={(seconds) => `${seconds}s`}
+        />
       )}
       <div ref={bottomRef} />
       {composer && (
-        <div className="transcript-composer">
-          <textarea
-            ref={composerRef}
-            className="input transcript-composer__input"
-            rows={1}
-            aria-label={app.t("Message to agent", "给 Agent 的消息")}
-            placeholder={placeholder ?? app.t("Message…", "输入消息…")}
-            value={draft}
-            onChange={(e) => {
-              setDraft(e.target.value);
-              e.currentTarget.style.height = "auto";
-              e.currentTarget.style.height = `${Math.min(e.currentTarget.scrollHeight, 180)}px`;
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                e.preventDefault();
-                submit();
-              }
-            }}
-          />
-          {modelOverride && (
+        <ChatComposer
+          className="transcript-composer"
+          sendMode="enter"
+          value={draft}
+          onChange={setDraft}
+          onSubmit={submit}
+          busy={sendPending}
+          ariaLabel={app.t("Message to agent", "给 Agent 的消息")}
+          placeholder={placeholder ?? app.t("Message…", "输入消息…")}
+          sendLabel={sendPending ? app.t("Sending…", "发送中…") : app.t("Send", "发送")}
+          sendIcon={<span>{sendPending ? app.t("Sending…", "发送中…") : app.t("Send", "发送")}</span>}
+          leadingActions={modelOverride ? (
             <input
               className="input mono"
               style={{ width: 170 }}
@@ -394,17 +357,12 @@ export default function Transcript({
               value={model}
               onChange={(e) => setModel(e.target.value)}
             />
+          ) : null}
+          hint={app.t(
+            "Enter to send · Shift+Enter for a new line · State the goal; tools and skills handle the details.",
+            "Enter 发送 · Shift+Enter 换行 · 只需说明目标，细节交给工具和 Skill。",
           )}
-          <Button variant="primary" disabled={!draft.trim() || sendPending} onClick={submit}>
-            {sendPending ? app.t("Sending…", "发送中…") : app.t("Send", "发送")}
-          </Button>
-          <div className="transcript-composer__hint">
-            {app.t(
-              "Enter to send · Shift+Enter for a new line · State the goal; tools and skills handle the details.",
-              "Enter 发送 · Shift+Enter 换行 · 只需说明目标，细节交给工具和 Skill。",
-            )}
-          </div>
-        </div>
+        />
       )}
       {sendError && <div className="err">{sendError.message}</div>}
     </div>
