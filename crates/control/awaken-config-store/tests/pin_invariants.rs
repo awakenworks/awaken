@@ -170,6 +170,7 @@ fn configs_round_trip_through_json_losslessly() {
         awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
             name: "gh".into(),
             url: "https://mcp.example".into(),
+            credential: None,
         },
     ];
 

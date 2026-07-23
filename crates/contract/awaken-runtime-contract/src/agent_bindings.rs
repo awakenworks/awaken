@@ -17,6 +17,12 @@ pub const AGENT_BINDINGS_CONFIG_KEY: &str = "awaken.agent_bindings";
 pub struct AgentMcpServerBinding {
     pub name: String,
     pub url: String,
+    /// Exact secret-free credential revision frozen into the publication.
+    ///
+    /// Runtime may materialize this revision but must never select a different
+    /// credential. `None` denotes an intentionally unauthenticated server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<crate::credential::CredentialRef>,
 }
 
 /// The normalized, executable subset of Agent integration configuration.

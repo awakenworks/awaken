@@ -820,7 +820,19 @@ fn typed_mcp_servers(values: Vec<serde_json::Value>) -> Result<Vec<AgentMcpServe
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default()
                 .to_string();
-            Ok(AgentMcpServerBinding { name, url })
+            let credential = object
+                .get("credential")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|error| {
+                    format!("mcp_servers entry {index} has an invalid credential: {error}")
+                })?;
+            Ok(AgentMcpServerBinding {
+                name,
+                url,
+                credential,
+            })
         })
         .collect()
 }

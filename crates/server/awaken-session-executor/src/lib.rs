@@ -1223,6 +1223,16 @@ impl SessionRuntime for ManagedHost {
                     let row = credentials.credentials.get(&source_id).await.map_err(|e| {
                         RunError::bad_request(format!("mcp server `{}`: {e}", binding.name))
                     })?;
+                    if row.workspace_id != init.workspace_id
+                        || binding.credential_revision.is_some_and(|revision| {
+                            u64::try_from(row.version).ok() != Some(revision)
+                        })
+                    {
+                        return Err(RunError::bad_request(format!(
+                            "mcp server `{}` credential is unavailable in this Workspace at the published revision",
+                            binding.name
+                        )));
+                    }
                     let bearer = awaken_credential_vault::materialize(&row, &*credentials.secrets)
                         .await
                         .map_err(|e| {

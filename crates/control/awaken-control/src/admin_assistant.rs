@@ -735,6 +735,7 @@ mod tests {
             awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
                 name: "github".into(),
                 url: "https://mcp.example".into(),
+                credential: None,
             },
         ];
         plane
