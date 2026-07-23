@@ -1,6 +1,6 @@
 # ADR-0065: Recoverable and Embeddable Remote Worker Protocol
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-23
 - Builds on: [ADR-0006](0006-fact-authority-run-record-is-cache.md)
   (committed facts are read authority),
@@ -117,10 +117,11 @@ P1 adds a public exact-match `AttemptExecutorRegistry`, registry-derived Worker
 capabilities, production Worker identity, and durable lifecycle feeds split
 between committed Run truth and dispatch operations.
 
-P2 adds PostgreSQL active-active Control Nodes, versioned recovery
-cache/changefeed optimization, snapshot compaction, explicit configuration
-objects, and optional streaming transports. P2 changes deployment and
-performance, not the P0 protocol invariants.
+P2 permits PostgreSQL active-active Control Nodes and makes their asynchronous
+recovery and lifecycle reads authoritative. Versioned recovery caches/deltas,
+snapshot compaction, further configuration cleanup, and streaming transports
+are optional follow-up optimizations: they may reduce cost, but are not allowed
+to weaken or redefine the P0 protocol invariants.
 
 ## Consequences
 
@@ -139,6 +140,22 @@ performance, not the P0 protocol invariants.
 - NATS, Kafka, and etcd may support wake, feed, or directory roles but do not
   replace the committed-truth store without a new adapter that satisfies the
   full coordinator and recovery contracts.
+
+## Implementation Evidence
+
+P0 and P1 are implemented by the public recovery projection, durable operation
+receipts, injectable claimed-commit service, `WorkerNodeBuilder`, exact executor
+registry, registered Worker identity, and the separated lifecycle/dispatch
+feeds described in the detailed design.
+
+The P2 active-active boundary is covered by a real PostgreSQL test that launches
+two independent Control processes over one schema and deliberately routes
+registration-independent protocol calls across both. Control A exits after
+durably applying a claimed commit but before delivering its HTTP receipt;
+Control B returns the durable duplicate receipt, serves authoritative recovery,
+and settles the same claim. The test asserts one receipt, one message, and one
+completion tombstone and runs in `scripts/ci/pg_tests.sh`, which provisions an
+ephemeral PostgreSQL instance so the case cannot silently self-skip.
 
 ## Rejected Alternatives
 

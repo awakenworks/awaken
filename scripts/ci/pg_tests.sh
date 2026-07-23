@@ -62,6 +62,8 @@ cargo test -p awaken-dispatch \
 cargo test -p awaken-session-executor \
   commit_claimed_postgres_guard_blocks_reclaim_until_http_commit_finishes \
   || status=1
+cargo test -p awaken-session-executor --test active_active_postgres -- --test-threads=1 \
+  || status=1
 cargo test -p awaken-config-store --test postgres || status=1
 cargo test -p awaken-admin-config-api --test postgres_store || status=1
 cargo test -p awaken-store-postgres --test postgres_live || status=1
