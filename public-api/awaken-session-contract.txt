@@ -224,7 +224,7 @@ pub awaken_session_contract::PersistedSession::session_id: alloc::string::String
 pub awaken_session_contract::PersistedSession::status: alloc::string::String
 pub awaken_session_contract::PersistedSession::title: core::option::Option<alloc::string::String>
 pub struct awaken_session_contract::PersistedSessionRuntime
-pub awaken_session_contract::PersistedSessionRuntime::delegate_ids: core::option::Option<alloc::vec::Vec<alloc::string::String>>
+pub awaken_session_contract::PersistedSessionRuntime::delegate_ids: alloc::vec::Vec<alloc::string::String>
 pub awaken_session_contract::PersistedSessionRuntime::deny_egress: bool
 pub awaken_session_contract::PersistedSessionRuntime::mcp_servers: alloc::vec::Vec<awaken_session_contract::McpServerBinding>
 pub awaken_session_contract::PersistedSessionRuntime::runtime: core::option::Option<alloc::string::String>
@@ -260,7 +260,7 @@ pub awaken_session_contract::ScopedPersistedSession::session: awaken_session_con
 pub awaken_session_contract::ScopedPersistedSession::workspace_id: alloc::string::String
 pub struct awaken_session_contract::SessionInit
 pub awaken_session_contract::SessionInit::agent_id: alloc::string::String
-pub awaken_session_contract::SessionInit::delegate_ids: core::option::Option<alloc::vec::Vec<alloc::string::String>>
+pub awaken_session_contract::SessionInit::delegate_ids: alloc::vec::Vec<alloc::string::String>
 pub awaken_session_contract::SessionInit::deny_egress: bool
 pub awaken_session_contract::SessionInit::mcp_servers: alloc::vec::Vec<awaken_session_contract::McpServerBinding>
 pub awaken_session_contract::SessionInit::model: core::option::Option<alloc::string::String>
