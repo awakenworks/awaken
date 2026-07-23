@@ -395,7 +395,9 @@ pub fn build_error_router() -> Router {
 /// [`EchoModel`] keeps the worker self-contained (no upstream model needed), so the
 /// e2e can assert the worker drove the run without configuring a provider. The
 /// PRODUCTION worker (real per-run model resolution) lives in `awaken-worker`.
-pub async fn run_echo_worker(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_echo_worker(
+    upstream: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     struct EchoWorkerProvider;
 
     impl InferenceExecutorMaterializer for EchoWorkerProvider {

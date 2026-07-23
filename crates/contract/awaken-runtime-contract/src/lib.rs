@@ -44,8 +44,9 @@ pub use delegation::{
     ResultRecord, RunDelegationService, RunDelegations,
 };
 pub use execution::{
-    AttemptExecutorRegistry, AttemptExecutorRegistryError, Cancellation, ExecutorCapabilities,
-    NATIVE_RUNTIME_CAPABILITY, RunAttemptExecutor, RunExecutor, Wait, execution_capability,
+    A2A_RUNTIME_CAPABILITY, AttemptExecutorRegistry, AttemptExecutorRegistryError, Cancellation,
+    ExecutorCapabilities, NATIVE_RUNTIME_CAPABILITY, RunAttemptExecutor, RunExecutor, Wait,
+    execution_capability,
 };
 pub use live_inbox::{LiveInbox, LiveInboxMessage, LiveInboxMessageId};
 pub use llm::{ChatRequest, ChatResponse, LlmExecutor};
@@ -89,7 +90,9 @@ pub use resolver::{
     AgentSnapshotResolver, PublishedAgentSnapshotSource, RunResolver, StaticPublishedAgentSnapshots,
 };
 pub use resume::{ResumeCommand, ResumeError, ResumeResult, validate_resume};
-pub use runtime_context::{CaptureContext, RuntimeRunContext};
+pub use runtime_context::{
+    AttemptOwnershipError, AttemptOwnershipVerifier, CaptureContext, RuntimeRunContext,
+};
 pub use snapshot::{
     AgentConfigRevisionRef, AgentPublicationVersion, AgentSnapshotFingerprint,
     AgentSnapshotMetadata, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,

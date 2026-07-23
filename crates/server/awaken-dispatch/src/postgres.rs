@@ -198,6 +198,27 @@ impl StreamCheckpointStore for PostgresStreamCheckpointStore {
 
 #[async_trait]
 impl DispatchQueue for PostgresDispatchStore {
+    async fn worker_owns_run(
+        &self,
+        identity: &crate::WorkerIdentity,
+        run_id: &RunId,
+        now_ms: u64,
+    ) -> Result<bool, DispatchError> {
+        let p = NS;
+        sqlx::query_scalar(&format!(
+            "SELECT EXISTS(SELECT 1 FROM {p}_dispatch \
+             WHERE run_id = $1 AND status = 'running' \
+             AND lease_owner = $2 AND lease_until IS NOT NULL \
+             AND lease_until >= $3)"
+        ))
+        .bind(&run_id.0)
+        .bind(identity.lease_owner())
+        .bind(now_ms as i64)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(reject)
+    }
+
     async fn enqueue_with(
         &self,
         request: RunDispatch,
@@ -479,20 +500,23 @@ impl DispatchQueue for PostgresDispatchStore {
         // claim/reclaim/settle/cancel from changing or removing the authority row
         // until the real ThreadCommit on its own connection has completed.
         let mut tx = self.pool.begin().await.map_err(reject)?;
-        let current: Option<(i64, Option<String>, Json<RunDispatch>)> = sqlx::query_as(&format!(
-            "SELECT lease_epoch, lease_owner, request \
+        let current: Option<(i64, Option<String>, Option<i64>, Json<RunDispatch>)> =
+            sqlx::query_as(&format!(
+                "SELECT lease_epoch, lease_owner, lease_until, request \
              FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
-        ))
-        .bind(&claim.run_id.0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(reject)?;
+            ))
+            .bind(&claim.run_id.0)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(reject)?;
         let request = current
-            .filter(|(epoch, owner, _)| {
+            .filter(|(epoch, owner, _, _)| {
                 (*epoch).max(0) as u64 == claim.epoch && owner.as_deref() == Some(&claim.owner)
             })
-            .map(|(_, _, Json(request))| request);
-        Ok(request.map(|request| CommitEpochGuard::new(tx, request)))
+            .and_then(|(_, _, expires_ms, Json(request))| {
+                expires_ms.map(|expires_ms| (request, expires_ms.max(0) as u64))
+            });
+        Ok(request.map(|(request, expires_ms)| CommitEpochGuard::new(tx, request, expires_ms)))
     }
 
     async fn claim(

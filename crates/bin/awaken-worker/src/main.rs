@@ -6,7 +6,7 @@
 //! serves no HTTP surface of its own.
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let upstream = std::env::var("AWAKEN_UPSTREAM_URL").unwrap_or_default();
     awaken_worker::run(&upstream).await
 }
