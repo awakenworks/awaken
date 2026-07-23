@@ -1463,6 +1463,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "thiserror",
         "tokio",
         "axum",
+        # The product HTTP adapter owns web-console static asset and SPA delivery;
+        # the outer CLI only locates/builds the distribution and supplies its path.
+        "tower-http",
         "tower",
         "http-body-util",
         # dev-only (mcp_sessions test): the VaultRefresher refresh-grant path +
