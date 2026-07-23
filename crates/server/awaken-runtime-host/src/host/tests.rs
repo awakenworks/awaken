@@ -953,6 +953,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
             workspace_id: host.local_workspace().into(),
             agent_id: "agent".into(),
             mcp_servers: Vec::new(),
+            delegate_ids: None,
             resources: effective_resources(
                 store
                     .map(|id| TestInput {
@@ -1501,6 +1502,7 @@ async fn prepare_session_stages_egress_into_the_sandbox_spec() {
         workspace_id: host.local_workspace().into(),
         agent_id: "a".into(),
         mcp_servers: Vec::new(),
+        delegate_ids: None,
         resources: Default::default(),
         model: None,
         runtime: None,
@@ -1550,6 +1552,7 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
         workspace_id: "ws".into(),
         agent_id: "a".into(),
         mcp_servers: Vec::new(),
+        delegate_ids: None,
         resources: Default::default(),
         model: None,
         runtime: None,
@@ -1583,6 +1586,7 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
         workspace_id: "ws".into(),
         agent_id: "a".into(),
         mcp_servers: Vec::new(),
+        delegate_ids: None,
         resources: Default::default(),
         model: None,
         runtime: None,
@@ -1618,6 +1622,7 @@ async fn prepare_session_mounts_an_effective_memory_resource() {
         workspace_id: host.local_workspace().into(),
         agent_id: agent.into(),
         mcp_servers: Vec::new(),
+        delegate_ids: None,
         resources: effective_resources(
             (agent == "a")
                 .then(|| TestInput {
@@ -1803,6 +1808,7 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
                 workspace_id: host.local_workspace().into(),
                 agent_id: "a".into(),
                 mcp_servers: Vec::new(),
+                delegate_ids: None,
                 resources: effective_resources(vec![
                     TestInput {
                         kind: "file".into(),
@@ -1982,6 +1988,7 @@ async fn a_github_repository_resource_injects_a_scoped_github_mcp_server() {
                 workspace_id: host.local_workspace().into(),
                 agent_id: "a".into(),
                 mcp_servers: Vec::new(),
+                delegate_ids: None,
                 resources: effective_repository(
                     "repo-1",
                     "https://github.com/awaken/example.git",
@@ -2065,6 +2072,7 @@ async fn rotating_a_github_repository_token_re_keys_the_clone_and_mcp_bearer() {
                 workspace_id: host.local_workspace().into(),
                 agent_id: "a".into(),
                 mcp_servers: Vec::new(),
+                delegate_ids: None,
                 resources: effective_repository(
                     "repo-1",
                     "https://github.com/awaken/example.git",
@@ -2153,6 +2161,7 @@ fn bare_session(agent: &str, workspace: &str) -> awaken_protocol_managed::Sessio
         workspace_id: workspace.into(),
         agent_id: agent.into(),
         mcp_servers: Vec::new(),
+        delegate_ids: None,
         resources: Default::default(),
         model: None,
         runtime: None,

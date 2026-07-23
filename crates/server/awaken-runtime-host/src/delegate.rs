@@ -74,11 +74,6 @@ impl Delegates {
         self.agent_rosters.insert(agent_id, targets);
     }
 
-    /// Whether the roster is empty (no delegates configured at all).
-    pub(crate) fn is_empty(&self) -> bool {
-        self.ids.is_empty()
-    }
-
     /// All delegate ids (the `multiagent` advertisement).
     pub(crate) fn ids(&self) -> Vec<String> {
         self.ids.iter().cloned().collect()
@@ -125,6 +120,8 @@ pub(crate) struct HostRunDelegationService {
     /// All configured Agent identities, per-Agent rosters, and remote adapters.
     /// A child receives its own roster, never an implicit copy of its delegation_origin's.
     delegates: Delegates,
+    config_service: Option<Arc<crate::config_plane::ConfigService>>,
+    workspace: String,
     scheduler: Option<RunScheduler>,
 }
 
@@ -135,10 +132,9 @@ impl HostRunDelegationService {
         provider: Arc<LocalProvider>,
         sandbox: Arc<crate::session_environment::SessionEnvironment>,
         reuse_sandbox: bool,
+        root_roster: HashSet<String>,
         delegates: Delegates,
-        scheduler: Option<RunScheduler>,
     ) -> Self {
-        let root_roster = delegates.ids.clone();
         Self {
             llm,
             model_ref,
@@ -147,8 +143,39 @@ impl HostRunDelegationService {
             reuse_sandbox,
             root_roster,
             delegates,
-            scheduler,
+            config_service: None,
+            workspace: String::new(),
+            scheduler: None,
         }
+    }
+
+    pub(crate) fn with_config_catalog(
+        mut self,
+        service: Option<Arc<crate::config_plane::ConfigService>>,
+        workspace: String,
+    ) -> Self {
+        self.config_service = service;
+        self.workspace = workspace;
+        self
+    }
+
+    pub(crate) fn with_scheduler(mut self, scheduler: Option<RunScheduler>) -> Self {
+        self.scheduler = scheduler;
+        self
+    }
+
+    fn roster_for(&self, agent_id: &str) -> HashSet<String> {
+        self.delegates
+            .agent_rosters
+            .get(agent_id)
+            .cloned()
+            .or_else(|| {
+                self.config_service
+                    .as_ref()?
+                    .delegate_ids_in(&self.workspace, agent_id)
+                    .map(|ids| ids.into_iter().collect())
+            })
+            .unwrap_or_default()
     }
 
     fn may_delegate_to(
@@ -156,12 +183,14 @@ impl HostRunDelegationService {
         origin: &awaken_agent_contract::agent::delegation::DelegationOrigin,
         target: &str,
     ) -> bool {
-        origin
-            .agent_lineage
-            .last()
-            .and_then(|agent| self.delegates.agent_rosters.get(agent))
-            .unwrap_or(&self.root_roster)
-            .contains(target)
+        if origin.agent_lineage.len() <= 1 {
+            self.root_roster.contains(target)
+        } else {
+            origin
+                .agent_lineage
+                .last()
+                .is_some_and(|agent| self.roster_for(agent).contains(target))
+        }
     }
 
     /// Drive a native delegate to one ordinary Run boundary.
@@ -182,12 +211,7 @@ impl HostRunDelegationService {
         let child_run_id = request.run_id.clone();
         // The child keeps its own committed usage; the returned value additionally
         // rolls that usage into the initiating Run's accounting projection.
-        let delegates = self
-            .delegates
-            .agent_rosters
-            .get(agent_id)
-            .cloned()
-            .unwrap_or_default();
+        let delegates = self.roster_for(agent_id);
         let run_delegation = if delegates.is_empty() {
             None
         } else {
@@ -456,9 +480,11 @@ mod durable_cancel_tests {
             provider,
             sandbox,
             true,
+            HashSet::from(["researcher".to_string()]),
             delegates,
-            Some(scheduler),
-        );
+        )
+        .with_config_catalog(None, "default".into())
+        .with_scheduler(Some(scheduler));
         let origin = DelegationOrigin::root_for_agent(
             RunId("parent-run".into()),
             "delegate-call",

@@ -96,6 +96,58 @@ impl<'de> Deserialize<'de> for ModelSelection {
     }
 }
 
+/// The delegation roster authored for one Agent.
+///
+/// Managed Agents keeps the public union as JSON, but the authoring aggregate
+/// stores only the executable coordinator form. The legacy `workers` spelling is
+/// accepted on read so existing drafts migrate without retaining an opaque value.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MultiagentConfig {
+    pub agent_ids: Vec<String>,
+}
+
+impl Serialize for MultiagentConfig {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct as _;
+
+        let mut state = serializer.serialize_struct("MultiagentConfig", 2)?;
+        state.serialize_field("type", "coordinator")?;
+        state.serialize_field("agents", &self.agent_ids)?;
+        state.end()
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum MultiagentConfigWire {
+    Coordinator {
+        #[serde(rename = "type")]
+        kind: Option<String>,
+        agents: Vec<String>,
+    },
+    Legacy {
+        workers: Vec<String>,
+    },
+}
+
+impl<'de> Deserialize<'de> for MultiagentConfig {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = MultiagentConfigWire::deserialize(deserializer)?;
+        let agent_ids = match wire {
+            MultiagentConfigWire::Coordinator { kind, agents } => {
+                if kind.as_deref().is_some_and(|kind| kind != "coordinator") {
+                    return Err(serde::de::Error::custom(
+                        "multiagent.type must be `coordinator`",
+                    ));
+                }
+                agents
+            }
+            MultiagentConfigWire::Legacy { workers } => workers,
+        };
+        Ok(Self { agent_ids })
+    }
+}
+
 /// A declarative agent configuration, identified by `id`. This is the config
 /// domain's source of truth; the runtime never edits it — it consumes only the
 /// compiled snapshot (ADR-0031). Field order is the canonical serialization order
@@ -144,11 +196,10 @@ pub struct AgentConfig {
     /// byte-identical; a non-empty pool enters the content address like any field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub model_candidates: Vec<ModelBinding>,
-    /// Managed-Agent identity/wire fields, carried so the config plane's agent
-    /// object stays consistent with the SDK `/v1/agents` object (name / model /
-    /// system / tools / mcp_servers / skills / multiagent / metadata). These are
-    /// authoring metadata — the runtime consumes only the compiled fields above —
-    /// so they are `skip_serializing_if`-empty to keep prior fingerprints identical.
+    /// Managed-Agent identity fields, carried so the config plane's agent object
+    /// stays consistent with the SDK `/v1/agents` object. Identity metadata is
+    /// excluded from the behavioral fingerprint; the typed MCP/Skill/delegation
+    /// bindings below are compiled into the executable snapshot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -168,7 +219,7 @@ pub struct AgentConfig {
     )]
     pub skill_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub multiagent: Option<serde_json::Value>,
+    pub multiagent: Option<MultiagentConfig>,
     /// Soft-deletion lifecycle of the authoring aggregate. Archived Agents remain
     /// readable (including revision history) but cannot be published or selected
     /// for new execution. Kept on the aggregate rather than hidden in metadata so

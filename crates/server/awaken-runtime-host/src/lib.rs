@@ -1183,6 +1183,8 @@ impl SessionRuntime for ManagedHost {
         if let Some(runtime) = &init.runtime {
             self.host.register_thread_runtime(thread, runtime);
         }
+        self.host
+            .register_thread_delegates(thread, init.delegate_ids.clone());
         // Stage the session's network-egress policy (from its environment): the first
         // turn's sandbox runs `bash` under `bwrap --unshare-net` when egress is denied.
         if init.deny_egress {
@@ -1333,7 +1335,11 @@ impl SessionRuntime for ManagedHost {
 
     fn capabilities_for(&self, thread: &str) -> AgentCapabilities {
         let workspace = self.host.thread_workspace(thread);
-        self.capabilities_for_workspace(&workspace)
+        let mut capabilities = self.capabilities_for_workspace(&workspace);
+        if let Some(delegate_ids) = self.host.thread_delegate_ids(thread) {
+            capabilities.delegates = delegate_ids;
+        }
+        capabilities
     }
 }
 

@@ -19,6 +19,8 @@ pub struct AgentConfigView {
     /// The delivered Skills selected by this Agent. Empty is an intentional empty
     /// selection for newly published configs, not "all global skills".
     pub skill_ids: Vec<String>,
+    /// Published Agent ids this Agent may invoke through `agent_run`.
+    pub delegate_ids: Vec<String>,
     /// Resources bound to the published Agent. The runtime mounts these at Session
     /// preparation; protocol projections expose the same effective inputs.
     pub resources: Vec<awaken_resource_contract::InputBinding>,

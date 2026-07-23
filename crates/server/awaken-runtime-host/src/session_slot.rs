@@ -22,6 +22,8 @@ pub(crate) struct SessionRuntimeSlot {
     pub model_ref: Option<String>,
     pub memory: Option<Arc<BoundMemory>>,
     pub mcp: Vec<PreparedMcpServer>,
+    /// Exact published delegation roster. `None` keeps unmanaged host defaults.
+    pub delegates: Option<Vec<String>>,
     /// `Some([])` deliberately means that the frozen manifest delivers no Skills;
     /// `None` is the legacy/latest-catalog compatibility path.
     pub skills: Option<Vec<awaken_skill_store::SkillVersion>>,

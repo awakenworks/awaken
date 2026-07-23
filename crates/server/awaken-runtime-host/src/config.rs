@@ -185,7 +185,7 @@ pub(crate) fn client_tool_descriptor(id: &str) -> ToolDescriptor {
 }
 
 /// The `agent_run` delegation descriptor (advertised only when a roster is set).
-fn delegation_descriptor() -> ToolDescriptor {
+pub(crate) fn delegation_descriptor() -> ToolDescriptor {
     builtin_tools()
         .into_iter()
         .find(|t| t.toolset == Toolset::Delegation)

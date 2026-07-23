@@ -511,18 +511,38 @@ impl SharedHost {
         // advertise: the skill tools plus the discovered MCP tools.
         let mut dynamic_descriptors = skill_descriptors;
         dynamic_descriptors.extend(mcp_descriptors);
-        let config = installed.unwrap_or_else(|| {
+        let session_delegates = self
+            .thread_delegate_ids(thread)
+            .map(|ids| ids.into_iter().collect())
+            .unwrap_or_else(|| self.delegates.ids_set().clone());
+        let mut config = installed.unwrap_or_else(|| {
             server_config(
                 "assistant",
                 &self.inference_routing.model_ref(thread, &self.model_ref),
                 &self.client_tools,
-                self.delegates.ids_set(),
+                &session_delegates,
                 &plugin_ids,
                 &self.plugin_config,
                 &dynamic_descriptors,
                 context_policy,
             )
         });
+        // A published roster is the capability truth; the concrete builtin tool
+        // remains owned by `awaken-ext-builtin-tools` and is materialized into this
+        // transient execution plan. The durable snapshot is never rewritten and no
+        // second descriptor definition enters the neutral publication contract.
+        if !session_delegates.is_empty()
+            && !config
+                .resolved_spec
+                .tool_descriptors
+                .iter()
+                .any(|tool| tool.id == awaken_ext_builtin_tools::AGENT_RUN)
+        {
+            config
+                .resolved_spec
+                .tool_descriptors
+                .push(crate::config::delegation_descriptor());
+        }
         // D6: for an ACP run, hand the session's staged MCP servers to the CLI's own MCP
         // client via `plugin_config.acp.mcp_servers`. Whether this run executes on ACP is
         // the host's runtime registration (`AcpBackend::is_acp`), not the config's

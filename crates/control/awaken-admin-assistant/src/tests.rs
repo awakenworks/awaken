@@ -412,8 +412,11 @@ async fn draft_agent_round_trips_mcp_skills_multiagent_and_metadata() {
     );
     assert_eq!(stored.skill_ids, vec!["greet"]);
     assert_eq!(
-        stored.multiagent,
-        Some(serde_json::json!({ "workers": ["a", "b"] }))
+        stored
+            .multiagent
+            .as_ref()
+            .map(|config| config.agent_ids.as_slice()),
+        Some(["a".to_string(), "b".to_string()].as_slice())
     );
     assert_eq!(
         stored.metadata.get("team").map(String::as_str),

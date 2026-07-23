@@ -27,7 +27,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_config_store::{AgentConfig, ManagementAuditRecord, ModelSelection, ToolOverride};
+use awaken_config_store::{
+    AgentConfig, ManagementAuditRecord, ModelSelection, MultiagentConfig, ToolOverride,
+};
 use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
 use awaken_runtime_contract::resolved::{ContextPolicy, ToolDescriptor};
 use awaken_runtime_contract::tool::{
@@ -837,6 +839,10 @@ fn typed_skill_ids(values: Vec<serde_json::Value>) -> Result<Vec<String>, String
         .collect()
 }
 
+fn typed_multiagent(value: serde_json::Value) -> Result<MultiagentConfig, String> {
+    serde_json::from_value(value).map_err(|error| format!("invalid multiagent roster: {error}"))
+}
+
 struct DraftAgent {
     validator: Arc<dyn DraftValidator>,
     store: Arc<dyn DraftStore>,
@@ -903,7 +909,10 @@ impl RawTool for DraftAgent {
             recovery_policies: Default::default(),
             mcp_servers,
             skill_ids,
-            multiagent: args.multiagent,
+            multiagent: match args.multiagent.map(typed_multiagent).transpose() {
+                Ok(value) => value,
+                Err(error) => return Ok(ToolOutput::error(call.call_id, error)),
+            },
             archived_at: None,
             metadata: args.metadata,
             // Compaction is derived from the model at publish; the admin assistant does not
@@ -1057,7 +1066,10 @@ impl RawTool for PatchAgent {
             };
         }
         if let Some(v) = patch.multiagent {
-            config.multiagent = Some(v);
+            config.multiagent = match typed_multiagent(v) {
+                Ok(value) => Some(value),
+                Err(error) => return Ok(ToolOutput::error(call.call_id, error)),
+            };
         }
         if let Some(v) = patch.metadata {
             config.metadata = v;

@@ -110,6 +110,7 @@ impl ManagedState {
         };
         // Echo the agent version the client pinned (or overrode over), defaulting to 1.
         let agent_version = req.agent.version().unwrap_or(1);
+        let delegate_ids = config_view.as_ref().map(|view| view.delegate_ids.clone());
         // Session-inline bindings override the Agent defaults by name or URL. The
         // effective set is used for preparation, persistence, and wire projection,
         // so the UI shows what the runtime will actually connect.
@@ -311,6 +312,7 @@ impl ManagedState {
             environment_binding: None,
             runtime: awaken_session_contract::PersistedSessionRuntime {
                 mcp_servers: bindings.clone(),
+                delegate_ids: delegate_ids.clone(),
                 runtime: req.awaken_runtime().map(str::to_string),
                 deny_egress,
                 sandbox: sandbox.clone(),
@@ -335,6 +337,7 @@ impl ManagedState {
                     workspace_id: owner_scope.clone(),
                     agent_id: agent_id.clone(),
                     mcp_servers: bindings,
+                    delegate_ids,
                     resources: resolved_resources.clone(),
                     model: selected_model.as_ref().map(|m| m.id.clone()),
                     runtime: req.awaken_runtime().map(str::to_string),
@@ -393,7 +396,10 @@ impl ManagedState {
                             .collect()
                     },
                 ),
-                multiagent: project::agent_multiagent(&caps),
+                multiagent: config_view.as_ref().map_or_else(
+                    || project::agent_multiagent(&caps),
+                    |view| project::agent_multiagent_ids(&view.delegate_ids),
+                ),
             },
             environment_id: environment_id.clone(),
             created_at: PROCESSED_AT.to_string(),
@@ -815,6 +821,7 @@ impl ManagedState {
                         workspace_id: owner_scope.clone(),
                         agent_id: session.agent_id.clone(),
                         mcp_servers: session.runtime.mcp_servers.clone(),
+                        delegate_ids: session.runtime.delegate_ids.clone(),
                         resources: session.resources.active.clone(),
                         model: Some(session.model.clone()),
                         runtime: session.runtime.runtime.clone(),

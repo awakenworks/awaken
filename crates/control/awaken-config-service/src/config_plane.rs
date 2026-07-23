@@ -307,6 +307,19 @@ impl ConfigService {
         self.installed.snapshot_in(workspace, agent)
     }
 
+    /// The exact delegation roster frozen in an installed publication.
+    ///
+    /// `None` distinguishes an unavailable/unpublished Agent from an explicit
+    /// empty roster. Runtime delegation uses this for child Agents so capability
+    /// never leaks from the initiating Agent.
+    pub fn delegate_ids_in(&self, workspace: &str, agent: &str) -> Option<Vec<String>> {
+        let snapshot = self.installed.snapshot_in(workspace, agent)?;
+        awaken_runtime_contract::agent_bindings::AgentBindings::from_config(
+            &snapshot.resolved_spec.plugin_config,
+        )
+        .map(|bindings| bindings.delegate_ids)
+    }
+
     #[must_use]
     pub fn agent_unavailable_in(&self, workspace: &str, agent: &str) -> bool {
         self.installed.is_unavailable(workspace, agent)

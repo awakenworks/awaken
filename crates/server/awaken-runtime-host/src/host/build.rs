@@ -583,6 +583,19 @@ impl SharedHost {
         self.inference_routing.register(thread, model_ref);
     }
 
+    /// Bind the exact published delegation roster to a prepared Session.
+    /// `None` preserves the unmanaged host-composed compatibility roster.
+    pub fn register_thread_delegates(&self, thread: &str, delegates: Option<Vec<String>>) {
+        self.session_slots
+            .update(thread, |slot| slot.delegates = delegates);
+    }
+
+    pub(crate) fn thread_delegate_ids(&self, thread: &str) -> Option<Vec<String>> {
+        self.session_slots
+            .read(thread, |slot| slot.delegates.clone())
+            .flatten()
+    }
+
     /// Deny network egress for `thread`'s sandbox (from its environment's networking
     /// policy), staged before its first turn and consumed by `sandbox_spec` (and by a
     /// sandboxed ACP channel source wired via [`SharedHost::thread_egress`]).
@@ -684,9 +697,15 @@ impl SharedHost {
         sandbox: Arc<crate::session_environment::SessionEnvironment>,
         commit: Arc<crate::store::HostCommit>,
     ) -> Result<Option<Arc<dyn RunDelegationService>>, HostError> {
-        if self.delegates.is_empty() {
+        let root_roster = self
+            .thread_delegate_ids(thread)
+            .map(|ids| ids.into_iter().collect())
+            .unwrap_or_else(|| self.delegates.ids_set().clone());
+        if root_roster.is_empty() {
             return Ok(None);
         }
+        let mut delegates = self.delegates.clone();
+        delegates.add_local(root_roster.clone());
         let scheduler = if self.deployment.durable {
             Some(crate::agent_runner::RunScheduler {
                 store: crate::dispatch_backend::shared_durable_store(self.store_dir.as_deref())?,
@@ -707,15 +726,18 @@ impl SharedHost {
         } else {
             None
         };
-        Ok(Some(Arc::new(HostRunDelegationService::new(
+        let service = HostRunDelegationService::new(
             self.llm.clone(),
             self.model_ref.clone(),
             Arc::new(LocalProvider::new(sub_base("deleg"))),
             sandbox,
             self.agent_run_reuse_sandbox,
-            self.delegates.clone(),
-            scheduler,
-        ))))
+            root_roster,
+            delegates,
+        )
+        .with_config_catalog(self.config_service.clone(), self.thread_workspace(thread))
+        .with_scheduler(scheduler);
+        Ok(Some(Arc::new(service)))
     }
 
     /// Spawn the one process-level [`DispatchPool`] (O2), once, when durable ingress

@@ -26,6 +26,9 @@ pub struct AgentBindings {
     pub mcp_servers: Vec<AgentMcpServerBinding>,
     #[serde(default)]
     pub skill_ids: Vec<String>,
+    /// Published Agent ids this Agent may invoke through `agent_run`.
+    #[serde(default)]
+    pub delegate_ids: Vec<String>,
 }
 
 impl AgentBindings {
