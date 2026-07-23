@@ -105,8 +105,8 @@ function TokenButton() {
             <h3>{app.t("API token", "API 令牌")}</h3>
             <p className="mut" style={{ margin: 0 }}>
               {app.t(
-                "Bearer token for the management plane (embedded IAM). Sessions run unguarded in P1.",
-                "管理面(嵌入式 IAM)的 Bearer 令牌;P1 阶段会话面不设门。",
+                "Service bearer for management and Managed Agents APIs. Live Preview exchanges it for a narrow application token.",
+                "用于管理 API 与 Managed Agents API 的服务令牌。实时预览会将其换成最小权限的应用令牌。",
               )}
             </p>
             <input className="input mono" value={value} placeholder="sk-ant-…" onChange={(e) => setValue(e.target.value)} />

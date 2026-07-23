@@ -5,16 +5,46 @@ import { useApp } from "../lib/app-state";
 import { Card, Pill } from "../components/ui";
 
 export const PROTOCOLS = [
-  { id: "managed", name: "Managed Agents", endpoint: "/v1/sessions", mode: "HTTP + SSE", token: "console" },
-  { id: "ai-sdk", name: "Vercel AI SDK", endpoint: "/v1/ai-sdk/chat", mode: "Data Stream", token: "console" },
-  { id: "ag-ui", name: "AG-UI", endpoint: "/v1/ag-ui", mode: "SSE events", token: "console" },
-  { id: "a2a", name: "A2A", endpoint: "/v1/a2a", mode: "JSON-RPC / HTTP+JSON", token: "console" },
+  { id: "managed", name: "Managed Agents", endpoint: "/v1/sessions", mode: "HTTP + SSE", token: "service" },
+  { id: "ai-sdk", name: "Vercel AI SDK", endpoint: "/v1/ai-sdk/chat", mode: "UI Message Stream", token: "application" },
+  { id: "ag-ui", name: "AG-UI", endpoint: "/v1/ag-ui", mode: "SSE events", token: "application" },
+  { id: "a2a", name: "A2A", endpoint: "/v1/a2a", mode: "JSON-RPC / HTTP+JSON", token: "service" },
   { id: "mcp", name: "MCP Server", endpoint: "/v1/mcp", mode: "Streamable HTTP", token: "dedicated" },
 ] as const;
 
-const CURL = `curl -N http://localhost:8080/v1/ai-sdk/chat \\
+export const APPLICATION_TOKEN_CURL = `curl http://localhost:8080/v1/application-access-tokens \\
+  -H "Authorization: Bearer $AWAKEN_API_KEY" \\
   -H 'content-type: application/json' \\
-  -d '{"id":"demo","messages":[{"role":"user","content":"Summarize this release"}]}'`;
+  -d '{
+    "authority_id": "my-backend",
+    "application_scope": "project_42",
+    "thread_namespace": "customer-chat",
+    "actor_key": "opaque-user-ref",
+    "operations": ["thread.run", "thread.read"],
+    "agent_ids": ["support"],
+    "default_agent_id": "support",
+    "expires_in_seconds": 300
+  }'`;
+
+export const FRONTEND_AI_SDK = `import { useChat } from "@ai-sdk/react";
+import { DefaultChatTransport } from "ai";
+
+// Implement this against YOUR backend. Never put AWAKEN_API_KEY in browser code.
+const { access_token } = await getApplicationToken();
+const threadId = crypto.randomUUID();
+
+const chat = useChat({
+  id: threadId,
+  transport: new DefaultChatTransport({
+    api: \`\${AWAKEN_URL}/v1/ai-sdk/threads/\${threadId}/runs\`,
+    headers: { Authorization: \`Bearer \${access_token}\` },
+  }),
+});`;
+
+export const MANAGED_CURL = `curl http://localhost:8080/v1/sessions \\
+  -H "Authorization: Bearer $AWAKEN_API_KEY" \\
+  -H 'content-type: application/json' \\
+  -d '{"agent":"support","title":"backend job"}'`;
 
 export default function ProtocolsSurface() {
   const app = useApp();
@@ -43,17 +73,48 @@ export default function ProtocolsSurface() {
                     "Set AWAKEN_MCP_BEARER_TOKEN; the route is absent until configured. Send it as Authorization: Bearer.",
                     "设置 AWAKEN_MCP_BEARER_TOKEN；配置前路由不存在。通过 Authorization: Bearer 发送。",
                   )
+                : protocol.token === "application"
+                  ? app.t(
+                      "Browser/application route: send a short-lived application token scoped to opaque application and thread namespaces plus an Agent allow-list.",
+                      "浏览器/应用入口：使用短期应用令牌，并限制到不透明的应用作用域、thread 命名空间和 Agent 白名单。",
+                    )
                 : app.t(
-                    "Local self-hosted mode is open by default. Management IAM uses the bearer saved in the top bar; protect public protocol ingress at your gateway.",
-                    "本地自托管默认开放。管理 IAM 使用顶部保存的 bearer；公网协议入口需在网关保护。",
+                    "Server-to-server route: use a workspace-scoped service API key. Never expose it to browser or mobile clients.",
+                    "服务间调用入口：使用 workspace 范围的服务 API Key，禁止暴露给浏览器或移动端。",
                   )}
             </p>
           </Card>
         ))}
       </div>
       <Card>
-        <h3>{app.t("AI SDK quick start", "AI SDK 快速开始")}</h3>
-        <pre className="code-block"><code>{CURL}</code></pre>
+        <h3>{app.t("Backend integration · mint application access", "后端集成 · 签发应用访问令牌")}</h3>
+        <p className="mut">
+          {app.t(
+            "Your backend authenticates the end user with its own model, maps its project/tenant to application_scope, and asks Awaken for a token. Awaken never needs the user's roles or permissions.",
+            "你的后端继续使用自己的用户与权限模型，只需把项目/租户映射为 application_scope 后向 Awaken 申请令牌。Awaken 无需理解用户角色或权限。",
+          )}
+        </p>
+        <pre className="code-block"><code>{APPLICATION_TOKEN_CURL}</code></pre>
+      </Card>
+      <Card>
+        <h3>{app.t("Frontend integration · Vercel AI SDK", "前端集成 · Vercel AI SDK")}</h3>
+        <p className="mut">
+          {app.t(
+            "Return only access_token to the browser, keep it in memory, and use the application's own thread id. Token rotation preserves the same scoped thread mapping.",
+            "只把 access_token 返回浏览器并保存在内存中，thread id 继续使用应用自己的标识。令牌轮换后仍会映射到同一作用域内的 thread。",
+          )}
+        </p>
+        <pre className="code-block"><code>{FRONTEND_AI_SDK}</code></pre>
+      </Card>
+      <Card>
+        <h3>{app.t("Backend integration · Managed Agents", "后端集成 · Managed Agents")}</h3>
+        <p className="mut">
+          {app.t(
+            "Trusted services call Managed Agents directly with a service API key. This credential is separate from application access tokens.",
+            "可信后端通过服务 API Key 直接调用 Managed Agents；该凭证与应用访问令牌相互分离。",
+          )}
+        </p>
+        <pre className="code-block"><code>{MANAGED_CURL}</code></pre>
       </Card>
       <Card>
         <h3>{app.t("Execution adapters", "执行适配器")}</h3>
