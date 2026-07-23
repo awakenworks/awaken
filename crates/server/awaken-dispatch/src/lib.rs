@@ -40,6 +40,10 @@ pub use any::AnyDispatchStore;
 pub use capability::RunIngressCapabilities;
 // The database-less worker's HTTP dispatch client (drives claim/settle over the wire
 // to a cell server's dispatch_transport_router), extracted from awaken-session-executor.
+pub use awaken_dispatch_contract::operational::{
+    DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
+    DispatchPage, LeaseLossReason,
+};
 pub use awaken_dispatch_contract::{
     AssignmentRejection, ClaimedCommitCommand, ExecutionLocation, ExecutionScopeRef,
     HOST_EXECUTOR_CAPABILITY, LeastLoadedPolicy, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,

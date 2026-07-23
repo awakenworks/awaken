@@ -17,3 +17,4 @@ impl<F> awaken_dispatch_testkit::ConformanceClock for F where F: core::ops::func
 pub fn F::set(&self, u64)
 pub async fn awaken_dispatch_testkit::assert_dispatch_conformance(&dyn awaken_dispatch_contract::dispatch::DispatchQueue, &str, awaken_dispatch_testkit::ConformanceCapabilities)
 pub async fn awaken_dispatch_testkit::assert_dispatch_conformance_with_clock(&dyn awaken_dispatch_contract::dispatch::DispatchQueue, &str, awaken_dispatch_testkit::ConformanceCapabilities, &dyn awaken_dispatch_testkit::ConformanceClock)
+pub async fn awaken_dispatch_testkit::assert_dispatch_operational_feed_conformance<S>(&S, &str) where S: awaken_dispatch_contract::dispatch::DispatchQueue + awaken_dispatch_contract::operational::DispatchOperationalFeed + ?core::marker::Sized

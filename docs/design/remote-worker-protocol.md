@@ -365,6 +365,24 @@ P0 is done only when:
 6. In-memory, SQLite, and PostgreSQL adapters pass the same remote Worker
    transport/store conformance suite.
 
+Implementation evidence as of 2026-07-23:
+
+- `remote_worker_recovery_e2e.ts` runs one real Control process and two real
+  database-less Worker processes. It loses a receipt after durable apply, proves
+  the same operation is retried, kills Worker A before Awaiting settlement,
+  expires its lease, and proves Worker B reclaims and resumes from the committed
+  A2A context without resending the initial message.
+- The same scenario replays Worker A's delayed claimed commit after Worker B has
+  advanced the epoch and verifies rejection, one terminal transcript effect,
+  and terminal settlement.
+- `commit_ingest_http.rs` independently injects a malformed/lost first receipt
+  after apply and verifies that `RemoteClaimedRunCommit` obtains the durable
+  duplicate receipt without duplicating history.
+- The production composition preserves the recovery port through
+  `AnyDispatchStore` and authenticates registered recovery reads with the
+  logical Worker id while authorizing them with the incarnation-bound lease
+  owner and epoch.
+
 ## 5. Dynamic Behavior View
 
 ### 5.1 Normal and resumed execution
@@ -511,7 +529,7 @@ trait DispatchOperationalFeed {
         &self,
         cursor: DispatchCursor,
         limit: usize,
-    ) -> DispatchPage;
+    ) -> Result<DispatchPage, DispatchError>;
 }
 ```
 
@@ -520,6 +538,28 @@ The Run feed contains committed `running`, `awaiting`, `resumed`, `completed`,
 `reclaimed`, `lease_lost`, `settled`, and `dead_lettered`. Consumers persist
 their cursor and backfill after reconnect. Live notification is only a wake
 hint; it never replaces the durable cursor.
+
+`DispatchOperationalFeed` is implemented by the memory, SQLite, and PostgreSQL
+dispatch stores. Its `DispatchOperation` payload is a tagged product type:
+
+| Applied dispatch mutation | Durable operation facts |
+|---|---|
+| fresh or awaiting claim | `claimed { claim }` |
+| expired lease is claimed at a higher epoch | `lease_lost { previous, expired }`, then `reclaimed { previous, claim }` |
+| current epoch settles | `settled { claim, outcome }` |
+| expired lease exhausts its retry budget | `lease_lost { claim, retry_exhausted }`, then `dead_lettered { claim, attempt_count }` |
+| cancellation revokes a live lease | `lease_lost { claim, cancelled }` |
+| fenced settle, duplicate/no-op command, successful renewal | no operation fact |
+
+SQLite and PostgreSQL append the operation row in the same transaction that
+changes dispatch authority. The memory reference does both under the same lock.
+Consequently a consumer cannot observe `settled` while the dispatch mutation
+rolled back, and a stale owner cannot publish a false settle. `DispatchCursor`
+is exclusive and scoped to one dispatch store; `DispatchPage.next_cursor` is
+the last event actually returned, or the requested cursor for an empty page.
+The SQL outbox survives process restart. `AnyDispatchStore` exposes it for its
+built-in SQLite/PostgreSQL backends and fails explicitly when an injected legacy
+adapter implements only `Dispatch`.
 
 `CheckpointRunLifecycleFeed` is the portable P1 Run implementation. It reads
 `EventScope::All` from the existing committed-event projection, accepts an
