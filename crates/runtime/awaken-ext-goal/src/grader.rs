@@ -4,7 +4,7 @@ use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::permission::ToolCapabilityNarrowing;
 use awaken_runtime_contract::{
     EndCause, ExecutableAgentSnapshot, Message, MessageId, ModelBinding, Role, RunActivation,
-    RunState, RuntimeRunContext, ThreadReader,
+    RunState, RuntimeRunContext, ThreadReader, TranscriptSliceSpec,
 };
 
 use crate::outcome::{Grade, Grader, GraderError, GradingInput, parse_grade};
@@ -83,9 +83,34 @@ impl Grader for AgentGrader<'_> {
         snapshot: &ExecutableAgentSnapshot,
         input: &GradingInput,
     ) -> Result<Grade, GraderError> {
-        if input.message_start > input.message_end || input.message_end > input.transcript.len() {
+        let slice_spec = TranscriptSliceSpec {
+            snapshot: input.transcript_snapshot.clone(),
+            ranges: input.transcript_ranges.clone(),
+        };
+        if let Err(error) = slice_spec.validate() {
+            return Err(GraderError::Execution(format!(
+                "evaluated message range is invalid: {error}"
+            )));
+        }
+        let legacy_range = u64::try_from(input.message_start)
+            .ok()
+            .zip(u64::try_from(input.message_end).ok())
+            .map(|(start, end)| awaken_runtime_contract::TranscriptRange::new(start, end));
+        if input.transcript_ranges.as_slice() != legacy_range.as_slice() {
             return Err(GraderError::Execution(
-                "evaluated message range is outside the committed transcript".into(),
+                "grading range evidence is inconsistent".into(),
+            ));
+        }
+        let selected_len = input
+            .transcript_ranges
+            .iter()
+            .try_fold(0_u64, |total, range| {
+                total.checked_add(range.end.saturating_sub(range.start))
+            })
+            .and_then(|total| usize::try_from(total).ok());
+        if selected_len != Some(input.transcript.len()) {
+            return Err(GraderError::Execution(
+                "materialized grading messages do not match transcript ranges".into(),
             ));
         }
         let thread_id = grader_thread_id(&input.outcome_id, input.iteration);
@@ -140,6 +165,9 @@ impl Grader for AgentGrader<'_> {
 mod tests {
     use super::*;
     use crate::outcome::{Id, Rubric};
+    use awaken_runtime_contract::{
+        ThreadId, TranscriptRange, TranscriptSnapshotRef, TranscriptView,
+    };
 
     fn input() -> GradingInput {
         GradingInput {
@@ -147,6 +175,13 @@ mod tests {
             iteration: 2,
             description: "ship".into(),
             rubric: Rubric("all checks pass".into()),
+            transcript_snapshot: TranscriptSnapshotRef {
+                thread_id: ThreadId("worker".into()),
+                view: TranscriptView::RawCommitted,
+                version: 1,
+                end_seq: 1,
+            },
+            transcript_ranges: vec![TranscriptRange::new(0, 1)],
             transcript: vec![Message::text(
                 MessageId("answer".into()),
                 Role::Assistant,

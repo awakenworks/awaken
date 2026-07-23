@@ -10,6 +10,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_ext_goal::outcome::{
     DeliverableEvidence, GradeDecision, GradingInput, Id, Rubric, parse_grade,
 };
+use awaken_runtime_contract::{ThreadId, TranscriptRange, TranscriptSnapshotRef, TranscriptView};
 use serde::{Deserialize, Serialize};
 
 pub const SCHEMA_VERSION: u32 = 1;
@@ -56,6 +57,13 @@ impl JudgeCase {
             iteration: 0,
             description: self.description.clone(),
             rubric: Rubric(self.rubric.clone()),
+            transcript_snapshot: TranscriptSnapshotRef {
+                thread_id: ThreadId(format!("eval/{}/worker", self.id)),
+                view: TranscriptView::RawCommitted,
+                version: 1,
+                end_seq: 1,
+            },
+            transcript_ranges: vec![TranscriptRange::new(0, 1)],
             transcript: vec![Message::text(
                 MessageId(format!("eval/{}/deliverable", self.id)),
                 Role::Assistant,
@@ -446,6 +454,8 @@ mod tests {
         let input = case("x", GradeDecision::Satisfied, &[]).grading_input();
         assert_eq!(input.message_start, 0);
         assert_eq!(input.message_end, 1);
+        assert_eq!(input.transcript_snapshot.end_seq, 1);
+        assert_eq!(input.transcript_ranges, vec![TranscriptRange::new(0, 1)]);
         assert_eq!(input.transcript[0].text_content(), "done");
     }
 

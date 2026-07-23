@@ -5,7 +5,9 @@
 //! identities and persists the resulting state transitions.
 
 use async_trait::async_trait;
-use awaken_runtime_contract::{ExecutableAgentSnapshot, Message, RunId};
+use awaken_runtime_contract::{
+    ExecutableAgentSnapshot, Message, RunId, TranscriptRange, TranscriptSnapshotRef,
+};
 use serde::{Deserialize, Serialize};
 
 pub const MIN_ITERATIONS: u32 = 1;
@@ -116,7 +118,14 @@ pub struct GradingInput {
     pub iteration: u32,
     pub description: String,
     pub rubric: Rubric,
+    /// Frozen Worker transcript prefix and the selected evaluation ranges.
+    pub transcript_snapshot: TranscriptSnapshotRef,
+    pub transcript_ranges: Vec<TranscriptRange>,
+    /// Materialized messages for `transcript_ranges`, in range order. This cache
+    /// avoids giving the Judge unrelated historical turns.
     pub transcript: Vec<Message>,
+    /// Global half-open Worker transcript range retained for Evaluation/report
+    /// compatibility; it matches the single range above.
     pub message_start: usize,
     pub message_end: usize,
     pub worker_state: serde_json::Value,

@@ -8,7 +8,7 @@
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::{
     EndCause, Message, MessageId, Role, RunActivation, RunId, RunState, RuntimeRunContext,
-    ThreadId, ThreadReader,
+    ThreadId, ThreadReader, TranscriptRange, TranscriptSliceSpec, TranscriptView,
 };
 
 use crate::outcome::{
@@ -359,12 +359,30 @@ impl<'a> Controller<'a> {
         iteration: u32,
         message_start: usize,
     ) -> Result<GradingInput, Error> {
+        let snapshot = self
+            .reader
+            .transcript_snapshot(self.thread_id, TranscriptView::RawCommitted);
+        let start = u64::try_from(message_start).map_err(|_| {
+            Error::Serialization("message start does not fit transcript index".into())
+        })?;
+        let end = u64::try_from(aggregate.state.transcript_cursor).map_err(|_| {
+            Error::Serialization("message end does not fit transcript index".into())
+        })?;
+        let ranges = vec![TranscriptRange::new(start, end)];
+        let slice = snapshot
+            .slice(&TranscriptSliceSpec {
+                snapshot: snapshot.reference().clone(),
+                ranges: ranges.clone(),
+            })
+            .map_err(|error| Error::Serialization(error.to_string()))?;
         Ok(GradingInput {
             outcome_id: aggregate.state.outcome_id.clone(),
             iteration,
             description: aggregate.definition.description.clone(),
             rubric: aggregate.definition.rubric.clone(),
-            transcript: self.reader.committed_messages(self.thread_id),
+            transcript_snapshot: snapshot.reference().clone(),
+            transcript_ranges: ranges,
+            transcript: slice.messages.to_vec(),
             message_start,
             message_end: aggregate.state.transcript_cursor,
             worker_state: serde_json::to_value(&aggregate.state)
@@ -639,6 +657,10 @@ mod tests {
 
     struct RangeGrader;
 
+    struct RecordingWindowGrader {
+        seen: Mutex<Vec<GradingInput>>,
+    }
+
     #[async_trait]
     impl Grader for RangeGrader {
         async fn grade(
@@ -646,9 +668,8 @@ mod tests {
             _snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
             input: &GradingInput,
         ) -> Result<Grade, GraderError> {
-            let end = input.message_end.min(input.transcript.len());
-            let start = input.message_start.min(end);
-            let deliverable = input.transcript[start..end]
+            let deliverable = input
+                .transcript
                 .iter()
                 .map(Message::text_content)
                 .collect::<Vec<_>>()
@@ -660,6 +681,21 @@ mod tests {
                     GradeDecision::NeedsRevision
                 },
                 explanation: "deterministic test grade".into(),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl Grader for RecordingWindowGrader {
+        async fn grade(
+            &self,
+            _snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
+            input: &GradingInput,
+        ) -> Result<Grade, GraderError> {
+            self.seen.lock().unwrap().push(input.clone());
+            Ok(Grade {
+                decision: GradeDecision::Satisfied,
+                explanation: "recorded".into(),
             })
         }
     }
@@ -800,6 +836,61 @@ mod tests {
             world.executions.load(Ordering::SeqCst),
             1,
             "the committed Worker Run must be observed, not inferred twice"
+        );
+    }
+
+    #[tokio::test]
+    async fn grader_materializes_only_the_current_worker_range_from_a_frozen_snapshot() {
+        let world = World::new(&["FINAL"]);
+        let thread = ThreadId("window-worker".into());
+        world
+            .commit(ThreadCommit::assemble(
+                thread.clone(),
+                awaken_runtime_contract::RunDisposition::ended(
+                    RunId("old-run".into()),
+                    EndCause::NaturalEnd,
+                ),
+                false,
+                vec![Message::text(
+                    MessageId("old".into()),
+                    Role::User,
+                    "unrelated old history",
+                )],
+                Vec::new(),
+                Vec::new(),
+            ))
+            .await
+            .unwrap();
+        let grader = RecordingWindowGrader {
+            seen: Mutex::new(Vec::new()),
+        };
+        Controller::new(
+            &thread,
+            &world,
+            &world,
+            &world,
+            RuntimeRunContext::new(),
+            &grader,
+        )
+        .define_or_resume(
+            Id("window-outcome".into()),
+            Definition::new("ship", "FINAL", 2).unwrap(),
+            binding(),
+        )
+        .await
+        .unwrap();
+
+        let seen = grader.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].transcript_snapshot.end_seq, 3);
+        assert_eq!(seen[0].transcript_ranges, vec![TranscriptRange::new(2, 3)]);
+        assert_eq!(
+            seen[0]
+                .transcript
+                .iter()
+                .map(Message::text_content)
+                .collect::<Vec<_>>(),
+            ["FINAL"]
         );
     }
 
