@@ -27,18 +27,7 @@ impl SharedHost {
             thread,
         ) {
             // Database-less worker: every thread commits to the cell server's ingest.
-            CommitPlan::Remote(url) => {
-                let upstream = self
-                    .upstream
-                    .as_ref()
-                    .expect("remote commit plan has an upstream");
-                Ok(HostCommit::Remote(crate::store::RemoteHostCommit::new(
-                    crate::commit_ingest::RemoteCoordinator::new(url)
-                        .with_client(upstream.client().clone())
-                        .with_worker_id(upstream.worker_id())
-                        .with_request_authorizer(upstream.request_authorizer()),
-                )))
-            }
+            CommitPlan::Remote(_) => Ok(HostCommit::Remote(crate::store::RemoteHostCommit::new())),
             // Shared Postgres commit backend (ADR-0022 D6): one coordinator keyed by
             // thread, connected once at startup (the non-Send sqlx connect stays out of
             // the run loop). Fails closed when uninitialised, independent of a store dir.
@@ -133,7 +122,7 @@ impl SharedHost {
         // live in `dispatch_backend`, which owns backend selection (ADR-0019/0024).
         // Every session's worker shares this queue; the process-level `DispatchPool`
         // is its sole claimer and routes each run back to its owning session.
-        let store = crate::dispatch_backend::shared_durable_store(self.store_dir.as_deref())?;
+        let store = self.dispatch_store()?;
         // Carry the host's InferenceExecutorMaterializer into the worker as a neutral model→executor
         // closure, so a worker-driven run resolves its own configured model per attempt
         // (R1). `None` when no provider is installed — the worker stays on the host

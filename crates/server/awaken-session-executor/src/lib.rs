@@ -93,9 +93,7 @@ mod worker_control_client;
 // The neutral session substrate and its resume vocabulary.
 pub use crate::commit_backend::init_shared_postgres_commit;
 pub use crate::credential_materializer::PinnedCredentialMaterializer;
-pub use crate::dispatch_backend::{
-    ensure_durable_backend, init_shared_dispatch_store, init_shared_postgres_dispatch,
-};
+pub use crate::dispatch_backend::{ensure_durable_backend, init_shared_postgres_dispatch};
 pub use crate::host::{HostResume, ResourcePlanePorts, SharedHost};
 pub use crate::postgres_migration_lock::PostgresMigrationLock;
 pub use crate::worker_control_client::WorkerControlClient;
@@ -132,8 +130,7 @@ pub use crate::tool_catalog::{
 };
 // The per-plane resource routers the composition root merges over one host.
 pub use crate::commit_ingest::{
-    ClaimedCommitService, RemoteClaimedRunCommit, RemoteCoordinator, claimed_commit_ingest_router,
-    claimed_commit_ingest_router_with_directory, claimed_commit_router, commit_ingest_router,
+    ClaimedCommitService, RemoteClaimedRunCommit, claimed_commit_router,
 };
 pub use crate::deployment_config::{
     DeploymentConfig, DispatchBackend, SandboxTier, StoreKind, Wake,

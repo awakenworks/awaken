@@ -52,9 +52,8 @@ pub trait WorkerRequestAuthorizer: Send + Sync {
 }
 
 /// Build a worker's process dispatch store: an [`HttpDispatchQueue`] pointed at the
-/// cell server, wrapped as the injectable `AnyDispatchStore` the pool drains. Pass
-/// it to `init_shared_dispatch_store` so `ensure_dispatch_pool` claims/settles over
-/// the transport instead of a local queue.
+/// Control Node, wrapped as the `AnyDispatchStore` a Worker injects into its
+/// `SharedHost`. The host's pool then claims and settles over this transport.
 pub fn worker_dispatch_store(
     server_url: impl Into<String>,
 ) -> std::sync::Arc<crate::AnyDispatchStore> {
