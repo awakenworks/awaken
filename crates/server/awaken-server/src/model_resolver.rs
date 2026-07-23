@@ -99,6 +99,8 @@ impl CatalogModelPublicationResolver {
         catalog.offerings.iter().find(|offering| {
             offering.status == awaken_model_catalog::OfferingStatus::Active
                 && offering.model_id == binding.model_ref
+                && offering.provider_id.as_str() == binding.provider_identity_ref
+                && binding.backend_ref == "genai"
         })
     }
 
@@ -342,10 +344,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pinned_publication_preserves_authored_identity_and_order() {
+    async fn pinned_publication_preserves_validated_authored_identity_and_order() {
         let resolver = resolver(&["primary", "fallback"]).await;
-        let primary = ModelBinding::new("authored-provider", "primary", "native");
-        let fallback = ModelBinding::new("other-authored-provider", "fallback", "native");
+        let primary = ModelBinding::new("openai", "primary", "genai");
+        let fallback = ModelBinding::new("openai", "fallback", "genai");
         let resolved = resolver
             .resolve_models(
                 &ScopeId::from("workspace-a"),
@@ -359,13 +361,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn same_model_on_another_provider_is_not_treated_as_the_published_binding() {
+        let resolver = resolver(&["primary"]).await;
+        let binding = ModelBinding::new("other-provider", "primary", "genai");
+        assert!(matches!(
+            resolver
+                .resolve_models(
+                    &ScopeId::from("workspace-a"),
+                    &ModelSelection::Pinned(binding.clone()),
+                    &[],
+                )
+                .await,
+            Err(PublicationResolutionError::CandidateUnavailable {
+                binding: rejected,
+                ..
+            }) if rejected == binding
+        ));
+    }
+
+    #[tokio::test]
     async fn one_unresolvable_fallback_rejects_the_entire_publication() {
         let resolver = resolver(&["primary"]).await;
         let error = resolver
             .resolve_models(
                 &ScopeId::from("workspace-a"),
-                &ModelSelection::Pinned(ModelBinding::new("p", "primary", "b")),
-                &[ModelBinding::new("p", "missing", "b")],
+                &ModelSelection::Pinned(ModelBinding::new("openai", "primary", "genai")),
+                &[ModelBinding::new("openai", "missing", "genai")],
             )
             .await
             .unwrap_err();
