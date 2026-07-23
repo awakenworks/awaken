@@ -355,8 +355,8 @@ impl SharedHost {
     /// Enable context compaction. Once a turn's conversation exceeds `threshold`
     /// messages, the `compact` plugin's `BeforeInference` hook summarizes everything
     /// but the last `keep_last` messages (through a `compactor` sub-agent) and injects
-    /// the summary as request-only context; the main agent runs a matching `KeepLast`
-    /// window so those older raw turns drop from the model view. Non-destructive:
+    /// the summary as request-only context and then activates a matching Run-scoped
+    /// window so those covered raw turns drop from the model view. Non-destructive:
     /// committed truth is never rewritten (G13). The bounds are also exposed as the
     /// `compact` config section, so a per-run `plugin_config` can override them.
     pub fn with_compaction(self, threshold: usize, keep_last: usize) -> Self {
@@ -371,7 +371,7 @@ impl SharedHost {
     /// reaches `trigger_ratio` of the model's `max_tokens` window (the "auto-compact
     /// at N% of the window" behavior), keeping the last `keep_last` messages. This
     /// is how compaction becomes aware of the model's max token instead of a bare
-    /// message count. The main agent still runs a matching `KeepLast(keep_last)`.
+    /// message count. The request window activates only after a summary succeeds.
     pub fn with_compaction_tokens(
         self,
         max_tokens: u32,
@@ -413,8 +413,8 @@ impl SharedHost {
         self
     }
 
-    /// Await in-flight background memory extractions up to `timeout` (shutdown
-    /// flush). Returns `true` if all finished.
+    /// Await in-flight background auxiliary work (Memory extraction and Compact
+    /// prefetch) up to `timeout` during shutdown. Returns `true` if all finished.
     pub async fn drain_memory(&self, timeout: std::time::Duration) -> bool {
         self.memory.drain(timeout).await
     }

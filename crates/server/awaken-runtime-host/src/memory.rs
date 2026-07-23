@@ -431,6 +431,10 @@ impl MemoryRuntime {
         self.background.drain(timeout).await
     }
 
+    pub(crate) fn background(&self) -> Arc<BackgroundRuns> {
+        self.background.clone()
+    }
+
     pub fn set_extraction_repository(&self, repository: Arc<dyn MemoryExtractionRepository>) {
         *self
             .extractions

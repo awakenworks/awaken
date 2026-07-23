@@ -3,9 +3,10 @@
 //! [`CompactPlugin`] contributes a `BeforeInference` [`PhaseHook`] symmetric with
 //! memory recall: on a long conversation it summarizes the older messages through
 //! an injected ordinary Agent-backed tool and injects the summary as **request-only**
-//! context (never committed, G13). The main agent's `ContextPolicy::KeepLast` drops
-//! the older raw turns from the model view, so summary + kept tail cover the whole
-//! conversation. Summarization runs at most once per run, gated on the run-scoped
+//! context (never committed, G13). A successful fold activates the Run-scoped
+//! [`ContextWindow`], so summary + optional bridge + kept tail cover the whole
+//! conversation; before that, the kernel keeps all history. Summarization runs at
+//! most once per run, gated on the run-scoped
 //! [`ContextMessages`] state so it replays across steps and a resumed run
 //! instead of recomputing (ADR-0055).
 
@@ -15,15 +16,17 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::state::{Action, Command, MergePolicy, Scope, StateKey, Store};
+use awaken_runtime_contract::content_fingerprint;
 use awaken_runtime_contract::plugin::{
-    CapabilityBound, ContextMessages, Contributions, HookReaction, IdBound, PhaseContext,
-    PhaseHook, PhaseHookPoint, Plugin, PluginConfigError, PluginManifest,
+    CapabilityBound, ContextMessages, ContextWindow, Contributions, HookReaction, IdBound,
+    PhaseContext, PhaseHook, PhaseHookPoint, Plugin, PluginConfigError, PluginManifest,
 };
 use awaken_runtime_contract::tool::{RawTool, ToolCall, invoke_raw_tool};
 
 use crate::agent::{COMPACT_AGENT_ID, SUMMARIZE_PROMPT};
+use crate::backend::{CompactArtifact, CompactBackend, CompactRequest};
 use crate::config::CompactConfig;
-use crate::fold::{fold_point, token_fold_point};
+use crate::fold::{fold_point, prefetch_fold_point, token_fold_point};
 
 /// A rough, deterministic token estimate (~4 chars/token) over a message slice.
 /// Cheap enough to run every `BeforeInference` without a real tokenizer; it drives
@@ -84,6 +87,7 @@ pub fn compaction_count(state: &[Command]) -> usize {
 pub struct CompactPlugin {
     config: CompactConfig,
     agent_tool: Option<Arc<dyn RawTool>>,
+    backend: Option<(String, Arc<dyn CompactBackend>)>,
 }
 
 impl CompactPlugin {
@@ -91,6 +95,7 @@ impl CompactPlugin {
         Self {
             config,
             agent_tool: None,
+            backend: None,
         }
     }
 
@@ -100,12 +105,26 @@ impl CompactPlugin {
         self
     }
 
+    /// Use the host's asynchronous compaction backend in this parent-Thread
+    /// namespace. It supersedes the synchronous compatibility tool.
+    #[must_use]
+    pub fn with_backend(
+        mut self,
+        scope: impl Into<String>,
+        backend: Arc<dyn CompactBackend>,
+    ) -> Self {
+        self.backend = Some((scope.into(), backend));
+        self
+    }
+
     fn contribute(&self, config: CompactConfig) -> Contributions {
         let mut contributions = Contributions::new(COMPACT_PLUGIN_ID);
         contributions.declare_state_key(ContextMessages::KEY);
+        contributions.declare_state_key(ContextWindow::KEY);
         contributions.register_hook(Arc::new(CompactHook {
             config,
             agent_tool: self.agent_tool.clone(),
+            backend: self.backend.clone(),
         }));
         contributions
     }
@@ -119,7 +138,10 @@ impl Plugin for CompactPlugin {
             config_sections: vec![COMPACT_PLUGIN_ID.into()],
             bound: CapabilityBound {
                 phase_hooks: vec![PhaseHookPoint::BeforeInference],
-                state_keys: IdBound::Exact(vec![ContextMessages::KEY.into()]),
+                state_keys: IdBound::Exact(vec![
+                    ContextMessages::KEY.into(),
+                    ContextWindow::KEY.into(),
+                ]),
                 ..Default::default()
             },
         }
@@ -150,31 +172,30 @@ pub fn config_schema() -> serde_json::Value {
 struct CompactHook {
     config: CompactConfig,
     agent_tool: Option<Arc<dyn RawTool>>,
+    backend: Option<(String, Arc<dyn CompactBackend>)>,
 }
 
 impl CompactHook {
-    /// The request-only summary block for a fold, or `None` when nothing folds.
-    async fn compute(&self, parent_run_id: &str, conversation: &[Message]) -> Option<Vec<Message>> {
-        let agent_tool = self.agent_tool.as_ref()?;
+    fn fold_to(&self, conversation: &[Message]) -> Option<usize> {
         // Token-aware when the model's window is known (fold at `trigger_ratio` of
         // it), else the message-count `threshold`.
-        let fold_to = match self.config.max_tokens {
+        match self.config.max_tokens {
             Some(max_tokens) => token_fold_point(
                 estimate_tokens(conversation),
                 max_tokens,
                 self.config.trigger_ratio,
                 conversation.len(),
                 self.config.keep_last,
-            )?,
+            ),
             None => fold_point(
                 conversation.len(),
                 self.config.threshold,
                 self.config.keep_last,
-            )?,
-        };
-        // Seed the `compactor` sub-agent with the older slice plus the summarize
-        // prompt, through the shared aux-run port. A per-agent `instructions` override
-        // (config) replaces the built-in prompt; otherwise the default is used.
+            ),
+        }
+    }
+
+    fn seed(&self, conversation: &[Message], fold_to: usize) -> Vec<Message> {
         let mut seed = conversation[..fold_to].to_vec();
         let prompt = self
             .config
@@ -186,6 +207,73 @@ impl CompactHook {
             Role::User,
             prompt,
         ));
+        seed
+    }
+
+    fn request(&self, scope: &str, conversation: &[Message], fold_to: usize) -> CompactRequest {
+        let seed = self.seed(conversation, fold_to);
+        let key = format!(
+            "compact-{}",
+            content_fingerprint(&(scope, fold_to, &seed)).unwrap_or_default()
+        );
+        CompactRequest {
+            scope: scope.to_string(),
+            key,
+            covered_messages: fold_to,
+            seed,
+        }
+    }
+
+    fn block(
+        artifact: CompactArtifact,
+        conversation: &[Message],
+        fold_to: usize,
+    ) -> Option<Vec<Message>> {
+        if artifact.summary.trim().is_empty() || artifact.covered_messages > fold_to {
+            return None;
+        }
+        let mut block = vec![Message::text(
+            MessageId("compact-summary".into()),
+            Role::System,
+            format!("Summary of earlier conversation: {}", artifact.summary),
+        )];
+        // A soft-prefetched artifact may cover an earlier prefix. Preserve the
+        // unsummarized bridge verbatim before the main windowed tail.
+        block.extend_from_slice(&conversation[artifact.covered_messages..fold_to]);
+        Some(block)
+    }
+
+    async fn compute(&self, parent_run_id: &str, conversation: &[Message]) -> Option<Vec<Message>> {
+        let estimated_tokens = estimate_tokens(conversation);
+        let Some(fold_to) = self.fold_to(conversation) else {
+            if let Some((scope, backend)) = &self.backend
+                && let Some(prefetch_to) = prefetch_fold_point(
+                    conversation.len(),
+                    estimated_tokens,
+                    self.config.threshold,
+                    self.config.max_tokens,
+                    self.config.trigger_ratio,
+                    self.config.prefetch_ratio,
+                    self.config.keep_last,
+                )
+            {
+                backend
+                    .prefetch(self.request(scope, conversation, prefetch_to))
+                    .await;
+            }
+            return None;
+        };
+
+        if let Some((scope, backend)) = &self.backend {
+            if let Some(ready) = backend.latest_ready(scope, fold_to).await {
+                return Self::block(ready, conversation, fold_to);
+            }
+            let request = self.request(scope, conversation, fold_to);
+            return Self::block(backend.summarize(request).await?, conversation, fold_to);
+        }
+
+        let agent_tool = self.agent_tool.as_ref()?;
+        let seed = self.seed(conversation, fold_to);
         let reply = invoke_raw_tool(
             agent_tool.as_ref(),
             ToolCall {
@@ -207,11 +295,16 @@ impl CompactHook {
         if summary.trim().is_empty() {
             return None;
         }
-        Some(vec![Message::text(
-            MessageId("compact-summary".into()),
-            Role::System,
-            format!("Summary of earlier conversation: {summary}"),
-        )])
+        Self::block(
+            CompactArtifact {
+                scope: String::new(),
+                key: parent_run_id.to_string(),
+                covered_messages: fold_to,
+                summary,
+            },
+            conversation,
+            fold_to,
+        )
     }
 }
 
@@ -240,6 +333,7 @@ impl PhaseHook for CompactHook {
             // adapter projects into the event.
             Some(block) => HookReaction::state(vec![
                 ContextMessages::write(&BTreeMap::from([(COMPACT_PLUGIN_ID.to_string(), block)])),
+                ContextWindow::write(&Some(self.config.keep_last)),
                 compaction_marker(&ctx.run_id.0),
             ]),
             // No fold this step: record the "evaluated, did not fold" decision (an
@@ -314,6 +408,47 @@ mod tests {
         }
     }
 
+    struct FakeBackend {
+        prefetched: std::sync::Mutex<Vec<CompactRequest>>,
+        ready: std::sync::Mutex<Option<CompactArtifact>>,
+        summarized: std::sync::Mutex<Vec<CompactRequest>>,
+    }
+
+    #[async_trait]
+    impl CompactBackend for FakeBackend {
+        async fn prefetch(&self, request: CompactRequest) {
+            self.prefetched.lock().unwrap().push(request);
+        }
+
+        async fn latest_ready(
+            &self,
+            scope: &str,
+            at_most_messages: usize,
+        ) -> Option<CompactArtifact> {
+            self.ready.lock().unwrap().clone().filter(|artifact| {
+                artifact.scope == scope && artifact.covered_messages <= at_most_messages
+            })
+        }
+
+        async fn summarize(&self, request: CompactRequest) -> Option<CompactArtifact> {
+            self.summarized.lock().unwrap().push(request.clone());
+            Some(CompactArtifact {
+                scope: request.scope,
+                key: request.key,
+                covered_messages: request.covered_messages,
+                summary: "hard summary".into(),
+            })
+        }
+    }
+
+    fn fake_backend(ready: Option<CompactArtifact>) -> Arc<FakeBackend> {
+        Arc::new(FakeBackend {
+            prefetched: std::sync::Mutex::new(Vec::new()),
+            ready: std::sync::Mutex::new(ready),
+            summarized: std::sync::Mutex::new(Vec::new()),
+        })
+    }
+
     fn msg(text: &str) -> Message {
         Message::text(MessageId("m".into()), Role::User, text)
     }
@@ -381,6 +516,80 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn soft_threshold_prefetches_without_blocking_or_marking_a_fold() {
+        let backend = fake_backend(None);
+        let plugin = CompactPlugin::new(CompactConfig {
+            threshold: 10,
+            keep_last: 2,
+            prefetch_ratio: 0.5,
+            ..Default::default()
+        })
+        .with_backend("thread-a", backend.clone());
+        let reaction = plugin.resolve().phase_hooks[0]
+            .on_phase(&phase_ctx(), &convo(6), &Store::new())
+            .await;
+
+        assert!(injected(&reaction).is_empty());
+        assert_eq!(compaction_count(&reaction.state), 0);
+        assert_eq!(backend.summarized.lock().unwrap().len(), 0);
+        let prefetched = backend.prefetched.lock().unwrap();
+        assert_eq!(prefetched.len(), 1);
+        assert_eq!(prefetched[0].covered_messages, 4);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn hard_fold_reuses_ready_prefix_and_bridges_every_uncovered_message() {
+        let backend = fake_backend(Some(CompactArtifact {
+            scope: "thread-a".into(),
+            key: "soft".into(),
+            covered_messages: 5,
+            summary: "soft summary".into(),
+        }));
+        let plugin = CompactPlugin::new(CompactConfig {
+            threshold: 4,
+            keep_last: 2,
+            ..Default::default()
+        })
+        .with_backend("thread-a", backend.clone());
+        let reaction = plugin.resolve().phase_hooks[0]
+            .on_phase(&phase_ctx(), &convo(10), &Store::new())
+            .await;
+
+        let block = injected(&reaction);
+        assert_eq!(block.len(), 4, "summary + messages 5..8 bridge");
+        assert!(block[0].text_content().contains("soft summary"));
+        assert_eq!(
+            block[1..]
+                .iter()
+                .map(Message::text_content)
+                .collect::<Vec<_>>(),
+            ["turn 5", "turn 6", "turn 7"]
+        );
+        assert_eq!(backend.summarized.lock().unwrap().len(), 0);
+        assert_eq!(compaction_count(&reaction.state), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn hard_cache_miss_awaits_the_exact_stable_request() {
+        let backend = fake_backend(None);
+        let plugin = CompactPlugin::new(CompactConfig {
+            threshold: 4,
+            keep_last: 2,
+            ..Default::default()
+        })
+        .with_backend("thread-a", backend.clone());
+        let reaction = plugin.resolve().phase_hooks[0]
+            .on_phase(&phase_ctx(), &convo(10), &Store::new())
+            .await;
+
+        assert_eq!(injected(&reaction).len(), 1);
+        let summarized = backend.summarized.lock().unwrap();
+        assert_eq!(summarized.len(), 1);
+        assert_eq!(summarized[0].covered_messages, 8);
+        assert_eq!(compaction_count(&reaction.state), 1);
+    }
+
     /// Records the text of the last seed message — the compaction prompt the hook
     /// appended — so a test can assert which prompt reached the compactor.
     struct PromptRecorder {
@@ -446,8 +655,13 @@ mod tests {
         let reaction = hook.on_phase(&phase_ctx(), &convo(10), &Store::new()).await;
         // The fold stages exactly one thread-scoped compaction marker, which the
         // read-back helper resolves to `true`.
-        assert_eq!(reaction.state.len(), 2);
+        assert_eq!(reaction.state.len(), 3);
         assert_eq!(compaction_count(&reaction.state), 1);
+        let mut state = Store::new();
+        for command in &reaction.state {
+            state.apply(command);
+        }
+        assert_eq!(ContextWindow::load(&state).unwrap(), Some(2));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -479,7 +693,11 @@ mod tests {
         let hook = &plugin.resolve().phase_hooks[0];
         let mut state = Store::new();
         let first = hook.on_phase(&phase_ctx(), &convo(10), &state).await;
-        assert_eq!(first.state.len(), 2, "summary block + compaction marker");
+        assert_eq!(
+            first.state.len(),
+            3,
+            "summary block + context window + compaction marker"
+        );
         assert_eq!(compaction_count(&first.state), 1);
         // A later step of the same run replays the summary but stages no new fact,
         // gated on the run-scoped compaction state applied here (ADR-0055).
@@ -500,6 +718,7 @@ mod tests {
             keep_last: 2,
             max_tokens: Some(10), // budget = 0.8 * 10 = 8 tokens
             trigger_ratio: 0.8,
+            prefetch_ratio: 0.75,
             instructions: None,
         })
         .with_agent_tool(Arc::new(FixedSummarizer {
@@ -523,6 +742,7 @@ mod tests {
             keep_last: 2,
             max_tokens: Some(1_000_000), // budget far beyond a tiny conversation
             trigger_ratio: 0.8,
+            prefetch_ratio: 0.75,
             instructions: None,
         })
         .with_agent_tool(Arc::new(FixedSummarizer {

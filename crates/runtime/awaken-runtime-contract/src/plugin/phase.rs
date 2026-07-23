@@ -97,6 +97,18 @@ impl StateKey for ContextMessages {
     type Value = BTreeMap<String, Vec<Message>>;
 }
 
+/// Run-scoped request-window override. A compaction producer writes this only
+/// after it has supplied complete coverage (summary plus any bridge) for the
+/// conversational prefix the kernel will hide.
+pub struct ContextWindow;
+
+impl StateKey for ContextWindow {
+    const KEY: &'static str = "context_window";
+    const SCOPE: Scope = Scope::Run;
+    const MERGE: MergePolicy = MergePolicy::Exclusive;
+    type Value = Option<usize>;
+}
+
 /// What a hook stages back into the loop: durable state commands plus committed
 /// messages. `messages` are **committed** reminder messages an `AfterTool` hook
 /// appends to the transcript (so they reach the next inference and replay

@@ -493,19 +493,18 @@ impl SharedHost {
             plugin_ids.push(awaken_ext_memory::MEMORY_PLUGIN_ID.to_string());
         }
         // Compaction is a plugin too: a BeforeInference hook that folds the older
-        // slice into a summary and injects it request-only. The main agent runs a
-        // rolling window matching the config's `keep_last`, so summarized older turns
-        // leave the model view.
+        // slice into a summary and injects it request-only. A successful fold
+        // activates its matching Run-scoped window; before that history stays whole.
         let context_policy = match &self.compaction {
             Some(compaction) => {
-                let keep_last = compaction.config.keep_last;
                 let agent_tool =
                     build_compact_runner(self.llm.clone(), &self.model_ref, commit.clone());
+                let backend = build_compact_backend(agent_tool, self.memory.background());
                 let plugin =
-                    CompactPlugin::new(compaction.config.clone()).with_agent_tool(agent_tool);
+                    CompactPlugin::new(compaction.config.clone()).with_backend(thread, backend);
                 runtime = runtime.with_plugin(Arc::new(plugin));
                 plugin_ids.push(awaken_ext_compact::COMPACT_PLUGIN_ID.to_string());
-                awaken_runtime_contract::resolved::ContextPolicy::KeepLast { keep_last }
+                awaken_runtime_contract::resolved::ContextPolicy::KeepAll
             }
             None => awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
         };

@@ -26,8 +26,8 @@ pub use contributions::{Contributions, DynamicTool, Plugin, PluginConfigError};
 pub use env::{MergeError, ResolvedExecutionEnv};
 pub use guard::{RunEndContext, RunEndDecision, RunEndGuard};
 pub use phase::{
-    AfterToolContext, ContextMessages, HookReaction, PhaseContext, PhaseHook, PhaseHookPoint,
-    PhaseKind,
+    AfterToolContext, ContextMessages, ContextWindow, HookReaction, PhaseContext, PhaseHook,
+    PhaseHookPoint, PhaseKind,
 };
 
 #[cfg(test)]

@@ -686,7 +686,14 @@ impl LlmExecutor for CompactHostModel {
         } else if system_text.contains("Summary of earlier conversation") {
             "seen-summary".to_string()
         } else {
-            "no-summary".to_string()
+            format!(
+                "no-summary-users={}",
+                request
+                    .messages
+                    .iter()
+                    .filter(|message| message.role == Role::User)
+                    .count()
+            )
         };
         Ok(ChatResponse {
             output: AssistantOutput::text(reply),
@@ -711,7 +718,7 @@ async fn compaction_summary_reaches_the_same_long_turn() {
         .find(|m| m.role == Role::Assistant)
         .map(|m| block_text(&m.content))
         .unwrap_or_default();
-    assert_eq!(reply1, "no-summary", "short turn is not compacted");
+    assert_eq!(reply1, "no-summary-users=1", "short turn is not compacted");
 
     // Turn 2: the conversation now exceeds the threshold, so the compact plugin's
     // BeforeInference hook summarizes the older slice inline and the model sees it.
@@ -724,6 +731,31 @@ async fn compaction_summary_reaches_the_same_long_turn() {
         .map(|m| block_text(&m.content))
         .unwrap_or_default();
     assert_eq!(reply2, "seen-summary");
+}
+
+#[tokio::test]
+async fn compaction_keeps_full_history_until_a_summary_activates_the_window() {
+    let host = SharedHost::new(Arc::new(CompactHostModel), "stub").with_compaction(10, 1);
+    let user = |id: &str| vec![Message::text(MessageId(id.into()), Role::User, id)];
+
+    host.run(None, "t-before-fold", user("u1"))
+        .await
+        .expect("turn 1");
+    let turn = host
+        .run(None, "t-before-fold", user("u2"))
+        .await
+        .expect("turn 2");
+    let reply = turn
+        .new_messages
+        .iter()
+        .rev()
+        .find(|message| message.role == Role::Assistant)
+        .map(|message| block_text(&message.content))
+        .unwrap_or_default();
+    assert_eq!(
+        reply, "no-summary-users=2",
+        "KeepLast must remain inactive until compaction supplies prefix coverage"
+    );
 }
 
 /// The extractor saves "the user prefers tea"; the main agent answers "tea"

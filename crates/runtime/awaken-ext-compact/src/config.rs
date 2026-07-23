@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 /// `trigger_ratio` of that window — the "auto-compact at N% of the window"
 /// behavior. When `max_tokens` is `None`, it falls back to the message-count
 /// `threshold`. Either way, `keep_last` most-recent messages stay verbatim and
-/// the main agent's `ContextPolicy::KeepLast` must mirror it.
+/// a successful fold activates the matching Run-scoped request window.
 ///
 /// Deserialization is **bounds-checked** against [`config_schema`]: an
 /// out-of-range value is rejected at load (fail-closed) rather than silently
@@ -23,7 +23,7 @@ pub struct CompactConfig {
     /// the conversation exceeds this many messages.
     pub threshold: usize,
     /// Keep this many most-recent messages verbatim; the summary covers the rest.
-    /// The main agent's `ContextPolicy::KeepLast` must mirror this.
+    /// Applied by the Run-scoped request window only after prefix coverage exists.
     pub keep_last: usize,
     /// The model's max context window in tokens. `Some` ⇒ token-aware trigger;
     /// `None` ⇒ message-count `threshold`.
@@ -31,6 +31,9 @@ pub struct CompactConfig {
     /// Fold once the estimated context reaches this fraction of `max_tokens`
     /// (e.g. `0.8` = compact at 80% of the window). Ignored without `max_tokens`.
     pub trigger_ratio: f64,
+    /// Begin non-blocking background precomputation at this fraction of the hard
+    /// threshold/window. Must be in `(0, 1)`; cache misses never affect correctness.
+    pub prefetch_ratio: f64,
     /// Optional per-agent compaction prompt: the instruction appended to the older
     /// slice that tells the compactor what to preserve. `None` falls back to the
     /// built-in [`SUMMARIZE_PROMPT`](crate::SUMMARIZE_PROMPT). This is the one knob
@@ -46,6 +49,7 @@ impl Default for CompactConfig {
             keep_last: 8,
             max_tokens: None,
             trigger_ratio: 0.8,
+            prefetch_ratio: 0.75,
             instructions: None,
         }
     }
@@ -71,6 +75,7 @@ impl<'de> Deserialize<'de> for CompactConfig {
             keep_last: usize,
             max_tokens: Option<u32>,
             trigger_ratio: f64,
+            prefetch_ratio: f64,
             instructions: Option<String>,
         }
 
@@ -82,6 +87,7 @@ impl<'de> Deserialize<'de> for CompactConfig {
                     keep_last: d.keep_last,
                     max_tokens: d.max_tokens,
                     trigger_ratio: d.trigger_ratio,
+                    prefetch_ratio: d.prefetch_ratio,
                     instructions: d.instructions,
                 }
             }
@@ -103,6 +109,11 @@ impl<'de> Deserialize<'de> for CompactConfig {
                 "compact.trigger_ratio must be in (0, 1]",
             ));
         }
+        if !s.prefetch_ratio.is_finite() || s.prefetch_ratio <= 0.0 || s.prefetch_ratio >= 1.0 {
+            return Err(serde::de::Error::custom(
+                "compact.prefetch_ratio must be in (0, 1)",
+            ));
+        }
         // `max_tokens` minimum 1 when present (a 0-token window is a degenerate
         // budget); `u32` already excludes negatives.
         if matches!(s.max_tokens, Some(0)) {
@@ -116,6 +127,7 @@ impl<'de> Deserialize<'de> for CompactConfig {
             keep_last: s.keep_last,
             max_tokens: s.max_tokens,
             trigger_ratio: s.trigger_ratio,
+            prefetch_ratio: s.prefetch_ratio,
             instructions: s.instructions,
         })
     }
@@ -132,6 +144,8 @@ inherit the model's context window. If no window is known, it falls back to the 
 message-count `threshold`.\n\
 - `keep_last` most-recent messages always stay verbatim; the summary covers everything \
 older. Keep it small (a handful) so compaction actually reclaims context.\n\
+- `prefetch_ratio` starts best-effort background summarization before the hard trigger; \
+the hard trigger still recovers or awaits the exact stable compactor Run on a miss.\n\
 - `instructions` is the COMPACTION PROMPT — free-form English telling the summarizer WHAT \
 to preserve (open tasks, decisions, file paths, identifiers), NOT a size or token count. \
 Blank uses the built-in default. `trigger_ratio`/`threshold` shape WHEN it fires; \
@@ -142,6 +156,7 @@ fn compact_example() -> serde_json::Value {
     serde_json::json!({
         "keep_last": 8,
         "trigger_ratio": 0.8,
+        "prefetch_ratio": 0.75,
         "instructions": "Summarize the older turns into a compact briefing. Preserve open \
     tasks, decisions made, and any file paths, identifiers, and commands referenced. Drop \
     resolved chatter and duplicated tool output."
@@ -170,6 +185,10 @@ pub fn config_schema() -> serde_json::Value {
             "trigger_ratio": {
                 "type": "number", "exclusiveMinimum": 0, "maximum": 1,
                 "description": "Fold once estimated context reaches this fraction of max_tokens (e.g. 0.8)."
+            },
+            "prefetch_ratio": {
+                "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1,
+                "description": "Start non-blocking background compaction at this fraction of the hard threshold."
             },
             "instructions": {
                 "type": ["string", "null"], "format": "textarea",
@@ -223,6 +242,23 @@ mod tests {
         assert!(
             err.is_err(),
             "trigger_ratio > 1 must be rejected (maximum 1): {err:?}"
+        );
+    }
+
+    #[test]
+    fn prefetch_ratio_must_be_strictly_between_zero_and_one() {
+        for invalid in [0.0, 1.0, -0.1] {
+            assert!(
+                serde_json::from_value::<CompactConfig>(
+                    serde_json::json!({ "prefetch_ratio": invalid })
+                )
+                .is_err(),
+                "{invalid} must be rejected"
+            );
+        }
+        assert!(
+            serde_json::from_value::<CompactConfig>(serde_json::json!({ "prefetch_ratio": 0.5 }))
+                .is_ok()
         );
     }
 
