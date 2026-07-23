@@ -29,6 +29,7 @@ use crate::dispatch::{
 };
 use crate::postgres::PostgresDispatchStore;
 use crate::sqlite::SqliteDispatchStore;
+use crate::{DispatchCursor, DispatchOperationalFeed, DispatchPage};
 use awaken_run_ingress_contract::RunDispatch;
 
 /// The active durable-dispatch backend behind one concrete type. Both a SQLite
@@ -36,6 +37,7 @@ use awaken_run_ingress_contract::RunDispatch;
 /// was selected and forwards every call to it.
 pub struct AnyDispatchStore {
     inner: Arc<dyn Dispatch>,
+    operational: Option<Arc<dyn DispatchOperationalFeed>>,
 }
 
 impl AnyDispatchStore {
@@ -104,9 +106,11 @@ impl AnyDispatchStore {
         Ok((Self::from_store(store), wake))
     }
 
-    fn from_store(store: impl Dispatch + 'static) -> Self {
+    fn from_store(store: impl Dispatch + DispatchOperationalFeed + 'static) -> Self {
+        let store = Arc::new(store);
         Self {
-            inner: Arc::new(store),
+            inner: store.clone(),
+            operational: Some(store),
         }
     }
 
@@ -117,7 +121,10 @@ impl AnyDispatchStore {
     /// [`init_shared_dispatch_store`](crate) so the host drives it like any other
     /// queue. Open mechanism; the sharding/tenant policy stays in the closed caller.
     pub fn from_dispatch(inner: Arc<dyn Dispatch>) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            operational: None,
+        }
     }
 }
 
@@ -349,6 +356,22 @@ impl DispatchQueue for AnyDispatchStore {
 
     async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError> {
         delegate!(self, list_dispatches())
+    }
+}
+
+#[async_trait]
+impl DispatchOperationalFeed for AnyDispatchStore {
+    async fn events_after(
+        &self,
+        cursor: DispatchCursor,
+        limit: usize,
+    ) -> Result<DispatchPage, DispatchError> {
+        let Some(feed) = &self.operational else {
+            return Err(DispatchError::Rejected(
+                "configured dispatch adapter does not expose an operational feed".to_string(),
+            ));
+        };
+        feed.events_after(cursor, limit).await
     }
 }
 

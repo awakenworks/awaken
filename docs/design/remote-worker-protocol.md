@@ -511,7 +511,7 @@ trait DispatchOperationalFeed {
         &self,
         cursor: DispatchCursor,
         limit: usize,
-    ) -> DispatchPage;
+    ) -> Result<DispatchPage, DispatchError>;
 }
 ```
 
@@ -520,6 +520,28 @@ The Run feed contains committed `running`, `awaiting`, `resumed`, `completed`,
 `reclaimed`, `lease_lost`, `settled`, and `dead_lettered`. Consumers persist
 their cursor and backfill after reconnect. Live notification is only a wake
 hint; it never replaces the durable cursor.
+
+`DispatchOperationalFeed` is implemented by the memory, SQLite, and PostgreSQL
+dispatch stores. Its `DispatchOperation` payload is a tagged product type:
+
+| Applied dispatch mutation | Durable operation facts |
+|---|---|
+| fresh or awaiting claim | `claimed { claim }` |
+| expired lease is claimed at a higher epoch | `lease_lost { previous, expired }`, then `reclaimed { previous, claim }` |
+| current epoch settles | `settled { claim, outcome }` |
+| expired lease exhausts its retry budget | `lease_lost { claim, retry_exhausted }`, then `dead_lettered { claim, attempt_count }` |
+| cancellation revokes a live lease | `lease_lost { claim, cancelled }` |
+| fenced settle, duplicate/no-op command, successful renewal | no operation fact |
+
+SQLite and PostgreSQL append the operation row in the same transaction that
+changes dispatch authority. The memory reference does both under the same lock.
+Consequently a consumer cannot observe `settled` while the dispatch mutation
+rolled back, and a stale owner cannot publish a false settle. `DispatchCursor`
+is exclusive and scoped to one dispatch store; `DispatchPage.next_cursor` is
+the last event actually returned, or the requested cursor for an empty page.
+The SQL outbox survives process restart. `AnyDispatchStore` exposes it for its
+built-in SQLite/PostgreSQL backends and fails explicitly when an injected legacy
+adapter implements only `Dispatch`.
 
 `CheckpointRunLifecycleFeed` is the portable P1 Run implementation. It reads
 `EventScope::All` from the existing committed-event projection, accepts an

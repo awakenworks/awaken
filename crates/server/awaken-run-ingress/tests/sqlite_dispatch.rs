@@ -16,8 +16,9 @@ use awaken_agent_contract::thread::commit::coordinator::{
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, RunDisposition, ThreadCommit};
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_run_ingress::{
-    ClaimedCommitCoordinator, ClaimedRunCommit, DispatchQueue, DurableRunIngress, GuardedRunCommit,
-    Inbox, PendingInput, RunClaim, RunDispatch, SqliteDispatchStore,
+    ClaimedCommitCoordinator, ClaimedRunCommit, DispatchCursor, DispatchOperation,
+    DispatchOperationalFeed, DispatchQueue, DurableRunIngress, GuardedRunCommit, Inbox,
+    PendingInput, RunClaim, RunDispatch, SqliteDispatchStore,
 };
 use awaken_runtime::RunIngress;
 use awaken_runtime_contract::resume::ResumeResult;
@@ -208,6 +209,21 @@ async fn sqlite_dispatch_opens_a_file_and_persists() {
         .unwrap()
         .expect("survived");
     assert_eq!(claimed.request.run_id().0, "run-1");
+    drop(restarted);
+
+    let feed = SqliteDispatchStore::open(&path).expect("open feed reader");
+    let page = feed
+        .events_after(DispatchCursor(0), 10)
+        .await
+        .expect("backfill persisted operations");
+    assert!(matches!(
+        page.events.as_slice(),
+        [event]
+            if matches!(
+                &event.operation,
+                DispatchOperation::Claimed { claim } if claim.run_id.0 == "run-1"
+            )
+    ));
     let _ = std::fs::remove_file(&path);
 }
 

@@ -673,9 +673,20 @@ async fn settle_done_clears_pending_and_dispatch() {
         ))
         .await
         .unwrap();
-    // Never claimed, so the row's fence epoch is the default 0; settle under it.
+    // Settle is authority-bearing: obtain the exact claim epoch first. Epoch 0
+    // means "never claimed" and is not execution authority.
+    let claimed = store
+        .claim_run(&RunId("run-1".to_string()), "settle-test", 1_000, 0)
+        .await
+        .unwrap()
+        .expect("claim before settle");
     store
-        .settle(&RunId("run-1".to_string()), 0, DispatchOutcome::Done, &[])
+        .settle(
+            &RunId("run-1".to_string()),
+            claimed.lease.epoch,
+            DispatchOutcome::Done,
+            &[],
+        )
         .await
         .unwrap();
     assert_eq!(store.dispatch_count(), 0);

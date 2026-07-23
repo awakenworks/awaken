@@ -11,10 +11,10 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::RunState;
 use awaken_run_ingress::{
-    AnyDispatchStore, DispatchOutcome, DispatchQueue, DurableRunIngress, Inbox, LeastLoadedPolicy,
-    MemoryDispatchStore, PlacementContext, PlacementError, PlacementPolicy, PlacementRequirements,
-    RankedWorker, RunDispatch, SubmitOptions, WorkerIdentity, WorkerManifest, WorkerSnapshot,
-    WorkerState,
+    AnyDispatchStore, DispatchCursor, DispatchOperation, DispatchOperationalFeed, DispatchOutcome,
+    DispatchQueue, DurableRunIngress, Inbox, LeastLoadedPolicy, MemoryDispatchStore,
+    PlacementContext, PlacementError, PlacementPolicy, PlacementRequirements, RankedWorker,
+    RunDispatch, SubmitOptions, WorkerIdentity, WorkerManifest, WorkerSnapshot, WorkerState,
 };
 use awaken_run_ingress::{RunClaim, SettleOutcome, WorkerRecoveryMode};
 use awaken_runtime::RunIngress;
@@ -479,6 +479,46 @@ async fn any_delegates_inbox_append_idempotency() {
     assert!(
         !store.append(input).await.unwrap(),
         "a duplicate message id is a no-op through the wrapper"
+    );
+}
+
+#[tokio::test]
+async fn any_exposes_the_builtin_backends_operational_feed() {
+    let store = any_in_memory();
+    store
+        .enqueue(RunDispatch::new(activation("operations-run")))
+        .await
+        .expect("enqueue");
+    store
+        .claim("operations-owner", 1_000, 0)
+        .await
+        .expect("claim")
+        .expect("runnable");
+
+    let page = store
+        .events_after(DispatchCursor(0), 10)
+        .await
+        .expect("built-in feed");
+
+    assert!(matches!(
+        page.events.as_slice(),
+        [event]
+            if matches!(
+                &event.operation,
+                DispatchOperation::Claimed { claim }
+                    if claim.owner == "operations-owner"
+            )
+    ));
+}
+
+#[tokio::test]
+async fn any_fails_feed_reads_closed_for_a_dispatch_only_adapter() {
+    let dispatch_only: Arc<dyn awaken_run_ingress::Dispatch> = Arc::new(MemoryDispatchStore::new());
+    let store = AnyDispatchStore::from_dispatch(dispatch_only);
+
+    assert!(
+        store.events_after(DispatchCursor(0), 1).await.is_err(),
+        "an erased legacy adapter cannot pretend to expose durable operations"
     );
 }
 

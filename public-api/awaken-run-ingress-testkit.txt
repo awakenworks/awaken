@@ -17,3 +17,4 @@ impl<F> awaken_run_ingress_testkit::ConformanceClock for F where F: core::ops::f
 pub fn F::set(&self, u64)
 pub async fn awaken_run_ingress_testkit::assert_dispatch_conformance(&dyn awaken_run_ingress_contract::dispatch::DispatchQueue, &str, awaken_run_ingress_testkit::ConformanceCapabilities)
 pub async fn awaken_run_ingress_testkit::assert_dispatch_conformance_with_clock(&dyn awaken_run_ingress_contract::dispatch::DispatchQueue, &str, awaken_run_ingress_testkit::ConformanceCapabilities, &dyn awaken_run_ingress_testkit::ConformanceClock)
+pub async fn awaken_run_ingress_testkit::assert_dispatch_operational_feed_conformance<S>(&S, &str) where S: awaken_run_ingress_contract::dispatch::DispatchQueue + awaken_run_ingress_contract::operational::DispatchOperationalFeed + ?core::marker::Sized

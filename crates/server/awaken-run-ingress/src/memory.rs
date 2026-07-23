@@ -22,6 +22,10 @@ use crate::dispatch::{
     DispatchQueue, DispatchState, DispatchSummary, Inbox, Lease, Outbox, PendingInput,
     PendingRecord, RunClaim, SettleOutcome, SubmitOptions,
 };
+use crate::{
+    DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
+    DispatchPage, LeaseLossReason,
+};
 use awaken_run_ingress_contract::RunDispatch;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +91,8 @@ struct State {
     outbox: Vec<PendingInput>,
     /// Applied-Done facts, retained as permanent run-id tombstones (ADR-0060).
     completions: Vec<DispatchCompletion>,
+    /// Dispatch-authority transitions in the same order as their mutations.
+    operations: Vec<DispatchOperationalEvent>,
 }
 
 /// In-memory durable-ingress store. Cloneable handles share one state.
@@ -151,6 +157,13 @@ fn lock(state: &Mutex<State>) -> Result<std::sync::MutexGuard<'_, State>, Dispat
     state
         .lock()
         .map_err(|_| DispatchError::Rejected("dispatch store poisoned".to_string()))
+}
+
+fn push_operation(state: &mut State, operation: DispatchOperation) {
+    state.operations.push(DispatchOperationalEvent {
+        cursor: DispatchCursor(state.operations.len() as u64 + 1),
+        operation,
+    });
 }
 
 /// A pending input is deliverable when it has no schedule or its time has come.
@@ -277,6 +290,8 @@ fn claim_exact(
     {
         return None;
     }
+    let previous =
+        was_recovery.then(|| row.lease.clone().expect("a recovery has an expired lease"));
     let (request, sandbox, cancellation_requested, lease) = {
         let row = state.rows.get_mut(&run_id).expect("runnable row exists");
         row.lease_epoch += 1;
@@ -305,15 +320,35 @@ fn claim_exact(
         .filter(|pending| pending.input.run_id == run_id && is_due(&pending.input, now_ms))
         .map(|pending| pending.input.clone())
         .collect();
-    Some(Claimed {
+    let claimed = Claimed {
         request,
-        lease,
+        lease: lease.clone(),
         cancellation_requested,
         pending,
         recovered: was_recovery,
         sandbox,
         assignment,
-    })
+    };
+    if let Some(previous) = previous {
+        let previous = RunClaim::from(&previous);
+        let claim = RunClaim::from(&lease);
+        push_operation(
+            state,
+            DispatchOperation::LeaseLost {
+                claim: previous.clone(),
+                reason: LeaseLossReason::Expired,
+            },
+        );
+        push_operation(state, DispatchOperation::Reclaimed { previous, claim });
+    } else {
+        push_operation(
+            state,
+            DispatchOperation::Claimed {
+                claim: RunClaim::from(&lease),
+            },
+        );
+    }
+    Some(claimed)
 }
 
 #[async_trait]
@@ -804,10 +839,18 @@ impl DispatchQueue for MemoryDispatchStore {
         // Fence: apply only while the caller still holds the current epoch. A stale
         // owner (lower epoch, or a gone row) changes nothing — the reclaimer's
         // in-flight state is inviolate.
-        let current = state.rows.get(run_id).map(|r| r.lease_epoch);
-        if current != Some(epoch) {
+        let current = state
+            .rows
+            .get(run_id)
+            .filter(|row| row.state == RowState::Leased && row.lease_epoch == epoch)
+            .and_then(|row| row.lease.clone());
+        let Some(lease) = current else {
             return Ok(SettleOutcome::Fenced);
-        }
+        };
+        let operation = DispatchOperation::Settled {
+            claim: RunClaim::from(&lease),
+            outcome,
+        };
         match outcome {
             DispatchOutcome::Done => {
                 let sequence = state.completions.len() as u64 + 1;
@@ -837,6 +880,7 @@ impl DispatchQueue for MemoryDispatchStore {
                     .retain(|p| !consumed.contains(&p.input.message_id));
             }
         }
+        push_operation(&mut state, operation);
         Ok(SettleOutcome::Applied)
     }
 
@@ -858,16 +902,32 @@ impl DispatchQueue for MemoryDispatchStore {
     async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError> {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
-        let mut reaped = 0;
+        let mut operations = Vec::new();
         for row in state.rows.values_mut() {
             let expired = row.state == RowState::Leased
                 && row.lease.as_ref().is_some_and(|l| l.expires_ms < now_ms);
             if expired && row.attempt_count >= max_attempts {
+                let lease = row
+                    .lease
+                    .clone()
+                    .expect("an expired running row carries its lease");
+                let claim = RunClaim::from(&lease);
+                operations.push(DispatchOperation::LeaseLost {
+                    claim: claim.clone(),
+                    reason: LeaseLossReason::RetryExhausted,
+                });
+                operations.push(DispatchOperation::DeadLettered {
+                    claim,
+                    attempt_count: row.attempt_count,
+                });
                 row.state = RowState::DeadLetter;
                 row.lease = None;
                 row.dead_lettered_at = Some(now_ms);
-                reaped += 1;
             }
+        }
+        let reaped = operations.len() / 2;
+        for operation in operations {
+            push_operation(&mut state, operation);
         }
         Ok(reaped)
     }
@@ -942,16 +1002,31 @@ impl DispatchQueue for MemoryDispatchStore {
         if !cancellable {
             return Ok(None);
         }
-        let row = state.rows.get_mut(run_id).expect("cancellable row exists");
-        let thread = row.request.thread_id().clone();
-        row.cancellation_requested = true;
-        if row.state == RowState::Leased {
-            // Revoke the in-flight authority immediately. The stale owner keeps its
-            // local cancellation token, but every later commit/settle under its old
-            // epoch is fenced while cancellation becomes claimable now.
-            row.state = RowState::Pending;
-            row.lease = None;
-            row.lease_epoch += 1;
+        let (thread, lost) = {
+            let row = state.rows.get_mut(run_id).expect("cancellable row exists");
+            let thread = row.request.thread_id().clone();
+            row.cancellation_requested = true;
+            let lost = if row.state == RowState::Leased {
+                // Revoke the in-flight authority immediately. The stale owner keeps
+                // its local cancellation token, but every later commit/settle under
+                // its old epoch is fenced while cancellation becomes claimable now.
+                let lease = row.lease.take();
+                row.state = RowState::Pending;
+                row.lease_epoch += 1;
+                lease
+            } else {
+                None
+            };
+            (thread, lost)
+        };
+        if let Some(lease) = lost {
+            push_operation(
+                &mut state,
+                DispatchOperation::LeaseLost {
+                    claim: RunClaim::from(&lease),
+                    reason: LeaseLossReason::Cancelled,
+                },
+            );
         }
         Ok(Some(thread))
     }
@@ -977,6 +1052,29 @@ impl DispatchQueue for MemoryDispatchStore {
 
     async fn purge_dead_letters_before(&self, cutoff_ms: u64) -> Result<usize, DispatchError> {
         self.purge_dead(|row| row.dead_lettered_at.is_some_and(|at| at <= cutoff_ms))
+    }
+}
+
+#[async_trait]
+impl DispatchOperationalFeed for MemoryDispatchStore {
+    async fn events_after(
+        &self,
+        cursor: DispatchCursor,
+        limit: usize,
+    ) -> Result<DispatchPage, DispatchError> {
+        let state = lock(&self.state)?;
+        let events = state
+            .operations
+            .iter()
+            .filter(|event| event.cursor > cursor)
+            .take(limit)
+            .cloned()
+            .collect::<Vec<_>>();
+        let next_cursor = events.last().map_or(cursor, |event| event.cursor);
+        Ok(DispatchPage {
+            events,
+            next_cursor,
+        })
     }
 }
 

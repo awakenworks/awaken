@@ -12,6 +12,9 @@ use awaken_run_ingress_contract::RunDispatch;
 use awaken_run_ingress_contract::dispatch::{
     DispatchOutcome, DispatchQueue, PendingInput, RunClaim, SettleOutcome, SubmitOptions,
 };
+use awaken_run_ingress_contract::operational::{
+    DispatchCursor, DispatchOperation, DispatchOperationalFeed, LeaseLossReason,
+};
 use awaken_run_ingress_contract::{
     PlacementRequirements, WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerCredentialRevision,
     WorkerIdentity, WorkerManifest, WorkerSnapshot, WorkerState,
@@ -104,6 +107,208 @@ pub async fn assert_dispatch_conformance_with_clock(
     current_claim_guard_is_exact(store, namespace, capabilities, clock).await;
     sandbox_binding_survives_recovery(store, namespace, capabilities, clock).await;
     completion_is_atomic_and_prevents_resurrection(store, namespace, capabilities, clock).await;
+}
+
+/// Verify the durable operational feed independently from Run lifecycle truth.
+///
+/// The backend under test must be fresh enough that the supplied namespace does
+/// not collide with live rows; pre-existing feed events are handled by taking an
+/// initial cursor.
+pub async fn assert_dispatch_operational_feed_conformance<S>(store: &S, namespace: &str)
+where
+    S: DispatchQueue + DispatchOperationalFeed + ?Sized,
+{
+    let baseline = store
+        .events_after(DispatchCursor(0), usize::MAX)
+        .await
+        .expect("read operational baseline");
+    let cursor = baseline.next_cursor;
+
+    let settled_run = run_id(namespace, "operations-settled");
+    store
+        .enqueue(dispatch(
+            namespace,
+            "operations-settled",
+            "operations-settled-thread",
+        ))
+        .await
+        .expect("enqueue settled operational run");
+    let first = store
+        .claim_run(&settled_run, "operations-a", LEASE_MS, 0)
+        .await
+        .expect("first operational claim")
+        .expect("settled run is runnable");
+    let recovered = store
+        .claim_run(&settled_run, "operations-b", LEASE_MS, LEASE_MS + 1)
+        .await
+        .expect("operational recovery")
+        .expect("expired run is recoverable");
+    assert_eq!(
+        store
+            .settle(&settled_run, first.lease.epoch, DispatchOutcome::Done, &[],)
+            .await
+            .expect("fenced settle verdict"),
+        SettleOutcome::Fenced
+    );
+    assert_eq!(
+        store
+            .settle(
+                &settled_run,
+                recovered.lease.epoch,
+                DispatchOutcome::Awaiting,
+                &[],
+            )
+            .await
+            .expect("current settle"),
+        SettleOutcome::Applied
+    );
+
+    let dead_run = run_id(namespace, "operations-dead-letter");
+    store
+        .enqueue(dispatch(
+            namespace,
+            "operations-dead-letter",
+            "operations-dead-letter-thread",
+        ))
+        .await
+        .expect("enqueue dead-letter operational run");
+    let dead_first = store
+        .claim_run(&dead_run, "operations-c", LEASE_MS, 2_000)
+        .await
+        .expect("dead-letter first claim")
+        .expect("dead-letter run is runnable");
+    let dead_recovered = store
+        .claim_run(
+            &dead_run,
+            "operations-d",
+            LEASE_MS,
+            dead_first.lease.expires_ms + 1,
+        )
+        .await
+        .expect("dead-letter recovery")
+        .expect("dead-letter run is recoverable");
+    assert_eq!(
+        store
+            .reap(1, dead_recovered.lease.expires_ms + 1)
+            .await
+            .expect("reap exhausted run"),
+        1
+    );
+
+    let cancelled_run = run_id(namespace, "operations-cancelled");
+    store
+        .enqueue(dispatch(
+            namespace,
+            "operations-cancelled",
+            "operations-cancelled-thread",
+        ))
+        .await
+        .expect("enqueue cancellation operational run");
+    store
+        .claim_run(&cancelled_run, "operations-e", LEASE_MS, 5_000)
+        .await
+        .expect("cancellation claim")
+        .expect("cancellation run is runnable");
+    assert_eq!(
+        store
+            .cancel(&cancelled_run)
+            .await
+            .expect("cancel leased run"),
+        Some(thread_id(namespace, "operations-cancelled-thread"))
+    );
+
+    let page = store
+        .events_after(cursor, 100)
+        .await
+        .expect("read operational transitions");
+    assert!(
+        page.events
+            .windows(2)
+            .all(|pair| pair[0].cursor < pair[1].cursor),
+        "dispatch cursors are strictly increasing"
+    );
+    let operations = page
+        .events
+        .iter()
+        .map(|event| &event.operation)
+        .collect::<Vec<_>>();
+    assert_eq!(operations.len(), 11, "only applied mutations emit facts");
+    assert!(
+        matches!(operations[0], DispatchOperation::Claimed { claim } if claim.run_id == settled_run)
+    );
+    assert!(matches!(
+        operations[1],
+        DispatchOperation::LeaseLost {
+            claim,
+            reason: LeaseLossReason::Expired
+        } if claim.owner == "operations-a"
+    ));
+    assert!(matches!(
+        operations[2],
+        DispatchOperation::Reclaimed { previous, claim }
+            if previous.owner == "operations-a" && claim.owner == "operations-b"
+    ));
+    assert!(matches!(
+        operations[3],
+        DispatchOperation::Settled {
+            claim,
+            outcome: DispatchOutcome::Awaiting
+        } if claim.owner == "operations-b"
+    ));
+    assert!(
+        matches!(operations[4], DispatchOperation::Claimed { claim } if claim.run_id == dead_run)
+    );
+    assert!(matches!(
+        operations[5],
+        DispatchOperation::LeaseLost {
+            reason: LeaseLossReason::Expired,
+            ..
+        }
+    ));
+    assert!(matches!(operations[6], DispatchOperation::Reclaimed { .. }));
+    assert!(matches!(
+        operations[7],
+        DispatchOperation::LeaseLost {
+            reason: LeaseLossReason::RetryExhausted,
+            ..
+        }
+    ));
+    assert!(matches!(
+        operations[8],
+        DispatchOperation::DeadLettered {
+            attempt_count: 1,
+            ..
+        }
+    ));
+    assert!(matches!(
+        operations[9],
+        DispatchOperation::Claimed { claim } if claim.run_id == cancelled_run
+    ));
+    assert!(matches!(
+        operations[10],
+        DispatchOperation::LeaseLost {
+            claim,
+            reason: LeaseLossReason::Cancelled
+        } if claim.owner == "operations-e"
+    ));
+
+    let first_page = store
+        .events_after(cursor, 2)
+        .await
+        .expect("first operational page");
+    let second_page = store
+        .events_after(first_page.next_cursor, 2)
+        .await
+        .expect("second operational page");
+    assert_eq!(first_page.events.len(), 2);
+    assert_eq!(second_page.events.len(), 2);
+    assert_eq!(second_page.events[0], page.events[2]);
+    let empty = store
+        .events_after(page.next_cursor, 0)
+        .await
+        .expect("zero-sized operational page");
+    assert!(empty.events.is_empty());
+    assert_eq!(empty.next_cursor, page.next_cursor);
 }
 
 async fn local_claims_skip_remote_only_work(store: &dyn DispatchQueue, ns: &str) {
