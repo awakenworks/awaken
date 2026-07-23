@@ -528,12 +528,10 @@ impl NamespaceProvider {
                 pc::EnvValue::Inline { value } => {
                     base_env.push((var.name.clone(), value.clone()));
                 }
-                pc::EnvValue::Secret { .. } => {
-                    return Err(err(format!(
-                        "environment variable {:?}: unresolved secret env values are not supported by the local OS sandbox",
-                        var.name
-                    )));
-                }
+                // A broker reference is not a process value. Materialization happens
+                // above this provider; unresolved references are deliberately omitted
+                // so their URI can never leak into the child environment.
+                pc::EnvValue::Secret { .. } => {}
             }
         }
 
@@ -809,12 +807,7 @@ impl NamespaceSandbox {
                 pc::EnvValue::Inline { value } => {
                     process.env(&var.name, value);
                 }
-                pc::EnvValue::Secret { .. } => {
-                    return Err(err(format!(
-                        "command environment variable {:?}: unresolved secret env values are not supported by the local OS sandbox",
-                        var.name
-                    )));
-                }
+                pc::EnvValue::Secret { .. } => {}
             }
         }
         Ok(())
@@ -831,12 +824,7 @@ impl NamespaceSandbox {
                 pc::EnvValue::Inline { value } => {
                     cmd_env.push((var.name.clone(), value.clone()));
                 }
-                pc::EnvValue::Secret { .. } => {
-                    return Err(err(format!(
-                        "command environment variable {:?}: unresolved secret env values are not supported by the local OS sandbox",
-                        var.name
-                    )));
-                }
+                pc::EnvValue::Secret { .. } => {}
             }
         }
         let macos_argv: Vec<String> = command
