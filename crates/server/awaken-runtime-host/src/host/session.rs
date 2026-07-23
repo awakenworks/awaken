@@ -499,8 +499,10 @@ impl SharedHost {
         let context_policy = match &self.compaction {
             Some(compaction) => {
                 let keep_last = compaction.config.keep_last;
-                let plugin = CompactPlugin::new(compaction.config.clone())
-                    .with_agent_tool(compaction.agent_tool.clone());
+                let agent_tool =
+                    build_compact_runner(self.llm.clone(), &self.model_ref, commit.clone());
+                let plugin =
+                    CompactPlugin::new(compaction.config.clone()).with_agent_tool(agent_tool);
                 runtime = runtime.with_plugin(Arc::new(plugin));
                 plugin_ids.push(awaken_ext_compact::COMPACT_PLUGIN_ID.to_string());
                 awaken_runtime_contract::resolved::ContextPolicy::KeepLast { keep_last }

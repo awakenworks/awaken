@@ -154,7 +154,7 @@ struct CompactHook {
 
 impl CompactHook {
     /// The request-only summary block for a fold, or `None` when nothing folds.
-    async fn compute(&self, conversation: &[Message]) -> Option<Vec<Message>> {
+    async fn compute(&self, parent_run_id: &str, conversation: &[Message]) -> Option<Vec<Message>> {
         let agent_tool = self.agent_tool.as_ref()?;
         // Token-aware when the model's window is known (fold at `trigger_ratio` of
         // it), else the message-count `threshold`.
@@ -189,7 +189,7 @@ impl CompactHook {
         let reply = invoke_raw_tool(
             agent_tool.as_ref(),
             ToolCall {
-                call_id: "compact-agent-run".into(),
+                call_id: format!("compact/{parent_run_id}"),
                 tool_id: agent_tool.id().to_string(),
                 arguments: serde_json::json!({
                     "agent_id": COMPACT_AGENT_ID,
@@ -233,7 +233,7 @@ impl PhaseHook for CompactHook {
         if ContextMessages::load_or_default(state).contains_key(COMPACT_PLUGIN_ID) {
             return HookReaction::default();
         }
-        match self.compute(conversation).await {
+        match self.compute(&ctx.run_id.0, conversation).await {
             // A fold happened: record the summary under this producer in
             // `ContextMessages` (the kernel injects it request-only across steps and
             // a resumed run) *and* stage the durable, protocol-neutral marker the

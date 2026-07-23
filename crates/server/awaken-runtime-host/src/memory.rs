@@ -70,6 +70,7 @@ impl AgentSelector {
                 provider: LocalProvider::new(base),
                 catalog,
                 seq: AtomicU64::new(0),
+                execution: None,
             }),
         }
     }

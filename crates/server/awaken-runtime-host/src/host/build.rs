@@ -388,8 +388,7 @@ impl SharedHost {
 
     /// Install a resolved `CompactConfig` and wire the `compactor` sub-agent.
     fn enable_compaction(mut self, config: CompactConfig) -> Self {
-        let agent_tool = build_compact_runner(self.llm.clone(), &self.model_ref);
-        self.compaction = Some(crate::compact::Compaction { config, agent_tool });
+        self.compaction = Some(crate::compact::Compaction { config });
         self
     }
 
