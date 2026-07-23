@@ -1,22 +1,21 @@
-// Button primitive: native-attr passthrough + a typed `variant` that maps to the
-// legacy `.btn` BEM classes (styling lives in base.css). Mirrors oversight-next's
-// Button so call sites read the same everywhere.
-
-import type { ButtonHTMLAttributes, ReactNode } from "react";
+import {
+  Button as SharedButton,
+  type ButtonProps as SharedButtonProps,
+} from "@awaken/ui";
 import { cx } from "./cx";
 
 export type ButtonVariant = "default" | "primary" | "ghost" | "danger";
+export type ButtonProps = Omit<SharedButtonProps, "variant"> & {
+  readonly variant?: ButtonVariant;
+};
 
-export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: ButtonVariant;
-  icon?: ReactNode;
-}
-
-export function Button({ variant = "default", icon, className, children, ...props }: ButtonProps) {
+/** Awaken legacy class adapter over the shared button behavior. */
+export function Button({ variant = "default", className, ...props }: ButtonProps) {
   return (
-    <button className={cx("btn", variant !== "default" && variant, className)} {...props}>
-      {icon}
-      {children}
-    </button>
+    <SharedButton
+      {...props}
+      variant={variant}
+      className={cx("btn", variant !== "default" && variant, className)}
+    />
   );
 }
