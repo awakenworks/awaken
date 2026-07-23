@@ -21,7 +21,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::state::{StateKey, Store};
 use awaken_runtime_contract::plugin::{
     CapabilityBound, ContextMessages, Contributions, HookReaction, IdBound, PhaseContext,
-    PhaseHook, PhaseHookPoint, Plugin, PluginConfigError, PluginManifest,
+    PhaseHook, PhaseHookPoint, PhaseKind, Plugin, PluginConfigError, PluginManifest,
 };
 
 use crate::localfs::{MemoryDir, MemoryStoreHandle};
@@ -231,7 +231,7 @@ impl RecallHook {
         )]
     }
 
-    async fn compute(&self, conversation: &[Message]) -> Vec<Message> {
+    async fn compute(&self, run_input: &[Message]) -> Vec<Message> {
         let entries = self.store.entries().await.unwrap_or_default();
         if entries.is_empty() {
             return Vec::new();
@@ -248,7 +248,7 @@ impl RecallHook {
         let selector = self.selector.as_ref().expect("checked above");
         let picked = selector
             .select(
-                &query_from(conversation),
+                &query_from(run_input),
                 &manifest(&entries),
                 self.bounds.max_entries,
             )
@@ -274,8 +274,8 @@ impl PhaseHook for RecallHook {
 
     async fn on_phase(
         &self,
-        _ctx: &PhaseContext,
-        conversation: &[Message],
+        ctx: &PhaseContext,
+        _conversation: &[Message],
         state: &Store,
     ) -> HookReaction {
         // Already computed this run (replayed across steps and a resumed run): the
@@ -283,7 +283,10 @@ impl PhaseHook for RecallHook {
         if ContextMessages::load_or_default(state).contains_key(MEMORY_PLUGIN_ID) {
             return HookReaction::default();
         }
-        let block = self.compute(conversation).await;
+        let PhaseKind::BeforeInference { run_input } = &ctx.kind else {
+            return HookReaction::default();
+        };
+        let block = self.compute(run_input).await;
         HookReaction::state(vec![ContextMessages::write(&BTreeMap::from([(
             MEMORY_PLUGIN_ID.to_string(),
             block,
@@ -293,11 +296,9 @@ impl PhaseHook for RecallHook {
 
 #[cfg(test)]
 mod tests {
-    use awaken_agent_contract::agent::run::Id as RunId;
-    use awaken_runtime_contract::plugin::PhaseKind;
-
     use super::*;
     use crate::recall::RecallBounds;
+    use awaken_agent_contract::agent::run::Id as RunId;
 
     fn store_with(entries: &[(&str, &str)]) -> MemoryDir {
         let root = std::env::temp_dir().join(format!(
@@ -318,7 +319,20 @@ mod tests {
         PhaseContext {
             run_id: RunId("r".into()),
             step: 0,
-            kind: PhaseKind::BeforeInference,
+            kind: PhaseKind::BeforeInference {
+                run_input: Default::default(),
+            },
+        }
+    }
+
+    fn phase_ctx_with_input(text: &str) -> PhaseContext {
+        PhaseContext {
+            run_id: RunId("r".into()),
+            step: 0,
+            kind: PhaseKind::BeforeInference {
+                run_input: vec![Message::text(MessageId("current".into()), Role::User, text)]
+                    .into(),
+            },
         }
     }
 
@@ -411,13 +425,14 @@ mod tests {
         let plugin = MemoryPlugin::new(store, bounds).with_selector(selector.clone());
         let hook = &plugin.resolve().phase_hooks[0];
 
-        let conversation = vec![Message::text(
-            MessageId("u".into()),
+        let historical_conversation = vec![Message::text(
+            MessageId("historical".into()),
             Role::User,
-            "which one?",
+            "old request",
         )];
         let mut state = Store::new();
-        let reaction = hook.on_phase(&phase_ctx(), &conversation, &state).await;
+        let ctx = phase_ctx_with_input("which one?");
+        let reaction = hook.on_phase(&ctx, &historical_conversation, &state).await;
         // Only the selected memory is injected (into `ContextMessages` state); the
         // selector saw the user query.
         let block = injected(&reaction);
@@ -433,7 +448,7 @@ mod tests {
             state.apply(command);
         }
         *selector.seen_query.lock().unwrap() = String::new();
-        let replay = hook.on_phase(&phase_ctx(), &conversation, &state).await;
+        let replay = hook.on_phase(&ctx, &historical_conversation, &state).await;
         assert!(replay.state.is_empty(), "a replay stages no new state");
         assert_eq!(
             *selector.seen_query.lock().unwrap(),

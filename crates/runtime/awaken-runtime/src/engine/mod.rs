@@ -176,6 +176,7 @@ pub(crate) async fn run_agent_loop(
         .iter()
         .map(|message| message.id.clone())
         .collect();
+    let run_input: std::sync::Arc<[Message]> = activation.input.clone().into();
     let fresh_input: Vec<Message> = activation
         .input
         .into_iter()
@@ -200,6 +201,7 @@ pub(crate) async fn run_agent_loop(
         delegation_origin.as_ref(),
         transcript,
         fresh_input,
+        run_input,
         0,
         store,
         Vec::new(),
@@ -691,6 +693,7 @@ async fn drive(
     delegation_origin: Option<&DelegationOrigin>,
     transcript: Vec<Message>,
     new_messages: Vec<Message>,
+    run_input: std::sync::Arc<[Message]>,
     step_base: usize,
     mut store: Store,
     seed_state: Vec<StateCommand>,
@@ -840,6 +843,7 @@ async fn drive(
             step,
             PhaseHookPoint::StepStart,
             &ledger.transcript,
+            &run_input,
             &mut store,
             &mut ledger.staged_state,
         )
@@ -850,6 +854,7 @@ async fn drive(
             step,
             PhaseHookPoint::BeforeInference,
             &ledger.transcript,
+            &run_input,
             &mut store,
             &mut ledger.staged_state,
         )
@@ -950,6 +955,7 @@ async fn drive(
             step,
             PhaseHookPoint::AfterInference,
             &ledger.transcript,
+            &run_input,
             &mut store,
             &mut ledger.staged_state,
         )
@@ -1120,6 +1126,7 @@ async fn drive(
             step,
             PhaseHookPoint::StepEnd,
             &ledger.transcript,
+            &run_input,
             &mut store,
             &mut ledger.staged_state,
         )
@@ -1362,6 +1369,7 @@ async fn run_phase_hooks(
     step: usize,
     point: PhaseHookPoint,
     conversation: &[Message],
+    run_input: &std::sync::Arc<[Message]>,
     store: &mut Store,
     staged_state: &mut Vec<StateCommand>,
 ) {
@@ -1369,7 +1377,9 @@ async fn run_phase_hooks(
     // `collect_tool_reactions`, never here.
     let kind = match point {
         PhaseHookPoint::StepStart => PhaseKind::StepStart,
-        PhaseHookPoint::BeforeInference => PhaseKind::BeforeInference,
+        PhaseHookPoint::BeforeInference => PhaseKind::BeforeInference {
+            run_input: run_input.clone(),
+        },
         PhaseHookPoint::AfterInference => PhaseKind::AfterInference,
         PhaseHookPoint::StepEnd => PhaseKind::StepEnd,
         PhaseHookPoint::AfterTool => {
