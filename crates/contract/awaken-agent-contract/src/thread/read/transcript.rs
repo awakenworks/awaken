@@ -115,6 +115,13 @@ pub struct TranscriptSliceSpec {
     pub ranges: Vec<TranscriptRange>,
 }
 
+impl TranscriptSliceSpec {
+    /// Validate only the durable range contract, without loading messages.
+    pub fn validate(&self) -> Result<(), TranscriptError> {
+        validate_ranges(&self.ranges, self.snapshot.end_seq)
+    }
+}
+
 /// The immutable selected messages plus evidence tying them to their source.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TranscriptSlice {

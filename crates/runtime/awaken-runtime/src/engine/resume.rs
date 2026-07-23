@@ -273,6 +273,7 @@ pub(super) async fn drive_resumed(
         ticket.delegation_origin.as_ref(),
         transcript,
         resumed_new_messages,
+        Default::default(),
         RESUME_STEP_BASE,
         store,
         seed_state,

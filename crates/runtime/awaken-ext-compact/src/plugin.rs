@@ -282,7 +282,9 @@ mod tests {
         PhaseContext {
             run_id: RunId("r".into()),
             step: 0,
-            kind: PhaseKind::BeforeInference,
+            kind: PhaseKind::BeforeInference {
+                run_input: Default::default(),
+            },
         }
     }
 
