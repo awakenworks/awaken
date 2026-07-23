@@ -302,6 +302,7 @@ pub awaken_runtime_contract::execution::ExecutorCapabilities::cancellation: awak
 pub awaken_runtime_contract::execution::ExecutorCapabilities::wait: awaken_runtime_contract::execution::Wait
 impl awaken_runtime_contract::execution::ExecutorCapabilities
 pub const awaken_runtime_contract::execution::ExecutorCapabilities::NATIVE: Self
+pub const awaken_runtime_contract::execution::A2A_RUNTIME_CAPABILITY: &str
 pub const awaken_runtime_contract::execution::NATIVE_RUNTIME_CAPABILITY: &str
 pub trait awaken_runtime_contract::execution::RunAttemptExecutor: awaken_runtime_contract::execution::RunExecutor
 pub fn awaken_runtime_contract::execution::RunAttemptExecutor::cancel<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<()>> + core::marker::Send + 'async_trait)>> where Self: core::marker::Sync + 'async_trait, 'life0: 'async_trait
@@ -1657,6 +1658,7 @@ pub fn awaken_runtime_contract::tool::ToolRecoveryPolicy::default() -> Self
 pub struct awaken_runtime_contract::ToolWait
 pub awaken_runtime_contract::ToolWait::correlation_id: alloc::string::String
 pub awaken_runtime_contract::ToolWait::kind: awaken_runtime_contract::tool_batch::ToolWaitKind
+pub const awaken_runtime_contract::A2A_RUNTIME_CAPABILITY: &str
 pub const awaken_runtime_contract::NATIVE_RUNTIME_CAPABILITY: &str
 pub trait awaken_runtime_contract::AgentSnapshotResolver
 pub fn awaken_runtime_contract::AgentSnapshotResolver::get_snapshot(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>

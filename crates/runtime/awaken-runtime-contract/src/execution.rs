@@ -10,12 +10,20 @@ use crate::resolved::Backend;
 /// Exact Worker capability for the built-in in-process runtime.
 pub const NATIVE_RUNTIME_CAPABILITY: &str = "native-runtime";
 
+/// Worker capability for the built-in generic A2A attempt executor.
+///
+/// The immutable `backend_ref` still carries the exact remote endpoint. Placement
+/// admits against this finite capability because one installed A2A transport can
+/// execute any valid endpoint; a Worker manifest cannot enumerate future URLs.
+pub const A2A_RUNTIME_CAPABILITY: &str = "a2a-runtime";
+
 /// Manifest/placement capability required by an immutable `backend_ref`.
 #[must_use]
 pub fn execution_capability(backend_ref: &str) -> String {
     match Backend::from_ref(backend_ref) {
         Backend::Native => NATIVE_RUNTIME_CAPABILITY.to_string(),
-        Backend::Acp { .. } | Backend::Remote { .. } => backend_ref.to_string(),
+        Backend::Acp { .. } => backend_ref.to_string(),
+        Backend::Remote { .. } => A2A_RUNTIME_CAPABILITY.to_string(),
     }
 }
 
@@ -406,6 +414,16 @@ mod tests {
                 .await
                 .is_err(),
             "an unregistered neighboring CLI fails closed"
+        );
+    }
+
+    #[test]
+    fn placement_capability_matches_the_installed_executor_altitude() {
+        assert_eq!(execution_capability("genai"), NATIVE_RUNTIME_CAPABILITY);
+        assert_eq!(execution_capability("acp:claude"), "acp:claude");
+        assert_eq!(
+            execution_capability("a2a:https://agent.example"),
+            A2A_RUNTIME_CAPABILITY
         );
     }
 

@@ -76,10 +76,17 @@ impl SharedHost {
         Self::build(llm, model_ref.into(), None)
     }
 
-    /// Install the exact dispatch transport owned by this host composition.
+    /// Install the exact durable dispatch transport owned by this host composition.
+    ///
+    /// An explicitly assembled queue is already the authority for ingress, so it
+    /// also enables this host's dispatch pool. Embedders do not need to mutate the
+    /// process-global `AWAKEN_INGRESS` environment variable to activate a transport
+    /// they supplied directly.
     #[must_use]
     pub fn with_dispatch_store(mut self, store: Arc<awaken_run_ingress::AnyDispatchStore>) -> Self {
         self.dispatch_store_override = Some(store);
+        self.deployment.durable = true;
+        self.deployment.disable_local_pool = false;
         self
     }
 

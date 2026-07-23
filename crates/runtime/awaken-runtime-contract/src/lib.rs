@@ -44,8 +44,9 @@ pub use delegation::{
     ResultRecord, RunDelegationService, RunDelegations,
 };
 pub use execution::{
-    AttemptExecutorRegistry, AttemptExecutorRegistryError, Cancellation, ExecutorCapabilities,
-    NATIVE_RUNTIME_CAPABILITY, RunAttemptExecutor, RunExecutor, Wait, execution_capability,
+    A2A_RUNTIME_CAPABILITY, AttemptExecutorRegistry, AttemptExecutorRegistryError, Cancellation,
+    ExecutorCapabilities, NATIVE_RUNTIME_CAPABILITY, RunAttemptExecutor, RunExecutor, Wait,
+    execution_capability,
 };
 pub use live_inbox::{LiveInbox, LiveInboxMessage, LiveInboxMessageId};
 pub use llm::{ChatRequest, ChatResponse, LlmExecutor};
