@@ -33,6 +33,7 @@ fn state() -> AdminState {
         mcp: Arc::new(InMemoryMcpStore::new()),
         resources: Arc::new(InMemoryAgentInputBindingRepository::new()),
         probe: None,
+        model_discovery: None,
         availability: Default::default(),
     }
 }
@@ -48,6 +49,9 @@ fn document_shape_and_schema_components() {
         "Provider",
         "ProtocolEndpoint",
         "Offering",
+        "AuthorOfferingRequest",
+        "DiscoverModelsRequest",
+        "CatalogSyncResult",
         "ProviderCatalog",
         "CredentialSource",
         "CredentialPool",
@@ -142,10 +146,12 @@ async fn every_documented_operation_is_mounted() {
 fn every_mounted_route_is_documented() {
     // (METHOD, path-template) for every route `admin_router` mounts.
     const MOUNTED: &[(&str, &str)] = &[
+        ("get", "/v1/config/provider-proposals"),
         ("put", "/v1/config/providers/{id}"),
         ("get", "/v1/config/providers/{id}"),
         ("put", "/v1/config/endpoints/{id}"),
         ("get", "/v1/config/endpoints/{id}"),
+        ("post", "/v1/config/endpoints/{id}/discover-models"),
         ("post", "/v1/config/offerings"),
         ("put", "/v1/config/model-attributes/{model_id}"),
         ("get", "/v1/config/catalog"),

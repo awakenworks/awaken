@@ -232,6 +232,8 @@ async fn seed_catalog(_h: &Harness) -> awaken_model_catalog::ProviderCatalog {
         protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
         dialect: ApiDialect::AnthropicMessages,
         upstream_model: None,
+        source: Default::default(),
+        status: Default::default(),
     })
     .await
     .unwrap();

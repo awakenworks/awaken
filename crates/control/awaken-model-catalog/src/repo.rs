@@ -7,8 +7,8 @@
 use std::sync::Mutex;
 
 use crate::{
-    CatalogError, ModelAttributes, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider,
-    ProviderCatalog, ProviderId, ValidCatalog,
+    CatalogError, CatalogSyncResult, DiscoveredModel, ModelAttributes, Offering, ProtocolEndpoint,
+    ProtocolEndpointId, Provider, ProviderCatalog, ProviderId, ValidCatalog,
 };
 
 /// A catalog write/read failure.
@@ -28,7 +28,15 @@ pub enum RepoError {
 pub trait CatalogRepo: Send + Sync {
     async fn put_provider(&self, provider: Provider) -> Result<(), RepoError>;
     async fn put_endpoint(&self, endpoint: ProtocolEndpoint) -> Result<(), RepoError>;
+    /// Explicitly author an offering. The repository normalizes provenance to
+    /// manual/active; provider-owned state enters only through reconciliation.
     async fn put_offering(&self, offering: Offering) -> Result<(), RepoError>;
+    /// Atomically merge one complete provider API listing for an endpoint.
+    async fn reconcile_discovered_models(
+        &self,
+        endpoint_id: &ProtocolEndpointId,
+        models: Vec<DiscoveredModel>,
+    ) -> Result<CatalogSyncResult, RepoError>;
     /// Publish the intrinsic attributes of a `model_id` (upsert on the model id).
     /// Model attributes publish independently of offerings — they carry no
     /// reference to a provider/endpoint (`ProviderCatalog::validate` leaves them
@@ -97,7 +105,9 @@ impl CatalogRepo for InMemoryCatalogRepo {
         Ok(())
     }
 
-    async fn put_offering(&self, offering: Offering) -> Result<(), RepoError> {
+    async fn put_offering(&self, mut offering: Offering) -> Result<(), RepoError> {
+        offering.source = crate::OfferingSource::Manual;
+        offering.status = crate::OfferingStatus::Active;
         let mut guard = self.inner.lock().expect("catalog mutex");
         if !guard
             .get()
@@ -134,6 +144,21 @@ impl CatalogRepo for InMemoryCatalogRepo {
         // is never reassigned, so a rejected write leaves no trace (fail-closed).
         *guard = ValidCatalog::parse(next)?;
         Ok(())
+    }
+
+    async fn reconcile_discovered_models(
+        &self,
+        endpoint_id: &ProtocolEndpointId,
+        models: Vec<DiscoveredModel>,
+    ) -> Result<CatalogSyncResult, RepoError> {
+        let mut guard = self.inner.lock().expect("catalog mutex");
+        if !guard.get().endpoints.contains_key(endpoint_id.as_str()) {
+            return Err(RepoError::EndpointNotFound(endpoint_id.0.clone()));
+        }
+        let mut next = guard.get().clone();
+        let result = next.reconcile_discovered_models(endpoint_id, models)?;
+        *guard = ValidCatalog::parse(next)?;
+        Ok(result)
     }
 
     async fn put_model_attributes(
@@ -219,6 +244,8 @@ mod tests {
             protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
             dialect: ApiDialect::AnthropicMessages,
             upstream_model: None,
+            source: Default::default(),
+            status: Default::default(),
         })
         .await
         .unwrap();
@@ -274,6 +301,8 @@ mod tests {
             protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
             dialect: ApiDialect::OpenAiChat, // endpoint is AnthropicMessages
             upstream_model: None,
+            source: Default::default(),
+            status: Default::default(),
         };
         assert!(repo.put_offering(bad).await.is_err());
     }
@@ -322,6 +351,8 @@ mod tests {
             protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
             dialect: ApiDialect::AnthropicMessages,
             upstream_model: Some("v1".into()),
+            source: Default::default(),
+            status: Default::default(),
         };
         repo.put_offering(first.clone()).await.unwrap();
         first.upstream_model = Some("v2".into());

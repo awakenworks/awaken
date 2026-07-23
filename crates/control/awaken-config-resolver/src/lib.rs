@@ -151,7 +151,11 @@ async fn resolve_inference_toggled(
     let offering = catalog
         .offerings
         .iter()
-        .find(|o| o.model_id == model_id && !disabled_endpoints.contains(&o.protocol_endpoint_id.0))
+        .find(|o| {
+            o.status == awaken_model_catalog::OfferingStatus::Active
+                && o.model_id == model_id
+                && !disabled_endpoints.contains(&o.protocol_endpoint_id.0)
+        })
         .ok_or_else(|| ResolveError::ModelUnresolved(model_id.to_string()))?;
 
     let endpoint = catalog
@@ -797,6 +801,8 @@ mod tests {
             protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
             dialect: ApiDialect::AnthropicMessages,
             upstream_model: None,
+            source: Default::default(),
+            status: Default::default(),
         });
         c
     }

@@ -27,7 +27,8 @@ use awaken_credential_vault::{
 };
 use awaken_model_catalog::repo::{CatalogRepo, RepoError};
 use awaken_model_catalog::{
-    ModelAttributes, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
+    CatalogSyncResult, DiscoveredModel, ModelAttributes, Offering, OfferingSource, OfferingStatus,
+    ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
 };
 use awaken_runtime_contract::resilience::Disposition;
 use awaken_tenancy::WorkspaceScope as ResourceWorkspace;
@@ -59,6 +60,10 @@ pub struct AdminState {
     /// otherwise it reports `unknown` (the model SDK never enters this CRUD crate —
     /// it arrives behind this port).
     pub probe: Option<Arc<dyn CredentialProbe>>,
+    /// Optional provisioning-side provider model discovery. The HTTP/application
+    /// layer passes only an authored endpoint plus a secret-free credential row;
+    /// the adapter owns exact credential materialization and provider I/O.
+    pub model_discovery: Option<Arc<dyn ModelCatalogDiscovery>>,
     /// Credential availability cooldowns (ADR-0043 / E3-4). An operator (or an
     /// external rate-limit signal) cools a source through `POST
     /// /credentials/:id/cooldown`; pool resolution then rotates past it. Shared, so
@@ -85,6 +90,27 @@ pub trait CredentialProbe: Send + Sync {
     async fn probe(&self, base_url: &str, secret: &RedactedString, model: &str) -> ProbeStatus;
 }
 
+/// Provisioning port for obtaining one complete, provider-neutral model listing.
+/// Runtime execution never depends on this port and never reads the catalog.
+#[async_trait::async_trait]
+pub trait ModelCatalogDiscovery: Send + Sync {
+    async fn discover(
+        &self,
+        endpoint: &ProtocolEndpoint,
+        credential: &CredentialSource,
+    ) -> Result<Vec<DiscoveredModel>, ModelCatalogDiscoveryError>;
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ModelCatalogDiscoveryError {
+    /// The exact source cannot be materialized by this provisioning adapter
+    /// (notably a worker-private reference on the control-plane process).
+    #[error("credential cannot be materialized by this provisioning adapter: {0}")]
+    CredentialUnavailable(String),
+    #[error("provider model listing failed: {0}")]
+    Provider(String),
+}
+
 /// Author the model catalog and enter credentials. The resolver consumes the same
 /// catalog snapshot (`GET /v1/config/catalog`) to bind a run.
 pub fn admin_router(state: AdminState) -> Router {
@@ -97,6 +123,10 @@ pub fn admin_router(state: AdminState) -> Router {
         .route(
             "/v1/config/endpoints/{id}",
             put(put_endpoint).get(get_endpoint),
+        )
+        .route(
+            "/v1/config/endpoints/{id}/discover-models",
+            post(discover_endpoint_models),
         )
         .route("/v1/config/offerings", post(post_offering))
         .route(
@@ -391,11 +421,34 @@ async fn get_endpoint(
         .map_err(|e| repo_problem(&e, &req_id(&headers)))
 }
 
+/// Wire command for explicit authoring. Discovery provenance and availability
+/// are server-owned and therefore cannot be forged by an HTTP client.
+#[derive(serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct AuthorOfferingRequest {
+    model_id: String,
+    provider_id: ProviderId,
+    protocol_endpoint_id: ProtocolEndpointId,
+    dialect: awaken_model_catalog::ApiDialect,
+    #[serde(default)]
+    upstream_model: Option<String>,
+}
+
 async fn post_offering(
     State(state): State<AdminState>,
     headers: HeaderMap,
-    Json(offering): Json<Offering>,
+    Json(request): Json<AuthorOfferingRequest>,
 ) -> Result<Json<Offering>, Problem> {
+    let offering = Offering {
+        model_id: request.model_id,
+        provider_id: request.provider_id,
+        protocol_endpoint_id: request.protocol_endpoint_id,
+        dialect: request.dialect,
+        upstream_model: request.upstream_model,
+        source: OfferingSource::Manual,
+        status: OfferingStatus::Active,
+    };
     // Fail-closed reference integrity (offering → provider/endpoint) lives in the
     // repo's put_offering: a dangling endpoint ref is a 404 (referenced resource
     // not found); a dialect mismatch that breaks the whole catalog is a 422 invariant.
@@ -405,6 +458,101 @@ async fn post_offering(
         .await
         .map_err(|e| repo_problem(&e, &req_id(&headers)))?;
     Ok(Json(offering))
+}
+
+#[derive(serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct DiscoverModelsRequest {
+    credential_source_id: CredentialSourceId,
+    /// Used only by an unwrapped/test router. The authenticated management edge
+    /// supplies `WorkspaceScope`, which is authoritative when present.
+    #[serde(default)]
+    workspace_id: Option<String>,
+}
+
+async fn discover_endpoint_models(
+    State(state): State<AdminState>,
+    scope: Option<Extension<ResourceWorkspace>>,
+    Path(endpoint_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<DiscoverModelsRequest>,
+) -> Result<Json<CatalogSyncResult>, Problem> {
+    let rid = req_id(&headers);
+    let workspace_id = scope
+        .map(|Extension(scope)| scope.0)
+        .or(request.workspace_id)
+        .ok_or_else(|| {
+            Problem(ApiError::new(
+                400,
+                "workspace_required",
+                "Workspace required",
+                "model discovery requires an authenticated Workspace scope",
+                &rid,
+            ))
+        })?;
+    let endpoint_id = ProtocolEndpointId::new(endpoint_id);
+    let endpoint = state
+        .catalog
+        .get_endpoint(&endpoint_id)
+        .await
+        .map_err(|error| repo_problem(&error, &rid))?;
+    let credential = state
+        .credentials
+        .get(&request.credential_source_id)
+        .await
+        .map_err(|error| cred_problem(&error, &rid))?;
+    if credential.workspace_id != workspace_id {
+        return Err(cred_problem(
+            &CredentialError::SourceNotFound(request.credential_source_id.0),
+            &rid,
+        ));
+    }
+    if credential.status != CredentialStatus::Active {
+        return Err(cred_problem(
+            &CredentialError::NotActive(credential.id.0.clone()),
+            &rid,
+        ));
+    }
+    if credential
+        .provider_id
+        .as_deref()
+        .is_some_and(|provider| provider != endpoint.provider_id.as_str())
+    {
+        return Err(cred_problem(&CredentialError::NoCredential, &rid));
+    }
+    let discovery = state.model_discovery.as_ref().ok_or_else(|| {
+        Problem(ApiError::new(
+            501,
+            "model_discovery_unavailable",
+            "Model discovery unavailable",
+            "this deployment has no provisioning-side model discovery adapter",
+            &rid,
+        ))
+    })?;
+    let models = discovery
+        .discover(&endpoint, &credential)
+        .await
+        .map_err(|error| {
+            let (status, code) = match &error {
+                ModelCatalogDiscoveryError::CredentialUnavailable(_) => {
+                    (409, "discovery_credential_unavailable")
+                }
+                ModelCatalogDiscoveryError::Provider(_) => (502, "model_discovery_failed"),
+            };
+            Problem(ApiError::new(
+                status,
+                code,
+                "Provider model discovery failed",
+                error.to_string(),
+                &rid,
+            ))
+        })?;
+    state
+        .catalog
+        .reconcile_discovered_models(&endpoint_id, models)
+        .await
+        .map(Json)
+        .map_err(|error| repo_problem(&error, &rid))
 }
 
 async fn put_model_attributes(
