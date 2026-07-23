@@ -131,7 +131,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // traceparent); the whole request→inference path nests under it.
     let app = app.layer(axum::middleware::from_fn(awaken_observability::trace_http));
     let app = match console_dist {
-        Some(dist) => console::mount(app, &dist),
+        Some(dist) => awaken_server::console::mount(app, &dist),
         None => app,
     };
 

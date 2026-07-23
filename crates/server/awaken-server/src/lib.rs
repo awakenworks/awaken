@@ -19,6 +19,7 @@
 //! `awaken-runtime-host`.
 
 pub mod admin;
+pub mod console;
 pub mod dynamic_placement;
 pub mod inference_materializer;
 pub mod mcp_export;
