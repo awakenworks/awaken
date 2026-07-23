@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use awaken_resource_contract::{
     ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, RepositoryConfigVersion,
-    RepositoryDefinition, ResourceState,
+    RepositoryDefinition, ResourceState, ResourceTimestamps,
 };
 use serde::{Deserialize, Serialize};
 
@@ -48,6 +48,16 @@ impl LegacyMemoryStoreDef {
             return None;
         }
         let id = self.id;
+        let state = if self.archived {
+            ResourceState::Archived
+        } else {
+            ResourceState::Active
+        };
+        let migrated_at = now_nanos();
+        let mut timestamps = ResourceTimestamps::created(migrated_at);
+        if state == ResourceState::Archived {
+            timestamps.transition_to(state, migrated_at);
+        }
         Some((
             MemoryStoreDefinition {
                 id: id.clone().into(),
@@ -55,13 +65,9 @@ impl LegacyMemoryStoreDef {
                 name: self.name,
                 description: self.description,
                 metadata: self.metadata,
-                state: if self.archived {
-                    ResourceState::Archived
-                } else {
-                    ResourceState::Active
-                },
+                state,
                 current_config_version: ConfigVersion::INITIAL,
-                timestamps: Default::default(),
+                timestamps,
             },
             MemoryStoreConfigVersion {
                 memory_store_id: id.into(),
@@ -79,4 +85,34 @@ pub(crate) fn now_nanos() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos().min(u64::MAX as u128) as u64)
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_archive_transition_records_real_aggregate_time() {
+        let (definition, _) = LegacyMemoryStoreDef {
+            id: "memory-1".into(),
+            workspace_id: "workspace-a".into(),
+            name: "Legacy".into(),
+            description: String::new(),
+            metadata: BTreeMap::new(),
+            archived: true,
+        }
+        .into_catalog_records()
+        .expect("owned row is migratable");
+
+        assert_eq!(definition.state, ResourceState::Archived);
+        assert!(definition.timestamps.created_unix_nanos > 0);
+        assert_eq!(
+            definition.timestamps.archived_unix_nanos,
+            Some(definition.timestamps.created_unix_nanos)
+        );
+        assert_eq!(
+            definition.timestamps.updated_unix_nanos,
+            definition.timestamps.created_unix_nanos
+        );
+    }
 }
