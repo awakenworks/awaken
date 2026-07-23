@@ -177,3 +177,25 @@ restore a tool denied by IAM/platform policy. Complete binary-safe bundles are
 now hash-verified and materialized under the Session's `.skills` tree from the
 exact version frozen in `ResolvedSessionResources`; that content operation is not
 an authorization bypass.
+
+## Amendment (2026-07-23): MCP ownership follows the Agent aggregate
+
+The `AgentMcpConfig` sentence in the Resource adapters section records a retired
+intermediate design. MCP endpoint authoring now lives only in the
+Workspace-scoped `AgentConfig` aggregate as typed `AgentMcpServerBinding`
+values. An optional credential is an exact secret-free
+`CredentialRef { id, revision }`; it does not transfer credential ownership to
+the Agent context.
+
+At publication, the configuration application invokes a
+`CredentialReferenceValidator` implemented by the control-plane credential
+adapter. It verifies the trusted Workspace, Active status and exact revision
+without exposing material. Runtime preparation rechecks Workspace and revision
+before materialization. IAM authorization remains at the PEP; neither check is
+an authorization grant.
+
+The standalone `McpServerDef` / `AgentMcpConfig` tables, repositories, routes and
+DTOs are removed by the scoped admin migration. Historical migration files stay
+append-only. A Session persists the effective published-or-explicit-override MCP
+projection needed for restart; that immutable Session value is not another
+authoring aggregate.
