@@ -227,7 +227,6 @@ pub(crate) fn server_config(
     context_policy: ContextPolicy,
 ) -> ExecutableAgentSnapshot {
     let tools = advertised_tools(client_tools, delegates, dynamic_descriptors);
-    let inference_access = awaken_runtime_contract::InferenceAccess::host_executor(model_ref);
     ExecutableAgentSnapshot::builder(agent_id)
         .instructions(SYSTEM_PROMPT)
         .model(ModelBinding::new("default", model_ref, "default"))
@@ -237,10 +236,6 @@ pub(crate) fn server_config(
         .plugins(plugin_ids.iter().cloned())
         .plugin_config(plugin_config.iter().map(|(k, v)| (k.clone(), v.clone())))
         .context_policy(context_policy)
-        .metadata(awaken_runtime_contract::AgentSnapshotMetadata {
-            inference_access: Some(inference_access),
-            ..Default::default()
-        })
         .build()
 }
 

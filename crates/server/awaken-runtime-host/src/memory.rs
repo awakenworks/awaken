@@ -463,21 +463,22 @@ impl MemoryRuntime {
             .as_ref()
         {
             return materializer
-                .materialize_pinned(&snapshot.model_ref, &snapshot.inference_access)
+                .materialize_pinned(&snapshot.model)
                 .ok_or_else(|| {
                     format!(
-                        "pinned inference access for model `{}` is unavailable",
-                        snapshot.model_ref
+                        "published model candidate `{}` is unavailable",
+                        snapshot.model.binding.model_ref
                     )
                 });
         }
-        snapshot
-            .inference_access
-            .is_host_executor_for(&snapshot.model_ref)
-            .then(|| self.llm.clone())
-            .ok_or_else(|| {
-                "pinned inference access requires an installed credential materializer".into()
-            })
+        matches!(
+            snapshot.model.provisioning,
+            awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor
+        )
+        .then(|| self.llm.clone())
+        .ok_or_else(|| {
+            "published model candidate requires an installed credential materializer".into()
+        })
     }
 
     pub(crate) fn extraction_repository(&self) -> Arc<dyn MemoryExtractionRepository> {
@@ -622,7 +623,7 @@ impl BoundMemory {
             .filter(|value| !value.trim().is_empty())
             .unwrap_or(DEFAULT_MEMORY_INSTRUCTIONS);
         let catalog = AgentCatalog::new().with_agent(default_memory_agent(
-            &intent.extractor.model_ref,
+            &intent.extractor.model.binding.model_ref,
             instructions,
         ));
         let executor = self.runtime.materialize_extractor(&intent.extractor)?;
@@ -792,17 +793,16 @@ impl crate::host::SharedHost {
         let model_ref = self
             .inference_routing
             .model_ref(thread, &snapshot.resolved_spec.model_binding.model_ref);
-        let inference_access = snapshot
-            .metadata
-            .inference_access
-            .as_ref()
-            .and_then(|access| access.for_model(&model_ref));
-        let Some(inference_access) = inference_access else {
+        let model = snapshot
+            .resolved_spec
+            .candidate_for_model(&model_ref)
+            .cloned();
+        let Some(model) = model else {
             tracing::error!(
                 thread,
                 model_ref,
                 snapshot_id = %snapshot.id.0,
-                "memory extraction rejected: snapshot has no pinned inference access for model"
+                "memory extraction rejected: snapshot has no published model candidate"
             );
             return None;
         };
@@ -810,8 +810,7 @@ impl crate::host::SharedHost {
             memory,
             extractor: MemoryExtractorSnapshot {
                 agent_id: MEMORY_AGENT_ID.to_string(),
-                model_ref,
-                inference_access,
+                model,
                 instructions: config.instructions,
                 extraction_prompt: config.extraction_prompt,
             },
@@ -969,8 +968,9 @@ mod tests {
     ) -> MemoryExtractorSnapshot {
         MemoryExtractorSnapshot {
             agent_id: MEMORY_AGENT_ID.into(),
-            model_ref: "stub".into(),
-            inference_access: awaken_runtime_contract::InferenceAccess::host_executor("stub"),
+            model: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                awaken_runtime_contract::resolved::ModelBinding::new("host", "stub", "host"),
+            ),
             instructions: instructions.map(str::to_string),
             extraction_prompt: extraction_prompt.map(str::to_string),
         }
@@ -1346,8 +1346,9 @@ mod tests {
             vec![user("remember the maintenance window")],
             MemoryExtractorSnapshot {
                 agent_id: MEMORY_AGENT_ID.into(),
-                model_ref: "stub".into(),
-                inference_access: awaken_runtime_contract::InferenceAccess::host_executor("stub"),
+                model: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                    awaken_runtime_contract::resolved::ModelBinding::new("host", "stub", "host"),
+                ),
                 instructions: None,
                 extraction_prompt: None,
             },

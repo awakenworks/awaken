@@ -29,7 +29,6 @@ pub use awaken_managed_routers::{default_models, files_router, models_router};
 // The A2A remote-delegate adapter + its transport constructor: the composition root
 // builds the adapter here and injects it behind the host's neutral RemoteAgent interface.
 use awaken_run_executor_a2a::{A2aRemoteAgent, HttpTransport};
-use awaken_runtime_contract::InferenceAccess;
 pub use awaken_runtime_host::{
     ConfigService, ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost,
     PreparedMcpRefresh, ProtocolHost, SharedHost, SkillContext, SkillSpec, ThreadEvent,
@@ -97,12 +96,15 @@ struct RouteProvider;
 impl InferenceExecutorMaterializer for RouteProvider {
     fn materialize_pinned(
         &self,
-        model_ref: &str,
-        access: &InferenceAccess,
+        candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
     ) -> Option<Arc<dyn LlmExecutor>> {
-        if !access.is_host_executor_for(model_ref) {
+        if !matches!(
+            candidate.provisioning,
+            awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor
+        ) {
             return None;
         }
+        let model_ref = candidate.binding.model_ref.as_str();
         let labeled: Arc<dyn LlmExecutor> = match model_ref {
             "fast" => Arc::new(LabelModel("fast")),
             "slow" => Arc::new(LabelModel("slow")),
@@ -358,10 +360,12 @@ pub async fn run_echo_worker(upstream: &str) -> Result<(), Box<dyn std::error::E
 
         fn materialize_pinned(
             &self,
-            model_ref: &str,
-            access: &InferenceAccess,
+            candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
         ) -> Option<Arc<dyn LlmExecutor>> {
-            if !access.is_host_executor_for(model_ref) {
+            if !matches!(
+                candidate.provisioning,
+                awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor
+            ) {
                 return None;
             }
             Some(Arc::new(EchoModel))

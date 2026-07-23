@@ -324,11 +324,10 @@ async fn a_secretless_worker_reads_the_snapshot_pinned_access() {
 
 #[tokio::test]
 async fn a_per_run_model_override_routes_the_worker_to_the_overridden_model() {
-    // R5, end to end on the worker path: a run carrying `model_ref_override` resolves
-    // through `effective_model_ref → materialize_inference` to a DIFFERENT executor than its
-    // snapshot binding names — proving the per-turn switch reaches the provider seam,
-    // not just the binding. The resolver is keyed by ref: binding "m" → "BOUND",
-    // override "alt" → "ALT"; the committed reply must be "ALT".
+    // R5, end to end on the worker path: a run selects the already-published `alt`
+    // candidate and resolves it to a different executor than the primary binding.
+    // This proves the per-turn switch reaches the materialization seam without
+    // allowing an arbitrary model ref outside the immutable snapshot.
     use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 
     struct Fixed(&'static str);
@@ -362,7 +361,13 @@ async fn a_per_run_model_override_routes_the_worker_to_the_overridden_model() {
         Some(resolver),
     );
 
-    let over = activation("run-override").with_model_ref_override(Some("alt".into()));
+    let mut over = activation("run-override");
+    over.snapshot.resolved_spec.model_candidates.push(
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+            awaken_runtime_contract::resolved::ModelBinding::new("alt", "alt", "stub"),
+        ),
+    );
+    let over = over.with_model_ref_override(Some("alt".into()));
     let state = ingress
         .submit_background(over)
         .await

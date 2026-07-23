@@ -276,11 +276,13 @@ fn activation(plugin_ids: Vec<String>) -> RunActivation {
                 instructions: String::new(),
                 max_steps: 16,
                 delegation_limits: Default::default(),
-                model_binding: ModelBinding {
-                    provider_identity_ref: "p".to_string(),
-                    model_ref: "m".to_string(),
-                    backend_ref: "b".to_string(),
-                },
+                model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                    ModelBinding {
+                        provider_identity_ref: "p".to_string(),
+                        model_ref: "m".to_string(),
+                        backend_ref: "b".to_string(),
+                    },
+                ),
                 tool_descriptors: Vec::new(),
                 plugin_ids,
                 plugin_config: Default::default(),

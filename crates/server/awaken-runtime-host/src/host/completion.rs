@@ -3,11 +3,21 @@
 
 use super::*;
 use awaken_run_ingress::PlacementRequirements;
-use awaken_runtime_contract::InferenceAccess;
 use std::collections::HashMap;
 
+fn model_realization_capability(
+    provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
+) -> &'static str {
+    match provisioning {
+        awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor => "host-executor/v1",
+        awaken_runtime_contract::resolved::ModelProvisioning::Provider { .. } => {
+            "credential-source/v1"
+        }
+    }
+}
+
 pub(crate) fn remote_worker_placement(
-    access: Option<&InferenceAccess>,
+    models: &awaken_runtime_contract::resolved::ResolvedSpec,
     resources: Option<&awaken_protocol_managed::SessionResourceManifest>,
     remote_required: bool,
 ) -> PlacementRequirements {
@@ -19,20 +29,11 @@ pub(crate) fn remote_worker_placement(
     placement
         .required_capabilities
         .insert("native-runtime".to_string());
-    if let Some(access) = access {
-        if access.candidates.is_empty() {
-            placement
-                .required_capabilities
-                .insert(access.scheme.clone());
-        } else {
-            placement.required_capabilities.extend(
-                access
-                    .candidates
-                    .iter()
-                    .map(|candidate| candidate.access.scheme.clone()),
-            );
-        }
-    }
+    placement.required_capabilities.extend(
+        std::iter::once(&models.model_binding)
+            .chain(models.model_candidates.iter())
+            .map(|candidate| model_realization_capability(&candidate.provisioning).to_string()),
+    );
     if let Some(resources) = resources {
         placement
             .required_capabilities
@@ -65,7 +66,7 @@ impl SharedHost {
         // successor can be the operation that removes a prior projection.
         let placement = (self.deployment.disable_local_pool || resources.is_some()).then(|| {
             remote_worker_placement(
-                activation.snapshot.metadata.inference_access.as_ref(),
+                &activation.snapshot.resolved_spec,
                 resources.as_ref(),
                 self.deployment.disable_local_pool,
             )
@@ -257,22 +258,17 @@ impl CompletionSink for CompletionRegistry {
 
 #[cfg(test)]
 mod completion_tests {
-    use super::{CompletionRegistry, InferenceAccess, RunId, remote_worker_placement};
+    use super::{CompletionRegistry, RunId, remote_worker_placement};
     use awaken_agent_contract::agent::run::RunState;
     use awaken_run_ingress::CompletionSink;
+    use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
     use std::sync::Arc;
 
-    fn opaque_access(scheme: &str, reference: &str) -> InferenceAccess {
-        InferenceAccess {
-            scheme: scheme.into(),
-            reference: reference.into(),
-            provider_ref: None,
-            route_ref: None,
-            scope_id: None,
-            credential_access: None,
-            endpoint: None,
-            candidates: Vec::new(),
-        }
+    fn host_models() -> awaken_runtime_contract::resolved::ResolvedSpec {
+        awaken_runtime_contract::ExecutableAgentSnapshot::builder("test")
+            .model(ModelBinding::new("host", "primary", "native"))
+            .build()
+            .resolved_spec
     }
 
     /// A3: dropping the guard (caller future dropped / timed out) removes the
@@ -303,18 +299,22 @@ mod completion_tests {
 
     #[test]
     fn coordinator_admission_pins_protocol_and_every_materialization_capability() {
-        let access = InferenceAccess::candidate_set([
-            (
-                "primary".to_string(),
-                opaque_access("credential-source/v1", "credential-a"),
-            ),
-            (
-                "fallback".to_string(),
-                opaque_access("credential-reference/v1", "grant-b"),
-            ),
-        ])
-        .unwrap();
-        let placement = remote_worker_placement(Some(&access), None, true);
+        let mut models = host_models();
+        models
+            .model_candidates
+            .push(ResolvedModelCandidate::provider(
+                ModelBinding::new("provider", "fallback", "native"),
+                "provider@1",
+                "route@1",
+                "workspace",
+                None,
+                awaken_runtime_contract::InferenceEndpoint {
+                    adapter_kind: "openai".into(),
+                    base_url: "https://example.invalid".into(),
+                    upstream_model: "fallback".into(),
+                },
+            ));
+        let placement = remote_worker_placement(&models, None, true);
         assert_eq!(placement.contract_version, 1);
         assert_eq!(placement.dispatch_contract_version, 1);
         assert_eq!(placement.runtime_protocol_version, 1);
@@ -324,11 +324,7 @@ mod completion_tests {
                 .required_capabilities
                 .contains("credential-source/v1")
         );
-        assert!(
-            placement
-                .required_capabilities
-                .contains("credential-reference/v1")
-        );
+        assert!(placement.required_capabilities.contains("host-executor/v1"));
     }
 
     #[test]
@@ -364,7 +360,7 @@ mod completion_tests {
                 skills: Some(Vec::new()),
             },
         );
-        let placement = remote_worker_placement(None, Some(&resources), true);
+        let placement = remote_worker_placement(&host_models(), Some(&resources), true);
         assert!(
             placement
                 .required_capabilities
@@ -386,7 +382,7 @@ mod completion_tests {
                 skills: Some(Vec::new()),
             },
         );
-        let placement = remote_worker_placement(None, Some(&resources), true);
+        let placement = remote_worker_placement(&host_models(), Some(&resources), true);
         assert!(
             placement
                 .required_capabilities

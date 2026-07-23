@@ -161,7 +161,9 @@ fn dispatch_with_capability(run: &str, capability: &str) -> RunDispatch {
                 instructions: String::new(),
                 max_steps: 1,
                 delegation_limits: Default::default(),
-                model_binding: ModelBinding::new("provider", "model", "native"),
+                model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                    ModelBinding::new("provider", "model", "native"),
+                ),
                 tool_descriptors: Vec::new(),
                 plugin_ids: Vec::new(),
                 plugin_config: Default::default(),

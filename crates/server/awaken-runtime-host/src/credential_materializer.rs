@@ -10,7 +10,8 @@ use std::sync::Arc;
 use awaken_agent_contract::RedactedString;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_credential_vault::{CredentialSourceId, CredentialStatus, SecretStore};
-use awaken_runtime_contract::{CredentialInjectionKind, CredentialUsage, InferenceAccess};
+use awaken_runtime_contract::resolved::{ModelProvisioning, ResolvedModelCandidate};
+use awaken_runtime_contract::{CredentialInjectionKind, CredentialUsage};
 
 /// Worker/host-side realization of one already-published credential reference.
 #[derive(Clone)]
@@ -35,45 +36,38 @@ impl PinnedCredentialMaterializer {
     /// complete candidate that was already included in the published snapshot.
     pub async fn materialize_provider(
         &self,
-        access: &InferenceAccess,
+        candidate: &ResolvedModelCandidate,
     ) -> Result<RedactedString, String> {
-        if access.scheme != "credential-source/v1" {
-            return Err(format!(
-                "unsupported inference access scheme `{}`",
-                access.scheme
-            ));
-        }
-        let provider = access
-            .provider_ref
-            .as_deref()
-            .and_then(|value| value.split_once('@'))
+        let ModelProvisioning::Provider {
+            provider_ref,
+            scope_id,
+            credential,
+            ..
+        } = &candidate.provisioning
+        else {
+            return Err("model candidate does not require a provider credential".into());
+        };
+        let provider = provider_ref
+            .split_once('@')
             .map(|(provider, _)| provider)
-            .ok_or_else(|| {
-                "published inference access has no versioned provider pin".to_string()
-            })?;
-        let scope = access
-            .scope_id
-            .as_deref()
-            .ok_or_else(|| "published inference access has no Workspace owner".to_string())?;
-        let credential = access
-            .credential_access
+            .ok_or_else(|| "published model candidate has no versioned provider pin".to_string())?;
+        let credential = credential
             .as_ref()
-            .ok_or_else(|| "published inference access has no credential pin".to_string())?;
+            .ok_or_else(|| "published model candidate has no credential pin".to_string())?;
         if credential.injection != CredentialInjectionKind::Reference
             || credential.usage != CredentialUsage::ProviderAdapter
-            || credential.credential.id != access.reference
         {
             return Err("published credential injection contract is invalid".to_string());
         }
 
         let source = self
             .credentials
-            .get(&CredentialSourceId(access.reference.clone()))
+            .get(&CredentialSourceId(credential.credential.id.clone()))
             .await
             .map_err(|error| error.to_string())?;
         let revision = u64::try_from(source.version)
             .map_err(|_| format!("credential {} has a negative version", source.id.0))?;
-        if source.workspace_id != scope {
+        if source.workspace_id != *scope_id {
             return Err("published credential Workspace owner changed".to_string());
         }
         if source.status != CredentialStatus::Active {

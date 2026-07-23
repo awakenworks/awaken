@@ -54,7 +54,7 @@ pub(crate) fn build_chat_request(
     // the request as-is — one tool type end to end, no lossy projection into a schema.
     let tools = spec.tool_presentation.model_tools(&combined, opened);
     ChatRequest {
-        model_binding: spec.model_binding.clone(),
+        model_binding: spec.model_binding.binding.clone(),
         messages,
         tools,
     }

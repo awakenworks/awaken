@@ -97,12 +97,12 @@ impl LlmExecutor for TruncateThenFailPrimary {
     }
 }
 
-fn binding(model: &str) -> ModelBinding {
-    ModelBinding {
+fn binding(model: &str) -> awaken_runtime_contract::resolved::ResolvedModelCandidate {
+    awaken_runtime_contract::resolved::ResolvedModelCandidate::host(ModelBinding {
         provider_identity_ref: "p".to_string(),
         model_ref: model.to_string(),
         backend_ref: "b".to_string(),
-    }
+    })
 }
 
 /// An activation whose primary model is `primary` with ordered pool `fallbacks`.
@@ -196,6 +196,27 @@ async fn explicit_override_is_the_only_model_executed_for_the_run() {
 
     assert!(matches!(outcome, RunState::Ended(EndCause::NaturalEnd)));
     assert_eq!(&*seen.lock().unwrap(), &["chosen"]);
+}
+
+#[tokio::test]
+async fn an_override_outside_the_published_pool_is_rejected_before_inference() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(RouteLlm {
+            failing: vec![],
+            seen: seen.clone(),
+        }))
+        .with_retry_policy(no_retries());
+
+    let mut activation = activation("primary", &["published-fallback"]);
+    activation.model_ref_override = Some("not-published".to_string());
+    let error = runtime
+        .execute(activation, RuntimeRunContext::new())
+        .await
+        .expect_err("an unpinned selector must fail closed");
+
+    assert!(error.to_string().contains("outside the publication-pinned"));
+    assert!(seen.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

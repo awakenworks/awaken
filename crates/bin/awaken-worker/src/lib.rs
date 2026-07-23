@@ -472,7 +472,7 @@ fn grace_window(graceful: bool, configured_secs: Option<u64>) -> std::time::Dura
 mod grace_tests {
     use std::sync::Arc;
 
-    use awaken_runtime_contract::{InferenceAccess, llm::LlmExecutor};
+    use awaken_runtime_contract::llm::LlmExecutor;
 
     use super::{
         InferenceExecutorMaterializer, grace_window, shared_credential_backend, worker_manifest,
@@ -487,8 +487,7 @@ mod grace_tests {
 
         fn materialize_pinned(
             &self,
-            _model_ref: &str,
-            _access: &InferenceAccess,
+            _candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
         ) -> Option<Arc<dyn LlmExecutor>> {
             None
         }

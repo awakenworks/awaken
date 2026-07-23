@@ -119,7 +119,7 @@ fn activation(model_ref: &str) -> RunActivation {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn worker_resolves_a_configured_model_to_a_real_executor() {
     let p = provider("claude-x", Some(("anthropic", true))).await;
-    let activation = activation("claude-x");
+    let mut activation = activation("claude-x");
     let access = p
         .publisher
         .resolve_for_scope(
@@ -128,7 +128,16 @@ async fn worker_resolves_a_configured_model_to_a_real_executor() {
         )
         .await
         .expect("access is pinned");
-    assert!(p.materializer.materialize(&activation, &access).is_some());
+    let exact = access.for_model("claude-x").expect("candidate access");
+    activation.snapshot.resolved_spec.model_binding.provisioning =
+        awaken_runtime_contract::resolved::ModelProvisioning::Provider {
+            provider_ref: exact.provider_ref.expect("provider pin"),
+            route_ref: exact.route_ref.expect("route pin"),
+            scope_id: exact.scope_id.expect("scope pin"),
+            credential: exact.credential_access.map(Box::new),
+            endpoint: Box::new(exact.endpoint.expect("endpoint pin")),
+        };
+    assert!(p.materializer.materialize(&activation).is_some());
 }
 
 /// An unpublished `model_ref` returns `None`, so the host falls back to

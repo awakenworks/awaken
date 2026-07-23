@@ -36,7 +36,9 @@ fn spec() -> ResolvedSpec {
         instructions: "be concise".into(),
         max_steps: 8,
         delegation_limits: Default::default(),
-        model_binding: ModelBinding::new("prov", "gpt", "genai"),
+        model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+            ModelBinding::new("prov", "gpt", "genai"),
+        ),
         model_candidates: Vec::new(),
         tool_descriptors: Vec::new(),
         plugin_ids: Vec::new(),
@@ -71,7 +73,8 @@ fn resolved_spec_field_names_are_pinned() {
     // The fingerprint newtype is a BARE string on the wire, not a wrapped object.
     assert_eq!(v["catalog_fingerprint"], json!("fp-1"));
 
-    // The nested model binding names its three refs exactly.
+    // Host-executor candidates retain the frozen legacy model-binding shape.
+    // Provider publications add an explicit provisioning object, pinned below.
     assert_eq!(
         v["model_binding"],
         json!({
@@ -92,6 +95,51 @@ fn resolved_spec_field_names_are_pinned() {
 
     // An empty tool presentation renders as `{}` (its `facets` map is skipped empty).
     assert_eq!(v["tool_presentation"], json!({}));
+}
+
+#[test]
+fn provider_model_candidate_provisioning_is_pinned() {
+    let mut spec = spec();
+    spec.model_binding = awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
+        ModelBinding::new("identity-a", "model-a", "genai"),
+        "provider-a@2",
+        "route-a@3",
+        "workspace-a",
+        Some(awaken_runtime_contract::CredentialAccess {
+            credential: awaken_runtime_contract::CredentialRef {
+                id: "credential-a".into(),
+                revision: 4,
+            },
+            injection: awaken_runtime_contract::CredentialInjectionKind::Reference,
+            usage: awaken_runtime_contract::CredentialUsage::ProviderAdapter,
+        }),
+        awaken_runtime_contract::InferenceEndpoint {
+            adapter_kind: "openai_chat_completions".into(),
+            base_url: "https://provider.example/v1".into(),
+            upstream_model: "upstream-a".into(),
+        },
+    );
+
+    let wire = serde_json::to_value(spec).expect("serialize provider candidate");
+    assert_eq!(
+        wire["model_binding"]["provisioning"],
+        json!({
+            "type": "provider",
+            "provider_ref": "provider-a@2",
+            "route_ref": "route-a@3",
+            "scope_id": "workspace-a",
+            "credential": {
+                "credential": { "id": "credential-a", "revision": 4 },
+                "injection": "reference",
+                "usage": { "type": "provider_adapter" }
+            },
+            "endpoint": {
+                "adapter_kind": "openai_chat_completions",
+                "base_url": "https://provider.example/v1",
+                "upstream_model": "upstream-a"
+            }
+        })
+    );
 }
 
 // --- Item 1: RunActivation wire shape --------------------------------------

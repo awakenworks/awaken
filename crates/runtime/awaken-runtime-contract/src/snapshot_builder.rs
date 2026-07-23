@@ -12,7 +12,8 @@
 use std::collections::BTreeMap;
 
 use crate::resolved::{
-    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor, ToolPresentation,
+    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedModelCandidate, ResolvedSpec,
+    ToolDescriptor, ToolPresentation,
 };
 use crate::snapshot::{
     AgentId, AgentSnapshotMetadata, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
@@ -38,8 +39,8 @@ pub struct ExecutableAgentSnapshotBuilder {
     instructions: String,
     max_steps: usize,
     delegation_limits: awaken_agent_contract::agent::delegation::DelegationLimits,
-    model_binding: ModelBinding,
-    model_candidates: Vec<ModelBinding>,
+    model_binding: ResolvedModelCandidate,
+    model_candidates: Vec<ResolvedModelCandidate>,
     tools: Vec<ToolDescriptor>,
     plugin_ids: Vec<String>,
     plugin_config: BTreeMap<String, serde_json::Value>,
@@ -56,7 +57,7 @@ impl ExecutableAgentSnapshotBuilder {
             instructions: String::new(),
             max_steps: DEFAULT_MAX_STEPS,
             delegation_limits: Default::default(),
-            model_binding: ModelBinding::default(),
+            model_binding: ResolvedModelCandidate::host(ModelBinding::default()),
             model_candidates: Vec::new(),
             tools: Vec::new(),
             plugin_ids: Vec::new(),
@@ -78,7 +79,14 @@ impl ExecutableAgentSnapshotBuilder {
     /// The provider instance / model / backend this agent runs on.
     #[must_use]
     pub fn model(mut self, model_binding: ModelBinding) -> Self {
-        self.model_binding = model_binding;
+        self.model_binding = ResolvedModelCandidate::host(model_binding);
+        self
+    }
+
+    /// Set the complete primary candidate resolved by configuration publication.
+    #[must_use]
+    pub fn resolved_model(mut self, model: ResolvedModelCandidate) -> Self {
+        self.model_binding = model;
         self
     }
 
@@ -86,6 +94,19 @@ impl ExecutableAgentSnapshotBuilder {
     /// a candidate fails cleanly (#1). Empty (the default) is a single-model agent.
     #[must_use]
     pub fn model_candidates(mut self, candidates: impl IntoIterator<Item = ModelBinding>) -> Self {
+        self.model_candidates = candidates
+            .into_iter()
+            .map(ResolvedModelCandidate::host)
+            .collect();
+        self
+    }
+
+    /// Set the complete ordered fallback candidates resolved by publication.
+    #[must_use]
+    pub fn resolved_model_candidates(
+        mut self,
+        candidates: impl IntoIterator<Item = ResolvedModelCandidate>,
+    ) -> Self {
         self.model_candidates = candidates.into_iter().collect();
         self
     }

@@ -399,11 +399,13 @@ fn snapshot(tool_ids: &[&str]) -> ExecutableAgentSnapshot {
             instructions: String::new(),
             max_steps: 8,
             delegation_limits: Default::default(),
-            model_binding: ModelBinding {
-                provider_identity_ref: "provider".to_string(),
-                model_ref: "model".to_string(),
-                backend_ref: "backend".to_string(),
-            },
+            model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                ModelBinding {
+                    provider_identity_ref: "provider".to_string(),
+                    model_ref: "model".to_string(),
+                    backend_ref: "backend".to_string(),
+                },
+            ),
             tool_descriptors: tool_ids
                 .iter()
                 .map(|id| ToolDescriptor::pinned("formal", *id, *id, serde_json::json!({})))

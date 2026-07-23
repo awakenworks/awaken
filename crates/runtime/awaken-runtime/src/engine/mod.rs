@@ -133,9 +133,16 @@ pub(crate) async fn run_agent_loop(
     let mut resolved = runtime
         .resolve(&activation.snapshot)
         .map_err(map_resolver_error)?;
-    resolved
-        .spec
-        .apply_execution_model_override(activation.model_ref_override.as_deref());
+    if let Some(model_ref) = activation
+        .model_ref_override
+        .as_deref()
+        .filter(|model_ref| !model_ref.is_empty())
+        && !resolved.spec.select_execution_model(model_ref)
+    {
+        return Err(Error::Execution(format!(
+            "model override `{model_ref}` is outside the publication-pinned candidate set"
+        )));
+    }
 
     let run_id = activation.run_id.clone();
     let thread_id = activation.thread_id.clone();

@@ -29,7 +29,7 @@ use crate::binding_resolver::ModelResolver;
 use crate::installed_catalog::InstalledAgentCatalog;
 use crate::managed_agent::{agent_config_from_managed, managed_from_agent_config};
 use crate::publication::{
-    PublishError, ValidationIssue, pin_inference_access, prepare_agent_publication,
+    PublishError, ValidationIssue, prepare_agent_publication, resolve_publication_models,
     snapshot_metadata,
 };
 use crate::tool_catalog::RESERVED_ADMIN_SCOPE;
@@ -263,18 +263,23 @@ impl ConfigService {
         }
         let source_revision = versioned.revision;
         let mut resolved = prepare_agent_publication(self.model_resolver.as_deref(), versioned)?;
-        resolved.inference_access = Some(
-            pin_inference_access(
+        resolved.models = Some(
+            resolve_publication_models(
                 self.inference_access_publisher.as_deref(),
                 workspace,
                 &resolved,
             )
             .await?,
         );
-        let snapshot = awaken_config_store::compile_resolved(
+        let models = resolved.models.take().ok_or_else(|| {
+            PublishError::Unresolvable("publication did not resolve model candidates".into())
+        })?;
+        let snapshot = awaken_config_store::compile_published(
             &resolved.config,
             catalog,
             snapshot_metadata(&resolved),
+            models.primary,
+            models.candidates,
         )
         .map_err(|e| PublishError::Compile(e.to_string()))?;
         let publication =
@@ -890,14 +895,18 @@ mod resource_prompt_tests {
         let scope = ScopeId::from("workspace-a");
         plane.put(&scope, &agent_config("agent-a")).await.unwrap();
         let publication = plane.publish(&scope, "agent-a").await.unwrap();
-        let access = publication
-            .snapshot
-            .metadata
-            .inference_access
-            .as_ref()
-            .expect("publication carries resolved inference access");
-        assert_eq!(access.scope_id.as_deref(), Some("workspace-a"));
-        assert_eq!(access.reference, "credential-workspace-a");
+        let candidate = &publication.snapshot.resolved_spec.model_binding;
+        let awaken_runtime_contract::resolved::ModelProvisioning::Provider {
+            scope_id,
+            credential: Some(credential),
+            ..
+        } = &candidate.provisioning
+        else {
+            panic!("publication carries a complete provider candidate")
+        };
+        assert_eq!(scope_id, "workspace-a");
+        assert_eq!(credential.credential.id, "credential-workspace-a");
+        assert!(publication.snapshot.metadata.inference_access.is_none());
         assert_eq!(publication.fingerprint, publication.snapshot.fingerprint.0);
     }
 
@@ -913,16 +922,14 @@ mod resource_prompt_tests {
         plane.put(&scope, &agent_config("agent-a")).await.unwrap();
 
         let publication = plane.publish(&scope, "agent-a").await.unwrap();
-        let model_ref = &publication.snapshot.resolved_spec.model_binding.model_ref;
-        let access = publication
-            .snapshot
-            .metadata
-            .inference_access
-            .as_ref()
-            .and_then(|access| access.for_model(model_ref))
-            .expect("local publication pins host access");
-
-        assert!(access.is_host_executor_for(model_ref));
+        assert!(matches!(
+            publication
+                .snapshot
+                .resolved_spec
+                .model_binding
+                .provisioning,
+            awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor
+        ));
     }
 
     fn static_plane(resolver: Option<Arc<dyn ModelResolver>>) -> ConfigPlane {

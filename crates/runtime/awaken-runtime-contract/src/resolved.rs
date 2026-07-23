@@ -34,7 +34,7 @@ pub struct ResolvedSpec {
     /// own resolved value applies when that child delegates again.
     #[serde(default, skip_serializing_if = "is_default_delegation_limits")]
     pub delegation_limits: awaken_agent_contract::agent::delegation::DelegationLimits,
-    pub model_binding: ModelBinding,
+    pub model_binding: ResolvedModelCandidate,
     /// Ordered pool fallbacks tried *after* [`model_binding`](Self::model_binding)
     /// when a candidate fails cleanly (retryable-exhausted or its circuit is open)
     /// and no partial has been committed for the step. Empty for a single-model
@@ -43,7 +43,7 @@ pub struct ResolvedSpec {
     /// Part of the resolved decision surface (data-only, G3): a pool change is a
     /// config change, so it flows through resolution and the catalog fingerprint.
     #[serde(default)]
-    pub model_candidates: Vec<ModelBinding>,
+    pub model_candidates: Vec<ResolvedModelCandidate>,
     pub tool_descriptors: Vec<ToolDescriptor>,
     pub plugin_ids: Vec<String>,
     /// Per-plugin configuration, keyed by plugin id. Raw JSON so the runtime
@@ -74,35 +74,47 @@ impl ResolvedSpec {
     /// on a clean pre-commit failure of the current one (never mid-stream).
     #[must_use]
     pub fn candidate_bindings(&self) -> Vec<&ModelBinding> {
-        std::iter::once(&self.model_binding)
-            .chain(self.model_candidates.iter())
+        std::iter::once(&self.model_binding.binding)
+            .chain(
+                self.model_candidates
+                    .iter()
+                    .map(|candidate| &candidate.binding),
+            )
             .collect()
     }
 
-    /// Apply a per-run model override to this ephemeral resolved view.
+    /// The complete publication-pinned candidate for `binding`. Provisioning uses
+    /// this exact lookup so two routes for the same upstream model cannot share
+    /// credential or endpoint state accidentally.
+    #[must_use]
+    pub fn candidate_for_binding(&self, binding: &ModelBinding) -> Option<&ResolvedModelCandidate> {
+        std::iter::once(&self.model_binding)
+            .chain(self.model_candidates.iter())
+            .find(|candidate| &candidate.binding == binding)
+    }
+
+    /// The first complete published candidate whose model id matches an explicit
+    /// run override. The override is a model selector, never a route selector.
+    #[must_use]
+    pub fn candidate_for_model(&self, model_ref: &str) -> Option<&ResolvedModelCandidate> {
+        std::iter::once(&self.model_binding)
+            .chain(self.model_candidates.iter())
+            .find(|candidate| candidate.binding.model_ref == model_ref)
+    }
+
+    /// Select one candidate from this ephemeral resolved view.
     ///
-    /// The durable, content-addressed snapshot remains untouched. An override
-    /// that names a published pool candidate adopts that candidate's complete
-    /// provider/backend binding; any other override keeps the primary routing
-    /// axes and changes only its model ref. Explicit selection disables pool
-    /// failover for this run so execution cannot silently leave the model that
-    /// admission pinned.
-    pub fn apply_execution_model_override(&mut self, model_ref: Option<&str>) {
-        let Some(model_ref) = model_ref.filter(|model_ref| !model_ref.is_empty()) else {
-            return;
+    /// The durable, content-addressed snapshot remains untouched. Selection is
+    /// fail-closed: `false` means the requested model was not published and no
+    /// state changed. A successful explicit selection disables pool failover so
+    /// execution cannot silently leave the model selected for this run.
+    pub fn select_execution_model(&mut self, model_ref: &str) -> bool {
+        let Some(selected) = self.candidate_for_model(model_ref).cloned() else {
+            return false;
         };
-        let selected = self
-            .candidate_bindings()
-            .into_iter()
-            .find(|binding| binding.model_ref == model_ref)
-            .cloned()
-            .unwrap_or_else(|| {
-                let mut binding = self.model_binding.clone();
-                binding.model_ref = model_ref.to_string();
-                binding
-            });
         self.model_binding = selected;
         self.model_candidates.clear();
+        true
     }
 }
 
@@ -191,6 +203,98 @@ pub struct ModelBinding {
     pub provider_identity_ref: String,
     pub model_ref: String,
     pub backend_ref: String,
+}
+
+/// The provisioning facts for one published model candidate. This is snapshot
+/// data, not secret material and not an IAM decision. Local endpoints, gateways,
+/// and provider SaaS all use `Provider`; only an explicitly installed in-process
+/// executor uses `HostExecutor`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ModelProvisioning {
+    /// Direct/test composition with an executor installed by the host. Published
+    /// provider configurations never fall back to this variant.
+    #[default]
+    HostExecutor,
+    /// Exact provider route and credential delivery frozen by publication.
+    Provider {
+        provider_ref: String,
+        route_ref: String,
+        scope_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credential: Option<Box<crate::CredentialAccess>>,
+        endpoint: Box<crate::InferenceEndpoint>,
+    },
+}
+
+impl ModelProvisioning {
+    fn is_host_executor(&self) -> bool {
+        matches!(self, Self::HostExecutor)
+    }
+}
+
+/// One complete, immutable model candidate in an executable publication.
+///
+/// `binding` is the small runtime identity copied into [`crate::ChatRequest`].
+/// `provisioning` is consumed before the runtime loop to create an executor and
+/// therefore never needs to enter each model request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedModelCandidate {
+    #[serde(flatten)]
+    pub binding: ModelBinding,
+    #[serde(default, skip_serializing_if = "ModelProvisioning::is_host_executor")]
+    pub provisioning: ModelProvisioning,
+}
+
+impl ResolvedModelCandidate {
+    #[must_use]
+    pub fn host(binding: ModelBinding) -> Self {
+        Self {
+            binding,
+            provisioning: ModelProvisioning::HostExecutor,
+        }
+    }
+
+    #[must_use]
+    pub fn provider(
+        binding: ModelBinding,
+        provider_ref: impl Into<String>,
+        route_ref: impl Into<String>,
+        scope_id: impl Into<String>,
+        credential: Option<crate::CredentialAccess>,
+        endpoint: crate::InferenceEndpoint,
+    ) -> Self {
+        Self {
+            binding,
+            provisioning: ModelProvisioning::Provider {
+                provider_ref: provider_ref.into(),
+                route_ref: route_ref.into(),
+                scope_id: scope_id.into(),
+                credential: credential.map(Box::new),
+                endpoint: Box::new(endpoint),
+            },
+        }
+    }
+}
+
+impl std::ops::Deref for ResolvedModelCandidate {
+    type Target = ModelBinding;
+
+    fn deref(&self) -> &Self::Target {
+        &self.binding
+    }
+}
+
+impl std::ops::DerefMut for ResolvedModelCandidate {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.binding
+    }
+}
+
+impl AsRef<ModelBinding> for ResolvedModelCandidate {
+    fn as_ref(&self) -> &ModelBinding {
+        &self.binding
+    }
 }
 
 impl ModelBinding {
@@ -625,6 +729,26 @@ mod tests {
             Some("https://host/a2a")
         );
         assert!(!Backend::from_ref("a2a:x").is_acp());
+    }
+
+    #[test]
+    fn execution_model_selection_is_limited_to_the_published_pool() {
+        let mut spec = crate::snapshot::ExecutableAgentSnapshot::builder("agent")
+            .model(ModelBinding::new("primary-id", "primary", "native"))
+            .model_candidates([ModelBinding::new("fallback-id", "fallback", "native")])
+            .build()
+            .resolved_spec;
+        let unchanged = spec.clone();
+
+        assert!(!spec.select_execution_model("not-published"));
+        assert_eq!(
+            spec, unchanged,
+            "a rejected selector cannot mutate the pool"
+        );
+
+        assert!(spec.select_execution_model("fallback"));
+        assert_eq!(spec.model_binding.provider_identity_ref, "fallback-id");
+        assert!(spec.model_candidates.is_empty());
     }
 
     #[test]

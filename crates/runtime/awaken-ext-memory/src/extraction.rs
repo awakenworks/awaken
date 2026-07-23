@@ -19,14 +19,39 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryExtractorSnapshot {
     pub agent_id: String,
-    pub model_ref: String,
-    /// Configuration-publication output used to inject the same credential and
-    /// endpoint on every retry. It contains references only, never secret bytes.
-    pub inference_access: awaken_runtime_contract::InferenceAccess,
+    /// Complete configuration-publication candidate used on every retry. It
+    /// contains references only, never secret bytes.
+    pub model: awaken_runtime_contract::resolved::ResolvedModelCandidate,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extraction_prompt: Option<String>,
+}
+
+impl MemoryExtractorSnapshot {
+    /// Construct the explicit host-executor form used by embedded compositions
+    /// and persistence-adapter tests. Provider-backed publications carry their
+    /// complete candidate from the executable snapshot instead.
+    #[must_use]
+    pub fn host_executor(
+        agent_id: impl Into<String>,
+        provider_identity_ref: impl Into<String>,
+        model_ref: impl Into<String>,
+        backend_ref: impl Into<String>,
+    ) -> Self {
+        Self {
+            agent_id: agent_id.into(),
+            model: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                awaken_runtime_contract::resolved::ModelBinding::new(
+                    provider_identity_ref,
+                    model_ref,
+                    backend_ref,
+                ),
+            ),
+            instructions: None,
+            extraction_prompt: None,
+        }
+    }
 }
 
 /// One deterministic Memory mutation proposed by the extractor.
@@ -282,7 +307,10 @@ impl MemoryExtractionIntent {
             ("terminal_commit_id", self.terminal_commit_id.as_str()),
             ("memory_store_id", self.memory_store_id.as_str()),
             ("extractor.agent_id", self.extractor.agent_id.as_str()),
-            ("extractor.model_ref", self.extractor.model_ref.as_str()),
+            (
+                "extractor.model_ref",
+                self.extractor.model.binding.model_ref.as_str(),
+            ),
         ] {
             if value.trim().is_empty() {
                 return Err(MemoryExtractionError::Invalid(format!(
@@ -1113,9 +1141,12 @@ mod tests {
             vec![Message::text(Id("m1".into()), Role::User, "remember me")],
             MemoryExtractorSnapshot {
                 agent_id: "memory-agent".into(),
-                model_ref: "model-config-2".into(),
-                inference_access: awaken_runtime_contract::InferenceAccess::host_executor(
-                    "model-config-2",
+                model: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                    awaken_runtime_contract::resolved::ModelBinding::new(
+                        "host",
+                        "model-config-2",
+                        "host",
+                    ),
                 ),
                 instructions: None,
                 extraction_prompt: None,
