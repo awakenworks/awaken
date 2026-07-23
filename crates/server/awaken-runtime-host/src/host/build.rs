@@ -414,10 +414,9 @@ impl SharedHost {
         self
     }
 
-    /// Make this host a database-less **worker** of the cell server at `url`: every
-    /// thread's commit posts facts to the server's commit ingest instead of a local
-    /// store (paired with an `HttpDispatchQueue` for claim/settle). The worker holds
-    /// no store; the server stays the single writer.
+    /// Make this host a database-less **Worker** of the Control Node at `url`.
+    /// Attempts use the registered HTTP dispatch transport and a claim-fenced
+    /// operation coordinator; the Worker holds no authoritative store.
     #[must_use]
     pub fn with_upstream(mut self, url: impl Into<String>) -> Self {
         self.upstream = Some(crate::worker_security::WorkerUpstream::new(url));
@@ -723,21 +722,17 @@ impl SharedHost {
         let remote_agents = self.remote_agents.clone();
         let scheduler = if self.deployment.durable {
             let recovery_projection = commit.recovery_projection();
+            let claimed_commit = self
+                .upstream
+                .as_ref()
+                .map(crate::commit_ingest::remote_claimed_commit)
+                .transpose()?;
             Some(crate::agent_runner::RunScheduler {
                 store: self.dispatch_store()?,
                 commit: commit.clone(),
                 reader: commit,
                 owner: crate::dispatch_backend::dispatch_owner(),
-                claimed_commit: self.upstream.as_ref().map(|upstream| {
-                    let mut commit =
-                        crate::commit_ingest::RemoteClaimedRunCommit::new(upstream.base_url())
-                            .with_client(upstream.client().clone())
-                            .with_request_authorizer(upstream.request_authorizer());
-                    if let Some(identity) = upstream.worker_identity() {
-                        commit = commit.with_worker_identity(identity.clone());
-                    }
-                    Arc::new(commit) as Arc<dyn awaken_run_ingress::ClaimedRunCommit>
-                }),
+                claimed_commit,
                 recovery_projection,
                 session_resources: self.thread_resource_manifest(thread),
             })

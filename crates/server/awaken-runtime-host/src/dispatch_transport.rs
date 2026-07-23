@@ -40,11 +40,9 @@ pub fn worker_dispatch_store_with_upstream(
     identity: WorkerIdentity,
 ) -> Arc<AnyDispatchStore> {
     Arc::new(AnyDispatchStore::from_dispatch(Arc::new(
-        HttpDispatchQueue::new(upstream.base_url())
+        HttpDispatchQueue::new(upstream.base_url(), identity)
             .with_client(upstream.client().clone())
-            .with_worker_id(upstream.worker_id())
-            .with_request_authorizer(upstream.request_authorizer())
-            .with_worker_identity(identity),
+            .with_request_authorizer(upstream.request_authorizer()),
     ) as Arc<dyn Dispatch>))
 }
 
@@ -178,28 +176,7 @@ async fn claim_authority(
     })
 }
 
-/// Compatibility facade used by existing composition roots. The host parameter
-/// is retained for source compatibility; new compositions inject an explicit
-/// [`WorkerDispatchService`] through [`dispatch_transport_router_with_service`].
-pub fn dispatch_transport_router(host: Arc<SharedHost>) -> Router {
-    let dispatch = host
-        .dispatch_store()
-        .expect("worker dispatch router requires the durable backend initialized at startup");
-    dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::local(dispatch)))
-}
-
-pub fn dispatch_transport_router_with_directory(
-    host: Arc<SharedHost>,
-    directory: Arc<dyn WorkerDirectory>,
-) -> Router {
-    dispatch_transport_router_with_directory_and_policy(
-        host,
-        directory,
-        Arc::new(awaken_run_ingress::LeastLoadedPolicy),
-    )
-}
-
-pub fn dispatch_transport_router_with_directory_and_policy(
+fn registered_dispatch_router(
     host: Arc<SharedHost>,
     directory: Arc<dyn WorkerDirectory>,
     policy: Arc<dyn PlacementPolicy>,
@@ -227,8 +204,8 @@ pub fn dispatch_transport_router_with_directory_and_policy(
 
 /// Production worker transport: lifecycle/dispatch and atomic claimed commit are
 /// mounted over the same durable queue, authenticator, and incarnation directory.
-/// Keeping this as one composition entry prevents a server from pairing registered
-/// claims with the legacy unregistered commit route.
+/// This single composition entry prevents a server from mounting claims without
+/// their matching claim-fenced commit authority.
 pub fn registered_worker_transport_router(
     host: Arc<SharedHost>,
     directory: Arc<dyn WorkerDirectory>,
@@ -237,11 +214,7 @@ pub fn registered_worker_transport_router(
     let dispatch = host
         .dispatch_store()
         .expect("registered worker transport requires the durable backend at startup");
-    let dispatch_router = dispatch_transport_router_with_directory_and_policy(
-        host.clone(),
-        directory.clone(),
-        policy,
-    );
+    let dispatch_router = registered_dispatch_router(host.clone(), directory.clone(), policy);
     let commit_service = Arc::new(crate::commit_ingest::ClaimedCommitService::for_host(
         dispatch as Arc<dyn DispatchQueue>,
         host,

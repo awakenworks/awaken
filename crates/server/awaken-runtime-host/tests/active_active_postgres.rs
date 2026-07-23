@@ -354,8 +354,8 @@ async fn two_control_processes_retry_recover_and_settle_without_sticky_routing()
 
     let (identity, _) = configured_worker();
 
-    let queue_a = HttpDispatchQueue::new(&base_a).with_worker_identity(identity.clone());
-    let queue_b = HttpDispatchQueue::new(&base_b).with_worker_identity(identity.clone());
+    let queue_a = HttpDispatchQueue::new(&base_a, identity.clone());
+    let queue_b = HttpDispatchQueue::new(&base_b, identity.clone());
     let run_id = RunId("active-active-run".into());
     let thread_id = ThreadId("active-active-thread".into());
     queue_a
@@ -396,8 +396,7 @@ async fn two_control_processes_retry_recover_and_settle_without_sticky_routing()
         claim: claim.clone(),
         operation,
     };
-    let ambiguous = RemoteClaimedRunCommit::new(&base_a)
-        .with_worker_identity(identity.clone())
+    let ambiguous = RemoteClaimedRunCommit::new(&base_a, identity.clone())
         .commit_operation(command.clone())
         .await;
     assert!(
@@ -407,8 +406,7 @@ async fn two_control_processes_retry_recover_and_settle_without_sticky_routing()
     let exited = control_a.wait_for_exit().await;
     assert_eq!(exited.code(), Some(86), "fault injector exited Control A");
 
-    let duplicate = RemoteClaimedRunCommit::new(&base_b)
-        .with_worker_identity(identity)
+    let duplicate = RemoteClaimedRunCommit::new(&base_b, identity)
         .commit_operation(command)
         .await
         .expect("retry the same logical operation through Control B");

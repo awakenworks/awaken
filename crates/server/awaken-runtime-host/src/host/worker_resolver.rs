@@ -118,13 +118,9 @@ impl HostWorkerResolver {
             worker.install_attempt_executor(executor);
         }
         if let Some(upstream) = &host.upstream {
-            let mut remote = crate::commit_ingest::RemoteClaimedRunCommit::new(upstream.base_url())
-                .with_client(upstream.client().clone())
-                .with_request_authorizer(upstream.request_authorizer());
-            if let Some(identity) = upstream.worker_identity() {
-                remote = remote.with_worker_identity(identity.clone());
-            }
-            worker = worker.with_claimed_commit(Arc::new(remote));
+            let claimed_commit = crate::commit_ingest::remote_claimed_commit(upstream)
+                .map_err(|error| Self::execution_error(error.to_string()))?;
+            worker = worker.with_claimed_commit(claimed_commit);
         }
         if let Some(projection) = recovery_projection {
             worker = worker.with_recovery_projection(projection);

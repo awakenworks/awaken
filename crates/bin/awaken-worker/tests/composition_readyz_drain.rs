@@ -13,8 +13,8 @@
 //! e2e: the upstream implements only worker lifecycle and an empty claim response, so
 //! no real server, durable queue, or model is involved.
 //!
-//! This exercises the single worker composition, `ensure_dispatch_pool` over the injected
-//! `worker_dispatch_store`, the `/readyz` `/livez` `/metrics` surface, and the drain
+//! This exercises the single Worker composition over its explicitly injected typed
+//! dispatch store, the `/readyz` `/livez` `/metrics` surface, and the drain
 //! transition (`POST /admin/drain` flips `/readyz` 200 → 503). Determinism: we POLL
 //! `/readyz` until it flips — never a fixed "wait for ready" sleep.
 
@@ -94,7 +94,7 @@ fn run_brings_readyz_up_then_drain_flips_it_down() {
             .expect("spawn the awaken-worker binary"),
     );
 
-    // The pool comes up (ensure_dispatch_pool over the injected worker_dispatch_store),
+    // The pool comes up over the explicitly injected typed Worker dispatch store,
     // so once the admin surface binds, readiness reports ACCEPTING. Polled, not slept.
     assert!(
         poll_until(&admin_addr, "GET", "/readyz", 200),

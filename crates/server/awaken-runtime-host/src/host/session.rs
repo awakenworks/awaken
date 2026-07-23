@@ -147,13 +147,8 @@ impl SharedHost {
         .with_context(run_context);
         ingress.install_attempt_executor(attempt_executor);
         if let Some(upstream) = &self.upstream {
-            let mut commit = crate::commit_ingest::RemoteClaimedRunCommit::new(upstream.base_url())
-                .with_client(upstream.client().clone())
-                .with_request_authorizer(upstream.request_authorizer());
-            if let Some(identity) = upstream.worker_identity() {
-                commit = commit.with_worker_identity(identity.clone());
-            }
-            ingress = ingress.with_claimed_commit(Arc::new(commit));
+            ingress =
+                ingress.with_claimed_commit(crate::commit_ingest::remote_claimed_commit(upstream)?);
         }
         if let Some(projection) = recovery_projection {
             ingress = ingress.with_recovery_projection(projection);

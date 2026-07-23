@@ -39,7 +39,7 @@ mod worker_context;
 pub use any::AnyDispatchStore;
 pub use capability::RunIngressCapabilities;
 // The database-less worker's HTTP dispatch client (drives claim/settle over the wire
-// to a cell server's dispatch_transport_router), extracted from awaken-runtime-host.
+// to the Control Node's registered Worker router), extracted from awaken-runtime-host.
 pub use awaken_run_ingress_contract::operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
     DispatchPage, LeaseLossReason,
@@ -76,7 +76,7 @@ pub use recovery_projection::{RecoveryProjection, RecoveryProjectionError};
 pub use send_message::OutboxMessageSender;
 pub use service::{DispatchService, DispatchServiceConfig};
 pub use sqlite::{SqliteDispatchStore, StoreError as SqliteStoreError};
-pub use transport_client::{HttpDispatchQueue, WorkerRequestAuthorizer, worker_dispatch_store};
+pub use transport_client::{HttpDispatchQueue, WorkerRequestAuthorizer};
 #[cfg(feature = "nats")]
 pub use wake::NatsWakeSignal;
 pub use wake::{LocalWakeSignal, PgNotifyWake, WakeSignal};

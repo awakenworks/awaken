@@ -4,7 +4,7 @@
 //! `transport_client.rs` is otherwise an entirely untested public module. These
 //! tests drive the real client's claim/settle verbs across a real TCP port
 //! (ephemeral) against a live `axum` server that mirrors a cell server's
-//! `dispatch_transport_router`, backed by the production `MemoryDispatchStore`.
+//! registered Worker router, backed by the production `MemoryDispatchStore`.
 //! No mock transport — the seam under test is the client's reqwest encode/decode
 //! against the wire the server actually serves.
 //!
@@ -22,7 +22,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_run_ingress::{
     DispatchError, DispatchOutcome, DispatchQueue, HttpDispatchQueue, Inbox, MemoryDispatchStore,
-    Outbox, PendingInput, RunClaim, RunDispatch, SettleOutcome, SubmitOptions,
+    Outbox, PendingInput, RunClaim, RunDispatch, SettleOutcome, SubmitOptions, WorkerIdentity,
 };
 use awaken_runtime_contract::resume::ResumeResult;
 use axum::extract::State;
@@ -57,7 +57,7 @@ fn provider_candidate(
     )
 }
 
-/// Stand up a live server mirroring a cell server's `dispatch_transport_router`
+/// Stand up a live server mirroring the Control Node's Worker dispatch routes
 /// over a shared [`MemoryDispatchStore`], bound to an ephemeral port. Returns the
 /// base URL a `HttpDispatchQueue` points at plus the shared store handle, so a test
 /// can assert server-side state directly.
@@ -244,7 +244,7 @@ async fn bind_sandbox(
 #[tokio::test]
 async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
     let (base, store, clock) = spawn_transport_server().await;
-    let queue = HttpDispatchQueue::new(base);
+    let queue = HttpDispatchQueue::new(base, WorkerIdentity::new("worker-A", "boot-A", 1));
     let run = RunId("run-1".into());
 
     // Enqueue a run over the wire; the server-side store records it.
@@ -334,17 +334,19 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
 #[tokio::test]
 async fn renew_lease_returns_false_over_the_wire_when_the_lease_was_stolen() {
     let (base, store, clock) = spawn_transport_server().await;
-    let queue = HttpDispatchQueue::new(base);
+    let queue_a =
+        HttpDispatchQueue::new(base.clone(), WorkerIdentity::new("worker-A", "boot-A", 1));
+    let queue_b = HttpDispatchQueue::new(base, WorkerIdentity::new("worker-B", "boot-B", 1));
     let run = RunId("run-1".into());
 
-    queue
+    queue_a
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
 
     // Worker A claims at t=0 with a 1s lease (epoch 1).
     clock.store(0, Ordering::SeqCst);
-    let a = queue
+    let a = queue_a
         .claim("worker-A", 1_000, 0)
         .await
         .unwrap()
@@ -353,7 +355,7 @@ async fn renew_lease_returns_false_over_the_wire_when_the_lease_was_stolen() {
     // While A still holds it, a renew succeeds — the TRUE path, as a control.
     clock.store(100, Ordering::SeqCst);
     assert!(
-        queue
+        queue_a
             .renew_lease(&run, "worker-A", 1_000, 100)
             .await
             .unwrap(),
@@ -362,7 +364,7 @@ async fn renew_lease_returns_false_over_the_wire_when_the_lease_was_stolen() {
 
     // The lease lapses; worker B recovers the run at t=2s (epoch 2 — B now owns it).
     clock.store(2_000, Ordering::SeqCst);
-    let b = queue
+    let b = queue_b
         .claim("worker-B", 1_000, 2_000)
         .await
         .unwrap()
@@ -378,7 +380,7 @@ async fn renew_lease_returns_false_over_the_wire_when_the_lease_was_stolen() {
     // holder must stop (the whole point of the multi-node liveness knob).
     clock.store(2_100, Ordering::SeqCst);
     assert!(
-        !queue
+        !queue_a
             .renew_lease(&run, "worker-A", 1_000, 2_100)
             .await
             .unwrap(),
@@ -386,7 +388,7 @@ async fn renew_lease_returns_false_over_the_wire_when_the_lease_was_stolen() {
     );
     // And A's settle at its old epoch is fenced, leaving B's in-flight run inviolate.
     assert_eq!(
-        queue
+        queue_a
             .settle(&run, a.lease.epoch, DispatchOutcome::Done, &[])
             .await
             .unwrap(),
@@ -412,7 +414,10 @@ fn an_input() -> PendingInput {
 async fn server_local_write_verbs_fail_closed() {
     // No server is needed: these verbs resolve locally on the client without a
     // request, so a bad base URL is never dialed.
-    let queue = HttpDispatchQueue::new("http://127.0.0.1:1");
+    let queue = HttpDispatchQueue::new(
+        "http://127.0.0.1:1",
+        WorkerIdentity::new("worker-local", "boot-local", 1),
+    );
     let run = RunId("run-1".into());
 
     // The verbs a database-less worker must never legitimately drive — server-owned
@@ -455,7 +460,10 @@ async fn server_local_write_verbs_fail_closed() {
 // correct answer, not a pretended mutation.
 #[tokio::test]
 async fn maintenance_verbs_fail_closed_except_the_legitimate_inbox_list_readback() {
-    let queue = HttpDispatchQueue::new("http://127.0.0.1:1");
+    let queue = HttpDispatchQueue::new(
+        "http://127.0.0.1:1",
+        WorkerIdentity::new("worker-local", "boot-local", 1),
+    );
     let run = RunId("run-1".into());
     let thread = ThreadId("thread-1".into());
     let _ = &run;

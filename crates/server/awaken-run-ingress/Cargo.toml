@@ -22,7 +22,7 @@ thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 # The database-less worker's HTTP dispatch client (`HttpDispatchQueue`) posts
-# claim/settle over the wire to a cell server's dispatch_transport_router.
+# claim/settle over the wire to the Control Node's registered Worker router.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"] }
 rusqlite = { workspace = true }
@@ -42,7 +42,7 @@ awaken-store-postgres = { workspace = true }
 awaken-store-sqlite = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
 # dev-only: the transport_client e2e stands up a real axum server mirroring a cell
-# server's dispatch_transport_router on an ephemeral port, so the `HttpDispatchQueue`
+# Control Node Worker routes on an ephemeral port, so the `HttpDispatchQueue`
 # client's claim/settle cross a real socket (no mock transport).
 axum = { workspace = true }
 

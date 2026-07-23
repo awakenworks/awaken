@@ -239,7 +239,7 @@ fn unauthorized(message: String) -> (StatusCode, Json<Value>) {
 pub struct RemoteClaimedRunCommit {
     base_url: String,
     client: reqwest::Client,
-    identity: Option<WorkerIdentity>,
+    identity: WorkerIdentity,
     request_authorizer: Option<Arc<dyn WorkerRequestAuthorizer>>,
 }
 
@@ -247,11 +247,11 @@ const CLAIMED_COMMIT_TRANSPORT_ATTEMPTS: usize = 3;
 const CLAIMED_COMMIT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
 
 impl RemoteClaimedRunCommit {
-    pub fn new(base_url: impl Into<String>) -> Self {
+    pub fn new(base_url: impl Into<String>, identity: WorkerIdentity) -> Self {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             client: reqwest::Client::new(),
-            identity: None,
+            identity,
             request_authorizer: None,
         }
     }
@@ -265,20 +265,8 @@ impl RemoteClaimedRunCommit {
     }
 
     #[must_use]
-    pub fn with_worker_identity(mut self, identity: WorkerIdentity) -> Self {
-        if let Some(authorizer) = &self.request_authorizer {
-            self.request_authorizer = Some(authorizer.bind_worker_identity(&identity));
-        }
-        self.identity = Some(identity);
-        self
-    }
-
-    #[must_use]
     pub fn with_request_authorizer(mut self, authorizer: Arc<dyn WorkerRequestAuthorizer>) -> Self {
-        self.request_authorizer = Some(match &self.identity {
-            Some(identity) => authorizer.bind_worker_identity(identity),
-            None => authorizer,
-        });
+        self.request_authorizer = Some(authorizer.bind_worker_identity(&self.identity));
         self
     }
 
@@ -313,23 +301,17 @@ impl ClaimedRunCommit for RemoteClaimedRunCommit {
         &self,
         command: ClaimedCommitCommand,
     ) -> Result<CommitReceipt, CommitError> {
-        let authenticated_worker = self
-            .identity
-            .as_ref()
-            .map_or(command.claim.owner.as_str(), |identity| {
-                identity.worker_id.as_str()
-            });
         let path = "/v1/worker/commit-claimed";
         let body = json!({
             "claim": command.claim,
             "operation": command.operation,
-            "identity": self.identity
+            "identity": &self.identity
         });
         let mut last_transport_error = None;
         for attempt in 1..=CLAIMED_COMMIT_TRANSPORT_ATTEMPTS {
             let request = self.client.post(format!("{}{path}", self.base_url));
             let response = match self
-                .authorize(path, authenticated_worker, request)?
+                .authorize(path, &self.identity.worker_id, request)?
                 .json(&body)
                 .send()
                 .await
@@ -365,6 +347,19 @@ impl ClaimedRunCommit for RemoteClaimedRunCommit {
             || "claimed commit transport exhausted without a response".to_string(),
         )))
     }
+}
+
+pub(crate) fn remote_claimed_commit(
+    upstream: &crate::worker_security::WorkerUpstream,
+) -> Result<Arc<dyn ClaimedRunCommit>, HostError> {
+    let identity = upstream.worker_identity().cloned().ok_or_else(|| {
+        HostError::internal("remote Worker commit transport requires a registered identity")
+    })?;
+    Ok(Arc::new(
+        RemoteClaimedRunCommit::new(upstream.base_url(), identity)
+            .with_client(upstream.client().clone())
+            .with_request_authorizer(upstream.request_authorizer()),
+    ))
 }
 
 fn unix_now_ms() -> u64 {

@@ -261,18 +261,19 @@ Order: scale workers first (cheapest) → swap store (single-cell write bottlene
 | **done · read side** | **server→client live streaming across all three frontends** — managed live previews (`event_start`/`event_delta`), ai-sdk/ag-ui already streaming. The in-process per-session broadcast is the **read-side prototype** of the cross-node event sink (same multiplex/fan-out shape) | `awaken-protocol-managed` (`preview.rs`, live SSE), the `run_streaming` seam |
 | **done · published language** | **the Fact contract** — the existing neutral `ThreadCommit` carries thread/run identity, ordered commands and events, and deterministic commit identity; transport does not introduce a second fact vocabulary | `awaken-agent-contract::thread::commit::staged::ThreadCommit` |
 | **done · closed loop** | **ONE end-to-end path**: one registered Worker → authenticated typed HTTP dispatch transport → claim-fenced `CommitOperation` → durable `CommitReceipt`. **Workers are db-less**; the Control Node remains the sole writer and Run observation is projected from committed truth | `HttpDispatchQueue`, `registered_worker_transport_router`, `ClaimedCommitService`, `RemoteClaimedRunCommit` |
-| **done · worker-only mode** | a process runs the ordinary execution pool over HTTP dispatch and remote commit ingest, without opening the server store | deployment config worker mode, `worker_dispatch_store_with_upstream`, `SharedHost::with_upstream` |
+| **done · worker-only mode** | a process runs the ordinary execution pool over registered HTTP dispatch and claim-fenced commit operations, without opening the Control store | deployment config worker mode, `worker_dispatch_store_with_upstream`, `SharedHost::with_upstream` |
 | **done · placement and egress** | capability is a worker-manifest/dispatch requirement, filtered before replaceable policy ranking; ACP/tool egress occurs inside the selected Session sandbox under its network policy | `PlacementRequirements`, worker registry, `SessionEnvironmentProvider` |
-| **done · recovery fencing** | claim epochs fence remote commit and settle; terminal dispatch completion is an atomic tombstone. This closes stale-owner and terminal-redelivery safety, not cold-Worker context reconstruction or nonterminal response-loss idempotency | claimed commit ingest, stale-epoch tests, ADR-0060 completion tombstone |
-| **P0 · recoverable Worker closure** | claim-authorized consistent recovery snapshot, local non-authoritative recovery projection, stable commit operation receipt, expected thread version, injectable claimed-commit service, and public Worker assembly | [recoverable remote Worker protocol](remote-worker-protocol.md) and ADR-0065 |
+| **done · recovery fencing** | claim epochs fence remote commit and settle; terminal dispatch completion is an atomic tombstone; cold Workers reconstruct from a claim-authorized recovery snapshot; stable operation receipts make ambiguous response retries idempotent | `RunRecoverySnapshot`, `RecoveryProjection`, `CommitOperation`, `CommitReceipt`, ADR-0060/0065 |
+| **done · recoverable Worker closure** | claim-authorized consistent recovery snapshot, local non-authoritative recovery projection, stable commit operation receipt, expected thread version, injectable claimed-commit service, and public Worker assembly | [recoverable remote Worker protocol](remote-worker-protocol.md) and ADR-0065 |
 | **optional · not on the path** | **`journal_mode=WAL` + `busy_timeout`, set once on the shared db** — a within-process read/write-concurrency + robustness tweak, *not* a correctness requirement: no target opens the sqlite file from multiple processes (merged = one process/one shared db; split = db-less workers over HTTP) | at the shared connection open, benefits every `with_prefix(NS)` schema |
 | **Phase 2** | shard-router + cell membership + migration/failover — build only when a cell tops out | |
 
 ## Sequencing, open design, and one recorded coupling
 
 **Start with the Fact contract, then a thin transport slice.** The cell's worker
-is stateless and **db-less** — it never opens sqlite; it claims runs over an HTTP
-dispatch transport and pushes facts back, and the server stays the single writer.
+is stateless and **db-less** — it never opens sqlite; it claims runs over an
+identity-bearing HTTP dispatch transport and sends versioned commit operations,
+and the server stays the single writer.
 So there is **no "make sqlite multi-process safe" step**: neither target opens the
 file from multiple processes (merged = one process over one shared db; split =
 db-less workers over HTTP). WAL is an optional shared-db tweak, not a gate (see
@@ -293,11 +294,10 @@ already-built read-side broadcast a typed thing to carry.
 claim/selection reads), not a new cross-cutting service. Fold it there, or it
 becomes an anemic global.
 
-**Build ONE thin slice before the matrix.** One worker, one transport, one Fact
-type, end-to-end (claim → run → push facts → commit → fan-out), everything else
-stubbed. Let capability, egress policy, fencing, and HA emerge from that slice's
-real constraints rather than being committed up front — the cross-node bucket is
-otherwise a big-bang list, which is the opposite of simple design.
+The resulting slice is one Worker, one typed transport, and one published Fact
+contract end-to-end: register → claim → recover → run → commit operation →
+receipt → lifecycle/operational observation → settle. Capability, egress
+policy, fencing, and HA extend this same path rather than creating another one.
 
 ### Storage — one shared db, prefix-isolated schemas
 

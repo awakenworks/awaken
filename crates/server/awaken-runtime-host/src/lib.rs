@@ -136,8 +136,7 @@ pub use crate::deployment_config::{
     DeploymentConfig, DispatchBackend, SandboxTier, StoreKind, Wake,
 };
 pub use crate::dispatch_transport::{
-    WorkerDispatchService, dispatch_transport_router, dispatch_transport_router_with_directory,
-    dispatch_transport_router_with_directory_and_policy, dispatch_transport_router_with_service,
+    WorkerDispatchService, dispatch_transport_router_with_service,
     registered_worker_transport_router, worker_dispatch_store_with_upstream,
 };
 pub use crate::worker_security::{
@@ -148,14 +147,14 @@ pub use crate::worker_security::{
     WorkerRequestAuthenticator, WorkerSigningCredential, WorkerUpstream,
 };
 // The worker HTTP dispatch client now lives in awaken-run-ingress; re-exported so
-// composition roots keep using `awaken_runtime_host::{HttpDispatchQueue, worker_dispatch_store}`.
+// composition roots keep using the typed `awaken_runtime_host::HttpDispatchQueue`.
 pub use crate::durable_ops::durable_ops_router;
 pub use awaken_env_store::{PostgresEnvRegistry, SqliteEnvRegistry};
 // The durable session-repository backends now live in `awaken-session-store` (a
 // stores/ leaf); re-exported so composition roots keep their import paths.
 pub use awaken_run_ingress::{
     HOST_EXECUTOR_CAPABILITY, HttpDispatchQueue, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
-    WorkerRequestAuthorizer, worker_dispatch_store,
+    WorkerRequestAuthorizer,
 };
 pub use awaken_session_store::{PostgresManagedSessionRepository, SqliteManagedSessionRepository};
 

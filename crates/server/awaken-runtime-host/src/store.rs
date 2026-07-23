@@ -42,8 +42,8 @@ pub(crate) enum HostCommit {
     /// polymorphic implementations of the same read+write store, chosen once at the
     /// composition root behind a trait object — no per-backend dispatch here.
     Local(Arc<dyn HostStore>),
-    /// The database-independent Worker's boundary: `commit` posts facts to the
-    /// Control Node over HTTP while committed reads come from the claim-fenced
+    /// The database-independent Worker's read boundary. Authoritative writes go
+    /// through the attempt's claim-fenced operation coordinator; reads use the
     /// [`awaken_run_ingress::RecoveryProjection`]. It deliberately is not a
     /// [`HostStore`]: the projection is an execution cache, never authoritative
     /// storage or an alternate commit path.

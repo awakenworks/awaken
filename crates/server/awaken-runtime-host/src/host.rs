@@ -165,8 +165,8 @@ pub struct SharedHost {
     /// `None`, sessions use an in-memory coordinator (ephemeral).
     pub(crate) store_dir: Option<PathBuf>,
     /// The cell server this host is a database-less **worker** of, if any. When set,
-    /// every thread's commit boundary is a [`HostCommit::Remote`] that posts facts to
-    /// the server's commit ingest — the worker holds no store. Set via
+    /// every thread's read boundary is a non-authoritative recovery projection;
+    /// writes use the attempt's claim-fenced operation coordinator. Set via
     /// [`with_upstream`](Self::with_upstream); `None` is a store-owning server/host.
     pub(crate) upstream: Option<crate::worker_security::WorkerUpstream>,
     /// The deployment axes (store/dispatch backend, durable ingress, wake), parsed

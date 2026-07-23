@@ -1,5 +1,5 @@
 //! The database-less worker's dispatch client: a `Dispatch` implementation whose
-//! claim/settle verbs are HTTP calls to a cell server's `dispatch_transport_router`,
+//! claim/settle verbs are HTTP calls to the Control Node's registered Worker router,
 //! so a worker drives runs without ever opening the store.
 //!
 //! Only the worker verbs cross the wire — `enqueue`, `claim_new_run`, `claim`,
@@ -51,64 +51,23 @@ pub trait WorkerRequestAuthorizer: Send + Sync {
     ) -> std::sync::Arc<dyn WorkerRequestAuthorizer>;
 }
 
-/// Build a worker's process dispatch store: an [`HttpDispatchQueue`] pointed at the
-/// Control Node, wrapped as the `AnyDispatchStore` a Worker injects into its
-/// `SharedHost`. The host's pool then claims and settles over this transport.
-pub fn worker_dispatch_store(
-    server_url: impl Into<String>,
-) -> std::sync::Arc<crate::AnyDispatchStore> {
-    std::sync::Arc::new(crate::AnyDispatchStore::from_dispatch(std::sync::Arc::new(
-        HttpDispatchQueue::new(server_url),
-    )
-        as std::sync::Arc<dyn crate::Dispatch>))
-}
-
 /// A `Dispatch` store whose worker verbs are HTTP calls to a cell server.
 pub struct HttpDispatchQueue {
     base_url: String,
     client: reqwest::Client,
-    default_worker_id: String,
-    worker_identity: Option<WorkerIdentity>,
+    worker_identity: WorkerIdentity,
     request_authorizer: Option<std::sync::Arc<dyn WorkerRequestAuthorizer>>,
-    legacy_claimed_owners: std::sync::Mutex<std::collections::HashMap<String, String>>,
 }
 
 impl HttpDispatchQueue {
-    /// Point a worker at `base_url` (the cell server's origin, e.g.
-    /// `http://server:8080`); the transport routes are appended.
-    pub fn new(base_url: impl Into<String>) -> Self {
+    /// Point one registered Worker incarnation at `base_url`.
+    pub fn new(base_url: impl Into<String>, worker_identity: WorkerIdentity) -> Self {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             client: reqwest::Client::new(),
-            default_worker_id: std::env::var("AWAKEN_WORKER_ID")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| "awaken-worker".to_string()),
-            worker_identity: None,
+            worker_identity,
             request_authorizer: None,
-            legacy_claimed_owners: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
-    }
-
-    /// Configure the authenticated identity used for owner-less worker verbs such
-    /// as enqueue and settle. Claim methods still use their `owner` argument so the
-    /// neutral `DispatchQueue` caller and HTTP identity remain aligned.
-    #[must_use]
-    pub fn with_worker_id(mut self, worker_id: impl Into<String>) -> Self {
-        self.default_worker_id = worker_id.into();
-        self
-    }
-
-    /// Pin the durable registry identity allocated at startup. Registered-worker
-    /// transports use it for every authority-bearing verb.
-    #[must_use]
-    pub fn with_worker_identity(mut self, identity: WorkerIdentity) -> Self {
-        self.default_worker_id = identity.worker_id.clone();
-        if let Some(authorizer) = &self.request_authorizer {
-            self.request_authorizer = Some(authorizer.bind_worker_identity(&identity));
-        }
-        self.worker_identity = Some(identity);
-        self
     }
 
     /// Decorate every request with the same logical Worker credential used by
@@ -118,10 +77,7 @@ impl HttpDispatchQueue {
         mut self,
         authorizer: std::sync::Arc<dyn WorkerRequestAuthorizer>,
     ) -> Self {
-        self.request_authorizer = Some(match &self.worker_identity {
-            Some(identity) => authorizer.bind_worker_identity(identity),
-            None => authorizer,
-        });
+        self.request_authorizer = Some(authorizer.bind_worker_identity(&self.worker_identity));
         self
     }
 
@@ -169,32 +125,8 @@ impl HttpDispatchQueue {
         )))
     }
 
-    fn authenticated_worker<'a>(&'a self, legacy_owner: &'a str) -> &'a str {
-        if self.worker_identity.is_some() {
-            &self.default_worker_id
-        } else {
-            legacy_owner
-        }
-    }
-
-    fn remember_legacy_claim(&self, claimed: &Option<Claimed>) {
-        if self.worker_identity.is_none()
-            && let Some(claimed) = claimed
-            && let Ok(mut owners) = self.legacy_claimed_owners.lock()
-        {
-            owners.insert(claimed.lease.run_id.0.clone(), claimed.lease.owner.clone());
-        }
-    }
-
-    fn settlement_worker(&self, run_id: &RunId) -> String {
-        if self.worker_identity.is_some() {
-            return self.default_worker_id.clone();
-        }
-        self.legacy_claimed_owners
-            .lock()
-            .ok()
-            .and_then(|owners| owners.get(&run_id.0).cloned())
-            .unwrap_or_else(|| self.default_worker_id.clone())
+    fn worker_id(&self) -> &str {
+        &self.worker_identity.worker_id
     }
 }
 
@@ -216,8 +148,8 @@ impl DispatchQueue for HttpDispatchQueue {
         let value = self
             .post(
                 "/v1/worker/checkpoint/get",
-                json!({ "claim": claim, "identity": self.worker_identity }),
-                &self.default_worker_id,
+                json!({ "claim": claim, "identity": &self.worker_identity }),
+                self.worker_id(),
             )
             .await?;
         serde_json::from_value(value.get("checkpoint").cloned().unwrap_or_default())
@@ -232,8 +164,8 @@ impl DispatchQueue for HttpDispatchQueue {
         let value = self
             .post(
                 "/v1/worker/checkpoint/put",
-                json!({ "claim": claim, "checkpoint": checkpoint, "identity": self.worker_identity }),
-                &self.default_worker_id,
+                json!({ "claim": claim, "checkpoint": checkpoint, "identity": &self.worker_identity }),
+                self.worker_id(),
             )
             .await?;
         Ok(
@@ -252,8 +184,8 @@ impl DispatchQueue for HttpDispatchQueue {
         let value = self
             .post(
                 "/v1/worker/checkpoint/delete",
-                json!({ "claim": claim, "identity": self.worker_identity }),
-                &self.default_worker_id,
+                json!({ "claim": claim, "identity": &self.worker_identity }),
+                self.worker_id(),
             )
             .await?;
         Ok(
@@ -270,15 +202,11 @@ impl DispatchQueue for HttpDispatchQueue {
         claim: &RunClaim,
     ) -> Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, DispatchError>
     {
-        let authenticated_worker = self
-            .worker_identity
-            .as_ref()
-            .map_or(claim.owner.as_str(), |_| self.default_worker_id.as_str());
         let value = self
             .post(
                 "/v1/worker/recovery/snapshot",
-                json!({ "claim": claim, "identity": self.worker_identity }),
-                authenticated_worker,
+                json!({ "claim": claim, "identity": &self.worker_identity }),
+                self.worker_id(),
             )
             .await?;
         serde_json::from_value(value.get("snapshot").cloned().unwrap_or_default())
@@ -296,9 +224,9 @@ impl DispatchQueue for HttpDispatchQueue {
                 json!({
                     "claim": claim,
                     "sandbox_ref": sandbox_ref,
-                    "identity": self.worker_identity
+                    "identity": &self.worker_identity
                 }),
-                &self.default_worker_id,
+                self.worker_id(),
             )
             .await?;
         Ok(
@@ -318,7 +246,7 @@ impl DispatchQueue for HttpDispatchQueue {
         self.post(
             "/v1/worker/dispatch/enqueue",
             json!({ "request": request, "options": options }),
-            &self.default_worker_id,
+            self.worker_id(),
         )
         .await?;
         Ok(())
@@ -327,15 +255,15 @@ impl DispatchQueue for HttpDispatchQueue {
     async fn claim_new_run(
         &self,
         request: RunDispatch,
-        owner: &str,
+        _owner: &str,
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         let value = self
             .post(
                 "/v1/worker/dispatch/claim_new_run",
-                json!({ "request": request, "identity": self.worker_identity }),
-                self.authenticated_worker(owner),
+                json!({ "request": request, "identity": &self.worker_identity }),
+                self.worker_id(),
             )
             .await?;
         let claimed = serde_json::from_value(
@@ -345,7 +273,6 @@ impl DispatchQueue for HttpDispatchQueue {
                 .unwrap_or(serde_json::Value::Null),
         )
         .map_err(|error| DispatchError::Rejected(format!("decode claimed: {error}")))?;
-        self.remember_legacy_claim(&claimed);
         let _ = (lease_ms, now_ms);
         Ok(claimed)
     }
@@ -364,15 +291,15 @@ impl DispatchQueue for HttpDispatchQueue {
     async fn deliver_and_claim(
         &self,
         input: PendingInput,
-        owner: &str,
+        _owner: &str,
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         let value = self
             .post(
                 "/v1/worker/dispatch/deliver_and_claim",
-                json!({ "input": input, "identity": self.worker_identity }),
-                self.authenticated_worker(owner),
+                json!({ "input": input, "identity": &self.worker_identity }),
+                self.worker_id(),
             )
             .await?;
         let claimed = serde_json::from_value(
@@ -382,7 +309,6 @@ impl DispatchQueue for HttpDispatchQueue {
                 .unwrap_or(serde_json::Value::Null),
         )
         .map_err(|error| DispatchError::Rejected(format!("decode claimed: {error}")))?;
-        self.remember_legacy_claim(&claimed);
         let _ = (lease_ms, now_ms);
         Ok(claimed)
     }
@@ -400,21 +326,20 @@ impl DispatchQueue for HttpDispatchQueue {
 
     async fn claim(
         &self,
-        owner: &str,
+        _owner: &str,
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         let v = self
             .post(
                 "/v1/worker/dispatch/claim",
-                json!({ "identity": self.worker_identity }),
-                self.authenticated_worker(owner),
+                json!({ "identity": &self.worker_identity }),
+                self.worker_id(),
             )
             .await?;
         let claimed =
             serde_json::from_value(v.get("claimed").cloned().unwrap_or(serde_json::Value::Null))
                 .map_err(|e| DispatchError::Rejected(format!("decode claimed: {e}")))?;
-        self.remember_legacy_claim(&claimed);
         let _ = (lease_ms, now_ms);
         Ok(claimed)
     }
@@ -425,21 +350,22 @@ impl DispatchQueue for HttpDispatchQueue {
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
-        self.claim(&self.default_worker_id, lease_ms, now_ms).await
+        self.claim(&self.worker_identity.lease_owner(), lease_ms, now_ms)
+            .await
     }
 
     async fn claim_run(
         &self,
         run_id: &RunId,
-        owner: &str,
+        _owner: &str,
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         let value = self
             .post(
                 "/v1/worker/dispatch/claim_run",
-                json!({ "run_id": run_id.0, "identity": self.worker_identity }),
-                self.authenticated_worker(owner),
+                json!({ "run_id": run_id.0, "identity": &self.worker_identity }),
+                self.worker_id(),
             )
             .await?;
         let claimed = serde_json::from_value(
@@ -449,7 +375,6 @@ impl DispatchQueue for HttpDispatchQueue {
                 .unwrap_or(serde_json::Value::Null),
         )
         .map_err(|error| DispatchError::Rejected(format!("decode claimed: {error}")))?;
-        self.remember_legacy_claim(&claimed);
         let _ = (lease_ms, now_ms);
         Ok(claimed)
     }
@@ -468,15 +393,15 @@ impl DispatchQueue for HttpDispatchQueue {
     async fn renew_lease(
         &self,
         run_id: &RunId,
-        owner: &str,
+        _owner: &str,
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<bool, DispatchError> {
         let v = self
             .post(
                 "/v1/worker/dispatch/renew",
-                json!({ "run_id": run_id.0, "identity": self.worker_identity }),
-                self.authenticated_worker(owner),
+                json!({ "run_id": run_id.0, "identity": &self.worker_identity }),
+                self.worker_id(),
             )
             .await?;
         let _ = (lease_ms, now_ms);
@@ -485,15 +410,15 @@ impl DispatchQueue for HttpDispatchQueue {
 
     async fn renew_owned_leases(
         &self,
-        owner: &str,
+        _owner: &str,
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<usize, DispatchError> {
         let v = self
             .post(
                 "/v1/worker/dispatch/renew_owned",
-                json!({ "identity": self.worker_identity }),
-                self.authenticated_worker(owner),
+                json!({ "identity": &self.worker_identity }),
+                self.worker_id(),
             )
             .await?;
         let _ = (lease_ms, now_ms);
@@ -507,12 +432,11 @@ impl DispatchQueue for HttpDispatchQueue {
         outcome: DispatchOutcome,
         consumed: &[String],
     ) -> Result<SettleOutcome, DispatchError> {
-        let worker_id = self.settlement_worker(run_id);
         let v = self
             .post(
                 "/v1/worker/dispatch/settle",
-                json!({ "run_id": run_id.0, "epoch": epoch, "outcome": outcome, "consumed": consumed, "identity": self.worker_identity }),
-                &worker_id,
+                json!({ "run_id": run_id.0, "epoch": epoch, "outcome": outcome, "consumed": consumed, "identity": &self.worker_identity }),
+                self.worker_id(),
             )
             .await?;
         // `settled` is the server's fence verdict: applied vs. stale-epoch fenced.

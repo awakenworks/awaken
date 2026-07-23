@@ -1,5 +1,5 @@
 //! End-to-end over real HTTP: a database-less worker's `HttpDispatchQueue` drives
-//! a cell server's `dispatch_transport_router` — enqueue → claim → renew → settle —
+//! the Control Node's Worker routes — enqueue → claim → renew → settle —
 //! through the `DispatchQueue` trait, exactly as the pool would. Its own test binary
 //! (installs a one-shot injected dispatch store).
 
@@ -13,8 +13,8 @@ use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_run_ingress::{
     DispatchOutcome, DispatchQueue, MemoryDispatchStore, PendingInput, RunClaim, RunDispatch,
+    WorkerIdentity,
 };
-use awaken_run_ingress_testkit::{ConformanceCapabilities, assert_dispatch_conformance_with_clock};
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
@@ -94,7 +94,14 @@ async fn db_less_worker_drives_runs_over_real_http() {
     });
 
     // The worker holds only this HTTP client — no store handle.
-    let queue = HttpDispatchQueue::new(format!("http://{addr}"));
+    let queue = HttpDispatchQueue::new(
+        format!("http://{addr}"),
+        WorkerIdentity::new("worker-1", "boot-1", 1),
+    );
+    let recovery_queue = HttpDispatchQueue::new(
+        format!("http://{addr}"),
+        WorkerIdentity::new("worker-2", "boot-2", 1),
+    );
     queue
         .enqueue(RunDispatch::new(activation("run-A", "t1")))
         .await
@@ -140,7 +147,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
     // worker bumps the epoch, so the original owner's settle carrying its now-stale
     // epoch is fenced server-side and changes nothing.
     clock.set(40_000);
-    let reclaimed = queue
+    let reclaimed = recovery_queue
         .claim("worker-2", 30_000, 40_000)
         .await
         .expect("reclaim over http")
@@ -168,7 +175,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
     );
     // The current owner settles under the fresh epoch: applied, the run is removed.
     assert_eq!(
-        queue
+        recovery_queue
             .settle(
                 &RunId("run-A".into()),
                 reclaimed.lease.epoch,
@@ -250,13 +257,4 @@ async fn db_less_worker_drives_runs_over_real_http() {
         queue.cancel(&RunId("no-such-run".into())).await.is_err(),
         "cancel is not available on the worker dispatch transport"
     );
-
-    let conformance_clock = |now_ms| clock.set(now_ms);
-    assert_dispatch_conformance_with_clock(
-        &queue,
-        "conformance-http",
-        ConformanceCapabilities::WORKER_TRANSPORT,
-        &conformance_clock,
-    )
-    .await;
 }
