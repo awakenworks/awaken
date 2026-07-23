@@ -23,16 +23,17 @@ pub use awaken_resource_contract::{
     BindingId, FileId, InputBinding, InputResourceId, MemoryStoreId, RepositoryId, ResourceAccess,
 };
 
-/// Read ports for the authored aggregates (`InferenceProfileStore`,
-/// `AgentInputBindingRepository`) + in-memory reference impls. They live on the
-/// read side so the runtime host reads config without depending on the authoring HTTP crate
-/// (which writes through the same ports).
+mod reference_stores;
+/// Read ports for authored aggregates. The runtime host reads through these
+/// application contracts without depending on the authoring HTTP crate.
 pub mod stores;
 /// Telemetry ceiling composition (ADR-0050 D3): Org baseline tightened by lower layers.
 pub mod telemetry;
+pub use reference_stores::{
+    InMemoryAgentInputBindingRepository, InMemoryProfileStore, InMemoryWebhookStore,
+};
 pub use stores::{
     AgentInputBindingRepository, AgentInputRepositoryError, ConfigRepositoryError,
-    InMemoryAgentInputBindingRepository, InMemoryProfileStore, InMemoryWebhookStore,
     InferenceProfileStore, WebhookOutboxEvent, WebhookStore, validate_agent_input_revision,
 };
 pub use telemetry::{RedactionMode, TelemetryCeiling};
