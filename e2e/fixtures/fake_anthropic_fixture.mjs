@@ -146,6 +146,47 @@ function adminDriveReply(parsed) {
   }
 }
 
+function adminTypedEdgesReply(parsed) {
+  switch (toolResults(parsed).length) {
+    case 0: return tool('typed-0', 'admin_draft_agent', {
+      id: 'typed-admin-draft',
+      instructions: 'exercise typed authoring normalization',
+      mcp_servers: [{
+        id: 'typed-mcp',
+        url: 'https://mcp.example.invalid',
+        credential: { id: 'cred_typed', revision: 3 },
+      }],
+      skills: ['skill-string', { id: 'skill-object' }],
+      multiagent: { type: 'coordinator', agents: ['delegate-a'] },
+    });
+    case 1: return tool('typed-1', 'admin_draft_agent', {
+      id: 'bad-mcp-shape',
+      instructions: 'reject a non-object MCP entry',
+      mcp_servers: ['not-an-object'],
+    });
+    case 2: return tool('typed-2', 'admin_draft_agent', {
+      id: 'bad-mcp-credential',
+      instructions: 'reject an invalid typed credential reference',
+      mcp_servers: [{
+        name: 'typed-mcp',
+        url: 'https://mcp.example.invalid',
+        credential: { id: 7, revision: 'not-a-revision' },
+      }],
+    });
+    case 3: return tool('typed-3', 'admin_draft_agent', {
+      id: 'bad-skill-shape',
+      instructions: 'reject a non-id Skill entry',
+      skills: [{ name: 'not-an-id' }],
+    });
+    case 4: return tool('typed-4', 'admin_draft_agent', {
+      id: 'bad-roster-shape',
+      instructions: 'reject an invalid delegation roster',
+      multiagent: { type: 'mesh', agents: [] },
+    });
+    default: return text('ADMIN-TYPED-EDGES-DONE');
+  }
+}
+
 export const BEHAVIORS = {
   // The historic default: echo the last user text, and drive one tool round-trip
   // on `use-tool:<name>` (kept so the fault-injection / real-wire e2e are unchanged).
@@ -333,6 +374,9 @@ export const BEHAVIORS = {
   // tools) so the real DraftValidator accepts it.
   adminDrive(parsed) {
     return adminDriveReply(parsed);
+  },
+  adminTypedEdges(parsed) {
+    return adminTypedEdgesReply(parsed);
   },
   // DelegatingModel: with `agent_run` it delegates (to `researcher`, or `ghost` if
   // asked) and reports the delegate's result; without it, it answers plainly (so the
