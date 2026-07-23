@@ -8,6 +8,7 @@
 //! handles (G3). Worker wiring stays private to the host.
 
 pub mod dispatch;
+pub mod operational;
 pub mod run_dispatch;
 
 pub use awaken_worker_contract::{
@@ -23,6 +24,10 @@ pub use dispatch::{
     CasOutcome, Claimed, ClaimedCommitCommand, CommitEpochGuard, Dispatch, DispatchCompletion,
     DispatchError, DispatchOutcome, DispatchQueue, DispatchState, DispatchSummary, Inbox, Lease,
     Outbox, PendingInput, PendingRecord, RunClaim, SettleOutcome, SubmitOptions,
+};
+pub use operational::{
+    DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
+    DispatchPage, LeaseLossReason,
 };
 pub use run_dispatch::{
     ExecutionScopeRef, PlacementRequirements, RunDispatch, SessionResourceEnvelope,
