@@ -316,7 +316,10 @@ fn resource_pep_maps_only_resource_routes_and_is_total_by_method() {
         assert_eq!(resource_action_for(&Method::POST, path), Some(write));
         assert_eq!(resource_action_for(&Method::DELETE, path), Some(write));
     }
-    assert_eq!(resource_action_for(&Method::GET, "/v1/sessions"), None);
+    assert_eq!(
+        resource_action_for(&Method::GET, "/v1/sessions"),
+        Some(WORKSPACE_READ)
+    );
     assert_eq!(
         resource_action_for(&Method::GET, "/v1/config/catalog"),
         None
