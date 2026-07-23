@@ -1,8 +1,9 @@
 // Small stateless display primitives used across Awaken surfaces.
 
-import { useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import {
   EmptyState as SharedEmptyState,
+  JsonInspector as SharedJsonInspector,
   Skeleton as SharedSkeleton,
 } from "@awaken/ui";
 import { useApp } from "../../lib/app-state";
@@ -54,20 +55,22 @@ export function UsageBadges({
 // ---- JSON inspector (pretty, collapsible, copyable) ----
 export function JsonInspector({ value, collapsed = false }: { value: unknown; collapsed?: boolean }) {
   const app = useApp();
-  const [open, setOpen] = useState(!collapsed);
-  const text = JSON.stringify(value, null, 2);
   return (
-    <div className="json-inspector">
-      <div className="row" style={{ justifyContent: "space-between" }}>
-        <button className="btn ghost" style={{ height: 22 }} onClick={() => setOpen((v) => !v)}>
-          {open ? "▾" : "▸"} JSON
-        </button>
-        <button className="btn ghost" style={{ height: 22 }} onClick={() => void navigator.clipboard.writeText(text)}>
-          {app.t("Copy", "复制")}
-        </button>
-      </div>
-      {open && <pre className="json-body mono">{text}</pre>}
-    </div>
+    <SharedJsonInspector
+      collapsed={collapsed}
+      classes={{
+        root: "json-inspector",
+        header: "row",
+        toggle: "btn ghost",
+        copy: "btn ghost",
+        body: "json-body mono",
+      }}
+      labels={{
+        copy: app.t("Copy", "复制"),
+        copied: app.t("Copied", "已复制"),
+      }}
+      value={value}
+    />
   );
 }
 
