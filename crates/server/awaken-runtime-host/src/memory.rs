@@ -15,6 +15,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+use awaken_agent_contract::thread::read::transcript::TranscriptSnapshot;
 use awaken_ext_builtin_tools::{AgentRunArgs, erase, invoke_agent_tool};
 use awaken_ext_memory::{
     DEFAULT_SELECTOR_INSTRUCTIONS, EXTRACT_PROMPT, MEMORY_AGENT_ID, MemoryExtractionController,
@@ -326,7 +327,7 @@ impl MemoryTerminalExtraction for BoundMemoryTerminalExtraction {
     async fn extract_terminal(
         &self,
         terminal: &awaken_runtime_contract::terminal::CommittedTerminalRun,
-        transcript: Vec<Message>,
+        transcript: TranscriptSnapshot,
     ) -> Result<(), String> {
         self.memory
             .trigger(
@@ -490,7 +491,7 @@ impl BoundMemory {
         &self,
         thread: &str,
         terminal_commit_id: &str,
-        committed: Vec<Message>,
+        committed: TranscriptSnapshot,
         extractor: MemoryExtractorSnapshot,
     ) -> Result<(), MemoryExtractionError> {
         if self.runtime.catalog.resolve(MEMORY_AGENT_ID).is_none() {
@@ -845,6 +846,14 @@ mod tests {
         }
     }
 
+    fn snapshot(thread: &str, messages: Vec<Message>) -> TranscriptSnapshot {
+        TranscriptSnapshot::new(
+            awaken_agent_contract::agent::thread::Id(thread.to_string()),
+            awaken_agent_contract::thread::read::transcript::TranscriptView::RawCommitted,
+            messages,
+        )
+    }
+
     fn extractor(
         instructions: Option<&str>,
         extraction_prompt: Option<&str>,
@@ -983,7 +992,7 @@ mod tests {
             .trigger(
                 "thread-1",
                 "terminal-1",
-                vec![user("I really like rust")],
+                snapshot("thread-1", vec![user("I really like rust")]),
                 extractor(None, None),
             )
             .await
@@ -1091,7 +1100,7 @@ mod tests {
             .trigger(
                 "t",
                 "terminal-1",
-                vec![recall, user("please note this")],
+                snapshot("t", vec![recall, user("please note this")]),
                 extractor(None, None),
             )
             .await
@@ -1131,7 +1140,7 @@ mod tests {
             .trigger(
                 "t-custom",
                 "terminal-1",
-                vec![user("remember this")],
+                snapshot("t-custom", vec![user("remember this")]),
                 extractor(Some("CUSTOM MEMORY SYSTEM"), Some("CUSTOM EXTRACTION TASK")),
             )
             .await
@@ -1175,7 +1184,7 @@ mod tests {
                 .trigger(
                     "thread-redelivery",
                     "terminal-7",
-                    vec![user("I really like rust")],
+                    snapshot("thread-redelivery", vec![user("I really like rust")]),
                     extractor(None, None),
                 )
                 .await

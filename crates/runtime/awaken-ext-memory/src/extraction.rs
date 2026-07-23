@@ -10,6 +10,9 @@
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
+use awaken_agent_contract::thread::read::transcript::{
+    TranscriptRange, TranscriptSliceSpec, TranscriptSnapshot, TranscriptSnapshotRef,
+};
 use serde::{Deserialize, Serialize};
 
 /// Frozen, secret-free extractor configuration used by every retry.
@@ -88,7 +91,22 @@ pub struct MemoryExtractionIntent {
     pub transcript_start: usize,
     #[serde(default)]
     pub transcript_end: usize,
+    /// Immutable identity of the committed Thread prefix this intent observed.
+    /// Legacy intents omit it and retain only the materialized transcript below.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_snapshot: Option<TranscriptSnapshotRef>,
+    /// Domain-selected half-open windows over `transcript_snapshot`.
+    #[serde(default)]
+    pub transcript_ranges: Vec<TranscriptRange>,
+    /// Materialized window cache. The snapshot/ranges are authoritative for new
+    /// intents; retaining the selected messages makes extraction independent of
+    /// cache eviction and keeps legacy serialized intents recoverable.
     pub transcript: Vec<Message>,
+    /// Stable ordinary Agent Run identity used by every retry.
+    #[serde(default)]
+    pub auxiliary_thread_id: String,
+    #[serde(default)]
+    pub auxiliary_run_id: String,
     pub extractor: MemoryExtractorSnapshot,
     pub status: MemoryExtractionStatus,
     pub attempts: u32,
@@ -177,8 +195,9 @@ impl MemoryExtractionIntent {
         transcript: Vec<Message>,
         extractor: MemoryExtractorSnapshot,
     ) -> Result<Self, MemoryExtractionError> {
+        let intent_id = intent_id.into();
         let intent = Self {
-            intent_id: intent_id.into(),
+            intent_id: intent_id.clone(),
             idempotency_key: idempotency_key.into(),
             workspace_id: workspace_id.into(),
             session_id: session_id.into(),
@@ -187,7 +206,11 @@ impl MemoryExtractionIntent {
             memory_config_version,
             transcript_start,
             transcript_end,
+            transcript_snapshot: None,
+            transcript_ranges: Vec::new(),
             transcript,
+            auxiliary_thread_id: format!("{intent_id}/agent"),
+            auxiliary_run_id: format!("{intent_id}/agent/run"),
             extractor,
             status: MemoryExtractionStatus::Pending,
             attempts: 0,
@@ -199,6 +222,53 @@ impl MemoryExtractionIntent {
             receipt: None,
             last_error: None,
         };
+        intent.validate()?;
+        Ok(intent)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_snapshot(
+        intent_id: impl Into<String>,
+        idempotency_key: impl Into<String>,
+        workspace_id: impl Into<String>,
+        session_id: impl Into<String>,
+        terminal_commit_id: impl Into<String>,
+        memory_store_id: impl Into<String>,
+        memory_config_version: u64,
+        snapshot: TranscriptSnapshotRef,
+        ranges: Vec<TranscriptRange>,
+        transcript: Vec<Message>,
+        extractor: MemoryExtractorSnapshot,
+    ) -> Result<Self, MemoryExtractionError> {
+        let intent_id = intent_id.into();
+        let start = ranges.first().map_or(snapshot.end_seq, |range| range.start);
+        let end = snapshot.end_seq;
+        let transcript_start = usize::try_from(start).map_err(|_| {
+            MemoryExtractionError::Invalid("transcript range start exceeds usize".into())
+        })?;
+        let transcript_end = usize::try_from(end).map_err(|_| {
+            MemoryExtractionError::Invalid("transcript range end exceeds usize".into())
+        })?;
+        let cached_len = transcript.len();
+        let mut intent = Self::new_range(
+            intent_id.clone(),
+            idempotency_key,
+            workspace_id,
+            session_id,
+            terminal_commit_id,
+            memory_store_id,
+            memory_config_version,
+            0,
+            cached_len,
+            transcript,
+            extractor,
+        )?;
+        intent.transcript_start = transcript_start;
+        intent.transcript_end = transcript_end;
+        intent.transcript_snapshot = Some(snapshot);
+        intent.transcript_ranges = ranges;
+        intent.auxiliary_thread_id = format!("{intent_id}/agent");
+        intent.auxiliary_run_id = format!("{intent_id}/agent/run");
         intent.validate()?;
         Ok(intent)
     }
@@ -227,13 +297,43 @@ impl MemoryExtractionIntent {
         }
         let legacy_range =
             self.transcript_start == 0 && self.transcript_end == 0 && !self.transcript.is_empty();
-        if !legacy_range
+        if self.transcript_snapshot.is_none()
+            && !legacy_range
             && (self.transcript_end < self.transcript_start
                 || self.transcript_end - self.transcript_start != self.transcript.len())
         {
             return Err(MemoryExtractionError::Invalid(
                 "transcript range must match the captured messages".into(),
             ));
+        }
+        if let Some(snapshot) = &self.transcript_snapshot {
+            if snapshot.thread_id.0 != self.session_id {
+                return Err(MemoryExtractionError::Invalid(
+                    "transcript snapshot must belong to the extraction Session".into(),
+                ));
+            }
+            TranscriptSliceSpec {
+                snapshot: snapshot.clone(),
+                ranges: self.transcript_ranges.clone(),
+            }
+            .validate()
+            .map_err(|error| MemoryExtractionError::Invalid(error.to_string()))?;
+            let selected = self
+                .transcript_ranges
+                .iter()
+                .try_fold(0_u64, |total, range| {
+                    total.checked_add(range.end - range.start)
+                });
+            let Some(selected) = selected else {
+                return Err(MemoryExtractionError::Invalid(
+                    "selected transcript length overflow".into(),
+                ));
+            };
+            if usize::try_from(selected).ok() != Some(self.transcript.len()) {
+                return Err(MemoryExtractionError::Invalid(
+                    "materialized transcript cache must match the selected ranges".into(),
+                ));
+            }
         }
         if self.mutations.iter().any(|mutation| {
             mutation.path.trim().is_empty() || mutation.target_sha256.trim().is_empty()
@@ -311,7 +411,11 @@ impl MemoryExtractionIntent {
             && self.memory_config_version == other.memory_config_version
             && self.transcript_start == other.transcript_start
             && self.transcript_cursor() == other.transcript_cursor()
+            && self.transcript_snapshot == other.transcript_snapshot
+            && self.transcript_ranges == other.transcript_ranges
             && self.transcript == other.transcript
+            && self.auxiliary_thread_id() == other.auxiliary_thread_id()
+            && self.auxiliary_run_id() == other.auxiliary_run_id()
             && self.extractor == other.extractor
     }
 
@@ -323,6 +427,28 @@ impl MemoryExtractionIntent {
             self.transcript.len()
         } else {
             self.transcript_end
+        }
+    }
+
+    /// Stable auxiliary Thread identity, derived for legacy intents that predate
+    /// the explicit serialized field.
+    #[must_use]
+    pub fn auxiliary_thread_id(&self) -> String {
+        if self.auxiliary_thread_id.trim().is_empty() {
+            format!("{}/agent", self.intent_id)
+        } else {
+            self.auxiliary_thread_id.clone()
+        }
+    }
+
+    /// Stable auxiliary Run identity, derived for legacy intents that predate
+    /// the explicit serialized field.
+    #[must_use]
+    pub fn auxiliary_run_id(&self) -> String {
+        if self.auxiliary_run_id.trim().is_empty() {
+            format!("{}/agent/run", self.intent_id)
+        } else {
+            self.auxiliary_run_id.clone()
         }
     }
 
@@ -595,7 +721,7 @@ pub struct MemoryTerminalExtractionRequest {
     pub terminal_run_id: String,
     pub memory_store_id: String,
     pub memory_config_version: u64,
-    pub committed_transcript: Vec<Message>,
+    pub committed_transcript: TranscriptSnapshot,
     pub extractor: MemoryExtractorSnapshot,
 }
 
@@ -607,7 +733,7 @@ pub trait MemoryTerminalExtraction: Send + Sync {
     async fn extract_terminal(
         &self,
         terminal: &awaken_runtime_contract::terminal::CommittedTerminalRun,
-        transcript: Vec<Message>,
+        transcript: TranscriptSnapshot,
     ) -> Result<(), String>;
 }
 
@@ -639,7 +765,10 @@ impl awaken_runtime_contract::terminal::RunTerminalObserver for MemoryTerminalOb
         &self,
         terminal: &awaken_runtime_contract::terminal::CommittedTerminalRun,
     ) -> Result<(), awaken_runtime_contract::terminal::RunTerminalObserverError> {
-        let transcript = self.reader.committed_messages(&terminal.thread_id);
+        let transcript = self.reader.transcript_snapshot(
+            &terminal.thread_id,
+            awaken_agent_contract::thread::read::transcript::TranscriptView::RawCommitted,
+        );
         self.extraction
             .extract_terminal(terminal, transcript)
             .await
@@ -735,24 +864,50 @@ impl MemoryExtractionController {
                 Err(MemoryExtractionError::IdempotencyConflict(idempotency_key))
             };
         }
-        let committed_transcript: Vec<_> = request
-            .committed_transcript
-            .into_iter()
-            .filter(|message| !message.id.0.starts_with(crate::RECALL_MESSAGE_ID_PREFIX))
-            .collect();
+        if request.committed_transcript.reference().thread_id.0 != request.session_id {
+            return Err(MemoryExtractionError::Invalid(
+                "terminal transcript snapshot belongs to another Session".into(),
+            ));
+        }
         let start = self
             .repository
             .extraction_cursor(&request.session_id)
             .await?;
-        if start > committed_transcript.len() {
+        if start > request.committed_transcript.messages().len() {
             return Err(MemoryExtractionError::Invalid(format!(
                 "extraction cursor {start} exceeds committed transcript length {}",
-                committed_transcript.len()
+                request.committed_transcript.messages().len()
             )));
         }
-        let end = committed_transcript.len();
-        let transcript = committed_transcript[start..].to_vec();
-        let intent = MemoryExtractionIntent::new_range(
+        let end = request.committed_transcript.messages().len();
+        let start_seq = u64::try_from(start)
+            .map_err(|_| MemoryExtractionError::Invalid("transcript cursor overflow".into()))?;
+        let end_seq = u64::try_from(end)
+            .map_err(|_| MemoryExtractionError::Invalid("transcript cursor overflow".into()))?;
+        let mut ranges = Vec::new();
+        let mut open = None;
+        let mut transcript = Vec::new();
+        for (offset, message) in request.committed_transcript.messages()[start..]
+            .iter()
+            .enumerate()
+        {
+            let sequence = start_seq
+                + u64::try_from(offset).map_err(|_| {
+                    MemoryExtractionError::Invalid("transcript sequence overflow".into())
+                })?;
+            if message.id.0.starts_with(crate::RECALL_MESSAGE_ID_PREFIX) {
+                if let Some(range_start) = open.take() {
+                    ranges.push(TranscriptRange::new(range_start, sequence));
+                }
+            } else {
+                open.get_or_insert(sequence);
+                transcript.push(message.clone());
+            }
+        }
+        if let Some(range_start) = open {
+            ranges.push(TranscriptRange::new(range_start, end_seq));
+        }
+        let intent = MemoryExtractionIntent::new_snapshot(
             intent_id,
             idempotency_key,
             request.workspace_id,
@@ -760,8 +915,8 @@ impl MemoryExtractionController {
             request.terminal_run_id,
             request.memory_store_id,
             request.memory_config_version,
-            start,
-            end,
+            request.committed_transcript.reference().clone(),
+            ranges,
             transcript,
             request.extractor,
         )?;
@@ -1315,15 +1470,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn terminal_enqueue_uses_a_durable_filtered_transcript_cursor() {
+    async fn terminal_enqueue_uses_a_durable_snapshot_window_and_stable_agent_identity() {
         let repository = Arc::new(TestRepository::default());
         let controller = MemoryExtractionController::new(repository.clone(), "worker-a");
+        let first = Message::text(Id("m1".into()), Role::User, "first new fact");
         let recall = Message::text(
             Id(format!("{}-1", crate::RECALL_MESSAGE_ID_PREFIX)),
             Role::System,
-            "old recalled context",
+            "request-only recall must not be re-extracted",
         );
-        let first = Message::text(Id("m1".into()), Role::User, "first new fact");
         let second = Message::text(Id("m2".into()), Role::User, "second new fact");
         let request = |run: &str, transcript: Vec<Message>| MemoryTerminalExtractionRequest {
             workspace_id: "ws-a".into(),
@@ -1331,24 +1486,28 @@ mod tests {
             terminal_run_id: run.into(),
             memory_store_id: "memory-1".into(),
             memory_config_version: 2,
-            committed_transcript: transcript,
+            committed_transcript: TranscriptSnapshot::new(
+                awaken_agent_contract::agent::thread::Id("session-1".into()),
+                awaken_agent_contract::thread::read::transcript::TranscriptView::RawCommitted,
+                transcript,
+            ),
             extractor: intent().extractor,
         };
 
         controller
-            .enqueue_terminal(request("run-1", vec![recall.clone(), first.clone()]))
+            .enqueue_terminal(request("run-1", vec![first.clone(), recall.clone()]))
             .await
             .unwrap();
         controller
             .enqueue_terminal(request(
                 "run-2",
-                vec![recall.clone(), first.clone(), second.clone()],
+                vec![first.clone(), recall.clone(), second.clone()],
             ))
             .await
             .unwrap();
         assert_eq!(
             controller
-                .enqueue_terminal(request("run-2", vec![recall, first, second.clone()]))
+                .enqueue_terminal(request("run-2", vec![first, recall, second.clone()]))
                 .await
                 .unwrap(),
             PutMemoryExtractionOutcome::Existing
@@ -1366,18 +1525,42 @@ mod tests {
             .unwrap();
         assert_eq!(
             (first_intent.transcript_start, first_intent.transcript_end),
-            (0, 1)
+            (0, 2)
         );
         assert_eq!(
             first_intent.transcript,
             vec![Message::text(Id("m1".into()), Role::User, "first new fact")]
         );
         assert_eq!(
+            first_intent.transcript_ranges,
+            vec![TranscriptRange::new(0, 1)]
+        );
+        assert_eq!(
+            first_intent
+                .transcript_snapshot
+                .as_ref()
+                .expect("snapshot")
+                .end_seq,
+            2
+        );
+        assert_eq!(
+            first_intent.auxiliary_thread_id(),
+            "memory-extraction:session-1:run-1/agent"
+        );
+        assert_eq!(
+            first_intent.auxiliary_run_id(),
+            "memory-extraction:session-1:run-1/agent/run"
+        );
+        assert_eq!(
             (second_intent.transcript_start, second_intent.transcript_end),
-            (1, 2)
+            (2, 3)
+        );
+        assert_eq!(
+            second_intent.transcript_ranges,
+            vec![TranscriptRange::new(2, 3)]
         );
         assert_eq!(second_intent.transcript, vec![second]);
-        assert_eq!(repository.extraction_cursor("session-1").await.unwrap(), 2);
+        assert_eq!(repository.extraction_cursor("session-1").await.unwrap(), 3);
     }
 
     struct TerminalReader(Vec<Message>);
@@ -1399,14 +1582,14 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct TerminalExtractionRecorder(Mutex<Vec<(String, Vec<Message>)>>);
+    struct TerminalExtractionRecorder(Mutex<Vec<(String, TranscriptSnapshot)>>);
 
     #[async_trait]
     impl MemoryTerminalExtraction for TerminalExtractionRecorder {
         async fn extract_terminal(
             &self,
             terminal: &awaken_runtime_contract::terminal::CommittedTerminalRun,
-            transcript: Vec<Message>,
+            transcript: TranscriptSnapshot,
         ) -> Result<(), String> {
             self.0
                 .lock()
@@ -1439,6 +1622,7 @@ mod tests {
         let observations = extraction.0.lock().unwrap();
         assert_eq!(observations.len(), 1);
         assert_eq!(observations[0].0, "run-7");
-        assert_eq!(observations[0].1, committed);
+        assert_eq!(observations[0].1.messages(), committed);
+        assert_eq!(observations[0].1.reference().end_seq, 1);
     }
 }
