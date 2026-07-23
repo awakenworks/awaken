@@ -321,7 +321,7 @@ mod role_tests {
 /// a vault-aware `ManagedState` over an MCP-wired `ManagedHost` (ADR-0043 Phase
 /// 3); every other mode goes through [`mount`], whose state is the plain host.
 pub fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState>) -> Router {
-    mount_with_managed_over(host, managed_state, ephemeral_resource_catalog())
+    mount_with_managed_over(host, managed_state, ephemeral_resource_catalog(), None)
 }
 
 fn ephemeral_resource_catalog() -> Arc<dyn awaken_protocol_managed::ResourceCatalog> {
@@ -339,13 +339,31 @@ pub fn mount_with_managed_and_resource_catalog(
     managed_state: Arc<ManagedState>,
     resource_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
 ) -> Router {
-    mount_with_managed_over(host, managed_state, resource_catalog)
+    mount_with_managed_over(host, managed_state, resource_catalog, None)
+}
+
+/// Assemble the production data plane with application credentials enforced on
+/// browser-facing AI SDK and AG-UI routes. Managed Agents remains the
+/// service-to-service API and is authorized independently by the composition root.
+pub fn mount_with_managed_and_application_access(
+    host: Arc<SharedHost>,
+    managed_state: Arc<ManagedState>,
+    resource_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
+    application_access: Arc<awaken_authz_enforce::ApplicationAccessStore>,
+) -> Router {
+    mount_with_managed_over(
+        host,
+        managed_state,
+        resource_catalog,
+        Some(application_access),
+    )
 }
 
 fn mount_with_managed_over(
     host: Arc<SharedHost>,
     managed_state: Arc<ManagedState>,
     resource_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
+    application_access: Option<Arc<awaken_authz_enforce::ApplicationAccessStore>>,
 ) -> Router {
     install_platform_memory_data_plane(&host);
     // Spawn the process-level dispatch pool once when durable ingress is enabled
@@ -363,8 +381,18 @@ fn mount_with_managed_over(
     // One neutral port impl behind the three wire adapters (each `router` takes
     // `Arc<dyn ProtocolRuntime>`), so they share the host with no per-protocol twin.
     let port: Arc<dyn ProtocolRuntime> = Arc::new(ProtocolHost::new(host.clone()));
-    let ai_sdk = awaken_protocol_ai_sdk::router(port.clone());
-    let ag_ui = awaken_protocol_ag_ui::router(port.clone());
+    let mut ai_sdk = awaken_protocol_ai_sdk::router(port.clone());
+    let mut ag_ui = awaken_protocol_ag_ui::router(port.clone());
+    if let Some(application_access) = application_access {
+        ai_sdk = ai_sdk.layer(axum::middleware::from_fn_with_state(
+            application_access.clone(),
+            awaken_authz_enforce::application_guard,
+        ));
+        ag_ui = ag_ui.layer(axum::middleware::from_fn_with_state(
+            application_access,
+            awaken_authz_enforce::application_guard,
+        ));
+    }
     let a2a = awaken_protocol_a2a::router(port.clone());
     // The durable-ingress operations surface (slice E): ADR-0009 follow-on verbs
     // (supersede / reconcile / reap / dead-letter GC) over the same shared host.

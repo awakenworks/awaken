@@ -12,7 +12,7 @@ use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{FromRequest, Json, Path, Query, Request, State};
+use axum::extract::{Extension, FromRequest, Json, Path, Query, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -25,6 +25,7 @@ use awaken_protocol_transport::{
     ChannelStreamSink, CursorParams, DriverError, Pending, ProtocolRuntime, Resume, StepOutcome,
     paginate_history,
 };
+use awaken_tenancy::{ResolvedAgentId, ResolvedResourceId};
 
 use crate::encoder::{AgUiEncoder, encode_close, encode_history, encode_step};
 use crate::request::{ToolResultInput, process};
@@ -74,8 +75,12 @@ pub fn router(runtime: Runtime) -> Router {
 async fn thread_messages(
     State(rt): State<Runtime>,
     Path(thread_id): Path<String>,
+    resolved: Option<Extension<ResolvedResourceId>>,
     Query(params): Query<CursorParams>,
 ) -> Response {
+    let thread_id = resolved
+        .map(|Extension(thread)| thread.0)
+        .unwrap_or(thread_id);
     let history = rt.history(&thread_id).await;
     match paginate_history(&history, params.cursor.as_deref(), params.limit()) {
         // The house cursor-page envelope (`awaken-api-contract`): `{ items, cursor }`,
@@ -91,17 +96,28 @@ async fn thread_messages(
 
 async fn run_agent(
     State(rt): State<Runtime>,
+    resolved_agent: Option<Extension<ResolvedAgentId>>,
     AgUiJson(input): AgUiJson<RunAgentInput>,
 ) -> Response {
-    run(rt, input, None).await
+    run(rt, input, resolved_agent.map(|Extension(agent)| agent.0)).await
 }
 
 async fn run_agent_scoped(
     State(rt): State<Runtime>,
     Path(agent_id): Path<String>,
+    resolved_agent: Option<Extension<ResolvedAgentId>>,
     AgUiJson(input): AgUiJson<RunAgentInput>,
 ) -> Response {
-    run(rt, input, Some(agent_id)).await
+    run(
+        rt,
+        input,
+        Some(
+            resolved_agent
+                .map(|Extension(agent)| agent.0)
+                .unwrap_or(agent_id),
+        ),
+    )
+    .await
 }
 
 async fn run(rt: Runtime, input: RunAgentInput, agent_id: Option<String>) -> Response {

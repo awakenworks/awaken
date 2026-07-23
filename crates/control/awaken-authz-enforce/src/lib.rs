@@ -16,13 +16,16 @@
 //! graph resolves that up through `Global`, never to `ws_local`. So an
 //! out-of-tenant request is denied even for an `admin` token.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use axum::body::{Body, to_bytes};
 use axum::extract::{Request, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+use sha2::{Digest, Sha256};
 
 use awaken_iam_contract::{
     ActionKey, AuthorizationDecision, AuthorizationRequest, PrincipalRef, ScopeRef, Timestamp,
@@ -60,6 +63,281 @@ pub struct TokenSpec {
 /// couple of tokens into it at boot.
 pub struct EnforceEngine {
     state: Mutex<EngineState>,
+}
+
+/// The deliberately small authority Awaken accepts from a customer application.
+///
+/// `application_scope` and `thread_namespace` are opaque strings chosen by the
+/// embedding application. Awaken does not interpret them as users, roles, or
+/// projects; it only uses their exact values to isolate thread ids.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplicationGrant {
+    pub authority_id: String,
+    pub application_scope: String,
+    pub thread_namespace: String,
+    pub actor_key: Option<String>,
+    pub operations: HashSet<String>,
+    pub agent_ids: HashSet<String>,
+    pub default_agent_id: Option<String>,
+}
+
+impl ApplicationGrant {
+    /// Convert an application-visible id into a stable, scope-isolated host id.
+    #[must_use]
+    pub fn bind_thread(&self, workspace_id: &str, external_thread_id: &str) -> String {
+        let mut digest = Sha256::new();
+        for part in [
+            workspace_id,
+            self.authority_id.as_str(),
+            self.application_scope.as_str(),
+            self.thread_namespace.as_str(),
+            external_thread_id,
+        ] {
+            digest.update(part.len().to_be_bytes());
+            digest.update(part.as_bytes());
+        }
+        format!("app_{:x}", digest.finalize())
+    }
+}
+
+/// An application credential after authentication. It is intentionally
+/// separate from the service credential directory used by management APIs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplicationIdentity {
+    pub workspace_id: String,
+    pub grant: ApplicationGrant,
+}
+
+/// Process-local short-lived application credentials.
+///
+/// Restarting the binary invalidates these credentials, which is a safe default
+/// for phase one. Their thread mapping remains stable across token rotation.
+pub struct ApplicationAccessStore {
+    engine: EnforceEngine,
+    grants: Mutex<HashMap<String, ApplicationGrant>>,
+}
+
+impl Default for ApplicationAccessStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ApplicationAccessStore {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            engine: EnforceEngine::seeded(),
+            grants: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Mint one short-lived credential and attach its narrow application grant.
+    pub fn mint(
+        &self,
+        token_id: String,
+        workspace_id: String,
+        expires_at: Option<String>,
+        grant: ApplicationGrant,
+    ) -> Result<String, IamError> {
+        let service_id = format!("application:{token_id}");
+        let secret = self.engine.mint(TokenSpec {
+            token_id,
+            service_id: service_id.clone(),
+            workspace_id,
+            role: "admin".to_string(),
+            expires_at,
+        })?;
+        self.grants
+            .lock()
+            .expect("application grant store poisoned")
+            .insert(service_id, grant);
+        Ok(secret)
+    }
+
+    /// Authenticate only credentials minted by this application store.
+    pub fn authenticate(&self, presented: &str) -> Result<ApplicationIdentity, ()> {
+        let (principal, workspace) = self.engine.authenticate(presented).map_err(|_| ())?;
+        let PrincipalRef::Service { service_id } = principal else {
+            return Err(());
+        };
+        let grant = self
+            .grants
+            .lock()
+            .expect("application grant store poisoned")
+            .get(&service_id)
+            .cloned()
+            .ok_or(())?;
+        Ok(ApplicationIdentity {
+            workspace_id: workspace.0,
+            grant,
+        })
+    }
+
+    pub fn revoke(&self, token_id: &str) -> Result<(), IamError> {
+        self.engine.revoke(token_id)?;
+        self.grants
+            .lock()
+            .expect("application grant store poisoned")
+            .remove(&format!("application:{token_id}"));
+        Ok(())
+    }
+}
+
+const MAX_APPLICATION_BODY: usize = 2 * 1024 * 1024;
+
+/// Blanket PEP for browser/application protocol routes.
+///
+/// It accepts only an application credential, checks the route operation and
+/// Agent allow-list, then replaces every external thread id with the stable
+/// scope-isolated host id before a protocol adapter sees the request.
+pub async fn application_guard(
+    State(store): State<Arc<ApplicationAccessStore>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let Some(presented) = presented_bearer(request.headers()) else {
+        return reject(StatusCode::UNAUTHORIZED, "missing application access token");
+    };
+    let Ok(identity) = store.authenticate(&presented) else {
+        return reject(StatusCode::UNAUTHORIZED, "invalid application access token");
+    };
+    let operation = if matches!(request.method().as_str(), "GET" | "HEAD") {
+        "thread.read"
+    } else {
+        "thread.run"
+    };
+    if !identity.grant.operations.contains(operation) {
+        return reject(
+            StatusCode::FORBIDDEN,
+            "application token does not allow this operation",
+        );
+    }
+    match scope_application_request(request, &identity).await {
+        Ok(request) => next.run(request).await,
+        Err(response) => response,
+    }
+}
+
+async fn scope_application_request(
+    mut request: Request,
+    identity: &ApplicationIdentity,
+) -> Result<Request, Response> {
+    let path = request.uri().path().to_string();
+    let segments: Vec<&str> = path.split('/').collect();
+    let path_agent = segments
+        .windows(2)
+        .find(|pair| pair[0] == "agents")
+        .map(|pair| pair[1].to_string());
+    if path_agent.is_some() {
+        authorize_agent(identity, path_agent.as_deref())?;
+    }
+
+    if let Some(index) = segments.iter().position(|segment| *segment == "threads")
+        && let Some(external) = segments.get(index + 1)
+    {
+        let internal = identity.grant.bind_thread(&identity.workspace_id, external);
+        request
+            .extensions_mut()
+            .insert(awaken_tenancy::ResolvedResourceId(internal.clone()));
+        let new_path = path.replacen(
+            &format!("/threads/{external}"),
+            &format!("/threads/{internal}"),
+            1,
+        );
+        replace_path(request.uri_mut(), &new_path)?;
+    }
+
+    if matches!(request.method().as_str(), "POST" | "PUT" | "PATCH") {
+        let (mut parts, body) = request.into_parts();
+        let bytes = to_bytes(body, MAX_APPLICATION_BODY)
+            .await
+            .map_err(|_| reject(StatusCode::BAD_REQUEST, "invalid application request body"))?;
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|_| reject(StatusCode::BAD_REQUEST, "application request must be JSON"))?;
+        let object = value.as_object_mut().ok_or_else(|| {
+            reject(
+                StatusCode::BAD_REQUEST,
+                "application request must be an object",
+            )
+        })?;
+        let agent = object
+            .get("agentId")
+            .or_else(|| object.get("agent_id"))
+            .and_then(serde_json::Value::as_str)
+            .or(path_agent.as_deref())
+            .or(identity.grant.default_agent_id.as_deref());
+        authorize_agent(identity, agent)?;
+        if let Some(agent) = agent {
+            parts
+                .extensions
+                .insert(awaken_tenancy::ResolvedAgentId(agent.to_string()));
+        }
+        if path_agent.is_none()
+            && object.get("agentId").is_none()
+            && object.get("agent_id").is_none()
+            && let Some(default_agent) = &identity.grant.default_agent_id
+        {
+            object.insert(
+                "agentId".to_string(),
+                serde_json::Value::String(default_agent.clone()),
+            );
+        }
+        let thread_key = if object.contains_key("threadId") {
+            Some("threadId")
+        } else if object.contains_key("thread_id") {
+            Some("thread_id")
+        } else {
+            None
+        };
+        if let Some(key) = thread_key {
+            let external = object
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| reject(StatusCode::BAD_REQUEST, "thread id must be a string"))?;
+            let internal = identity.grant.bind_thread(&identity.workspace_id, external);
+            object.insert(key.to_string(), serde_json::Value::String(internal));
+        } else if !parts.uri.path().contains("/threads/") {
+            return Err(reject(
+                StatusCode::BAD_REQUEST,
+                "application protocol requests require a thread id",
+            ));
+        }
+        let encoded = serde_json::to_vec(&value)
+            .map_err(|_| reject(StatusCode::BAD_REQUEST, "invalid application request body"))?;
+        parts.headers.remove(header::CONTENT_LENGTH);
+        request = Request::from_parts(parts, Body::from(encoded));
+    }
+    Ok(request)
+}
+
+fn authorize_agent(identity: &ApplicationIdentity, agent_id: Option<&str>) -> Result<(), Response> {
+    let Some(agent_id) = agent_id else {
+        return Err(reject(
+            StatusCode::BAD_REQUEST,
+            "application protocol requests require an agent id",
+        ));
+    };
+    if identity.grant.agent_ids.contains(agent_id) {
+        Ok(())
+    } else {
+        Err(reject(
+            StatusCode::FORBIDDEN,
+            "application token does not allow this agent",
+        ))
+    }
+}
+
+fn replace_path(uri: &mut Uri, path: &str) -> Result<(), Response> {
+    let query = uri
+        .query()
+        .map(|query| format!("?{query}"))
+        .unwrap_or_default();
+    *uri = format!("{path}{query}")
+        .parse()
+        .map_err(|_| reject(StatusCode::BAD_REQUEST, "invalid thread id"))?;
+    Ok(())
 }
 
 struct EngineState {
@@ -138,6 +416,18 @@ impl EnforceEngine {
             .directory
             .authenticate(presented, &Timestamp(now_rfc3339()))?;
         Ok((token.principal.clone(), token.workspace.clone()))
+    }
+
+    /// Revoke a token by id in the process-local directory.
+    pub fn revoke(&self, token_id: &str) -> Result<(), IamError> {
+        self.state
+            .lock()
+            .expect("enforce engine poisoned")
+            .directory
+            .revoke(
+                &awaken_iam_contract::ApiTokenId(token_id.to_string()),
+                Timestamp(now_rfc3339()),
+            )
     }
 
     /// Authorize `principal` performing `action` at `scope`. Fail-closed: an
