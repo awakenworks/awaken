@@ -137,7 +137,8 @@ pub use crate::deployment_config::{
 };
 pub use crate::dispatch_transport::{
     WorkerDispatchService, dispatch_transport_router_with_service,
-    registered_worker_transport_router, worker_dispatch_store_with_upstream,
+    registered_worker_transport_router, registered_worker_transport_router_with_services,
+    worker_dispatch_store_with_upstream,
 };
 pub use crate::worker_security::{
     FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, ManualWorkerClock, MtlsWorkerAuthenticator,

@@ -221,8 +221,21 @@ pub fn registered_worker_transport_router(
         directory,
         Arc::new(HeaderWorkerAuthenticator),
     ));
-    let commit_router = crate::commit_ingest::claimed_commit_router(commit_service);
-    dispatch_router.merge(commit_router)
+    registered_worker_transport_router_with_services(dispatch_router, commit_service)
+}
+
+/// Compose the complete registered-Worker transport from already-configured
+/// application services.
+///
+/// Embedding Control Nodes use this entry after selecting their authoritative
+/// dispatch, commit, directory, authentication, recovery, and checkpoint ports.
+/// Keeping the merge here prevents a product composition root from mounting
+/// claims without the matching claim-fenced commit surface.
+pub fn registered_worker_transport_router_with_services(
+    dispatch_router: Router,
+    commit_service: Arc<crate::commit_ingest::ClaimedCommitService>,
+) -> Router {
+    dispatch_router.merge(crate::commit_ingest::claimed_commit_router(commit_service))
 }
 
 pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService>) -> Router {
