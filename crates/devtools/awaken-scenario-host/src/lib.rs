@@ -1624,10 +1624,28 @@ pub fn build_remote_delegation_router() -> Router {
     let url = std::env::var("AWAKEN_REMOTE_AGENT_URL")
         .expect("AWAKEN_REMOTE_AGENT_URL must be set for delegate-remote mode");
     let (model, model_ref) = scenario_model(Arc::new(DelegatingModel), "delegate-remote");
-    let host = SharedHost::new(model, model_ref).with_remote_agent(
-        "researcher",
-        Arc::new(A2aRemoteAgent::new(Arc::new(HttpTransport::new(url)))),
-    );
+    // Remote delegation still uses the neutral publication/binding contract:
+    // advertise `agent_run` on the coordinator and bind `researcher` as its
+    // target. `with_remote_agent` supplies the transport implementation only;
+    // it must not be responsible for capability advertisement.
+    let mut tools = awaken_runtime_host::authorable_tools();
+    tools.retain(|tool| tool.kind == ToolKind::AgentDelegation);
+    let assistant = ExecutableAgentSnapshot::builder("assistant")
+        .model(ModelBinding::new("default", &model_ref, "default"))
+        .tools(tools)
+        .agent_bindings(AgentBindings {
+            delegate_ids: vec![AgentId("researcher".into())],
+            ..Default::default()
+        })
+        .build();
+    let publications = StaticPublishedAgentSnapshots::try_new([assistant])
+        .expect("valid remote delegation publication");
+    let host = SharedHost::new(model, model_ref)
+        .with_agent_publications(Arc::new(publications))
+        .with_remote_agent(
+            "researcher",
+            Arc::new(A2aRemoteAgent::new(Arc::new(HttpTransport::new(url)))),
+        );
     mount(Arc::new(host))
 }
 

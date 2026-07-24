@@ -141,7 +141,10 @@ async function main() {
       .filter((e) => e.type === 'agent.message' || e.type === 'agent.tool_result')
       .map((e) => e.content?.[0]?.text ?? '')
       .join(' | ');
-    assert.ok(badText.includes('roster'), `roster rejection surfaced: ${badText}`);
+    assert.ok(
+      /roster|published targets/i.test(badText),
+      `roster rejection surfaced: ${badText}`,
+    );
     assert.ok(!badText.includes('researched: 42'), `no sub-run output leaked: ${badText}`);
 
     console.log('E2E PASS: multi-agent delegation (happy + fail-closed) via TS SDK.');

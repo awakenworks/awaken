@@ -2,7 +2,7 @@
 
 Test-coverage design and gap analysis for the **Claude Managed Agents** API
 (`platform.claude.com/docs/en/managed-agents/*`), mapped against awaken's TS/Node
-e2e conformance suite in `e2e/` (~170 `*_e2e.mjs` suites + the static conformance
+e2e conformance suite in `e2e/` (234 `*_e2e.mjs` / `*_e2e.ts` files + the static conformance
 gate in `e2e/conformance/`).
 
 The oracle is the installed official SDK (`@anthropic-ai/sdk`, pinned in
@@ -31,6 +31,73 @@ so some doc surface is Anthropic-cloud-only or a research preview it does not im
   not implement this doc surface (cloud-only, infra-level, or research preview). Not a
   bug, not dead code.
 
+## Cause-effect completeness and Ark portability (2026-07-24)
+
+The compatibility oracle for the session-update and create-override cases is Anthropic's
+official Managed Agents contract, not Ark. In particular, Anthropic specifies that
+`tools`/`mcp_servers` updates are full replacement, that only those two fields are
+mutable mid-session, and that create-time list overrides can clear a session-local field.
+See the [official session operations contract](https://platform.claude.com/docs/en/managed-agents/session-operations),
+[Update Session API reference](https://platform.claude.com/docs/en/api/beta/sessions/update),
+and [MCP connector constraints](https://platform.claude.com/docs/en/managed-agents/mcp-connector).
+
+The current inventory contains 234 `*_e2e.mjs` / `*_e2e.ts` files, 91 of them
+managed-named. That is broad coverage, but it is **not complete**: the remaining
+implemented-but-untested effects below remain open, and absent/cloud-only effects are
+tracked separately rather than being counted as covered.
+
+The cause-effect graph has four materially different cause classes. A remote Ark endpoint
+can exercise only the provider-controlled part of the graph; it cannot replace the local
+host, deployment, persistence, fault-injection, and security fixtures.
+
+| Cause class | Representative causes | Required observable effects | Current coverage | Can Ark be the sole fixture? |
+|---|---|---|---|---|
+| Public wire contract | route prefix, beta header, DTO discriminator, pagination, SSE framing | official SDK sends/parses the exchange without a compatibility fork | strong static gates; behavioral mismatches remain provider-dependent | **Partial** |
+| Managed session state machine | create/update, message, tool loop, confirmation, outcome, threads, interrupt, archive/delete | legal status/event sequence and terminal state | happy paths strong; conditional branches include the backlog below | **Conditional** on provider feature support |
+| Host/runtime resilience | restart, reconnect/replay, lease reclaim, exactly-once, filesystem/sandbox enforcement | durable recovery and invariant preservation | local process/database/fake-upstream suites | **No** |
+| Deployment/security/operations | worker topology, IAM/authz, networking, telemetry, secret handling, cross-protocol ingress | policy enforcement, isolation, metrics/traces, failure taxonomy | local/container/infra fixtures | **No** |
+
+The dynamic compatibility path is:
+
+`route/auth → create/retrieve → user.message → running → model/tool → optional
+requires_action/resume → idle/outcome → list/stream/reconnect → archive/delete`.
+
+The TypeScript recorder `conformance/ark_managed_agents_compat_e2e.ts` drives that path
+with the official SDK and stores a redacted exchange transcript under
+`artifacts/ark-managed-agents-compat.json`. Against Ark on 2026-07-24 using
+`@anthropic-ai/sdk` 0.114.0, the result was **14 pass / 18 fail / 3 skip**. The principal
+causes were the SDK `/v1` suffix versus Ark's `/api/v3` route, missing required response
+members and nullable `next_page`, unnamed `data:`-only SSE frames, unsupported archive
+operations, and accepted-but-not-observed custom-tool / `always_ask` updates. Therefore
+Ark is useful as one provider compatibility lane, but it cannot be the canonical or only
+Managed Agents e2e environment.
+
+This pass closed the following local contract cases against that Anthropic oracle:
+
+| Case | Local coverage | Verification |
+|---|---|---|
+| Session `agent.tools` full replacement | implemented and asserted | `management_sessions_family_e2e.mjs` |
+| Session `agent.mcp_servers`/`agent` update gate | immutable fields rejected; update event carries agent snapshot | `management_sessions_family_e2e.mjs` |
+| Create-time null/empty overrides | `system`, `tools`, `mcp_servers`, `skills`; `model:null` remains 400 | `managed_model_override_e2e.mjs` |
+| MCP server ↔ `mcp_toolset` references | dangling server rejected; declared toolset projects | `managed_model_override_e2e.mjs` |
+| MCP `always_ask` confirmation | permission policy parks and resumes MCP calls | `management_mcp_e2e.mjs` |
+| Retryable inference and active interrupt/steer | `status_rescheduled` is emitted before retry; active turn can be interrupted and replaced | `managed_error_recovery_e2e.mjs` |
+
+The DeepSeek live-provider lane was also attempted from the shell's
+`DEEPSEEK_API_KEY` configuration with the OpenAI-compatible endpoint and
+`deepseek-v4-flash`. Transport and model resolution succeeded, but the provider returned
+HTTP 402 (`Insufficient Balance`), so no model-output compatibility verdict is claimed
+from that run. Deterministic local compatibility remains green: Rust/SDK event catalogs
+27/27 outbound and 7/7 inbound, beta sentinel, serde golden, TypeScript type-check, and
+the session override/update suites all pass.
+
+The ACP runtime-selection regression is also closed: a session's
+`metadata["awaken.runtime"] = "acp:<cli>"` is copied into the neutral resolved
+backend binding before the shared `AttemptExecutorRegistry` is built. This prevents
+an accepted runtime hint from silently falling back to the native model.
+`acp_e2e.mjs` and `acp_jsonrpc_e2e.mjs` now pass, including native-session
+non-regression and second-turn relaunch coverage.
+
 ## Closed this pass
 
 | Behavior | Doc page | New suite | Design |
@@ -49,39 +116,41 @@ write-time `Cron::parse` 400), `cron.rs` (dependency-free 5-field evaluator),
 
 These are real coverage gaps: awaken implements the behavior, no e2e asserts it.
 
-1. **MCP tool confirmation (`always_ask`) approve/deny** — the MCP toolset defaults to
-   `always_ask`, but every MCP suite auto-runs (`always_allow`). No test parks an
-   `agent.mcp_tool_use` at `requires_action` and resolves it via `user.tool_confirmation`.
-   → new `managed_mcp_hitl_e2e.mjs` (decision table {mcp tool × allow|deny} × fixture side-effect).
-2. **MCP `session.error` classification** (`mcp_connection_failed_error` /
-   `mcp_authentication_failed_error` + `mcp_server_name` + `retry_status`; session still
-   starts) → new `managed_mcp_error_e2e.mjs`.
-3. **Mid-run interrupt + steer** — only the no-op interrupt (no active run) is tested.
-   Interrupting an actively-running turn and redirecting is uncovered.
-   → `managed_interrupt_steer_e2e.mjs`.
-4. **Session agent-update gate** — only `tools`/`mcp_servers` mutable; full-array-replacement
-   semantics, running-session → refuse, `model`/`system` mutation → reject. Untested.
-5. **Overrides clearing rules** — `system:null` clears; `tools` cleared with non-empty skills → 400.
-   Only `model:null`→400 covered.
-6. **`agent.thinking` start-only preview + no-replay-on-reconnect** — previews best-effort.
+1. ~~**MCP tool confirmation (`always_ask`) approve/deny**~~ — closed in `management_mcp_e2e.mjs`.
+2. ~~**MCP `session.error` classification**~~ — closed in
+   `management_mcp_e2e.mjs`: 401 and unreachable-server partitions now project through
+   the neutral classified `RunError` into `session.error` with server name and retry status.
+3. ~~**Mid-run interrupt + steer**~~ — closed in `managed_error_recovery_e2e.mjs`.
+4. ~~**Session agent-update gate**~~ — closed in `management_sessions_family_e2e.mjs`.
+5. ~~**Overrides clearing rules**~~ — closed in `managed_model_override_e2e.mjs`.
+6. **`agent.thinking` start-only preview + no-replay-on-reconnect** — marker/content
+   ordering is covered by `managed_real_thinking_e2e.mjs` with a thinking-capable
+   provider; generic reconnect/replay is covered by `managed_reconnect_real_e2e.mjs`.
+   The combined thinking-specific no-replay assertion remains provider-gated.
 7. **Deployment run failure taxonomy + auto-pause/auto-archive** (`environment_archived_error`,
    `agent_archived_error`, `session_rate_limited_error`; `has_error` run filter).
 8. **`limited` networking sub-flags** — `allow_mcp_servers` / `allow_package_managers`
    (default `false`); only `allowed_hosts` is exercised.
-9. **Worker lease-reclaim** — an un-acked lease past `reclaim_older_than_ms` becomes re-claimable
-   (queue-level; no real CLI needed). → `management_worker_lease_reclaim_e2e.mjs`.
-10. **`read_only` memory mount rejects writes** (fs-level enforcement; container tier verified in
-    `docker.rs`) — only `read_write` mounts are tested.
-11. **`mcp_toolset` declaration + tool filtering** — no test puts an `mcp_toolset` entry in `tools`
-    or exercises `default_config.enabled:false` enable-lists on MCP tools.
-12. **Multiagent thread control** — `{type:"self"}` coordinator self-copy; interrupt a
-    `requires_action` child (denies pending tools, re-idles `end_turn`, no sampling); archive
-    rejected unless idle. Delegation *happy path* is covered.
-13. **Files negatives** — `downloadable:false` on uploaded files, download-of-uploaded → 400,
-    invalid-filename → 400, `document`/`image` `file_id` content block in a turn.
-14. **`session.status_rescheduled` / `rescheduling`** — implemented (transient-retry counting),
-    but hard to drive deterministically from the current fake-upstream fault modes; needs a
-    once-transient scenario mode. Lower priority.
+9. ~~**Worker lease-reclaim**~~ — `management_environments_e2e.mjs` proves the
+    `reclaim_older_than_ms=0` HTTP boundary and `awaken-work-store` proves the same
+    requested age against SQLite durable state.
+10. ~~**`read_only` memory mount rejects writes**~~ — closed in
+    `managed_memory_extraction_durable_e2e.mjs` (activation fails closed, no extraction
+    outbox, and no store mutation).
+11. ~~**`mcp_toolset` declaration + tool filtering**~~ — declaration/reference validation
+    is covered in `managed_model_override_e2e.mjs`; confirmation policy is covered in
+    `management_mcp_e2e.mjs`.
+12. **Multiagent thread control** — delegation lifecycle, child enumeration/retrieval,
+    fail-closed roster handling, and idle-child archive are covered by
+    `managed_delegation_e2e.mjs`. `{type:"self"}` copy and interrupting a
+    `requires_action` child are not implemented by the current thread contract and
+    are recorded as explicit negative/out-of-scope cases.
+13. **Files negatives** — filename validation and download authorization are covered
+    by `managed_resources_api_e2e.mjs`; `downloadable:false` upload metadata and
+    `document`/`image` `file_id` blocks are absent from awaken's file-upload contract,
+    so those Anthropic-cloud-only cases cannot be asserted locally.
+14. ~~**`session.status_rescheduled` / `rescheduling`**~~ — closed in
+    `managed_error_recovery_e2e.mjs` with a deterministic transient-503 scenario.
 
 ## Not implemented / out-of-scope — *why the code is uncovered*
 
@@ -163,8 +232,9 @@ small (base-enum additions rippled to only a handful of `_`-less matches). This 
 
 - **Structural conformance**: `npm run test:conformance` — event catalog + `MANAGED_BETA` +
   serde golden vs the installed SDK. Green.
-- **Behavioral coverage**: the ~170 `*_e2e.mjs` suites, +3 this pass (104 in the default
-  `test` script; the management surface in `test:extended`). **Cumulative run of the default
+- **Behavioral coverage**: 234 `*_e2e.mjs` / `*_e2e.ts` files, including 91 managed-named
+  files (104 in the default `test` script; the management surface in `test:extended`).
+  **Cumulative run of the default
   suite (each suite spawned independently): 104 pass / 0 fail / 104** — the whole deterministic
   suite is green. The 4 formerly-failing suites were fixed (they were real gaps, not
   environmental):
