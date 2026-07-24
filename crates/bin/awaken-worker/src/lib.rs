@@ -199,6 +199,7 @@ impl std::error::Error for WorkerNodeBuildError {}
 pub struct WorkerNodeBuilder {
     upstream: WorkerUpstream,
     manifest: Option<WorkerManifest>,
+    deployment: awaken_runtime_host::DeploymentConfig,
     application_factory: Option<RegisteredApplicationFactory>,
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
     acp_credentials: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
@@ -212,6 +213,7 @@ impl WorkerNodeBuilder {
         Self {
             upstream,
             manifest: None,
+            deployment: awaken_runtime_host::DeploymentConfig::from_env(),
             application_factory: None,
             materializer: None,
             acp_credentials: None,
@@ -223,6 +225,17 @@ impl WorkerNodeBuilder {
     #[must_use]
     pub fn with_manifest(mut self, manifest: WorkerManifest) -> Self {
         self.manifest = Some(manifest);
+        self
+    }
+
+    /// Install the same typed deployment value used to derive this Worker's
+    /// manifest and to assemble its runtime Host.
+    #[must_use]
+    pub fn with_deployment_config(
+        mut self,
+        deployment: awaken_runtime_host::DeploymentConfig,
+    ) -> Self {
+        self.deployment = deployment;
         self
     }
 
@@ -300,6 +313,7 @@ impl WorkerNodeBuilder {
         Ok(WorkerNode {
             upstream: self.upstream,
             manifest,
+            deployment: self.deployment,
             application_factory: self.application_factory,
             application_gate: None,
             materializer: self.materializer,
@@ -324,6 +338,7 @@ pub enum WorkerShutdown {
 pub struct WorkerNode {
     upstream: WorkerUpstream,
     manifest: WorkerManifest,
+    deployment: awaken_runtime_host::DeploymentConfig,
     application_factory: Option<RegisteredApplicationFactory>,
     application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
@@ -425,8 +440,38 @@ where
             Output = Result<WorkerShutdown, Box<dyn std::error::Error + Send + Sync>>,
         >,
 {
+    run_with_application_credential_stores_and_deployment_until(
+        upstream,
+        awaken_runtime_host::DeploymentConfig::from_env(),
+        credentials,
+        secrets,
+        application_capabilities,
+        factory,
+        gate,
+        shutdown,
+    )
+    .await
+}
+
+/// Explicit-deployment counterpart for embedding composition roots.
+pub async fn run_with_application_credential_stores_and_deployment_until<F>(
+    upstream: WorkerUpstream,
+    deployment: awaken_runtime_host::DeploymentConfig,
+    credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
+    secrets: Arc<dyn awaken_credential_vault::SecretStore>,
+    application_capabilities: std::collections::BTreeSet<String>,
+    factory: RegisteredApplicationFactory,
+    gate: Arc<dyn awaken_runtime_contract::permission::ToolGateHook>,
+    shutdown: F,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+where
+    F: std::future::Future<
+            Output = Result<WorkerShutdown, Box<dyn std::error::Error + Send + Sync>>,
+        >,
+{
     build_worker_with_materialization_stores(
         upstream,
+        deployment,
         awaken_control::InferenceMaterializationStores {
             credentials,
             secrets,
@@ -462,6 +507,7 @@ async fn build_standard_worker(
         shared_credential_backend(std::env::var("AWAKEN_CREDENTIAL_DB").ok().as_deref());
     build_worker_with_materialization_stores(
         upstream,
+        awaken_runtime_host::DeploymentConfig::from_env(),
         stores,
         repository_credentials,
         application_capabilities,
@@ -473,6 +519,7 @@ async fn build_standard_worker(
 
 async fn build_worker_with_materialization_stores(
     upstream: WorkerUpstream,
+    deployment: awaken_runtime_host::DeploymentConfig,
     stores: awaken_control::InferenceMaterializationStores,
     repository_credentials: bool,
     application_capabilities: std::collections::BTreeSet<String>,
@@ -485,6 +532,7 @@ async fn build_worker_with_materialization_stores(
         CredentialInferenceMaterializer::new(stores.credentials.clone(), stores.secrets.clone());
     let materializer: Arc<dyn InferenceExecutorMaterializer> = Arc::new(materializer);
     let manifest = worker_manifest(
+        &deployment,
         Some(materializer.as_ref()),
         resources.is_some(),
         resources
@@ -494,6 +542,7 @@ async fn build_worker_with_materialization_stores(
     );
     build_configured_worker(
         upstream,
+        deployment,
         manifest,
         materializer,
         Some(awaken_runtime_host::PinnedCredentialMaterializer::new(
@@ -546,6 +595,7 @@ pub async fn run_with_upstream_application_and_inference_materializer(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     build_secretless_worker(
         upstream,
+        awaken_runtime_host::DeploymentConfig::from_env(),
         materializer,
         application_capabilities,
         application,
@@ -571,8 +621,36 @@ where
             Output = Result<WorkerShutdown, Box<dyn std::error::Error + Send + Sync>>,
         >,
 {
+    run_with_upstream_application_and_inference_materializer_and_deployment_until(
+        upstream,
+        awaken_runtime_host::DeploymentConfig::from_env(),
+        materializer,
+        application_capabilities,
+        application,
+        application_gate,
+        shutdown,
+    )
+    .await
+}
+
+/// Explicit-deployment supervised secretless Worker entrypoint.
+pub async fn run_with_upstream_application_and_inference_materializer_and_deployment_until<F>(
+    upstream: WorkerUpstream,
+    deployment: awaken_runtime_host::DeploymentConfig,
+    materializer: Arc<dyn InferenceExecutorMaterializer>,
+    application_capabilities: std::collections::BTreeSet<String>,
+    application: Option<RegisteredApplicationFactory>,
+    application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
+    shutdown: F,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+where
+    F: std::future::Future<
+            Output = Result<WorkerShutdown, Box<dyn std::error::Error + Send + Sync>>,
+        >,
+{
     build_secretless_worker(
         upstream,
+        deployment,
         materializer,
         application_capabilities,
         application,
@@ -585,6 +663,7 @@ where
 
 async fn build_secretless_worker(
     upstream: WorkerUpstream,
+    deployment: awaken_runtime_host::DeploymentConfig,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
     application_capabilities: std::collections::BTreeSet<String>,
     application: Option<RegisteredApplicationFactory>,
@@ -592,6 +671,7 @@ async fn build_secretless_worker(
 ) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
     let resources = shared_resource_wiring(None).await?;
     let manifest = worker_manifest(
+        &deployment,
         Some(materializer.as_ref()),
         resources.is_some(),
         false,
@@ -599,6 +679,7 @@ async fn build_secretless_worker(
     );
     build_configured_worker(
         upstream,
+        deployment,
         manifest,
         materializer,
         None,
@@ -610,6 +691,7 @@ async fn build_secretless_worker(
 
 fn build_configured_worker(
     upstream: WorkerUpstream,
+    deployment: awaken_runtime_host::DeploymentConfig,
     manifest: WorkerManifest,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
     acp_credentials: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
@@ -618,6 +700,7 @@ fn build_configured_worker(
     application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
 ) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
     let mut builder = WorkerNodeBuilder::new(upstream)
+        .with_deployment_config(deployment)
         .with_manifest(manifest)
         .with_inference_materializer(materializer)
         .with_optional_resource_plane(resources)
@@ -743,6 +826,7 @@ impl WorkerNode {
             None => SharedHost::new(Arc::new(NoModelConfiguredExecutor), "worker"),
         };
         let mut host = host
+            .with_deployment_config(self.deployment)
             .with_worker_upstream(upstream)
             .with_dispatch_store(dispatch_store)
             .with_remote_attempt_executor(awaken_server::a2a_attempt_executor());
@@ -891,16 +975,18 @@ fn new_incarnation_id() -> Result<String, getrandom::Error> {
 }
 
 fn worker_manifest(
+    deployment: &awaken_runtime_host::DeploymentConfig,
     materializer: Option<&dyn InferenceExecutorMaterializer>,
     resource_support: bool,
     repository_credential_support: bool,
     application_capabilities: std::collections::BTreeSet<String>,
 ) -> WorkerManifest {
     use awaken_provisioning_contract::{IsolationClass, SandboxCapabilities};
-    let tier = std::env::var("AWAKEN_SANDBOX_TIER").unwrap_or_else(|_| "namespace".to_string());
-    let (sandbox, backend) = match tier.as_str() {
-        "local" => (WorkerManifest::default().sandbox, "local"),
-        "docker" | "podman" | "k8s" => (
+    let (sandbox, backend) = match deployment.sandbox_tier {
+        awaken_runtime_host::SandboxTier::Local => (WorkerManifest::default().sandbox, "local"),
+        awaken_runtime_host::SandboxTier::Docker
+        | awaken_runtime_host::SandboxTier::Podman
+        | awaken_runtime_host::SandboxTier::K8s => (
             SandboxCapabilities {
                 isolation: IsolationClass::Container,
                 tool_transparent: true,
@@ -911,9 +997,14 @@ fn worker_manifest(
                 resource_limits: true,
                 custom_rootfs: true,
             },
-            tier.as_str(),
+            match deployment.sandbox_tier {
+                awaken_runtime_host::SandboxTier::Docker => "docker",
+                awaken_runtime_host::SandboxTier::Podman => "podman",
+                awaken_runtime_host::SandboxTier::K8s => "k8s",
+                _ => unreachable!("matched container sandbox tier"),
+            },
         ),
-        _ => (
+        awaken_runtime_host::SandboxTier::Namespace => (
             SandboxCapabilities {
                 isolation: IsolationClass::Namespace,
                 tool_transparent: true,
@@ -944,11 +1035,8 @@ fn worker_manifest(
         }
     }
     capabilities.extend(application_capabilities);
-    if let Some(cli) = std::env::var("AWAKEN_ACP_CLI")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-    {
-        capabilities.insert(format!("acp:{cli}"));
+    if let Some(profile) = &deployment.acp {
+        capabilities.extend(profile.cli_ids().map(|cli| format!("acp:{cli}")));
     }
     capabilities.extend(
         std::env::var("AWAKEN_WORKER_CAPABILITIES")
@@ -1095,10 +1183,20 @@ mod grace_tests {
         }
     }
 
+    fn deployment() -> awaken_runtime_host::DeploymentConfig {
+        awaken_runtime_host::DeploymentConfig::from_env()
+    }
+
     #[test]
     fn worker_manifest_derives_materialization_capabilities_from_the_adapter() {
         let materializer = SchemeMaterializer;
-        let manifest = worker_manifest(Some(&materializer), false, false, Default::default());
+        let manifest = worker_manifest(
+            &deployment(),
+            Some(&materializer),
+            false,
+            false,
+            Default::default(),
+        );
 
         assert!(manifest.capabilities.contains("native-runtime"));
         assert!(
@@ -1118,7 +1216,7 @@ mod grace_tests {
 
     #[test]
     fn worker_manifest_advertises_only_installed_resource_seams() {
-        let without = worker_manifest(None, false, false, Default::default());
+        let without = worker_manifest(&deployment(), None, false, false, Default::default());
         assert!(
             !without
                 .capabilities
@@ -1130,7 +1228,7 @@ mod grace_tests {
                 .contains(super::REPOSITORY_CREDENTIALS_CAPABILITY)
         );
 
-        let secretless = worker_manifest(None, true, false, Default::default());
+        let secretless = worker_manifest(&deployment(), None, true, false, Default::default());
         assert!(
             secretless
                 .capabilities
@@ -1142,7 +1240,7 @@ mod grace_tests {
                 .contains(super::REPOSITORY_CREDENTIALS_CAPABILITY)
         );
 
-        let credentialed = worker_manifest(None, true, true, Default::default());
+        let credentialed = worker_manifest(&deployment(), None, true, true, Default::default());
         assert!(
             credentialed
                 .capabilities
@@ -1153,6 +1251,7 @@ mod grace_tests {
     #[test]
     fn worker_manifest_includes_explicit_application_capabilities() {
         let manifest = worker_manifest(
+            &deployment(),
             None,
             false,
             false,

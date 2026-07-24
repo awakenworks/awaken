@@ -11,6 +11,7 @@
 //! even to the host loopback), the same [`ThreadEgress`] registrations that drive
 //! the native path's bash-tool jail.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -21,11 +22,89 @@ use awaken_run_executor_acp::{
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_sandbox_local::NamespaceProvider;
 
-/// How a sandboxed/containerized ACP source obtains a run's CLI launch: a **fixed**
-/// test argv, or a **per-run
-/// projection** of the run's `acp:<cli>` backend_ref through its [`AcpCli`] row — so
-/// the CLI the config plane selected *for that agent* runs inside the isolation, with
-/// its model/env projected, rather than a single fixed command.
+#[derive(Clone)]
+struct ProjectedLaunch {
+    cli: AcpCli,
+    resolver: Arc<dyn LaunchResolver>,
+}
+
+/// Exact `acp:<cli>` launch routes installed on one Worker.
+#[derive(Clone)]
+pub struct AcpLaunchRegistry {
+    routes: Arc<BTreeMap<String, ProjectedLaunch>>,
+    default_cli: Option<String>,
+}
+
+impl AcpLaunchRegistry {
+    pub fn new(
+        routes: Vec<(AcpCli, Arc<dyn LaunchResolver>)>,
+        default_cli: Option<String>,
+    ) -> Result<Self, String> {
+        let mut indexed = BTreeMap::new();
+        for (cli, resolver) in routes {
+            if cli.id.trim().is_empty() {
+                return Err("ACP launch route id must not be empty".into());
+            }
+            let id = cli.id.to_string();
+            if indexed
+                .insert(id.clone(), ProjectedLaunch { cli, resolver })
+                .is_some()
+            {
+                return Err(format!("duplicate ACP launch route `acp:{id}`"));
+            }
+        }
+        if indexed.is_empty() {
+            return Err("ACP launch registry must contain at least one route".into());
+        }
+        if let Some(default) = &default_cli
+            && !indexed.contains_key(default)
+        {
+            return Err(format!(
+                "default ACP CLI `acp:{default}` has no launch route"
+            ));
+        }
+        Ok(Self {
+            routes: Arc::new(indexed),
+            default_cli,
+        })
+    }
+
+    pub fn single(cli: AcpCli, resolver: Arc<dyn LaunchResolver>) -> Self {
+        let default = cli.id.to_string();
+        Self::new(vec![(cli, resolver)], Some(default))
+            .expect("one known ACP CLI is a valid launch registry")
+    }
+
+    fn selected(
+        &self,
+        backend: &awaken_runtime_contract::resolved::Backend,
+    ) -> Result<&ProjectedLaunch, OpenError> {
+        let awaken_runtime_contract::resolved::Backend::Acp { cli } = backend else {
+            return Err(OpenError("run backend is not ACP".to_string()));
+        };
+        let id = if cli.is_empty() {
+            self.default_cli.as_deref().ok_or_else(|| {
+                OpenError("bare `acp` has no configured default CLI route".to_string())
+            })?
+        } else {
+            cli.as_str()
+        };
+        self.routes.get(id).ok_or_else(|| {
+            let available = self
+                .routes
+                .keys()
+                .map(|cli| format!("acp:{cli}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            OpenError(format!(
+                "run selected `acp:{id}` but this worker only serves [{available}]"
+            ))
+        })
+    }
+}
+
+/// How a sandboxed/containerized ACP source obtains a run's CLI launch: a fixed
+/// test argv, or an exact per-run route from the Worker's launch registry.
 ///
 /// This is the public factory input to [`build_acp_channel_source`] (ADR-0057
 /// `serve-selected-cli`): a composition root picks `Projected` to serve each run's
@@ -34,20 +113,15 @@ use awaken_sandbox_local::NamespaceProvider;
 pub enum LaunchSource {
     /// One CLI for every `acp:*` thread (explicit trusted/test composition only).
     Fixed(AcpLaunch),
-    /// The run's config-plane-selected CLI, projected per run through its [`AcpCli`]
-    /// row + `resolver` (production; `AWAKEN_ACP_CLI`).
-    Projected {
-        cli: Box<AcpCli>,
-        resolver: Arc<dyn LaunchResolver>,
-    },
+    /// The run's config-plane-selected CLI, exact-routed by `acp:<cli>`.
+    Projected(AcpLaunchRegistry),
 }
 
 impl LaunchSource {
     /// The concrete launch for `activation` — the fixed argv, or the projection of the
-    /// run's selected [`AcpCli`]. A projecting source serves exactly one CLI, so a run
-    /// whose config-plane selection (`acp:<other>`) names a *different* CLI fails closed
-    /// rather than silently running on the wrong runtime — the runtime-side of matching
-    /// the declared ACP dialect to what this worker actually serves.
+    /// run's selected [`AcpCli`]. A projecting source serves only the exact routes in
+    /// its registry, so an unadvertised `acp:<other>` fails closed rather than silently
+    /// running on the wrong runtime.
     fn resolve(
         &self,
         activation: &RunActivation,
@@ -55,30 +129,22 @@ impl LaunchSource {
     ) -> Result<AcpLaunch, OpenError> {
         match self {
             LaunchSource::Fixed(launch) => Ok(launch.clone()),
-            LaunchSource::Projected { cli, resolver } => {
-                use awaken_runtime_contract::resolved::Backend;
-                match backend {
-                    // A bare `acp` (no CLI named) or the exact CLI this worker serves.
-                    Backend::Acp { cli: id } if id.is_empty() || id == cli.id => {}
-                    Backend::Acp { cli: id } => {
-                        return Err(OpenError(format!(
-                            "run selected `acp:{id}` but this worker serves `acp:{}`",
-                            cli.id
-                        )));
-                    }
-                    _ => return Err(OpenError("run backend is not ACP".to_string())),
-                }
-                project_launch(cli.as_ref(), resolver.as_ref(), activation)
+            LaunchSource::Projected(registry) => {
+                let selected = registry.selected(backend)?;
+                project_launch(&selected.cli, selected.resolver.as_ref(), activation)
             }
         }
     }
 
-    /// The config-plane-selected [`AcpCli`] this source serves, if projecting. `None`
-    /// for a fixed argv (which carries no catalog row, so no MCP projection).
-    pub(crate) fn cli(&self) -> Option<&AcpCli> {
+    fn cli(
+        &self,
+        backend: &awaken_runtime_contract::resolved::Backend,
+    ) -> Result<Option<&AcpCli>, OpenError> {
         match self {
-            LaunchSource::Fixed(_) => None,
-            LaunchSource::Projected { cli, .. } => Some(cli.as_ref()),
+            LaunchSource::Fixed(_) => Ok(None),
+            LaunchSource::Projected(registry) => {
+                registry.selected(backend).map(|route| Some(&route.cli))
+            }
         }
     }
 }
@@ -342,10 +408,7 @@ impl SandboxChannelSource {
     ) -> Self {
         Self {
             provider: SandboxBackend::Namespace(NamespaceProvider::new(base)),
-            launch: LaunchSource::Projected {
-                cli: Box::new(cli),
-                resolver,
-            },
+            launch: LaunchSource::Projected(AcpLaunchRegistry::single(cli, resolver)),
             egress: ThreadEgress::default(),
             codec: awaken_run_executor_acp::Codec::Acp,
             resources: None,
@@ -359,7 +422,14 @@ impl SandboxChannelSource {
     pub fn from_source(base: impl Into<std::path::PathBuf>, source: LaunchSource) -> Self {
         match source {
             LaunchSource::Fixed(launch) => Self::new(base, launch),
-            LaunchSource::Projected { cli, resolver } => Self::projecting(base, *cli, resolver),
+            LaunchSource::Projected(registry) => Self {
+                provider: SandboxBackend::Namespace(NamespaceProvider::new(base)),
+                launch: LaunchSource::Projected(registry),
+                egress: ThreadEgress::default(),
+                codec: awaken_run_executor_acp::Codec::Acp,
+                resources: None,
+                sandbox: None,
+            },
         }
     }
 
@@ -372,7 +442,7 @@ impl SandboxChannelSource {
             provider: SandboxBackend::Workdir(awaken_sandbox_local::LocalProvider::new(base)),
             launch: source,
             egress: ThreadEgress::default(),
-            // The Local tier serves a real CLI (AWAKEN_ACP_CLI/ARGV), so it speaks official
+            // The Local tier serves a real CLI from the Worker profile, so it speaks official
             // ACP — matching the source it replaces (`local_source`), never the fixture wire.
             codec: awaken_run_executor_acp::Codec::Acp,
             resources: None,
@@ -491,7 +561,8 @@ impl AgentChannelSource for SandboxChannelSource {
         // over the ACP wire the executor drives (claude/gemini/opencode); a config-file
         // CLI (codex) gets its config.toml. Fail-closed on an inline-secret credential
         // (only broker references are sandbox-safe).
-        let injection = match self.launch.cli() {
+        let cli = self.launch.cli(&backend)?;
+        let injection = match cli {
             Some(cli) => awaken_run_executor_acp::mcp_injection(
                 cli,
                 &activation.snapshot.resolved_spec.plugin_config,
@@ -503,7 +574,7 @@ impl AgentChannelSource for SandboxChannelSource {
         // projected config as an inline, read-only, never-harvested mount at the fixed
         // interior config home, with the CLI's config-home env pointed there.
         let mut spec = self.spec(thread);
-        if let Some(cli) = self.launch.cli()
+        if let Some(cli) = cli
             && let Some((mount, (env_key, env_val))) = acp_config_mount(
                 cli,
                 injection.config_file.clone(),
@@ -560,7 +631,7 @@ impl BoundLocalChannelSource {
     ) -> Self {
         let codec = match &launch {
             LaunchSource::Fixed(_) => awaken_run_executor_acp::Codec::Newline,
-            LaunchSource::Projected { .. } => awaken_run_executor_acp::Codec::Acp,
+            LaunchSource::Projected(_) => awaken_run_executor_acp::Codec::Acp,
         };
         Self {
             sandbox,
@@ -576,7 +647,8 @@ impl BoundLocalChannelSource {
 impl AgentChannelSource for BoundLocalChannelSource {
     async fn open(&self, activation: &RunActivation) -> Result<AgentSession, OpenError> {
         let mut launch = self.launch.resolve(activation, &self.backend)?;
-        if let Some(cli) = self.launch.cli() {
+        let cli = self.launch.cli(&self.backend)?;
+        if let Some(cli) = cli {
             if self.sandbox.is_container() {
                 launch.argv = cli
                     .container_argv
@@ -608,14 +680,14 @@ impl AgentChannelSource for BoundLocalChannelSource {
             launch.env.retain(|(key, _)| key != "HOME");
             launch.env.push(("HOME".to_string(), config_home));
         }
-        let injection = match self.launch.cli() {
+        let injection = match cli {
             Some(cli) => {
                 awaken_run_executor_acp::mcp_injection_from_servers(cli, &self.mcp_servers, true)?
             }
             None => awaken_run_executor_acp::McpInjection::default(),
         };
         let config_home = self.sandbox.config_home();
-        if let Some(cli) = self.launch.cli()
+        if let Some(cli) = cli
             && let Some((mount, (env_key, env_val))) =
                 acp_config_mount(cli, injection.config_file.clone(), &config_home, false)
         {
@@ -938,6 +1010,56 @@ mod tests {
         }
     }
 
+    #[test]
+    fn acp_launch_registry_exact_routes_multiple_clis_and_requires_a_default_for_bare_acp() {
+        let routes = ["claude", "codex"]
+            .into_iter()
+            .map(|id| {
+                (
+                    *awaken_run_executor_acp::acp_cli(id).unwrap(),
+                    Arc::new(FakeResolver) as Arc<dyn LaunchResolver>,
+                )
+            })
+            .collect();
+        let registry = AcpLaunchRegistry::new(routes, Some("codex".to_string())).unwrap();
+        let selected = registry
+            .selected(&awaken_runtime_contract::resolved::Backend::Acp {
+                cli: "claude".to_string(),
+            })
+            .unwrap();
+        assert_eq!(selected.cli.id, "claude");
+        let selected = registry
+            .selected(&awaken_runtime_contract::resolved::Backend::Acp { cli: String::new() })
+            .unwrap();
+        assert_eq!(selected.cli.id, "codex");
+        assert!(
+            registry
+                .selected(&awaken_runtime_contract::resolved::Backend::Acp {
+                    cli: "gemini".to_string(),
+                })
+                .is_err()
+        );
+
+        let no_default = AcpLaunchRegistry::new(
+            ["claude", "codex"]
+                .into_iter()
+                .map(|id| {
+                    (
+                        *awaken_run_executor_acp::acp_cli(id).unwrap(),
+                        Arc::new(FakeResolver) as Arc<dyn LaunchResolver>,
+                    )
+                })
+                .collect(),
+            None,
+        )
+        .unwrap();
+        assert!(
+            no_default
+                .selected(&awaken_runtime_contract::resolved::Backend::Acp { cli: String::new() })
+                .is_err()
+        );
+    }
+
     struct FakeProcess;
 
     #[async_trait]
@@ -1020,10 +1142,10 @@ mod tests {
         let cli = awaken_run_executor_acp::acp_cli(cli_id).expect("known ACP CLI");
         BoundLocalChannelSource {
             sandbox,
-            launch: LaunchSource::Projected {
-                cli: Box::new(*cli),
-                resolver: Arc::new(FakeResolver),
-            },
+            launch: LaunchSource::Projected(AcpLaunchRegistry::single(
+                *cli,
+                Arc::new(FakeResolver),
+            )),
             codec: awaken_run_executor_acp::Codec::Acp,
             backend: awaken_runtime_contract::resolved::Backend::Acp {
                 cli: cli_id.to_string(),

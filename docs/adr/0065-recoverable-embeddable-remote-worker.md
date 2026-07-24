@@ -111,6 +111,11 @@ identity-bound transport used by Worker control. It returns one
 `ApplicationSessionProvisioner` plus the decorator that wraps each Session's
 built-in Native/ACP/A2A `RunAttemptExecutor` router.
 
+An embedding composition root may pass the existing typed `DeploymentConfig`
+to the standard Worker entrypoint. The same value derives the manifest and
+configures Host routing, so advertised ACP routes, their default, and sandbox
+selection cannot drift or fall back to a second process-environment path.
+
 The provisioner returns only a frozen `ApplicationSessionPlan` of neutral
 mounts, environment values, prompt context, MCP servers, and egress policy. The
 Host stages it in the existing Session slot before environment realization;

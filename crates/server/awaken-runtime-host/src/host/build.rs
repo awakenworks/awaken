@@ -76,6 +76,15 @@ impl SharedHost {
         Self::build(llm, model_ref.into(), None)
     }
 
+    /// Replace the environment-derived deployment value with the exact typed
+    /// value owned by an embedding composition root.
+    #[must_use]
+    pub fn with_deployment_config(mut self, deployment: crate::DeploymentConfig) -> Self {
+        self.session_blob_root = deployment.acp_session_blob_root.clone();
+        self.deployment = deployment;
+        self
+    }
+
     /// Install the exact durable dispatch transport owned by this host composition.
     ///
     /// An explicitly assembled queue is already the authority for ingress, so it
@@ -217,10 +226,7 @@ impl SharedHost {
             store_dir: store_dir.clone(),
             // A shared root (e.g. a networked mount) enables cross-machine ACP
             // session recovery; unset means single-machine (stable config home).
-            session_blob_root: std::env::var("AWAKEN_ACP_SESSION_BLOBS")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .map(PathBuf::from),
+            session_blob_root: deployment.acp_session_blob_root.clone(),
             upstream: None,
             deployment,
             memory,

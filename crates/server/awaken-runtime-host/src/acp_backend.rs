@@ -209,8 +209,8 @@ impl crate::host::SharedHost {
     /// publication-pinned provider access. This is the ONE place both the server and
     /// worker roots configure ACP, so they never drift.
     ///
-    /// `AWAKEN_ACP_CLI=<id>` advertises the CLI installed on this worker; the run's
-    /// published `acp:<cli>` binding remains authoritative and must match. Provider
+    /// The typed deployment profile advertises every CLI installed on this worker;
+    /// the run's published `acp:<cli>` binding remains authoritative and must match. Provider
     /// endpoint/model/credential data come only from `credentials` and the snapshot.
     /// Neither capability set → no ACP backend served. Panics on an advertised ACP
     /// capability without a credential materializer or on a misconfigured tier.
@@ -219,28 +219,35 @@ impl crate::host::SharedHost {
         hand_factory: Arc<dyn crate::HandExecutorFactory>,
         credentials: Option<crate::PinnedCredentialMaterializer>,
     ) -> Self {
-        let base = acp_sandbox_base();
-        let source = match acp_serve_cli() {
-            Some(id) => {
-                let cli = *awaken_run_executor_acp::acp_cli(&id)
-                    .unwrap_or_else(|| panic!("AWAKEN_ACP_CLI={id} is not a known ACP CLI"));
-                let credentials = credentials.unwrap_or_else(|| {
-                    panic!(
-                        "AWAKEN_ACP_CLI={id} requires persisted credential materialization stores"
-                    )
-                });
+        let deployment = self.deployment.clone();
+        let Some(profile) = deployment.acp.as_ref() else {
+            return self;
+        };
+        let base = acp_sandbox_base(&deployment);
+        let credentials = credentials.unwrap_or_else(|| {
+            panic!("configured ACP CLIs require persisted credential materialization stores")
+        });
+        let routes = profile
+            .cli_ids()
+            .map(|id| {
+                let cli = *awaken_run_executor_acp::acp_cli(id)
+                    .expect("AcpWorkerProfile validates every CLI");
                 let resolver = Arc::new(crate::PublishedAcpLaunchResolver::new(
                     cli,
                     Some(base.clone()),
-                    credentials,
+                    credentials.clone(),
                 ));
-                crate::LaunchSource::Projected {
-                    cli: Box::new(cli),
-                    resolver,
-                }
-            }
-            None => return self,
-        };
+                (
+                    cli,
+                    resolver as Arc<dyn awaken_run_executor_acp::LaunchResolver>,
+                )
+            })
+            .collect();
+        let default = profile.default_cli().map(str::to_string);
+        let source = crate::LaunchSource::Projected(
+            crate::AcpLaunchRegistry::new(routes, default)
+                .unwrap_or_else(|error| panic!("configure ACP launch routes: {error}")),
+        );
         self.with_acp_launch_source(hand_factory, source).await
     }
 
@@ -252,15 +259,14 @@ impl crate::host::SharedHost {
         hand_factory: Arc<dyn crate::HandExecutorFactory>,
         source: crate::LaunchSource,
     ) -> Self {
-        let base = acp_sandbox_base();
-        let dep = crate::DeploymentConfig::from_env();
+        let dep = self.deployment.clone();
+        let base = acp_sandbox_base(&dep);
         // Probe the OS-native sandbox once. A bwrap-less host degrades to unsandboxed local
         // ACP when the tier was left at its default (dev/single-machine ergonomics — the
         // environment still runs) and fails closed only when `AWAKEN_SANDBOX_TIER=namespace`
         // was requested EXPLICITLY, so an operator who asked for isolation never silently
         // loses it. So a worker without bwrap works out of the box.
-        let tier_explicit = std::env::var_os("AWAKEN_SANDBOX_TIER").is_some();
-        let tier = crate::resolve_sandbox_tier(dep.sandbox_tier, tier_explicit, &base)
+        let tier = crate::resolve_sandbox_tier(dep.sandbox_tier, dep.sandbox_tier_explicit, &base)
             .await
             .unwrap_or_else(|e| panic!("configure the ACP sandbox tier: {e}"));
         let mut host = self;
@@ -317,10 +323,8 @@ impl crate::host::SharedHost {
         resolver: Arc<dyn awaken_run_executor_acp::LaunchResolver>,
         store_dir: Option<std::path::PathBuf>,
     ) -> Self {
-        let source = crate::LaunchSource::Projected {
-            cli: Box::new(cli),
-            resolver,
-        };
+        let source =
+            crate::LaunchSource::Projected(crate::AcpLaunchRegistry::single(cli, resolver));
         // When a session-blob root is configured, recover this CLI's session across
         // directories/machines: harvest it to the (shared) root after a run and
         // restore it before the next, keyed by thread+adapter — under the same
@@ -345,24 +349,12 @@ impl crate::host::SharedHost {
     }
 }
 
-/// The ACP CLI capability this worker advertises. It does not select the run's
-/// backend: the published snapshot must independently name the same `acp:<cli>`.
-fn acp_serve_cli() -> Option<String> {
-    std::env::var("AWAKEN_ACP_CLI")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-}
-
 /// The base dir the ACP sandbox roots and per-thread config homes live under
 /// (`AWAKEN_SANDBOX_DIR`), or a per-process temp dir when unset.
-fn acp_sandbox_base() -> std::path::PathBuf {
-    std::env::var("AWAKEN_SANDBOX_DIR")
-        .ok()
-        .filter(|v| !v.is_empty())
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::temp_dir().join(format!("awaken-acp-sbx-{}", std::process::id()))
-        })
+fn acp_sandbox_base(deployment: &crate::DeploymentConfig) -> std::path::PathBuf {
+    deployment.sandbox_dir.clone().unwrap_or_else(|| {
+        std::env::temp_dir().join(format!("awaken-acp-sbx-{}", std::process::id()))
+    })
 }
 
 #[cfg(test)]
