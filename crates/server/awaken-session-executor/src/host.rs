@@ -147,6 +147,9 @@ pub struct SharedHost {
     /// Optional application wrapper around the complete per-Session attempt
     /// router. It cannot replace or bypass the built-in backend registry.
     pub(crate) application_attempt_decorator: Option<AttemptExecutorDecorator>,
+    /// Optional claim-time projection into the authoritative Session environment.
+    pub(crate) application_session_provisioner:
+        Option<Arc<dyn crate::ApplicationSessionProvisioner>>,
     pub(crate) provider: LocalProvider,
     /// Provider for the Session-owned environment shared by Native/ACP/children.
     /// Kept separate from deliberately-fresh housekeeping sandboxes.

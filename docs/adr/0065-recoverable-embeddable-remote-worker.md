@@ -26,7 +26,7 @@ reconstruct a committed Run after Awaiting or a previous Worker crash. The
 claimed-commit router also fixes its commit applier to `SharedHost`, and the
 worker executable fixes its private loop and executor selection. An embedding
 application must currently copy generic Worker transport and lifecycle code to
-add its own execution decorator.
+add its own claim-bound Session provisioning and execution adaptation.
 
 PostgreSQL transactions do not remove these gaps. They make one database
 transaction atomic and isolated, but they do not refresh another process's
@@ -103,19 +103,28 @@ that service and does not manufacture a private `SharedHost` commit path.
 
 A public `WorkerNodeBuilder` assembles registration, heartbeat, claim, recovery,
 lease renewal, commit, settle/abandon, drain, quiesce, and deregistration. The
-application supplies one registration-time decorator factory. After the Control
-Node allocates the exact Worker incarnation, the factory receives an immutable
-`RegisteredWorkerContext` carrying that registration and the same
-identity-bound transport used by Worker control. Its decorator wraps each
-Session's built-in Native/ACP/A2A `RunAttemptExecutor` router; it cannot replace
-the router through a second Worker assembly path.
+application supplies one registration-time application factory. After the
+Control Node allocates the exact Worker incarnation, the factory receives an
+immutable `RegisteredWorkerContext` carrying that registration and the same
+identity-bound transport used by Worker control. It returns one
+`RegisteredWorkerApplication`: an optional claim-time
+`ApplicationSessionProvisioner` plus the decorator that wraps each Session's
+built-in Native/ACP/A2A `RunAttemptExecutor` router.
+
+The provisioner returns only a frozen `ApplicationSessionPlan` of neutral
+mounts, environment values, prompt context, MCP servers, and egress policy. The
+Host stages it in the existing Session slot before environment realization;
+Native and ACP consume the same resulting `SessionEnvironment`. It cannot
+create another sandbox, executor registry, or MCP registry. Re-delivery of the
+same plan fingerprint is idempotent, while a different plan cannot mutate an
+already-bound Session.
 
 Run ingress captures the exact claim behind the neutral
 `AttemptOwnershipVerifier` installed in `RuntimeRunContext`. Application code can
 therefore fail closed immediately before an external side effect without
 receiving dispatch, Worker, HTTP, or database types. Product envelopes, MCP
 capability tokens, resource ACLs, and business outcome mapping remain
-application-owned decorators and do not enter the Worker protocol.
+application-owned projections/decorators and do not enter the Worker protocol.
 
 ### D5: Extensibility and active-active operation are phased
 
@@ -141,8 +150,9 @@ to weaken or redefine the P0 protocol invariants.
 - Response loss no longer turns a nonterminal commit retry into duplicate facts.
 - SQLite keeps its simple single-writer cell. PostgreSQL can later remove the
   physical singleton without introducing direct Worker database writes.
-- Embedding systems such as Flow supply only their business execution decorator;
-  they do not own generic registration, claim, lease, recovery, or settlement.
+- Embedding systems such as Flow supply only their registered application
+  projection and execution decorator; they do not own generic Session
+  realization, registration, claim, lease, recovery, or settlement.
 - Commit latency includes the Control Node/coordinator hop, and recovery adds a
   snapshot read after claim. Batching, deltas, and streaming may optimize those
   costs only after correctness is closed.
@@ -156,8 +166,8 @@ to weaken or redefine the P0 protocol invariants.
 
 P0 and P1 are implemented by the public recovery projection, durable operation
 receipts, injectable claimed-commit service, `WorkerNodeBuilder`, exact executor
-registry inside the Session router, registered Worker context/decorator factory,
-claim-bound neutral ownership verification, and the separated
+registry inside the Session router, registered Worker application factory,
+claim-bound Session plan, neutral ownership verification, and the separated
 lifecycle/dispatch feeds described in the detailed design.
 
 The P2 active-active boundary is covered by a real PostgreSQL test that launches

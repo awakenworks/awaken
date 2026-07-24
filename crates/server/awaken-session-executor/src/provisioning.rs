@@ -133,10 +133,7 @@ impl SharedHost {
     /// (ADR-0036); the environment provisions isolation tools plus the session's
     /// staged resource mounts (ADR-0038), each realized read-only under `.mnt/`.
     pub(crate) fn sandbox_spec(&self, thread: &str) -> pc::SandboxSpec {
-        let mounts = self
-            .session_slots
-            .read(thread, |slot| slot.resources.mounts.clone())
-            .unwrap_or_default();
+        let mounts = self.thread_session_mounts(thread);
         // Egress denial is a Workdir-tier bwrap convenience (not admission-gated
         // network isolation, which this tier cannot enforce), so it rides `extra`.
         let extra = self
@@ -147,7 +144,7 @@ impl SharedHost {
             scope: thread.to_string(),
             isolation: pc::IsolationClass::Workdir,
             mounts,
-            env: Vec::new(),
+            env: self.thread_session_env(thread),
             network: pc::NetworkPolicy::Unrestricted,
             outputs_path: OUTPUTS_PATH.to_string(),
             limits: pc::ResourceLimits::default(),
@@ -231,16 +228,12 @@ impl SharedHost {
     /// `github:<logical>` server bridged from a github_repository resource.
     #[cfg(test)]
     pub(crate) fn thread_mcp(&self, thread: &str) -> Vec<crate::host::PreparedMcpServer> {
-        self.session_slots
-            .read(thread, |slot| slot.mcp.clone())
-            .unwrap_or_default()
+        self.thread_session_mcp(thread)
     }
 
     /// The prompt fragments staged for `thread`'s bound resources (ADR-0038 A3a).
     pub(crate) fn thread_resource_prompts(&self, thread: &str) -> Vec<String> {
-        self.session_slots
-            .read(thread, |slot| slot.resources.prompts.clone())
-            .unwrap_or_default()
+        self.thread_session_prompts(thread)
     }
 
     /// The content-addressed blob store (Files API, file-resource mounts, artifacts).
@@ -451,9 +444,7 @@ impl SharedHost {
         };
         // Repos the agent pushes itself via an injected `github:<logical>` MCP server.
         let mcp_owned: std::collections::HashSet<String> = self
-            .session_slots
-            .read(thread, |slot| slot.mcp.clone())
-            .unwrap_or_default()
+            .thread_session_mcp(thread)
             .iter()
             .filter_map(|s| s.name.strip_prefix("github:").map(String::from))
             .collect();

@@ -108,7 +108,13 @@ impl ThreadEgress {
     /// Whether `thread` is registered deny-egress.
     pub fn denies(&self, thread: &str) -> bool {
         self.0
-            .read(thread, |slot| slot.deny_egress)
+            .read(thread, |slot| {
+                slot.deny_egress
+                    || slot
+                        .application
+                        .as_ref()
+                        .is_some_and(|application| application.deny_egress)
+            })
             .unwrap_or(false)
     }
 }
@@ -177,7 +183,24 @@ impl ThreadResources {
     /// [`pc::MountRequirement`] the provider realizes. Empty when none are staged.
     fn mounts_for(&self, thread: &str) -> Vec<pc::MountRequirement> {
         self.0
-            .read(thread, |slot| slot.resources.mounts.clone())
+            .read(thread, |slot| {
+                let mut mounts = slot.resources.mounts.clone();
+                if let Some(application) = &slot.application {
+                    mounts.extend(application.mounts.clone());
+                }
+                mounts
+            })
+            .unwrap_or_default()
+    }
+
+    fn env_for(&self, thread: &str) -> Vec<pc::EnvVar> {
+        self.0
+            .read(thread, |slot| {
+                slot.application
+                    .as_ref()
+                    .map(|application| application.env.clone())
+                    .unwrap_or_default()
+            })
             .unwrap_or_default()
     }
 }
@@ -397,6 +420,13 @@ impl SandboxChannelSource {
             .unwrap_or_default()
     }
 
+    fn resource_env(&self, thread: &str) -> Vec<pc::EnvVar> {
+        self.resources
+            .as_ref()
+            .map(|resources| resources.env_for(thread))
+            .unwrap_or_default()
+    }
+
     /// The provisioning request for one run: sandbox scoped to the thread (so a
     /// multi-turn session reuses one workspace), network from its registration, and the
     /// session's staged file/resource mounts (ADR-0038) bound into the bwrap interior.
@@ -412,7 +442,7 @@ impl SandboxChannelSource {
             scope: thread.to_string(),
             isolation: self.provider.isolation(),
             mounts: self.resource_mounts(thread),
-            env: Vec::new(),
+            env: self.resource_env(thread),
             network,
             outputs_path: "/mnt/session/outputs".to_string(),
             limits: pc::ResourceLimits::default(),

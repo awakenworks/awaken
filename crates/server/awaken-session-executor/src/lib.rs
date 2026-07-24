@@ -16,6 +16,7 @@ mod acp_provision;
 mod acp_serve;
 mod agent_catalog;
 mod agent_runner;
+mod application;
 mod background;
 mod commit_backend;
 mod commit_ingest;
@@ -91,6 +92,9 @@ mod postgres_migration_lock;
 mod worker_control_client;
 
 // The neutral session substrate and its resume vocabulary.
+pub use crate::application::{
+    ApplicationSessionError, ApplicationSessionPlan, ApplicationSessionProvisioner,
+};
 pub use crate::commit_backend::init_shared_postgres_commit;
 pub use crate::credential_materializer::PinnedCredentialMaterializer;
 pub use crate::dispatch_backend::{ensure_durable_backend, init_shared_postgres_dispatch};
