@@ -80,7 +80,7 @@ pub use transport_client::{HttpDispatchQueue, WorkerRequestAuthorizer};
 #[cfg(feature = "nats")]
 pub use wake::NatsWakeSignal;
 pub use wake::{LocalWakeSignal, PgNotifyWake, WakeSignal};
-pub use worker::{DEFAULT_LEASE_MS, DispatchWorker};
+pub use worker::{DEFAULT_LEASE_MS, DispatchWorker, claim_bound_ownership_verifier};
 pub use worker_context::InferenceMaterializerFn;
 
 /// A durable-ingress failure: either the dispatch store rejected an operation or

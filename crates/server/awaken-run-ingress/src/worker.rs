@@ -58,6 +58,23 @@ struct ClaimBoundOwnershipVerifier {
     clock: Arc<dyn Clock>,
 }
 
+/// Build the neutral ownership verifier for one exact dispatch claim.
+///
+/// Runtime hosts use this before Session construction; [`DispatchWorker`] uses
+/// the same adapter during attempt execution. Keeping construction here avoids a
+/// second claim/clock interpretation in an embedding application.
+pub fn claim_bound_ownership_verifier(
+    dispatch: Arc<dyn crate::DispatchQueue>,
+    claim: RunClaim,
+    clock: Arc<dyn Clock>,
+) -> Arc<dyn AttemptOwnershipVerifier> {
+    Arc::new(ClaimBoundOwnershipVerifier {
+        dispatch,
+        claim,
+        clock,
+    })
+}
+
 #[async_trait::async_trait]
 impl AttemptOwnershipVerifier for ClaimBoundOwnershipVerifier {
     async fn verify_current(&self) -> Result<(), AttemptOwnershipError> {
@@ -278,11 +295,11 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         }
         let fenced: Arc<dyn CommitCoordinator> = Arc::new(coordinator);
         let dispatch: Arc<dyn crate::DispatchQueue> = self.store.clone();
-        let ownership: Arc<dyn AttemptOwnershipVerifier> = Arc::new(ClaimBoundOwnershipVerifier {
-            dispatch: dispatch.clone(),
-            claim: claim.clone(),
-            clock: self.ownership_clock.clone(),
-        });
+        let ownership = claim_bound_ownership_verifier(
+            dispatch.clone(),
+            claim.clone(),
+            self.ownership_clock.clone(),
+        );
         let mut ctx = self
             .execution_context()
             .with_commit(fenced)
