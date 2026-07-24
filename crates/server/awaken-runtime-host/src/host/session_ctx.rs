@@ -42,6 +42,10 @@ pub(crate) struct SessionCtx {
     /// This thread's interrupted-stream checkpoint store (Phase 3), wired into
     /// every run context so an inference drop flushes durably at its boundary.
     pub(crate) stream_checkpoint: Arc<dyn StreamCheckpointStore>,
+    /// Live plugins contributed by the realized Session environment (currently
+    /// claim-prepared MCP servers). They join every attempt through
+    /// `RuntimeRunContext` without rewriting the immutable Agent publication.
+    pub(crate) session_plugins: Vec<Arc<dyn awaken_runtime_contract::plugin::Plugin>>,
     /// Where this session's runs execute tool calls (ADR-0044/0046), cloned from
     /// `SharedHost::hand_placement` at session creation: the session-wide remote hand
     /// and the per-run placement provider, behind one type owning their precedence.
@@ -119,6 +123,9 @@ impl SessionCtx {
             // Open/single-machine reads the env default; managed overrides with
             // the ceiling × request × consent meet.
             .with_capture(crate::redact::env_capture_decision());
+        for plugin in &self.session_plugins {
+            ctx = ctx.with_session_plugin(plugin.clone());
+        }
         // ADR-0050: attribute captured content to a subject and write it to the
         // sink, when a sink (session-wired or the process-global) and a subject
         // (open surface: AWAKEN_CONTENT_SUBJECT) are set. Content only flows when

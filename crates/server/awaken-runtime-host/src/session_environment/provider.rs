@@ -64,6 +64,14 @@ impl SessionEnvironmentProvider {
         }
     }
 
+    pub(crate) fn install_secret_broker(&self, broker: Arc<dyn pc::SecretBroker>) {
+        match self {
+            Self::Workdir(provider) => provider.install_secret_broker(broker),
+            Self::Namespace(provider) => provider.install_secret_broker(broker),
+            Self::Container { provider, .. } => provider.install_secret_broker(broker),
+        }
+    }
+
     pub(crate) async fn create(
         &self,
         spec: &pc::SandboxSpec,

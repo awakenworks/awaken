@@ -20,8 +20,7 @@ use awaken_agent_contract::RedactedString;
 use awaken_credential_vault::{SecretRef, SecretStore};
 use awaken_ext_mcp::{AuthChallenge, Credential, CredentialRefresher, HttpTransportBuilder};
 use awaken_protocol_managed::{McpProbe, McpProbeStatus, TokenEndpointAuthBinding};
-use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_runtime_contract::tool::RawTool;
+use awaken_runtime_contract::plugin::Plugin;
 use base64::Engine as _;
 
 use crate::host::HostError;
@@ -311,13 +310,23 @@ impl McpProbe for ExtMcpProbe {
     }
 }
 
-/// The discovered surface of one thread's staged MCP servers: the executable
-/// tools to register on the runtime, their model-visible descriptors for the
-/// advertised config, and the namespaced tool ids the gate pre-authorizes.
+/// The discovered surface of one thread's staged MCP servers. Each server is
+/// represented by the canonical live [`awaken_ext_mcp::McpPlugin`], so model
+/// descriptors and executable tools have one source of truth. The initial exact
+/// ids are also retained for the Session permission gate.
 pub struct McpWiring {
-    pub tools: Vec<Arc<dyn RawTool>>,
-    pub descriptors: Vec<ToolDescriptor>,
+    pub plugins: Vec<Arc<dyn Plugin>>,
     pub tool_ids: Vec<String>,
+}
+
+impl McpWiring {
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            plugins: Vec::new(),
+            tool_ids: Vec::new(),
+        }
+    }
 }
 
 /// Connect every staged server and collect the discovered tools. Fail closed:
@@ -326,11 +335,7 @@ pub struct McpWiring {
 /// A server with refresh configuration gets a [`VaultRefresher`], so an expired
 /// access token is exchanged mid-connect (and mid-turn) instead of failing.
 pub async fn connect_staged(staged: &[PreparedMcpServer]) -> Result<McpWiring, HostError> {
-    let mut wiring = McpWiring {
-        tools: Vec::new(),
-        descriptors: Vec::new(),
-        tool_ids: Vec::new(),
-    };
+    let mut wiring = McpWiring::empty();
     for server in staged {
         let credential = match &server.bearer {
             Some(token) => awaken_ext_mcp::Credential::Bearer(token.expose_secret().to_string()),
@@ -343,24 +348,24 @@ pub async fn connect_staged(staged: &[PreparedMcpServer]) -> Result<McpWiring, H
                     .refresher(Arc::new(VaultRefresher::new(refresh.clone()))
                         as Arc<dyn CredentialRefresher>);
         }
-        let transport = builder.connect().await.map_err(|e| {
+        let transport = builder.connect_streaming().await.map_err(|e| {
             HostError::internal(format!(
                 "mcp server `{}` at {}: {e}",
                 server.name, server.url
             ))
         })?;
-        let connection = awaken_ext_mcp::connect_tools(&server.name, Arc::new(transport))
+        let connected = awaken_ext_mcp::McpServer::connect_http(&server.name, transport)
             .await
             .map_err(|e| HostError::internal(format!("mcp server `{}`: {e}", server.name)))?;
-        // Authorization follows the executable registry, not its model-facing
-        // descriptor projection. A transport may expose an executable tool even
-        // when a compatibility descriptor is absent; deriving both registration
-        // and pre-authorization from RawTool::id keeps one capability truth.
-        wiring
-            .tool_ids
-            .extend(connection.tools.iter().map(|tool| tool.id().to_string()));
-        wiring.descriptors.extend(connection.descriptors);
-        wiring.tools.extend(connection.tools);
+        let plugin = connected.plugin();
+        let contributions = plugin.resolve();
+        wiring.tool_ids.extend(
+            contributions
+                .dynamic_tools
+                .iter()
+                .map(|tool| tool.tool.id().to_string()),
+        );
+        wiring.plugins.push(Arc::new(plugin));
     }
     Ok(wiring)
 }

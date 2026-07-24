@@ -202,7 +202,7 @@ pub struct WorkerNodeBuilder {
     deployment: awaken_runtime_host::DeploymentConfig,
     application_factory: Option<RegisteredApplicationFactory>,
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
-    acp_credentials: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
+    credential_materializer: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
     resources: Option<WorkerResourcePlane>,
     admin_listen: Option<String>,
 }
@@ -216,7 +216,7 @@ impl WorkerNodeBuilder {
             deployment: awaken_runtime_host::DeploymentConfig::from_env(),
             application_factory: None,
             materializer: None,
-            acp_credentials: None,
+            credential_materializer: None,
             resources: None,
             admin_listen: Some("0.0.0.0:9090".to_string()),
         }
@@ -274,11 +274,11 @@ impl WorkerNodeBuilder {
         self
     }
 
-    fn with_acp_credentials(
+    fn with_credential_materializer(
         mut self,
         credentials: awaken_runtime_host::PinnedCredentialMaterializer,
     ) -> Self {
-        self.acp_credentials = Some(credentials);
+        self.credential_materializer = Some(credentials);
         self
     }
 
@@ -317,7 +317,7 @@ impl WorkerNodeBuilder {
             application_factory: self.application_factory,
             application_gate: None,
             materializer: self.materializer,
-            acp_credentials: self.acp_credentials,
+            credential_materializer: self.credential_materializer,
             resources: self.resources,
             admin_listen: self.admin_listen,
         })
@@ -342,7 +342,7 @@ pub struct WorkerNode {
     application_factory: Option<RegisteredApplicationFactory>,
     application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
-    acp_credentials: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
+    credential_materializer: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
     resources: Option<WorkerResourcePlane>,
     admin_listen: Option<String>,
 }
@@ -443,8 +443,7 @@ where
     run_with_application_credential_stores_and_deployment_until(
         upstream,
         awaken_runtime_host::DeploymentConfig::from_env(),
-        credentials,
-        secrets,
+        (credentials, secrets),
         application_capabilities,
         factory,
         gate,
@@ -457,8 +456,10 @@ where
 pub async fn run_with_application_credential_stores_and_deployment_until<F>(
     upstream: WorkerUpstream,
     deployment: awaken_runtime_host::DeploymentConfig,
-    credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
-    secrets: Arc<dyn awaken_credential_vault::SecretStore>,
+    credential_stores: (
+        Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
+        Arc<dyn awaken_credential_vault::SecretStore>,
+    ),
     application_capabilities: std::collections::BTreeSet<String>,
     factory: RegisteredApplicationFactory,
     gate: Arc<dyn awaken_runtime_contract::permission::ToolGateHook>,
@@ -469,6 +470,7 @@ where
             Output = Result<WorkerShutdown, Box<dyn std::error::Error + Send + Sync>>,
         >,
 {
+    let (credentials, secrets) = credential_stores;
     build_worker_with_materialization_stores(
         upstream,
         deployment,
@@ -544,11 +546,13 @@ async fn build_worker_with_materialization_stores(
         upstream,
         deployment,
         manifest,
-        materializer,
-        Some(awaken_runtime_host::PinnedCredentialMaterializer::new(
-            stores.credentials,
-            stores.secrets,
-        )),
+        WorkerMaterializers {
+            inference: materializer,
+            credentials: Some(awaken_runtime_host::PinnedCredentialMaterializer::new(
+                stores.credentials,
+                stores.secrets,
+            )),
+        },
         resources,
         application,
         application_gate,
@@ -681,20 +685,26 @@ async fn build_secretless_worker(
         upstream,
         deployment,
         manifest,
-        materializer,
-        None,
+        WorkerMaterializers {
+            inference: materializer,
+            credentials: None,
+        },
         resources,
         application,
         application_gate,
     )
 }
 
+struct WorkerMaterializers {
+    inference: Arc<dyn InferenceExecutorMaterializer>,
+    credentials: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
+}
+
 fn build_configured_worker(
     upstream: WorkerUpstream,
     deployment: awaken_runtime_host::DeploymentConfig,
     manifest: WorkerManifest,
-    materializer: Arc<dyn InferenceExecutorMaterializer>,
-    acp_credentials: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
+    materializers: WorkerMaterializers,
     resources: Option<WorkerResourcePlane>,
     application: Option<RegisteredApplicationFactory>,
     application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
@@ -702,11 +712,11 @@ fn build_configured_worker(
     let mut builder = WorkerNodeBuilder::new(upstream)
         .with_deployment_config(deployment)
         .with_manifest(manifest)
-        .with_inference_materializer(materializer)
+        .with_inference_materializer(materializers.inference)
         .with_optional_resource_plane(resources)
         .with_admin_listen(configured_admin_listen());
-    if let Some(credentials) = acp_credentials {
-        builder = builder.with_acp_credentials(credentials);
+    if let Some(credentials) = materializers.credentials {
+        builder = builder.with_credential_materializer(credentials);
     }
     if let Some(factory) = application {
         builder = builder.with_application_factory(factory);
@@ -846,12 +856,16 @@ impl WorkerNode {
 
         // Serve only the ACP CLI capability this worker advertises. The run's snapshot
         // selects the matching backend and supplies its published provider access.
+        let credential_materializer = self.credential_materializer.clone();
         host = host
             .with_acp_from_deployment(
                 awaken_server::relay_hand_executor_factory(),
-                self.acp_credentials,
+                self.credential_materializer,
             )
             .await;
+        if let Some(credentials) = credential_materializer {
+            host = host.with_session_secret_broker(Arc::new(credentials));
+        }
 
         let host = Arc::new(host);
         if let Some(validator) = resource_validator {

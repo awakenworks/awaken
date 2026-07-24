@@ -124,6 +124,13 @@ create another sandbox, executor registry, or MCP registry. Re-delivery of the
 same plan fingerprint is idempotent, while a different plan cannot mutate an
 already-bound Session.
 
+For Native execution, each prepared MCP server becomes the canonical
+`McpPlugin` and enters the runtime through the Session plugin field on
+`RuntimeRunContext`; it is not flattened into a parallel tool/descriptor
+registry and does not rewrite the published Agent snapshot. ACP receives the
+same typed prepared server through its own protocol projection and the Host does
+not open a competing second MCP connection.
+
 Run ingress captures the exact claim behind the neutral
 `AttemptOwnershipVerifier` installed in `RuntimeRunContext`. Application code can
 therefore fail closed immediately before an external side effect without

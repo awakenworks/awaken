@@ -217,6 +217,9 @@ pub struct awaken_runtime_host::PinnedCredentialMaterializer
 impl awaken_runtime_host::PinnedCredentialMaterializer
 pub async fn awaken_runtime_host::PinnedCredentialMaterializer::materialize_provider(&self, &awaken_runtime_contract::resolved::ResolvedModelCandidate) -> core::result::Result<awaken_agent_contract::secret::RedactedString, alloc::string::String>
 pub fn awaken_runtime_host::PinnedCredentialMaterializer::new(alloc::sync::Arc<dyn awaken_credential_vault::repo::CredentialRepo>, alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>) -> Self
+impl awaken_provisioning_contract::sandbox::SecretBroker for awaken_runtime_host::PinnedCredentialMaterializer
+pub fn awaken_runtime_host::PinnedCredentialMaterializer::materialize<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<u8>, awaken_provisioning_contract::sandbox::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_host::PinnedCredentialMaterializer::write_back<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, alloc::vec::Vec<u8>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_provisioning_contract::sandbox::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_runtime_host::PostgresMigrationLock
 impl awaken_runtime_host::PostgresMigrationLock
 pub async fn awaken_runtime_host::PostgresMigrationLock::acquire(&str) -> core::result::Result<Self, alloc::string::String>
@@ -351,6 +354,7 @@ pub fn awaken_runtime_host::SharedHost::with_remote_attempt_executor(self, alloc
 pub fn awaken_runtime_host::SharedHost::with_remote_hand(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_resource_lifecycle(self, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourceLifecycleRepository>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_session_blob_root(self, impl core::convert::Into<std::path::PathBuf>) -> Self
+pub fn awaken_runtime_host::SharedHost::with_session_secret_broker(self, alloc::sync::Arc<dyn awaken_provisioning_contract::sandbox::SecretBroker>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_skill_fork_placement(self, awaken_runtime_host::SkillForkPlacement) -> Self
 pub fn awaken_runtime_host::SharedHost::with_skill_store(self, impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_skill_store_backend(self, alloc::sync::Arc<dyn awaken_resource_contract::SkillStore>) -> Self
