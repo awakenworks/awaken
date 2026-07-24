@@ -207,11 +207,12 @@ part of the resulting domain language.
 
 The earlier overloads for hosted Worker composition are retired. A hosted
 composition supplies its configured `WorkerUpstream` and inference materializer
-through the canonical `WorkerNodeBuilder`; registration and every later Worker
-transport clone retain that client's mTLS/security properties and logical Worker
-identity. The string-based `run_with_inference_materializer` helper remains only
-as the secretless CLI/example adapter and delegates to the same builder-owned
-lifecycle.
+through the canonical `WorkerNodeBuilder`, whose standard manifest derives the
+advertised access schemes from that installed materializer. Registration and
+every later Worker transport clone retain that client's mTLS/security properties
+and logical Worker identity. The string-based
+`run_with_inference_materializer` helper remains only as the secretless
+CLI/example adapter and delegates to the same builder-owned lifecycle.
 
 An explicit `model_ref_override` remains a model selector rather than a Provider
 account selector. Selection now retains every complete published binding for that

@@ -111,10 +111,14 @@ identity-bound transport used by Worker control. It returns one
 `ApplicationSessionProvisioner` plus the decorator that wraps each Session's
 built-in Native/ACP/A2A `RunAttemptExecutor` router.
 
-An embedding composition root may pass the existing typed `DeploymentConfig`
-to the standard Worker entrypoint. The same value derives the manifest and
-configures Host routing, so advertised ACP routes, their default, and sandbox
-selection cannot drift or fall back to a second process-environment path.
+An embedding composition root installs the existing typed `DeploymentConfig`
+and its materializers/resource plane on `WorkerNodeBuilder`, then selects
+`with_standard_manifest(application_capabilities)`. `build()` is the sole
+standard manifest derivation point; the same installed values configure Host
+routing, so advertised inference/resource capabilities, ACP routes, their
+default, and sandbox selection cannot drift through a second assembly path.
+Special deployments retain `with_manifest(explicit_manifest)`, but the two
+manifest sources are mutually exclusive and share contract validation.
 
 The provisioner returns only a frozen `ApplicationSessionPlan` of neutral
 mounts, environment values, prompt context, MCP servers, and egress policy. The

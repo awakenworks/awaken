@@ -1,5 +1,5 @@
 use awaken_runtime_host::WorkerUpstream;
-use awaken_worker::{WorkerNodeBuilder, WorkerShutdown};
+use awaken_worker::{StandardManifestConfig, WorkerNodeBuilder, WorkerShutdown};
 use awaken_worker_contract::{VersionRange, WorkerManifest};
 use std::sync::{Arc, Mutex};
 
@@ -38,6 +38,65 @@ fn builder_rejects_incomplete_or_invalid_topology() {
         .err()
         .expect("zero capacity is invalid");
     assert!(invalid_capacity.to_string().contains("max_concurrent"));
+
+    let invalid_standard_capacity = WorkerNodeBuilder::new(WorkerUpstream::new("http://control"))
+        .with_standard_manifest_config(
+            StandardManifestConfig::new("worker-node-test").with_max_concurrent(0),
+        )
+        .with_standard_manifest(Default::default())
+        .build()
+        .err()
+        .expect("standard and explicit manifests share capacity validation");
+    assert!(
+        invalid_standard_capacity
+            .to_string()
+            .contains("max_concurrent")
+    );
+}
+
+#[test]
+fn standard_manifest_is_derived_from_builder_topology() {
+    let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
+    deployment.acp = Some(
+        awaken_runtime_host::AcpWorkerProfile::new(vec!["codex".to_string()], None)
+            .expect("valid ACP profile"),
+    );
+    let worker = WorkerNodeBuilder::new(WorkerUpstream::new("http://control"))
+        .with_deployment_config(deployment)
+        .with_standard_manifest(std::collections::BTreeSet::from([
+            "application:test/v1".to_string()
+        ]))
+        .build()
+        .expect("standard manifest derives a valid worker topology");
+
+    assert!(worker.manifest().capabilities.contains("native-runtime"));
+    assert!(
+        worker
+            .manifest()
+            .capabilities
+            .contains("application:test/v1")
+    );
+    assert!(worker.manifest().capabilities.contains("acp:codex"));
+}
+
+#[test]
+fn explicit_and_standard_manifest_sources_are_mutually_exclusive() {
+    let error = WorkerNodeBuilder::new(WorkerUpstream::new("http://control"))
+        .with_manifest(manifest())
+        .with_standard_manifest(Default::default())
+        .build()
+        .err()
+        .expect("conflicting manifest sources fail closed");
+
+    assert!(error.to_string().contains("mutually exclusive"));
+
+    let reverse = WorkerNodeBuilder::new(WorkerUpstream::new("http://control"))
+        .with_standard_manifest(Default::default())
+        .with_manifest(manifest())
+        .build()
+        .err()
+        .expect("reverse manifest source conflict also fails closed");
+    assert!(reverse.to_string().contains("mutually exclusive"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
