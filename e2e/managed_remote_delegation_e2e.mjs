@@ -48,7 +48,10 @@ async function main() {
 
     // A delegated via agent_run.
     const toolUse = events.find((e) => e.type === 'agent.tool_use');
-    assert.ok(toolUse && toolUse.name === 'agent_run', 'A delegated via agent_run');
+    assert.ok(
+      toolUse && toolUse.name === 'agent_run',
+      `A delegated via agent_run; events=${events.map((e) => e.type).join(',')}; messages=${JSON.stringify(events.filter((e) => e.type === 'agent.message').map((e) => e.content))}`,
+    );
     pass('server A issued an agent_run delegation');
 
     // The remote peer (B) handled the delegated turn and echoed; the result flowed
