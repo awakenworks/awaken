@@ -134,6 +134,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::delete;
 use axum::{Json, Router};
 
+mod bootstrap;
+
+use bootstrap::bootstrap_admin_token;
+
 /// Name of the bootstrap admin-token file under the management directory.
 pub const ADMIN_TOKEN_FILE: &str = "admin-token";
 
@@ -955,45 +959,6 @@ fn import_legacy_layout(db_path: &Path) {
     eprintln!(
         "awaken-server: embedded IAM imported {imported} legacy token row(s) into the iam-server store"
     );
-}
-
-/// First-boot bootstrap: mint the one `admin`-role token the operator starts
-/// from, log its cleartext once to stderr, and write it to `<dir>/admin-token`
-/// (mode 0600). Single-machine hand-off by design (P1); rotate it early.
-fn bootstrap_admin_token(authz: &ManagementAuthz, dir: &Path, workspace_id: &str) {
-    let secret = authz
-        .mint_service_token(TokenSpec {
-            token_id: "tok_mgmt_bootstrap".to_string(),
-            service_id: BOOTSTRAP_PRINCIPAL.to_string(),
-            workspace_id: workspace_id.to_string(),
-            role: "admin".to_string(),
-            created_at: None,
-            expires_at: None,
-        })
-        .expect("mint the bootstrap admin token");
-    let path = dir.join(ADMIN_TOKEN_FILE);
-    write_owner_only(&path, &secret).expect("write the bootstrap admin-token file");
-    eprintln!(
-        "awaken-server: EMBEDDED IAM BOOTSTRAP — minted the admin API token \
-         for principal `{BOOTSTRAP_PRINCIPAL}` in workspace `{workspace_id}`.\n\
-         It is printed ONCE and written to {} (mode 0600).\n\
-         ROTATE IT: anyone holding this token has full management authority.\n\
-         {secret}",
-        path.display()
-    );
-}
-
-/// Write `contents` to `path` readable by the owner only (0600 on unix).
-fn write_owner_only(path: &Path, contents: &str) -> std::io::Result<()> {
-    use std::io::Write;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    options.open(path)?.write_all(contents.as_bytes())
 }
 
 // ---- Middleware --------------------------------------------------------------
