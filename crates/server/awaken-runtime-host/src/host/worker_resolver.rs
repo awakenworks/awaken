@@ -186,6 +186,40 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                 .map_err(|error| Self::execution_error(error.to_string()))?;
         }
 
+        if let Some(provisioner) = &host.application_session_provisioner {
+            let dispatch: Arc<dyn awaken_run_ingress::DispatchQueue> = host
+                .dispatch_store()
+                .map_err(|error| Self::execution_error(error.to_string()))?;
+            let ownership = awaken_run_ingress::claim_bound_ownership_verifier(
+                dispatch,
+                awaken_run_ingress::RunClaim::from(&claimed.lease),
+                Arc::new(awaken_run_ingress::SystemClock),
+            );
+            ownership.verify_current().await.map_err(|error| {
+                Self::execution_error(format!(
+                    "run {} lost ownership before application provisioning: {error}",
+                    claimed.lease.run_id.0
+                ))
+            })?;
+            let plan = provisioner
+                .prepare(&claimed.request.activation, ownership.clone())
+                .await
+                .map_err(|error| {
+                    Self::execution_error(format!(
+                        "run {} application provisioning failed: {error}",
+                        claimed.lease.run_id.0
+                    ))
+                })?;
+            ownership.verify_current().await.map_err(|error| {
+                Self::execution_error(format!(
+                    "run {} lost ownership during application provisioning: {error}",
+                    claimed.lease.run_id.0
+                ))
+            })?;
+            host.install_application_session_plan(&thread_id.0, plan)
+                .map_err(|error| Self::execution_error(error.to_string()))?;
+        }
+
         let (adopted, rebuild_binding) = adopt_bound_sandbox(
             &host,
             claimed.sandbox.as_deref(),
@@ -244,6 +278,7 @@ mod tests {
     use awaken_runtime_contract::snapshot::{
         AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
     };
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct AdoptionModel;
 
@@ -286,6 +321,122 @@ mod tests {
             },
             Vec::new(),
         )
+    }
+
+    struct CountingProvisioner {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::ApplicationSessionProvisioner for CountingProvisioner {
+        async fn prepare(
+            &self,
+            activation: &RunActivation,
+            ownership: Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>,
+        ) -> Result<crate::ApplicationSessionPlan, crate::ApplicationSessionError> {
+            ownership
+                .verify_current()
+                .await
+                .map_err(|error| crate::ApplicationSessionError::new(error.to_string()))?;
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(crate::ApplicationSessionPlan::empty(format!(
+                "application:{}",
+                activation.snapshot.fingerprint.0
+            )))
+        }
+    }
+
+    #[tokio::test]
+    async fn claimed_application_plan_is_installed_before_session_realization() {
+        use awaken_run_ingress::{Clock, DispatchQueue};
+
+        let storage = tempfile::tempdir().expect("storage");
+        let dispatch = Arc::new(
+            awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory()
+                .expect("in-memory dispatch"),
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub")
+                .with_store_dir(storage.path())
+                .with_dispatch_store(dispatch.clone())
+                .with_application_session_provisioner(Arc::new(CountingProvisioner {
+                    calls: calls.clone(),
+                })),
+        );
+        dispatch
+            .enqueue(awaken_run_ingress::RunDispatch::new(test_activation(
+                "thread-application-plan",
+                "run-application-plan",
+            )))
+            .await
+            .expect("enqueue");
+        let now = awaken_run_ingress::SystemClock.now_ms();
+        let claimed = dispatch
+            .claim("worker-a", 30_000, now)
+            .await
+            .expect("claim")
+            .expect("claimed run");
+        let resolver = HostWorkerResolver {
+            host: Arc::downgrade(&host),
+        };
+
+        resolver
+            .worker_for_claimed(&claimed)
+            .await
+            .expect("application plan precedes Session realization");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(
+            host.session_environment("thread-application-plan")
+                .await
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_claim_is_rejected_before_application_provisioning() {
+        use awaken_run_ingress::{Clock, DispatchQueue};
+
+        let storage = tempfile::tempdir().expect("storage");
+        let dispatch = Arc::new(
+            awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory()
+                .expect("in-memory dispatch"),
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub")
+                .with_store_dir(storage.path())
+                .with_dispatch_store(dispatch.clone())
+                .with_application_session_provisioner(Arc::new(CountingProvisioner {
+                    calls: calls.clone(),
+                })),
+        );
+        dispatch
+            .enqueue(awaken_run_ingress::RunDispatch::new(test_activation(
+                "thread-stale-application",
+                "run-stale-application",
+            )))
+            .await
+            .expect("enqueue");
+        let now = awaken_run_ingress::SystemClock.now_ms();
+        let mut claimed = dispatch
+            .claim("worker-a", 30_000, now)
+            .await
+            .expect("claim")
+            .expect("claimed run");
+        claimed.lease.epoch += 1;
+        let resolver = HostWorkerResolver {
+            host: Arc::downgrade(&host),
+        };
+
+        assert!(resolver.worker_for_claimed(&claimed).await.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(
+            host.session_environment("thread-stale-application")
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]

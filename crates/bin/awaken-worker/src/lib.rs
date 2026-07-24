@@ -24,7 +24,9 @@ use std::sync::Arc;
 mod admin;
 
 use awaken_runtime_contract::execution::NATIVE_RUNTIME_CAPABILITY;
-use awaken_runtime_host::{AttemptExecutorDecorator, WorkerControlClient, WorkerUpstream};
+use awaken_runtime_host::{
+    ApplicationSessionProvisioner, AttemptExecutorDecorator, WorkerControlClient, WorkerUpstream,
+};
 use awaken_server::inference_materializer::CredentialInferenceMaterializer;
 use awaken_server::no_model::NoModelConfiguredExecutor;
 use awaken_server::{InferenceExecutorMaterializer, SharedHost};
@@ -73,10 +75,47 @@ impl RegisteredWorkerContext {
     }
 }
 
-/// Registration-time application factory. The returned decorator is applied to
-/// every Session's authoritative Native/ACP/A2A attempt router.
-pub type RegisteredDecoratorFactory =
-    Arc<dyn Fn(&RegisteredWorkerContext) -> Result<AttemptExecutorDecorator, String> + Send + Sync>;
+/// The complete application assembly created from one registered Worker identity.
+///
+/// The provisioner adds claim-bound material to the Host's authoritative Session
+/// environment; the decorator wraps the authoritative Native/ACP/A2A router.
+pub struct RegisteredWorkerApplication {
+    decorator: AttemptExecutorDecorator,
+    session_provisioner: Option<Arc<dyn ApplicationSessionProvisioner>>,
+}
+
+impl RegisteredWorkerApplication {
+    #[must_use]
+    pub fn new(decorator: AttemptExecutorDecorator) -> Self {
+        Self {
+            decorator,
+            session_provisioner: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_session_provisioner(
+        mut self,
+        provisioner: Arc<dyn ApplicationSessionProvisioner>,
+    ) -> Self {
+        self.session_provisioner = Some(provisioner);
+        self
+    }
+
+    fn into_parts(
+        self,
+    ) -> (
+        AttemptExecutorDecorator,
+        Option<Arc<dyn ApplicationSessionProvisioner>>,
+    ) {
+        (self.decorator, self.session_provisioner)
+    }
+}
+
+/// Registration-time application factory.
+pub type RegisteredApplicationFactory = Arc<
+    dyn Fn(&RegisteredWorkerContext) -> Result<RegisteredWorkerApplication, String> + Send + Sync,
+>;
 
 /// Explicit resource-plane wiring for a database-less Worker.
 ///
@@ -160,7 +199,7 @@ impl std::error::Error for WorkerNodeBuildError {}
 pub struct WorkerNodeBuilder {
     upstream: WorkerUpstream,
     manifest: Option<WorkerManifest>,
-    application_decorator_factory: Option<RegisteredDecoratorFactory>,
+    application_factory: Option<RegisteredApplicationFactory>,
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
     acp_credentials: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
     resources: Option<WorkerResourcePlane>,
@@ -173,7 +212,7 @@ impl WorkerNodeBuilder {
         Self {
             upstream,
             manifest: None,
-            application_decorator_factory: None,
+            application_factory: None,
             materializer: None,
             acp_credentials: None,
             resources: None,
@@ -187,14 +226,11 @@ impl WorkerNodeBuilder {
         self
     }
 
-    /// Install the only application execution extension: a factory evaluated
-    /// after registration whose decorator wraps the built-in Session router.
+    /// Install the only application extension factory, evaluated after Worker
+    /// registration so both provisioning and execution use its assigned identity.
     #[must_use]
-    pub fn with_application_decorator_factory(
-        mut self,
-        factory: RegisteredDecoratorFactory,
-    ) -> Self {
-        self.application_decorator_factory = Some(factory);
+    pub fn with_application_factory(mut self, factory: RegisteredApplicationFactory) -> Self {
+        self.application_factory = Some(factory);
         self
     }
 
@@ -264,7 +300,7 @@ impl WorkerNodeBuilder {
         Ok(WorkerNode {
             upstream: self.upstream,
             manifest,
-            application_decorator_factory: self.application_decorator_factory,
+            application_factory: self.application_factory,
             application_gate: None,
             materializer: self.materializer,
             acp_credentials: self.acp_credentials,
@@ -288,7 +324,7 @@ pub enum WorkerShutdown {
 pub struct WorkerNode {
     upstream: WorkerUpstream,
     manifest: WorkerManifest,
-    application_decorator_factory: Option<RegisteredDecoratorFactory>,
+    application_factory: Option<RegisteredApplicationFactory>,
     application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
     acp_credentials: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
@@ -338,16 +374,15 @@ pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error + Send 
     run_with_standard_environment(WorkerUpstream::new(upstream), Default::default(), None).await
 }
 
-/// Run the standard database-less Worker with one registered application
-/// decorator around its authoritative Session attempt router.
+/// Run the standard database-less Worker with one registered application.
 ///
 /// Credential, resource-plane, ACP, manifest, and lifecycle assembly remain
 /// identical to [`run`]; the application contributes only the post-registration
 /// wrapper.
-pub async fn run_with_application_decorator(
+pub async fn run_with_application(
     upstream: WorkerUpstream,
     application_capabilities: std::collections::BTreeSet<String>,
-    factory: RegisteredDecoratorFactory,
+    factory: RegisteredApplicationFactory,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     run_with_standard_environment(upstream, application_capabilities, Some(factory)).await
 }
@@ -356,10 +391,10 @@ pub async fn run_with_application_decorator(
 /// shutdown source. Embedded applications use this to retain an explicit stop
 /// handle while reusing the standard registration, routing, heartbeat, drain,
 /// quiesce, and deregistration path.
-pub async fn run_with_application_decorator_until<F>(
+pub async fn run_with_application_until<F>(
     upstream: WorkerUpstream,
     application_capabilities: std::collections::BTreeSet<String>,
-    factory: RegisteredDecoratorFactory,
+    factory: RegisteredApplicationFactory,
     shutdown: F,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 where
@@ -381,7 +416,7 @@ pub async fn run_with_application_credential_stores_until<F>(
     credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
     secrets: Arc<dyn awaken_credential_vault::SecretStore>,
     application_capabilities: std::collections::BTreeSet<String>,
-    factory: RegisteredDecoratorFactory,
+    factory: RegisteredApplicationFactory,
     gate: Arc<dyn awaken_runtime_contract::permission::ToolGateHook>,
     shutdown: F,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
@@ -409,7 +444,7 @@ where
 async fn run_with_standard_environment(
     upstream: WorkerUpstream,
     application_capabilities: std::collections::BTreeSet<String>,
-    application: Option<RegisteredDecoratorFactory>,
+    application: Option<RegisteredApplicationFactory>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     build_standard_worker(upstream, application_capabilities, application)
         .await?
@@ -420,7 +455,7 @@ async fn run_with_standard_environment(
 async fn build_standard_worker(
     upstream: WorkerUpstream,
     application_capabilities: std::collections::BTreeSet<String>,
-    application: Option<RegisteredDecoratorFactory>,
+    application: Option<RegisteredApplicationFactory>,
 ) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
     let stores = awaken_control::open_inference_materialization_stores_from_env().await;
     let repository_credentials =
@@ -441,7 +476,7 @@ async fn build_worker_with_materialization_stores(
     stores: awaken_control::InferenceMaterializationStores,
     repository_credentials: bool,
     application_capabilities: std::collections::BTreeSet<String>,
-    application: Option<RegisteredDecoratorFactory>,
+    application: Option<RegisteredApplicationFactory>,
     application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
 ) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
     let resource_credentials = repository_credentials.then(|| stores.clone());
@@ -502,13 +537,12 @@ pub async fn run_with_upstream_and_inference_materializer(
 }
 
 /// Run a caller-materialized Worker with an optional registered application
-/// decorator. This is the secretless counterpart of
-/// [`run_with_application_decorator`].
+/// application. This is the secretless counterpart of [`run_with_application`].
 pub async fn run_with_upstream_application_and_inference_materializer(
     upstream: WorkerUpstream,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
     application_capabilities: std::collections::BTreeSet<String>,
-    application: Option<RegisteredDecoratorFactory>,
+    application: Option<RegisteredApplicationFactory>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     build_secretless_worker(
         upstream,
@@ -528,7 +562,7 @@ pub async fn run_with_upstream_application_and_inference_materializer_until<F>(
     upstream: WorkerUpstream,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
     application_capabilities: std::collections::BTreeSet<String>,
-    application: Option<RegisteredDecoratorFactory>,
+    application: Option<RegisteredApplicationFactory>,
     application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     shutdown: F,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
@@ -553,7 +587,7 @@ async fn build_secretless_worker(
     upstream: WorkerUpstream,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
     application_capabilities: std::collections::BTreeSet<String>,
-    application: Option<RegisteredDecoratorFactory>,
+    application: Option<RegisteredApplicationFactory>,
     application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
 ) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
     let resources = shared_resource_wiring(None).await?;
@@ -580,7 +614,7 @@ fn build_configured_worker(
     materializer: Arc<dyn InferenceExecutorMaterializer>,
     acp_credentials: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
     resources: Option<WorkerResourcePlane>,
-    application: Option<RegisteredDecoratorFactory>,
+    application: Option<RegisteredApplicationFactory>,
     application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
 ) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
     let mut builder = WorkerNodeBuilder::new(upstream)
@@ -592,7 +626,7 @@ fn build_configured_worker(
         builder = builder.with_acp_credentials(credentials);
     }
     if let Some(factory) = application {
-        builder = builder.with_application_decorator_factory(factory);
+        builder = builder.with_application_factory(factory);
     }
     let mut worker = builder.build()?;
     worker.application_gate = application_gate;
@@ -665,22 +699,27 @@ impl WorkerNode {
             .map_err(std::io::Error::other)?;
         let upstream = upstream.with_worker_identity(registration.snapshot.identity.clone());
         let control = WorkerControlClient::new(upstream.clone());
-        let application_decorator = match self.application_decorator_factory {
+        let application = match self.application_factory {
             Some(factory) => match factory(&RegisteredWorkerContext::new(
                 registration.clone(),
                 upstream.clone(),
             )) {
-                Ok(decorator) => Some(decorator),
+                Ok(application) => Some(application),
                 Err(error) => {
                     let _ = control.deregister(&registration.snapshot.identity).await;
                     return Err(std::io::Error::other(format!(
-                        "application decorator factory failed: {error}"
+                        "registered application factory failed: {error}"
                     ))
                     .into());
                 }
             },
             None => None,
         };
+        let (application_decorator, application_provisioner) = application
+            .map(RegisteredWorkerApplication::into_parts)
+            .map_or((None, None), |(decorator, provisioner)| {
+                (Some(decorator), provisioner)
+            });
         // Route the dispatch pool's claim/settle over HTTP to the cell server.
         let dispatch_store = awaken_runtime_host::worker_dispatch_store_with_upstream(
             &upstream,
@@ -712,6 +751,9 @@ impl WorkerNode {
         }
         if let Some(decorator) = application_decorator {
             host = host.with_application_attempt_decorator(decorator);
+        }
+        if let Some(provisioner) = application_provisioner {
+            host = host.with_application_session_provisioner(provisioner);
         }
         if let Some(gate) = self.application_gate {
             host = host.with_gate_override(gate);

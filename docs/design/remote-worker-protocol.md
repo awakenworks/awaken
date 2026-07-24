@@ -14,14 +14,15 @@ Awaken shall expose one recoverable, database-independent, embeddable remote
 Worker component. A Control Node owns dispatch and committed truth; a Worker
 claims compatible work, obtains a consistent committed recovery view, executes
 Native/ACP/A2A locally, renews its lease, and sends idempotent claimed commits
-back to the coordinator. An embedding application supplies only an execution
-decorator.
+back to the coordinator. An embedding application supplies only one registered
+Session projection and execution decorator.
 
 This design closes the Worker protocol. It does not move product semantics into
 Awaken. Flow continues to own Issue, Workflow, WorkUnit, acceptance, its
 execution envelope, MCP capability tokens, Project/Actor/Resource policy,
 `ResourceEffect`, and the conversion from technical Run success to business
-success.
+success. Awaken owns the one Session environment; Flow may only project
+claim-bound additions into it.
 
 The current implementation already supplies registration, heartbeat,
 drain/quiesce, placement, claim/renew/settle/checkpoint, epoch fencing, remote
@@ -111,8 +112,11 @@ Awaken Worker Node
 │       ├── native
 │       ├── acp:<cli-id>
 │       └── a2a:<endpoint-or-profile>
-└── application-supplied RunAttemptExecutor decorator
-    └── Flow envelope / MCP / resource / output adapter
+└── registered application
+    ├── ApplicationSessionProvisioner
+    │   └── neutral mounts / env / prompt / MCP / egress plan
+    └── RunAttemptExecutor decorator
+        └── Flow envelope / ownership / output adapter
 ```
 
 ### 3.1 Ownership and dependency rules
@@ -122,7 +126,7 @@ Awaken Worker Node
 | Control Node | claim authority, committed truth, receipts, durable feeds | store adapters and authenticators | product envelope or business acceptance |
 | Worker Node | attempt lifecycle and local execution | Control transport, executor registry, recovery cache | authoritative facts or direct Control database access |
 | Store adapter | transaction/CAS/snapshot implementation | chosen storage medium | Worker placement or product policy |
-| Application decorator | business input/output adaptation and ACL | public attempt context | registration, lease, recovery, commit protocol |
+| Registered application | business Session projection, input/output adaptation, and ACL | registered context, neutral Session/attempt ports | Session realization, registration, lease, recovery, commit protocol |
 
 The Control Node is not necessarily a singleton. It is the location of the
 logical coordinator protocol. Every implementation must preserve G1/G13 commit
@@ -306,7 +310,7 @@ application projection. The public router accepts only a versioned
 ```rust
 WorkerNodeBuilder::new(upstream)
     .with_manifest(manifest)
-    .with_application_decorator_factory(factory)
+    .with_application_factory(factory)
     .with_inference_materializer(materializer)
     .with_resource_plane(WorkerResourcePlane::new(resources, validator))
     .build()?
@@ -319,10 +323,13 @@ immutable manifest before registration. `run_until_shutdown()` owns process
 signals; supervisors and conformance tests use the same `WorkerNode::run_until`
 state machine with an injected shutdown future. Registration creates one
 immutable `RegisteredWorkerContext` from the returned `RegisteredWorker` and the
-identity-bound `WorkerUpstream`; the factory then creates the application
-decorator. `SharedHost` constructs its complete per-Session Native/ACP/A2A router
-first and applies that decorator around it. There is no public Worker/Host path
-that replaces the complete router.
+identity-bound `WorkerUpstream`; the factory then creates one
+`RegisteredWorkerApplication`. Its claim-time provisioner contributes a frozen
+neutral plan before Session realization, and `SharedHost` merges that plan with
+its built-in resources into one Session environment. `SharedHost` then
+constructs its complete per-Session Native/ACP/A2A router and applies the
+application decorator around it. There is no public Worker/Host path that
+replaces the complete router or creates another Session environment.
 
 `WorkerNode` owns:
 
@@ -335,11 +342,13 @@ that replaces the complete router.
 - drain admission fence, quiesce, deregistration, and shutdown.
 
 The decorated executor receives only a validated attempt context. Run ingress
-captures the exact `RunClaim` in an `AttemptOwnershipVerifier` carried by
-`RuntimeRunContext`, allowing a decorator to recheck live ownership without
-learning dispatch vocabulary. A decorator may add Flow envelope parsing,
-Run-scoped MCP, resource delivery, and output projection, but cannot bypass
-claim, recovery, backend routing, commit, or settlement.
+captures the exact `RunClaim` in an `AttemptOwnershipVerifier`. The Host supplies
+the same verifier to claim-time application provisioning and later carries it
+in `RuntimeRunContext`, allowing application code to recheck live ownership
+without learning dispatch vocabulary. A provisioner may project Flow bindings
+and Run-scoped MCP into the one Session; a decorator may parse the Flow envelope
+and project outputs. Neither can bypass claim, recovery, backend routing,
+Session realization, commit, or settlement.
 
 ### 4.6 Topology validation
 
@@ -400,6 +409,8 @@ Worker             Control transport       Dispatch       Coordinator/Store
   | recovery(claim) ------>|--------------------------------------->|
   |<-- consistent snapshot|<---------------------------------------|
   | load RecoveryProjection                                     |
+  | verify ownership; prepare application Session plan           |
+  | merge plan; realize one SessionEnvironment                    |
   | select exact backend_ref; enter executor                     |
   | renew --------------->|------------------->| extend same epoch  |
   | commit(op,ver,hash) -->|-------------------------------------->|
@@ -471,10 +482,11 @@ Native/ACP/A2A executors actually installed by the Host. Duplicate keys, native
 refs registered as exact routes, empty ACP/A2A targets, or unknown refs fail
 closed.
 
-The Worker exposes only
-`WorkerNodeBuilder::with_application_decorator_factory`. The factory runs after
-registration and receives `RegisteredWorkerContext`; its returned function wraps
-the complete Session router for execute, resume, and cancel. The removed
+The Worker exposes only `WorkerNodeBuilder::with_application_factory`. The
+factory runs after registration and receives `RegisteredWorkerContext`; its
+returned `RegisteredWorkerApplication` supplies at most one claim-time Session
+provisioner and one function that wraps the complete Session router for execute,
+resume, and cancel. The removed
 `with_attempt_executor`/`with_attempt_executor_registry` Worker paths are not
 retained as compatibility tracks.
 
@@ -779,8 +791,10 @@ helpers and CLI parsing do not belong here.
 | `ClaimedCommitService` | application service | authenticated, fenced, versioned, idempotent commit orchestration | directory, dispatch, coordinator resolver, authenticator | `SharedHost` construction or product projection | embedding system cannot use its coordinator; stale owner writes | G1/G13; dependency-injection and stale-epoch tests |
 | `ThreadCoordinatorResolver` | boundary port | coordinator selection for the addressed Thread/cell | configured commit backend | placement, auth, or application cache | request commits through a different authority | same-source and multi-node tests |
 | `WorkerNode` | public component | Worker lifecycle from registration through drain | control client, recovery client, commit client, executor | product envelope or Control database | every application rewrites lifecycle and diverges | G5/G6; lifecycle state-machine suite |
-| `WorkerNodeBuilder` | assembly API | validated explicit Worker dependency assembly and one post-registration decorator factory | manifest, materializers/resources, application factory | complete executor replacement, environment parsing, or hidden global stores | application duplicates Worker/router lifecycle | construction and registered-context lifecycle tests |
+| `WorkerNodeBuilder` | assembly API | validated explicit Worker dependency assembly and one post-registration application factory | manifest, materializers/resources, application factory | complete executor/environment replacement, process environment parsing, or hidden global stores | application duplicates Worker/router lifecycle | construction and registered-context lifecycle tests |
 | `RegisteredWorkerContext` | immutable assembly value | one allocated Worker incarnation plus its identity-bound request transport | `RegisteredWorker`, `WorkerUpstream` | mutable liveness truth, product ACL, or a second credential | application uses an unsigned/stale identity or parallel trust path | signed transport and registration-order tests |
+| `RegisteredWorkerApplication` | immutable assembly value | the one provisioner/decorator pair installed after registration | registered context and neutral Host ports | Worker lifecycle or a second execution router | application hooks are assembled under different identities | registered-context lifecycle tests |
+| `ApplicationSessionProvisioner` | Worker application port | claim-bound projection into the authoritative Session environment | activation and neutral ownership verifier | sandbox creation, Session cache, claim vocabulary, or product persistence | Native and ACP receive different resources or a stale claim materializes secrets | application-plan ordering, merge, and stale-claim tests |
 | `AttemptOwnershipVerifier` | Runtime live port | claim-bound current-attempt verdict | private run-ingress adapter over `DispatchQueue` | claim/epoch, Worker registry, HTTP, database, or product vocabulary | application performs an external effect after losing ownership | cross-backend current/expired/stale tests; signed HTTP test |
 | `AttemptExecutorRegistry` | public registry | exact frozen backend-ref to executor mapping and capability export | Native/ACP/A2A executors | arbitrary advertised capability or routing policy | manifest drifts from real execution support | G40; registry/manifest conformance |
 | `RunLifecycleFeed` | boundary port | durable cursor over committed Run lifecycle | commit outbox/projection | dispatch lease operations or product status | consumers infer store tables or miss reconnect events | cursor/redelivery tests |
@@ -791,7 +805,7 @@ helpers and CLI parsing do not belong here.
 | Priority | Required decision | Completion boundary |
 |---|---|---|
 | P0 | recovery snapshot/projection, operation receipts, injectable claimed commit, public Worker assembly, topology rejection, conformance + bounded model | remote Worker is correct, recoverable, and embeddable |
-| P1 | exact Session executor registry, registered application decoration, neutral ownership verification, production identity, separated lifecycle feeds | fleet is extensible and production-operable |
+| P1 | exact Session executor registry, registered application provisioning/decoration, neutral ownership verification, production identity, separated lifecycle feeds | fleet is extensible and production-operable |
 | P2 | PostgreSQL active-active with authoritative recovery/lifecycle reads and multi-process failure injection | the physical Control singleton and sticky-routing constraint are removed |
 | Deferred | recovery cache/deltas, snapshot compaction, optional streaming, cell sharding/rebalancing, alternative primary stores, merged business event feed | requires measured scale or a separate accepted ADR |
 

@@ -301,10 +301,7 @@ impl SharedHost {
         // managed adapter's `prepare_session` before the first turn; the wire
         // composition (connect + discover, fail closed) lives in `crate::mcp`.
         // Read, not removed, so a retry re-attempts (and re-fails) the connect.
-        let staged_mcp: Vec<PreparedMcpServer> = self
-            .session_slots
-            .read(thread, |slot| slot.mcp.clone())
-            .unwrap_or_default();
+        let staged_mcp = self.thread_session_mcp(thread);
         let mcp = crate::mcp::connect_staged(&staged_mcp).await?;
         // An authored permission policy is the sole authority for MCP confirmation.
         // Without one, selecting the MCP server pre-authorizes its discovered tools;

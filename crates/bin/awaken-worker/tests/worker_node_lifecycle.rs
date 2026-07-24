@@ -47,11 +47,11 @@ async fn node_runs_register_ready_drain_quiesce_and_deregister() {
     let observed = registered_identity.clone();
     WorkerNodeBuilder::new(WorkerUpstream::new(upstream.url()).with_worker_id("worker-node-test"))
         .with_manifest(manifest())
-        .with_application_decorator_factory(Arc::new(move |context| {
+        .with_application_factory(Arc::new(move |context| {
             *observed.lock().expect("identity observation mutex") =
                 Some(context.identity().clone());
             let decorator: awaken_runtime_host::AttemptExecutorDecorator = Arc::new(|inner| inner);
-            Ok(decorator)
+            Ok(awaken_worker::RegisteredWorkerApplication::new(decorator))
         }))
         .without_admin_surface()
         .build()

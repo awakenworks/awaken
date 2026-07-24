@@ -602,6 +602,63 @@ async fn host_application_decorator_wraps_the_complete_session_boundary() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
+#[test]
+fn application_session_plan_joins_the_authoritative_session_slot() {
+    use awaken_provisioning_contract::{
+        EnvValue, EnvVar, EnvVisibility, MountAccess, MountLifetime, MountRequirement, MountSource,
+    };
+
+    let host = SharedHost::new(Arc::new(MemoryHostModel), "stub");
+    let mut plan = crate::ApplicationSessionPlan::empty("flow-snapshot:sha256:one");
+    plan.mounts.push(MountRequirement {
+        mount_id: "flow-workspace".into(),
+        source: MountSource::Inline {
+            contents: "project".into(),
+        },
+        mount_path: "/workspace/project.txt".into(),
+        access: MountAccess::ReadOnly,
+        lifetime: MountLifetime::PerRun,
+        required: true,
+    });
+    plan.env.push(EnvVar {
+        name: "FLOW_PROJECT".into(),
+        value: EnvValue::Inline {
+            value: "project-a".into(),
+        },
+        visibility: EnvVisibility::Process,
+    });
+    plan.prompts.push("Use the bound Flow project.".into());
+    plan.mcp_servers.push(PreparedMcpServer {
+        name: "flow".into(),
+        url: "https://example.invalid/mcp".into(),
+        bearer: None,
+        refresh: None,
+    });
+    plan.deny_egress = true;
+
+    host.install_application_session_plan("flow-thread", plan.clone())
+        .expect("first plan installs");
+    host.install_application_session_plan("flow-thread", plan)
+        .expect("same fingerprint is idempotent");
+
+    let spec = host.sandbox_spec("flow-thread");
+    assert_eq!(spec.mounts.len(), 1);
+    assert_eq!(spec.env.len(), 1);
+    assert!(host.thread_egress().denies("flow-thread"));
+    assert_eq!(
+        host.thread_resource_prompts("flow-thread"),
+        vec!["Use the bound Flow project."]
+    );
+    assert_eq!(host.thread_mcp("flow-thread").len(), 1);
+
+    let replacement = crate::ApplicationSessionPlan::empty("flow-snapshot:sha256:two");
+    assert!(
+        host.install_application_session_plan("flow-thread", replacement)
+            .is_err(),
+        "a bound Session cannot switch application plans"
+    );
+}
+
 #[tokio::test]
 async fn tool_bearing_snapshot_can_be_restricted_at_the_run_boundary() {
     use crate::run_exec::BoundRunExecutor;

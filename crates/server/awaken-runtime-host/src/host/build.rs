@@ -197,6 +197,7 @@ impl SharedHost {
             acp: None,
             remote_attempt_executor: None,
             application_attempt_decorator: None,
+            application_session_provisioner: None,
             provider: LocalProvider::new(sandbox_root.clone()),
             session_provider: crate::session_environment::SessionEnvironmentProvider::workdir(
                 sandbox_root.clone(),
@@ -270,6 +271,17 @@ impl SharedHost {
         decorator: super::AttemptExecutorDecorator,
     ) -> Self {
         self.application_attempt_decorator = Some(decorator);
+        self
+    }
+
+    /// Install the only application hook that may add claim-bound material to
+    /// the authoritative Session environment before it is created or adopted.
+    #[must_use]
+    pub fn with_application_session_provisioner(
+        mut self,
+        provisioner: Arc<dyn crate::ApplicationSessionProvisioner>,
+    ) -> Self {
+        self.application_session_provisioner = Some(provisioner);
         self
     }
 
