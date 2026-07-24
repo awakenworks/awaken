@@ -2,6 +2,7 @@
 //! update, delete, and archive.
 
 use super::*;
+use crate::types::AgentRef;
 use crate::types::McpServer;
 use serde_json::json;
 
@@ -141,6 +142,28 @@ impl ManagedState {
                         .clone()
                         .zip(server.credential_revision),
                 ));
+            }
+        }
+        // Anthropic requires MCP declarations and toolsets to be a bijective
+        // reference: every declared server has a toolset and every toolset names
+        // a declared server. Validate create-time overrides before provisioning.
+        if let AgentRef::Object(override_ref) = &req.agent
+            && let (Some(Some(mcp_servers)), Some(Some(tools))) =
+                (&override_ref.mcp_servers, &override_ref.tools)
+        {
+            let declared = mcp_servers
+                .iter()
+                .filter_map(|v| v.get("name").and_then(|n| n.as_str()))
+                .collect::<std::collections::BTreeSet<_>>();
+            let toolset_names = tools
+                .iter()
+                .filter(|v| v.get("type").and_then(|t| t.as_str()) == Some("mcp_toolset"))
+                .filter_map(|v| v.get("mcp_server_name").and_then(|n| n.as_str()))
+                .collect::<std::collections::BTreeSet<_>>();
+            if declared != toolset_names {
+                return Err(StateError::Run(RunError::bad_request(
+                    "each mcp_server must be referenced by exactly one mcp_toolset",
+                )));
             }
         }
         let bindings: Vec<McpServerBinding> = effective_mcp_servers
@@ -390,7 +413,7 @@ impl ManagedState {
             .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
         persisted.status = "idle".to_string();
         let deployment_id = req.metadata.get("awaken.deployment_id").cloned();
-        let session = Session {
+        let mut session = Session {
             id: id.clone(),
             kind: "session",
             agent: SessionAgent {
@@ -441,6 +464,29 @@ impl ManagedState {
             vault_ids: req.vault_ids.clone(),
             deployment_id,
         };
+        // Anthropic's create-time overrides are session-local replacements. Null
+        // clears nullable/list fields; an empty list also clears a list field.
+        if let AgentRef::Object(override_ref) = &req.agent {
+            if let Some(system) = &override_ref.system {
+                session.agent.system = system.clone();
+            }
+            if let Some(tools) = &override_ref.tools {
+                if tools.as_ref().is_none_or(|tools| tools.is_empty())
+                    && !session.agent.skills.is_empty()
+                {
+                    return Err(StateError::Run(RunError::bad_request(
+                        "cannot clear tools while skills are configured",
+                    )));
+                }
+                session.agent.tools = tools.clone().unwrap_or_default();
+            }
+            if let Some(mcp_servers) = &override_ref.mcp_servers {
+                session.agent.mcp_servers = mcp_servers.clone().unwrap_or_default();
+            }
+            if let Some(skills) = &override_ref.skills {
+                session.agent.skills = skills.clone().unwrap_or_default();
+            }
+        }
         // Persist the session's config (secret-free) so a restart or a peer process
         // rehydrates its real agent/model/title/metadata/MCP, not a placeholder.
         // The core session record is tenancy-agnostic (authz is an edge aspect) —
@@ -955,9 +1001,16 @@ impl ManagedState {
         id: &str,
         title: Option<Option<String>>,
         metadata: Option<std::collections::BTreeMap<String, Option<String>>>,
+        tools: Option<Vec<serde_json::Value>>,
+        mcp_servers: Option<Vec<serde_json::Value>>,
     ) -> Result<Session, StateError> {
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
+        if record.session.status != "idle" {
+            return Err(StateError::Run(RunError::bad_request(
+                "session agent updates require an idle session; interrupt the active run first",
+            )));
+        }
         let title_in_request = title.is_some();
         if let Some(title) = title {
             record.session.title = title;
@@ -974,6 +1027,13 @@ impl ManagedState {
                 }
             }
         }
+        let agent_changed = tools.is_some() || mcp_servers.is_some();
+        if let Some(tools) = tools {
+            record.session.agent.tools = tools;
+        }
+        if let Some(mcp_servers) = mcp_servers {
+            record.session.agent.mcp_servers = mcp_servers;
+        }
         // Announce the mutation on the event stream (`session.updated`): the new
         // title when the update set one, plus the full metadata bag.
         record.events.push(Event {
@@ -983,6 +1043,7 @@ impl ManagedState {
                     .then(|| record.session.title.clone())
                     .flatten(),
                 metadata: record.session.metadata.clone(),
+                agent: agent_changed.then(|| record.session.agent.clone()),
             },
             processed_at: Some(PROCESSED_AT.to_string()),
         });

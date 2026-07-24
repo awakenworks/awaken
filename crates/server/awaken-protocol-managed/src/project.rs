@@ -342,10 +342,13 @@ pub fn project_messages(
 pub(crate) fn project_step(
     outcome: &StepOutcome,
     pending: Option<(&str, bool)>,
+    mcp_ids: impl IntoIterator<Item = String>,
 ) -> Vec<ProjectedEvent> {
     let mut events = fold(&outcome.messages, pending);
     events.push(terminal_event(outcome.state(), pending));
-    ManagedEncoder::default().transcode_facts(&events)
+    let mut encoder = ManagedEncoder::default();
+    encoder.mcp_ids.extend(mcp_ids);
+    encoder.transcode_facts(&events)
 }
 
 /// Project the run's sole lifecycle authority to the Managed terminal fact.
