@@ -3,6 +3,22 @@
 
 use super::*;
 
+fn pre_authorized_tool_ids(
+    mcp_ids: &[String],
+    admin_ids: &[String],
+    has_authored_permission: bool,
+) -> Vec<String> {
+    if has_authored_permission {
+        admin_ids.to_vec()
+    } else {
+        mcp_ids
+            .iter()
+            .cloned()
+            .chain(admin_ids.iter().cloned())
+            .collect()
+    }
+}
+
 impl SharedHost {
     /// Evict only the rebuildable runtime context while retaining the
     /// independently-owned Session environment and its live resource projection.
@@ -290,23 +306,17 @@ impl SharedHost {
             .read(thread, |slot| slot.mcp.clone())
             .unwrap_or_default();
         let mcp = crate::mcp::connect_staged(&staged_mcp).await?;
-        // MCP tools are pre-authorized on this thread's gate: the session creator
-        // explicitly configured the server (with its credential), which is the
-        // authorization decision — the ask-gate keeps covering the built-in
-        // mutation tools. `server_gate_allowing(&[])` is the plain server gate,
-        // so threads without MCP keep the exact default policy.
-        // The management tools (ADR-0052) are pre-authorized like the MCP tools: they
-        // are read-only, and only the reserved-scope assistant's config names them.
+        // An authored permission policy is the sole authority for MCP confirmation.
+        // Without one, selecting the MCP server pre-authorizes its discovered tools;
+        // with one, its rules/default decide every MCP call. Do not project a second
+        // confirmation list through Session state: that path cannot survive recovery
+        // without duplicating the published policy.
+        // Management tools (ADR-0052) remain pre-authorized: they are read-only,
+        // and only the reserved-scope assistant's config names them.
         let admin_ids: Vec<String> = self
             .admin_tools
             .iter()
             .map(|t| t.id().to_string())
-            .collect();
-        let pre_authorized: Vec<String> = mcp
-            .tool_ids
-            .iter()
-            .cloned()
-            .chain(admin_ids.iter().cloned())
             .collect();
         // A remote worker consumes the exact snapshot distributed in the claim;
         // it must not reopen the config registry and reconstruct current state.
@@ -323,6 +333,14 @@ impl SharedHost {
                 )
             })
         });
+        let authored_permission = config_permission_ruleset(
+            installed
+                .as_ref()
+                .map(|c| c.resolved_spec.plugin_config.plugins())
+                .unwrap_or(&self.plugin_config),
+        );
+        let pre_authorized =
+            pre_authorized_tool_ids(&mcp.tool_ids, &admin_ids, authored_permission.is_some());
         // The workspace skill dir is negotiated by the agent/hand definition: its
         // `plugin_config.skills_dir` (ADR-0036) overrides the default `skills` subdir,
         // so a hand that authors skills elsewhere is discovered where it says — not a
@@ -338,17 +356,6 @@ impl SharedHost {
             })
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| crate::skills::DEFAULT_SKILLS_SUBDIR.to_string());
-        // An authored permission policy (the agent's `permission` config section)
-        // shapes the gate: its rules layer over the built-in baseline (perception +
-        // the pre-authorized MCP/admin tools) and its default governs unmatched calls.
-        // A malformed/absent section → None → the strict built-in default (mutations
-        // asked), so a bad policy never fails open.
-        let authored_permission = config_permission_ruleset(
-            installed
-                .as_ref()
-                .map(|c| c.resolved_spec.plugin_config.plugins())
-                .unwrap_or(&self.plugin_config),
-        );
         let apply_base_gate = !pre_authorized.is_empty() || authored_permission.is_some();
         let permission =
             crate::config::server_permission_policy(authored_permission.clone(), &pre_authorized);
@@ -533,7 +540,7 @@ impl SharedHost {
                     .collect()
             })
             .unwrap_or_default();
-        let config = installed.unwrap_or_else(|| {
+        let mut config = installed.unwrap_or_else(|| {
             server_config(
                 "assistant",
                 &self.inference_routing.model_ref(thread, &self.model_ref),
@@ -545,6 +552,15 @@ impl SharedHost {
                 context_policy,
             )
         });
+        // A session-selected ACP/A2A runtime is an execution backend choice, not
+        // merely an environment hint. Reflect it into the neutral resolved
+        // snapshot so the shared AttemptExecutorRegistry routes the activation
+        // instead of silently using the native fallback.
+        if let Some(adapter) = self.acp.as_ref().and_then(|acp| acp.adapter_for(thread)) {
+            if awaken_runtime_contract::resolved::Backend::from_ref(&adapter).is_acp() {
+                config.resolved_spec.model_binding.binding.backend_ref = adapter;
+            }
+        }
         // D6: for an ACP run, hand the session's staged MCP servers to the CLI's own MCP
         // client via `plugin_config.acp.mcp_servers`. Whether this run executes on ACP is
         // the host's runtime registration (`AcpBackend::is_acp`), not the config's
@@ -900,5 +916,25 @@ impl SharedHost {
         }
 
         dispose_result.and(reference_result)
+    }
+}
+
+#[cfg(test)]
+mod permission_projection_tests {
+    use super::pre_authorized_tool_ids;
+
+    #[test]
+    fn authored_permission_is_the_only_mcp_confirmation_authority() {
+        let mcp = vec!["mcp__calc__add".to_string()];
+        let admin = vec!["awaken_admin_get".to_string()];
+
+        assert_eq!(
+            pre_authorized_tool_ids(&mcp, &admin, false),
+            vec!["mcp__calc__add", "awaken_admin_get"]
+        );
+        assert_eq!(
+            pre_authorized_tool_ids(&mcp, &admin, true),
+            vec!["awaken_admin_get"]
+        );
     }
 }

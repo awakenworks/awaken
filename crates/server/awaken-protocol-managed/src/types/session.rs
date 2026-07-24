@@ -87,6 +87,14 @@ pub struct AgentRefObject {
     pub kind: Option<AgentRefKind>,
     #[serde(default)]
     pub version: Option<u32>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub system: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub tools: Option<Option<Vec<Value>>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub mcp_servers: Option<Option<Vec<Value>>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub skills: Option<Option<Vec<Value>>>,
     /// Outer `None` = `model` omitted; `Some(None)` = `model: null`; `Some(Some(_))` =
     /// a value. Only meaningful when `kind` is `agent_with_overrides`.
     #[serde(default, deserialize_with = "deserialize_double_option")]
@@ -432,6 +440,8 @@ pub struct SessionError {
     pub kind: &'static str,
     pub message: String,
     pub retry_status: RetryStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp_server_name: Option<String>,
 }
 
 impl SessionError {
@@ -442,7 +452,13 @@ impl SessionError {
     /// the catch-all `unknown_error` / `exhausted` — the session stays usable, so we
     /// don't force-terminate on one failed turn.
     pub fn classify(code: &str, message: impl Into<String>) -> Self {
+        let message = message.into();
+        let mcp_server_name = code_message_server_name(code, &message);
         let (kind, retry_status) = match code {
+            "mcp_connection_failed" => ("mcp_connection_failed_error", RetryStatus::Retrying),
+            "mcp_authentication_failed" => {
+                ("mcp_authentication_failed_error", RetryStatus::Terminal)
+            }
             "rate_limited" => ("model_rate_limited_error", RetryStatus::Exhausted),
             "context_overflow" | "unauthorized" => {
                 ("model_request_failed_error", RetryStatus::Terminal)
@@ -451,10 +467,21 @@ impl SessionError {
         };
         Self {
             kind,
-            message: message.into(),
+            message,
             retry_status,
+            mcp_server_name,
         }
     }
+}
+
+fn code_message_server_name(code: &str, message: &str) -> Option<String> {
+    if !code.starts_with("mcp_") {
+        return None;
+    }
+    let marker = "mcp server `";
+    let start = message.find(marker)? + marker.len();
+    let rest = &message[start..];
+    Some(rest.split('`').next()?.to_string())
 }
 
 /// The payload of an outbound event (its `type` plus kind-specific fields).
@@ -575,6 +602,8 @@ pub enum OutboundKind {
         title: Option<String>,
         #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
         metadata: std::collections::BTreeMap<String, String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agent: Option<SessionAgent>,
     },
     /// A subagent child thread terminated (`session.thread_status_terminated`),
     /// e.g. when archived.
@@ -956,5 +985,21 @@ mod tests {
             v["model_usage"].get("speed").is_none(),
             "speed is omitted when None"
         );
+    }
+
+    #[test]
+    fn mcp_failures_project_structured_retry_and_server_fields() {
+        let auth =
+            SessionError::classify("mcp_authentication_failed", "mcp server `calc`: HTTP 401");
+        assert_eq!(auth.kind, "mcp_authentication_failed_error");
+        assert_eq!(auth.mcp_server_name.as_deref(), Some("calc"));
+        assert_eq!(auth.retry_status, RetryStatus::Terminal);
+        let connection = SessionError::classify(
+            "mcp_connection_failed",
+            "mcp server `offline`: connection refused",
+        );
+        assert_eq!(connection.kind, "mcp_connection_failed_error");
+        assert_eq!(connection.mcp_server_name.as_deref(), Some("offline"));
+        assert_eq!(connection.retry_status, RetryStatus::Retrying);
     }
 }

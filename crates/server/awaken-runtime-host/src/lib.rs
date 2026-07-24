@@ -218,9 +218,16 @@ fn user_message(content: Vec<ContentBlock>) -> Message {
 }
 
 fn to_run_error(err: HostError) -> RunError {
+    let message = err.message;
+    if message.contains("401") || message.to_ascii_lowercase().contains("auth") {
+        return RunError::classified("mcp_authentication_failed", message);
+    }
+    if message.to_ascii_lowercase().contains("mcp server") {
+        return RunError::classified("mcp_connection_failed", message);
+    }
     match err.kind {
-        HostErrorKind::BadRequest => RunError::bad_request(err.message),
-        HostErrorKind::Internal => RunError::internal(err.message),
+        HostErrorKind::BadRequest => RunError::bad_request(message),
+        HostErrorKind::Internal => RunError::internal(message),
     }
 }
 

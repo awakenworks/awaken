@@ -21,7 +21,24 @@ impl ManagedState {
         let pending = outcome
             .pending()
             .map(|p| (p.tool_use_id.as_str(), p.client_executed));
-        let projected = project_step(&outcome, pending);
+        let prior_mcp_ids: Vec<String> = self
+            .sessions
+            .lock()
+            .ok()
+            .and_then(|sessions| {
+                sessions.get(session_id).map(|record| {
+                    record
+                        .events
+                        .iter()
+                        .filter_map(|event| match event.kind {
+                            OutboundKind::AgentMcpToolUse { .. } => Some(event.id.clone()),
+                            _ => None,
+                        })
+                        .collect()
+                })
+            })
+            .unwrap_or_default();
+        let projected = project_step(&outcome, pending, prior_mcp_ids);
         // Child-thread identity comes from the Runtime relationship aggregate.
         // Messages supply only the child thread's sent/received content.
         struct DelegateCall {
@@ -376,7 +393,13 @@ impl ManagedState {
                     // propagating the run error; otherwise retry after a process
                     // crash could provision over the surviving workspace.
                     self.persist_session_environment_binding(session_id).await?;
-                    let outcome = outcome?;
+                    let outcome = match outcome {
+                        Ok(outcome) => outcome,
+                        Err(error) => {
+                            self.append_runtime_failure(session_id, &error)?;
+                            return Err(StateError::Run(error));
+                        }
+                    };
                     self.append_step(session_id, outcome, sink.take_allocated_ids())?;
                 }
                 InboundEvent::UserToolConfirmation {
@@ -460,6 +483,38 @@ impl ManagedState {
             record.session.usage = session_usage_value(usage);
         }
         Ok(SendEventsResponse { data: receipts })
+    }
+
+    fn append_runtime_failure(
+        &self,
+        session_id: &str,
+        error: &awaken_session_contract::RunError,
+    ) -> Result<(), StateError> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
+        let start = record.events.len();
+        let processed_at = Some(PROCESSED_AT.to_string());
+        record.events.push(Event {
+            id: self.next_event_id(),
+            kind: OutboundKind::SessionStatusRunning {},
+            processed_at: processed_at.clone(),
+        });
+        record.events.push(Event {
+            id: self.next_event_id(),
+            kind: OutboundKind::SessionError {
+                error: SessionError::classify(&error.code, error.message.clone()),
+            },
+            processed_at: processed_at.clone(),
+        });
+        record.events.push(Event {
+            id: self.next_event_id(),
+            kind: OutboundKind::SessionStatusIdle {
+                stop_reason: StopReason::EndTurn,
+            },
+            processed_at,
+        });
+        self.broadcast_committed_from(session_id, record, start);
+        Ok(())
     }
 
     /// `GET /v1/sessions/{id}/events` — the session's events, oldest-first, paged

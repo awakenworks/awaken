@@ -504,6 +504,9 @@ pub trait SessionRuntime: Send + Sync {
 pub struct RunError {
     pub message: String,
     pub kind: RunErrorKind,
+    /// Stable neutral fault code consumed by protocol transcoders. This keeps
+    /// provider/MCP classification out of any one public adapter.
+    pub code: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -518,6 +521,7 @@ impl RunError {
         Self {
             message: message.into(),
             kind: RunErrorKind::Internal,
+            code: "internal".into(),
         }
     }
 
@@ -526,6 +530,15 @@ impl RunError {
         Self {
             message: message.into(),
             kind: RunErrorKind::BadRequest,
+            code: "invalid_request".into(),
+        }
+    }
+
+    pub fn classified(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind: RunErrorKind::Internal,
+            code: code.into(),
         }
     }
 }

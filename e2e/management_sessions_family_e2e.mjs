@@ -47,6 +47,27 @@ async function main() {
       assert.equal(updatedEv.metadata.team, 'core');
       pass('session.updated on the event stream');
 
+      // -- mid-session agent update gate ------------------------------------
+      // Only tools and MCP servers are mutable. Arrays are full replacements;
+      // model/system/skills are rejected instead of being silently ignored.
+      const clearedTools = await client.beta.sessions.update(session.id, {
+        agent: { tools: [] },
+        betas: BETAS,
+      });
+      assert.deepEqual(clearedTools.agent.tools, [], 'tools update is a full replacement');
+      const updatedAfterTools = await drain(client.beta.sessions.events.list(session.id, { betas: BETAS }));
+      assert.ok(updatedAfterTools.some((e) => e.type === 'session.updated' && Array.isArray(e.agent?.tools)),
+        'tools update emits session.updated');
+      await assert.rejects(
+        () => client.beta.sessions.update(session.id, { agent: { model: 'forbidden-model' }, betas: BETAS }),
+        (err) => err.status === 400,
+      );
+      await assert.rejects(
+        () => client.beta.sessions.update(session.id, { agent: { system: 'forbidden-system' }, betas: BETAS }),
+        (err) => err.status === 400,
+      );
+      pass('session agent update gate: tools replace; model/system reject 400');
+
       const listed = (await drain(client.beta.sessions.list({ betas: BETAS }))).map((s) => s.id);
       assert.ok(listed.includes(session.id));
       pass('beta.sessions.list -> PageCursor<BetaManagedAgentsSession>');

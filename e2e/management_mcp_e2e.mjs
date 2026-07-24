@@ -155,6 +155,85 @@ async function main() {
       );
       assert.equal(fixture.unauthorized, 0, 'no request was ever rejected for missing auth');
       pass('fixture saw `Bearer <token>` on every request incl. both tools/call');
+
+      // Anthropic MCP toolset default is always_ask. The permission policy is
+      // carried through the neutral AgentConfigView/SessionInit into the one
+      // runtime gate, then projected as the same Managed event sequence.
+      const gatedAgent = 'calc-gated-agent';
+      r = await req(base, 'PUT', `/v1/config/agents/${gatedAgent}`, {
+        name: 'Gated Calculator',
+        system: 'Use the calculator tool and report its result.',
+        model: { provider_identity_ref: 'default', model_ref: 'management', backend_ref: 'default' },
+        mcp_servers: [{ name: 'calc', url: fixture.url, credential: { id: credId, revision: credRevision } }],
+        tools: [{ type: 'mcp_toolset', mcp_server_name: 'calc', default_config: { enabled: true, permission_policy: { type: 'always_ask' } } }],
+        plugins: ['permission'],
+        plugin_config: { permission: { default_behavior: 'ask', rules: [{ pattern: 'mcp__calc__add', behavior: 'ask' }] } },
+      });
+      assert.equal(r.status, 200, JSON.stringify(r.json));
+      r = await req(base, 'POST', `/v1/config/agents/${gatedAgent}/publish`);
+      assert.equal(r.status, 200, JSON.stringify(r.json));
+      const gated = await client.beta.sessions.create({ agent: gatedAgent, betas: BETAS });
+      await sendMessage(client, gated.id, 'add 9 4');
+      let gatedEvents = await listEvents(client, gated.id);
+      const gatedUse = gatedEvents.find((event) => event.type === 'agent.mcp_tool_use');
+      assert.ok(gatedUse, `MCP tool call should be parked: ${gatedEvents.map((event) => event.type)}`);
+      const gatedIdle = [...gatedEvents].reverse().find((event) => event.type === 'session.status_idle');
+      assert.equal(gatedIdle.stop_reason.type, 'requires_action');
+      await client.beta.sessions.events.send(gated.id, {
+        events: [{ type: 'user.tool_confirmation', tool_use_id: gatedUse.id, result: 'allow' }],
+        betas: BETAS,
+      });
+      gatedEvents = await listEvents(client, gated.id);
+      assert.ok(gatedEvents.some((event) => event.type === 'agent.mcp_tool_result'), JSON.stringify(gatedEvents));
+      pass('MCP always_ask -> requires_action -> user.tool_confirmation -> mcp_tool_result');
+
+      // MCP authentication failures are committed through the neutral runtime
+      // failure path and projected as a structured Managed session.error. The
+      // session remains readable/reusable after the failed turn.
+      const wrong = await req(base, 'POST', '/v1/config/credentials', {
+        workspace_id: 'ws', kind: 'vault', secret: 'wrong-mcp-token', // awaken-allow: secret (deliberate auth-failure fixture)
+      });
+      assert.equal(wrong.status, 201);
+      const badAgent = 'calc-auth-failure-agent';
+      r = await req(base, 'PUT', `/v1/config/agents/${badAgent}`, {
+        name: 'Bad MCP Auth',
+        system: 'Use the calculator tool.',
+        model: { provider_identity_ref: 'default', model_ref: 'management', backend_ref: 'default' },
+        mcp_servers: [{ name: 'calc', url: fixture.url, credential: { id: wrong.json.id, revision: wrong.json.version } }],
+      });
+      assert.equal(r.status, 200, JSON.stringify(r.json));
+      r = await req(base, 'POST', `/v1/config/agents/${badAgent}/publish`);
+      assert.equal(r.status, 200, JSON.stringify(r.json));
+      const bad = await client.beta.sessions.create({ agent: badAgent, betas: BETAS });
+      await assert.rejects(() => sendMessage(client, bad.id, 'add 2 2'), /APIError|500/);
+      const badEvents = await listEvents(client, bad.id);
+      const failure = badEvents.find((event) => event.type === 'session.error');
+      assert.ok(failure, `MCP auth failure must be durable: ${badEvents.map((event) => event.type)}`);
+      assert.equal(failure.error.type, 'mcp_authentication_failed_error');
+      assert.equal(failure.error.mcp_server_name, 'calc');
+      assert.equal(failure.error.retry_status.type, 'terminal');
+      pass('MCP 401 -> neutral classified failure -> session.error with server and retry status');
+
+      const offlineAgent = 'calc-connection-failure-agent';
+      r = await req(base, 'PUT', `/v1/config/agents/${offlineAgent}`, {
+        name: 'Offline MCP',
+        system: 'Use the unavailable calculator tool.',
+        model: { provider_identity_ref: 'default', model_ref: 'management', backend_ref: 'default' },
+        mcp_servers: [{ name: 'offline', url: 'http://127.0.0.1:1/mcp' }],
+      });
+      assert.equal(r.status, 200, JSON.stringify(r.json));
+      r = await req(base, 'POST', `/v1/config/agents/${offlineAgent}/publish`);
+      assert.equal(r.status, 200, JSON.stringify(r.json));
+      const offline = await client.beta.sessions.create({ agent: offlineAgent, betas: BETAS });
+      await assert.rejects(() => sendMessage(client, offline.id, 'use offline tool'), /APIError|500/);
+      const offlineEvents = await listEvents(client, offline.id);
+      const offlineFailure = offlineEvents.find((event) => event.type === 'session.error');
+      assert.ok(offlineFailure, `MCP connection failure must be durable: ${offlineEvents.map((event) => event.type)}`);
+      assert.equal(offlineFailure.error.type, 'mcp_connection_failed_error');
+      assert.equal(offlineFailure.error.mcp_server_name, 'offline');
+      assert.equal(offlineFailure.error.retry_status.type, 'retrying');
+      pass('MCP connection failure -> neutral classified session.error with retrying status');
+
     });
 
     console.log('E2E PASS: management-plane MCP config drives a multi-turn MCP conversation with the vault-backed bearer.');
