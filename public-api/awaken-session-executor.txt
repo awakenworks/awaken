@@ -44,9 +44,7 @@ pub awaken_session_executor::HostResume::ToolPermission::allow: bool
 pub awaken_session_executor::HostResume::ToolPermission::note: core::option::Option<alloc::string::String>
 pub enum awaken_session_executor::LaunchSource
 pub awaken_session_executor::LaunchSource::Fixed(awaken_run_executor_acp::subprocess::AcpLaunch)
-pub awaken_session_executor::LaunchSource::Projected
-pub awaken_session_executor::LaunchSource::Projected::cli: alloc::boxed::Box<awaken_run_executor_acp::acp_cli::AcpCli>
-pub awaken_session_executor::LaunchSource::Projected::resolver: alloc::sync::Arc<dyn awaken_run_executor_acp::subprocess::LaunchResolver>
+pub awaken_session_executor::LaunchSource::Projected(awaken_session_executor::AcpLaunchRegistry)
 pub enum awaken_session_executor::SandboxTier
 pub awaken_session_executor::SandboxTier::Docker
 pub awaken_session_executor::SandboxTier::K8s
@@ -79,6 +77,10 @@ pub awaken_session_executor::WorkerAuthError::Missing
 pub enum awaken_session_executor::WorkerCredentialError
 pub awaken_session_executor::WorkerCredentialError::Encode
 pub awaken_session_executor::WorkerCredentialError::Invalid
+pub struct awaken_session_executor::AcpLaunchRegistry
+impl awaken_session_executor::AcpLaunchRegistry
+pub fn awaken_session_executor::AcpLaunchRegistry::new(alloc::vec::Vec<(awaken_run_executor_acp::acp_cli::AcpCli, alloc::sync::Arc<dyn awaken_run_executor_acp::subprocess::LaunchResolver>)>, core::option::Option<alloc::string::String>) -> core::result::Result<Self, alloc::string::String>
+pub fn awaken_session_executor::AcpLaunchRegistry::single(awaken_run_executor_acp::acp_cli::AcpCli, alloc::sync::Arc<dyn awaken_run_executor_acp::subprocess::LaunchResolver>) -> Self
 pub struct awaken_session_executor::AcpSandboxBindings
 impl awaken_session_executor::AcpSandboxBindings
 pub fn awaken_session_executor::AcpSandboxBindings::new(awaken_session_executor::ThreadEgress, awaken_session_executor::ThreadResources, awaken_session_executor::ThreadSandbox) -> Self
@@ -93,6 +95,11 @@ pub async fn awaken_session_executor::AcpServeHost::usage(&self, &str) -> (u64, 
 pub struct awaken_session_executor::AcpTurn
 pub awaken_session_executor::AcpTurn::messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub awaken_session_executor::AcpTurn::stop: awaken_session_executor::AcpStop
+pub struct awaken_session_executor::AcpWorkerProfile
+impl awaken_session_executor::AcpWorkerProfile
+pub fn awaken_session_executor::AcpWorkerProfile::cli_ids(&self) -> impl core::iter::traits::iterator::Iterator<Item = &str>
+pub fn awaken_session_executor::AcpWorkerProfile::default_cli(&self) -> core::option::Option<&str>
+pub fn awaken_session_executor::AcpWorkerProfile::new(impl core::iter::traits::collect::IntoIterator<Item = alloc::string::String>, core::option::Option<alloc::string::String>) -> core::result::Result<Self, alloc::string::String>
 pub struct awaken_session_executor::ApplicationSessionError(_)
 impl awaken_session_executor::ApplicationSessionError
 pub fn awaken_session_executor::ApplicationSessionError::new(impl core::convert::Into<alloc::string::String>) -> Self
@@ -115,6 +122,8 @@ pub struct awaken_session_executor::ClaimedCommitService
 impl awaken_session_executor::ClaimedCommitService
 pub fn awaken_session_executor::ClaimedCommitService::new(alloc::sync::Arc<dyn awaken_dispatch_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_agent_contract::thread::commit::coordinator::OperationCoordinator>, alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>, alloc::sync::Arc<dyn awaken_session_executor::WorkerRequestAuthenticator>) -> Self
 pub struct awaken_session_executor::DeploymentConfig
+pub awaken_session_executor::DeploymentConfig::acp: core::option::Option<awaken_session_executor::AcpWorkerProfile>
+pub awaken_session_executor::DeploymentConfig::acp_session_blob_root: core::option::Option<std::path::PathBuf>
 pub awaken_session_executor::DeploymentConfig::container_image: core::option::Option<alloc::string::String>
 pub awaken_session_executor::DeploymentConfig::database_url: core::option::Option<alloc::string::String>
 pub awaken_session_executor::DeploymentConfig::disable_local_pool: bool
@@ -122,7 +131,9 @@ pub awaken_session_executor::DeploymentConfig::dispatch_backend: awaken_session_
 pub awaken_session_executor::DeploymentConfig::dispatch_owner: alloc::string::String
 pub awaken_session_executor::DeploymentConfig::durable: bool
 pub awaken_session_executor::DeploymentConfig::nats_url: core::option::Option<alloc::string::String>
+pub awaken_session_executor::DeploymentConfig::sandbox_dir: core::option::Option<std::path::PathBuf>
 pub awaken_session_executor::DeploymentConfig::sandbox_tier: awaken_session_executor::SandboxTier
+pub awaken_session_executor::DeploymentConfig::sandbox_tier_explicit: bool
 pub awaken_session_executor::DeploymentConfig::storage_dir: core::option::Option<std::path::PathBuf>
 pub awaken_session_executor::DeploymentConfig::store: awaken_session_executor::StoreKind
 pub awaken_session_executor::DeploymentConfig::upstream: core::option::Option<alloc::string::String>
@@ -130,6 +141,7 @@ pub awaken_session_executor::DeploymentConfig::wake: awaken_session_executor::Wa
 pub awaken_session_executor::DeploymentConfig::wake_channel: alloc::string::String
 impl awaken_session_executor::DeploymentConfig
 pub fn awaken_session_executor::DeploymentConfig::durable_needs_persistence_error(&self, bool) -> core::option::Option<&'static str>
+pub fn awaken_session_executor::DeploymentConfig::ephemeral() -> Self
 pub fn awaken_session_executor::DeploymentConfig::from_env() -> Self
 pub struct awaken_session_executor::ExtMcpProbe
 impl awaken_session_contract::mcp_probe::McpProbe for awaken_session_executor::ExtMcpProbe
@@ -327,6 +339,7 @@ pub fn awaken_session_executor::SharedHost::with_client_tools(self, std::collect
 pub fn awaken_session_executor::SharedHost::with_compaction(self, usize, usize) -> Self
 pub fn awaken_session_executor::SharedHost::with_compaction_tokens(self, u32, f64, usize) -> Self
 pub fn awaken_session_executor::SharedHost::with_config_service(self, alloc::sync::Arc<awaken_config_service::config_plane::ConfigService>) -> Self
+pub fn awaken_session_executor::SharedHost::with_deployment_config(self, awaken_session_executor::DeploymentConfig) -> Self
 pub fn awaken_session_executor::SharedHost::with_dispatch_store(self, alloc::sync::Arc<awaken_dispatch::any::AnyDispatchStore>) -> Self
 pub fn awaken_session_executor::SharedHost::with_gate_override(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>) -> Self
 pub fn awaken_session_executor::SharedHost::with_inference_materializer(self, alloc::sync::Arc<dyn awaken_session_executor::InferenceExecutorMaterializer>) -> Self
