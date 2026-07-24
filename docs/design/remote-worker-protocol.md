@@ -581,7 +581,7 @@ The SQL outbox survives process restart. `AnyDispatchStore` exposes it for its
 built-in SQLite/PostgreSQL backends and fails explicitly when an injected
 adapter implements only `Dispatch`.
 
-`CheckpointRunLifecycleFeed` is the portable P1 Run implementation. It reads
+`CheckpointRunLifecycleFeed` is the portable single-process Run implementation. It reads
 `EventScope::All` from the existing committed-event projection, accepts an
 exclusive `LifecycleCursor`, and returns `LifecyclePage.next_cursor` equal to
 the last event actually returned. It projects only committed
@@ -601,12 +601,12 @@ does not need to parse strings or lose failure detail. Malformed lifecycle
 payloads and events referencing an unknown Run fail the page read; they are not
 silently skipped.
 
-A feed instance addresses one committed-truth partition. PostgreSQL's shared
-coordinator is a cell-wide partition; the current SQLite/filesystem host creates
-one coordinator per Thread, so its feed is Thread-partitioned. A cursor is valid
-only for the feed instance that produced it. P2 may add a durable merged outbox
-or partition-qualified cursor, but must not manufacture a global order across
-independent SQLite files.
+A feed instance addresses one committed-truth partition. A PostgreSQL schema
+and a SQLite database file each define one shared partition; a filesystem host
+that creates one coordinator per Thread remains Thread-partitioned. A cursor is
+valid only for the feed instance that produced it. A merged feed must use a
+durable outbox or partition-qualified cursor and must not manufacture a global
+order across independent partitions.
 
 If a deployment exposes one merged feed, it must be a durable projection/outbox
 with explicit ordering semantics. It must not pretend that independently stored
@@ -649,10 +649,10 @@ Implementation evidence as of 2026-07-23:
 - The final database assertion requires exactly one operation receipt, message,
   and dispatch completion. `scripts/ci/pg_tests.sh` supplies a disposable real
   PostgreSQL instance and runs the scenario single-threaded.
-- `PostgresCommitCoordinator` implements `RunLifecycleFeed` with an
-  authoritative SQL window query. A peer constructed before another node's
-  commits still pages `Running`, `Awaiting`, `Resumed`, and `Completed` without
-  refreshing its synchronous compatibility projection.
+- `PostgresCommitCoordinator` and `SqliteCommitCoordinator` implement
+  `RunLifecycleFeed` with authoritative SQL window queries. A peer constructed
+  before another node's commits still pages `Running`, `Awaiting`, `Resumed`,
+  and `Completed` without refreshing its synchronous compatibility projection.
 
 ### 7.2 Recovery optimization
 
