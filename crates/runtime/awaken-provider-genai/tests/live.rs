@@ -1,5 +1,5 @@
 //! Live provider smoke test. Ignored by default; it needs network and a
-//! an explicit OpenAI API key in the environment. This test reads it itself and
+//! an explicit OpenAI-compatible provider API key in the environment. This test reads it itself and
 //! injects it into a fixed adapter; the provider adapter has no ambient default.
 //! Run with:
 //!
@@ -16,10 +16,24 @@ use awaken_runtime_contract::resolved::ModelBinding;
 #[tokio::test]
 #[ignore = "requires network and a provider API key"]
 async fn live_text_completion() {
-    let model = std::env::var("AWAKEN_GENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
-    let key = std::env::var("OPENAI_API_KEY").expect("set OPENAI_API_KEY");
-    let executor =
-        GenaiExecutor::from_resolved(awaken_provider_genai::AdapterKind::OpenAI, None, key);
+    let deepseek = std::env::var("DEEPSEEK_API_KEY").ok();
+    let (adapter, base_url, key, default_model) = if let Some(key) = deepseek {
+        (
+            awaken_provider_genai::AdapterKind::OpenAI,
+            Some("https://api.deepseek.com/v1".to_string()),
+            key,
+            "deepseek-v4-flash",
+        )
+    } else {
+        (
+            awaken_provider_genai::AdapterKind::OpenAI,
+            None,
+            std::env::var("OPENAI_API_KEY").expect("set OPENAI_API_KEY or DEEPSEEK_API_KEY"),
+            "gpt-4o-mini",
+        )
+    };
+    let model = std::env::var("AWAKEN_GENAI_MODEL").unwrap_or_else(|_| default_model.to_string());
+    let executor = GenaiExecutor::from_resolved(adapter, base_url, key);
 
     let request = ChatRequest {
         model_binding: ModelBinding {
