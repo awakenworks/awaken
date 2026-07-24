@@ -289,11 +289,11 @@ async fn poll_work(
     // the query string. Keep the query-only fields parsed as well so the wire
     // contract is explicit even where this open-tier queue is non-blocking.
     let worker_id = worker_id(&headers);
-    let _ = (poll.block_ms, poll.reclaim_older_than_ms);
+    let _ = poll.block_ms;
     Ok(Json(
         state
             .work
-            .claim(&id, worker_id, now_ms())
+            .claim_with_reclaim(&id, worker_id, now_ms(), poll.reclaim_older_than_ms)
             .await
             .as_ref()
             .map(crate::work_queue::project_work),
