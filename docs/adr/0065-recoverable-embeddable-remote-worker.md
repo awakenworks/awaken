@@ -111,10 +111,14 @@ identity-bound transport used by Worker control. It returns one
 `ApplicationSessionProvisioner` plus the decorator that wraps each Session's
 built-in Native/ACP/A2A `RunAttemptExecutor` router.
 
-An embedding composition root may pass the existing typed `DeploymentConfig`
-to the standard Worker entrypoint. The same value derives the manifest and
-configures Host routing, so advertised ACP routes, their default, and sandbox
-selection cannot drift or fall back to a second process-environment path.
+An embedding composition root installs the existing typed `DeploymentConfig`
+and its materializers/resource plane on `WorkerNodeBuilder`, then selects
+`with_standard_manifest(application_capabilities)`. `build()` is the sole
+standard manifest derivation point; the same installed values configure Host
+routing, so advertised inference/resource capabilities, ACP routes, their
+default, and sandbox selection cannot drift through a second assembly path.
+Special deployments retain `with_manifest(explicit_manifest)`, but the two
+manifest sources are mutually exclusive and share contract validation.
 
 The provisioner returns only a frozen `ApplicationSessionPlan` of neutral
 mounts, environment values, prompt context, MCP servers, and egress policy. The
@@ -123,6 +127,13 @@ Native and ACP consume the same resulting `SessionEnvironment`. It cannot
 create another sandbox, executor registry, or MCP registry. Re-delivery of the
 same plan fingerprint is idempotent, while a different plan cannot mutate an
 already-bound Session.
+
+For Native execution, each prepared MCP server becomes the canonical
+`McpPlugin` and enters the runtime through the Session plugin field on
+`RuntimeRunContext`; it is not flattened into a parallel tool/descriptor
+registry and does not rewrite the published Agent snapshot. ACP receives the
+same typed prepared server through its own protocol projection and the Host does
+not open a competing second MCP connection.
 
 Run ingress captures the exact claim behind the neutral
 `AttemptOwnershipVerifier` installed in `RuntimeRunContext`. Application code can

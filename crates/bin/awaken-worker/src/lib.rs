@@ -140,7 +140,8 @@ impl WorkerResourcePlane {
         }
     }
 
-    fn with_repository_credentials(
+    #[must_use]
+    pub fn with_repository_credentials(
         mut self,
         credentials: awaken_control::InferenceMaterializationStores,
     ) -> Self {
@@ -183,6 +184,36 @@ fn shared_credential_backend(value: Option<&str>) -> bool {
         .is_some_and(|value| value.starts_with("postgres://") || value.starts_with("postgresql://"))
 }
 
+struct WorkerProcessConfig {
+    deployment: awaken_session_executor::DeploymentConfig,
+    manifest: StandardManifestConfig,
+    admin_listen: Option<String>,
+    graceful_drain: std::time::Duration,
+    repository_credentials: bool,
+}
+
+impl WorkerProcessConfig {
+    fn from_env() -> Self {
+        let configured_grace = std::env::var("AWAKEN_WORKER_DRAIN_GRACE_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok());
+        Self {
+            deployment: awaken_session_executor::DeploymentConfig::from_env(),
+            manifest: StandardManifestConfig::from_env(),
+            admin_listen: Some(
+                std::env::var("AWAKEN_WORKER_ADMIN_LISTEN")
+                    .ok()
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or_else(|| "0.0.0.0:9090".to_string()),
+            ),
+            graceful_drain: grace_window(true, configured_grace),
+            repository_credentials: shared_credential_backend(
+                std::env::var("AWAKEN_CREDENTIAL_DB").ok().as_deref(),
+            ),
+        }
+    }
+}
+
 /// Invalid explicit Worker composition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkerNodeBuildError(String);
@@ -195,16 +226,149 @@ impl std::fmt::Display for WorkerNodeBuildError {
 
 impl std::error::Error for WorkerNodeBuildError {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManifestKind {
+    Explicit,
+    Standard,
+}
+
+impl std::fmt::Display for ManifestKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Explicit => "explicit",
+            Self::Standard => "standard",
+        })
+    }
+}
+
+enum ManifestSource {
+    Explicit(Box<WorkerManifest>),
+    Standard {
+        application_capabilities: std::collections::BTreeSet<String>,
+    },
+}
+
+impl ManifestSource {
+    fn kind(&self) -> ManifestKind {
+        match self {
+            Self::Explicit(_) => ManifestKind::Explicit,
+            Self::Standard { .. } => ManifestKind::Standard,
+        }
+    }
+}
+
+enum ManifestSelection {
+    Unset,
+    Selected(ManifestSource),
+    Conflict {
+        first: ManifestKind,
+        second: ManifestKind,
+    },
+}
+
+impl ManifestSelection {
+    fn select(&mut self, next: ManifestSource) {
+        let current = std::mem::replace(self, Self::Unset);
+        *self = match current {
+            Self::Unset => Self::Selected(next),
+            Self::Selected(previous) if previous.kind() == next.kind() => Self::Selected(next),
+            Self::Selected(previous) => Self::Conflict {
+                first: previous.kind(),
+                second: next.kind(),
+            },
+            conflict @ Self::Conflict { .. } => conflict,
+        };
+    }
+}
+
+/// Typed metadata used only by the canonical standard manifest derivation.
+///
+/// Embedding code gets deterministic defaults. The process adapters explicitly
+/// call [`StandardManifestConfig::from_env`] once when environment-driven Worker
+/// deployment is desired; the Builder itself never rereads process environment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StandardManifestConfig {
+    build_digest: String,
+    zone: Option<String>,
+    extra_capabilities: std::collections::BTreeSet<String>,
+    max_concurrent: u32,
+}
+
+impl Default for StandardManifestConfig {
+    fn default() -> Self {
+        Self {
+            build_digest: env!("CARGO_PKG_VERSION").to_string(),
+            zone: None,
+            extra_capabilities: Default::default(),
+            max_concurrent: std::thread::available_parallelism()
+                .map(|value| value.get() as u32)
+                .unwrap_or(1),
+        }
+    }
+}
+
+impl StandardManifestConfig {
+    #[must_use]
+    pub fn new(build_digest: impl Into<String>) -> Self {
+        Self {
+            build_digest: build_digest.into(),
+            ..Self::default()
+        }
+    }
+
+    #[must_use]
+    pub fn with_zone(mut self, zone: impl Into<String>) -> Self {
+        self.zone = Some(zone.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_extra_capabilities(
+        mut self,
+        capabilities: impl IntoIterator<Item = String>,
+    ) -> Self {
+        self.extra_capabilities = capabilities.into_iter().collect();
+        self
+    }
+
+    #[must_use]
+    pub fn with_max_concurrent(mut self, max_concurrent: u32) -> Self {
+        self.max_concurrent = max_concurrent;
+        self
+    }
+
+    /// Parse the legacy `AWAKEN_WORKER_*` manifest metadata once at a process
+    /// composition edge.
+    #[must_use]
+    pub fn from_env() -> Self {
+        let mut config = Self::default();
+        config.build_digest = std::env::var("AWAKEN_WORKER_BUILD_DIGEST")
+            .unwrap_or_else(|_| config.build_digest.clone());
+        config.zone = std::env::var("AWAKEN_WORKER_ZONE").ok();
+        config.extra_capabilities = std::env::var("AWAKEN_WORKER_CAPABILITIES")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .collect();
+        config
+    }
+}
+
 /// Public assembly boundary for a recoverable database-less Worker.
 pub struct WorkerNodeBuilder {
     upstream: WorkerUpstream,
-    manifest: Option<WorkerManifest>,
+    manifest: ManifestSelection,
     deployment: awaken_session_executor::DeploymentConfig,
+    standard_manifest_config: StandardManifestConfig,
     application_factory: Option<RegisteredApplicationFactory>,
+    application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
-    acp_credentials: Option<awaken_session_executor::PinnedCredentialMaterializer>,
+    credential_materializer: Option<awaken_session_executor::PinnedCredentialMaterializer>,
     resources: Option<WorkerResourcePlane>,
     admin_listen: Option<String>,
+    graceful_drain: std::time::Duration,
 }
 
 impl WorkerNodeBuilder {
@@ -212,19 +376,46 @@ impl WorkerNodeBuilder {
     pub fn new(upstream: WorkerUpstream) -> Self {
         Self {
             upstream,
-            manifest: None,
-            deployment: awaken_session_executor::DeploymentConfig::from_env(),
+            manifest: ManifestSelection::Unset,
+            deployment: awaken_session_executor::DeploymentConfig::ephemeral(),
+            standard_manifest_config: StandardManifestConfig::default(),
             application_factory: None,
+            application_gate: None,
             materializer: None,
-            acp_credentials: None,
+            credential_materializer: None,
             resources: None,
             admin_listen: Some("0.0.0.0:9090".to_string()),
+            graceful_drain: std::time::Duration::from_secs(20),
         }
+    }
+
+    fn with_process_config(mut self, config: WorkerProcessConfig) -> Self {
+        self.deployment = config.deployment;
+        self.standard_manifest_config = config.manifest;
+        self.admin_listen = config.admin_listen;
+        self.graceful_drain = config.graceful_drain;
+        self
     }
 
     #[must_use]
     pub fn with_manifest(mut self, manifest: WorkerManifest) -> Self {
-        self.manifest = Some(manifest);
+        self.manifest
+            .select(ManifestSource::Explicit(Box::new(manifest)));
+        self
+    }
+
+    /// Derive the immutable Worker manifest from the dependencies installed on
+    /// this builder. Application capabilities remain explicit because the
+    /// registration-time factory cannot run until after this manifest has been
+    /// accepted and assigned a Worker identity.
+    #[must_use]
+    pub fn with_standard_manifest(
+        mut self,
+        application_capabilities: std::collections::BTreeSet<String>,
+    ) -> Self {
+        self.manifest.select(ManifestSource::Standard {
+            application_capabilities,
+        });
         self
     }
 
@@ -239,11 +430,29 @@ impl WorkerNodeBuilder {
         self
     }
 
+    /// Install typed metadata for standard manifest derivation.
+    #[must_use]
+    pub fn with_standard_manifest_config(mut self, config: StandardManifestConfig) -> Self {
+        self.standard_manifest_config = config;
+        self
+    }
+
     /// Install the only application extension factory, evaluated after Worker
     /// registration so both provisioning and execution use its assigned identity.
     #[must_use]
     pub fn with_application_factory(mut self, factory: RegisteredApplicationFactory) -> Self {
         self.application_factory = Some(factory);
+        self
+    }
+
+    /// Install the sole application-owned permission gate around the canonical
+    /// Session route.
+    #[must_use]
+    pub fn with_application_gate(
+        mut self,
+        gate: Arc<dyn awaken_runtime_contract::permission::ToolGateHook>,
+    ) -> Self {
+        self.application_gate = Some(gate);
         self
     }
 
@@ -274,11 +483,38 @@ impl WorkerNodeBuilder {
         self
     }
 
-    fn with_acp_credentials(
+    #[must_use]
+    pub fn with_graceful_drain(mut self, grace: std::time::Duration) -> Self {
+        self.graceful_drain = grace;
+        self
+    }
+
+    /// Install the authoritative credential materializer used by ACP launch and
+    /// Session secret delivery.
+    #[must_use]
+    pub fn with_credential_materializer(
         mut self,
         credentials: awaken_session_executor::PinnedCredentialMaterializer,
     ) -> Self {
-        self.acp_credentials = Some(credentials);
+        self.credential_materializer = Some(credentials);
+        self
+    }
+
+    /// Derive both inference and Session-secret materializers from one pair of
+    /// authoritative credential stores.
+    #[must_use]
+    pub fn with_credential_stores(
+        mut self,
+        credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
+        secrets: Arc<dyn awaken_credential_vault::SecretStore>,
+    ) -> Self {
+        self.materializer = Some(Arc::new(CredentialInferenceMaterializer::new(
+            credentials.clone(),
+            secrets.clone(),
+        )));
+        self.credential_materializer = Some(
+            awaken_session_executor::PinnedCredentialMaterializer::new(credentials, secrets),
+        );
         self
     }
 
@@ -289,39 +525,65 @@ impl WorkerNodeBuilder {
                 "Worker upstream URL must not be empty".to_string(),
             ));
         }
-        let manifest = self.manifest.ok_or_else(|| {
-            WorkerNodeBuildError("Worker manifest must be supplied explicitly".to_string())
-        })?;
-        if manifest.build_digest.trim().is_empty() {
-            return Err(WorkerNodeBuildError(
-                "Worker manifest build_digest must not be empty".to_string(),
-            ));
-        }
-        if manifest.capacity.max_concurrent == 0 {
-            return Err(WorkerNodeBuildError(
-                "Worker manifest max_concurrent must be greater than zero".to_string(),
-            ));
-        }
-        if !manifest.dispatch_contract.contains(1) || !manifest.runtime_protocol.contains(1) {
-            return Err(WorkerNodeBuildError(
-                "Worker manifest must support dispatch and runtime protocol version 1".to_string(),
-            ));
-        }
-        manifest
-            .fingerprint()
-            .map_err(|error| WorkerNodeBuildError(error.to_string()))?;
+        let resource_support = ResourceManifestSupport::from(self.resources.as_ref());
+        let manifest = match self.manifest {
+            ManifestSelection::Selected(ManifestSource::Explicit(manifest)) => *manifest,
+            ManifestSelection::Selected(ManifestSource::Standard {
+                application_capabilities,
+            }) => derive_standard_manifest(StandardManifestInputs {
+                deployment: &self.deployment,
+                materializer: self.materializer.as_deref(),
+                resource_support,
+                application_capabilities,
+                config: &self.standard_manifest_config,
+            }),
+            ManifestSelection::Unset => {
+                return Err(WorkerNodeBuildError(
+                    "Worker manifest source must be selected".to_string(),
+                ));
+            }
+            ManifestSelection::Conflict { first, second } => {
+                return Err(WorkerNodeBuildError(format!(
+                    "Worker manifest sources are mutually exclusive: selected {first} and {second}"
+                )));
+            }
+        };
+        validate_worker_manifest(&manifest)?;
         Ok(WorkerNode {
             upstream: self.upstream,
             manifest,
             deployment: self.deployment,
             application_factory: self.application_factory,
-            application_gate: None,
+            application_gate: self.application_gate,
             materializer: self.materializer,
-            acp_credentials: self.acp_credentials,
+            credential_materializer: self.credential_materializer,
             resources: self.resources,
             admin_listen: self.admin_listen,
+            graceful_drain: self.graceful_drain,
         })
     }
+}
+
+fn validate_worker_manifest(manifest: &WorkerManifest) -> Result<(), WorkerNodeBuildError> {
+    if manifest.build_digest.trim().is_empty() {
+        return Err(WorkerNodeBuildError(
+            "Worker manifest build_digest must not be empty".to_string(),
+        ));
+    }
+    if manifest.capacity.max_concurrent == 0 {
+        return Err(WorkerNodeBuildError(
+            "Worker manifest max_concurrent must be greater than zero".to_string(),
+        ));
+    }
+    if !manifest.dispatch_contract.contains(1) || !manifest.runtime_protocol.contains(1) {
+        return Err(WorkerNodeBuildError(
+            "Worker manifest must support dispatch and runtime protocol version 1".to_string(),
+        ));
+    }
+    manifest
+        .fingerprint()
+        .map_err(|error| WorkerNodeBuildError(error.to_string()))?;
+    Ok(())
 }
 
 /// Why the Worker lifecycle is stopping.
@@ -342,9 +604,10 @@ pub struct WorkerNode {
     application_factory: Option<RegisteredApplicationFactory>,
     application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
-    acp_credentials: Option<awaken_session_executor::PinnedCredentialMaterializer>,
+    credential_materializer: Option<awaken_session_executor::PinnedCredentialMaterializer>,
     resources: Option<WorkerResourcePlane>,
     admin_listen: Option<String>,
+    graceful_drain: std::time::Duration,
 }
 
 #[derive(Clone)]
@@ -386,112 +649,7 @@ impl WorkerLifecycle {
 /// The injected remote dispatch store is the durable-ingress authority and enables
 /// the pool directly; embedding does not require `AWAKEN_INGRESS=durable`.
 pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    run_with_standard_environment(WorkerUpstream::new(upstream), Default::default(), None).await
-}
-
-/// Run the standard database-less Worker with one registered application.
-///
-/// Credential, resource-plane, ACP, manifest, and lifecycle assembly remain
-/// identical to [`run`]; the application contributes only the post-registration
-/// wrapper.
-pub async fn run_with_application(
-    upstream: WorkerUpstream,
-    application_capabilities: std::collections::BTreeSet<String>,
-    factory: RegisteredApplicationFactory,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    run_with_standard_environment(upstream, application_capabilities, Some(factory)).await
-}
-
-/// Run the same fully assembled Worker lifecycle with a supervisor-provided
-/// shutdown source. Embedded applications use this to retain an explicit stop
-/// handle while reusing the standard registration, routing, heartbeat, drain,
-/// quiesce, and deregistration path.
-pub async fn run_with_application_until<F>(
-    upstream: WorkerUpstream,
-    application_capabilities: std::collections::BTreeSet<String>,
-    factory: RegisteredApplicationFactory,
-    shutdown: F,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
-where
-    F: std::future::Future<
-            Output = Result<WorkerShutdown, Box<dyn std::error::Error + Send + Sync>>,
-        >,
-{
-    build_standard_worker(upstream, application_capabilities, Some(factory))
-        .await?
-        .run_until(shutdown)
-        .await
-}
-
-/// Run a supervised application Worker over credential stores supplied by an
-/// embedding composition root. Native inference, ACP launch credentials and
-/// credentialed Resource delivery all use these same authoritative stores.
-pub async fn run_with_application_credential_stores_until<F>(
-    upstream: WorkerUpstream,
-    credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
-    secrets: Arc<dyn awaken_credential_vault::SecretStore>,
-    application_capabilities: std::collections::BTreeSet<String>,
-    factory: RegisteredApplicationFactory,
-    gate: Arc<dyn awaken_runtime_contract::permission::ToolGateHook>,
-    shutdown: F,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
-where
-    F: std::future::Future<
-            Output = Result<WorkerShutdown, Box<dyn std::error::Error + Send + Sync>>,
-        >,
-{
-    run_with_application_credential_stores_and_deployment_until(
-        upstream,
-        awaken_session_executor::DeploymentConfig::from_env(),
-        credentials,
-        secrets,
-        application_capabilities,
-        factory,
-        gate,
-        shutdown,
-    )
-    .await
-}
-
-/// Explicit-deployment counterpart for embedding composition roots.
-pub async fn run_with_application_credential_stores_and_deployment_until<F>(
-    upstream: WorkerUpstream,
-    deployment: awaken_session_executor::DeploymentConfig,
-    credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
-    secrets: Arc<dyn awaken_credential_vault::SecretStore>,
-    application_capabilities: std::collections::BTreeSet<String>,
-    factory: RegisteredApplicationFactory,
-    gate: Arc<dyn awaken_runtime_contract::permission::ToolGateHook>,
-    shutdown: F,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
-where
-    F: std::future::Future<
-            Output = Result<WorkerShutdown, Box<dyn std::error::Error + Send + Sync>>,
-        >,
-{
-    build_worker_with_materialization_stores(
-        upstream,
-        deployment,
-        awaken_control::InferenceMaterializationStores {
-            credentials,
-            secrets,
-        },
-        true,
-        application_capabilities,
-        Some(factory),
-        Some(gate),
-    )
-    .await?
-    .run_until(shutdown)
-    .await
-}
-
-async fn run_with_standard_environment(
-    upstream: WorkerUpstream,
-    application_capabilities: std::collections::BTreeSet<String>,
-    application: Option<RegisteredApplicationFactory>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    build_standard_worker(upstream, application_capabilities, application)
+    build_standard_worker(WorkerUpstream::new(upstream))
         .await?
         .run_until_shutdown()
         .await
@@ -499,60 +657,27 @@ async fn run_with_standard_environment(
 
 async fn build_standard_worker(
     upstream: WorkerUpstream,
-    application_capabilities: std::collections::BTreeSet<String>,
-    application: Option<RegisteredApplicationFactory>,
 ) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
+    let process = WorkerProcessConfig::from_env();
     let stores = awaken_control::open_inference_materialization_stores_from_env().await;
-    let repository_credentials =
-        shared_credential_backend(std::env::var("AWAKEN_CREDENTIAL_DB").ok().as_deref());
-    build_worker_with_materialization_stores(
-        upstream,
-        awaken_session_executor::DeploymentConfig::from_env(),
-        stores,
-        repository_credentials,
-        application_capabilities,
-        application,
-        None,
-    )
-    .await
+    build_worker_with_materialization_stores(upstream, process, stores).await
 }
 
 async fn build_worker_with_materialization_stores(
     upstream: WorkerUpstream,
-    deployment: awaken_session_executor::DeploymentConfig,
+    process: WorkerProcessConfig,
     stores: awaken_control::InferenceMaterializationStores,
-    repository_credentials: bool,
-    application_capabilities: std::collections::BTreeSet<String>,
-    application: Option<RegisteredApplicationFactory>,
-    application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
 ) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
-    let resource_credentials = repository_credentials.then(|| stores.clone());
+    let resource_credentials = process.repository_credentials.then(|| stores.clone());
     let resources = shared_resource_wiring(resource_credentials).await?;
-    let materializer =
-        CredentialInferenceMaterializer::new(stores.credentials.clone(), stores.secrets.clone());
-    let materializer: Arc<dyn InferenceExecutorMaterializer> = Arc::new(materializer);
-    let manifest = worker_manifest(
-        &deployment,
-        Some(materializer.as_ref()),
-        resources.is_some(),
-        resources
-            .as_ref()
-            .is_some_and(WorkerResourcePlane::supports_repository_credentials),
-        application_capabilities,
-    );
-    build_configured_worker(
-        upstream,
-        deployment,
-        manifest,
-        materializer,
-        Some(awaken_session_executor::PinnedCredentialMaterializer::new(
-            stores.credentials,
-            stores.secrets,
-        )),
-        resources,
-        application,
-        application_gate,
-    )
+    let mut builder = WorkerNodeBuilder::new(upstream)
+        .with_process_config(process)
+        .with_credential_stores(stores.credentials, stores.secrets)
+        .with_standard_manifest(Default::default());
+    if let Some(resources) = resources {
+        builder = builder.with_resource_plane(resources);
+    }
+    Ok(builder.build()?)
 }
 
 /// Run a genuinely secretless worker with a deployment-provided materializer.
@@ -563,171 +688,30 @@ pub async fn run_with_inference_materializer(
     upstream: &str,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    run_with_upstream_and_inference_materializer(WorkerUpstream::new(upstream), materializer).await
-}
-
-/// Run a secretless Worker over one caller-configured control transport.
-///
-/// Managed compositions use this entrypoint so the same [`WorkerUpstream`]
-/// (including its mTLS client and logical Worker id) is cloned through
-/// registration, claim/renew/settle, claimed commit, and ordinary commit. This
-/// function never reconstructs the transport from its URL.
-pub async fn run_with_upstream_and_inference_materializer(
-    upstream: WorkerUpstream,
-    materializer: Arc<dyn InferenceExecutorMaterializer>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    run_with_upstream_application_and_inference_materializer(
-        upstream,
-        materializer,
-        Default::default(),
-        None,
-    )
-    .await
-}
-
-/// Run a caller-materialized Worker with an optional registered application
-/// application. This is the secretless counterpart of [`run_with_application`].
-pub async fn run_with_upstream_application_and_inference_materializer(
-    upstream: WorkerUpstream,
-    materializer: Arc<dyn InferenceExecutorMaterializer>,
-    application_capabilities: std::collections::BTreeSet<String>,
-    application: Option<RegisteredApplicationFactory>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     build_secretless_worker(
-        upstream,
-        awaken_session_executor::DeploymentConfig::from_env(),
+        WorkerUpstream::new(upstream),
+        WorkerProcessConfig::from_env(),
         materializer,
-        application_capabilities,
-        application,
-        None,
     )
     .await?
     .run_until_shutdown()
     .await
 }
 
-/// Supervised counterpart of
-/// [`run_with_upstream_application_and_inference_materializer`].
-pub async fn run_with_upstream_application_and_inference_materializer_until<F>(
-    upstream: WorkerUpstream,
-    materializer: Arc<dyn InferenceExecutorMaterializer>,
-    application_capabilities: std::collections::BTreeSet<String>,
-    application: Option<RegisteredApplicationFactory>,
-    application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
-    shutdown: F,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
-where
-    F: std::future::Future<
-            Output = Result<WorkerShutdown, Box<dyn std::error::Error + Send + Sync>>,
-        >,
-{
-    run_with_upstream_application_and_inference_materializer_and_deployment_until(
-        upstream,
-        awaken_session_executor::DeploymentConfig::from_env(),
-        materializer,
-        application_capabilities,
-        application,
-        application_gate,
-        shutdown,
-    )
-    .await
-}
-
-/// Explicit-deployment supervised secretless Worker entrypoint.
-pub async fn run_with_upstream_application_and_inference_materializer_and_deployment_until<F>(
-    upstream: WorkerUpstream,
-    deployment: awaken_session_executor::DeploymentConfig,
-    materializer: Arc<dyn InferenceExecutorMaterializer>,
-    application_capabilities: std::collections::BTreeSet<String>,
-    application: Option<RegisteredApplicationFactory>,
-    application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
-    shutdown: F,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
-where
-    F: std::future::Future<
-            Output = Result<WorkerShutdown, Box<dyn std::error::Error + Send + Sync>>,
-        >,
-{
-    build_secretless_worker(
-        upstream,
-        deployment,
-        materializer,
-        application_capabilities,
-        application,
-        application_gate,
-    )
-    .await?
-    .run_until(shutdown)
-    .await
-}
-
 async fn build_secretless_worker(
     upstream: WorkerUpstream,
-    deployment: awaken_session_executor::DeploymentConfig,
+    process: WorkerProcessConfig,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
-    application_capabilities: std::collections::BTreeSet<String>,
-    application: Option<RegisteredApplicationFactory>,
-    application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
 ) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
     let resources = shared_resource_wiring(None).await?;
-    let manifest = worker_manifest(
-        &deployment,
-        Some(materializer.as_ref()),
-        resources.is_some(),
-        false,
-        application_capabilities,
-    );
-    build_configured_worker(
-        upstream,
-        deployment,
-        manifest,
-        materializer,
-        None,
-        resources,
-        application,
-        application_gate,
-    )
-}
-
-fn build_configured_worker(
-    upstream: WorkerUpstream,
-    deployment: awaken_session_executor::DeploymentConfig,
-    manifest: WorkerManifest,
-    materializer: Arc<dyn InferenceExecutorMaterializer>,
-    acp_credentials: Option<awaken_session_executor::PinnedCredentialMaterializer>,
-    resources: Option<WorkerResourcePlane>,
-    application: Option<RegisteredApplicationFactory>,
-    application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
-) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
     let mut builder = WorkerNodeBuilder::new(upstream)
-        .with_deployment_config(deployment)
-        .with_manifest(manifest)
+        .with_process_config(process)
         .with_inference_materializer(materializer)
-        .with_optional_resource_plane(resources)
-        .with_admin_listen(configured_admin_listen());
-    if let Some(credentials) = acp_credentials {
-        builder = builder.with_acp_credentials(credentials);
+        .with_standard_manifest(Default::default());
+    if let Some(resources) = resources {
+        builder = builder.with_resource_plane(resources);
     }
-    if let Some(factory) = application {
-        builder = builder.with_application_factory(factory);
-    }
-    let mut worker = builder.build()?;
-    worker.application_gate = application_gate;
-    Ok(worker)
-}
-
-fn configured_admin_listen() -> String {
-    std::env::var("AWAKEN_WORKER_ADMIN_LISTEN")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "0.0.0.0:9090".to_string())
-}
-
-impl WorkerNodeBuilder {
-    fn with_optional_resource_plane(mut self, resources: Option<WorkerResourcePlane>) -> Self {
-        self.resources = resources;
-        self
-    }
+    Ok(builder.build()?)
 }
 
 impl WorkerNode {
@@ -846,12 +830,16 @@ impl WorkerNode {
 
         // Serve only the ACP CLI capability this worker advertises. The run's snapshot
         // selects the matching backend and supplies its published provider access.
+        let credential_materializer = self.credential_materializer.clone();
         host = host
             .with_acp_from_deployment(
                 awaken_server::relay_hand_executor_factory(),
-                self.acp_credentials,
+                self.credential_materializer,
             )
             .await;
+        if let Some(credentials) = credential_materializer {
+            host = host.with_session_secret_broker(Arc::new(credentials));
+        }
 
         let host = Arc::new(host);
         if let Some(validator) = resource_validator {
@@ -936,7 +924,11 @@ impl WorkerNode {
 
         // Stop claiming immediately so no NEW run is taken; the in-flight ones finish
         // within the grace window before the process exits.
-        let grace = drain_grace(graceful);
+        let grace = if graceful {
+            self.graceful_drain
+        } else {
+            std::time::Duration::ZERO
+        };
         let deadline_ms = wall_clock_ms().saturating_add(grace.as_millis() as u64);
         if let Err(error) = lifecycle.begin_drain(Some(deadline_ms)).await {
             eprintln!("awaken-worker drain registration failed closed: {error}");
@@ -974,15 +966,36 @@ fn new_incarnation_id() -> Result<String, getrandom::Error> {
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-fn worker_manifest(
-    deployment: &awaken_session_executor::DeploymentConfig,
-    materializer: Option<&dyn InferenceExecutorMaterializer>,
-    resource_support: bool,
-    repository_credential_support: bool,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResourceManifestSupport {
+    None,
+    Session,
+    SessionWithRepositoryCredentials,
+}
+
+impl From<Option<&WorkerResourcePlane>> for ResourceManifestSupport {
+    fn from(resources: Option<&WorkerResourcePlane>) -> Self {
+        match resources {
+            Some(resources) if resources.supports_repository_credentials() => {
+                Self::SessionWithRepositoryCredentials
+            }
+            Some(_) => Self::Session,
+            None => Self::None,
+        }
+    }
+}
+
+struct StandardManifestInputs<'a> {
+    deployment: &'a awaken_session_executor::DeploymentConfig,
+    materializer: Option<&'a dyn InferenceExecutorMaterializer>,
+    resource_support: ResourceManifestSupport,
     application_capabilities: std::collections::BTreeSet<String>,
-) -> WorkerManifest {
+    config: &'a StandardManifestConfig,
+}
+
+fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> WorkerManifest {
     use awaken_provisioning_contract::{IsolationClass, SandboxCapabilities};
-    let (sandbox, backend) = match deployment.sandbox_tier {
+    let (sandbox, backend) = match inputs.deployment.sandbox_tier {
         awaken_session_executor::SandboxTier::Local => (WorkerManifest::default().sandbox, "local"),
         awaken_session_executor::SandboxTier::Docker
         | awaken_session_executor::SandboxTier::Podman
@@ -997,7 +1010,7 @@ fn worker_manifest(
                 resource_limits: true,
                 custom_rootfs: true,
             },
-            match deployment.sandbox_tier {
+            match inputs.deployment.sandbox_tier {
                 awaken_session_executor::SandboxTier::Docker => "docker",
                 awaken_session_executor::SandboxTier::Podman => "podman",
                 awaken_session_executor::SandboxTier::K8s => "k8s",
@@ -1023,43 +1036,38 @@ fn worker_manifest(
         awaken_runtime_contract::A2A_RUNTIME_CAPABILITY.to_string(),
     ]);
     capabilities.extend(
-        materializer
+        inputs
+            .materializer
             .into_iter()
             .flat_map(InferenceExecutorMaterializer::supported_access_schemes)
             .map(|capability| (*capability).to_string()),
     );
-    if resource_support {
-        capabilities.insert(SESSION_RESOURCES_CAPABILITY.to_string());
-        if repository_credential_support {
+    match inputs.resource_support {
+        ResourceManifestSupport::None => {}
+        ResourceManifestSupport::Session => {
+            capabilities.insert(SESSION_RESOURCES_CAPABILITY.to_string());
+        }
+        ResourceManifestSupport::SessionWithRepositoryCredentials => {
+            capabilities.insert(SESSION_RESOURCES_CAPABILITY.to_string());
             capabilities.insert(REPOSITORY_CREDENTIALS_CAPABILITY.to_string());
         }
     }
-    capabilities.extend(application_capabilities);
-    if let Some(profile) = &deployment.acp {
+    capabilities.extend(inputs.application_capabilities);
+    if let Some(profile) = &inputs.deployment.acp {
         capabilities.extend(profile.cli_ids().map(|cli| format!("acp:{cli}")));
     }
-    capabilities.extend(
-        std::env::var("AWAKEN_WORKER_CAPABILITIES")
-            .unwrap_or_default()
-            .split(',')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string),
-    );
+    capabilities.extend(inputs.config.extra_capabilities.iter().cloned());
     WorkerManifest {
-        build_digest: std::env::var("AWAKEN_WORKER_BUILD_DIGEST")
-            .unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string()),
+        build_digest: inputs.config.build_digest.clone(),
         capabilities,
-        zone: std::env::var("AWAKEN_WORKER_ZONE").ok(),
+        zone: inputs.config.zone.clone(),
         sandbox,
         sandbox_backends: std::collections::BTreeSet::from([backend.to_string()]),
         dispatch_contract: VersionRange::exact(1),
         runtime_protocol: VersionRange::exact(1),
         checkpoint_formats: std::collections::BTreeSet::from(["stream-v1".to_string()]),
         capacity: WorkerCapacity {
-            max_concurrent: std::thread::available_parallelism()
-                .map(|value| value.get() as u32)
-                .unwrap_or(1),
+            max_concurrent: inputs.config.max_concurrent,
             ..WorkerCapacity::default()
         },
         ..WorkerManifest::default()
@@ -1128,16 +1136,6 @@ async fn wait_for_in_flight(host: &SharedHost, grace: std::time::Duration) {
     }
 }
 
-/// The graceful-drain window: how long to let in-flight runs finish after we stop
-/// claiming. Reads `AWAKEN_WORKER_DRAIN_GRACE_SECS` and delegates to the pure
-/// [`grace_window`] so the policy is unit-testable without touching the environment.
-fn drain_grace(graceful: bool) -> std::time::Duration {
-    let configured = std::env::var("AWAKEN_WORKER_DRAIN_GRACE_SECS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok());
-    grace_window(graceful, configured)
-}
-
 /// The grace policy (pure): a SIGTERM (orchestrator scale-in) waits `configured` or
 /// the 20s default so in-flight runs finish; a SIGINT (developer ctrl-c) exits
 /// promptly (zero) so the foreground stop is snappy.
@@ -1155,8 +1153,9 @@ mod grace_tests {
     use awaken_runtime_contract::llm::LlmExecutor;
 
     use super::{
-        InferenceExecutorMaterializer, credential_observations, grace_window,
-        shared_credential_backend, worker_manifest,
+        InferenceExecutorMaterializer, ResourceManifestSupport, StandardManifestConfig,
+        StandardManifestInputs, WorkerNodeBuilder, credential_observations,
+        derive_standard_manifest, grace_window, shared_credential_backend,
     };
 
     struct SchemeMaterializer;
@@ -1184,19 +1183,20 @@ mod grace_tests {
     }
 
     fn deployment() -> awaken_session_executor::DeploymentConfig {
-        awaken_session_executor::DeploymentConfig::from_env()
+        awaken_session_executor::DeploymentConfig::ephemeral()
     }
 
     #[test]
     fn worker_manifest_derives_materialization_capabilities_from_the_adapter() {
         let materializer = SchemeMaterializer;
-        let manifest = worker_manifest(
-            &deployment(),
-            Some(&materializer),
-            false,
-            false,
-            Default::default(),
-        );
+        let deployment = deployment();
+        let manifest = derive_standard_manifest(StandardManifestInputs {
+            deployment: &deployment,
+            materializer: Some(&materializer),
+            resource_support: ResourceManifestSupport::None,
+            application_capabilities: Default::default(),
+            config: &StandardManifestConfig::default(),
+        });
 
         assert!(manifest.capabilities.contains("native-runtime"));
         assert!(
@@ -1215,8 +1215,27 @@ mod grace_tests {
     }
 
     #[test]
+    fn standard_builder_derives_from_its_installed_materializer() {
+        let worker =
+            WorkerNodeBuilder::new(awaken_session_executor::WorkerUpstream::new("http://control"))
+                .with_inference_materializer(Arc::new(SchemeMaterializer))
+                .with_standard_manifest(Default::default())
+                .build()
+                .expect("installed standard topology is valid");
+
+        assert!(worker.manifest().capabilities.contains("test-access/v1"));
+    }
+
+    #[test]
     fn worker_manifest_advertises_only_installed_resource_seams() {
-        let without = worker_manifest(&deployment(), None, false, false, Default::default());
+        let deployment = deployment();
+        let without = derive_standard_manifest(StandardManifestInputs {
+            deployment: &deployment,
+            materializer: None,
+            resource_support: ResourceManifestSupport::None,
+            application_capabilities: Default::default(),
+            config: &StandardManifestConfig::default(),
+        });
         assert!(
             !without
                 .capabilities
@@ -1228,7 +1247,13 @@ mod grace_tests {
                 .contains(super::REPOSITORY_CREDENTIALS_CAPABILITY)
         );
 
-        let secretless = worker_manifest(&deployment(), None, true, false, Default::default());
+        let secretless = derive_standard_manifest(StandardManifestInputs {
+            deployment: &deployment,
+            materializer: None,
+            resource_support: ResourceManifestSupport::Session,
+            application_capabilities: Default::default(),
+            config: &StandardManifestConfig::default(),
+        });
         assert!(
             secretless
                 .capabilities
@@ -1240,7 +1265,13 @@ mod grace_tests {
                 .contains(super::REPOSITORY_CREDENTIALS_CAPABILITY)
         );
 
-        let credentialed = worker_manifest(&deployment(), None, true, true, Default::default());
+        let credentialed = derive_standard_manifest(StandardManifestInputs {
+            deployment: &deployment,
+            materializer: None,
+            resource_support: ResourceManifestSupport::SessionWithRepositoryCredentials,
+            application_capabilities: Default::default(),
+            config: &StandardManifestConfig::default(),
+        });
         assert!(
             credentialed
                 .capabilities
@@ -1250,16 +1281,17 @@ mod grace_tests {
 
     #[test]
     fn worker_manifest_includes_explicit_application_capabilities() {
-        let manifest = worker_manifest(
-            &deployment(),
-            None,
-            false,
-            false,
-            std::collections::BTreeSet::from([
+        let deployment = deployment();
+        let manifest = derive_standard_manifest(StandardManifestInputs {
+            deployment: &deployment,
+            materializer: None,
+            resource_support: ResourceManifestSupport::None,
+            application_capabilities: std::collections::BTreeSet::from([
                 "application:flow-envelope/v1".to_string(),
                 "application:flow-tools/v1".to_string(),
             ]),
-        );
+            config: &StandardManifestConfig::default(),
+        });
 
         assert!(
             manifest
@@ -1267,6 +1299,27 @@ mod grace_tests {
                 .contains("application:flow-envelope/v1")
         );
         assert!(manifest.capabilities.contains("application:flow-tools/v1"));
+    }
+
+    #[test]
+    fn standard_manifest_uses_one_typed_metadata_source() {
+        let deployment = deployment();
+        let config = StandardManifestConfig::new("build:test")
+            .with_zone("zone:test")
+            .with_extra_capabilities(["operator:test/v1".to_string()])
+            .with_max_concurrent(7);
+        let manifest = derive_standard_manifest(StandardManifestInputs {
+            deployment: &deployment,
+            materializer: None,
+            resource_support: ResourceManifestSupport::None,
+            application_capabilities: Default::default(),
+            config: &config,
+        });
+
+        assert_eq!(manifest.build_digest, "build:test");
+        assert_eq!(manifest.zone.as_deref(), Some("zone:test"));
+        assert!(manifest.capabilities.contains("operator:test/v1"));
+        assert_eq!(manifest.capacity.max_concurrent, 7);
     }
 
     #[test]
