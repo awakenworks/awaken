@@ -62,6 +62,61 @@ async function main() {
     assert.equal(overObj.agent.version, 4, 'override echoes its pinned base version');
     pass('agent_with_overrides.model ({id, speed}) replaces the model and echoes version');
 
+    // Official create-time override semantics: null/empty arrays clear the
+    // session-local field. This must not mutate the underlying Agent version.
+    const cleared = await client.beta.sessions.create({
+      agent: {
+        id: 'assistant',
+        type: 'agent_with_overrides',
+        system: null,
+        tools: [],
+        mcp_servers: [],
+        skills: [],
+      },
+      betas: BETAS,
+    });
+    assert.equal(cleared.agent.system, null);
+    assert.deepEqual(cleared.agent.tools, []);
+    assert.deepEqual(cleared.agent.mcp_servers, []);
+    assert.deepEqual(cleared.agent.skills, []);
+    pass('create-time null/empty override fields clear only the session');
+
+    const mcpFiltered = await client.beta.sessions.create({
+      agent: {
+        id: 'assistant',
+        type: 'agent_with_overrides',
+        tools: [{
+          type: 'mcp_toolset',
+          mcp_server_name: 'calc',
+          default_config: { enabled: false },
+          configs: [{ name: 'add', enabled: true }],
+        }],
+        mcp_servers: [{ type: 'url', name: 'calc', url: 'http://127.0.0.1:1/mcp' }],
+      },
+      betas: BETAS,
+    });
+    assert.equal(mcpFiltered.agent.tools[0].type, 'mcp_toolset');
+    assert.equal(mcpFiltered.agent.tools[0].mcp_server_name, 'calc');
+    assert.equal(mcpFiltered.agent.tools[0].default_config.enabled, false);
+    assert.deepEqual(mcpFiltered.agent.mcp_servers, [{
+      type: 'url', name: 'calc', url: 'http://127.0.0.1:1/mcp',
+    }]);
+    pass('mcp_toolset allowlist projects with its declared MCP server');
+
+    await assert.rejects(
+      () => client.beta.sessions.create({
+        agent: {
+          id: 'assistant',
+          type: 'agent_with_overrides',
+          mcp_servers: [{ type: 'url', name: 'dangling', url: 'http://127.0.0.1:1/mcp' }],
+          tools: [],
+        },
+        betas: BETAS,
+      }),
+      (err) => err.status === 400,
+    );
+    pass('unreferenced MCP server is rejected 400');
+
     // ── model: null is a clear — rejected, a session always needs a model ────────
     // Raw POST: the not-clearable rule is a wire-level constraint, so drive it past
     // the SDK's typed params directly.

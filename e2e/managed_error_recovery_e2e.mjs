@@ -126,6 +126,67 @@ async function main() {
       pass('thread operations work across successive runs');
     }
 
+    // 7. A retryable upstream fault is observable as the neutral
+    // `session.status_rescheduled` marker before the successful answer. This is
+    // deliberately driven through the real provider adapter and socket fixture,
+    // not by injecting a protocol event.
+    {
+      const retryUpstream = await startUpstream('echo', { failuresBeforeSuccess: 1, faultStatus: 503 });
+      const retryServer = spawnServer('real', PORT + 1, { ...realServerEnv('echo', retryUpstream) });
+      try {
+        await waitForPort(PORT + 1);
+        const retryClient = new Anthropic({ apiKey: 'e2e-dummy', baseURL: retryServer.baseUrl });
+        const session = await retryClient.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
+        await retryClient.beta.sessions.events.send(session.id, {
+          events: [{ type: 'user.message', content: [{ type: 'text', text: 'retry-me' }] }],
+          betas: BETAS,
+        });
+        const events = await listEvents(retryClient, session.id);
+        const types = events.map((event) => event.type);
+        assert.ok(types.includes('session.status_rescheduled'), `retry marker missing: ${types}`);
+        assert.ok(types.includes('agent.message'), `retry did not complete: ${types}`);
+        pass('retryable upstream fault -> session.status_rescheduled -> successful turn');
+      } finally {
+        await stopServer(retryServer.server);
+        retryUpstream.close();
+      }
+    }
+
+    // 8. Interrupt an active turn, then steer the same idle session with a new
+    // user message. The neutral runtime owns the cancellation/continuation
+    // semantics; Managed only projects the resulting event sequence.
+    {
+      const slowUpstream = await startUpstream('echo', { delayMs: 900 });
+      const steerServer = spawnServer('real', PORT + 2, { ...realServerEnv('echo', slowUpstream) });
+      try {
+        await waitForPort(PORT + 2);
+        const steerClient = new Anthropic({ apiKey: 'e2e-dummy', baseURL: steerServer.baseUrl });
+        const session = await steerClient.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
+        const active = steerClient.beta.sessions.events.send(session.id, {
+          events: [{ type: 'user.message', content: [{ type: 'text', text: 'long-running original' }] }],
+          betas: BETAS,
+        }).catch(() => undefined);
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        await steerClient.beta.sessions.events.send(session.id, {
+          events: [{ type: 'user.interrupt' }],
+          betas: BETAS,
+        });
+        await active;
+        await steerClient.beta.sessions.events.send(session.id, {
+          events: [{ type: 'user.message', content: [{ type: 'text', text: 'steered replacement' }] }],
+          betas: BETAS,
+        });
+        const events = await listEvents(steerClient, session.id);
+        const texts = events.filter((event) => event.type === 'agent.message')
+          .flatMap((event) => event.content ?? []).map((part) => part.text ?? '').join(' ');
+        assert.ok(texts.includes('steered replacement'), `steered answer missing: ${texts}`);
+        pass('active interrupt followed by a replacement user.message completes on the same session');
+      } finally {
+        await stopServer(steerServer.server);
+        slowUpstream.close();
+      }
+    }
+
     console.log('E2E PASS: managed error recovery + graceful degradation (ported from awaken-next).');
   } finally {
     await stopServer(a.server);

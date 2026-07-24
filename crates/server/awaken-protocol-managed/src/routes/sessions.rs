@@ -306,6 +306,51 @@ async fn update_session(
     Path(id): Path<String>,
     ManagedJson(body): ManagedJson<serde_json::Value>,
 ) -> Result<Json<Session>, WireErr> {
+    let agent = body.get("agent").cloned();
+    let (tools, mcp_servers) = if let Some(agent) = agent {
+        let object = agent
+            .as_object()
+            .ok_or_else(|| {
+                error_response(StateError::Run(RunError::bad_request(
+                    "agent update must be an object",
+                )))
+            })
+            .map_err(|e| e)?;
+        for immutable in ["model", "system", "skills"] {
+            if object.contains_key(immutable) {
+                return Err(error_response(StateError::Run(RunError::bad_request(
+                    format!(
+                        "agent.{immutable} is not updatable; only tools and mcp_servers may change"
+                    ),
+                ))));
+            }
+        }
+        let tools = object
+            .get("tools")
+            .map(|value| {
+                value.as_array().cloned().ok_or_else(|| {
+                    error_response(StateError::Run(RunError::bad_request(
+                        "agent.tools must be an array",
+                    )))
+                })
+            })
+            .transpose()
+            .map_err(|e| e)?;
+        let mcp_servers = object
+            .get("mcp_servers")
+            .map(|value| {
+                value.as_array().cloned().ok_or_else(|| {
+                    error_response(StateError::Run(RunError::bad_request(
+                        "agent.mcp_servers must be an array",
+                    )))
+                })
+            })
+            .transpose()
+            .map_err(|e| e)?;
+        (tools, mcp_servers)
+    } else {
+        (None, None)
+    };
     let title = body.get("title").map(|t| t.as_str().map(str::to_string));
     let metadata = body.get("metadata").and_then(|m| m.as_object()).map(|o| {
         o.iter()
@@ -313,7 +358,7 @@ async fn update_session(
             .collect()
     });
     state
-        .update_session(&id, title, metadata)
+        .update_session(&id, title, metadata, tools, mcp_servers)
         .map(Json)
         .map_err(error_response)
 }
