@@ -24,7 +24,9 @@ use environment_owned::EnvironmentOwnedProcess;
 mod files;
 mod podman_plan;
 mod recovery;
+mod secret;
 pub use podman_plan::{RootfsError, RootfsPlan, podman_run_argv, rootfs_plan};
+pub use secret::SecretBytes;
 
 /// Container-tier capabilities: OS-enforced isolation strong enough to host an
 /// opaque agent, with the guarantees bwrap could not give (allowlist egress,
@@ -79,26 +81,6 @@ pub struct BindPlan {
     /// Exact credential file path inside a directory bind. Docker/Podman mount the
     /// writable config directory; Kubernetes reads this file via exec for writeback.
     pub credential_file_path: Option<String>,
-}
-
-#[derive(Clone, PartialEq, Eq)]
-pub struct SecretBytes(Vec<u8>);
-
-impl SecretBytes {
-    fn new(bytes: Vec<u8>) -> Self {
-        Self(bytes)
-    }
-
-    #[cfg(feature = "k8s")]
-    pub(crate) fn expose(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-impl std::fmt::Debug for SecretBytes {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("<redacted secret bytes>")
-    }
 }
 
 /// A memory-store mount realized as a **memoryd sidecar** sharing an `emptyDir` with
@@ -1409,7 +1391,7 @@ pub struct ContainerProvider<R: ContainerRuntime> {
     file_store: Option<Arc<dyn pc::BlobSource>>,
     /// Bidirectional broker used only for `MountSource::Secret`; durable writable
     /// mounts are committed through it after the agent process exits.
-    secret_broker: Option<Arc<dyn pc::SecretBroker>>,
+    secret_broker: std::sync::RwLock<Option<Arc<dyn pc::SecretBroker>>>,
     /// Neutral MemoryStore projection injected by the composition root. Interior
     /// mutability lets an already-shared provider receive the platform adapter.
     memory_mounter: std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>,
@@ -1423,7 +1405,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             egress_proxy: None,
             blobs: std::collections::HashMap::new(),
             file_store: None,
-            secret_broker: None,
+            secret_broker: std::sync::RwLock::new(None),
             memory_mounter: std::sync::RwLock::new(None),
         }
     }
@@ -1461,9 +1443,16 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
     }
 
     #[must_use]
-    pub fn with_secret_broker(mut self, broker: Arc<dyn pc::SecretBroker>) -> Self {
-        self.secret_broker = Some(broker);
+    pub fn with_secret_broker(self, broker: Arc<dyn pc::SecretBroker>) -> Self {
+        self.install_secret_broker(broker);
         self
+    }
+
+    pub fn install_secret_broker(&self, broker: Arc<dyn pc::SecretBroker>) {
+        *self
+            .secret_broker
+            .write()
+            .expect("container secret broker lock poisoned") = Some(broker);
     }
 
     /// Realize a Session-owned container environment. The trait `create` boxes this.
@@ -1496,12 +1485,17 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         // the seed then the injected BlobSource, hash-verified. Bytes are staged to a host
         // dir (bound by docker/podman) and recorded as `content` (projected by the k8s
         // ConfigMap path) — kept alive by the sandbox for the container's lifetime.
+        let secret_broker = self
+            .secret_broker
+            .read()
+            .expect("container secret broker lock poisoned")
+            .clone();
         let mut staging = resolve_and_stage(
             spec,
             &mut plan.binds,
             &self.blobs,
             &self.file_store,
-            &self.secret_broker,
+            &secret_broker,
         )
         .await?;
         if !self.runtime.has_native_memory_mounts() {
@@ -1556,7 +1550,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             lifecycle: Arc::new(ContainerLifecycle {
                 staging: std::sync::Mutex::new(staging.guard),
                 secret_writebacks: staging.secret_writebacks,
-                secret_broker: self.secret_broker.clone(),
+                secret_broker,
                 memory: tokio::sync::Mutex::new(Some(staging.memory)),
                 writeback_done: tokio::sync::Mutex::new(false),
                 remove_done: tokio::sync::Mutex::new(false),
@@ -1642,6 +1636,10 @@ impl<R: ContainerRuntime + 'static> AgentContainerProvider for ContainerProvider
 impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerProvider<R> {
     fn install_memory_mounter(&self, mounter: Arc<dyn pc::MemoryMounter>) {
         self.install_memory_mounter(mounter);
+    }
+
+    fn install_secret_broker(&self, broker: Arc<dyn pc::SecretBroker>) {
+        self.install_secret_broker(broker);
     }
 
     async fn create_environment(
@@ -1777,6 +1775,8 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironment for ContainerSandbox<R>
 #[async_trait]
 pub trait ContainerEnvironmentProvider: Send + Sync {
     fn install_memory_mounter(&self, _mounter: Arc<dyn pc::MemoryMounter>) {}
+
+    fn install_secret_broker(&self, _broker: Arc<dyn pc::SecretBroker>) {}
 
     async fn create_environment(
         &self,
