@@ -21,10 +21,12 @@ use awaken_runtime_contract::llm::{
 };
 use awaken_runtime_contract::permission::{GateOutcome, ToolGateHook};
 use awaken_runtime_contract::plugin::{
-    CapabilityBound, Contributions, HookReaction, IdBound, PhaseContext, PhaseHook, PhaseHookPoint,
-    Plugin, PluginManifest,
+    CapabilityBound, Contributions, DynamicTool, HookReaction, IdBound, PhaseContext, PhaseHook,
+    PhaseHookPoint, Plugin, PluginManifest,
 };
-use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
+use awaken_runtime_contract::resolved::{
+    CatalogFingerprint, ModelBinding, ResolvedSpec, ToolDescriptor,
+};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
@@ -170,6 +172,72 @@ impl RawTool for CountingEcho {
     }
 }
 
+struct SessionToolPlugin {
+    ran: Arc<AtomicUsize>,
+}
+
+impl Plugin for SessionToolPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: "session-tools".to_string(),
+            requires: Vec::new(),
+            config_sections: Vec::new(),
+            bound: CapabilityBound {
+                tools: IdBound::Exact(vec!["echo".to_string()]),
+                ..Default::default()
+            },
+        }
+    }
+
+    fn resolve(&self) -> Contributions {
+        let mut contributions = Contributions::new("session-tools");
+        contributions.register_dynamic_tool(DynamicTool {
+            descriptor: ToolDescriptor::pinned(
+                "session",
+                "echo",
+                "Echo from the realized Session.",
+                serde_json::json!({"type": "object"}),
+            ),
+            tool: Arc::new(CountingEcho {
+                ran: self.ran.clone(),
+            }),
+        });
+        contributions
+    }
+}
+
+struct SessionToolLlm {
+    calls: AtomicUsize,
+    saw_tool: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl LlmExecutor for SessionToolLlm {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        let output = if n == 0 {
+            if request.tools.iter().any(|tool| tool.id == "echo") {
+                self.saw_tool.fetch_add(1, Ordering::SeqCst);
+            }
+            AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "session-call".to_string(),
+                tool_id: "echo".to_string(),
+                arguments: serde_json::json!({}),
+            }])
+        } else {
+            AssistantOutput::text("done".to_string())
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
 /// A plugin-contributed tool gate that always blocks — a pre-execution decision
 /// that can only restrict, never grant (G21).
 struct NarrowGate;
@@ -300,6 +368,35 @@ fn activation(plugin_ids: Vec<String>) -> RunActivation {
         model_ref_override: None,
         tool_capability_narrowing: Default::default(),
     }
+}
+
+#[tokio::test]
+async fn a_session_plugin_augments_an_immutable_publication() {
+    let ran = Arc::new(AtomicUsize::new(0));
+    let saw_tool = Arc::new(AtomicUsize::new(0));
+    let runtime = Runtime::new().with_llm(Arc::new(SessionToolLlm {
+        calls: AtomicUsize::new(0),
+        saw_tool: saw_tool.clone(),
+    }));
+    let context = RuntimeRunContext::new()
+        .with_session_plugin(Arc::new(SessionToolPlugin { ran: ran.clone() }));
+
+    let state = runtime
+        .execute(activation(Vec::new()), context)
+        .await
+        .expect("runs");
+
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+    assert_eq!(
+        saw_tool.load(Ordering::SeqCst),
+        1,
+        "the model sees the Session capability without a publication rewrite"
+    );
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        1,
+        "the same plugin contribution executes the advertised tool"
+    );
 }
 
 #[tokio::test]
