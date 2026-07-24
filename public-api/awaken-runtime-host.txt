@@ -103,7 +103,7 @@ pub struct awaken_runtime_host::ApplicationSessionPlan
 pub awaken_runtime_host::ApplicationSessionPlan::deny_egress: bool
 pub awaken_runtime_host::ApplicationSessionPlan::env: alloc::vec::Vec<awaken_provisioning_contract::vocab::EnvVar>
 pub awaken_runtime_host::ApplicationSessionPlan::fingerprint: alloc::string::String
-pub awaken_runtime_host::ApplicationSessionPlan::mcp_servers: alloc::vec::Vec<awaken_runtime_host::mcp::PreparedMcpServer>
+pub awaken_runtime_host::ApplicationSessionPlan::mcp_servers: alloc::vec::Vec<awaken_runtime_host::PreparedMcpServer>
 pub awaken_runtime_host::ApplicationSessionPlan::mounts: alloc::vec::Vec<awaken_provisioning_contract::vocab::MountRequirement>
 pub awaken_runtime_host::ApplicationSessionPlan::prompts: alloc::vec::Vec<alloc::string::String>
 impl awaken_runtime_host::ApplicationSessionPlan
@@ -218,6 +218,13 @@ pub awaken_runtime_host::PreparedMcpRefresh::scope: core::option::Option<alloc::
 pub awaken_runtime_host::PreparedMcpRefresh::secrets: alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>
 pub awaken_runtime_host::PreparedMcpRefresh::token_endpoint: alloc::string::String
 pub awaken_runtime_host::PreparedMcpRefresh::token_endpoint_auth: awaken_session_contract::mcp_binding::TokenEndpointAuthBinding
+pub struct awaken_runtime_host::PreparedMcpServer
+pub awaken_runtime_host::PreparedMcpServer::bearer: core::option::Option<awaken_agent_contract::secret::RedactedString>
+pub awaken_runtime_host::PreparedMcpServer::name: alloc::string::String
+pub awaken_runtime_host::PreparedMcpServer::refresh: core::option::Option<awaken_runtime_host::PreparedMcpRefresh>
+pub awaken_runtime_host::PreparedMcpServer::url: alloc::string::String
+impl awaken_runtime_host::PreparedMcpServer
+pub fn awaken_runtime_host::PreparedMcpServer::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, core::option::Option<awaken_agent_contract::secret::RedactedString>) -> Self
 pub struct awaken_runtime_host::ProtocolHost
 impl awaken_runtime_host::ProtocolHost
 pub fn awaken_runtime_host::ProtocolHost::new(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> Self
@@ -302,7 +309,7 @@ pub fn awaken_runtime_host::SharedHost::provision_local_workspace() -> alloc::st
 pub fn awaken_runtime_host::SharedHost::provision_local_workspace_at(&std::path::Path) -> alloc::string::String
 pub fn awaken_runtime_host::SharedHost::register_thread_delegates(&self, &str, alloc::vec::Vec<alloc::string::String>)
 pub fn awaken_runtime_host::SharedHost::register_thread_egress(&self, &str, bool)
-pub fn awaken_runtime_host::SharedHost::register_thread_mcp(&self, &str, alloc::vec::Vec<awaken_runtime_host::mcp::PreparedMcpServer>)
+pub fn awaken_runtime_host::SharedHost::register_thread_mcp(&self, &str, alloc::vec::Vec<awaken_runtime_host::PreparedMcpServer>)
 pub fn awaken_runtime_host::SharedHost::register_thread_model(&self, &str, impl core::convert::Into<alloc::string::String>)
 pub fn awaken_runtime_host::SharedHost::register_thread_sandbox(&self, &str, awaken_provisioning_contract::spec::SandboxOverride)
 pub fn awaken_runtime_host::SharedHost::registered_thread_workspace(&self, &str) -> core::option::Option<alloc::string::String>

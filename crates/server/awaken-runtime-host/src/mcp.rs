@@ -44,6 +44,23 @@ pub struct PreparedMcpServer {
     pub refresh: Option<PreparedMcpRefresh>,
 }
 
+impl PreparedMcpServer {
+    /// Build one claim-time MCP projection without OAuth refresh wiring.
+    #[must_use]
+    pub fn new(
+        name: impl Into<String>,
+        url: impl Into<String>,
+        bearer: Option<RedactedString>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            url: url.into(),
+            bearer,
+            refresh: None,
+        }
+    }
+}
+
 /// Project a staged MCP server to the neutral ACP config the ACP executor reads back
 /// from `plugin_config.acp.mcp_servers`, choosing the credential form by **trust**:
 /// - a **trusted** (non-sandboxed local) run may carry the raw bearer **inline** (β);
