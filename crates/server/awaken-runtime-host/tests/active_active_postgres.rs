@@ -30,8 +30,8 @@ use awaken_runtime_contract::snapshot::{
 };
 use awaken_runtime_host::{
     ClaimedCommitService, FixedWorkerLeasePolicy, HeaderWorkerAuthenticator,
-    RemoteClaimedRunCommit, SystemWorkerClock, WorkerDispatchService, claimed_commit_router,
-    dispatch_transport_router_with_service,
+    RemoteClaimedRunCommit, SystemWorkerClock, WorkerDispatchService,
+    dispatch_transport_router_with_service, registered_worker_transport_router_with_services,
 };
 use awaken_store_postgres::PostgresCommitCoordinator;
 use axum::extract::{Request, State};
@@ -212,8 +212,10 @@ async fn active_active_control_child() {
         directory,
         authenticator,
     ));
-    let router = dispatch_transport_router_with_service(dispatch_service)
-        .merge(claimed_commit_router(commit_service));
+    let router = registered_worker_transport_router_with_services(
+        dispatch_transport_router_with_service(dispatch_service),
+        commit_service,
+    );
     let router = if std::env::var(CHILD_EXIT_AFTER_COMMIT_ENV).as_deref() == Ok("1") {
         router.layer(axum::middleware::from_fn_with_state(
             Arc::new(AtomicBool::new(true)),
