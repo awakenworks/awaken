@@ -1,4 +1,9 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import {
+  DialogSurface,
+  useCommandPalette,
+  useCommandPaletteShortcut,
+} from "@awaken/ui";
 import { Outlet, useNavigate } from "react-router";
 import { useApp } from "../../lib/app-state";
 import { NAV, navPath } from "../../lib/navigation/paths";
@@ -13,55 +18,52 @@ function CommandPalette() {
   const app = useApp();
   const nav = useNavigate();
   const [open, setOpen] = useState(false);
-  const [q, setQ] = useState("");
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        setOpen((v) => !v);
-        setQ("");
-      }
-      if (e.key === "Escape") setOpen(false);
-    };
-    const onOpen = () => {
-      setQ("");
-      setOpen(true);
-    };
-    window.addEventListener("keydown", onKey);
-    window.addEventListener("awaken:open-palette", onOpen);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("awaken:open-palette", onOpen);
-    };
-  }, []);
+  const palette = useCommandPalette({
+    open,
+    items: NAV,
+    filterItems: (items, query) =>
+      items
+        .filter(
+          (item) =>
+            item.label.toLowerCase().includes(query.toLowerCase()) ||
+            item.labelZh.includes(query),
+        )
+        .slice(0, 8),
+    onOpenChange: setOpen,
+    onSelect: (item) => {
+      nav(navPath(item, app.workspaceId));
+      setOpen(false);
+    },
+  });
+  useCommandPaletteShortcut({
+    onOpenChange: setOpen,
+    open,
+    openEventName: "awaken:open-palette",
+  });
   if (!open) return null;
-  const hits = NAV.filter(
-    (n) => n.label.toLowerCase().includes(q.toLowerCase()) || n.labelZh.includes(q),
-  ).slice(0, 8);
   return (
-    <div className="overlay" onClick={() => setOpen(false)}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+    <DialogSurface
+      ariaLabel={app.t("Command palette", "命令面板")}
+      onOpenChange={setOpen}
+      open={open}
+      panelClassName="modal"
+      rootClassName="overlay"
+    >
         <input
-          autoFocus
+          ref={palette.inputRef}
           className="input"
           placeholder={app.t("Go to…", "跳转…")}
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && hits[0]) {
-              nav(navPath(hits[0], app.workspaceId));
-              setOpen(false);
-            }
-          }}
+          value={palette.query}
+          onChange={(e) => palette.setQuery(e.target.value)}
+          onKeyDown={palette.onInputKeyDown}
         />
-        {hits.map((n) => (
+        {palette.filteredItems.map((n, index) => (
           <button
             key={n.key}
             className="nav-item"
-            onClick={() => {
-              nav(navPath(n, app.workspaceId));
-              setOpen(false);
-            }}
+            data-active={index === palette.selectedIndex || undefined}
+            onMouseEnter={() => palette.setSelectedIndex(index)}
+            onClick={() => palette.activate(n)}
           >
             {app.t(n.label, n.labelZh)}
             <span className="mut" style={{ marginLeft: "auto", fontSize: 11 }}>
@@ -69,8 +71,7 @@ function CommandPalette() {
             </span>
           </button>
         ))}
-      </div>
-    </div>
+    </DialogSurface>
   );
 }
 

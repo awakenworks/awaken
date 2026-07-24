@@ -540,6 +540,10 @@ textarea.input {
   justify-content: center;
   padding: 10vh 24px 24px;
 }
+.overlay .ui-dialog-surface__viewport {
+  position: static;
+  display: contents;
+}
 .modal {
   width: min(560px, 94vw);
   max-height: 76vh;
