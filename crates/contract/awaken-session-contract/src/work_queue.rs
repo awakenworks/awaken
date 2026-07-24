@@ -365,6 +365,18 @@ pub trait WorkQueue: Send + Sync {
     /// item (queued→active) when none is actively leased. `None` when the queue is
     /// empty or one is still live-leased. The poll is recorded for `workers_polling`.
     async fn claim(&self, env_id: &str, worker_id: &str, now_ms: u64) -> Option<WorkItem>;
+    /// Claim with an optional caller-requested reclaim age. Backends that cannot
+    /// tune lease clocks may conservatively delegate to [`Self::claim`].
+    async fn claim_with_reclaim(
+        &self,
+        env_id: &str,
+        worker_id: &str,
+        now_ms: u64,
+        reclaim_older_than_ms: Option<u64>,
+    ) -> Option<WorkItem> {
+        let _ = reclaim_older_than_ms;
+        self.claim(env_id, worker_id, now_ms).await
+    }
     /// Acknowledge receipt (queued→starting), stamping `acknowledged_at`.
     async fn ack(&self, env_id: &str, wid: &str) -> Option<WorkItem>;
     /// Atomically compare the preceding heartbeat and, when it matches, record a

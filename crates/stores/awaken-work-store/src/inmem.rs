@@ -32,12 +32,18 @@ pub const POLLER_WINDOW_MS: u64 = 30_000;
 /// coordinate across processes in the database.
 #[derive(Default)]
 pub struct LeaseBook {
-    /// work_id → lease expiry (ms). Absent ⇒ no live lease (reclaimable).
-    leases: Mutex<BTreeMap<String, u64>>,
+    /// work_id → lease refresh/expiry window. Absent ⇒ no live lease.
+    leases: Mutex<BTreeMap<String, LeaseWindow>>,
     /// work_id → worker identity that owns the current lease.
     owners: Mutex<BTreeMap<String, String>>,
     /// env_id → (worker_id → last poll ms).
     polls: Mutex<BTreeMap<String, BTreeMap<String, u64>>>,
+}
+
+#[derive(Clone, Copy)]
+struct LeaseWindow {
+    refreshed_at_ms: u64,
+    expires_at_ms: u64,
 }
 
 impl LeaseBook {
@@ -56,7 +62,14 @@ impl LeaseBook {
             .lock()
             .unwrap()
             .get(wid)
-            .is_some_and(|exp| *exp > now_ms)
+            .is_some_and(|lease| lease.expires_at_ms > now_ms)
+    }
+    pub fn is_leased_with_reclaim_age(&self, wid: &str, now_ms: u64, age_ms: u64) -> bool {
+        self.leases
+            .lock()
+            .unwrap()
+            .get(wid)
+            .is_some_and(|lease| now_ms < lease.refreshed_at_ms.saturating_add(age_ms))
     }
     /// Start/extend `wid`'s lease to `now_ms + LEASE_TTL_MS`.
     pub fn lease(&self, wid: &str, now_ms: u64) {
@@ -82,10 +95,13 @@ impl LeaseBook {
 
     /// Start/extend `wid`'s lease by the requested duration.
     pub fn lease_for(&self, wid: &str, now_ms: u64, ttl_ms: u64) {
-        self.leases
-            .lock()
-            .unwrap()
-            .insert(wid.to_string(), now_ms.saturating_add(ttl_ms));
+        self.leases.lock().unwrap().insert(
+            wid.to_string(),
+            LeaseWindow {
+                refreshed_at_ms: now_ms,
+                expires_at_ms: now_ms.saturating_add(ttl_ms),
+            },
+        );
     }
     /// Drop `wid`'s lease (on stop / reclaim).
     pub fn release(&self, wid: &str) {
@@ -222,9 +238,6 @@ impl WorkQueue for InMemoryWorkQueue {
     async fn claim(&self, env_id: &str, worker_id: &str, now_ms: u64) -> Option<WorkItem> {
         self.book.record_poll(env_id, worker_id, now_ms);
         let mut works = self.works.lock().unwrap();
-        // Reclaim: an `active` item whose lease has lapsed (a worker that stopped
-        // heartbeating, e.g. crashed) is no longer held — return it to `queued` so
-        // this poll can re-lease it instead of the env blocking forever.
         for (wid, w) in works.iter_mut() {
             if w.environment_id == env_id
                 && w.state == WorkState::Active
@@ -235,15 +248,12 @@ impl WorkQueue for InMemoryWorkQueue {
                 self.book.release(wid);
             }
         }
-        // Single active lease per environment (the open-tier single-worker cap):
-        // after reclaim, only a live-leased item counts.
         if works
             .values()
             .any(|w| w.environment_id == env_id && w.state == WorkState::Active)
         {
             return None;
         }
-        // Lease the oldest queued item (ascending id == enqueue order).
         let wid = works
             .iter()
             .filter(|(_, w)| w.environment_id == env_id && w.state.is_claimable())
@@ -258,6 +268,28 @@ impl WorkQueue for InMemoryWorkQueue {
         Some(w.clone())
     }
 
+    async fn claim_with_reclaim(
+        &self,
+        env_id: &str,
+        worker_id: &str,
+        now_ms: u64,
+        reclaim_older_than_ms: Option<u64>,
+    ) -> Option<WorkItem> {
+        if let Some(age) = reclaim_older_than_ms {
+            let mut works = self.works.lock().unwrap();
+            for (wid, w) in works.iter_mut() {
+                if w.environment_id == env_id
+                    && w.state == WorkState::Active
+                    && !self.book.is_leased_with_reclaim_age(wid, now_ms, age)
+                {
+                    w.state = WorkState::Queued;
+                    w.latest_heartbeat_at = None;
+                    self.book.release(wid);
+                }
+            }
+        }
+        self.claim(env_id, worker_id, now_ms).await
+    }
     async fn ack(&self, env_id: &str, wid: &str) -> Option<WorkItem> {
         self.with_owned(env_id, wid, |w| {
             w.acknowledged_at = Some(OBJECT_AT.to_string());

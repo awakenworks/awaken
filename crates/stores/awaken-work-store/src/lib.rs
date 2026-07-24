@@ -65,7 +65,7 @@ impl SqliteWorkQueue {
         tx.execute(
             "UPDATE work_queue_item \
              SET state = 'queued', lease_owner = NULL, lease_expires_ms = NULL, \
-                 latest_heartbeat_at = NULL \
+                 lease_refreshed_ms = NULL, latest_heartbeat_at = NULL \
              WHERE environment_id = ?1 AND state = 'active' \
                AND (lease_expires_ms IS NULL OR lease_expires_ms <= ?2)",
             params![env_id, db_millis(now_ms)],
@@ -180,19 +180,43 @@ impl WorkQueue for SqliteWorkQueue {
             "UPDATE work_queue_item \
              SET state = 'active', started_at = ?1, lease_owner = ?2, \
                  lease_epoch = lease_epoch + 1, lease_expires_ms = ?3, \
-                 latest_heartbeat_at = NULL \
-             WHERE work_id = ?4",
+                 lease_refreshed_ms = ?4, latest_heartbeat_at = NULL \
+             WHERE work_id = ?5",
             params![
                 OBJECT_AT,
                 worker_id,
                 lease_expiry(now_ms, HEARTBEAT_TTL_SECONDS),
-                wid
+                db_millis(now_ms),
+                wid,
             ],
         )
         .expect("lease");
         let item = Self::owned(&tx, env_id, &wid);
         tx.commit().expect("commit claim");
         item
+    }
+
+    async fn claim_with_reclaim(
+        &self,
+        env_id: &str,
+        worker_id: &str,
+        now_ms: u64,
+        age_ms: Option<u64>,
+    ) -> Option<WorkItem> {
+        if let Some(age) = age_ms.filter(|age| *age <= now_ms) {
+            let mut guard = self.conn.lock().expect("work queue mutex poisoned");
+            let tx = guard
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .expect("begin immediate");
+            let cutoff = db_millis(now_ms - age);
+            tx.execute(
+                "UPDATE work_queue_item SET state = 'queued', lease_owner = NULL, lease_expires_ms = NULL, lease_refreshed_ms = NULL, latest_heartbeat_at = NULL \
+                 WHERE environment_id = ?1 AND state = 'active' AND lease_refreshed_ms IS NOT NULL AND lease_refreshed_ms <= ?2",
+                params![env_id, cutoff],
+            ).expect("reclaim requested lease age");
+            tx.commit().expect("commit requested reclaim");
+        }
+        self.claim(env_id, worker_id, now_ms).await
     }
 
     async fn ack(&self, env_id: &str, wid: &str) -> Option<WorkItem> {
@@ -250,12 +274,13 @@ impl WorkQueue for SqliteWorkQueue {
         if extended {
             tx.execute(
                 "UPDATE work_queue_item \
-                 SET latest_heartbeat_at = ?1, lease_expires_ms = ?2 \
-                 WHERE work_id = ?3 AND environment_id = ?4 AND state = 'active' \
-                   AND lease_owner = ?5",
+                 SET latest_heartbeat_at = ?1, lease_expires_ms = ?2, lease_refreshed_ms = ?3 \
+                 WHERE work_id = ?4 AND environment_id = ?5 AND state = 'active' \
+                   AND lease_owner = ?6",
                 params![
                     &last_heartbeat,
                     lease_expiry(now_ms, ttl_seconds),
+                    db_millis(now_ms),
                     wid,
                     env_id,
                     worker_id
@@ -280,7 +305,8 @@ impl WorkQueue for SqliteWorkQueue {
         Self::owned(&tx, env_id, wid)?;
         tx.execute(
             "UPDATE work_queue_item SET stop_requested_at = ?1, stopped_at = ?1, \
-             state = 'stopped', lease_owner = NULL, lease_expires_ms = NULL \
+             state = 'stopped', lease_owner = NULL, lease_expires_ms = NULL, \
+             lease_refreshed_ms = NULL \
              WHERE work_id = ?2",
             params![OBJECT_AT, wid],
         )
@@ -487,7 +513,7 @@ impl WorkQueue for PostgresWorkQueue {
         sqlx::query(
             "UPDATE work_queue_item \
              SET state = 'queued', lease_owner = NULL, lease_expires_ms = NULL, \
-                 latest_heartbeat_at = NULL \
+                 lease_refreshed_ms = NULL, latest_heartbeat_at = NULL \
              WHERE environment_id = $1 AND state = 'active' \
                AND (lease_expires_ms IS NULL OR lease_expires_ms <= $2)",
         )
@@ -522,18 +548,41 @@ impl WorkQueue for PostgresWorkQueue {
             "UPDATE work_queue_item \
              SET state = 'active', started_at = $1, lease_owner = $2, \
                  lease_epoch = lease_epoch + 1, lease_expires_ms = $3, \
-                 latest_heartbeat_at = NULL \
-             WHERE work_id = $4",
+                 lease_refreshed_ms = $4, latest_heartbeat_at = NULL \
+             WHERE work_id = $5",
         )
         .bind(OBJECT_AT)
         .bind(worker_id)
         .bind(lease_expiry(now_ms, HEARTBEAT_TTL_SECONDS))
+        .bind(db_millis(now_ms))
         .bind(&wid)
         .execute(&mut *tx)
         .await
         .expect("lease");
         tx.commit().await.expect("commit claim");
         self.fetch_owned(env_id, &wid).await
+    }
+
+    async fn claim_with_reclaim(
+        &self,
+        env_id: &str,
+        worker_id: &str,
+        now_ms: u64,
+        age_ms: Option<u64>,
+    ) -> Option<WorkItem> {
+        if let Some(age) = age_ms.filter(|age| *age <= now_ms) {
+            let cutoff = db_millis(now_ms - age);
+            sqlx::query(
+                "UPDATE work_queue_item SET state = 'queued', lease_owner = NULL, lease_expires_ms = NULL, lease_refreshed_ms = NULL, latest_heartbeat_at = NULL \
+                 WHERE environment_id = $1 AND state = 'active' AND lease_refreshed_ms IS NOT NULL AND lease_refreshed_ms <= $2",
+            )
+            .bind(env_id)
+            .bind(cutoff)
+            .execute(&self.pool)
+            .await
+            .expect("reclaim requested lease age");
+        }
+        self.claim(env_id, worker_id, now_ms).await
     }
 
     async fn ack(&self, env_id: &str, wid: &str) -> Option<WorkItem> {
@@ -598,12 +647,13 @@ impl WorkQueue for PostgresWorkQueue {
         let last_heartbeat = heartbeat_at(now_ms, current.latest_heartbeat_at.as_deref());
         if extended {
             sqlx::query(
-                "UPDATE work_queue_item SET latest_heartbeat_at = $1, lease_expires_ms = $2 \
-                 WHERE work_id = $3 AND environment_id = $4 AND state = 'active' \
-                   AND lease_owner = $5",
+                "UPDATE work_queue_item SET latest_heartbeat_at = $1, lease_expires_ms = $2, lease_refreshed_ms = $3 \
+                 WHERE work_id = $4 AND environment_id = $5 AND state = 'active' \
+                   AND lease_owner = $6",
             )
             .bind(&last_heartbeat)
             .bind(lease_expiry(now_ms, ttl_seconds))
+            .bind(db_millis(now_ms))
             .bind(wid)
             .bind(env_id)
             .bind(worker_id)
@@ -624,7 +674,8 @@ impl WorkQueue for PostgresWorkQueue {
         self.fetch_owned(env_id, wid).await?;
         sqlx::query(
             "UPDATE work_queue_item SET stop_requested_at = $1, stopped_at = $1, \
-             state = 'stopped', lease_owner = NULL, lease_expires_ms = NULL \
+             state = 'stopped', lease_owner = NULL, lease_expires_ms = NULL, \
+             lease_refreshed_ms = NULL \
              WHERE work_id = $2 AND environment_id = $3",
         )
         .bind(OBJECT_AT)
@@ -747,6 +798,19 @@ mod tests {
             .claim("env_a", "b", LEASE_TTL_MS + 1)
             .await
             .expect("expired lease reclaimed");
+        assert_eq!(reclaimed.id, w1);
+        assert_eq!(reclaimed.state, WorkState::Active);
+    }
+
+    #[tokio::test]
+    async fn sqlite_honors_requested_reclaim_age_before_lease_expiry() {
+        let q = q();
+        let w1 = q.enqueue_session("env_a", "s1").await;
+        assert_eq!(q.claim("env_a", "a", 0).await.expect("lease").id, w1);
+        let reclaimed = q
+            .claim_with_reclaim("env_a", "b", 1_001, Some(1_000))
+            .await
+            .expect("requested reclaim age reclaims the active lease");
         assert_eq!(reclaimed.id, w1);
         assert_eq!(reclaimed.state, WorkState::Active);
     }

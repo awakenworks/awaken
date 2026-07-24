@@ -114,6 +114,20 @@ async function main() {
       assert.equal(stopped.state, 'stopped');
       pass('beta.environments.work.retrieve / ack / heartbeat / update / stop');
 
+      const reclaimEnv = await client.beta.environments.create({
+        name: 'reclaim-env', config: { type: 'self_hosted' }, betas: BETAS,
+      });
+      const abandoned = await client.beta.environments.work.poll(reclaimEnv.id, { betas: BETAS });
+      const reclaimedResponse = await fetch(
+        `${baseUrl}/v1/environments/${reclaimEnv.id}/work/poll?reclaim_older_than_ms=0`,
+        { headers: { 'anthropic-worker-id': 'replacement-worker', 'anthropic-beta': BETAS[0] } },
+      );
+      assert.equal(reclaimedResponse.status, 200);
+      const reclaimed = await reclaimedResponse.json();
+      assert.equal(reclaimed?.id, abandoned.id, 'an expired lease is re-claimable by another worker');
+      assert.equal(reclaimed?.state, 'active');
+      pass('reclaim_older_than_ms=0 reclaims an abandoned lease');
+
       // -- Archive + delete --------------------------------------------------
       const archived = await client.beta.environments.archive(env.id, { betas: BETAS });
       assert.ok(archived.archived_at);
