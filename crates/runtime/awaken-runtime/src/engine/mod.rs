@@ -157,7 +157,7 @@ pub(crate) async fn run_agent_loop(
 
     // Merge the active plugins under their capability bounds; a violation fails
     // the run closed before any model call (G30).
-    let env = match runtime.resolve_plugin_env(&resolved.spec) {
+    let env = match runtime.resolve_plugin_env_with(&resolved.spec, &context.session_plugins) {
         Ok(env) => env,
         Err(_) => {
             let step = RunStepResult::capability_bound(run_id.clone());
@@ -307,7 +307,7 @@ pub(crate) async fn resume_run(
     let run_id = command.run_id.clone();
     let thread_id = command.thread_id.clone();
 
-    let env = match runtime.resolve_plugin_env(&resolved.spec) {
+    let env = match runtime.resolve_plugin_env_with(&resolved.spec, &context.session_plugins) {
         Ok(env) => env,
         Err(_) => {
             let step = RunStepResult::capability_bound(run_id.clone());
@@ -565,11 +565,13 @@ impl LiveEnv {
         &'a mut self,
         runtime: &Runtime,
         resolved: &ResolvedRun,
+        session_plugins: &[std::sync::Arc<dyn awaken_runtime_contract::plugin::Plugin>],
         base: &'a ResolvedExecutionEnv,
     ) -> &'a ResolvedExecutionEnv {
-        let version = runtime.active_live_version(&resolved.spec.plugin_ids);
+        let version = runtime.active_live_version_with(&resolved.spec.plugin_ids, session_plugins);
         if version != self.last_version {
-            if let Ok(refreshed) = runtime.resolve_plugin_env(&resolved.spec) {
+            if let Ok(refreshed) = runtime.resolve_plugin_env_with(&resolved.spec, session_plugins)
+            {
                 self.resolved = Some(refreshed);
             }
             self.last_version = version;
@@ -781,7 +783,9 @@ async fn drive(
     // dynamic (e.g. an MCP server firing `tools/list_changed`) advances its
     // `live_version`; `live_env` re-resolves the environment at the step boundary
     // when it changes, and is zero-overhead for static runs.
-    let mut live_env = LiveEnv::new(runtime.active_live_version(&resolved.spec.plugin_ids));
+    let mut live_env = LiveEnv::new(
+        runtime.active_live_version_with(&resolved.spec.plugin_ids, &context.session_plugins),
+    );
     // Failed inference steps in a row (post-retry). The runtime's tolerance
     // decides when the streak is terminal; a success resets it.
     let mut consecutive_inference_failures = 0usize;
@@ -852,7 +856,7 @@ async fn drive(
 
         // The environment to drive this step: the live-refreshed one when a
         // dynamic plugin's tool face changed, else the resolved base.
-        let env = live_env.current(runtime, resolved, env);
+        let env = live_env.current(runtime, resolved, &context.session_plugins, env);
 
         // RunState hooks stage state (G9/G30). A BeforeInference hook may also inject
         // request-only context (e.g. recalled memories), prepended to this

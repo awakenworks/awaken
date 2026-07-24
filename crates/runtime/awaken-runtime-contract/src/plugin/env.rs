@@ -35,6 +35,8 @@ pub enum MergeError {
     MissingDependency { plugin: String, missing: String },
     #[error("dependency cycle among active plugins")]
     DependencyCycle,
+    #[error("duplicate active plugin id {id:?}")]
+    DuplicatePlugin { id: String },
     #[error(transparent)]
     Config(#[from] PluginConfigError),
 }
@@ -66,6 +68,14 @@ impl ResolvedExecutionEnv {
     /// Merge active `(manifest, contributions)` pairs. Fails closed on a bound
     /// violation, duplicate tool id, missing dependency, or dependency cycle.
     pub fn merge(plugins: Vec<(PluginManifest, Contributions)>) -> Result<Self, MergeError> {
+        let mut plugin_ids = std::collections::BTreeSet::new();
+        for (manifest, _) in &plugins {
+            if !plugin_ids.insert(manifest.id.clone()) {
+                return Err(MergeError::DuplicatePlugin {
+                    id: manifest.id.clone(),
+                });
+            }
+        }
         for (manifest, contributions) in &plugins {
             enforce_bound(manifest, contributions)?;
         }
