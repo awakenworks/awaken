@@ -449,14 +449,14 @@ Two rules keep it that way:
    (A2A). No kind grows its own resolution path: runtime adapters materialize the
    same published access and may differ only in credential injection/usage.
 2. **Capability-aware claim.** A worker declares what it serves — `native` /
-   `acp:<cli>` (one CLI per projecting worker) / `a2a` — and claim filters on a
+   every exact `acp:<cli>` route in its typed `AcpWorkerProfile` / `a2a` — and claim filters on a
    routing key that enqueue stamps from the snapshot's `backend_ref` (no new
    payload, the queue still never parses snapshots). The open-time cli-match
    check stays the fail-closed backstop: the filter is routing, the check is
    enforcement.
 
 Consequently the worker composition root (`awaken_worker::run`) gains the same
-ACP wiring the Serve root has (`AWAKEN_ACP_CLI` + sandbox tier), and the A2A
+ACP wiring the Serve root has (`AcpWorkerProfile` + sandbox tier), and the A2A
 transport seam wires identically on both roots. A gateway-only (secretless)
 worker serves A2A only when the remote counterparty credential is
 gateway-brokered — a local-vault counterparty on a secretless worker fails
@@ -758,16 +758,18 @@ worker + provisioning concern at the composition root, never the executor's. So
 `SandboxTier` gains a `Local` (unsandboxed subprocess) member beside
 `Namespace`/`Docker`/`Podman`/`K8s`, and `build_acp_channel_source` yields the
 matching source for each — the executor construction is identical across all.
-Adds: `AWAKEN_ACP_CLI` wiring in `awaken serve` and `awaken_worker::run`;
-`SandboxTier::Local`; `LaunchSource{Fixed,Projected}` publicized as the factory
-input for all tiers.
+Adds: one typed `AcpWorkerProfile` shared by Worker capability advertisement and
+Host launch routing (`AWAKEN_ACP_CLIS`, with singular `AWAKEN_ACP_CLI` as the
+compatibility input); `SandboxTier::Local`; `LaunchSource{Fixed,Projected}`
+publicized as the factory input for all tiers.
 Retires: the dead-code status of `with_projected_acp`/`projecting` (scenario-only
 today) — they become the production path; production `AWAKEN_ACP_ARGV` is removed
 and fixed argv remains an explicit dev/test `LaunchSource` only.
 Guard: `LaunchSource::resolve` cli-match fail-closed (exists); tier-matrix unit
 tests.
-Done when: an `acp:codex` run on a codex-serving worker launches codex in e2e;
-on a claude-serving worker it fails closed with the mismatch error.
+Done when: one Worker can exact-route `acp:codex` and `acp:claude`; an
+unadvertised CLI fails closed, and bare `acp` is accepted only when the profile
+has an unambiguous configured default.
 
 **D `one-resolution-path`** — *Exactly one counterparty resolution; dialect
 checked; vendor keys auto-pool.*

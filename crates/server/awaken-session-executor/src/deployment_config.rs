@@ -12,7 +12,70 @@
 //! the environment. This is step ① of the config-driven-deployment cleanup: pull
 //! env-reading out of the library; migrate call sites onto the injected config.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
+
+/// The ACP adapters one Worker can actually launch.
+///
+/// This value is shared by Worker capability advertisement and Host launch
+/// routing. It therefore prevents an advertised `acp:<cli>` capability from
+/// drifting from the launch routes installed on that same Worker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcpWorkerProfile {
+    cli_ids: BTreeSet<String>,
+    default_cli: Option<String>,
+}
+
+impl AcpWorkerProfile {
+    pub fn new(
+        cli_ids: impl IntoIterator<Item = String>,
+        default_cli: Option<String>,
+    ) -> Result<Self, String> {
+        let mut normalized = BTreeSet::new();
+        for cli_id in cli_ids {
+            let cli_id = cli_id.trim();
+            if cli_id.is_empty() {
+                continue;
+            }
+            if awaken_run_executor_acp::acp_cli(cli_id).is_none() {
+                return Err(format!("unknown ACP CLI `{cli_id}`"));
+            }
+            if !normalized.insert(cli_id.to_string()) {
+                return Err(format!("duplicate ACP CLI `{cli_id}`"));
+            }
+        }
+        if normalized.is_empty() {
+            return Err("an ACP Worker profile requires at least one CLI".to_string());
+        }
+        let default_cli = default_cli
+            .map(|cli_id| cli_id.trim().to_string())
+            .filter(|cli_id| !cli_id.is_empty())
+            .or_else(|| {
+                (normalized.len() == 1).then(|| normalized.first().expect("one ACP CLI").clone())
+            });
+        if let Some(default_cli) = &default_cli
+            && !normalized.contains(default_cli)
+        {
+            return Err(format!(
+                "default ACP CLI `{default_cli}` is not present in the Worker profile"
+            ));
+        }
+        Ok(Self {
+            cli_ids: normalized,
+            default_cli,
+        })
+    }
+
+    #[must_use]
+    pub fn cli_ids(&self) -> impl Iterator<Item = &str> {
+        self.cli_ids.iter().map(String::as_str)
+    }
+
+    #[must_use]
+    pub fn default_cli(&self) -> Option<&str> {
+        self.default_cli.as_deref()
+    }
+}
 
 /// The commit-store backend for a thread's committed truth.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,6 +182,16 @@ pub struct DeploymentConfig {
     pub upstream: Option<String>,
     /// The sandbox tier this worker realizes ACP agents on (`AWAKEN_SANDBOX_TIER`).
     pub sandbox_tier: SandboxTier,
+    /// Whether the sandbox tier was explicitly selected. An unavailable default
+    /// namespace sandbox may degrade to local; an explicit request fails closed.
+    pub sandbox_tier_explicit: bool,
+    /// The ACP sandbox and per-Session configuration root (`AWAKEN_SANDBOX_DIR`).
+    /// `None` selects a process-scoped temporary root.
+    pub sandbox_dir: Option<PathBuf>,
+    /// The durable ACP Session blob root (`AWAKEN_ACP_SESSION_BLOBS`).
+    pub acp_session_blob_root: Option<PathBuf>,
+    /// The exact ACP adapters this Worker advertises and serves.
+    pub acp: Option<AcpWorkerProfile>,
     /// The container image an ACP agent runs in on a container tier
     /// (`AWAKEN_CONTAINER_IMAGE`); `None` on the namespace tier / when unset.
     pub container_image: Option<String>,
@@ -132,6 +205,30 @@ pub struct DeploymentConfig {
 pub const DEFAULT_WAKE_CHANNEL: &str = "awaken_dispatch_wake";
 
 impl DeploymentConfig {
+    /// Environment-independent defaults for embedding composition roots.
+    #[must_use]
+    pub fn ephemeral() -> Self {
+        Self {
+            durable: false,
+            storage_dir: None,
+            store: StoreKind::Sqlite,
+            dispatch_backend: DispatchBackend::Sqlite,
+            wake: Wake::None,
+            wake_channel: DEFAULT_WAKE_CHANNEL.to_string(),
+            nats_url: None,
+            database_url: None,
+            dispatch_owner: "embedded-worker".to_string(),
+            upstream: None,
+            sandbox_tier: SandboxTier::Namespace,
+            sandbox_tier_explicit: false,
+            sandbox_dir: None,
+            acp_session_blob_root: None,
+            acp: None,
+            container_image: None,
+            disable_local_pool: false,
+        }
+    }
+
     /// Parse the deployment axes from the historic `AWAKEN_*` environment variables.
     /// This is the backward-compatible bridge: every existing deployment keeps
     /// working unchanged; the library now reads the parsed config instead of env.
@@ -151,7 +248,20 @@ impl DeploymentConfig {
             Some("nats") => Wake::Nats,
             _ => Wake::None,
         };
-        let sandbox_tier = SandboxTier::from_env_str(env("AWAKEN_SANDBOX_TIER").as_deref());
+        let sandbox_tier_value = env("AWAKEN_SANDBOX_TIER");
+        let sandbox_tier = SandboxTier::from_env_str(sandbox_tier_value.as_deref());
+        let acp_cli_ids = env("AWAKEN_ACP_CLIS")
+            .or_else(|| env("AWAKEN_ACP_CLI"))
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let acp = (!acp_cli_ids.is_empty()).then(|| {
+            AcpWorkerProfile::new(acp_cli_ids, env("AWAKEN_ACP_DEFAULT_CLI"))
+                .unwrap_or_else(|error| panic!("configure ACP Worker profile: {error}"))
+        });
         let disable_local_pool = local_pool_disabled(
             env("AWAKEN_SERVER_RUN_LOCAL_POOL").as_deref(),
             env("AWAKEN_DISABLE_LOCAL_POOL").as_deref(),
@@ -169,6 +279,10 @@ impl DeploymentConfig {
             dispatch_owner: env("AWAKEN_DISPATCH_OWNER").unwrap_or_else(default_owner),
             upstream: env("AWAKEN_UPSTREAM_URL"),
             sandbox_tier,
+            sandbox_tier_explicit: sandbox_tier_value.is_some(),
+            sandbox_dir: env("AWAKEN_SANDBOX_DIR").map(PathBuf::from),
+            acp_session_blob_root: env("AWAKEN_ACP_SESSION_BLOBS").map(PathBuf::from),
+            acp,
             container_image: env("AWAKEN_CONTAINER_IMAGE"),
             disable_local_pool,
         }
@@ -223,19 +337,8 @@ mod tests {
 
     fn base() -> DeploymentConfig {
         DeploymentConfig {
-            durable: false,
-            storage_dir: None,
-            store: StoreKind::Sqlite,
-            dispatch_backend: DispatchBackend::Sqlite,
-            wake: Wake::None,
-            wake_channel: DEFAULT_WAKE_CHANNEL.to_string(),
-            nats_url: None,
-            database_url: None,
             dispatch_owner: "host-1".into(),
-            upstream: None,
-            sandbox_tier: SandboxTier::Namespace,
-            container_image: None,
-            disable_local_pool: false,
+            ..DeploymentConfig::ephemeral()
         }
     }
 
@@ -264,6 +367,37 @@ mod tests {
         for t in [SandboxTier::Docker, SandboxTier::Podman, SandboxTier::K8s] {
             assert!(t.is_container());
         }
+    }
+
+    #[test]
+    fn acp_worker_profile_has_exact_routes_and_an_unambiguous_default() {
+        let profile = AcpWorkerProfile::new(
+            ["claude".to_string(), "codex".to_string()],
+            Some("codex".to_string()),
+        )
+        .unwrap();
+        assert_eq!(
+            profile.cli_ids().collect::<Vec<_>>(),
+            vec!["claude", "codex"]
+        );
+        assert_eq!(profile.default_cli(), Some("codex"));
+
+        let one = AcpWorkerProfile::new(["claude".to_string()], None).unwrap();
+        assert_eq!(one.default_cli(), Some("claude"));
+        assert!(
+            AcpWorkerProfile::new(
+                ["claude".to_string(), "claude".to_string()],
+                Some("claude".to_string())
+            )
+            .is_err()
+        );
+        assert!(
+            AcpWorkerProfile::new(
+                ["claude".to_string(), "codex".to_string()],
+                Some("gemini".to_string())
+            )
+            .is_err()
+        );
     }
 
     #[test]

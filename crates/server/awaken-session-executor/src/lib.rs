@@ -110,8 +110,9 @@ pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::memory_store_api::memory_stores_router_with_catalog;
 pub use crate::redact::PiiRedactor;
 pub use crate::sandbox_source::{
-    AcpSandboxBindings, BoundLocalChannelSource, LaunchSource, SandboxChannelSource, ThreadEgress,
-    ThreadResources, ThreadSandbox, build_acp_channel_source, resolve_sandbox_tier,
+    AcpLaunchRegistry, AcpSandboxBindings, BoundLocalChannelSource, LaunchSource,
+    SandboxChannelSource, ThreadEgress, ThreadResources, ThreadSandbox, build_acp_channel_source,
+    resolve_sandbox_tier,
 };
 pub use crate::skills::SkillForkPlacement;
 pub use crate::skills_api::skills_router;
@@ -139,7 +140,7 @@ pub use crate::commit_ingest::{
     ClaimedCommitService, RemoteClaimedRunCommit, claimed_commit_router,
 };
 pub use crate::deployment_config::{
-    DeploymentConfig, DispatchBackend, SandboxTier, StoreKind, Wake,
+    AcpWorkerProfile, DeploymentConfig, DispatchBackend, SandboxTier, StoreKind, Wake,
 };
 pub use crate::dispatch_transport::{
     WorkerDispatchService, dispatch_transport_router_with_service,

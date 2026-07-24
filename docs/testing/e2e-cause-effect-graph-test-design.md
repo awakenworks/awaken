@@ -49,7 +49,7 @@
 | D15 | 沙箱隔离级 | `AWAKEN_SANDBOX_TIER`(`SandboxTier::from_env_str`) | local/none · namespace(bwrap) · docker · podman · k8s | namespace |
 | D16 | 容器镜像 | `AWAKEN_CONTAINER_IMAGE`(+`container-*` feature) | ref · 未设 | 未设(容器级必需) |
 | D17 | bwrap 缺失降级 | `AWAKEN_SANDBOX_ALLOW_LOCAL_FALLBACK` | 1(降级) · 未设(fail-closed) | fail-closed |
-| D18 | ACP CLI 源 | `AWAKEN_ACP_CLI` 仅声明 worker capability；snapshot `acp:<cli>` 必须匹配；固定 argv 仅显式 dev/test composition | cli-id · snapshot binding · 皆无(native) | 皆无 |
+| D18 | ACP CLI 源 | `AWAKEN_ACP_CLIS` 解析为同一 `AcpWorkerProfile`，同时驱动 worker capability 与精确启动路由；`AWAKEN_ACP_CLI` 为单值兼容输入；snapshot `acp:<cli>` 必须匹配；固定 argv 仅显式 dev/test composition | cli-id 集合 · 可选 default · snapshot binding · 皆无(native) | 皆无 |
 | D19 | Hand 拓扑 | brain 侧:`AWAKEN_REMOTE_HAND_UNIX`(C5 colocated) · `AWAKEN_REMOTE_HAND`(direct) · `AWAKEN_REMOTE_HAND_LISTEN`(reverse) · `AWAKEN_REMOTE_HAND_NATS`+`_SUBJECT`(relay);sandbox 侧 `awaken-sandbox hand --unix/--listen/--dial/--nats` | 四拓扑之一 | — |
 | D20 | 每会话出口 | 会话 environment networking → `NetworkPolicy::None/Unrestricted` | deny · allow | allow |
 | D21 | Worker 上游 & 秘密 | `AWAKEN_UPSTREAM_URL`/`AWAKEN_WORKER_SERVE_URL`;`AWAKEN_WORKER_GATEWAY_ONLY` | 本地凭证 · gateway-only(secretless) | 本地凭证 |
@@ -73,7 +73,7 @@
 - **R8** nats wake(D6=nats)⇒ `AWAKEN_NATS_URL` + `--features nats`(否则硬启动错,绝不静默 poll)。
 - **R9** 容器级(D15∈{docker,podman,k8s})⇒ 匹配 `container-*` feature + D16 镜像;**k8s ⇒ `AWAKEN_K8S_AGENT_ADDR`**。
 - **R10** namespace 级 ⇒ bwrap 存在,除非 D17=1 降级(高声通告)。
-- **R11** 投影 ACP 每 worker 只服务**一个** CLI:`backend_ref=acp:<other>` ≠ `AWAKEN_ACP_CLI` 时 open 处 fail-closed。
+- **R11** 投影 ACP 只服务 `AcpWorkerProfile` 中的精确 CLI 路由；未声明的 `backend_ref=acp:<other>` 在 open 处 fail-closed，裸 `acp` 在无唯一 default 时 fail-closed。
 - **R12** 出口封闭边界(D20=deny)⇒ unix 传输是唯一跨界口(C5);**k8s 无 ingress ⇒ reverse hand(`--dial`)必需**;镜像内 ACP 适配器须预置(封闭 pod 不能 `npm install`)。
 - **R13** gateway-only worker(D21)⇒ 不开 vault/无需 seal;本地凭证模型则退 `NoModelConfiguredExecutor`。默认 worker ⇒ 共享控制面 stores(D10+D12)。
 - **R14** hand/memoryd 角色 ⇒ `--features hand`/`memoryd`;memoryd fuse ⇒ `/dev/fuse`+SYS_ADMIN,否则自动退 copy。
