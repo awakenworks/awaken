@@ -140,7 +140,8 @@ impl WorkerResourcePlane {
         }
     }
 
-    fn with_repository_credentials(
+    #[must_use]
+    pub fn with_repository_credentials(
         mut self,
         credentials: awaken_control::InferenceMaterializationStores,
     ) -> Self {
@@ -201,6 +202,7 @@ pub struct WorkerNodeBuilder {
     manifest: Option<WorkerManifest>,
     deployment: awaken_runtime_host::DeploymentConfig,
     application_factory: Option<RegisteredApplicationFactory>,
+    application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
     credential_materializer: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
     resources: Option<WorkerResourcePlane>,
@@ -215,6 +217,7 @@ impl WorkerNodeBuilder {
             manifest: None,
             deployment: awaken_runtime_host::DeploymentConfig::from_env(),
             application_factory: None,
+            application_gate: None,
             materializer: None,
             credential_materializer: None,
             resources: None,
@@ -247,6 +250,17 @@ impl WorkerNodeBuilder {
         self
     }
 
+    /// Install the sole application-owned permission gate around the canonical
+    /// Session route.
+    #[must_use]
+    pub fn with_application_gate(
+        mut self,
+        gate: Arc<dyn awaken_runtime_contract::permission::ToolGateHook>,
+    ) -> Self {
+        self.application_gate = Some(gate);
+        self
+    }
+
     #[must_use]
     pub fn with_inference_materializer(
         mut self,
@@ -274,11 +288,32 @@ impl WorkerNodeBuilder {
         self
     }
 
-    fn with_credential_materializer(
+    /// Install the authoritative credential materializer used by ACP launch and
+    /// Session secret delivery.
+    #[must_use]
+    pub fn with_credential_materializer(
         mut self,
         credentials: awaken_runtime_host::PinnedCredentialMaterializer,
     ) -> Self {
         self.credential_materializer = Some(credentials);
+        self
+    }
+
+    /// Derive both inference and Session-secret materializers from one pair of
+    /// authoritative credential stores.
+    #[must_use]
+    pub fn with_credential_stores(
+        mut self,
+        credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
+        secrets: Arc<dyn awaken_credential_vault::SecretStore>,
+    ) -> Self {
+        self.materializer = Some(Arc::new(CredentialInferenceMaterializer::new(
+            credentials.clone(),
+            secrets.clone(),
+        )));
+        self.credential_materializer = Some(
+            awaken_runtime_host::PinnedCredentialMaterializer::new(credentials, secrets),
+        );
         self
     }
 
@@ -315,7 +350,7 @@ impl WorkerNodeBuilder {
             manifest,
             deployment: self.deployment,
             application_factory: self.application_factory,
-            application_gate: None,
+            application_gate: self.application_gate,
             materializer: self.materializer,
             credential_materializer: self.credential_materializer,
             resources: self.resources,
@@ -387,105 +422,6 @@ impl WorkerLifecycle {
 /// the pool directly; embedding does not require `AWAKEN_INGRESS=durable`.
 pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     run_with_standard_environment(WorkerUpstream::new(upstream), Default::default(), None).await
-}
-
-/// Run the standard database-less Worker with one registered application.
-///
-/// Credential, resource-plane, ACP, manifest, and lifecycle assembly remain
-/// identical to [`run`]; the application contributes only the post-registration
-/// wrapper.
-pub async fn run_with_application(
-    upstream: WorkerUpstream,
-    application_capabilities: std::collections::BTreeSet<String>,
-    factory: RegisteredApplicationFactory,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    run_with_standard_environment(upstream, application_capabilities, Some(factory)).await
-}
-
-/// Run the same fully assembled Worker lifecycle with a supervisor-provided
-/// shutdown source. Embedded applications use this to retain an explicit stop
-/// handle while reusing the standard registration, routing, heartbeat, drain,
-/// quiesce, and deregistration path.
-pub async fn run_with_application_until<F>(
-    upstream: WorkerUpstream,
-    application_capabilities: std::collections::BTreeSet<String>,
-    factory: RegisteredApplicationFactory,
-    shutdown: F,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
-where
-    F: std::future::Future<
-            Output = Result<WorkerShutdown, Box<dyn std::error::Error + Send + Sync>>,
-        >,
-{
-    build_standard_worker(upstream, application_capabilities, Some(factory))
-        .await?
-        .run_until(shutdown)
-        .await
-}
-
-/// Run a supervised application Worker over credential stores supplied by an
-/// embedding composition root. Native inference, ACP launch credentials and
-/// credentialed Resource delivery all use these same authoritative stores.
-pub async fn run_with_application_credential_stores_until<F>(
-    upstream: WorkerUpstream,
-    credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
-    secrets: Arc<dyn awaken_credential_vault::SecretStore>,
-    application_capabilities: std::collections::BTreeSet<String>,
-    factory: RegisteredApplicationFactory,
-    gate: Arc<dyn awaken_runtime_contract::permission::ToolGateHook>,
-    shutdown: F,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
-where
-    F: std::future::Future<
-            Output = Result<WorkerShutdown, Box<dyn std::error::Error + Send + Sync>>,
-        >,
-{
-    run_with_application_credential_stores_and_deployment_until(
-        upstream,
-        awaken_runtime_host::DeploymentConfig::from_env(),
-        (credentials, secrets),
-        application_capabilities,
-        factory,
-        gate,
-        shutdown,
-    )
-    .await
-}
-
-/// Explicit-deployment counterpart for embedding composition roots.
-pub async fn run_with_application_credential_stores_and_deployment_until<F>(
-    upstream: WorkerUpstream,
-    deployment: awaken_runtime_host::DeploymentConfig,
-    credential_stores: (
-        Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
-        Arc<dyn awaken_credential_vault::SecretStore>,
-    ),
-    application_capabilities: std::collections::BTreeSet<String>,
-    factory: RegisteredApplicationFactory,
-    gate: Arc<dyn awaken_runtime_contract::permission::ToolGateHook>,
-    shutdown: F,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
-where
-    F: std::future::Future<
-            Output = Result<WorkerShutdown, Box<dyn std::error::Error + Send + Sync>>,
-        >,
-{
-    let (credentials, secrets) = credential_stores;
-    build_worker_with_materialization_stores(
-        upstream,
-        deployment,
-        awaken_control::InferenceMaterializationStores {
-            credentials,
-            secrets,
-        },
-        true,
-        application_capabilities,
-        Some(factory),
-        Some(gate),
-    )
-    .await?
-    .run_until(shutdown)
-    .await
 }
 
 async fn run_with_standard_environment(
@@ -567,101 +503,16 @@ pub async fn run_with_inference_materializer(
     upstream: &str,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    run_with_upstream_and_inference_materializer(WorkerUpstream::new(upstream), materializer).await
-}
-
-/// Run a secretless Worker over one caller-configured control transport.
-///
-/// Managed compositions use this entrypoint so the same [`WorkerUpstream`]
-/// (including its mTLS client and logical Worker id) is cloned through
-/// registration, claim/renew/settle, claimed commit, and ordinary commit. This
-/// function never reconstructs the transport from its URL.
-pub async fn run_with_upstream_and_inference_materializer(
-    upstream: WorkerUpstream,
-    materializer: Arc<dyn InferenceExecutorMaterializer>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    run_with_upstream_application_and_inference_materializer(
-        upstream,
+    build_secretless_worker(
+        WorkerUpstream::new(upstream),
+        awaken_runtime_host::DeploymentConfig::from_env(),
         materializer,
         Default::default(),
         None,
-    )
-    .await
-}
-
-/// Run a caller-materialized Worker with an optional registered application
-/// application. This is the secretless counterpart of [`run_with_application`].
-pub async fn run_with_upstream_application_and_inference_materializer(
-    upstream: WorkerUpstream,
-    materializer: Arc<dyn InferenceExecutorMaterializer>,
-    application_capabilities: std::collections::BTreeSet<String>,
-    application: Option<RegisteredApplicationFactory>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    build_secretless_worker(
-        upstream,
-        awaken_runtime_host::DeploymentConfig::from_env(),
-        materializer,
-        application_capabilities,
-        application,
         None,
     )
     .await?
     .run_until_shutdown()
-    .await
-}
-
-/// Supervised counterpart of
-/// [`run_with_upstream_application_and_inference_materializer`].
-pub async fn run_with_upstream_application_and_inference_materializer_until<F>(
-    upstream: WorkerUpstream,
-    materializer: Arc<dyn InferenceExecutorMaterializer>,
-    application_capabilities: std::collections::BTreeSet<String>,
-    application: Option<RegisteredApplicationFactory>,
-    application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
-    shutdown: F,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
-where
-    F: std::future::Future<
-            Output = Result<WorkerShutdown, Box<dyn std::error::Error + Send + Sync>>,
-        >,
-{
-    run_with_upstream_application_and_inference_materializer_and_deployment_until(
-        upstream,
-        awaken_runtime_host::DeploymentConfig::from_env(),
-        materializer,
-        application_capabilities,
-        application,
-        application_gate,
-        shutdown,
-    )
-    .await
-}
-
-/// Explicit-deployment supervised secretless Worker entrypoint.
-pub async fn run_with_upstream_application_and_inference_materializer_and_deployment_until<F>(
-    upstream: WorkerUpstream,
-    deployment: awaken_runtime_host::DeploymentConfig,
-    materializer: Arc<dyn InferenceExecutorMaterializer>,
-    application_capabilities: std::collections::BTreeSet<String>,
-    application: Option<RegisteredApplicationFactory>,
-    application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
-    shutdown: F,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
-where
-    F: std::future::Future<
-            Output = Result<WorkerShutdown, Box<dyn std::error::Error + Send + Sync>>,
-        >,
-{
-    build_secretless_worker(
-        upstream,
-        deployment,
-        materializer,
-        application_capabilities,
-        application,
-        application_gate,
-    )
-    .await?
-    .run_until(shutdown)
     .await
 }
 
@@ -721,9 +572,10 @@ fn build_configured_worker(
     if let Some(factory) = application {
         builder = builder.with_application_factory(factory);
     }
-    let mut worker = builder.build()?;
-    worker.application_gate = application_gate;
-    Ok(worker)
+    if let Some(gate) = application_gate {
+        builder = builder.with_application_gate(gate);
+    }
+    Ok(builder.build()?)
 }
 
 fn configured_admin_listen() -> String {

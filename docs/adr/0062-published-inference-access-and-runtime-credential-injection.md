@@ -205,14 +205,13 @@ part of the resulting domain language.
 
 ## Amendment: hosted composition and model-level override (2026-07-23)
 
-The earlier removal note for
-`run_with_inference_materializer_and_upstream` applied to an unused overload.
-A hosted composition now has a concrete consumer and uses the deliberately named
-`run_with_upstream_and_inference_materializer` entrypoint. It accepts one already
-configured `WorkerUpstream`; registration and every later Worker transport clone
-retain that client's mTLS/security properties and logical Worker identity. This
-does not add a second execution path: both convenience and hosted entrypoints
-delegate to the same private `run_configured` lifecycle.
+The earlier overloads for hosted Worker composition are retired. A hosted
+composition supplies its configured `WorkerUpstream` and inference materializer
+through the canonical `WorkerNodeBuilder`; registration and every later Worker
+transport clone retain that client's mTLS/security properties and logical Worker
+identity. The string-based `run_with_inference_materializer` helper remains only
+as the secretless CLI/example adapter and delegates to the same builder-owned
+lifecycle.
 
 An explicit `model_ref_override` remains a model selector rather than a Provider
 account selector. Selection now retains every complete published binding for that
