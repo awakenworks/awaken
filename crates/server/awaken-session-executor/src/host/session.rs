@@ -117,6 +117,7 @@ impl SharedHost {
         commit: Arc<HostCommit>,
         stream_checkpoint: Arc<dyn StreamCheckpointStore>,
         terminal_observers: &[Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>],
+        session_plugins: &[Arc<dyn awaken_runtime_contract::plugin::Plugin>],
     ) -> Result<
         (
             Arc<dyn RunIngress>,
@@ -151,6 +152,10 @@ impl SharedHost {
         let run_context = terminal_observers.iter().cloned().fold(
             awaken_runtime_contract::RuntimeRunContext::new(),
             awaken_runtime_contract::RuntimeRunContext::with_terminal_observer,
+        );
+        let run_context = session_plugins.iter().cloned().fold(
+            run_context,
+            awaken_runtime_contract::RuntimeRunContext::with_session_plugin,
         );
         let mut ingress = DurableRunIngress::with_owner_and_resolver(
             runtime,
@@ -297,24 +302,6 @@ impl SharedHost {
         // Durable interrupted-stream checkpoints follow the commit's durability
         // (Phase 3): a mid-recovery crash resumes from the flushed partial.
         let stream_checkpoint = self.build_stream_checkpoint(thread)?;
-        // This thread's staged MCP servers (ADR-0043 Phase 3), registered by the
-        // managed adapter's `prepare_session` before the first turn; the wire
-        // composition (connect + discover, fail closed) lives in `crate::mcp`.
-        // Read, not removed, so a retry re-attempts (and re-fails) the connect.
-        let staged_mcp = self.thread_session_mcp(thread);
-        let mcp = crate::mcp::connect_staged(&staged_mcp).await?;
-        // An authored permission policy is the sole authority for MCP confirmation.
-        // Without one, selecting the MCP server pre-authorizes its discovered tools;
-        // with one, its rules/default decide every MCP call. Do not project a second
-        // confirmation list through Session state: that path cannot survive recovery
-        // without duplicating the published policy.
-        // Management tools (ADR-0052) remain pre-authorized: they are read-only,
-        // and only the reserved-scope assistant's config names them.
-        let admin_ids: Vec<String> = self
-            .admin_tools
-            .iter()
-            .map(|t| t.id().to_string())
-            .collect();
         // A remote worker consumes the exact snapshot distributed in the claim;
         // it must not reopen the config registry and reconstruct current state.
         // Local Session creation has no claimed snapshot yet, so it resolves the
@@ -330,12 +317,52 @@ impl SharedHost {
                 )
             })
         });
+        // Runtime selection is known before MCP realization. Native execution
+        // connects staged servers as in-process McpPlugins; ACP hands the same
+        // typed server set to the CLI's own MCP client and must not open a second
+        // competing host-side connection.
+        let execution_backend = self
+            .acp
+            .as_ref()
+            .and_then(|acp| acp.adapter_for(thread))
+            .map(|adapter| awaken_runtime_contract::resolved::Backend::from_ref(&adapter))
+            .or_else(|| {
+                installed.as_ref().map(|snapshot| {
+                    awaken_runtime_contract::resolved::Backend::from_ref(
+                        &snapshot.resolved_spec.model_binding.backend_ref,
+                    )
+                })
+            })
+            .unwrap_or(awaken_runtime_contract::resolved::Backend::Native);
+        let is_acp = execution_backend.is_acp();
+        // This thread's staged MCP servers (ADR-0043 Phase 3), registered by the
+        // managed adapter's `prepare_session` before the first turn; the wire
+        // composition (connect + discover, fail closed) lives in `crate::mcp`.
+        // Read, not removed, so a retry re-attempts (and re-fails) the connect.
+        let staged_mcp = self.thread_session_mcp(thread);
+        let mcp = if is_acp {
+            crate::mcp::McpWiring::empty()
+        } else {
+            crate::mcp::connect_staged(&staged_mcp).await?
+        };
+        // An authored permission policy is the sole authority for MCP confirmation.
+        // Without one, selecting the MCP server pre-authorizes its discovered tools;
+        // with one, its rules/default decide every MCP call. Do not project a second
+        // confirmation list through Session state: that path cannot survive recovery
+        // without duplicating the published policy.
         let authored_permission = config_permission_ruleset(
             installed
                 .as_ref()
                 .map(|c| c.resolved_spec.plugin_config.plugins())
                 .unwrap_or(&self.plugin_config),
         );
+        // Management tools (ADR-0052) remain pre-authorized: they are read-only,
+        // and only the reserved-scope assistant's config names them.
+        let admin_ids: Vec<String> = self
+            .admin_tools
+            .iter()
+            .map(|t| t.id().to_string())
+            .collect();
         let pre_authorized =
             pre_authorized_tool_ids(&mcp.tool_ids, &admin_ids, authored_permission.is_some());
         // The workspace skill dir is negotiated by the agent/hand definition: its
@@ -367,17 +394,11 @@ impl SharedHost {
         if apply_base_gate {
             runtime = runtime.with_gate(base_gate.clone());
         }
-        // Register the discovered MCP tools; their descriptors join the advertised
-        // config below so the model sees them.
-        for tool in mcp.tools {
-            runtime = runtime.with_tool(tool);
-        }
         // Register the management tool executables globally (ADR-0052 D3): the
         // registry stays global, the compile-time scope fence is what restricts them.
         for tool in &self.admin_tools {
             runtime = runtime.with_tool(tool.clone());
         }
-        let mcp_descriptors = mcp.descriptors;
         // A gate override (slice E) replaces the default authorization gate — e.g.
         // a scheduling gate that defers tool calls as `ScheduledAction`s so the
         // durable worker performs them out of band (ADR-0020).
@@ -520,10 +541,10 @@ impl SharedHost {
             }
             None => awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
         };
-        // Everything dynamically provisioned on this thread that the config must
-        // advertise: the skill tools plus the discovered MCP tools.
-        let mut dynamic_descriptors = skill_descriptors;
-        dynamic_descriptors.extend(mcp_descriptors);
+        // Authored/default Session configuration still advertises Skill tools.
+        // MCP tools are live Session plugins and therefore do not rewrite either
+        // this generated snapshot or an immutable published snapshot.
+        let dynamic_descriptors = skill_descriptors;
         let session_delegates: HashSet<String> = installed
             .as_ref()
             .map(|snapshot| {
@@ -567,17 +588,6 @@ impl SharedHost {
         // reference; the raw bearer never reaches the CLI), while a trusted-local host may
         // opt into β (`with_trusted_acp_mcp`) and hand the bearer inline. A native run is
         // untouched (its MCP servers are already the in-process tools connected above).
-        let execution_backend = self
-            .acp
-            .as_ref()
-            .and_then(|acp| acp.adapter_for(thread))
-            .map(|adapter| awaken_runtime_contract::resolved::Backend::from_ref(&adapter))
-            .unwrap_or_else(|| {
-                awaken_runtime_contract::resolved::Backend::from_ref(
-                    &config.resolved_spec.model_binding.backend_ref,
-                )
-            });
-        let is_acp = execution_backend.is_acp();
         // For a sandboxed (α) ACP run with authenticated MCP servers, resolve the α reference
         // through the host's loopback relay: point each server at the relay and register its
         // real bearer there, so the sandbox reaches the MCP server via loopback and the token
@@ -656,6 +666,7 @@ impl SharedHost {
                 commit.clone(),
                 stream_checkpoint.clone(),
                 &terminal_observers,
+                &mcp.plugins,
             )
             .await?;
         let durable = durable_ingress.is_some();
@@ -675,6 +686,7 @@ impl SharedHost {
             commit,
             terminal_observers,
             stream_checkpoint,
+            session_plugins: mcp.plugins,
             hand_placement,
             capture_sink: self.capture_sink.clone(),
             thread_id,

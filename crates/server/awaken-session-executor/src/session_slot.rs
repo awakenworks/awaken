@@ -23,7 +23,6 @@ pub(crate) struct SessionRuntimeSlot {
     pub runtime_adapter: Option<String>,
     pub memory: Option<Arc<BoundMemory>>,
     pub mcp: Vec<PreparedMcpServer>,
-    pub mcp_tools_requiring_confirmation: Vec<String>,
     /// Claim-bound additions supplied by the embedding application. The host
     /// realizes these through the same Session environment as built-in resources.
     pub application: Option<crate::ApplicationSessionPlan>,

@@ -66,7 +66,6 @@ impl AcpWorkerProfile {
         })
     }
 
-    #[must_use]
     pub fn cli_ids(&self) -> impl Iterator<Item = &str> {
         self.cli_ids.iter().map(String::as_str)
     }

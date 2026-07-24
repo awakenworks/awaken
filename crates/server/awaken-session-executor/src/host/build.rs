@@ -630,6 +630,18 @@ impl SharedHost {
         self
     }
 
+    /// Install the credential-file broker shared by every Session sandbox tier.
+    /// Application plans retain opaque `MountSource::Secret` references; only
+    /// the selected provider asks this port for bytes at realization time.
+    #[must_use]
+    pub fn with_session_secret_broker(
+        self,
+        broker: Arc<dyn awaken_provisioning_contract::SecretBroker>,
+    ) -> Self {
+        self.session_provider.install_secret_broker(broker);
+        self
+    }
+
     /// Bind `model_ref` to `thread` (R2/R5), staged before its first turn.
     pub fn register_thread_model(&self, thread: &str, model_ref: impl Into<String>) {
         self.inference_routing.register(thread, model_ref);

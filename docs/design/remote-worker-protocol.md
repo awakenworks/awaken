@@ -309,27 +309,38 @@ application projection. The public router accepts only a versioned
 
 ```rust
 WorkerNodeBuilder::new(upstream)
-    .with_manifest(manifest)
+    .with_deployment_config(deployment)
+    .with_credential_stores(credentials, secrets)
     .with_application_factory(factory)
-    .with_inference_materializer(materializer)
+    .with_application_gate(gate)
     .with_resource_plane(WorkerResourcePlane::new(resources, validator))
+    .with_standard_manifest(application_capabilities)
     .build()?
     .run_until_shutdown()
     .await
 ```
 
-`build()` is synchronous and side-effect free: it validates the upstream and
-immutable manifest before registration. `run_until_shutdown()` owns process
-signals; supervisors and conformance tests use the same `WorkerNode::run_until`
-state machine with an injected shutdown future. Registration creates one
-immutable `RegisteredWorkerContext` from the returned `RegisteredWorker` and the
-identity-bound `WorkerUpstream`; the factory then creates one
-`RegisteredWorkerApplication`. Its claim-time provisioner contributes a frozen
-neutral plan before Session realization, and `SharedHost` merges that plan with
-its built-in resources into one Session environment. `SharedHost` then
-constructs its complete per-Session Native/ACP/A2A router and applies the
-application decorator around it. There is no public Worker/Host path that
-replaces the complete router or creates another Session environment.
+`with_standard_manifest` is the sole standard capability projection. At
+`build()` it derives the immutable manifest from the deployment, installed
+inference materializer, resource plane and its repository credential support,
+ACP profile, and explicit application capabilities. A special deployment may
+instead select `with_manifest(explicit_manifest)`; selecting both sources fails
+closed rather than depending on call order. The process adapters parse
+environment-driven deployment and manifest metadata once before installing
+their typed values on the Builder.
+
+`build()` is synchronous and side-effect free: it derives or accepts one
+manifest and runs the same contract validation before registration.
+`run_until_shutdown()` owns process signals; supervisors and conformance tests
+use the same `WorkerNode::run_until` state machine with an injected shutdown
+future. Registration creates one immutable `RegisteredWorkerContext` from the
+returned `RegisteredWorker` and the identity-bound `WorkerUpstream`; the factory
+then creates one `RegisteredWorkerApplication`. Its claim-time provisioner
+contributes a frozen neutral plan before Session realization, and `SharedHost`
+merges that plan with its built-in resources into one Session environment.
+`SharedHost` then constructs its complete per-Session Native/ACP/A2A router and
+applies the application decorator around it. There is no public Worker/Host path
+that replaces the complete router or creates another Session environment.
 
 `WorkerNode` owns:
 
@@ -791,7 +802,7 @@ helpers and CLI parsing do not belong here.
 | `ClaimedCommitService` | application service | authenticated, fenced, versioned, idempotent commit orchestration | directory, dispatch, coordinator resolver, authenticator | `SharedHost` construction or product projection | embedding system cannot use its coordinator; stale owner writes | G1/G13; dependency-injection and stale-epoch tests |
 | `ThreadCoordinatorResolver` | boundary port | coordinator selection for the addressed Thread/cell | configured commit backend | placement, auth, or application cache | request commits through a different authority | same-source and multi-node tests |
 | `WorkerNode` | public component | Worker lifecycle from registration through drain | control client, recovery client, commit client, executor | product envelope or Control database | every application rewrites lifecycle and diverges | G5/G6; lifecycle state-machine suite |
-| `WorkerNodeBuilder` | assembly API | validated explicit Worker dependency assembly and one post-registration application factory | manifest, materializers/resources, application factory | complete executor/environment replacement, process environment parsing, or hidden global stores | application duplicates Worker/router lifecycle | construction and registered-context lifecycle tests |
+| `WorkerNodeBuilder` | assembly API | validated Worker dependency assembly, mutually exclusive explicit/standard manifest selection, and one post-registration application factory | typed deployment, materializers/resources, application capabilities/factory | complete executor/environment replacement, process environment parsing, hidden global stores, or a second capability derivation | application duplicates Worker/router lifecycle or advertises capabilities absent from the installed topology | construction, manifest-source, capability-derivation, and registered-context lifecycle tests |
 | `RegisteredWorkerContext` | immutable assembly value | one allocated Worker incarnation plus its identity-bound request transport | `RegisteredWorker`, `WorkerUpstream` | mutable liveness truth, product ACL, or a second credential | application uses an unsigned/stale identity or parallel trust path | signed transport and registration-order tests |
 | `RegisteredWorkerApplication` | immutable assembly value | the one provisioner/decorator pair installed after registration | registered context and neutral Host ports | Worker lifecycle or a second execution router | application hooks are assembled under different identities | registered-context lifecycle tests |
 | `ApplicationSessionProvisioner` | Worker application port | claim-bound projection into the authoritative Session environment | activation and neutral ownership verifier | sandbox creation, Session cache, claim vocabulary, or product persistence | Native and ACP receive different resources or a stale claim materializes secrets | application-plan ordering, merge, and stale-claim tests |
