@@ -250,6 +250,10 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
         self.inner.install_memory_mounter(mounter);
     }
 
+    fn install_secret_broker(&self, broker: Arc<dyn pc::SecretBroker>) {
+        self.inner.install_secret_broker(broker);
+    }
+
     async fn create_environment(
         &self,
         spec: &pc::SandboxSpec,
