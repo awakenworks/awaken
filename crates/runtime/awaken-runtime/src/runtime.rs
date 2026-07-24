@@ -250,6 +250,18 @@ impl Runtime {
         &self,
         spec: &awaken_runtime_contract::resolved::ResolvedSpec,
     ) -> std::result::Result<ResolvedExecutionEnv, MergeError> {
+        self.resolve_plugin_env_with(spec, &[])
+    }
+
+    /// Resolve authored plugins plus live plugins supplied by the realized
+    /// Session. Session plugins are active by construction, but otherwise pass
+    /// through the exact same configuration, bound, duplicate-id, dependency,
+    /// and ordering checks as authored plugins.
+    pub(crate) fn resolve_plugin_env_with(
+        &self,
+        spec: &awaken_runtime_contract::resolved::ResolvedSpec,
+        session_plugins: &[Arc<dyn Plugin>],
+    ) -> std::result::Result<ResolvedExecutionEnv, MergeError> {
         // Each active plugin resolves against its own config section (by manifest
         // id); a malformed section fails the run closed (G30).
         let mut active = Vec::new();
@@ -258,6 +270,11 @@ impl Runtime {
             if !spec.plugin_ids.contains(&manifest.id) {
                 continue;
             }
+            let contributions = plugin.resolve_configured(spec.plugin_config.get(&manifest.id))?;
+            active.push((manifest, contributions));
+        }
+        for plugin in session_plugins {
+            let manifest = plugin.manifest();
             let contributions = plugin.resolve_configured(spec.plugin_config.get(&manifest.id))?;
             active.push((manifest, contributions));
         }
@@ -277,12 +294,21 @@ impl Runtime {
     /// The combined live version of the active plugins, or `None` if every
     /// active plugin is static. A change signals the drive loop to re-resolve the
     /// execution environment at the next step boundary (dynamic tool refresh).
-    pub(crate) fn active_live_version(&self, plugin_ids: &[String]) -> Option<u64> {
+    pub(crate) fn active_live_version_with(
+        &self,
+        plugin_ids: &[String],
+        session_plugins: &[Arc<dyn Plugin>],
+    ) -> Option<u64> {
         let mut acc: Option<u64> = None;
         for plugin in &self.plugins {
             if plugin_ids.contains(&plugin.manifest().id)
                 && let Some(version) = plugin.live_version()
             {
+                acc = Some(acc.unwrap_or(0).wrapping_add(version));
+            }
+        }
+        for plugin in session_plugins {
+            if let Some(version) = plugin.live_version() {
                 acc = Some(acc.unwrap_or(0).wrapping_add(version));
             }
         }

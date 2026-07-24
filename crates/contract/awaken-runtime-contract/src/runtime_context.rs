@@ -130,6 +130,13 @@ pub struct RuntimeRunContext {
     /// decorators may recheck it immediately before an external side effect.
     /// Absence means the ingress topology has no dispatch ownership concept.
     pub ownership: Option<Arc<dyn AttemptOwnershipVerifier>>,
+    /// Process-local plugins bound by the realized Session rather than authored
+    /// into the immutable Agent publication. This is the live-wiring seam for
+    /// dynamically discovered capabilities such as a claim-prepared MCP server:
+    /// the publication remains frozen while the plugin still passes through the
+    /// runtime's ordinary capability-bound merge, tool presentation, and
+    /// execution path.
+    pub session_plugins: Vec<Arc<dyn crate::plugin::Plugin>>,
 }
 
 impl RuntimeRunContext {
@@ -168,6 +175,13 @@ impl RuntimeRunContext {
     #[must_use]
     pub fn with_ownership(mut self, ownership: Arc<dyn AttemptOwnershipVerifier>) -> Self {
         self.ownership = Some(ownership);
+        self
+    }
+
+    /// Bind one plugin supplied by the realized Session environment.
+    #[must_use]
+    pub fn with_session_plugin(mut self, plugin: Arc<dyn crate::plugin::Plugin>) -> Self {
+        self.session_plugins.push(plugin);
         self
     }
 

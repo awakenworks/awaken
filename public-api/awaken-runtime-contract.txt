@@ -567,6 +567,8 @@ pub awaken_runtime_contract::plugin::MergeError::DuplicateActionKind
 pub awaken_runtime_contract::plugin::MergeError::DuplicateActionKind::first: alloc::string::String
 pub awaken_runtime_contract::plugin::MergeError::DuplicateActionKind::id: alloc::string::String
 pub awaken_runtime_contract::plugin::MergeError::DuplicateActionKind::second: alloc::string::String
+pub awaken_runtime_contract::plugin::MergeError::DuplicatePlugin
+pub awaken_runtime_contract::plugin::MergeError::DuplicatePlugin::id: alloc::string::String
 pub awaken_runtime_contract::plugin::MergeError::DuplicateTool
 pub awaken_runtime_contract::plugin::MergeError::DuplicateTool::first: alloc::string::String
 pub awaken_runtime_contract::plugin::MergeError::DuplicateTool::id: alloc::string::String
@@ -895,6 +897,7 @@ pub awaken_runtime_contract::runtime_context::RuntimeRunContext::ownership: core
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::pause: core::option::Option<awaken_runtime_contract::pause::PauseSignal>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::reschedules: core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicU32>>
+pub awaken_runtime_contract::runtime_context::RuntimeRunContext::session_plugins: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::Plugin>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::stream_checkpoint: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::stream_sink: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::terminal_observers: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>>
@@ -916,6 +919,7 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_ownersh
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_pause(self, awaken_runtime_contract::pause::PauseSignal) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reader(self, alloc::sync::Arc<dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reschedules(self, alloc::sync::Arc<core::sync::atomic::AtomicU32>) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_session_plugin(self, alloc::sync::Arc<dyn awaken_runtime_contract::Plugin>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_checkpoint(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_sink(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_terminal_observer(self, alloc::sync::Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>) -> Self
@@ -1581,6 +1585,7 @@ pub awaken_runtime_contract::RuntimeRunContext::ownership: core::option::Option<
 pub awaken_runtime_contract::RuntimeRunContext::pause: core::option::Option<awaken_runtime_contract::pause::PauseSignal>
 pub awaken_runtime_contract::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader>>
 pub awaken_runtime_contract::RuntimeRunContext::reschedules: core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicU32>>
+pub awaken_runtime_contract::RuntimeRunContext::session_plugins: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::Plugin>>
 pub awaken_runtime_contract::RuntimeRunContext::stream_checkpoint: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>>
 pub awaken_runtime_contract::RuntimeRunContext::stream_sink: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>
 pub awaken_runtime_contract::RuntimeRunContext::terminal_observers: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>>
@@ -1602,6 +1607,7 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_ownersh
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_pause(self, awaken_runtime_contract::pause::PauseSignal) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reader(self, alloc::sync::Arc<dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reschedules(self, alloc::sync::Arc<core::sync::atomic::AtomicU32>) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_session_plugin(self, alloc::sync::Arc<dyn awaken_runtime_contract::Plugin>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_checkpoint(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_sink(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_terminal_observer(self, alloc::sync::Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>) -> Self

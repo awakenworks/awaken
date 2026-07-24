@@ -2,7 +2,8 @@
 
 - Status: Accepted
 - Amended: 2026-06-29 — D2/D3/D4/D5 refined against the awaken reference
-  implementation; see Amendment A1
+  implementation; see Amendment A1; 2026-07-24 — Session-realized plugins use
+  the same aggregate; see Amendment A2
 - Depends on: ADR-0001
 - Supersedes: the mutable `PluginRegistrar` registration seam; the config-blind
   `register_runtime(&mut PluginRegistrar)` seam (replaced by `resolve`, not
@@ -213,6 +214,23 @@ mis-specified. They are corrections and additions, not a new direction.
    validation *logic* collapses into `validate_section`; the trait is kept as the
    thin runtime↔server DI seam. Deleting the seam (as the original text implied)
    would remove a real abstraction, not a duplication.
+
+## Amendment A2 (2026-07-24): Session-realized plugins
+
+A capability discovered only after Session provisioning, such as a
+claim-prepared MCP server, cannot be authored into an immutable Agent
+publication. `RuntimeRunContext` may therefore carry process-local Session
+plugins, but this is a second **source of plugin instances**, not a second plugin
+system. Authored and Session plugins enter the same `ResolvedExecutionEnv::merge`
+and therefore share config resolution, capability bounds, ordering, executable
+tool presentation, live refresh, and conflict checks. Duplicate plugin ids
+across either source fail closed.
+
+The Session source must not rewrite the publication, register `RawTool` and
+descriptor projections independently, or bypass permission policy. The Host
+retains the plugin instance for the Session and injects it into both direct and
+durable run contexts; runtime resolution remains the sole executable capability
+aggregate.
 
 ### Still open — required for the governance payoff (G8 operator overlay)
 
