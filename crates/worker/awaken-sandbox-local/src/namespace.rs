@@ -358,6 +358,7 @@ pub struct NamespaceProvider {
     base: PathBuf,
     blobs: std::collections::HashMap<String, Vec<u8>>,
     file_store: Option<Arc<dyn pc::BlobSource>>,
+    secret_broker: Arc<std::sync::RwLock<Option<Arc<dyn pc::SecretBroker>>>>,
     /// Optional memory-store realizer. A FUSE-preferring mounter
     /// ([`MemoryStoreMounter::new`]) works on this tier: the store is FUSE-mounted on the
     /// host path that then binds into the bwrap namespace, so the agent reads/writes it
@@ -376,6 +377,7 @@ impl NamespaceProvider {
             base: base.into(),
             blobs: std::collections::HashMap::new(),
             file_store: None,
+            secret_broker: Arc::new(std::sync::RwLock::new(None)),
             memory_mounter: Arc::new(std::sync::RwLock::new(None)),
         }
     }
@@ -391,6 +393,19 @@ impl NamespaceProvider {
     pub fn with_blob_source(mut self, store: Arc<dyn pc::BlobSource>) -> Self {
         self.file_store = Some(store);
         self
+    }
+
+    #[must_use]
+    pub fn with_secret_broker(self, broker: Arc<dyn pc::SecretBroker>) -> Self {
+        self.install_secret_broker(broker);
+        self
+    }
+
+    pub fn install_secret_broker(&self, broker: Arc<dyn pc::SecretBroker>) {
+        *self
+            .secret_broker
+            .write()
+            .expect("secret broker lock poisoned") = Some(broker);
     }
 
     /// Realize `MemoryStore` mounts via an injected mounter. It uses live FUSE where
@@ -488,7 +503,26 @@ impl NamespaceProvider {
                 memory_mounts.push(guard);
                 continue;
             }
-            let bytes = resolve_source(&req.source, &self.blobs, &self.file_store).await;
+            let secret_broker = self
+                .secret_broker
+                .read()
+                .expect("secret broker lock poisoned")
+                .clone();
+            if secret_broker.is_some()
+                && matches!(req.source, pc::MountSource::Secret { .. })
+                && req.access == pc::MountAccess::ReadWrite
+            {
+                return Err(err(
+                    "the Namespace provider cannot write back a brokered writable Secret mount",
+                ));
+            }
+            let bytes = resolve_source(
+                &req.source,
+                &self.blobs,
+                &self.file_store,
+                secret_broker.as_ref(),
+            )
+            .await?;
             match &bytes {
                 Some(bytes) => {
                     verify(&req.source, bytes)?; // fail closed on content-hash mismatch
@@ -1077,6 +1111,24 @@ impl pc::Sandbox for NamespaceSandbox {
 mod tests {
     use super::*;
 
+    struct Broker;
+
+    #[async_trait]
+    impl pc::SecretBroker for Broker {
+        async fn materialize(&self, reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
+            assert_eq!(reference, "broker://namespace");
+            Ok(b"namespace-secret".to_vec())
+        }
+
+        async fn write_back(
+            &self,
+            _reference: &str,
+            _bytes: Vec<u8>,
+        ) -> Result<(), pc::SandboxError> {
+            unreachable!("the Namespace provider accepts only read-only brokered secrets")
+        }
+    }
+
     fn input<'a>(
         ws: &'a std::path::Path,
         out: &'a std::path::Path,
@@ -1145,6 +1197,34 @@ mod tests {
         );
         let sandbox = provider.create_sandbox(&spec).await.unwrap();
         assert_eq!(sandbox.realized().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_read_only_secret_is_materialized_by_the_dedicated_broker() {
+        use pc::Sandbox;
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = NamespaceProvider::new(tmp.path()).with_secret_broker(Arc::new(Broker));
+        let spec = ns_spec(
+            "t-ns-secret",
+            vec![pc::MountRequirement {
+                mount_id: "auth".into(),
+                source: pc::MountSource::Secret {
+                    reference: "broker://namespace".into(),
+                    content_hash: None,
+                },
+                mount_path: "/workspace/.auth".into(),
+                access: pc::MountAccess::ReadOnly,
+                lifetime: pc::MountLifetime::PerRun,
+                required: true,
+            }],
+        );
+
+        let sandbox = provider.create_sandbox(&spec).await.unwrap();
+        assert_eq!(sandbox.realized().len(), 1);
+        assert_eq!(
+            std::fs::read(&sandbox.secret_paths[0]).unwrap(),
+            b"namespace-secret"
+        );
     }
 
     #[tokio::test]

@@ -132,38 +132,45 @@ pub(crate) async fn resolve_source(
     source: &pc::MountSource,
     blobs: &HashMap<String, Vec<u8>>,
     store: &Option<Arc<dyn pc::BlobSource>>,
-) -> Option<Vec<u8>> {
+    secret_broker: Option<&Arc<dyn pc::SecretBroker>>,
+) -> Result<Option<Vec<u8>>, pc::SandboxError> {
     // Inline `Other({content})` and unresolvable memory stores short-circuit before
     // any store hit; the rest resolve by id (seed map first, then the store).
     let id = match source {
         pc::MountSource::File { file_id, .. } => file_id.as_str(),
         pc::MountSource::Resource { resource_id, .. } => resource_id.as_str(),
-        // The broker is faked locally by the seed map / store keyed on the reference.
-        pc::MountSource::Secret { reference, .. } => reference.as_str(),
+        pc::MountSource::Secret { reference, .. } => {
+            if let Some(broker) = secret_broker {
+                return broker.materialize(reference).await.map(Some);
+            }
+            reference.as_str()
+        }
         // Inline ephemeral content ships in the spec — no store hit, no id.
-        pc::MountSource::Inline { contents } => return Some(contents.clone().into_bytes()),
-        pc::MountSource::InlineBytes { contents, .. } => return Some(contents.clone()),
+        pc::MountSource::Inline { contents } => {
+            return Ok(Some(contents.clone().into_bytes()));
+        }
+        pc::MountSource::InlineBytes { contents, .. } => return Ok(Some(contents.clone())),
         pc::MountSource::Other(v) => {
-            return v
+            return Ok(v
                 .get("content")
                 .and_then(|c| c.as_str())
-                .map(|s| s.as_bytes().to_vec());
+                .map(|s| s.as_bytes().to_vec()));
         }
-        pc::MountSource::MemoryStore { .. } => return None,
+        pc::MountSource::MemoryStore { .. } => return Ok(None),
         // A Cache Volume has no seedable content — it is mounted in place from its
         // host path and its bytes have no authority (ADR-0056), so there is nothing to
         // fingerprint or seed here.
-        pc::MountSource::CacheVolume { .. } => return None,
+        pc::MountSource::CacheVolume { .. } => return Ok(None),
     };
     if let Some(bytes) = blobs.get(id) {
-        return Some(bytes.clone());
+        return Ok(Some(bytes.clone()));
     }
     if let Some(store) = store
         && let Some(bytes) = store.get(id).await
     {
-        return Some(bytes);
+        return Ok(Some(bytes));
     }
-    None
+    Ok(None)
 }
 
 /// The declared content hash of a mount source, if any (verified fail-closed).
@@ -197,8 +204,9 @@ pub(crate) fn verify(source: &pc::MountSource, bytes: &[u8]) -> Result<(), pc::S
 /// so it can restrict permissions but cannot keep the bytes off swap. True
 /// anti-swap isolation (a `tmpfs` with `noswap`) is the namespace/container
 /// provider's job — see [`SandboxCapabilities`](pc::SandboxCapabilities). The
-/// secret still never enters our process as a value: it is resolved by reference
-/// through the injected [`BlobSource`](pc::BlobSource) straight to disk.
+/// Secret bytes are resolved only at this provider boundary through the dedicated
+/// [`SecretBroker`](pc::SecretBroker), restricted immediately, and never carried in
+/// the declarative sandbox specification.
 #[cfg(unix)]
 pub(crate) fn restrict_to_owner(path: &std::path::Path) -> Result<(), pc::SandboxError> {
     use std::os::unix::fs::PermissionsExt;
@@ -217,6 +225,10 @@ pub struct LocalProvider {
     blobs: HashMap<String, Vec<u8>>,
     /// Optional content-addressed store consulted after the seed map (Slice 4).
     file_store: Option<Arc<dyn pc::BlobSource>>,
+    /// Credential-file materialization port. Kept separate from `BlobSource` so
+    /// secret references cannot accidentally resolve through the ordinary
+    /// resource-content path.
+    secret_broker: Arc<std::sync::RwLock<Option<Arc<dyn pc::SecretBroker>>>>,
     /// Optional memory-store realizer (FUSE / copy). Absent → a `MemoryStore` mount
     /// fails loud rather than being faked as an empty file (ADR-0053 item 1).
     memory_mounter: Arc<std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
@@ -228,6 +240,7 @@ impl LocalProvider {
             base: base.into(),
             blobs: HashMap::new(),
             file_store: None,
+            secret_broker: Arc::new(std::sync::RwLock::new(None)),
             memory_mounter: Arc::new(std::sync::RwLock::new(None)),
         }
     }
@@ -244,6 +257,19 @@ impl LocalProvider {
     pub fn with_blob_source(mut self, store: Arc<dyn pc::BlobSource>) -> Self {
         self.file_store = Some(store);
         self
+    }
+
+    #[must_use]
+    pub fn with_secret_broker(self, broker: Arc<dyn pc::SecretBroker>) -> Self {
+        self.install_secret_broker(broker);
+        self
+    }
+
+    pub fn install_secret_broker(&self, broker: Arc<dyn pc::SecretBroker>) {
+        *self
+            .secret_broker
+            .write()
+            .expect("secret broker lock poisoned") = Some(broker);
     }
 
     /// Realize `MemoryStore` mounts via an injected mounter (FUSE where available,
@@ -403,7 +429,26 @@ impl LocalProvider {
             };
             return Ok((realized, Some(guard)));
         }
-        let bytes = resolve_source(&req.source, &self.blobs, &self.file_store).await;
+        let secret_broker = self
+            .secret_broker
+            .read()
+            .expect("secret broker lock poisoned")
+            .clone();
+        if secret_broker.is_some()
+            && matches!(req.source, pc::MountSource::Secret { .. })
+            && req.access == pc::MountAccess::ReadWrite
+        {
+            return Err(err(
+                "the Workdir provider cannot write back a brokered writable Secret mount",
+            ));
+        }
+        let bytes = resolve_source(
+            &req.source,
+            &self.blobs,
+            &self.file_store,
+            secret_broker.as_ref(),
+        )
+        .await?;
         let realized = match bytes {
             Some(bytes) => {
                 verify(&req.source, &bytes)?; // fail closed on content-hash mismatch
@@ -876,6 +921,24 @@ mod shred_tests {
         ResourceLimits, Sandbox, SandboxSpec,
     };
 
+    struct Broker;
+
+    #[async_trait]
+    impl pc::SecretBroker for Broker {
+        async fn materialize(&self, reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
+            assert_eq!(reference, "broker://k");
+            Ok(b"broker-secret".to_vec())
+        }
+
+        async fn write_back(
+            &self,
+            _reference: &str,
+            _bytes: Vec<u8>,
+        ) -> Result<(), pc::SandboxError> {
+            unreachable!("the Workdir provider accepts only read-only brokered secrets")
+        }
+    }
+
     fn secret_spec(scope: &str) -> SandboxSpec {
         SandboxSpec {
             scope: scope.into(),
@@ -922,6 +985,35 @@ mod shred_tests {
         // A non-secret mount is NOT tracked (only credentials are shredded).
         sandbox.dispose().await.unwrap();
         assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn a_read_only_secret_uses_the_dedicated_broker() {
+        let source = MountSource::Secret {
+            reference: "broker://k".into(),
+            content_hash: None,
+        };
+        let broker: Arc<dyn pc::SecretBroker> = Arc::new(Broker);
+        let bytes = resolve_source(&source, &HashMap::new(), &None, Some(&broker))
+            .await
+            .unwrap();
+
+        assert_eq!(bytes.unwrap(), b"broker-secret");
+    }
+
+    #[tokio::test]
+    async fn a_brokered_writable_secret_fails_closed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = LocalProvider::new(tmp.path()).with_secret_broker(Arc::new(Broker));
+
+        let error = match provider
+            .create_sandbox(&secret_spec("t-broker-write"))
+            .await
+        {
+            Ok(_) => panic!("brokered writable Secret must fail closed"),
+            Err(error) => error,
+        };
+        assert!(error.0.contains("cannot write back"));
     }
 
     #[tokio::test]
@@ -995,7 +1087,9 @@ mod shred_tests {
             content_hash: None,
         };
         assert_eq!(
-            resolve_source(&file, &blobs, &none_store).await,
+            resolve_source(&file, &blobs, &none_store, None)
+                .await
+                .unwrap(),
             Some(b"file".to_vec())
         );
         let resource = MountSource::Resource {
@@ -1003,13 +1097,17 @@ mod shred_tests {
             content_hash: None,
         };
         assert_eq!(
-            resolve_source(&resource, &blobs, &none_store).await,
+            resolve_source(&resource, &blobs, &none_store, None)
+                .await
+                .unwrap(),
             Some(b"res".to_vec())
         );
         // Inline `Other({content})` short-circuits before any store hit.
         let inline = MountSource::Other(serde_json::json!({ "content": "inline" }));
         assert_eq!(
-            resolve_source(&inline, &blobs, &none_store).await,
+            resolve_source(&inline, &blobs, &none_store, None)
+                .await
+                .unwrap(),
             Some(b"inline".to_vec())
         );
         let binary = vec![0, 0xff, 0x80, b'\n'];
@@ -1018,7 +1116,9 @@ mod shred_tests {
             content_hash: Some(content_fingerprint(&binary)),
         };
         assert_eq!(
-            resolve_source(&carried, &blobs, &none_store).await,
+            resolve_source(&carried, &blobs, &none_store, None)
+                .await
+                .unwrap(),
             Some(binary.clone()),
             "binary input must round-trip without UTF-8 coercion"
         );
@@ -1028,13 +1128,23 @@ mod shred_tests {
         let mem = MountSource::MemoryStore {
             store_id: "m".into(),
         };
-        assert_eq!(resolve_source(&mem, &blobs, &none_store).await, None);
+        assert_eq!(
+            resolve_source(&mem, &blobs, &none_store, None)
+                .await
+                .unwrap(),
+            None
+        );
         // An unknown id resolves to nothing.
         let missing = MountSource::File {
             file_id: "nope".into(),
             content_hash: None,
         };
-        assert_eq!(resolve_source(&missing, &blobs, &none_store).await, None);
+        assert_eq!(
+            resolve_source(&missing, &blobs, &none_store, None)
+                .await
+                .unwrap(),
+            None
+        );
     }
 
     #[test]

@@ -2,7 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-07-03
-- Amended: 2026-07-04 (Slice 3/5 mechanism decisions — see Amendment)
+- Amended: 2026-07-04 (Slice 3/5 mechanism decisions — see Amendment);
+  2026-07-24 (credential broker composition — see Amendment 2)
 - Builds on: [ADR-0034](0034-runtime-axis-model-and-orthogonality.md) (kernel is
   sandbox-agnostic; a rooted tool is just a `RawTool`, D6),
   [ADR-0035](0035-environment-provisioning-tools-skills-resources.md)
@@ -225,3 +226,20 @@ place accordingly.
 - Process-as-container complicates multi-`spawn` per sandbox; accepted because the
   common case is one agent per environment and it buys native
   restart/observability/GC.
+
+## Amendment 2 (2026-07-24): one credential-file broker
+
+`PinnedCredentialMaterializer` is also the Worker composition's
+`SecretBroker`; this reuses the authoritative `CredentialRepo` and `SecretStore`
+instead of resolving `MountSource::Secret` through `BlobSource` or an
+application-owned plaintext path. The standard Worker installs that one broker
+after deployment selects the Session provider, so Local, Namespace, pooled
+Container, and direct Container variants cannot drift.
+
+Provider guarantees remain explicit. Namespace materializes read-only secret
+files and shreds them on disposal. Container additionally supports durable
+writable secret write-back through the same broker. Workdir cannot enforce a
+read-only mount and therefore fails the admission check for that declaration;
+Workdir and Namespace also fail closed when brokered writable write-back is
+requested. A higher layer carries only the opaque reference and may not replace
+it with `InlineBytes`.

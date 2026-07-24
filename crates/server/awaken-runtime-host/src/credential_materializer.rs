@@ -91,3 +91,94 @@ impl PinnedCredentialMaterializer {
             .map_err(|error| error.to_string())
     }
 }
+
+#[async_trait::async_trait]
+impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer {
+    async fn materialize(
+        &self,
+        reference: &str,
+    ) -> Result<Vec<u8>, awaken_provisioning_contract::SandboxError> {
+        let source = self
+            .credentials
+            .get(&CredentialSourceId(reference.to_string()))
+            .await
+            .map_err(|error| awaken_provisioning_contract::SandboxError::new(error.to_string()))?;
+        if source.status != CredentialStatus::Active {
+            return Err(awaken_provisioning_contract::SandboxError::new(format!(
+                "credential {} is not active",
+                source.id.0
+            )));
+        }
+        awaken_credential_vault::materialize(&source, self.secrets.as_ref())
+            .await
+            .map(|secret| secret.expose_secret().as_bytes().to_vec())
+            .map_err(|error| awaken_provisioning_contract::SandboxError::new(error.to_string()))
+    }
+
+    async fn write_back(
+        &self,
+        reference: &str,
+        bytes: Vec<u8>,
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        let source = self
+            .credentials
+            .get(&CredentialSourceId(reference.to_string()))
+            .await
+            .map_err(|error| awaken_provisioning_contract::SandboxError::new(error.to_string()))?;
+        if source.status != CredentialStatus::Active {
+            return Err(awaken_provisioning_contract::SandboxError::new(format!(
+                "credential {} is not active",
+                source.id.0
+            )));
+        }
+        let material_ref = source.material_ref.as_ref().ok_or_else(|| {
+            awaken_provisioning_contract::SandboxError::new(format!(
+                "credential {} has no material",
+                source.id.0
+            ))
+        })?;
+        let material = String::from_utf8(bytes).map_err(|_| {
+            awaken_provisioning_contract::SandboxError::new(
+                "credential write-back is not valid UTF-8",
+            )
+        })?;
+        self.secrets
+            .put(material_ref, RedactedString::new(material))
+            .await
+            .map_err(|error| awaken_provisioning_contract::SandboxError::new(error.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_provisioning_contract::SecretBroker;
+
+    #[tokio::test]
+    async fn credential_file_broker_reuses_the_persisted_vault() {
+        let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
+        let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
+        let source = awaken_credential_vault::repo::enter_credential(
+            awaken_credential_vault::CredentialCreateParams {
+                workspace_id: "workspace-a".into(),
+                kind: awaken_credential_vault::CredentialKind::Vault,
+                provider_id: Some("tool".into()),
+                env_key: None,
+                secret: Some(RedactedString::new("before")),
+                oauth_command: None,
+            },
+            secrets.as_ref(),
+            credentials.as_ref(),
+        )
+        .await
+        .unwrap();
+        let broker = PinnedCredentialMaterializer::new(credentials, secrets);
+
+        assert_eq!(broker.materialize(&source.id.0).await.unwrap(), b"before");
+        broker
+            .write_back(&source.id.0, b"after".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(broker.materialize(&source.id.0).await.unwrap(), b"after");
+    }
+}
