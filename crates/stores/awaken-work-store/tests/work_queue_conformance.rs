@@ -66,6 +66,39 @@ async fn reclaim_at_ttl<Q: WorkQueue>(q: &Q) {
     );
 }
 
+/// Requested reclaim age is measured from the last lease refresh, independently
+/// of the TTL selected by that heartbeat.
+async fn requested_reclaim_uses_refresh_clock<Q: WorkQueue>(q: &Q) {
+    let id = q.enqueue_session("env", "s0").await;
+    q.claim("env", "worker-a", 0).await.expect("initial claim");
+    assert!(matches!(
+        q.heartbeat(
+            "env",
+            &id,
+            "worker-a",
+            1_000,
+            LeaseHeartbeat {
+                condition: HeartbeatCondition::First,
+                desired_ttl_seconds: Some(120),
+            },
+        )
+        .await,
+        HeartbeatResult::Accepted(_)
+    ));
+    assert!(
+        q.claim_with_reclaim("env", "worker-b", 1_001, Some(2))
+            .await
+            .is_none(),
+        "a one-millisecond-old refresh is younger than the requested age"
+    );
+    assert!(
+        q.claim_with_reclaim("env", "worker-b", 1_002, Some(2))
+            .await
+            .is_some(),
+        "reclaim age is exact even when the live lease has a 120-second ttl"
+    );
+}
+
 /// Environments lease independently: a claim in one never touches another's cap.
 async fn env_isolation<Q: WorkQueue>(q: &Q) {
     q.enqueue_session("env_a", "a0").await;
@@ -211,6 +244,7 @@ async fn heartbeat_compare_and_extend<Q: WorkQueue>(q: &Q) {
 async fn run_suite<Q: WorkQueue>(fresh: impl Fn() -> Q) {
     single_active_cap(&fresh()).await;
     reclaim_at_ttl(&fresh()).await;
+    requested_reclaim_uses_refresh_clock(&fresh()).await;
     env_isolation(&fresh()).await;
     stop_frees_next(&fresh()).await;
     remove_env_purges(&fresh()).await;

@@ -41,6 +41,11 @@ pub(super) fn work_bundle() -> Result<MigrationBundle, MigrationError> {
                  ALTER TABLE {prefix}_item ADD COLUMN lease_epoch BIGINT NOT NULL DEFAULT 0; \
                  ALTER TABLE {prefix}_item ADD COLUMN lease_expires_ms BIGINT",
             )?,
+            Migration::new(
+                3,
+                "persist the lease refresh clock independently of its requested ttl",
+                "ALTER TABLE {prefix}_item ADD COLUMN lease_refreshed_ms BIGINT",
+            )?,
         ],
     )
 }
