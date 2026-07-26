@@ -268,8 +268,8 @@ export type SandboxNetwork =
   | { mode: "unrestricted" }
   | { mode: "allowlist"; hosts?: string[] }
   | { mode: "none" };
-/** The `config.sandbox` an environment persists — a UI projection of the backend
- * `SandboxSpec` (see /v1/capabilities `sandbox.config_schema`). */
+/** An Awaken sandbox-policy value projected to the backend `SandboxSpec`.
+ * It is deliberately separate from the official Environment config union. */
 export interface SandboxConfig {
   isolation?: "workdir" | "namespace" | "container";
   mounts?: SandboxMount[];
@@ -279,10 +279,6 @@ export interface SandboxConfig {
 export interface EnvironmentConfig {
   type: "cloud" | "self_hosted";
   networking?: EnvNetworking;
-  /** Execution backend: "awaken" (native) or "acp:<cli>". Absent = native. */
-  runtime?: string;
-  /** Present when the worker runs in an isolated sandbox. */
-  sandbox?: SandboxConfig;
 }
 export interface Environment {
   id: string;

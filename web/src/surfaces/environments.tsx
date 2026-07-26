@@ -5,11 +5,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../lib/api/client";
-import type { Environment, EnvironmentConfig, Page, SandboxConfig, WorkQueueStats } from "../lib/api/types";
+import type { Environment, EnvironmentConfig, Page, WorkQueueStats } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
-import { Button, Card, Modal, Pill, Segmented, Switch, TextField } from "../components/ui";
-import { useCapabilities } from "../lib/useCapabilities";
-import { SandboxEditor } from "../components/environment/SandboxEditor";
+import { Button, Card, Modal, Pill, Segmented, TextField } from "../components/ui";
 
 /** The environment's durable work-queue state (EnvRegistry + WorkQueue). A self-hosted
  * worker polls this queue; `depth` = items queued (backlog waiting to be claimed),
@@ -37,39 +35,13 @@ function EnvQueue({ id }: { id: string }) {
 function CreateModal({ onClose }: { onClose: () => void }) {
   const app = useApp();
   const qc = useQueryClient();
-  const caps = useCapabilities();
-  const runtimes = caps.data?.runtimes ?? [{ id: "awaken", label: "Native", kind: "native" as const, description: "" }];
-  const sandboxCap = caps.data?.sandbox;
-
   const [name, setName] = useState("");
   const [placement, setPlacement] = useState<"cloud" | "self_hosted">("cloud");
-  const [runtime, setRuntime] = useState("awaken");
   const [net, setNet] = useState<"unrestricted" | "limited">("unrestricted");
   const [hosts, setHosts] = useState("");
-  const [sandboxOn, setSandboxOn] = useState(false);
-  // Seed the sandbox from the first preset so the toggle yields a valid spec immediately.
-  const [sandbox, setSandbox] = useState<SandboxConfig>({});
-  const runtimeInfo = runtimes.find((r) => r.id === runtime);
-
-  function toggleSandbox(on: boolean) {
-    setSandboxOn(on);
-    if (on && Object.keys(sandbox).length === 0 && sandboxCap?.presets[0]) {
-      setSandbox(sandboxCap.presets[0].spec);
-    }
-  }
-
   const create = useMutation({
     mutationFn: () => {
-      const config: EnvironmentConfig = { type: placement };
-      if (runtime !== "awaken") config.runtime = runtime; // absent = native
-      if (sandboxOn && sandboxCap) config.sandbox = sandbox;
-      // Cloud egress only applies when NOT sandboxed (a sandbox owns its own egress).
-      if (placement === "cloud" && !sandboxOn) {
-        config.networking =
-          net === "limited"
-            ? { type: "limited", allowed_hosts: hosts.split(",").map((h) => h.trim()).filter(Boolean), allow_mcp_servers: true }
-            : { type: "unrestricted" };
-      }
+      const config = buildEnvironmentConfig(placement, net, hosts);
       return api.post<Environment>("/v1/environments", { name: name || "environment", config });
     },
     onSuccess: () => {
@@ -81,12 +53,6 @@ function CreateModal({ onClose }: { onClose: () => void }) {
   return (
     <Modal title={app.t("New environment", "新建运行环境")} onClose={onClose}>
         <TextField label={app.t("Name", "名称")} value={name} onChange={(e) => setName(e.target.value)} placeholder="claude-sandbox-github" />
-
-        <div className="field">
-          <label>{app.t("Runtime", "运行时")}</label>
-          <Segmented options={runtimes.map((r) => ({ value: r.id, label: r.label }))} value={runtime} onChange={setRuntime} />
-          {runtimeInfo?.description && <span className="mut">{runtimeInfo.description}</span>}
-        </div>
 
         <div className="field">
           <label>{app.t("Placement", "运行位置")}</label>
@@ -105,17 +71,7 @@ function CreateModal({ onClose }: { onClose: () => void }) {
           </span>
         </div>
 
-        {sandboxCap && (
-          <label className="row" style={{ gap: 8, alignItems: "center" }}>
-            <Switch checked={sandboxOn} onChange={(e) => toggleSandbox(e.target.checked)} />
-            <span>{app.t("Run in an isolated sandbox (bwrap)", "在隔离沙箱中运行(bwrap)")}</span>
-          </label>
-        )}
-
-        {sandboxOn && sandboxCap ? (
-          <SandboxEditor value={sandbox} onChange={setSandbox} sandbox={sandboxCap} />
-        ) : (
-          placement === "cloud" && (
+        {placement === "cloud" && (
             <div className="field">
               <label>{app.t("Networking", "网络")}</label>
               <Segmented
@@ -130,7 +86,6 @@ function CreateModal({ onClose }: { onClose: () => void }) {
                 <input className="input mono" placeholder="api.example.com, *.foo.com" value={hosts} onChange={(e) => setHosts(e.target.value)} />
               )}
             </div>
-          )
         )}
 
         {create.error instanceof Error && <div className="err">{create.error.message}</div>}
@@ -179,9 +134,8 @@ export default function EnvironmentsSurface() {
             <tr>
               <th>Environment</th>
               <th>{app.t("Name", "名称")}</th>
-              <th>{app.t("Runtime", "运行时")}</th>
               <th>{app.t("Placement", "运行位置")}</th>
-              <th>{app.t("Isolation / networking", "隔离/网络")}</th>
+              <th>{app.t("Networking", "网络")}</th>
               <th>{app.t("Queue", "队列")}</th>
               <th />
             </tr>
@@ -191,11 +145,6 @@ export default function EnvironmentsSurface() {
               <tr key={e.id}>
                 <td className="mono">{e.id}</td>
                 <td>{e.name}</td>
-                <td>
-                  <Pill tone={e.config.runtime ? "agent" : "neutral"}>
-                    {runtimeLabel(e.config.runtime)}
-                  </Pill>
-                </td>
                 <td>
                   <Pill tone={e.config.type === "self_hosted" ? "agent" : "neutral"}>
                     {e.config.type}
@@ -221,7 +170,7 @@ export default function EnvironmentsSurface() {
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={7} className="mut">
+                <td colSpan={6} className="mut">
                   {envs.isLoading ? "…" : app.t("No environments yet.", "还没有运行环境。")}
                 </td>
               </tr>
@@ -234,18 +183,24 @@ export default function EnvironmentsSurface() {
   );
 }
 
-export function runtimeLabel(runtime?: string): string {
-  if (!runtime || runtime === "awaken") return "Native";
-  const cli = runtime.startsWith("acp:") ? runtime.slice(4) : runtime;
-  const known: Record<string, string> = { claude: "Claude Code", codex: "Codex", gemini: "Gemini CLI", opencode: "OpenCode" };
-  return `${known[cli] ?? cli} · ACP`;
+export function isolationLabel(config: EnvironmentConfig): string {
+  return config.networking?.type ?? "provider default";
 }
 
-export function isolationLabel(config: EnvironmentConfig): string {
-  if (config.sandbox) {
-    const isolation = config.sandbox.isolation ?? "sandbox";
-    const network = config.sandbox.network?.mode ?? "provider network";
-    return `${isolation} · ${network === "none" ? "no egress" : network}`;
-  }
-  return config.networking?.type ?? "provider default";
+export function buildEnvironmentConfig(
+  placement: "cloud" | "self_hosted",
+  networking: "unrestricted" | "limited",
+  hosts: string,
+): EnvironmentConfig {
+  if (placement === "self_hosted") return { type: "self_hosted" };
+  return {
+    type: "cloud",
+    networking: networking === "limited"
+      ? {
+          type: "limited",
+          allowed_hosts: hosts.split(",").map((host) => host.trim()).filter(Boolean),
+          allow_mcp_servers: true,
+        }
+      : { type: "unrestricted" },
+  };
 }

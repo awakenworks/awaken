@@ -150,17 +150,10 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
             variant="primary"
             disabled={create.isPending || !agent}
             onClick={() => {
-              // The environment carries the runtime; the session declares it to the host
-              // via the `awaken.runtime` metadata key (protocol-managed ext::model_selection).
-              // So "pick a claude-sandbox environment" is how a user selects an ACP runtime —
-              // no runtime field leaks onto the (protocol-neutral) agent.
-              const env = (envs.data?.data ?? []).find((e) => e.id === environmentId);
-              const runtime = env?.config.runtime;
               create.mutate({
                 agent,
                 environment_id: environmentId || undefined,
                 title: title || undefined,
-                ...(runtime ? { metadata: { "awaken.runtime": runtime } } : {}),
                 vault_ids: vaultIds
                   .split(",")
                   .map((s) => s.trim())
