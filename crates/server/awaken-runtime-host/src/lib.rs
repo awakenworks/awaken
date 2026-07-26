@@ -696,6 +696,7 @@ impl ManagedHost {
                             mount_path: logical,
                             remote_url: config.remote_url.clone(),
                             initial_branch: config.initial_branch.clone(),
+                            initial_commit: config.initial_commit.clone(),
                             access: mount_access,
                         },
                         credential,

@@ -56,8 +56,8 @@ mod types;
 
 pub(crate) use helpers::{content_text, lifecycle_fact, rubric_text, session_usage_value};
 pub(crate) use resource::{
-    ParsedInputTarget, ParsedSessionInput, input_binding, parse_session_input,
-    resolved_resource_dto, resource_binding_id,
+    ParsedInputTarget, ParsedSessionInput, input_binding, resolved_resource_dto,
+    resource_binding_id,
 };
 pub use types::{
     AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
@@ -1119,7 +1119,11 @@ mod tests {
         assert_eq!(session.title.as_deref(), Some("My session"));
         assert_eq!(session.agent.mcp_servers.len(), 1);
         assert_eq!(session.resources.len(), 1);
-        assert_eq!(session.resources[0]["file_id"], "file-hash");
+        assert!(matches!(
+            &session.resources[0],
+            crate::types::resource::SessionResource::File { file_id, .. }
+                if file_id == "file-hash"
+        ));
         assert_eq!(
             restored.lock().unwrap().as_slice(),
             &[(
@@ -1283,7 +1287,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn live_input_mutations_survive_restart_without_changing_resource_identity() {
+    async fn live_file_attach_and_delete_survive_restart_without_projection_truth() {
+        // Cause graph:
+        // typed add/update/delete command -> prepare exact next generation
+        // -> Runtime applies it -> aggregate commits it -> restart replays only
+        // the committed generation. A projection is never persisted as truth.
+        //
+        // Decision table:
+        // | Rule | Command | Runtime | Durable state | Restart behavior |
+        // | R1 | add | success | revision +1, one Active | exact id/path restored |
+        // | R2 | delete | success | revision +1, no Active | resource absent |
         let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
         let catalog = Arc::new(ephemeral_resource_catalog());
         let state = ManagedState::new_with_mcp(RehydrateFake::default())
@@ -1298,27 +1311,20 @@ mod tests {
         let resource = state
             .create_resource(
                 &id,
-                serde_json::json!({
+                serde_json::from_value(serde_json::json!({
                     "type": "file",
                     "file_id": "immutable-file-hash",
                     "mount_path": "/input.txt"
-                }),
+                }))
+                .unwrap(),
             )
             .await
             .expect("attach");
-        let resource_id = resource["id"].as_str().unwrap().to_string();
-        state
-            .update_resource(
-                &id,
-                &resource_id,
-                serde_json::json!({"mount_path": "/renamed/input.txt"}),
-            )
-            .await
-            .expect("update");
-        let after_update = repo.get(&id).await.unwrap();
-        assert_eq!(after_update.resources.revision, 3);
+        let resource_id = resource.id().unwrap().to_string();
+        let after_attach = repo.get(&id).await.unwrap();
+        assert_eq!(after_attach.resources.revision, 2);
         assert_eq!(
-            after_update
+            after_attach
                 .resources
                 .activations
                 .iter()
@@ -1335,15 +1341,18 @@ mod tests {
         restarted.ensure_session(&id).await.expect("rehydrate");
         let restored = restarted.list_resources(&id).expect("list restored");
         assert_eq!(restored.len(), 1);
-        assert_eq!(restored[0]["id"], resource_id);
-        assert_eq!(restored[0]["mount_path"], "/renamed/input.txt");
+        assert!(matches!(
+            &restored[0],
+            crate::types::resource::SessionResource::File { id, mount_path, .. }
+                if id == &resource_id && mount_path == "/input.txt"
+        ));
 
         restarted
             .delete_resource(&id, &resource_id)
             .await
             .expect("detach");
         let after_delete = repo.get(&id).await.unwrap();
-        assert_eq!(after_delete.resources.revision, 4);
+        assert_eq!(after_delete.resources.revision, 3);
         assert!(
             after_delete
                 .resources

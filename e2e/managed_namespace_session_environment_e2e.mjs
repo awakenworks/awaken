@@ -168,6 +168,11 @@ async function main() {
           url: fixtureRepository,
           mount_path: '/workspace/fixture',
         },
+        {
+          type: 'github_repository',
+          url: repository,
+          mount_path: '/workspace/live-repo',
+        },
       ],
       betas: BETAS,
     });
@@ -190,12 +195,9 @@ async function main() {
       mount_path: '/workspace/live.txt',
       betas: BETAS,
     });
-    const repoResource = await client.beta.sessions.resources.add(session.id, {
-      type: 'github_repository',
-      url: repository,
-      mount_path: '/workspace/live-repo',
-      betas: BETAS,
-    });
+    const repoResource = session.resources.find((resource) =>
+      resource.type === 'github_repository' && resource.mount_path === '/workspace/live-repo');
+    assert.ok(repoResource?.id);
     reply = await lastReply(client, session.id, 'observe live attachments');
     assert.match(reply, /NAMESPACE-FILE-OK/, 'a live file attach changed the resident workspace');
     assert.match(reply, /live_file_mutated",true/, 'the Agent may edit its disposable File copy');
@@ -206,14 +208,14 @@ async function main() {
     );
     assert.match(reply, /NAMESPACE-REPOSITORY-OK/, 'a live repository attach changed the resident workspace');
 
-    await client.beta.sessions.resources.update(fileResource.id, {
+    await client.beta.sessions.resources.delete(fileResource.id, {
       session_id: session.id,
-      mount_path: '/workspace/renamed.txt',
       betas: BETAS,
     });
-    await client.beta.sessions.resources.update(repoResource.id, {
-      session_id: session.id,
-      mount_path: '/workspace/renamed-repo',
+    const renamedFileResource = await client.beta.sessions.resources.add(session.id, {
+      type: 'file',
+      file_id: uploaded.id,
+      mount_path: '/workspace/renamed.txt',
       betas: BETAS,
     });
     reply = await lastReply(client, session.id, 'observe renamed attachments');
@@ -225,10 +227,9 @@ async function main() {
       'NAMESPACE-FILE-OK',
       'repeated copy mutation still leaves the content-addressed File unchanged',
     );
-    assert.match(reply, /live_repo","ABSENT/, 'the old repository path was revoked');
-    assert.match(reply, /renamed_repo","NAMESPACE-REPOSITORY-OK/, 'the repository was reprovisioned at its replacement path');
+    assert.match(reply, /live_repo","NAMESPACE-REPOSITORY-OK/, 'create-time repository remains pinned');
 
-    await client.beta.sessions.resources.delete(fileResource.id, {
+    await client.beta.sessions.resources.delete(renamedFileResource.id, {
       session_id: session.id,
       betas: BETAS,
     });
@@ -238,7 +239,7 @@ async function main() {
     });
     reply = await lastReply(client, session.id, 'observe detached resources');
     assert.match(reply, /renamed_file","ABSENT/, 'file detach revoked the live path');
-    assert.match(reply, /renamed_repo","ABSENT/, 'repository detach revoked the live path');
+    assert.match(reply, /live_repo","ABSENT/, 'repository detach revoked its create-time path');
 
     if (TIER === 'namespace') {
       // A hard process crash leaves the durable SandboxHandle and namespace tree
@@ -270,17 +271,15 @@ async function main() {
       assert.match(reply, /NAMESPACE-SKILL-OK/, 'replacement process reused the delivered Skill tree');
       assert.match(reply, /NAMESPACE-MEMORY-OK/, 'replacement process reused the governed memory tree');
       assert.match(reply, /renamed_file","ABSENT/, 'replacement retained the detached resource state');
-      assert.match(reply, /renamed_repo","ABSENT/, 'replacement did not recreate a detached repository');
+      assert.match(reply, /live_repo","ABSENT/, 'replacement did not recreate a detached repository');
     }
 
     const memoryResource = session.resources.find((resource) => resource.type === 'memory_store');
-    await assert.rejects(
-      () => client.beta.sessions.resources.delete(memoryResource.id, {
-        session_id: session.id,
-        betas: BETAS,
-      }),
-      (error) => error.status === 400,
-      'a live Session cannot detach its create-time memory authority',
+    assert.equal(memoryResource.id, undefined, 'Memory attachment has no mutable resource address');
+    assert.ok(
+      (await client.beta.sessions.retrieve(session.id, { betas: BETAS })).resources
+        .some((resource) => resource.type === 'memory_store' && resource.memory_store_id === memory.id),
+      'the create-time Memory authority remains in the frozen Session after live mutations/restart',
     );
 
     const artifacts = await client.get(`/v1/files?scope_id=${session.id}`);

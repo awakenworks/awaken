@@ -394,12 +394,6 @@ async function main() {
       mount_path: '/workspace/live.txt',
       betas: BETAS,
     }));
-    const repoResource = await afterPendingActivation(() => client.beta.sessions.resources.add(session.id, {
-      type: 'github_repository',
-      url: skillRepository,
-      mount_path: '/workspace/live-repo',
-      betas: BETAS,
-    }));
     assert.equal(
       execFileSync(ENGINE, ['exec', container, 'cat', '/workspace/.mnt/workspace/live.txt'], {
         encoding: 'utf8',
@@ -407,51 +401,33 @@ async function main() {
       'CONTAINER-LIVE-FILE-OK',
       'a live file attach must update the resident container workspace',
     );
-    assert.match(
-      execFileSync(ENGINE, ['exec', container, 'cat', '/workspace/live-repo/greet/SKILL.md'], {
-        encoding: 'utf8',
-      }),
-      /CONTAINER-SKILL-OK/,
-      'a live repository attach must update the resident container workspace',
-    );
-
-    await afterPendingActivation(() => client.beta.sessions.resources.update(fileResource.id, {
+    await afterPendingActivation(() => client.beta.sessions.resources.delete(fileResource.id, {
       session_id: session.id,
-      mount_path: '/workspace/renamed.txt',
       betas: BETAS,
     }));
-    await afterPendingActivation(() => client.beta.sessions.resources.update(repoResource.id, {
-      session_id: session.id,
-      mount_path: '/workspace/renamed-repo',
-      betas: BETAS,
-    }));
+    const renamedFileResource = await afterPendingActivation(() =>
+      client.beta.sessions.resources.add(session.id, {
+        type: 'file',
+        file_id: liveFile.id,
+        mount_path: '/workspace/renamed.txt',
+        betas: BETAS,
+      }));
     execFileSync(ENGINE, [
       'exec',
       container,
       'sh',
       '-c',
-      'test ! -e /workspace/.mnt/workspace/live.txt && test ! -e /workspace/live-repo',
+      'test ! -e /workspace/.mnt/workspace/live.txt',
     ]);
     assert.equal(
       execFileSync(ENGINE, ['exec', container, 'cat', '/workspace/.mnt/workspace/renamed.txt'], {
         encoding: 'utf8',
       }),
       'CONTAINER-LIVE-FILE-OK',
-      'a live file rename must revoke the old path and materialize the replacement',
-    );
-    assert.match(
-      execFileSync(ENGINE, ['exec', container, 'cat', '/workspace/renamed-repo/greet/SKILL.md'], {
-        encoding: 'utf8',
-      }),
-      /CONTAINER-SKILL-OK/,
-      'a live repository rename must reprovision only the replacement path',
+      'delete + add moves a live File through the official subresource operations',
     );
 
-    await afterPendingActivation(() => client.beta.sessions.resources.delete(fileResource.id, {
-      session_id: session.id,
-      betas: BETAS,
-    }));
-    await afterPendingActivation(() => client.beta.sessions.resources.delete(repoResource.id, {
+    await afterPendingActivation(() => client.beta.sessions.resources.delete(renamedFileResource.id, {
       session_id: session.id,
       betas: BETAS,
     }));
@@ -460,7 +436,7 @@ async function main() {
       container,
       'sh',
       '-c',
-      'test ! -e /workspace/.mnt/workspace/renamed.txt && test ! -e /workspace/renamed-repo',
+      'test ! -e /workspace/.mnt/workspace/live.txt && test ! -e /workspace/.mnt/workspace/renamed.txt',
     ]);
 
     // A hard brain crash must retain the Session-owned environment. The replacement

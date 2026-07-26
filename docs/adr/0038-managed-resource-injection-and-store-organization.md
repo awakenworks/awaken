@@ -44,7 +44,7 @@ capability kernel, a two-plane crate split) until distribution forces each.
   `{id, type:"file_deleted"}`.
 - **create-time inline `resources[]`** and their default mounts:
   - file: `{type:"file", file_id, mount_path?}` → `/mnt/session/uploads/<file_id>`
-  - github: `{type:"github_repository", authorization_token, url,
+  - github: `{type:"github_repository", credential_binding?, url,
     checkout?:{type:"branch",name}|{type:"commit",sha}, mount_path?}` → `/workspace/<repo>`
   - memory: `{type:"memory_store", memory_store_id, access?:"read_write"|"read_only", instructions?}` → `/mnt/memory/<slug>`
 - **`session.resources[]`** (resolved): file = `{id, created_at, file_id,
@@ -52,8 +52,10 @@ capability kernel, a two-plane crate split) until distribution forces each.
   keys off `memory_store_id` (no top-level id) and renders `description`/`instructions`
   into the **system prompt**.
 - **subresource `/v1/sessions/{id}/resources`**: `add` is **file-only**;
-  `update` is **github token rotation only**; github/memory attach only at
-  create-time; `delete` → `{id, type:"session_resource_deleted"}`.
+  github/memory attach only at create-time; `delete` →
+  `{id, type:"session_resource_deleted"}`. The official raw-token `update`
+  request is deliberately rejected: Awaken admits only a pre-existing opaque
+  `credential_binding` at create time, then freezes its exact credential pin.
 - **memory-stores** is an independent API `/v1/memory_stores` (id `memstore_…`).
 
 ## Decision

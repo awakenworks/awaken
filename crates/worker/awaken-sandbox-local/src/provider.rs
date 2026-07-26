@@ -756,6 +756,7 @@ impl pc::RepositoryRealizer for LocalSandbox {
             &plan.mount_path,
             &plan.remote_url,
             plan.initial_branch.as_deref(),
+            plan.initial_commit.as_deref(),
             credential,
         )
         .map_err(err)
@@ -1422,6 +1423,7 @@ mod workdir_helper_tests {
             mount_path: "workspace/repo".into(),
             remote_url: bare.to_string_lossy().into_owned(),
             initial_branch: None,
+            initial_commit: None,
             access: pc::MountAccess::ReadWrite,
         };
 
@@ -1489,6 +1491,74 @@ mod workdir_helper_tests {
     }
 
     #[tokio::test]
+    async fn repository_realizer_checks_out_the_exact_commit_pin() {
+        // Cause graph: commit checkout in frozen config -> realization plan
+        // -> clone tokenless origin -> detached checkout -> exact tree/HEAD.
+        //
+        // Decision table:
+        // | Rule | Branch | Commit | Expected behavior |
+        // | G1 | none | valid reachable SHA | detached exact SHA/tree |
+        // | G2 | none | invalid SHA | fail realization, no fallback to HEAD |
+        let tmp = tempfile::tempdir().unwrap();
+        let seed = tmp.path().join("seed-commit");
+        std::fs::create_dir_all(&seed).unwrap();
+        git(&seed, &["init", "-q"]);
+        git(&seed, &["config", "user.email", "seed@t"]);
+        git(&seed, &["config", "user.name", "seed"]);
+        std::fs::write(seed.join("VERSION"), "one").unwrap();
+        git(&seed, &["add", "-A"]);
+        git(&seed, &["commit", "-q", "-m", "one"]);
+        let first = std::process::Command::new("git")
+            .current_dir(&seed)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        let first = String::from_utf8(first.stdout).unwrap().trim().to_string();
+        std::fs::write(seed.join("VERSION"), "two").unwrap();
+        git(&seed, &["commit", "-q", "-am", "two"]);
+
+        let provider = LocalProvider::new(tmp.path().join("envs"));
+        let sandbox = provider
+            .create_sandbox(&workdir_spec("exact-commit", false))
+            .await
+            .unwrap();
+        let plan = pc::RepositoryRealizationPlan {
+            repository_id: "repo-commit".into(),
+            mount_path: "workspace/repo".into(),
+            remote_url: seed.to_string_lossy().into_owned(),
+            initial_branch: None,
+            initial_commit: Some(first.clone()),
+            access: pc::MountAccess::ReadOnly,
+        };
+        pc::RepositoryRealizer::realize_repository(&sandbox, &plan, None)
+            .await
+            .unwrap();
+        let realized = sandbox.root.root().join("workspace/repo");
+        assert_eq!(
+            std::fs::read_to_string(realized.join("VERSION")).unwrap(),
+            "one"
+        );
+        let head = std::process::Command::new("git")
+            .current_dir(&realized)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8(head.stdout).unwrap().trim(), first);
+
+        let invalid = pc::RepositoryRealizationPlan {
+            mount_path: "workspace/invalid".into(),
+            initial_commit: Some("0000000000000000000000000000000000000000".into()),
+            ..plan
+        };
+        assert!(
+            pc::RepositoryRealizer::realize_repository(&sandbox, &invalid, None)
+                .await
+                .is_err(),
+            "G2 invalid commit fails instead of using the remote default HEAD"
+        );
+    }
+
+    #[tokio::test]
     async fn repository_realizer_rejects_a_jail_escape() {
         let tmp = tempfile::tempdir().unwrap();
         let provider = LocalProvider::new(tmp.path());
@@ -1501,6 +1571,7 @@ mod workdir_helper_tests {
             mount_path: "../escape".into(),
             remote_url: "http://x".into(),
             initial_branch: None,
+            initial_commit: None,
             access: pc::MountAccess::ReadOnly,
         };
         assert!(

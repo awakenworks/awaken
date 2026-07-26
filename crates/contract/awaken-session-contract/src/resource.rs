@@ -446,6 +446,7 @@ mod tests {
                 remote_url: "https://example.test/repo.git".into(),
                 credential_binding: Some("credential-1".into()),
                 initial_branch: Some("main".into()),
+                initial_commit: None,
                 clone_policy: ClonePolicy::default(),
             })
         }

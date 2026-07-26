@@ -841,6 +841,15 @@ async fn repeated_provider_call_id_in_distinct_runs_does_not_collide() {
 
 #[tokio::test]
 async fn draft_environment_assembles_and_persists_the_config() {
+    // Causal graph:
+    // typed tool arguments -> official Environment union -> EnvironmentAuthor side effect
+    // unknown execution-policy field -X-> EnvironmentAuthor side effect
+    //
+    // Decision table:
+    // | placement   | official options | unknown policy | outcome                 |
+    // | cloud       | present          | absent         | exact cloud config      |
+    // | self_hosted | absent           | absent         | exact self-hosted config|
+    // | self_hosted | absent           | present        | typed error; no persist |
     let author = Arc::new(FakeEnvAuthor::default());
     let tool = DraftEnvironment {
         author: author.clone(),
@@ -877,6 +886,28 @@ async fn draft_environment_assembles_and_persists_the_config() {
     assert!(!out2.is_error);
     let (_, config2) = author.last.lock().unwrap().clone().unwrap();
     assert_eq!(config2, serde_json::json!({ "type": "self_hosted" }));
+
+    *author.last.lock().unwrap() = None;
+    let rejected = tool
+        .invoke(ToolCall {
+            call_id: "c3".into(),
+            tool_id: CREATE_ENV_TOOL.into(),
+            arguments: serde_json::json!({
+                "name": "policy-in-wire-object",
+                "placement": "self_hosted",
+                "sandbox": { "isolation": "process" }
+            }),
+        })
+        .await
+        .unwrap();
+    assert!(
+        rejected.is_error,
+        "unknown policy field must fail typed admission"
+    );
+    assert!(
+        author.last.lock().unwrap().is_none(),
+        "rejected wire input must not author an Environment"
+    );
 }
 
 #[test]

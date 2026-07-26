@@ -319,6 +319,7 @@ impl pc::RepositoryRealizer for SessionEnvironment {
                 &plan.mount_path,
                 &plan.remote_url,
                 plan.initial_branch.as_deref(),
+                plan.initial_commit.as_deref(),
                 credential,
             ),
             Self::Container { sandbox, .. } => {
@@ -327,6 +328,7 @@ impl pc::RepositoryRealizer for SessionEnvironment {
                     &plan.mount_path,
                     &plan.remote_url,
                     plan.initial_branch.as_deref(),
+                    plan.initial_commit.as_deref(),
                     credential,
                 )
                 .await
@@ -921,6 +923,7 @@ mod tests {
             source.to_str().unwrap(),
             None,
             None,
+            None,
         )
         .await
         .expect_err("a failed container import is not reported as provisioned");
@@ -1043,6 +1046,7 @@ mod tests {
             mount_path: "workspace/repo".into(),
             remote_url: remote.to_string_lossy().into_owned(),
             initial_branch: None,
+            initial_commit: None,
             access: pc::MountAccess::ReadWrite,
         };
         pc::RepositoryRealizer::realize_repository(&environment, &repository_plan, None)

@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::agent::{AgentSkill, AgentTool, UrlMcpServer};
-use super::resource::ResourceInput;
+use super::resource::{ResourceInput, SessionResource};
 
 /// The Anthropic error envelope: `{ "type": "error", "error": { "type", "message" } }`.
 /// The SDK parses this shape to populate `err.error.type` / `err.error.message`;
@@ -314,7 +314,7 @@ pub struct Session {
     pub archived_at: Option<String>,
     pub title: Option<String>,
     pub metadata: std::collections::BTreeMap<String, String>,
-    pub resources: Vec<Value>,
+    pub resources: Vec<SessionResource>,
     pub outcome_evaluations: Vec<OutcomeEvaluation>,
     pub status: &'static str,
     pub stats: SessionStats,

@@ -101,6 +101,7 @@ fn resource_catalog_rules_define_one_backend_neutral_decision_table() {
         remote_url: "https://example.invalid/repo.git".into(),
         credential_binding: None,
         initial_branch: None,
+        initial_commit: None,
         clone_policy: Default::default(),
     };
     assert!(
@@ -118,6 +119,33 @@ fn resource_catalog_rules_define_one_backend_neutral_decision_table() {
             &repository_config,
         ),
         Err(ResourceCatalogError::Storage(_))
+    ));
+    // Checkout validation decision table:
+    // | Branch | Commit | Result |
+    // | none/non-empty | none | valid |
+    // | none | non-empty | valid |
+    // | some | some | invalid ambiguous config |
+    // | empty | none | invalid fallback-prone config |
+    let mut invalid_checkout = repository_config.clone();
+    invalid_checkout.initial_branch = Some("main".into());
+    invalid_checkout.initial_commit = Some("abc123".into());
+    assert!(matches!(
+        ResourceCatalogRules::validate_repository_config(
+            "repo-1",
+            ConfigVersion::INITIAL,
+            &invalid_checkout,
+        ),
+        Err(ResourceCatalogError::Invalid(_))
+    ));
+    invalid_checkout.initial_commit = None;
+    invalid_checkout.initial_branch = Some(" ".into());
+    assert!(matches!(
+        ResourceCatalogRules::validate_repository_config(
+            "repo-1",
+            ConfigVersion::INITIAL,
+            &invalid_checkout,
+        ),
+        Err(ResourceCatalogError::Invalid(_))
     ));
 
     assert!(

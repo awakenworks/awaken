@@ -613,8 +613,8 @@ async fn stream_thread_events(
 async fn create_resource(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
-    ManagedJson(body): ManagedJson<serde_json::Value>,
-) -> Result<Json<serde_json::Value>, WireErr> {
+    ManagedJson(body): ManagedJson<crate::types::resource::ResourceAddParams>,
+) -> Result<Json<crate::types::resource::SessionResource>, WireErr> {
     state
         .create_resource(&id, body)
         .await
@@ -625,14 +625,18 @@ async fn create_resource(
 async fn list_resources(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, WireErr> {
-    state.list_resources(&id).map(page).map_err(error_response)
+) -> Result<Json<Page<crate::types::resource::SessionResource>>, WireErr> {
+    state
+        .list_resources(&id)
+        .map(Page::single)
+        .map(Json)
+        .map_err(error_response)
 }
 
 async fn get_resource(
     State(state): State<Arc<ManagedState>>,
     Path((id, rid)): Path<(String, String)>,
-) -> Result<Json<serde_json::Value>, WireErr> {
+) -> Result<Json<crate::types::resource::SessionResource>, WireErr> {
     state
         .get_resource(&id, &rid)
         .map(Json)
@@ -642,8 +646,8 @@ async fn get_resource(
 async fn update_resource(
     State(state): State<Arc<ManagedState>>,
     Path((id, rid)): Path<(String, String)>,
-    ManagedJson(body): ManagedJson<serde_json::Value>,
-) -> Result<Json<serde_json::Value>, WireErr> {
+    ManagedJson(body): ManagedJson<crate::types::resource::ResourceUpdateParams>,
+) -> Result<Json<crate::types::resource::SessionResource>, WireErr> {
     state
         .update_resource(&id, &rid, body)
         .await
@@ -654,14 +658,15 @@ async fn update_resource(
 async fn delete_resource(
     State(state): State<Arc<ManagedState>>,
     Path((id, rid)): Path<(String, String)>,
-) -> Result<Json<serde_json::Value>, WireErr> {
+) -> Result<Json<crate::types::resource::DeletedSessionResource>, WireErr> {
     state
         .delete_resource(&id, &rid)
         .await
         .map_err(error_response)?;
-    Ok(Json(
-        serde_json::json!({ "id": rid, "type": "session_resource_deleted" }),
-    ))
+    Ok(Json(crate::types::resource::DeletedSessionResource {
+        id: rid,
+        kind: "session_resource_deleted",
+    }))
 }
 
 async fn send_events(

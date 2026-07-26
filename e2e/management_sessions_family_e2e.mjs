@@ -205,13 +205,24 @@ async function main() {
       });
       assert.equal(gotRes.id, res.id);
 
-      const upRes = await client.beta.sessions.resources.update(res.id, {
-        session_id: session.id,
-        mount_path: '/workspace/renamed.txt',
-        betas: BETAS,
-      });
-      assert.equal(upRes.mount_path, '/workspace/renamed.txt');
-      pass('beta.sessions.resources.list / retrieve / update');
+      await assert.rejects(
+        () => client.beta.sessions.resources.update(res.id, {
+          session_id: session.id,
+          authorization_token: 'must-not-enter', // awaken-allow: secret
+          betas: BETAS,
+        }),
+        (err) => err.status === 400,
+        'the official raw-token update is rejected before resource mutation',
+      );
+      assert.equal(
+        (await client.beta.sessions.resources.retrieve(res.id, {
+          session_id: session.id,
+          betas: BETAS,
+        })).mount_path,
+        '/workspace/in.txt',
+        'rejected update leaves the durable mount unchanged',
+      );
+      pass('beta.sessions.resources list/retrieve and fail-closed update behavior');
 
       const delRes = await client.beta.sessions.resources.delete(res.id, {
         session_id: session.id,

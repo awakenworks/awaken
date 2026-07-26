@@ -137,9 +137,7 @@ function adminDriveReply(parsed) {
     case 3: return tool('c3', 'admin_validate_agent', { id: 'drafted-agent' });
     case 4: return tool('c4', 'admin_draft_environment', {
       name: 'admin-authored-environment',
-      runtime: 'awaken',
       placement: 'self_hosted',
-      sandbox: { isolation: 'process', network: { mode: 'none' } },
     });
     case 5: return tool('c5', 'admin_explain_console', { topic: 'agent' });
     default: return text('ADMIN-RUN-DONE: capabilities, agent draft, environment, and help completed');

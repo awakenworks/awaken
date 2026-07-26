@@ -621,7 +621,9 @@ impl ManagedState {
         for (index, resource) in resources.iter().enumerate() {
             let repository_id = if let ParsedInputTarget::Repository {
                 remote_url,
+                credential_binding,
                 initial_branch,
+                initial_commit,
             } = &resource.target
             {
                 let catalog = self.resource_catalog.as_ref().ok_or_else(|| {
@@ -647,8 +649,9 @@ impl ManagedState {
                             repository_id: repository_id.clone().into(),
                             version: awaken_resource_contract::ConfigVersion::INITIAL,
                             remote_url: remote_url.clone(),
-                            credential_binding: None,
+                            credential_binding: credential_binding.clone(),
                             initial_branch: initial_branch.clone(),
+                            initial_commit: initial_commit.clone(),
                             clone_policy: awaken_resource_contract::ClonePolicy::default(),
                         },
                     )

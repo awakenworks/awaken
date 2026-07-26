@@ -171,6 +171,10 @@ pub struct RepositoryConfigVersion {
     pub credential_binding: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_branch: Option<String>,
+    /// Exact commit selected for the initial working tree. Mutually exclusive
+    /// with `initial_branch`; unlike a branch preference this is immutable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_commit: Option<String>,
     #[serde(default)]
     pub clone_policy: ClonePolicy,
 }
@@ -309,13 +313,26 @@ impl ResourceCatalogRules {
         version: ConfigVersion,
         config: &RepositoryConfigVersion,
     ) -> Result<(), ResourceCatalogError> {
-        if config.repository_id.as_str() == id && config.version == version {
-            Ok(())
-        } else {
+        if config.repository_id.as_str() != id || config.version != version {
             Err(ResourceCatalogError::Storage(format!(
                 "Repository `{id}` config version {} is corrupt",
                 version.0
             )))
+        } else if config.initial_branch.is_some() && config.initial_commit.is_some() {
+            Err(ResourceCatalogError::Invalid(
+                "Repository checkout cannot select both branch and commit".into(),
+            ))
+        } else if config
+            .initial_branch
+            .iter()
+            .chain(config.initial_commit.iter())
+            .any(|value| value.trim().is_empty())
+        {
+            Err(ResourceCatalogError::Invalid(
+                "Repository checkout value must be non-empty".into(),
+            ))
+        } else {
+            Ok(())
         }
     }
 

@@ -1,7 +1,7 @@
 //! Managed wire parsing and projection for typed Session inputs.
 
 use super::*;
-use crate::types::resource::{RepositoryCheckout, ResourceAccess, ResourceInput};
+use crate::types::resource::{RepositoryCheckout, ResourceAccess, ResourceInput, SessionResource};
 
 impl From<ResourceAccess> for awaken_resource_contract::ResourceAccess {
     fn from(value: ResourceAccess) -> Self {
@@ -36,7 +36,9 @@ pub(crate) enum ParsedInputTarget {
     MemoryStore(awaken_resource_contract::MemoryStoreId),
     Repository {
         remote_url: String,
+        credential_binding: Option<String>,
         initial_branch: Option<String>,
+        initial_commit: Option<String>,
     },
 }
 
@@ -54,14 +56,13 @@ impl ResourceInput {
             ResourceInput::File {
                 file_id,
                 mount_path,
-                instructions,
             } => ParsedSessionInput {
                 target: ParsedInputTarget::File(file_id.clone().into()),
                 mount_path: mount_path
                     .clone()
                     .unwrap_or_else(|| format!("/mnt/session/uploads/{file_id}")),
                 access: awaken_resource_contract::ResourceAccess::ReadOnly,
-                instructions: instructions.clone(),
+                instructions: None,
             },
             ResourceInput::MemoryStore {
                 memory_store_id,
@@ -78,8 +79,8 @@ impl ResourceInput {
             },
             ResourceInput::GithubRepository {
                 url,
+                credential_binding,
                 mount_path,
-                instructions,
                 checkout,
             } => ParsedSessionInput {
                 mount_path: mount_path
@@ -87,25 +88,21 @@ impl ResourceInput {
                     .unwrap_or_else(|| format!("/workspace/{}", repo_name(url))),
                 target: ParsedInputTarget::Repository {
                     remote_url: url.clone(),
+                    credential_binding: credential_binding.clone(),
                     initial_branch: match checkout {
                         Some(RepositoryCheckout::Branch { name }) => Some(name.clone()),
                         Some(RepositoryCheckout::Commit { .. }) | None => None,
                     },
+                    initial_commit: match checkout {
+                        Some(RepositoryCheckout::Commit { sha }) => Some(sha.clone()),
+                        Some(RepositoryCheckout::Branch { .. }) | None => None,
+                    },
                 },
                 access: awaken_resource_contract::ResourceAccess::ReadWrite,
-                instructions: instructions.clone(),
+                instructions: None,
             },
         }
     }
-}
-
-pub(crate) fn parse_session_input(v: &serde_json::Value) -> Option<ParsedSessionInput> {
-    if v.get("authorization_token").is_some() {
-        return None;
-    }
-    serde_json::from_value::<ResourceInput>(v.clone())
-        .ok()
-        .map(|resource| resource.to_parsed_input())
 }
 
 /// Lower a parsed Managed resource into the shared typed binding language. The
@@ -142,54 +139,46 @@ pub(crate) fn input_binding(
 pub(crate) fn resolved_resource_dto(
     session_id: &str,
     input: &awaken_session_contract::ResolvedInput,
-) -> serde_json::Value {
+) -> SessionResource {
     use awaken_session_contract::ResolvedInputSource;
-    use serde_json::json;
-
-    let mut obj = serde_json::Map::new();
-    obj.insert(
-        "id".into(),
-        json!(format!(
-            "{session_id}:resource:{}",
-            input.binding_id.as_str()
-        )),
-    );
-    obj.insert("mount_path".into(), json!(input.mount_path));
-    obj.insert("created_at".into(), json!(PROCESSED_AT));
-    obj.insert("updated_at".into(), json!(PROCESSED_AT));
+    let id = || format!("{session_id}:resource:{}", input.binding_id.as_str());
     match &input.source {
-        ResolvedInputSource::File { file_id } => {
-            obj.insert("type".into(), json!("file"));
-            obj.insert("file_id".into(), json!(file_id.as_str()));
-        }
+        ResolvedInputSource::File { file_id } => SessionResource::File {
+            id: id(),
+            created_at: PROCESSED_AT,
+            file_id: file_id.as_str().to_string(),
+            mount_path: input.mount_path.clone(),
+            updated_at: PROCESSED_AT,
+        },
         ResolvedInputSource::MemoryStore {
             memory_store_id, ..
-        } => {
-            obj.insert("type".into(), json!("memory_store"));
-            obj.insert("memory_store_id".into(), json!(memory_store_id.as_str()));
-            obj.insert(
-                "access".into(),
-                json!(match input.access {
-                    awaken_resource_contract::ResourceAccess::ReadOnly => "read_only",
-                    awaken_resource_contract::ResourceAccess::ReadWrite => "read_write",
+        } => SessionResource::MemoryStore {
+            memory_store_id: memory_store_id.as_str().to_string(),
+            access: Some(match input.access {
+                awaken_resource_contract::ResourceAccess::ReadOnly => ResourceAccess::ReadOnly,
+                awaken_resource_contract::ResourceAccess::ReadWrite => ResourceAccess::ReadWrite,
+            }),
+            instructions: input.instructions.clone(),
+            mount_path: Some(input.mount_path.clone()),
+        },
+        ResolvedInputSource::Repository { config, .. } => SessionResource::GithubRepository {
+            id: id(),
+            created_at: PROCESSED_AT,
+            mount_path: input.mount_path.clone(),
+            updated_at: PROCESSED_AT,
+            url: config.remote_url.clone(),
+            checkout: config
+                .initial_branch
+                .as_ref()
+                .map(|name| RepositoryCheckout::Branch { name: name.clone() })
+                .or_else(|| {
+                    config
+                        .initial_commit
+                        .as_ref()
+                        .map(|sha| RepositoryCheckout::Commit { sha: sha.clone() })
                 }),
-            );
-            if let Some(instructions) = &input.instructions {
-                obj.insert("instructions".into(), json!(instructions));
-            }
-        }
-        ResolvedInputSource::Repository { config, .. } => {
-            obj.insert("type".into(), json!("github_repository"));
-            obj.insert("url".into(), json!(config.remote_url));
-            if let Some(branch) = &config.initial_branch {
-                obj.insert(
-                    "checkout".into(),
-                    json!({ "type": "branch", "name": branch }),
-                );
-            }
-        }
+        },
     }
-    serde_json::Value::Object(obj)
 }
 
 /// Recover the typed binding identity from the Managed wire resource id.

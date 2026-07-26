@@ -1,7 +1,7 @@
 //! Post-creation session-resource CRUD (`/v1/sessions/{id}/resources`) mirrors the
-//! Managed Agents contract: `file` and `github_repository` attach to a live
-//! session, but a `memory_store` binds at session-create time only — attaching one
-//! to a running session fails closed with a 400 (`invalid_request_error`).
+//! Managed Agents contract: only `file` attaches to a live Session;
+//! `github_repository` and `memory_store` bind in the create-time snapshot.
+//! Awaken additionally rejects raw Repository tokens at typed admission.
 
 mod support;
 
@@ -82,6 +82,7 @@ struct AcceptingFake {
     applied:
         std::sync::Arc<std::sync::Mutex<Vec<awaken_session_contract::ResolvedSessionResources>>>,
     fail_next_apply: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    fail_apply_remaining: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 struct AgentWithResources;
@@ -355,6 +356,14 @@ impl SessionRuntime for AcceptingFake {
         if self
             .fail_next_apply
             .swap(false, std::sync::atomic::Ordering::SeqCst)
+            || self
+                .fail_apply_remaining
+                .fetch_update(
+                    std::sync::atomic::Ordering::SeqCst,
+                    std::sync::atomic::Ordering::SeqCst,
+                    |remaining| remaining.checked_sub(1),
+                )
+                .is_ok()
         {
             return Err(RunError::internal("injected activation failure"));
         }
@@ -646,8 +655,13 @@ async fn create_time_resources_are_backfilled_and_addressable() {
     assert_eq!(res[1]["type"], "memory_store");
     assert_eq!(res[1]["memory_store_id"], "mem_1");
     assert_eq!(res[1]["instructions"], "notes");
+    assert!(
+        res[1].get("id").is_none() && res[1].get("created_at").is_none(),
+        "the official immutable Memory projection has no synthetic address"
+    );
 
-    // They are addressable via list/get, uniformly with any later-attached ones.
+    // Both are listable; only the official File/Repository variants are
+    // individually addressable by a Session Resource id.
     let (s, listed) = call(&app, "GET", &format!("/v1/sessions/{id}/resources"), None).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(listed["data"].as_array().unwrap().len(), 2);
@@ -985,6 +999,7 @@ async fn terminal_session_never_deletes_a_platform_repository_definition() {
                 remote_url: "https://github.com/awaken/platform.git".into(),
                 credential_binding: None,
                 initial_branch: None,
+                initial_commit: None,
                 clone_policy: ClonePolicy::default(),
             },
         )
@@ -1069,11 +1084,12 @@ async fn failed_live_activation_rolls_back_before_reporting_failure() {
     let error = state
         .create_resource(
             &id,
-            json!({
+            serde_json::from_value(json!({
                 "type": "file",
                 "file_id": "file-rollback",
                 "mount_path": "/rollback.txt"
-            }),
+            }))
+            .unwrap(),
         )
         .await
         .unwrap_err();
@@ -1095,6 +1111,54 @@ async fn failed_live_activation_rolls_back_before_reporting_failure() {
     assert_eq!(
         durable.resources.activations[0].state,
         awaken_session_contract::ActivationState::Failed
+    );
+}
+
+#[tokio::test]
+async fn failed_activation_and_failed_compensation_remain_durably_retryable() {
+    // Cause graph: desired apply fails -> prior-manifest compensation fails
+    // -> never claim rollback/commit -> durable pending generation remains for
+    // the reconciler. Public projection continues to expose the old active set.
+    //
+    // Decision table:
+    // | Desired apply | Compensation | Durable state | Public projection |
+    // | fail | success | Failed, no pending | old generation |
+    // | fail | fail | Prepared/retryable pending | old generation |
+    let runtime = AcceptingFake::default();
+    runtime
+        .fail_apply_remaining
+        .store(2, std::sync::atomic::Ordering::SeqCst);
+    let applied = runtime.applied.clone();
+    let repo = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("session repository"),
+    );
+    let state = ManagedState::new(runtime).with_session_repo(repo.clone());
+    let id = state
+        .create_session(serde_json::from_value(json!({"agent": "a"})).unwrap(), None)
+        .await
+        .unwrap()
+        .id;
+
+    let result = state
+        .create_resource(
+            &id,
+            serde_json::from_value(json!({
+                "type": "file",
+                "file_id": "file-retryable",
+                "mount_path": "/retryable.txt"
+            }))
+            .unwrap(),
+        )
+        .await;
+    assert!(format!("{result:?}").contains("injected activation failure"));
+    assert_eq!(applied.lock().unwrap().len(), 2);
+    assert!(state.list_resources(&id).unwrap().is_empty());
+    let durable = repo.get(&id).await.unwrap();
+    assert!(durable.resources.pending.is_some());
+    assert!(durable.resources.needs_reconciliation());
+    assert_eq!(
+        durable.resources.activations.last().unwrap().state,
+        awaken_session_contract::ActivationState::Prepared
     );
 }
 
@@ -1168,11 +1232,12 @@ async fn resource_root_cas_cases_follow_the_decision_table_without_a_process_loc
         let result = state
             .create_resource(
                 &id,
-                json!({
+                serde_json::from_value(json!({
                     "type": "file",
                     "file_id": format!("file-cas-{index}"),
                     "mount_path": format!("/cas-{index}.txt")
-                }),
+                }))
+                .unwrap(),
             )
             .await;
         let durable = repo.get(&id).await.unwrap();
@@ -1223,8 +1288,18 @@ async fn resource_root_cas_cases_follow_the_decision_table_without_a_process_loc
 }
 
 #[tokio::test]
-async fn github_repository_attaches_to_a_live_session() {
-    let (app, id) = app_with_session().await;
+async fn github_repository_live_attach_is_rejected_without_runtime_effect() {
+    // Official subresource admission is file-only. Repository attachment is a
+    // create-time snapshot, so accepting it here would create a second mutable
+    // ownership path beside Session creation.
+    let runtime = AcceptingFake::default();
+    let applied = runtime.applied.clone();
+    let app = router(std::sync::Arc::new(
+        ManagedState::new(runtime).with_resource_catalog(resource_catalog()),
+    ));
+    let (_, session) = call(&app, "POST", "/v1/sessions", Some(json!({"agent": "a"}))).await;
+    let id = session["id"].as_str().unwrap();
+    let before = applied.lock().unwrap().len();
 
     let (s, resource) = call(
         &app,
@@ -1236,13 +1311,12 @@ async fn github_repository_attaches_to_a_live_session() {
         })),
     )
     .await;
-    assert_eq!(s, StatusCode::OK);
-    assert_eq!(resource["type"], "github_repository");
-    assert!(resource["id"].is_string());
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{resource}");
+    assert_eq!(applied.lock().unwrap().len(), before);
 
     let (s, listed) = call(&app, "GET", &format!("/v1/sessions/{id}/resources"), None).await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(listed["data"].as_array().unwrap().len(), 1);
+    assert!(listed["data"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -1329,20 +1403,21 @@ async fn repository_raw_credentials_are_rejected_on_create_and_update() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(prepared.lock().unwrap().is_empty());
 
-    let (_, session) = call(&app, "POST", "/v1/sessions", Some(json!({"agent": "a"}))).await;
-    let session_id = session["id"].as_str().unwrap();
-    let (status, resource) = call(
+    let (_, session) = call(
         &app,
         "POST",
-        &format!("/v1/sessions/{session_id}/resources"),
+        "/v1/sessions",
         Some(json!({
-            "type": "github_repository",
-            "url": "https://github.com/awaken/example.git"
+            "agent": "a",
+            "resources": [{
+                "type": "github_repository",
+                "url": "https://github.com/awaken/example.git"
+            }]
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
-    let resource_id = resource["id"].as_str().unwrap();
+    let session_id = session["id"].as_str().unwrap();
+    let resource_id = session["resources"][0]["id"].as_str().unwrap();
     let applied_before = applied.lock().unwrap().len();
     let (status, _) = call(
         &app,
@@ -1353,4 +1428,112 @@ async fn repository_raw_credentials_are_rejected_on_create_and_update() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(applied.lock().unwrap().len(), applied_before);
+}
+
+#[tokio::test]
+async fn repository_binding_materializes_one_exact_secret_free_execution_pin() {
+    // Cause graph:
+    // pre-existing same-Workspace binding -> create-time Repository config
+    // -> exact Vault access@revision -> frozen Session manifest -> Runtime apply;
+    // raw material and the binding identifier never enter the wire projection.
+    //
+    // Decision table:
+    // | Rule | Binding | Workspace/status | Result | Runtime | Durable pin |
+    // | B1 | absent | n/a | public Repository | once | none |
+    // | B2 | existing | exact/active | accept | once | exact revision |
+    // | B3 | missing/foreign/disabled | invalid | reject | zero | no Session |
+    let secrets = std::sync::Arc::new(awaken_credential_vault::InMemorySecretStore::new());
+    let credentials =
+        std::sync::Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
+    let source = awaken_credential_vault::repo::enter_credential(
+        awaken_credential_vault::CredentialCreateParams {
+            workspace_id: "default".into(),
+            kind: awaken_credential_vault::CredentialKind::Vault,
+            provider_id: Some("git".into()),
+            env_key: None,
+            secret: Some(awaken_agent_contract::RedactedString::from(
+                "never-project-this-secret".to_string(),
+            )),
+            oauth_command: None,
+        },
+        secrets.as_ref(),
+        credentials.as_ref(),
+    )
+    .await
+    .unwrap();
+    let vaults = std::sync::Arc::new(awaken_protocol_managed::VaultState::new(
+        secrets,
+        credentials,
+    ));
+    let sessions = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("session repository"),
+    );
+    let runtime = AcceptingFake::default();
+    let prepared = runtime.prepared.clone();
+    let app = router(std::sync::Arc::new(
+        ManagedState::new(runtime)
+            .with_vaults(vaults)
+            .with_session_repo(sessions.clone())
+            .with_resource_catalog(resource_catalog()),
+    ));
+
+    let (status, session) = call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({
+            "agent": "a",
+            "resources": [{
+                "type": "github_repository",
+                "url": "https://github.com/awaken/private.git",
+                "credential_binding": source.id.0
+            }]
+        })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{session}");
+    assert_eq!(
+        prepared.lock().unwrap().len(),
+        1,
+        "B2 Runtime prepared once"
+    );
+    let serialized = session.to_string();
+    assert!(!serialized.contains("credential_binding"));
+    assert!(!serialized.contains("never-project-this-secret"));
+    let durable = sessions.get(session["id"].as_str().unwrap()).await.unwrap();
+    let awaken_session_contract::ResolvedInputSource::Repository {
+        config, credential, ..
+    } = &durable.resources.active.inputs[0].source
+    else {
+        panic!("B2 must persist one Repository input")
+    };
+    assert_eq!(
+        config.credential_binding.as_deref(),
+        Some(source.id.0.as_str())
+    );
+    let credential = credential.as_ref().expect("B2 exact execution pin");
+    assert_eq!(credential.access.credential.id, source.id.0);
+    assert_eq!(credential.access.credential.revision, 1);
+
+    let (missing_status, _) = call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({
+            "agent": "a",
+            "resources": [{
+                "type": "github_repository",
+                "url": "https://github.com/awaken/private.git",
+                "credential_binding": "missing"
+            }]
+        })),
+    )
+    .await;
+    assert_eq!(missing_status, StatusCode::BAD_REQUEST, "B3");
+    assert_eq!(
+        prepared.lock().unwrap().len(),
+        1,
+        "B3 has no Runtime effect"
+    );
 }
