@@ -1451,13 +1451,20 @@ impl ManagedState {
             .as_ref()
             .map(|session| session.resources.clone())
             .unwrap_or_default();
-        let record = SessionRecord {
+        let session = self.rehydrated_session(id, persisted)?;
+        let delegated_runs = self
+            .runtime
+            .delegated_runs(id)
+            .await
+            .map_err(StateError::Run)?;
+        let mut record = SessionRecord {
             agent_id,
-            session: self.rehydrated_session(id, persisted)?,
+            session,
             resource_state,
             events,
             child_threads: Vec::new(),
         };
+        self.append_delegation_projections(&mut record, &delegated_runs);
         self.sessions
             .lock()
             .unwrap()

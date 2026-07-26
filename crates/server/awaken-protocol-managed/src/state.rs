@@ -457,6 +457,7 @@ mod tests {
         >,
         restored_environments: Arc<std::sync::Mutex<Vec<(String, String, String)>>>,
         restored_runtimes: Arc<std::sync::Mutex<Vec<RestoredRuntime>>>,
+        delegated: Arc<std::sync::Mutex<Vec<DelegatedRun>>>,
         order: Arc<std::sync::Mutex<Vec<&'static str>>>,
     }
 
@@ -518,6 +519,10 @@ mod tests {
                 awaken_agent_contract::agent::message::Role::User,
                 "hello",
             )]
+        }
+        async fn delegated_runs(&self, _thread: &str) -> Result<Vec<DelegatedRun>, RunError> {
+            self.order.lock().unwrap().push("delegations");
+            Ok(self.delegated.lock().unwrap().clone())
         }
         async fn restore_session_environment(
             &self,
@@ -1103,6 +1108,12 @@ mod tests {
 
         // Fresh state (empty cache) sharing the durable repo — simulates a restart.
         let runtime = RehydrateFake::default();
+        runtime.delegated.lock().unwrap().push(DelegatedRun {
+            run_id: awaken_agent_contract::agent::run::Id("child-durable".into()),
+            parent_call_id: "call-durable".into(),
+            agent_id: "researcher".into(),
+            status: awaken_agent_contract::agent::delegation::DelegationStatus::Completed,
+        });
         let restored = runtime.restored.clone();
         let restored_environments = runtime.restored_environments.clone();
         let restored_runtimes = runtime.restored_runtimes.clone();
@@ -1124,6 +1135,13 @@ mod tests {
             crate::types::resource::SessionResource::File { file_id, .. }
                 if file_id == "file-hash"
         ));
+        let threads = restarted.list_threads("sesn_1").expect("threads restored");
+        assert_eq!(threads.len(), 2, "primary plus the durable runtime child");
+        assert!(threads.iter().any(|thread| {
+            thread.id == "child-durable"
+                && thread.agent.id == "researcher"
+                && thread.status == SessionThreadStatus::Idle
+        }));
         assert_eq!(
             restored.lock().unwrap().as_slice(),
             &[(
@@ -1135,7 +1153,13 @@ mod tests {
         );
         assert_eq!(
             order.lock().unwrap().as_slice(),
-            &["resources", "runtime", "environment", "history"],
+            &[
+                "resources",
+                "runtime",
+                "environment",
+                "history",
+                "delegations"
+            ],
             "resources must be staged before environment adoption and history opening"
         );
         assert_eq!(

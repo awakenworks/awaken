@@ -445,6 +445,7 @@ async fn list_threads(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Page<SessionThread>>, WireErr> {
+    state.ensure_session(&id).await.map_err(error_response)?;
     state
         .list_threads(&id)
         .map(Page::single)
@@ -456,6 +457,7 @@ async fn get_thread(
     State(state): State<Arc<ManagedState>>,
     Path((id, tid)): Path<(String, String)>,
 ) -> Result<Json<SessionThread>, WireErr> {
+    state.ensure_session(&id).await.map_err(error_response)?;
     state
         .get_thread(&id, &tid)
         .map(Json)
@@ -466,6 +468,7 @@ async fn archive_thread(
     State(state): State<Arc<ManagedState>>,
     Path((id, tid)): Path<(String, String)>,
 ) -> Result<Json<SessionThread>, WireErr> {
+    state.ensure_session(&id).await.map_err(error_response)?;
     state
         .archive_thread(&id, &tid)
         .map(Json)
@@ -478,6 +481,7 @@ async fn list_thread_events(
     Path((id, tid)): Path<(String, String)>,
     Query(query): Query<PageQuery>,
 ) -> Result<Json<ListEventsResponse>, WireErr> {
+    state.ensure_session(&id).await.map_err(error_response)?;
     state
         .list_thread_events(&id, &tid, query.page.as_deref(), query.limit)
         .map(Json)
@@ -608,6 +612,7 @@ async fn stream_thread_events(
     // the Session stream. Primary-thread previews are the Session previews; child
     // execution currently has no independent preview producer.
     let previews = parse_event_deltas(raw.as_deref())?;
+    state.ensure_session(&id).await.map_err(error_response)?;
     state.get_thread(&id, &tid).map_err(error_response)?;
     let (snapshot, rx) = state.stream_subscribe(&id).map_err(error_response)?;
     let primary = tid == format!("{id}:primary");

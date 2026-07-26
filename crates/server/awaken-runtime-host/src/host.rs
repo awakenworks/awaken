@@ -10,7 +10,7 @@
 //! It names no protocol vocabulary: outcomes are the neutral [`RunState`] plus an
 //! optional [`PendingTool`]; each adapter maps those onto its own wire shape.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -3,6 +3,22 @@
 
 use super::*;
 
+fn project_delegated_runs(
+    registry: Option<&awaken_agent_contract::agent::delegation::DelegationRegistry>,
+) -> Vec<DelegatedRun> {
+    registry
+        .into_iter()
+        .flat_map(|registry| {
+            registry.delegations().map(|delegation| DelegatedRun {
+                run_id: delegation.child_run_id.clone(),
+                parent_call_id: delegation.parent_call_id.clone(),
+                agent_id: delegation.target_agent_id.clone(),
+                status: delegation.status,
+            })
+        })
+        .collect()
+}
+
 impl SharedHost {
     /// All messages committed on `thread` so far (the source of history). Empty
     /// when the thread has not run yet. Resolves through `ctx_for`, so a durable
@@ -28,6 +44,33 @@ impl SharedHost {
                 Vec::new()
             }
         }
+    }
+
+    /// Rebuild the neutral child-Run projection from the one durable owner:
+    /// `RunDelegations` entries committed in each parent Run's ordinary state log.
+    pub async fn delegated_runs(&self, thread: &str) -> Result<Vec<DelegatedRun>, HostError> {
+        let ctx = self.ctx_for(thread, None).await?;
+        let commands = ctx.commit.committed_state(&ctx.thread_id);
+        let mut stores: HashMap<RunId, Store> = HashMap::new();
+        for command in commands {
+            let Some(run_id) = command
+                .run_id
+                .clone()
+                .filter(|_| command.scope == Scope::Run)
+            else {
+                continue;
+            };
+            stores.entry(run_id).or_default().apply(&command);
+        }
+        let mut projected = Vec::new();
+        for store in stores.values() {
+            let registry = RunDelegations::load(store)
+                .map_err(|error| HostError::internal(error.to_string()))?;
+            projected.extend(project_delegated_runs(registry.as_ref()));
+        }
+        projected.sort_by(|left, right| left.run_id.0.cmp(&right.run_id.0));
+        projected.dedup_by(|left, right| left.run_id == right.run_id);
+        Ok(projected)
     }
 
     /// Durable committed-truth lifecycle feed for the partition containing
@@ -621,20 +664,7 @@ impl SharedHost {
             .expect("reschedule mutex poisoned")
             .as_ref()
             .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed) > 0);
-        let delegated_runs = delegation_registry
-            .into_iter()
-            .flat_map(|registry| {
-                registry
-                    .delegations()
-                    .map(|delegation| DelegatedRun {
-                        run_id: delegation.child_run_id.clone(),
-                        parent_call_id: delegation.parent_call_id.clone(),
-                        agent_id: delegation.target_agent_id.clone(),
-                        status: delegation.status,
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect();
+        let delegated_runs = project_delegated_runs(delegation_registry.as_ref());
         Ok(RunResult {
             new_messages,
             state,

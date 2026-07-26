@@ -4,7 +4,116 @@
 use super::*;
 use awaken_agent_contract::agent::delegation::DelegationStatus;
 
+struct DelegateCall {
+    run_id: String,
+    agent_name: String,
+    sent: Vec<ContentBlock>,
+    received: Vec<ContentBlock>,
+    status: DelegationStatus,
+}
+
 impl ManagedState {
+    fn delegate_calls(delegations: &[DelegatedRun], events: &[Event]) -> Vec<DelegateCall> {
+        delegations
+            .iter()
+            .map(|delegation| {
+                let sent = events.iter().find_map(|event| match &event.kind {
+                    OutboundKind::AgentToolUse { input, .. }
+                        if event.id == delegation.parent_call_id =>
+                    {
+                        Some(vec![ContentBlock::text(
+                            input
+                                .get("input")
+                                .and_then(|value| value.as_str())
+                                .unwrap_or_default(),
+                        )])
+                    }
+                    _ => None,
+                });
+                let received = events.iter().find_map(|event| match &event.kind {
+                    OutboundKind::AgentToolResult {
+                        tool_use_id,
+                        content,
+                        ..
+                    } if tool_use_id == &delegation.parent_call_id => Some(content.clone()),
+                    _ => None,
+                });
+                DelegateCall {
+                    run_id: delegation.run_id.0.clone(),
+                    agent_name: delegation.agent_id.clone(),
+                    sent: sent.unwrap_or_default(),
+                    received: received.unwrap_or_default(),
+                    status: delegation.status,
+                }
+            })
+            .collect()
+    }
+
+    /// Sole Runtime relationship -> Managed child Thread/event projector. Live
+    /// turns and restart recovery call the same function, so neither can invent a
+    /// different identity, message direction, or lifecycle sequence.
+    pub(super) fn append_delegation_projections(
+        &self,
+        record: &mut SessionRecord,
+        delegations: &[DelegatedRun],
+    ) {
+        for d in Self::delegate_calls(delegations, &record.events) {
+            let thread_id = d.run_id;
+            let name = d.agent_name;
+            let existing = record
+                .child_threads
+                .iter()
+                .position(|thread| thread.id == thread_id);
+            let is_new = existing.is_none();
+            let index = existing.unwrap_or_else(|| {
+                let child = Self::child_thread(&record.session, &thread_id, &name);
+                record.child_threads.push(child);
+                record.child_threads.len() - 1
+            });
+            let was_idle = record.child_threads[index].status == SessionThreadStatus::Idle;
+            let completed = d.status == DelegationStatus::Completed;
+            let mut kinds = Vec::new();
+            if is_new {
+                kinds.extend([
+                    OutboundKind::SessionThreadCreated {
+                        session_thread_id: thread_id.clone(),
+                        agent_name: name.clone(),
+                    },
+                    OutboundKind::SessionThreadStatusRunning {
+                        session_thread_id: thread_id.clone(),
+                        agent_name: name.clone(),
+                    },
+                    OutboundKind::AgentThreadMessageSent {
+                        to_session_thread_id: thread_id.clone(),
+                        to_agent_name: Some(name.clone()),
+                        content: d.sent,
+                    },
+                ]);
+            }
+            if completed && !was_idle {
+                record.child_threads[index].status = SessionThreadStatus::Idle;
+                record.child_threads[index].updated_at = PROCESSED_AT.to_string();
+                kinds.extend([
+                    OutboundKind::AgentThreadMessageReceived {
+                        from_session_thread_id: thread_id.clone(),
+                        from_agent_name: Some(name.clone()),
+                        content: d.received,
+                    },
+                    OutboundKind::SessionThreadStatusIdle {
+                        session_thread_id: thread_id,
+                        agent_name: name,
+                        stop_reason: StopReason::EndTurn,
+                    },
+                ]);
+            }
+            record.events.extend(kinds.into_iter().map(|kind| Event {
+                id: self.next_event_id(),
+                kind,
+                processed_at: Some(PROCESSED_AT.to_string()),
+            }));
+        }
+    }
+
     /// Append one step's projected events to the session, minting ids where the
     /// projection did not supply one.
     /// Project a committed turn into events and append them. `preview_ids` are the
@@ -39,49 +148,7 @@ impl ManagedState {
             })
             .unwrap_or_default();
         let projected = project_step(&outcome, pending, prior_mcp_ids);
-        // Child-thread identity comes from the Runtime relationship aggregate.
-        // Messages supply only the child thread's sent/received content.
-        struct DelegateCall {
-            run_id: String,
-            agent_name: String,
-            sent: Vec<ContentBlock>,
-            received: Vec<ContentBlock>,
-            status: DelegationStatus,
-        }
-        let delegates: Vec<DelegateCall> = outcome
-            .delegated_runs()
-            .iter()
-            .map(|delegation| {
-                let sent = projected.iter().find_map(|event| match &event.kind {
-                    OutboundKind::AgentToolUse { input, .. }
-                        if event.id.as_deref() == Some(&delegation.parent_call_id) =>
-                    {
-                        Some(vec![ContentBlock::text(
-                            input
-                                .get("input")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or_default(),
-                        )])
-                    }
-                    _ => None,
-                });
-                let received = projected.iter().find_map(|event| match &event.kind {
-                    OutboundKind::AgentToolResult {
-                        tool_use_id,
-                        content,
-                        ..
-                    } if tool_use_id == &delegation.parent_call_id => Some(content.clone()),
-                    _ => None,
-                });
-                DelegateCall {
-                    run_id: delegation.run_id.0.clone(),
-                    agent_name: delegation.agent_id.clone(),
-                    sent: sent.unwrap_or_default(),
-                    received: received.unwrap_or_default(),
-                    status: delegation.status,
-                }
-            })
-            .collect();
+        let delegated_runs = outcome.delegated_runs().to_vec();
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
         // Everything appended from here is republished on the live broadcast at the end.
@@ -144,66 +211,7 @@ impl ManagedState {
                 processed_at: Some(PROCESSED_AT.to_string()),
             });
         }
-        // Upsert by the actual child Run id. A synchronous child reaches idle in this
-        // step; an awaiting child remains running and completes on the later resume
-        // without a second `thread_created` event.
-        for d in delegates {
-            let thread_id = d.run_id;
-            let name = d.agent_name;
-            let existing = record
-                .child_threads
-                .iter()
-                .position(|thread| thread.id == thread_id);
-            let is_new = existing.is_none();
-            let index = existing.unwrap_or_else(|| {
-                let child = Self::child_thread(&record.session, &thread_id, &name);
-                record.child_threads.push(child);
-                record.child_threads.len() - 1
-            });
-            let was_idle = record.child_threads[index].status == SessionThreadStatus::Idle;
-            let completed = d.status == DelegationStatus::Completed;
-            let mut kinds = Vec::new();
-            if is_new {
-                kinds.extend([
-                    OutboundKind::SessionThreadCreated {
-                        session_thread_id: thread_id.clone(),
-                        agent_name: name.clone(),
-                    },
-                    OutboundKind::SessionThreadStatusRunning {
-                        session_thread_id: thread_id.clone(),
-                        agent_name: name.clone(),
-                    },
-                    OutboundKind::AgentThreadMessageSent {
-                        to_session_thread_id: thread_id.clone(),
-                        to_agent_name: Some(name.clone()),
-                        content: d.sent,
-                    },
-                ]);
-            }
-            if completed && !was_idle {
-                record.child_threads[index].status = SessionThreadStatus::Idle;
-                record.child_threads[index].updated_at = PROCESSED_AT.to_string();
-                kinds.extend([
-                    OutboundKind::AgentThreadMessageReceived {
-                        from_session_thread_id: thread_id.clone(),
-                        from_agent_name: Some(name.clone()),
-                        content: d.received,
-                    },
-                    OutboundKind::SessionThreadStatusIdle {
-                        session_thread_id: thread_id.clone(),
-                        agent_name: name.clone(),
-                        stop_reason: StopReason::EndTurn,
-                    },
-                ]);
-            }
-            for kind in kinds {
-                record.events.push(Event {
-                    id: self.next_event_id(),
-                    kind,
-                    processed_at: Some(PROCESSED_AT.to_string()),
-                });
-            }
-        }
+        self.append_delegation_projections(record, &delegated_runs);
         self.broadcast_committed_from(session_id, record, start);
         Ok(())
     }
