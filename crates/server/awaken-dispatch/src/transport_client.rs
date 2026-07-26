@@ -64,11 +64,16 @@ pub struct HttpDispatchQueue {
 }
 
 impl HttpDispatchQueue {
-    /// Point one registered Worker incarnation at `base_url`.
+    /// Point one registered Worker incarnation at the private Control plane.
+    /// Ambient egress proxies are disabled by default; callers can opt into an
+    /// intentional proxy or mTLS configuration with [`Self::with_client`].
     pub fn new(base_url: impl Into<String>, worker_identity: WorkerIdentity) -> Self {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .expect("the default dispatch HTTP client should build"),
             worker_identity,
             request_authorizer: None,
         }
@@ -325,7 +330,7 @@ impl DispatchQueue for HttpDispatchQueue {
     ) -> Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, DispatchError>
     {
         let value = self
-            .post(
+            .post_idempotent(
                 "/v1/worker/recovery/snapshot",
                 json!({ "claim": claim, "identity": &self.worker_identity }),
                 self.worker_id(),
@@ -586,7 +591,7 @@ impl DispatchQueue for HttpDispatchQueue {
         consumed: &[String],
     ) -> Result<SettleOutcome, DispatchError> {
         let v = self
-            .post(
+            .post_idempotent(
                 "/v1/worker/dispatch/settle",
                 json!({ "run_id": run_id.0, "epoch": epoch, "outcome": outcome, "consumed": consumed, "identity": &self.worker_identity }),
                 self.worker_id(),

@@ -247,10 +247,16 @@ const CLAIMED_COMMIT_TRANSPORT_ATTEMPTS: usize = 3;
 const CLAIMED_COMMIT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
 
 impl RemoteClaimedRunCommit {
+    /// Create the private Worker-to-Control commit client. The default does not
+    /// inherit ambient egress proxies; use [`Self::with_client`] when a proxy or
+    /// mTLS identity is intentionally part of the deployment.
     pub fn new(base_url: impl Into<String>, identity: WorkerIdentity) -> Self {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .expect("the default claimed-commit HTTP client should build"),
             identity,
             request_authorizer: None,
         }
