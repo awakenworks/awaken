@@ -58,6 +58,27 @@ impl ApplicationSessionPlan {
         self
     }
 
+    /// Author one URL-based MCP input pinned to an exact credential revision.
+    /// The contribution remains secret-free: Control resolves the reference
+    /// through the existing Session MCP credential path and freezes the selected
+    /// plaintext holder before Runtime realization.
+    #[must_use]
+    pub fn with_mcp_url_credential(
+        mut self,
+        name: impl Into<String>,
+        url: impl Into<String>,
+        credential: awaken_runtime_contract::CredentialRef,
+    ) -> Self {
+        self.mcp_inputs.push(serde_json::json!({
+            "name": name.into(),
+            "type": "url",
+            "url": url.into(),
+            "credential_source_id": credential.id,
+            "credential_revision": credential.revision,
+        }));
+        self
+    }
+
     /// Restrict the Session network policy using the existing neutral
     /// provisioning vocabulary. The Managed anti-corruption boundary converts
     /// it into a frozen Session fact and remains the sole owner of safe
@@ -145,6 +166,34 @@ pub trait ApplicationSessionProvisioner: Send + Sync {
         activation: &RunActivation,
         ownership: Arc<dyn AttemptOwnershipVerifier>,
     ) -> Result<ApplicationSessionPlan, ApplicationSessionError>;
+}
+
+#[cfg(test)]
+mod application_plan_tests {
+    use super::*;
+
+    #[test]
+    fn exact_application_mcp_credential_is_secret_free() {
+        let plan = ApplicationSessionPlan::empty("flow-plan").with_mcp_url_credential(
+            "flow",
+            "http://flow.invalid/mcp",
+            awaken_runtime_contract::CredentialRef {
+                id: "run-credential".into(),
+                revision: 3,
+            },
+        );
+        assert_eq!(
+            plan.mcp_inputs,
+            [serde_json::json!({
+                "name": "flow",
+                "type": "url",
+                "url": "http://flow.invalid/mcp",
+                "credential_source_id": "run-credential",
+                "credential_revision": 3,
+            })]
+        );
+        assert!(!plan.mcp_inputs[0].to_string().contains("Bearer"));
+    }
 }
 
 /// Result of the claim-fenced contribution and initial realization assignment.

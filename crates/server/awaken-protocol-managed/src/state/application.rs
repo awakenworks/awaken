@@ -12,6 +12,49 @@ use awaken_session_contract::{
     ApplicationSessionContributionReceipt, FrozenSessionProjection,
 };
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApplicationMcpInput {
+    name: String,
+    url: String,
+    #[serde(default, rename = "type")]
+    kind: Option<String>,
+    #[serde(default)]
+    credential_source_id: Option<String>,
+    #[serde(default)]
+    credential_revision: Option<u64>,
+}
+
+impl ApplicationMcpInput {
+    fn into_candidate(self) -> Result<ManagedMcpCandidate, ApplicationSessionContributionFailure> {
+        if self.kind.as_deref().is_some_and(|kind| kind != "url") {
+            return Err(ApplicationSessionContributionFailure::Invalid(
+                "application MCP input type must be `url`".into(),
+            ));
+        }
+        let published_credential = match (self.credential_source_id, self.credential_revision) {
+            (None, None) => None,
+            (Some(id), Some(revision)) if !id.trim().is_empty() && revision > 0 => {
+                Some((id, revision))
+            }
+            _ => {
+                return Err(ApplicationSessionContributionFailure::Invalid(
+                    "application MCP credential requires a non-empty source id and positive exact revision"
+                        .into(),
+                ));
+            }
+        };
+        Ok(ManagedMcpCandidate {
+            server: McpServer {
+                name: self.name,
+                url: self.url,
+            },
+            published_credential,
+            origin: awaken_session_contract::McpAttachmentOrigin::Application,
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct ManagedMcpCandidate {
     pub(super) server: McpServer,
@@ -114,17 +157,13 @@ impl ManagedState {
             .iter()
             .cloned()
             .map(|value| {
-                serde_json::from_value(value)
-                    .map(|server| ManagedMcpCandidate {
-                        server,
-                        published_credential: None,
-                        origin: awaken_session_contract::McpAttachmentOrigin::Application,
-                    })
+                serde_json::from_value::<ApplicationMcpInput>(value)
                     .map_err(|error| {
                         ApplicationSessionContributionFailure::Invalid(format!(
                             "application MCP input is malformed: {error}"
                         ))
-                    })
+                    })?
+                    .into_candidate()
             })
             .collect()
     }
@@ -698,5 +737,88 @@ mod tests {
         );
         assert_eq!(cleared.len(), 1, "C7");
         assert_eq!(cleared[0].server.name, "inline", "C7");
+    }
+
+    #[test]
+    fn application_mcp_credential_pair_follows_the_causal_decision_table() {
+        // Cause graph: source-id present XOR revision present -> malformed;
+        // neither -> anonymous; both valid -> the existing exact credential pin.
+        //
+        // | Rule | source id | revision | Effect |
+        // |---|---|---|---|
+        // | A1 | absent | absent | anonymous Application candidate |
+        // | A2 | present | present positive | exact credential candidate |
+        // | A3 | present | absent | reject |
+        // | A4 | absent | present | reject |
+        // | A5 | blank | present | reject |
+        // | A6 | present | zero | reject |
+        // | A7 | valid pair | non-URL type | reject |
+        // | A8 | valid pair | unknown field | reject |
+        let rows = [
+            (
+                "A1",
+                serde_json::json!({"name":"m","type":"url","url":"https://m.example"}),
+                true,
+                None,
+            ),
+            (
+                "A2",
+                serde_json::json!({"name":"m","type":"url","url":"https://m.example","credential_source_id":"cred-1","credential_revision":7}),
+                true,
+                Some(("cred-1", 7)),
+            ),
+            (
+                "A3",
+                serde_json::json!({"name":"m","url":"https://m.example","credential_source_id":"cred-1"}),
+                false,
+                None,
+            ),
+            (
+                "A4",
+                serde_json::json!({"name":"m","url":"https://m.example","credential_revision":7}),
+                false,
+                None,
+            ),
+            (
+                "A5",
+                serde_json::json!({"name":"m","url":"https://m.example","credential_source_id":" ","credential_revision":7}),
+                false,
+                None,
+            ),
+            (
+                "A6",
+                serde_json::json!({"name":"m","url":"https://m.example","credential_source_id":"cred-1","credential_revision":0}),
+                false,
+                None,
+            ),
+            (
+                "A7",
+                serde_json::json!({"name":"m","type":"stdio","url":"https://m.example","credential_source_id":"cred-1","credential_revision":7}),
+                false,
+                None,
+            ),
+            (
+                "A8",
+                serde_json::json!({"name":"m","url":"https://m.example","credential_source_id":"cred-1","credential_revision":7,"bearer":"must-not-pass"}),
+                false,
+                None,
+            ),
+        ];
+        for (rule, input, expected_ok, expected_pin) in rows {
+            let result = ManagedState::application_mcp_candidates(
+                &awaken_session_contract::ApplicationSessionInput {
+                    mcp_inputs: vec![input],
+                    ..Default::default()
+                },
+            );
+            assert_eq!(result.is_ok(), expected_ok, "{rule}");
+            if let (Ok(candidates), Some((id, revision))) = (result, expected_pin) {
+                assert_eq!(
+                    candidates[0].published_credential,
+                    Some((id.to_string(), revision)),
+                    "{rule}"
+                );
+            }
+        }
     }
 }
