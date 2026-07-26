@@ -35,7 +35,8 @@ pub mod resource_plane {
 
 pub use agent_config::{
     AgentClientToolView, AgentConfigSource, AgentConfigView, AgentEnvironmentBindingView,
-    AgentMcpServerView,
+    AgentMcpServerView, AgentTool, AgentToolConfig, AgentToolDefaultConfig,
+    AgentToolPermissionPolicy, CustomToolInputSchema, ObjectSchemaKind,
 };
 pub use application_contribution::{
     ApplicationSessionContribution, ApplicationSessionContributionFailure,

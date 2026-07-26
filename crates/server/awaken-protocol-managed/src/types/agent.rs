@@ -8,7 +8,11 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+
+pub use awaken_session_contract::{
+    AgentTool, AgentToolConfig as ToolConfig, AgentToolDefaultConfig as ToolDefaultConfig,
+    AgentToolPermissionPolicy as PermissionPolicy, CustomToolInputSchema, ObjectSchemaKind,
+};
 
 use crate::types::ModelConfig;
 
@@ -39,78 +43,6 @@ pub enum AgentSkill {
         skill_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         version: Option<String>,
-    },
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum PermissionPolicy {
-    AlwaysAllow,
-    AlwaysAsk,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ToolConfig {
-    pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub enabled: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub permission_policy: Option<PermissionPolicy>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ToolDefaultConfig {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub enabled: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub permission_policy: Option<PermissionPolicy>,
-}
-
-/// JSON Schema is intentionally extensible: schema keywords and property names
-/// are defined by the caller, not by the Managed Agents protocol.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CustomToolInputSchema {
-    #[serde(rename = "type")]
-    pub kind: ObjectSchemaKind,
-    #[serde(flatten)]
-    pub keywords: BTreeMap<String, Value>,
-}
-
-impl CustomToolInputSchema {
-    pub fn from_value(value: Value) -> Result<Self, String> {
-        serde_json::from_value(value).map_err(|error| error.to_string())
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum ObjectSchemaKind {
-    #[serde(rename = "object")]
-    Object,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum AgentTool {
-    #[serde(rename = "agent_toolset_20260401")]
-    AgentToolset20260401 {
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        configs: Vec<ToolConfig>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        default_config: Option<ToolDefaultConfig>,
-    },
-    McpToolset {
-        mcp_server_name: String,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        configs: Vec<ToolConfig>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        default_config: Option<ToolDefaultConfig>,
-    },
-    Custom {
-        name: String,
-        description: String,
-        input_schema: CustomToolInputSchema,
     },
 }
 

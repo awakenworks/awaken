@@ -1410,7 +1410,7 @@ mod runtime_session_store_tests {
             baseline: SessionBaselineState::Preparing(creation_intent()),
             title: None,
             metadata: Default::default(),
-            agent_tools: None,
+            agent_tools: Vec::new(),
             environment_binding: None,
             mcp: Default::default(),
             resources: Default::default(),

@@ -988,7 +988,7 @@ mod tests {
             ),
             title: Some("My session".to_string()),
             metadata,
-            agent_tools: None,
+            agent_tools: Vec::new(),
             environment_binding: None,
             mcp,
             resources: awaken_session_contract::SessionResourceState::from_legacy(sample_inputs()),
@@ -1097,17 +1097,23 @@ mod tests {
 
     #[test]
     fn rehydrated_session_restores_persisted_config() {
-        // Cause graph: durable mutable tools present -> use exact replacement;
-        // absent legacy field -> derive Runtime defaults. This test is T1; the
-        // following fallback test is T2.
+        // Cause graph: a durable mutable tool set is the exact replacement;
+        // only a genuinely non-durable in-memory Session derives Runtime defaults.
         //
         // | Rule | Persisted tools | Projection |
         // |---|---|---|
-        // | T1 | Some(including empty) | exact durable value |
-        // | T2 | None | Runtime default |
+        // | T1 | durable row, including empty | exact durable value |
+        // | T2 | no durable row | Runtime default for transient projection |
         let state = ManagedState::new_with_mcp(RehydrateFake::default());
         let mut persisted = sample_persisted("sesn_1");
-        persisted.agent_tools = Some(vec![serde_json::json!({"name": "durable-tool"})]);
+        persisted.agent_tools = vec![crate::types::agent::AgentTool::Custom {
+            name: "durable-tool".into(),
+            description: "Client-executed tool".into(),
+            input_schema: crate::types::agent::CustomToolInputSchema::from_value(
+                serde_json::json!({"type": "object"}),
+            )
+            .unwrap(),
+        }];
         let session = state
             .rehydrated_session("sesn_1", Some(persisted))
             .expect("valid durable projection");
@@ -1146,31 +1152,25 @@ mod tests {
     }
 
     #[test]
-    fn rehydrated_session_rejects_corrupt_tools_without_capability_downgrade() {
+    fn persisted_session_rejects_corrupt_tools_before_rehydration() {
         // Causal graph:
         // durable tool projection is present but invalid
-        //   -> typed rehydration fails
+        //   -> typed store decoding fails
         //   -> Runtime defaults are not substituted
         //   -> caller cannot cache or expose a weaker Session.
         //
         // Decision table:
         // | Durable field | Shape | Expected behavior |
-        // | absent | n/a | use Runtime defaults (legacy compatibility) |
-        // | present | valid typed/legacy tool | restore exact tool |
-        // | present | invalid | stable projection error; no fallback |
-        let state = ManagedState::new_with_mcp(RehydrateFake::default());
-        let mut persisted = sample_persisted("sesn_corrupt");
-        persisted.agent_tools = Some(vec![serde_json::json!({"unexpected": true})]);
-
-        let error = state
-            .rehydrated_session("sesn_corrupt", Some(persisted))
-            .expect_err("corrupt durable capabilities must fail closed");
+        // | absent | n/a | decoding error; no Runtime substitution |
+        // | present | valid typed tool | restore exact tool |
+        // | present | invalid | decoding error; no fallback |
+        let persisted = sample_persisted("sesn_corrupt");
+        let mut value = serde_json::to_value(persisted).unwrap();
+        value["agent_tools"] = serde_json::json!([{"unexpected": true}]);
 
         assert!(
-            error
-                .to_string()
-                .contains("persisted_session_projection_invalid: agent.tools[0]"),
-            "the recovery boundary returns a stable, indexed reason: {error}"
+            serde_json::from_value::<PersistedSession>(value).is_err(),
+            "corrupt durable capabilities fail at the store decoding boundary and cannot reach rehydration"
         );
     }
 
