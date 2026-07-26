@@ -1,50 +1,62 @@
-// Boot invariant (audit #32): a durable management plane MUST NOT start under an
-// ephemeral/absent sealing key — sealing vault secrets under a key that changes on
-// restart would brick every subsequent boot. So when AWAKEN_MGMT_DIR is set but
-// AWAKEN_MGMT_SEAL_KEY is not, `mgmt_seal_key_from_env` panics at boot: the process
-// exits non-zero and never binds its port. This pins that fail-closed startup — no
-// other test asserts it (they all set the key).
-//
-// Run: (from e2e/) node management_seal_key_required_e2e.mjs
+// A server-mode control plane must have one explicit typed seal-key source.
+// Local mode may create a durable owner-only key, but server mode cannot infer
+// key custody or accept a retired environment-variable compatibility path.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { spawn } from 'node:child_process';
+import {
+  deploymentEnv,
+  ensureProductionBuilt,
+  pass,
+  stopServer,
+  waitForPort,
+} from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38621);
 
 async function main() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-sealkey-required-'));
-  // Guard against a leaked key in the ambient env (would defeat the test).
-  delete process.env.AWAKEN_MGMT_SEAL_KEY;
-  // AWAKEN_MGMT_DIR set, SEAL_KEY absent, IAM off — the durable-store boot path.
-  const { server } = spawnServer('management', PORT, { AWAKEN_MGMT_DIR: dir });
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-sealkey-required-'));
+  const env = deploymentEnv(directory, {
+    fields: { mode: 'server', bind: `127.0.0.1:${PORT}` },
+  });
+  const server = spawn(ensureProductionBuilt(), ['serve', '--config', path.join(env.HOME, '.awaken', 'config.toml')], {
+    env: {
+      ...process.env,
+      ...env,
+      // This removed input is deliberately valid-looking. It must not satisfy
+      // the typed server-mode key requirement.
+      AWAKEN_MGMT_SEAL_KEY: '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
+    },
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  let stderr = '';
+  server.stderr.on('data', (chunk) => (stderr += chunk.toString()));
   try {
-    // Race: the process must EXIT (boot panic) rather than start LISTENING.
-    const exited = new Promise((resolve) => server.on('exit', (code, signal) => resolve({ code, signal })));
-    const listened = waitForPort(PORT, 12_000).then(() => ({ listened: true })).catch(() => ({ noListen: true }));
-    const outcome = await Promise.race([exited, listened]);
-
-    assert.ok(outcome.listened !== true, 'the server must NOT start listening without a sealing key');
-    // It exited: a Rust panic aborts non-zero (typically 101) or via SIGABRT.
-    const exit = outcome.code ?? (await exited).code;
-    const signal = outcome.signal ?? null;
-    assert.ok(
-      (exit !== null && exit !== 0) || signal !== null,
-      `boot must fail non-zero when AWAKEN_MGMT_SEAL_KEY is missing (code=${exit}, signal=${signal})`,
+    const exited = new Promise((resolve) =>
+      server.once('exit', (code, signal) => resolve({ code, signal })),
     );
-    pass(`durable management plane refuses to boot without AWAKEN_MGMT_SEAL_KEY (exit code=${exit} signal=${signal})`);
+    const listened = waitForPort(PORT, 3_000, server)
+      .then(() => ({ listened: true }))
+      .catch(() => ({ listened: false }));
+    const outcome = await Promise.race([exited, listened]);
+    assert.notEqual(outcome.listened, true, 'server mode must reject before bind');
+    const terminal = 'code' in outcome ? outcome : await exited;
+    assert.ok(terminal.code !== 0 || terminal.signal !== null, JSON.stringify(terminal));
+    assert.match(stderr, /server mode requires control_seal_key or control_seal_key_file/u);
+    pass('server mode rejects an absent typed seal-key source before bind');
+    pass('the retired seal-key environment variable cannot satisfy key custody');
   } finally {
     await stopServer(server);
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(directory, { recursive: true, force: true });
   }
 
-  console.log('E2E PASS: management plane fails closed at boot when AWAKEN_MGMT_SEAL_KEY is absent.');
+  console.log('E2E PASS: server-mode seal-key custody is explicit, typed, and fail-closed.');
 }
 
-main().catch((err) => {
-  console.error('E2E FAIL:', err);
+main().catch((error) => {
+  console.error('E2E FAIL:', error);
   process.exitCode = 1;
 });
