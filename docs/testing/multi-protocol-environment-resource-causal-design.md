@@ -605,3 +605,19 @@ seal-key source resolver, its re-export, and its compatibility-only tests were
 deleted; current source and test-design documentation now name typed deployment
 fields only. This removes a false second configuration path rather than keeping
 two inputs synchronized.
+
+## Phase 29: one typed tool-erasure owner
+
+| Rule | Dynamic arguments | Target Args | Tool policy | Expected |
+|---|---|---|---|---|
+| T1 | `null` | optional/empty DTO | typed `Tool` | normalize to `{}` and execute |
+| T2 | exact object | matching DTO | any | deserialize once and execute |
+| T3 | missing/unknown field | strict DTO | typed `Tool` | `InvalidArguments` |
+| T4 | missing/unknown field | strict DTO | legacy model-visible `RawTool` | one canonical error output |
+
+`awaken-runtime-contract::tool` now owns argument parsing, null normalization,
+error classification, and output rendering. Dependency direction keeps the sole
+`Erased<T>` implementation in the builtin extension adapter, which delegates all
+conversion behavior to that contract mechanism. Admin Assistant and Host
+auxiliary tools reuse the same parser; fixed management argument DTOs reject
+unknown fields. No second conversion rule remains.

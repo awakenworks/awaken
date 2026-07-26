@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use awaken_runtime_contract::tool::{RawTool, Tool, ToolError};
 use serde::Deserialize;
 
-use crate::erasure::erase;
+use crate::erase;
 
 /// Cap on fetched bytes so a huge response cannot blow up the transcript.
 const MAX_BODY: u64 = 1 << 20; // 1 MiB

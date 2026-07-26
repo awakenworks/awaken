@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use awaken_runtime_contract::tool::{RawTool, Tool, ToolError};
 use serde::Deserialize;
 
-use crate::erasure::erase;
+use crate::erase;
 
 /// Deliver a message to another thread in the multi-agent message lifecycle. A
 /// thread is the stable, addressable unit (a run is one ephemeral execution); the

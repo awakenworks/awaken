@@ -34,6 +34,7 @@ use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
 use awaken_runtime_contract::resolved::{ContextPolicy, ToolDescriptor};
 use awaken_runtime_contract::tool::{
     RawTool, ToolCall, ToolError, ToolOutput, current_tool_operation_id,
+    parse_tool_args_or_error_output,
 };
 use serde::{Deserialize, Serialize};
 
@@ -579,6 +580,7 @@ struct DraftEnvironment {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct DraftEnvArgs {
     name: String,
     #[serde(default)]
@@ -596,15 +598,11 @@ impl RawTool for DraftEnvironment {
     }
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
-        let args: DraftEnvArgs = match serde_json::from_value(call.arguments.clone()) {
-            Ok(a) => a,
-            Err(e) => {
-                return Ok(ToolOutput::error(
-                    call.call_id,
-                    format!("bad admin_draft_environment args: {e}"),
-                ));
-            }
-        };
+        let args: DraftEnvArgs =
+            match parse_tool_args_or_error_output(&call.call_id, call.arguments.clone()) {
+                Ok(args) => args,
+                Err(output) => return Ok(output),
+            };
         // Assemble only the official Environment union. The real author adapter
         // validates it through the same canonicalizer as POST /v1/environments.
         let mut config = serde_json::json!({
@@ -642,7 +640,8 @@ impl RawTool for DraftEnvironment {
 
 struct ExplainConsole;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ExplainArgs {
     #[serde(default)]
     topic: Option<String>,
@@ -655,9 +654,12 @@ impl RawTool for ExplainConsole {
     }
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
-        // Tolerant of a missing/empty arg object — an index request is well-formed.
+        // A null/empty argument object is the typed index request.
         let args: ExplainArgs =
-            serde_json::from_value(call.arguments.clone()).unwrap_or(ExplainArgs { topic: None });
+            match parse_tool_args_or_error_output(&call.call_id, call.arguments.clone()) {
+                Ok(args) => args,
+                Err(output) => return Ok(output),
+            };
         Ok(ToolOutput::ok(
             call.call_id,
             console_help::explain(args.topic.as_deref()).to_string(),
@@ -784,6 +786,7 @@ impl SkillSelection {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct DraftArgs {
     id: String,
     instructions: String,
@@ -830,15 +833,11 @@ impl RawTool for DraftAgent {
     }
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
-        let args: DraftArgs = match serde_json::from_value(call.arguments.clone()) {
-            Ok(a) => a,
-            Err(e) => {
-                return Ok(ToolOutput::error(
-                    call.call_id,
-                    format!("invalid arguments: {e}"),
-                ));
-            }
-        };
+        let args: DraftArgs =
+            match parse_tool_args_or_error_output(&call.call_id, call.arguments.clone()) {
+                Ok(args) => args,
+                Err(output) => return Ok(output),
+            };
         let audit_event = audit(
             &self.store,
             &self.audit,
@@ -903,6 +902,7 @@ impl RawTool for DraftAgent {
 // ---- Tool 3: admin_patch_agent --------------------------------------------------
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PatchArgs {
     id: String,
     patch: PatchFields,
@@ -912,6 +912,7 @@ struct PatchArgs {
 /// untouched on the stored draft; a present field replaces it (plugin_config merges
 /// by key rather than replacing the whole map).
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PatchFields {
     #[serde(default)]
     instructions: Option<String>,
@@ -960,15 +961,11 @@ impl RawTool for PatchAgent {
     }
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
-        let args: PatchArgs = match serde_json::from_value(call.arguments.clone()) {
-            Ok(a) => a,
-            Err(e) => {
-                return Ok(ToolOutput::error(
-                    call.call_id,
-                    format!("invalid arguments: {e}"),
-                ));
-            }
-        };
+        let args: PatchArgs =
+            match parse_tool_args_or_error_output(&call.call_id, call.arguments.clone()) {
+                Ok(args) => args,
+                Err(output) => return Ok(output),
+            };
         let audit_event = audit(
             &self.store,
             &self.audit,
@@ -1062,6 +1059,7 @@ impl RawTool for PatchAgent {
 // ---- Tool 4: admin_validate_agent -----------------------------------------------
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ValidateArgs {
     id: String,
 }
@@ -1078,15 +1076,11 @@ impl RawTool for ValidateAgent {
     }
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
-        let args: ValidateArgs = match serde_json::from_value(call.arguments.clone()) {
-            Ok(a) => a,
-            Err(e) => {
-                return Ok(ToolOutput::error(
-                    call.call_id,
-                    format!("invalid arguments: {e}"),
-                ));
-            }
-        };
+        let args: ValidateArgs =
+            match parse_tool_args_or_error_output(&call.call_id, call.arguments.clone()) {
+                Ok(args) => args,
+                Err(output) => return Ok(output),
+            };
         let draft = match self.store.get(&args.id).await {
             Ok(Some(c)) => c,
             Ok(None) => {
