@@ -222,7 +222,7 @@ async function main() {
   const servers = [];
   const environment = {
     AWAKEN_STORAGE_DIR: storage,
-    AWAKEN_LOCAL_WORKSPACE_ID: 'default',
+    AWAKEN_SCENARIO_WORKSPACE: 'default',
     ...realServerEnv('skills', upstream, { mode: 'skills-durable' }),
   };
 

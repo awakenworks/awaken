@@ -46,7 +46,7 @@ function start() {
     env: {
       ...environment,
       AWAKEN_HTTP_ADDR: `127.0.0.1:${PORT}`,
-      AWAKEN_LOCAL_WORKSPACE_ID: WORKSPACE,
+      AWAKEN_SCENARIO_WORKSPACE: WORKSPACE,
     },
     stdio: ['ignore', 'ignore', 'inherit'],
   });

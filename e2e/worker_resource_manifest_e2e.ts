@@ -388,7 +388,7 @@ async function main(): Promise<void> {
     AWAKEN_RESOURCE_DATABASE_URL: database.url,
     AWAKEN_ADMIN_DB: database.url,
     AWAKEN_SESSIONS_DB: database.url,
-    AWAKEN_LOCAL_WORKSPACE_ID: WORKSPACE,
+    AWAKEN_SCENARIO_WORKSPACE: WORKSPACE,
     // Keep the legacy general DSN from selecting an unrelated runtime store.
     AWAKEN_DATABASE_URL: '',
     AWAKEN_RUNTIME_DISPATCH_DATABASE_URL: '',
