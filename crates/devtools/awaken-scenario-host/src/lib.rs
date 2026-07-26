@@ -799,7 +799,7 @@ pub async fn build_acp_sandboxed_router() -> Router {
 /// The container-tier sibling of [`build_acp_sandboxed_router`]: the deterministic ACP
 /// agent and the Native tool hand run in one Session-owned Docker environment, driven
 /// through the full external SDK → managed → container-agent path. Configuration goes
-/// through an explicit fixed test launch plus `AWAKEN_SANDBOX_TIER=docker`; product
+/// through an explicit fixed test launch plus `SESSION_ENVIRONMENT_TIER=docker`; product
 /// composition has no fixed-argv environment override. Needs `--features container-docker`, a production
 /// sandbox image, and a reachable Docker daemon. Misconfiguration fails closed while
 /// building the host rather than falling back to a local process.

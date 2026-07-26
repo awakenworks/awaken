@@ -246,6 +246,10 @@ impl<R: ContainerRuntime + 'static> AgentContainerProvider for WarmContainerPool
 
 #[async_trait]
 impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContainerPool<R> {
+    fn sandbox_capabilities(&self) -> pc::SandboxCapabilities {
+        self.inner.sandbox_capabilities()
+    }
+
     fn install_memory_mounter(&self, mounter: Arc<dyn pc::MemoryMounter>) {
         self.inner.install_memory_mounter(mounter);
     }
@@ -288,6 +292,18 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "podman")]
+    #[test]
+    fn pool_preserves_inner_provider_capability_evidence() {
+        let runtime = Arc::new(crate::podman::PodmanRuntime::new(7600));
+        let inner = Arc::new(ContainerProvider::new(runtime, "agent:test"));
+        let expected = inner.sandbox_capabilities();
+        let pool = WarmContainerPool::new(inner, 1);
+        assert_eq!(pool.sandbox_capabilities(), expected);
+        assert!(pool.sandbox_capabilities().network_isolation);
+        assert!(!pool.sandbox_capabilities().enforced_network_allowlist);
+    }
 
     fn spec(scope: &str, cmd: &[&str]) -> pc::SandboxSpec {
         pc::SandboxSpec {
