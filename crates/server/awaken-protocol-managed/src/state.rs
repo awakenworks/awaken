@@ -653,6 +653,59 @@ mod tests {
         }
     }
 
+    /// Cause graph: exact child -> runtime termination -> one terminal projection.
+    /// Runtime failure stops before status/event mutation; a repeated successful
+    /// archive observes the terminal projection and performs no second effect.
+    ///
+    /// | Child | Runtime | Prior status | Result | Runtime calls | terminal events |
+    /// |---|---|---|---|---|---|
+    /// | absent | n/a | n/a | 404 | 0 | 0 |
+    /// | present | fail | running | error, still running | 1 | 0 |
+    /// | present | succeed | running | terminated | 1 | 1 |
+    /// | present | n/a | terminated | same receipt | unchanged | unchanged |
+    #[tokio::test]
+    async fn child_thread_archive_is_runtime_backed_fail_closed_and_idempotent() {
+        let runtime = EndSessionRecorder::default();
+        let ended = runtime.ended.clone();
+        let state = ManagedState::new(runtime);
+        let request = serde_json::from_value(serde_json::json!({ "agent": "assistant" })).unwrap();
+        let session = state.create_session(request, None).await.unwrap();
+        {
+            let mut sessions = state.sessions.lock().unwrap();
+            let record = sessions.get_mut(&session.id).unwrap();
+            record.child_threads.push(ManagedState::child_thread(
+                &record.session,
+                "child-1",
+                "researcher",
+            ));
+        }
+
+        let archived = state.archive_thread(&session.id, "child-1").await.unwrap();
+        assert_eq!(archived.status, SessionThreadStatus::Terminated);
+        assert_eq!(ended.lock().unwrap().as_slice(), &["child-1"]);
+        let terminal_count = state
+            .list_events(&session.id, None, None)
+            .unwrap()
+            .data
+            .iter()
+            .filter(|event| event.type_str() == "session.thread_status_terminated")
+            .count();
+        assert_eq!(terminal_count, 1);
+
+        state.archive_thread(&session.id, "child-1").await.unwrap();
+        assert_eq!(ended.lock().unwrap().as_slice(), &["child-1"]);
+        assert_eq!(
+            state
+                .list_events(&session.id, None, None)
+                .unwrap()
+                .data
+                .iter()
+                .filter(|event| event.type_str() == "session.thread_status_terminated")
+                .count(),
+            1
+        );
+    }
+
     // Delete finalization tests are generated from this causal graph:
     //
     // C1 terminal CAS committed ──> E1 public reads are NotFound
@@ -803,6 +856,40 @@ mod tests {
         fn model(&self) -> String {
             "host-default-model".to_string()
         }
+    }
+
+    #[tokio::test]
+    async fn child_thread_archive_failure_commits_no_terminal_projection() {
+        let state = ManagedState::new(EndSessionFailer);
+        let request = serde_json::from_value(serde_json::json!({ "agent": "assistant" })).unwrap();
+        let session = state.create_session(request, None).await.unwrap();
+        {
+            let mut sessions = state.sessions.lock().unwrap();
+            let record = sessions.get_mut(&session.id).unwrap();
+            record.child_threads.push(ManagedState::child_thread(
+                &record.session,
+                "child-fails",
+                "researcher",
+            ));
+        }
+
+        let error = state
+            .archive_thread(&session.id, "child-fails")
+            .await
+            .expect_err("runtime failure must fail closed");
+        assert!(error.to_string().contains("sandbox dispose blew up"));
+        assert_eq!(
+            state.get_thread(&session.id, "child-fails").unwrap().status,
+            SessionThreadStatus::Running
+        );
+        assert!(
+            !state
+                .list_events(&session.id, None, None)
+                .unwrap()
+                .data
+                .iter()
+                .any(|event| event.type_str() == "session.thread_status_terminated")
+        );
     }
 
     /// D2: a sandbox teardown failure at delete is swallowed (best-effort): the delete is

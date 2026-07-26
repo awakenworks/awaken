@@ -471,6 +471,7 @@ async fn archive_thread(
     state.ensure_session(&id).await.map_err(error_response)?;
     state
         .archive_thread(&id, &tid)
+        .await
         .map(Json)
         .map_err(error_response)
 }

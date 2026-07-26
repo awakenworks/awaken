@@ -103,6 +103,11 @@ async function main() {
       () => drain(client.beta.sessions.threads.events.list('sthr_nope', { session_id: session.id, betas: BETAS })),
       (err) => err.status === 404,
     );
+    assert.deepEqual(
+      (await drain(client.beta.sessions.events.list(session.id, { betas: BETAS }))).map((event) => event.id),
+      eventsBeforeUnknownCommands.map((event) => event.id),
+      'unknown Thread reads commit no event side effect',
+    );
     pass('unknown thread id -> 404 on retrieve + events.list');
 
     // -- threads.archive stamps archived_at (and archives the session) --------
@@ -113,15 +118,24 @@ async function main() {
     assert.ok(archivedThread.archived_at, 'the archived thread carries archived_at');
     const gotSession = await client.beta.sessions.retrieve(session.id, { betas: BETAS });
     assert.ok(gotSession.archived_at, 'archiving the primary thread archives the session');
+    assert.equal(gotSession.status, 'terminated', 'primary archive uses the Session terminal lifecycle');
+    assert.ok(
+      (await drain(client.beta.sessions.events.list(session.id, { betas: BETAS })))
+        .some((event) => event.type === 'session.status_terminated'),
+      'primary archive commits the authoritative terminal event',
+    );
     pass('beta.sessions.threads.archive -> archived_at');
 
+    const eventsBeforeUnknownArchive = await drain(
+      client.beta.sessions.events.list(session.id, { betas: BETAS }),
+    );
     await assert.rejects(
       () => client.beta.sessions.threads.archive('sthr_nope', { session_id: session.id, betas: BETAS }),
       (err) => err.status === 404,
     );
     assert.deepEqual(
       (await drain(client.beta.sessions.events.list(session.id, { betas: BETAS }))).map((event) => event.id),
-      eventsBeforeUnknownCommands.map((event) => event.id),
+      eventsBeforeUnknownArchive.map((event) => event.id),
       'an unknown Thread command commits no event side effect',
     );
     pass('archive unknown thread -> 404');

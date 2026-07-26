@@ -165,6 +165,21 @@ async function main() {
     );
     assert.ok(terminated, 'archiving the child emits session.thread_status_terminated');
     assert.equal(terminated.agent_name, 'researcher');
+    const terminalCount = afterEvents.filter(
+      (event) => event.type === 'session.thread_status_terminated' && event.session_thread_id === child.id,
+    ).length;
+    const archivedAgain = await client.beta.sessions.threads.archive(child.id, {
+      session_id: ok.id,
+      betas: BETAS,
+    });
+    assert.equal(archivedAgain.status, 'terminated');
+    assert.equal(
+      (await listEvents(client, ok.id)).filter(
+        (event) => event.type === 'session.thread_status_terminated' && event.session_thread_id === child.id,
+      ).length,
+      terminalCount,
+      'repeated archive is behaviorally idempotent and emits no duplicate terminal event',
+    );
     const childStream = await client.beta.sessions.threads.events.stream(child.id, {
       session_id: ok.id,
       betas: BETAS,

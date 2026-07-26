@@ -183,13 +183,39 @@ impl ManagedState {
     /// `POST /v1/sessions/{id}/threads/{thread_id}/archive`. Archiving the primary
     /// thread archives the session; archiving a subagent child thread terminates
     /// that thread (emitting `session.thread_status_terminated`).
-    pub fn archive_thread(&self, id: &str, thread_id: &str) -> Result<SessionThread, StateError> {
+    pub async fn archive_thread(
+        &self,
+        id: &str,
+        thread_id: &str,
+    ) -> Result<SessionThread, StateError> {
+        if format!("{id}:primary") == thread_id {
+            self.archive_session(id).await?;
+            return self.get_thread(id, thread_id);
+        }
+        let already_terminated = {
+            let sessions = self.sessions.lock().unwrap();
+            let record = sessions.get(id).ok_or(StateError::NotFound)?;
+            let child = record
+                .child_threads
+                .iter()
+                .find(|thread| thread.id == thread_id)
+                .ok_or(StateError::NotFound)?;
+            child.status == SessionThreadStatus::Terminated
+        };
+        if already_terminated {
+            return self.get_thread(id, thread_id);
+        }
+
+        // Runtime termination is the behavior; the wire status is committed only
+        // after that effect succeeds. `end_session` is idempotent for an already
+        // absent local child, so a retry after an uncertain response is safe.
+        self.runtime
+            .end_session(thread_id)
+            .await
+            .map_err(StateError::Run)?;
+
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
-        if format!("{id}:primary") == thread_id {
-            record.session.archived_at = Some(PROCESSED_AT.to_string());
-            return Ok(Self::primary_thread(record));
-        }
         let Some(child) = record
             .child_threads
             .iter_mut()
@@ -197,6 +223,9 @@ impl ManagedState {
         else {
             return Err(StateError::NotFound);
         };
+        if child.status == SessionThreadStatus::Terminated {
+            return Ok(child.clone());
+        }
         child.archived_at = Some(PROCESSED_AT.to_string());
         child.updated_at = PROCESSED_AT.to_string();
         child.status = SessionThreadStatus::Terminated;

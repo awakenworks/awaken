@@ -654,7 +654,10 @@ async fn archive_thread_broadcasts_to_an_open_live_stream() {
     let (_caught_up, _) = drain(&mut rx);
 
     let child_id = "child-run-stream";
-    state.archive_thread(&id, child_id).expect("archive child");
+    state
+        .archive_thread(&id, child_id)
+        .await
+        .expect("archive child");
 
     // The terminate was broadcast — the open stream receives it live.
     let (frames, _) = drain(&mut rx);
