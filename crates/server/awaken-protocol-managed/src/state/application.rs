@@ -648,6 +648,7 @@ mod tests {
         // | C4 | Session+Agent | any | same name | retain both for precedence |
         // | C5 | Session+Agent | any | same target/different name | retain both for conflict check |
         let view = awaken_session_contract::AgentConfigView {
+            environment: None,
             model: None,
             system: None,
             tool_ids: Vec::new(),

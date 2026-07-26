@@ -581,17 +581,60 @@ impl ManagedState {
                 .map(|default| default.binding_id.clone());
             attachments.push(awaken_session_contract::SessionInputAttachment { binding, replaces });
         }
-        // Sole composition/resolution point. Runtime receives this persisted,
-        // secret-free manifest and never re-opens Agent or Resource config stores.
-        let mut resolved_resources = awaken_session_contract::SessionInputResolver::resolve_inputs(
+        // Resolve the session's environment (defaulting to the local one) and its
+        // networking policy once, for both the SessionInit (staged before the first
+        // turn) and the echoed Session object.
+        let agent_environment = config_view
+            .as_ref()
+            .and_then(|view| view.environment.as_ref());
+        let environment_id = req
+            .environment_id
+            .clone()
+            .or_else(|| agent_environment.map(|binding| binding.environment_id.clone()))
+            .unwrap_or_else(|| "env_local".to_string());
+        let environment = match self.environments.as_ref() {
+            Some(environments) => {
+                let snapshot = match (req.environment_id.as_ref(), agent_environment) {
+                    (None, Some(binding)) => {
+                        environments
+                            .snapshot_exact(
+                                &binding.environment_id,
+                                binding.revision,
+                                req.awaken_runtime(),
+                            )
+                            .await
+                    }
+                    _ => {
+                        environments
+                            .snapshot(&environment_id, req.awaken_runtime())
+                            .await
+                    }
+                };
+                snapshot.ok_or_else(|| {
+                    StateError::Run(RunError::bad_request(format!(
+                        "environment `{environment_id}` is unavailable"
+                    )))
+                })?
+            }
+            None => crate::routes::environments::default_environment_snapshot(
+                environment_id.clone(),
+                req.awaken_runtime(),
+            ),
+        };
+        // Sole protocol-neutral composition/resolution point. Runtime receives this
+        // persisted, secret-free result and never re-opens Agent or Resource stores.
+        let compiled_defaults = awaken_session_contract::SessionDefaultsCompiler::compile(
             &owner_scope,
             self.resource_catalog
                 .as_deref()
                 .map(|catalog| catalog as &dyn awaken_resource_contract::ResourceConfigSource),
+            environment,
             agent_defaults,
             &attachments,
         )
         .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
+        let environment = compiled_defaults.environment;
+        let mut resolved_resources = compiled_defaults.resources;
         if let Some(view) = &config_view {
             resolved_resources.skills = Some(
                 self.runtime
@@ -600,27 +643,6 @@ impl ManagedState {
                     .map_err(StateError::Run)?,
             );
         }
-        // Resolve the session's environment (defaulting to the local one) and its
-        // networking policy once, for both the SessionInit (staged before the first
-        // turn) and the echoed Session object.
-        let environment_id = req
-            .environment_id
-            .clone()
-            .unwrap_or_else(|| "env_local".to_string());
-        let environment = match self.environments.as_ref() {
-            Some(environments) => environments
-                .snapshot(&environment_id, req.awaken_runtime())
-                .await
-                .ok_or_else(|| {
-                    StateError::Run(RunError::bad_request(format!(
-                        "environment `{environment_id}` is unavailable"
-                    )))
-                })?,
-            None => crate::routes::environments::default_environment_snapshot(
-                environment_id.clone(),
-                req.awaken_runtime(),
-            ),
-        };
         self.pin_repository_credentials(
             &owner_scope,
             &environment.credential_realization.resource_holder,
