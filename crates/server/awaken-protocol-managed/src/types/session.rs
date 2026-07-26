@@ -760,14 +760,16 @@ pub enum OutboundKind {
     #[serde(rename = "agent.thread_message_sent")]
     AgentThreadMessageSent {
         to_session_thread_id: String,
-        to_agent_name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        to_agent_name: Option<String>,
         content: Vec<ContentBlock>,
     },
     /// The coordinator received the delegate's reply (`agent.thread_message_received`).
     #[serde(rename = "agent.thread_message_received")]
     AgentThreadMessageReceived {
         from_session_thread_id: String,
-        from_agent_name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        from_agent_name: Option<String>,
         content: Vec<ContentBlock>,
     },
     /// The conversation history was summarized to fit context (the compact plugin

@@ -4,6 +4,60 @@
 use super::*;
 
 impl ManagedState {
+    /// Project the Session's single committed event log into one Thread stream.
+    /// The primary owns coordinator events and receives child status cross-posts.
+    /// A child sees only its own status plus messages expressed from that child's
+    /// perspective. This is a projection, not a second event store.
+    pub(crate) fn project_event_for_thread(
+        session_id: &str,
+        thread_id: &str,
+        mut event: Event,
+    ) -> Option<Event> {
+        if thread_id == format!("{session_id}:primary") {
+            return Some(event);
+        }
+        let is_own_status = match &event.kind {
+            OutboundKind::SessionThreadStatusRunning {
+                session_thread_id, ..
+            }
+            | OutboundKind::SessionThreadStatusIdle {
+                session_thread_id, ..
+            }
+            | OutboundKind::SessionThreadStatusRescheduled {
+                session_thread_id, ..
+            }
+            | OutboundKind::SessionThreadStatusTerminated {
+                session_thread_id, ..
+            } => session_thread_id == thread_id,
+            _ => false,
+        };
+        if is_own_status {
+            return Some(event);
+        }
+        event.kind = match event.kind {
+            OutboundKind::AgentThreadMessageSent {
+                to_session_thread_id,
+                content,
+                ..
+            } if to_session_thread_id == thread_id => OutboundKind::AgentThreadMessageReceived {
+                from_session_thread_id: format!("{session_id}:primary"),
+                from_agent_name: None,
+                content,
+            },
+            OutboundKind::AgentThreadMessageReceived {
+                from_session_thread_id,
+                content,
+                ..
+            } if from_session_thread_id == thread_id => OutboundKind::AgentThreadMessageSent {
+                to_session_thread_id: format!("{session_id}:primary"),
+                to_agent_name: None,
+                content,
+            },
+            _ => return None,
+        };
+        Some(event)
+    }
+
     fn thread_status(status: &str) -> SessionThreadStatus {
         match status {
             "idle" => SessionThreadStatus::Idle,
@@ -94,6 +148,36 @@ impl ManagedState {
             .find(|thread| thread.id == thread_id)
             .cloned()
             .ok_or(StateError::NotFound)
+    }
+
+    /// `GET /v1/sessions/{id}/threads/{thread_id}/events` — one typed projection
+    /// over the authoritative Session event log, cursor-paginated after filtering.
+    pub fn list_thread_events(
+        &self,
+        id: &str,
+        thread_id: &str,
+        cursor: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<ListEventsResponse, StateError> {
+        let sessions = self.sessions.lock().unwrap();
+        let record = sessions.get(id).ok_or(StateError::NotFound)?;
+        let primary_id = format!("{id}:primary");
+        if thread_id != primary_id && !record.child_threads.iter().any(|t| t.id == thread_id) {
+            return Err(StateError::NotFound);
+        }
+        let events = record
+            .events
+            .iter()
+            .cloned()
+            .filter_map(|event| Self::project_event_for_thread(id, thread_id, event))
+            .collect::<Vec<_>>();
+        let page = paginate_by_id(&events, cursor, limit, |event| event.id.as_str())
+            .map_err(|_| RunError::bad_request("unknown pagination cursor"))?;
+        Ok(ListEventsResponse {
+            data: page.items.to_vec(),
+            next_page: page.next_page,
+            has_more: page.has_more,
+        })
     }
 
     /// `POST /v1/sessions/{id}/threads/{thread_id}/archive`. Archiving the primary

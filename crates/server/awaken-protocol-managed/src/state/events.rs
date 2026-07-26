@@ -175,7 +175,7 @@ impl ManagedState {
                     },
                     OutboundKind::AgentThreadMessageSent {
                         to_session_thread_id: thread_id.clone(),
-                        to_agent_name: name.clone(),
+                        to_agent_name: Some(name.clone()),
                         content: d.sent,
                     },
                 ]);
@@ -186,7 +186,7 @@ impl ManagedState {
                 kinds.extend([
                     OutboundKind::AgentThreadMessageReceived {
                         from_session_thread_id: thread_id.clone(),
-                        from_agent_name: name.clone(),
+                        from_agent_name: Some(name.clone()),
                         content: d.received,
                     },
                     OutboundKind::SessionThreadStatusIdle {

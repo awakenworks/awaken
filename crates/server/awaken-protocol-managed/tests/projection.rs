@@ -591,6 +591,35 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
         .unwrap();
     assert_eq!(child["parent_thread_id"], format!("{id}:primary"));
     assert_eq!(child["agent"]["name"], "researcher");
+
+    // The child endpoint is not an alias of the Session log. It projects the
+    // same committed facts from the child's perspective: coordinator input is a
+    // received message and the child's reply is a sent message.
+    let child_events = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/threads/{child_thread_id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(
+        types(&child_events),
+        vec![
+            "session.thread_status_running",
+            "agent.thread_message_received",
+            "agent.thread_message_sent",
+            "session.thread_status_idle",
+        ],
+        "child stream contains only child-owned and cross-posted facts"
+    );
+    let received = &child_events["data"][1];
+    assert_eq!(received["from_session_thread_id"], format!("{id}:primary"));
+    assert!(received.get("from_agent_name").is_none());
+    assert_eq!(received["content"][0]["text"], "find the docs");
+    let sent = &child_events["data"][2];
+    assert_eq!(sent["to_session_thread_id"], format!("{id}:primary"));
+    assert!(sent.get("to_agent_name").is_none());
+    assert_eq!(sent["content"][0]["text"], "here are the docs");
 }
 
 // --- CE: session.updated event -----------------------------------------------

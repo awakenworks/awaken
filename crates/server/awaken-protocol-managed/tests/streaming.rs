@@ -619,6 +619,23 @@ async fn archiving_a_child_thread_streams_thread_status_terminated() {
         sse.contains(&format!("\"session_thread_id\":\"{child_id}\"")),
         "the terminated frame names the child thread — sse:\n{sse}"
     );
+    let (child_status, child_sse) = http_sse(
+        &app,
+        &format!("/v1/sessions/{id}/threads/{child_id}/stream"),
+        &[],
+    )
+    .await;
+    assert_eq!(child_status, StatusCode::OK);
+    assert!(
+        !child_sse.contains("event: session.status_")
+            && !child_sse.contains("event: agent.message\n"),
+        "a child stream must not alias the primary Session stream — sse:\n{child_sse}"
+    );
+    assert!(
+        child_sse.contains("event: agent.thread_message_received")
+            && child_sse.contains("event: agent.thread_message_sent"),
+        "the child stream projects both message directions from the child perspective — sse:\n{child_sse}"
+    );
 }
 
 /// `state/threads.rs::archive_thread` commits `session.thread_status_terminated` to

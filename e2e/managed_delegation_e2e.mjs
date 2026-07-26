@@ -7,6 +7,18 @@
 // `ghost` is intentionally absent so the fail-closed path can be shown too.
 //
 // Run: (from e2e/)  npm install && node managed_delegation_e2e.mjs
+//
+// Cause graph:
+//   admitted delegation -> durable child Run relationship -> child Thread projection
+//   -> primary cross-posts + child-perspective event projection -> archive termination
+//   unlisted target -X-> child Run / child Thread / usage side effects
+//
+// Decision table:
+// | target | relationship | child result | archive | observable behavior |
+// |---|---|---|---|---|
+// | roster member | new exact Run | complete | no | one idle child + two directional messages |
+// | roster member | existing exact Run | complete | yes | same child terminated + terminal event |
+// | absent member | none | none | n/a | no child and no delegate inference usage |
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
@@ -121,6 +133,26 @@ async function main() {
     const childIdle = childEvents.find((e) => e.type === 'session.thread_status_idle');
     assert.equal(childIdle.stop_reason.type, 'end_turn');
 
+    const ownChildEvents = [];
+    for await (const event of client.beta.sessions.threads.events.list(child.id, {
+      session_id: ok.id,
+      betas: BETAS,
+    })) ownChildEvents.push(event);
+    assert.deepEqual(
+      ownChildEvents.map((event) => event.type),
+      [
+        'session.thread_status_running',
+        'agent.thread_message_received',
+        'agent.thread_message_sent',
+        'session.thread_status_idle',
+      ],
+      'the child endpoint is a child-perspective projection, not a Session-log alias',
+    );
+    assert.equal(ownChildEvents[1].from_session_thread_id, primary.id);
+    assert.equal(ownChildEvents[1].from_agent_name, undefined);
+    assert.equal(ownChildEvents[2].to_session_thread_id, primary.id);
+    assert.equal(ownChildEvents[2].to_agent_name, undefined);
+
     // Archiving the child thread terminates it (session.thread_status_terminated).
     const archived = await client.beta.sessions.threads.archive(child.id, {
       session_id: ok.id,
@@ -133,6 +165,15 @@ async function main() {
     );
     assert.ok(terminated, 'archiving the child emits session.thread_status_terminated');
     assert.equal(terminated.agent_name, 'researcher');
+    const childStream = await client.beta.sessions.threads.events.stream(child.id, {
+      session_id: ok.id,
+      betas: BETAS,
+    });
+    const streamedChildTypes = [];
+    for await (const event of childStream) streamedChildTypes.push(event.type);
+    assert.ok(streamedChildTypes.includes('session.thread_status_terminated'));
+    assert.ok(!streamedChildTypes.some((type) => type.startsWith('session.status_')));
+    assert.ok(!streamedChildTypes.includes('agent.message'));
 
     // Fail closed: `ghost` is not in the roster; no sub-run runs.
     const bad = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
