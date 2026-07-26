@@ -1,6 +1,7 @@
 //! Immutable Session baseline and its consumed creation intent (ADR-0066 D1).
 
 use crate::env_registry::EnvironmentRevision;
+use awaken_credential_contract::CredentialRealizationProfile;
 
 /// Frozen network fact. This is Session state, not a provider request; the Host
 /// projects it to the provisioning contract at realization time.
@@ -10,26 +11,6 @@ pub enum SessionNetworkPolicy {
     Unrestricted,
     Allowlist { hosts: Vec<String> },
     None,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionPlaintextBoundary {
-    Workload,
-    Worker,
-    Platform,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct SessionPlaintextHolder {
-    pub boundary: SessionPlaintextBoundary,
-    pub trust_domain: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct SessionCredentialRealizationProfile {
-    pub inference_holder: SessionPlaintextHolder,
-    pub mcp_holder: SessionPlaintextHolder,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -50,7 +31,7 @@ pub struct EnvironmentSnapshot {
     /// reachability authority in this snapshot.
     pub sandbox: serde_json::Value,
     pub network: SessionNetworkPolicy,
-    pub credential_realization: SessionCredentialRealizationProfile,
+    pub credential_realization: CredentialRealizationProfile,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -174,6 +155,7 @@ impl SessionBaseline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_credential_contract::{PlaintextBoundary, PlaintextHolder};
 
     fn environment(revision: u64, network: SessionNetworkPolicy) -> EnvironmentSnapshot {
         EnvironmentSnapshot {
@@ -182,15 +164,12 @@ mod tests {
             config_fingerprint: EnvironmentFingerprint(format!("config-{revision}")),
             sandbox: serde_json::json!({}),
             network,
-            credential_realization: SessionCredentialRealizationProfile {
-                inference_holder: SessionPlaintextHolder {
-                    boundary: SessionPlaintextBoundary::Workload,
-                    trust_domain: "awaken.workload.acp".into(),
-                },
-                mcp_holder: SessionPlaintextHolder {
-                    boundary: SessionPlaintextBoundary::Worker,
-                    trust_domain: "awaken.worker".into(),
-                },
+            credential_realization: CredentialRealizationProfile {
+                inference_holder: PlaintextHolder::new(
+                    PlaintextBoundary::Workload,
+                    "awaken.workload.acp",
+                ),
+                mcp_holder: PlaintextHolder::new(PlaintextBoundary::Worker, "awaken.worker"),
             },
         }
     }

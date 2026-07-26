@@ -488,6 +488,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-credential-contract"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "awaken-credential-vault"
 version = "1.0.0-dev"
 dependencies = [
@@ -972,6 +983,7 @@ dependencies = [
  "awaken-admin-config-api",
  "awaken-agent-contract",
  "awaken-config-resolver",
+ "awaken-credential-contract",
  "awaken-credential-vault",
  "awaken-env-store",
  "awaken-ext-memory",
@@ -1200,6 +1212,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-credential-contract",
  "awaken-tenancy",
  "futures-util",
  "serde",
@@ -1516,6 +1529,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-credential-contract",
  "awaken-resource-contract",
  "proptest",
  "serde",

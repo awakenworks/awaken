@@ -151,6 +151,7 @@ async fn forward(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_ext_mcp::{Credential, HttpTransportBuilder, McpToolTransport};
 
     /// A fake upstream MCP server that echoes back the `Authorization` header it received, so
     /// the test can prove the relay injected the real bearer (and dropped the placeholder).
@@ -226,6 +227,198 @@ mod tests {
         assert!(
             !body.contains("session-mcp"),
             "placeholder must not reach upstream: {body}"
+        );
+    }
+
+    // Relay routing cases are generated from this cause graph:
+    // active route + exact current credential -> forward/inject; replacement ->
+    // next request uses only the new credential; removal -> reject before upstream.
+    //
+    // | Rule | Route state | Generation action | Effect |
+    // |------|-------------|-------------------|--------|
+    // | R1   | active      | none              | inject current |
+    // | R2   | active      | replace           | inject replacement only |
+    // | R3   | removed     | remove            | 404, no forward |
+    #[tokio::test]
+    async fn rotating_and_removing_a_route_updates_the_next_mcp_request() {
+        let upstream = fake_upstream().await;
+        let relay = McpRelay::start().await.unwrap();
+        let server = |secret: &str| PreparedMcpServer {
+            name: "github".into(),
+            url: format!("http://{upstream}/"),
+            bearer: Some(awaken_agent_contract::RedactedString::from(
+                secret.to_string(),
+            )),
+            refresh: None,
+        };
+        let client = reqwest::Client::new();
+        let route = relay.route_url("session", "github");
+
+        relay.set_routes("session", &[server("old-secret")]);
+        let first = client
+            .post(&route)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert_eq!(first, "Bearer old-secret");
+
+        relay.set_routes("session", &[server("new-secret")]);
+        let second = client
+            .post(&route)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert_eq!(second, "Bearer new-secret");
+        assert!(!second.contains("old-secret"));
+
+        relay.remove_routes("session");
+        let removed = client.post(&route).send().await.unwrap();
+        assert_eq!(removed.status(), reqwest::StatusCode::NOT_FOUND);
+    }
+
+    // Protocol-flow decision row: when R1 holds, initialize, tools/list and
+    // tools/call must all traverse the same authenticated route; any missing
+    // injection yields upstream 401 and no successful tool result.
+    #[tokio::test]
+    async fn injected_credential_preserves_the_complete_mcp_tool_flow() {
+        type Seen = Arc<Mutex<Vec<(String, String)>>>;
+
+        async fn mcp(State(seen): State<Seen>, req: Request) -> Response {
+            let bearer = req
+                .headers()
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("<none>")
+                .to_string();
+            if bearer != "Bearer relay-only-secret" {
+                return StatusCode::UNAUTHORIZED.into_response();
+            }
+            let body = match axum::body::to_bytes(req.into_body(), usize::MAX).await {
+                Ok(body) => body,
+                Err(error) => {
+                    return (StatusCode::BAD_REQUEST, error.to_string()).into_response();
+                }
+            };
+            let value: serde_json::Value = match serde_json::from_slice(&body) {
+                Ok(value) => value,
+                Err(error) => {
+                    return (StatusCode::BAD_REQUEST, error.to_string()).into_response();
+                }
+            };
+            let method = value
+                .get("method")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("<missing>")
+                .to_string();
+            seen.lock().unwrap().push((method.clone(), bearer));
+            let Some(id) = value.get("id").cloned() else {
+                return StatusCode::ACCEPTED.into_response();
+            };
+            let result = match method.as_str() {
+                "initialize" => serde_json::json!({
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": { "tools": {} },
+                    "serverInfo": { "name": "relay-test", "version": "1" }
+                }),
+                "tools/list" => serde_json::json!({
+                    "tools": [{
+                        "name": "echo",
+                        "description": "echo one value",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": { "value": { "type": "string" } },
+                            "required": ["value"]
+                        }
+                    }]
+                }),
+                "tools/call" => serde_json::json!({
+                    "content": [{ "type": "text", "text": value["params"]["arguments"]["value"] }],
+                    "isError": false
+                }),
+                _ => {
+                    return axum::Json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": { "code": -32601, "message": "method not found" }
+                    }))
+                    .into_response();
+                }
+            };
+            axum::Json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": result
+            }))
+            .into_response()
+        }
+
+        let seen: Seen = Arc::new(Mutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream = listener.local_addr().unwrap();
+        let app = axum::Router::new()
+            .route("/mcp", axum::routing::post(mcp))
+            .with_state(seen.clone());
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let relay = McpRelay::start().await.unwrap();
+        relay.set_routes(
+            "session-1",
+            &[PreparedMcpServer {
+                name: "functional".into(),
+                url: format!("http://{upstream}/mcp"),
+                bearer: Some(awaken_agent_contract::RedactedString::from(
+                    "relay-only-secret".to_string(),
+                )),
+                refresh: None,
+            }],
+        );
+
+        // This is the sandbox-side client: it receives the loopback route and no
+        // credential at all. The relay alone owns and injects the real bearer.
+        let transport = HttpTransportBuilder::new(relay.route_url("session-1", "functional"))
+            .credential(Credential::None)
+            .connect()
+            .await
+            .expect("initialize survives host-side injection");
+        let tools = transport
+            .list_tools()
+            .await
+            .expect("tools/list survives host-side injection");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "echo");
+        let result = transport
+            .call_tool("echo", serde_json::json!({ "value": "round-trip" }))
+            .await
+            .expect("tools/call survives host-side injection");
+        let result_json = serde_json::to_value(&result).expect("tool result serializes");
+        assert_eq!(result_json["content"][0]["type"], "text");
+        assert_eq!(result_json["content"][0]["text"], "round-trip");
+        assert_eq!(result.is_error, Some(false));
+
+        let seen = seen.lock().unwrap();
+        for expected in [
+            "initialize",
+            "notifications/initialized",
+            "tools/list",
+            "tools/call",
+        ] {
+            assert!(
+                seen.iter().any(|(method, _)| method == expected),
+                "the upstream MCP server must receive {expected}: {seen:?}"
+            );
+        }
+        assert!(
+            seen.iter()
+                .all(|(_, bearer)| bearer == "Bearer relay-only-secret"),
+            "every MCP operation is authenticated by the relay: {seen:?}"
         );
     }
 

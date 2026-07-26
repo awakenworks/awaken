@@ -206,6 +206,87 @@ pub enum CredentialCreateParams {
     },
 }
 
+/// Accept both the historical flat body and the official SDK's `{ auth: ... }`
+/// body, then normalize immediately into the one creation model above.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum CredentialCreateWire {
+    Legacy(CredentialCreateParams),
+    Official {
+        auth: CredentialCreateParams,
+        #[serde(default)]
+        metadata: BTreeMap<String, String>,
+        #[serde(default)]
+        display_name: Option<String>,
+    },
+}
+
+impl CredentialCreateWire {
+    #[must_use]
+    pub fn into_params(self) -> CredentialCreateParams {
+        match self {
+            Self::Legacy(params) => params,
+            Self::Official {
+                auth,
+                metadata,
+                display_name,
+            } => match auth {
+                CredentialCreateParams::EnvironmentVariable {
+                    secret_name,
+                    secret_value,
+                    networking,
+                    metadata: auth_metadata,
+                    display_name: auth_display_name,
+                } => CredentialCreateParams::EnvironmentVariable {
+                    secret_name,
+                    secret_value,
+                    networking,
+                    metadata: if metadata.is_empty() {
+                        auth_metadata
+                    } else {
+                        metadata
+                    },
+                    display_name: display_name.or(auth_display_name),
+                },
+                CredentialCreateParams::StaticBearer {
+                    mcp_server_url,
+                    token,
+                    metadata: auth_metadata,
+                    display_name: auth_display_name,
+                } => CredentialCreateParams::StaticBearer {
+                    mcp_server_url,
+                    token,
+                    metadata: if metadata.is_empty() {
+                        auth_metadata
+                    } else {
+                        metadata
+                    },
+                    display_name: display_name.or(auth_display_name),
+                },
+                CredentialCreateParams::McpOauth {
+                    mcp_server_url,
+                    access_token,
+                    expires_at,
+                    refresh,
+                    metadata: auth_metadata,
+                    display_name: auth_display_name,
+                } => CredentialCreateParams::McpOauth {
+                    mcp_server_url,
+                    access_token,
+                    expires_at,
+                    refresh,
+                    metadata: if metadata.is_empty() {
+                        auth_metadata
+                    } else {
+                        metadata
+                    },
+                    display_name: display_name.or(auth_display_name),
+                },
+            },
+        }
+    }
+}
+
 /// serde helper distinguishing an absent field (`None`) from an explicit JSON
 /// `null` (`Some(None)`) from a present value (`Some(Some(v))`). Lets an update
 /// PATCH a nullable field to `null` (clear) without conflating it with "omitted"

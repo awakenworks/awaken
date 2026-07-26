@@ -75,7 +75,7 @@ async function main() {
       pass('malformed body -> 400 + invalid_request_error');
 
       // (vault-not-found on create is a 404 only in the MCP-enabled build where
-      // vault state is wired; that path is covered by managed_mcp_e2e.mjs and the
+      // vault state is wired; that path is covered by managed_mcp_e2e.ts and the
       // Rust `unknown_vault_id_fails_the_create_with_404` test — not echo mode.)
 
       // --- archive lifecycle: archived_at is set; the session goes read-only ---

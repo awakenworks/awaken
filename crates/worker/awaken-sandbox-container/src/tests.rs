@@ -78,6 +78,27 @@ fn container_capabilities_are_the_strongest_tier() {
     assert_eq!(c.isolation, pc::IsolationClass::Container);
     assert!(c.tool_transparent && c.enforced_readonly && c.network_isolation);
     assert!(c.resource_limits && c.custom_rootfs);
+    assert!(
+        !c.secret_egress_substitution,
+        "the current container provider must not advertise an unimplemented secret guarantee"
+    );
+}
+
+#[test]
+fn current_container_provider_rejects_egress_only_secret_injection() {
+    // Cause graph/table:
+    // | EgressOnly requested | provider substitution | launch/result |
+    // | T                    | F                     | reject before launch |
+    // | T                    | T                     | admit (future provider suite) |
+    // The current provider occupies only the first row and must never claim the
+    // second merely because it has container network isolation.
+    let mut requested = spec("egress-only");
+    requested.env[1].visibility = pc::EnvVisibility::EgressOnly;
+    assert_eq!(
+        pc::prepare_environment(&requested, &container_capabilities()),
+        Err(pc::PrepareError::EgressSecretUnsupported("API_KEY".into())),
+        "an unsupported provider must fail before materializing or launching the sandbox"
+    );
 }
 
 #[test]

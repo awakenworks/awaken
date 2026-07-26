@@ -88,8 +88,21 @@ wrappers = [
     # The neutral session-runtime ports: agent-domain value objects (RedactedString
     # etc.) appear in the port signatures. A contract/ leaf above the base contract.
     "awaken-session-contract",
+    # Shared secret-free credential values + exact material resolver port.
+    "awaken-credential-contract",
 ]
 reason = "base contract; nothing may pull it upward (no downward dep of its own)"
+
+# Credential contract: only contexts that publish or consume exact credential
+# execution facts may depend on it. Implementations remain in their adapters.
+[[bans.deny]]
+name = "awaken-credential-contract"
+wrappers = [
+    "awaken-runtime-contract",
+    "awaken-session-contract",
+    "awaken-protocol-managed",
+]
+reason = "credential execution contract; only publishing/consuming contexts may depend on it"
 
 # Contract layer: the base contract must NOT depend upward on it.
 [[bans.deny]]

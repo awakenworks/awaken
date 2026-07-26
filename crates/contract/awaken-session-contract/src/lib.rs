@@ -35,8 +35,7 @@ pub use agent_config::{AgentConfigSource, AgentConfigView, AgentMcpServerView};
 pub use baseline::{
     ApplicationContributionState, ApplicationSessionInput, EnvironmentFingerprint,
     EnvironmentSnapshot, SessionBaseline, SessionBaselineFingerprint, SessionBaselineState,
-    SessionCreationIntent, SessionCredentialRealizationProfile, SessionMcpAuthoringContext,
-    SessionNetworkPolicy, SessionPlaintextBoundary, SessionPlaintextHolder,
+    SessionCreationIntent, SessionMcpAuthoringContext, SessionNetworkPolicy,
 };
 pub use fingerprint::stable_fingerprint;
 pub use lifecycle::{SessionLifecycleFact, SessionLifecycleSink};

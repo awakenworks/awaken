@@ -37,6 +37,7 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 awaken-agent-contract = { path = "crates/contract/awaken-agent-contract" }
+awaken-credential-contract = { path = "crates/contract/awaken-credential-contract" }
 awaken-runtime-contract = { path = "crates/runtime/awaken-runtime-contract" }
 awaken-tenancy = { path = "crates/contract/awaken-tenancy" }
 awaken-session-contract = { path = "crates/contract/awaken-session-contract" }
@@ -142,6 +143,7 @@ thiserror = "2"
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
 tokio-util = "0.7"
+url = "2.5"
 genai = "0.6.0-beta.17"
 axum = "0.8"
 # Property-based (lightweight formal) verification: dev-only. Encodes universally-

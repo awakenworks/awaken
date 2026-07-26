@@ -315,6 +315,30 @@ async fn wire_constraints_fail_closed() {
     )
     .await;
     assert_eq!(s4, StatusCode::BAD_REQUEST);
+
+    for invalid_url in [
+        "not-a-url",
+        "file:///tmp/mcp.sock",
+        "https://user:password@mcp.example.com/mcp",
+        "https://mcp.example.com/mcp#fragment",
+    ] {
+        let (status, _) = call(
+            &h.app,
+            "POST",
+            &format!("/v1/vaults/{vault_id}/credentials"),
+            Some(json!({
+                "type": "static_bearer",
+                "mcp_server_url": invalid_url,
+                "token": "x" // awaken-allow: secret
+            })),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "invalid credential target must fail closed: {invalid_url}"
+        );
+    }
 }
 
 /// Create a vault named `display_name` and return its id.
@@ -748,11 +772,10 @@ async fn update_credential_clears_display_name_with_explicit_null() {
 async fn update_mcp_oauth_refresh_rotates_sealed_secrets() {
     let h = harness();
     let vault_id = create_vault(&h, "mcp").await;
-    let url = "https://mcp.example.com/sse";
     let cred = create_mcp_oauth(
         &h,
         &vault_id,
-        url,
+        "https://mcp.example.com/sse",
         Some(json!({
             "client_id": "cli",
             "refresh_token": "rt-old", // awaken-allow: secret
@@ -814,7 +837,7 @@ async fn update_mcp_oauth_refresh_rotates_sealed_secrets() {
     );
 
     // Updating refresh on a credential that has none is a 400.
-    let plain = create_mcp_oauth(&h, &vault_id, url, None).await;
+    let plain = create_mcp_oauth(&h, &vault_id, "https://mcp.example.com/plain", None).await;
     let plain_id = plain["id"].as_str().unwrap().to_string();
     let (s, _) = call(
         &h.app,
@@ -834,11 +857,10 @@ async fn update_refresh_token_endpoint_auth_omitting_client_secret_keeps_the_sea
     // secret must be preserved.
     let h = harness();
     let vault_id = create_vault(&h, "mcp").await;
-    let url = "https://mcp.example.com/sse";
     let cred = create_mcp_oauth(
         &h,
         &vault_id,
-        url,
+        "https://mcp.example.com/oauth",
         Some(json!({
             "client_id": "cli",
             "refresh_token": "rt", // awaken-allow: secret
@@ -931,7 +953,7 @@ async fn update_credential_covers_static_and_mcp_auth_branches() {
     let oauth = create_mcp_oauth(
         &h,
         &vault_id,
-        url,
+        "https://mcp.example.com/oauth",
         Some(json!({
             "client_id": "cli",
             "refresh_token": "rt", // awaken-allow: secret
@@ -1322,60 +1344,166 @@ async fn mcp_oauth_credential_without_refresh_reports_no_refresh_token() {
     assert_eq!(validation["status"], "unknown");
 }
 
+// Credential selection cases come from this cause graph:
+// active requested Vault (in caller order) -> active compatible credential ->
+// canonical target equality -> selected source; a false cause skips that row and
+// continues, while no match is explicitly unauthenticated.
+//
+// | Rule | Vault active | Credential active | Target equal | Effect |
+// |------|--------------|-------------------|--------------|--------|
+// | M1   | T            | T                 | T            | select first Vault |
+// | M2   | T            | T                 | F            | continue/no match |
+// | M3   | T            | F                 | T            | skip credential |
+// | M4   | F            | -                 | -            | skip Vault |
+//
+// The normalization, order, archived-credential and archived-Vault tests below
+// are generated from M1-M4 and call the same production selector.
 #[tokio::test]
-async fn mcp_credential_source_for_url_binds_by_vault_and_exact_url() {
+async fn mcp_binding_normalizes_urls_and_supports_both_credential_kinds() {
     let h = harness();
-    let vault_a = create_vault(&h, "a").await;
-    let vault_b = create_vault(&h, "b").await;
-    let url = "https://mcp.example.com/sse";
+    let oauth_vault = create_vault(&h, "oauth").await;
+    let bearer_vault = create_vault(&h, "bearer").await;
 
-    // Vault A holds an mcp_oauth credential for `url`, plus two decoys that must
-    // never match: an env-var credential and a static_bearer against the same URL.
-    let oauth = create_mcp_oauth(&h, &vault_a, url, None).await;
+    let oauth = create_mcp_oauth(&h, &oauth_vault, "HTTPS://MCP.EXAMPLE.COM:443/sse/", None).await;
     let oauth_id = oauth["id"].as_str().unwrap().to_string();
-    create_credential(&h, &vault_a, "K").await;
-    let (s, _) = call(
+    let (status, bearer) = call(
         &h.app,
         "POST",
-        &format!("/v1/vaults/{vault_a}/credentials"),
+        &format!("/v1/vaults/{bearer_vault}/credentials"),
         Some(json!({
             "type": "static_bearer",
-            "mcp_server_url": url,
-            "token": "brr" // awaken-allow: secret
+            "mcp_server_url": "https://mcp.example.com/mcp",
+            "token": "bearer-secret" // awaken-allow: secret
         })),
     )
     .await;
-    assert_eq!(s, StatusCode::OK);
+    assert_eq!(status, StatusCode::OK);
+    let bearer_id = bearer["id"].as_str().unwrap().to_string();
 
-    // The seam returns the oauth credential's domain source id, not a decoy's.
-    let expected = h.state.credential_source_id(&vault_a, &oauth_id).unwrap();
-    let got = h
+    let oauth_source = h
         .state
-        .mcp_credential_source_for_url(std::slice::from_ref(&vault_a), url)
-        .expect("mcp_oauth credential binds by URL");
-    assert_eq!(got, expected);
-
-    // Wrong vault, wrong url, or a session bound to no vaults -> no binding.
-    assert!(
-        h.state
-            .mcp_credential_source_for_url(std::slice::from_ref(&vault_b), url)
-            .is_none()
-    );
-    assert!(
-        h.state
-            .mcp_credential_source_for_url(
-                std::slice::from_ref(&vault_a),
-                "https://other.example.com/sse"
-            )
-            .is_none()
-    );
-    assert!(h.state.mcp_credential_source_for_url(&[], url).is_none());
-
-    // A vault list spanning both vaults still finds it (vault B contributes none).
-    let both = vec![vault_b, vault_a];
+        .credential_source_id(&oauth_vault, &oauth_id)
+        .unwrap();
     assert_eq!(
-        h.state.mcp_credential_source_for_url(&both, url),
-        Some(expected)
+        h.state.mcp_credential_source_for_url(
+            std::slice::from_ref(&oauth_vault),
+            "https://mcp.example.com/sse"
+        ),
+        Some(oauth_source)
+    );
+
+    let bearer_source = h
+        .state
+        .credential_source_id(&bearer_vault, &bearer_id)
+        .unwrap();
+    assert_eq!(
+        h.state.mcp_credential_source_for_url(
+            std::slice::from_ref(&bearer_vault),
+            "https://MCP.example.com:443/mcp/"
+        ),
+        Some(bearer_source)
+    );
+
+    for different in [
+        "https://other.example.com/mcp",
+        "https://sub.mcp.example.com/mcp",
+        "https://mcp.example.com:8443/mcp",
+        "https://mcp.example.com/other",
+    ] {
+        assert!(
+            h.state
+                .mcp_credential_source_for_url(std::slice::from_ref(&bearer_vault), different)
+                .is_none(),
+            "a structurally different target must not match: {different}"
+        );
+    }
+    assert!(
+        h.state
+            .mcp_credential_source_for_url(&[], "https://mcp.example.com/mcp")
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn mcp_binding_uses_vault_id_order_as_credential_precedence() {
+    let h = harness();
+    let first_created = create_vault(&h, "first-created").await;
+    let second_created = create_vault(&h, "second-created").await;
+    let url = "https://mcp.example.com/mcp";
+    let first_credential = create_mcp_oauth(&h, &first_created, url, None).await;
+    let second_credential = create_mcp_oauth(&h, &second_created, url, None).await;
+    let first_source = h
+        .state
+        .credential_source_id(&first_created, first_credential["id"].as_str().unwrap())
+        .unwrap();
+    let second_source = h
+        .state
+        .credential_source_id(&second_created, second_credential["id"].as_str().unwrap())
+        .unwrap();
+
+    assert_eq!(
+        h.state
+            .mcp_credential_source_for_url(&[second_created.clone(), first_created.clone()], url),
+        Some(second_source)
+    );
+    assert_eq!(
+        h.state
+            .mcp_credential_source_for_url(&[first_created, second_created], url),
+        Some(first_source)
+    );
+}
+
+#[tokio::test]
+async fn same_target_credentials_are_authored_and_selected_deterministically() {
+    let h = harness();
+    let vault_id = create_vault(&h, "mcp").await;
+    let first = create_mcp_oauth(&h, &vault_id, "https://MCP.example.com:443/mcp/", None).await;
+
+    let (second_status, second) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials"),
+        Some(json!({
+            "type": "static_bearer",
+            "mcp_server_url": "https://mcp.example.com/mcp",
+            "token": "replacement" // awaken-allow: secret
+        })),
+    )
+    .await;
+    assert_eq!(second_status, StatusCode::OK);
+    let first_source = h
+        .state
+        .credential_source_id(&vault_id, first["id"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(
+        h.state.mcp_credential_source_for_url(
+            std::slice::from_ref(&vault_id),
+            "https://mcp.example.com/mcp"
+        ),
+        Some(first_source),
+        "the lowest credential id breaks a same-Vault tie"
+    );
+
+    let first_id = first["id"].as_str().unwrap();
+    let (archived, _) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials/{first_id}/archive"),
+        None,
+    )
+    .await;
+    assert_eq!(archived, StatusCode::OK);
+    let second_source = h
+        .state
+        .credential_source_id(&vault_id, second["id"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(
+        h.state.mcp_credential_source_for_url(
+            std::slice::from_ref(&vault_id),
+            "https://mcp.example.com/mcp"
+        ),
+        Some(second_source),
+        "archiving the first credential exposes the next deterministic candidate"
     );
 }
 
@@ -1514,7 +1642,7 @@ async fn mcp_refresh_for_source_exposes_public_and_confidential_refresh() {
     );
 
     // An mcp_oauth credential entered WITHOUT a refresh object yields none.
-    let plain = create_mcp_oauth(&h, &vault_id, url, None).await;
+    let plain = create_mcp_oauth(&h, &vault_id, "https://mcp.example.com/plain", None).await;
     let plain_id = plain["id"].as_str().unwrap().to_string();
     let plain_source = h.state.credential_source_id(&vault_id, &plain_id).unwrap();
     assert!(h.state.mcp_refresh_for_source(&plain_source).is_none());
@@ -1522,11 +1650,14 @@ async fn mcp_refresh_for_source_exposes_public_and_confidential_refresh() {
     // A confidential-client scheme is exposed too: its client_secret was sealed
     // at create, so the binding carries the sealed ref for the grant's client
     // authentication (basic → the Basic header, post → the form field).
-    for auth_type in ["client_secret_basic", "client_secret_post"] {
+    for (index, auth_type) in ["client_secret_basic", "client_secret_post"]
+        .into_iter()
+        .enumerate()
+    {
         let confidential = create_mcp_oauth(
             &h,
             &vault_id,
-            url,
+            &format!("https://mcp.example.com/confidential-{index}"),
             Some(json!({
                 "client_id": "cli_conf",
                 "refresh_token": "rt-secret-token", // awaken-allow: secret
@@ -1565,7 +1696,7 @@ async fn mcp_refresh_for_source_exposes_public_and_confidential_refresh() {
         &format!("/v1/vaults/{vault_id}/credentials"),
         Some(json!({
             "type": "static_bearer",
-            "mcp_server_url": url,
+            "mcp_server_url": "https://mcp.example.com/bearer",
             "token": "brr" // awaken-allow: secret
         })),
     )
