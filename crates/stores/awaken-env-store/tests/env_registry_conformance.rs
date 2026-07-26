@@ -124,12 +124,41 @@ async fn revision_decision_table<R: EnvRegistry>(r: &R) {
     );
 }
 
+async fn scope_round_trips_and_updates<R: EnvRegistry>(r: &R) {
+    let item = r
+        .create_scoped(
+            "scoped".into(),
+            String::new(),
+            Default::default(),
+            Some("organization".into()),
+            json!({"type":"self_hosted"}),
+        )
+        .await;
+    assert_eq!(
+        r.get(&item.id).await.unwrap().scope.as_deref(),
+        Some("organization")
+    );
+    let updated = r
+        .update(
+            &item.id,
+            EnvUpdate {
+                scope: Some(Some("account".into())),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.scope.as_deref(), Some("account"));
+    assert_eq!(updated.revision, EnvironmentRevision(2));
+}
+
 async fn run_suite<R: EnvRegistry>(fresh: impl Fn() -> R) {
     unique_ids(&fresh()).await;
     archive_soft_delete_hard(&fresh()).await;
     missing_id_fails_closed(&fresh()).await;
     delete_idempotent(&fresh()).await;
     revision_decision_table(&fresh()).await;
+    scope_round_trips_and_updates(&fresh()).await;
 }
 
 // ── Backend rows: each must pass the identical suite ─────────────────────────────

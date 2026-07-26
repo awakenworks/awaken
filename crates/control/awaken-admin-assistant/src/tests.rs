@@ -32,12 +32,6 @@ impl CapabilityReader for FakeCaps {
             skills: vec!["greet".into()],
             mcp_servers: vec![],
             memory_stores: vec![],
-            runtimes: vec![
-                serde_json::json!({ "id": "acp:claude", "label": "Claude Code", "kind": "acp", "cli": "claude" }),
-            ],
-            sandbox: Some(
-                serde_json::json!({ "config_schema": { "type": "object" }, "presets": [] }),
-            ),
         }
     }
 }
@@ -858,35 +852,31 @@ async fn draft_environment_assembles_and_persists_the_config() {
             call_id: "c1".into(),
             tool_id: CREATE_ENV_TOOL.into(),
             arguments: serde_json::json!({
-                "name": "claude-box",
-                "runtime": "acp:claude",
-                "placement": "self_hosted",
-                "sandbox": { "isolation": "namespace", "network": { "mode": "none" } }
+                "name": "cloud-box",
+                "placement": "cloud",
+                "networking": { "type": "limited", "allowed_hosts": ["api.example.com"] },
+                "packages": { "npm": ["typescript"] }
             }),
         })
         .await
         .unwrap();
     assert!(!out.is_error, "created ok: {out:?}");
     let (name, config) = author.last.lock().unwrap().clone().expect("authored");
-    assert_eq!(name, "claude-box");
-    assert_eq!(config["type"], "self_hosted");
-    assert_eq!(config["runtime"], "acp:claude");
-    assert_eq!(config["sandbox"]["network"]["mode"], "none");
-    // The native `awaken` runtime is the default → omitted from the config.
+    assert_eq!(name, "cloud-box");
+    assert_eq!(config["type"], "cloud");
+    assert_eq!(config["networking"]["type"], "limited");
+    assert_eq!(config["packages"]["npm"][0], "typescript");
     let out2 = tool
         .invoke(ToolCall {
             call_id: "c2".into(),
             tool_id: CREATE_ENV_TOOL.into(),
-            arguments: serde_json::json!({ "name": "native", "runtime": "awaken" }),
+            arguments: serde_json::json!({ "name": "self", "placement": "self_hosted" }),
         })
         .await
         .unwrap();
     assert!(!out2.is_error);
     let (_, config2) = author.last.lock().unwrap().clone().unwrap();
-    assert!(
-        config2.get("runtime").is_none(),
-        "native runtime is omitted"
-    );
+    assert_eq!(config2, serde_json::json!({ "type": "self_hosted" }));
 }
 
 #[test]

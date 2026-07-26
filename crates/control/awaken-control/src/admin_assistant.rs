@@ -147,11 +147,6 @@ impl CapabilityReader for CatalogCapabilityReader {
             skills,
             mcp_servers,
             memory_stores,
-            // Deployment-level vocabulary for authoring an environment (the same catalog
-            // the console renders), so `admin_draft_environment` grounds its runtime +
-            // schema-conformant sandbox instead of guessing.
-            runtimes: awaken_config_service::runtime_catalog(),
-            sandbox: Some(awaken_config_service::sandbox_capability()),
         }
     }
 }
@@ -173,7 +168,7 @@ impl EnvironmentStateAuthor {
 #[async_trait]
 impl EnvironmentAuthor for EnvironmentStateAuthor {
     async fn create(&self, name: &str, config: serde_json::Value) -> Result<String, String> {
-        Ok(self.env_state.author(name, config).await)
+        self.env_state.author(name, config).await
     }
 }
 
