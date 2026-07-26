@@ -650,7 +650,10 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
         EnvValue, EnvVar, EnvVisibility, MountAccess, MountLifetime, MountRequirement, MountSource,
     };
 
-    fn projection(prompt: &str) -> awaken_protocol_managed::FrozenSessionProjection {
+    fn projection(
+        prompt: &str,
+        with_environment_inputs: bool,
+    ) -> awaken_protocol_managed::FrozenSessionProjection {
         let mount = MountRequirement {
             mount_id: "flow-workspace".into(),
             source: MountSource::Inline {
@@ -673,11 +676,18 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
             "test.worker",
         );
         let input = awaken_protocol_managed::ApplicationSessionInput {
-            mounts: vec![serde_json::to_value(&mount).unwrap()],
-            env: vec![serde_json::to_value(&env).unwrap()],
+            mounts: with_environment_inputs
+                .then(|| serde_json::to_value(&mount).unwrap())
+                .into_iter()
+                .collect(),
+            env: with_environment_inputs
+                .then(|| serde_json::to_value(&env).unwrap())
+                .into_iter()
+                .collect(),
             prompts: vec![prompt.into()],
             mcp_inputs: Vec::new(),
-            network_restriction: Some(awaken_protocol_managed::SessionNetworkPolicy::None),
+            network_restriction: with_environment_inputs
+                .then_some(awaken_protocol_managed::SessionNetworkPolicy::None),
         };
         let baseline = awaken_protocol_managed::SessionBaseline::compile(
             awaken_protocol_managed::SessionBaselineInputs {
@@ -688,7 +698,11 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
                         "env-fingerprint".into(),
                     ),
                     sandbox: serde_json::json!({}),
-                    network: awaken_protocol_managed::SessionNetworkPolicy::None,
+                    network: if with_environment_inputs {
+                        awaken_protocol_managed::SessionNetworkPolicy::None
+                    } else {
+                        awaken_protocol_managed::SessionNetworkPolicy::Unrestricted
+                    },
                     credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
                         inference_holder: holder.clone(),
                         mcp_holder: holder.clone(),
@@ -720,8 +734,28 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
         }
     }
 
-    let host = SharedHost::new(Arc::new(MemoryHostModel), "stub");
-    let frozen = projection("Use the bound Flow project.");
+    #[derive(Clone, Default)]
+    struct PromptRecorder(Arc<Mutex<Vec<ChatRequest>>>);
+
+    #[async_trait::async_trait]
+    impl LlmExecutor for PromptRecorder {
+        async fn infer(
+            &self,
+            request: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            self.0.lock().unwrap().push(request);
+            Ok(ChatResponse {
+                output: AssistantOutput::text("ok"),
+                usage: None,
+                stop_reason: None,
+            })
+        }
+    }
+
+    let recorder = PromptRecorder::default();
+    let observed = recorder.0.clone();
+    let host = SharedHost::new(Arc::new(recorder), "stub");
+    let frozen = projection("Use the bound Flow project.", true);
     host.install_frozen_session_projection("flow-thread", frozen.clone())
         .await
         .expect("first frozen projection installs");
@@ -737,10 +771,78 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
         awaken_provisioning_contract::NetworkPolicy::None
     );
     assert_eq!(
-        host.thread_resource_prompts("flow-thread"),
+        host.thread_session_prompts("flow-thread"),
         vec!["Use the bound Flow project."]
     );
-    let replacement = projection("different");
+
+    // Cause graph:
+    // C1 = the frozen Session has a prompt; C2 = committed history is empty;
+    // C3 = the activation already carries the exact prompt.
+    // Effect E = prepend exactly one deterministic System message.
+    //
+    // | Rule | C1 | C2 | C3 | E |
+    // | P1   | 0  | *  | *  | 0 |
+    // | P2   | 1  | 1  | 0  | 1 |
+    // | P3   | 1  | 1  | 1  | 0 (deduplicate) |
+    // | P4   | 1  | 0  | *  | 0 |
+    host.run(None, "no-baseline", user("P1")).await.expect("P1");
+    host.install_frozen_session_projection(
+        "prompt-thread",
+        projection("Use the bound Flow project.", false),
+    )
+    .await
+    .expect("P2/P4 projection");
+    host.run(None, "prompt-thread", user("P2"))
+        .await
+        .expect("P2");
+    host.run(None, "prompt-thread", user("P4"))
+        .await
+        .expect("P4");
+    host.install_frozen_session_projection("deduplicated", projection("exact prompt", false))
+        .await
+        .expect("P3 projection");
+    host.run(
+        None,
+        "deduplicated",
+        vec![
+            Message::text(
+                MessageId("system-existing".into()),
+                Role::System,
+                "exact prompt",
+            ),
+            Message::text(MessageId("user-existing".into()), Role::User, "P3"),
+        ],
+    )
+    .await
+    .expect("P3");
+    let requests = observed.lock().unwrap();
+    let prompt_count = |request: &ChatRequest, prompt: &str| {
+        request
+            .messages
+            .iter()
+            .filter(|message| message.role == Role::System)
+            .flat_map(|message| message.content.iter())
+            .filter(|content| matches!(content, ContentBlock::Text { text } if text == prompt))
+            .count()
+    };
+    assert_eq!(
+        prompt_count(&requests[0], "Use the bound Flow project."),
+        0,
+        "P1"
+    );
+    assert_eq!(
+        prompt_count(&requests[1], "Use the bound Flow project."),
+        1,
+        "P2"
+    );
+    assert_eq!(
+        prompt_count(&requests[2], "Use the bound Flow project."),
+        1,
+        "P4 history retains the original fact without reinjection"
+    );
+    assert_eq!(prompt_count(&requests[3], "exact prompt"), 1, "P3");
+
+    let replacement = projection("different", true);
     assert!(
         host.install_frozen_session_projection("flow-thread", replacement)
             .await
@@ -3479,7 +3581,7 @@ async fn told_equals_mounted_the_prompt_path_and_access_match_the_realized_mount
     managed.prepare_session("t-g1", init).await.unwrap();
 
     let realized = ".mnt/mnt/memory";
-    let prompts = host.thread_resource_prompts("t-g1");
+    let prompts = host.thread_session_prompts("t-g1");
     assert!(
         prompts.iter().any(|p| p.contains(realized)),
         "the compiled prompt names the realized path {realized}: {prompts:?}"
