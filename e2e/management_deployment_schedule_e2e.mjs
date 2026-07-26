@@ -5,9 +5,17 @@
 // manual-run lifecycle but never sends a `schedule` — the cron half of the deployment
 // contract is otherwise untested.
 //
-// Design: equivalence partitioning on the cron expression (valid 5-field vs garbage
-// vs missing); state-transition on pause→unpause preserving the schedule. The awaken
-// server validates the expression via its dependency-free cron evaluator at create.
+// Causal graph: typed cron + IANA timezone -> wall-clock scheduler -> future UTC
+// occurrences; lifecycle gates execution/projection independently.
+//
+// Decision table:
+// | rule | cron/tz | lifecycle | observable behavior |
+// |---|---|---|---|
+// | S1 | valid | active | five ordered upcoming occurrences |
+// | S2 | valid | paused | no fire, but preview remains |
+// | S3 | valid | archived | preview clears |
+// | S4 | invalid expression/timezone | any | 400 before persistence |
+// | S5 | due + archived Environment | active | failed run then exact auto-pause |
 //
 // Run: (from e2e/)  node management_deployment_schedule_e2e.mjs
 
@@ -17,6 +25,13 @@ import { withScenarioServer, pass } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38433);
 const BETAS = ['managed-agents-2026-04-01'];
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function drain(pagePromise) {
+  const items = [];
+  for await (const item of pagePromise) items.push(item);
+  return items;
+}
 
 async function status(fn) {
   try { await fn(); return 200; } catch (e) { return e?.status ?? -1; }
@@ -40,6 +55,18 @@ async function main() {
     assert.ok(dep.schedule, 'created deployment echoes a schedule object');
     assert.equal(dep.schedule.expression, '0 20 * * 5', `expression echoed: ${JSON.stringify(dep.schedule)}`);
     assert.equal(dep.schedule.timezone, 'America/New_York', 'timezone echoed');
+    assert.equal(dep.schedule.upcoming_runs_at?.length, 5, 'S1 future occurrences are computed');
+    assert.ok(
+      dep.schedule.upcoming_runs_at.every((value, index, values) => index === 0 || values[index - 1] < value),
+      `S1 occurrences are strictly ordered: ${JSON.stringify(dep.schedule)}`,
+    );
+    const firstLocal = Object.fromEntries(
+      new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York', weekday: 'short', hour: '2-digit', hourCycle: 'h23',
+      }).formatToParts(new Date(dep.schedule.upcoming_runs_at[0])).map((part) => [part.type, part.value]),
+    );
+    assert.equal(firstLocal.weekday, 'Fri', 'S1 cron weekday is evaluated in declared timezone');
+    assert.equal(firstLocal.hour, '20', 'S1 cron hour is evaluated in declared timezone');
     pass('create with cron schedule -> active, expression/timezone echoed verbatim');
 
     // Schedule survives a retrieve (persisted, not just request-echoed).
@@ -52,6 +79,7 @@ async function main() {
     assert.equal(paused.status, 'paused');
     assert.equal(paused.paused_reason?.type, 'manual', `paused_reason: ${JSON.stringify(paused.paused_reason)}`);
     assert.equal(paused.schedule?.expression, '0 20 * * 5', 'schedule retained while paused');
+    assert.equal(paused.schedule?.upcoming_runs_at?.length, 5, 'S2 paused preview remains');
     const resumed = await client.beta.deployments.unpause(dep.id, { betas: BETAS });
     assert.equal(resumed.status, 'active');
     assert.equal(resumed.paused_reason, null, 'paused_reason cleared on unpause');
@@ -76,7 +104,53 @@ async function main() {
     assert.equal(noExpr, 400, `schedule without expression should be 400, got ${noExpr}`);
     pass('schedule missing expression -> 400');
 
-    console.log('E2E PASS: scheduled deployments (cron schedule echo/persist, pause-retains, write-time cron validation).');
+    const badTimezone = await status(() => client.beta.deployments.create({
+      agent: 'agent_sched', environment_id: 'env_1', name: 'bad-timezone',
+      initial_events: [{ type: 'user.message', content: [{ type: 'text', text: 'x' }] }],
+      schedule: { type: 'cron', expression: '0 9 * * *', timezone: 'Mars/Olympus' }, betas: BETAS,
+    }));
+    assert.equal(badTimezone, 400, `unknown IANA timezone should be 400, got ${badTimezone}`);
+    pass('unknown IANA timezone -> 400');
+
+    const archived = await client.beta.deployments.archive(dep.id, { betas: BETAS });
+    assert.deepEqual(archived.schedule?.upcoming_runs_at ?? [], [], 'S3 archived schedule has no future fires');
+
+    // S5 drives the production 15-second scheduler rather than calling an
+    // internal clock seam. The exact Environment becomes unavailable before the
+    // next minute boundary; the scheduled run must record the typed failure and
+    // atomically pause future fires with the same discriminator.
+    const scheduledEnvironment = await client.beta.environments.create({
+      name: 'scheduled-failure', config: { type: 'cloud' }, betas: BETAS,
+    });
+    const failingSchedule = await client.beta.deployments.create({
+      agent: 'agent_sched', environment_id: scheduledEnvironment.id, name: 'scheduled-failure',
+      initial_events: [{ type: 'user.message', content: [{ type: 'text', text: 'go' }] }],
+      schedule: { type: 'cron', expression: '* * * * *', timezone: 'UTC' }, betas: BETAS,
+    });
+    await client.beta.environments.archive(scheduledEnvironment.id, { betas: BETAS });
+    const deadline = Date.now() + 80_000;
+    let failedRun;
+    while (Date.now() < deadline) {
+      const runs = await drain(client.beta.deploymentRuns.list({
+        deployment_id: failingSchedule.id, trigger_type: 'schedule', betas: BETAS,
+      }));
+      failedRun = runs.find((run) => run.error?.type === 'environment_archived_error');
+      if (failedRun) break;
+      await sleep(1_000);
+    }
+    assert.ok(failedRun, 'S5 production scheduler records the archived-Environment failure');
+    assert.equal(failedRun.session_id, null, 'S5 terminal XOR');
+    const autoPaused = await client.beta.deployments.retrieve(failingSchedule.id, { betas: BETAS });
+    assert.equal(autoPaused.status, 'paused', 'S5 future scheduled fires stop');
+    assert.equal(autoPaused.paused_reason?.type, 'error', 'S5 error pause');
+    assert.equal(
+      autoPaused.paused_reason?.error?.type,
+      failedRun.error.type,
+      'S5 paused reason exactly matches the failed run error',
+    );
+    pass('scheduled persistent launch failure records run and auto-pauses exactly');
+
+    console.log('E2E PASS: scheduled deployments (timezone-aware preview, lifecycle behavior, write-time validation).');
   });
 }
 

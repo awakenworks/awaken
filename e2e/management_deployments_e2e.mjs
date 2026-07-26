@@ -31,6 +31,11 @@ import { withScenarioServer, pass } from './harness.mjs';
  * | D3   | retained      | absent          | null            | clear schedule, remain active |
  * | D4   | valid user    | absent          | absent          | run creates linked Session |
  * | D5   | invalid union | any             | any             | admission rejects; no deployment |
+ * | D6   | archived env  | absent          | absent          | failed run only; manual trigger does not pause |
+ * | D7   | mixed runs    | absent          | absent          | typed error/trigger/time filters select exact rows |
+ * | D8   | malformed query | absent        | absent          | 400; run store remains unchanged |
+ * | D9   | boundary violation | any         | any             | 400; deployment aggregate unchanged |
+ * | D10  | list filters | absent           | absent          | exact active/paused/archive/agent/time partition |
  *
  * Assertions below target lifecycle and mutation effects through the official SDK,
  * not only response decoding.
@@ -66,7 +71,7 @@ async function main() {
         betas: BETAS,
       });
       assert.equal(dep.type, 'deployment');
-      assert.ok(dep.id.startsWith('deploy_'), `id: ${dep.id}`);
+      assert.ok(dep.id.startsWith('depl_'), `id: ${dep.id}`);
       assert.equal(dep.status, 'active');
       assert.equal(dep.agent.type, 'agent');
       assert.equal(dep.agent.id, 'agent_x');
@@ -121,6 +126,63 @@ async function main() {
       assert.ok(runs.some((r) => r.id === run.id), 'the run is listed');
       pass(`beta.deploymentRuns.retrieve / list (${runs.length})`);
 
+      // Run-failure behavior, not just error DTO decoding: archiving the exact
+      // bound Environment makes Session creation fail, leaves session_id null,
+      // appends the typed run, and does not auto-pause a manual trigger.
+      const doomedEnvironment = await client.beta.environments.create({
+        name: 'deployment-doomed', config: { type: 'cloud' }, betas: BETAS,
+      });
+      const doomed = await client.beta.deployments.create({
+        agent: 'agent_x', environment_id: doomedEnvironment.id, name: 'doomed',
+        initial_events: [{ type: 'user.message', content: [{ type: 'text', text: 'go' }] }],
+        betas: BETAS,
+      });
+      await client.beta.environments.archive(doomedEnvironment.id, { betas: BETAS });
+      const failed = await client.beta.deployments.run(doomed.id, { betas: BETAS });
+      assert.equal(failed.session_id, null, 'D6 failed creation has no Session');
+      assert.equal(failed.error?.type, 'environment_archived_error', JSON.stringify(failed));
+      assert.match(failed.error?.message ?? '', /archived/);
+      assert.equal(failed.trigger_context.type, 'manual');
+      const stillActive = await client.beta.deployments.retrieve(doomed.id, { betas: BETAS });
+      assert.equal(stillActive.status, 'active', 'D6 only scheduled persistent failures auto-pause');
+      assert.equal(stillActive.paused_reason, null, 'D6');
+
+      const failures = await drain(client.beta.deploymentRuns.list({ has_error: true, betas: BETAS }));
+      assert.deepEqual(failures.map((item) => item.id), [failed.id], 'D7 has_error=true');
+      const successes = await drain(client.beta.deploymentRuns.list({ has_error: false, betas: BETAS }));
+      assert.ok(successes.some((item) => item.id === run.id), 'D7 has_error=false includes success');
+      assert.ok(successes.every((item) => item.error === null), 'D7 success partition is exact');
+      const manual = await drain(client.beta.deploymentRuns.list({ trigger_type: 'manual', betas: BETAS }));
+      assert.ok(manual.some((item) => item.id === run.id) && manual.some((item) => item.id === failed.id));
+      const scheduled = await drain(client.beta.deploymentRuns.list({ trigger_type: 'schedule', betas: BETAS }));
+      assert.deepEqual(scheduled, [], 'D7 no scheduled runs exist in this scenario');
+      const inclusive = await drain(client.beta.deploymentRuns.list({
+        'created_at[gte]': failed.created_at, 'created_at[lte]': failed.created_at, betas: BETAS,
+      }));
+      assert.ok(inclusive.some((item) => item.id === failed.id), 'D7 inclusive time bounds');
+      const exclusive = await drain(client.beta.deploymentRuns.list({
+        'created_at[gt]': failed.created_at, 'created_at[lt]': failed.created_at, betas: BETAS,
+      }));
+      assert.deepEqual(exclusive, [], 'D7 exclusive equal bounds');
+      const runCountBeforeRejectedFilters = (await drain(client.beta.deploymentRuns.list({ betas: BETAS }))).length;
+      for (const query of [
+        'has_error=maybe',
+        'trigger_type=timer',
+        'created_at%5Bgt%5D=not-a-timestamp',
+        'unsupported_filter=x',
+        'limit=0',
+        'limit=101',
+      ]) {
+        const response = await fetch(`${baseUrl}/v1/deployment_runs?${query}`);
+        assert.equal(response.status, 400, `D8 ${query}`);
+      }
+      assert.equal(
+        (await drain(client.beta.deploymentRuns.list({ betas: BETAS }))).length,
+        runCountBeforeRejectedFilters,
+        'D8 rejected query cannot mutate the append-only run store',
+      );
+      pass('deployment-run typed failure, terminal XOR, and list-filter decision table');
+
       const beforeInvalid = await drain(client.beta.deployments.list({ betas: BETAS }));
       await assert.rejects(
         client.beta.deployments.create({
@@ -139,11 +201,86 @@ async function main() {
       );
       pass('invalid deployment initial event fails before state mutation');
 
+      const baseCreate = {
+        agent: 'agent_x', environment_id: environment.id, name: 'boundary',
+        initial_events: [{ type: 'user.message', content: [{ type: 'text', text: 'go' }] }],
+      };
+      const repeatedEvents = Array.from({ length: 51 }, () => baseCreate.initial_events[0]);
+      const metadata17 = Object.fromEntries(Array.from({ length: 17 }, (_, index) => [`k${index}`, 'v']));
+      const rejectedWrites = [
+        ['empty name', { ...baseCreate, name: '' }],
+        ['no initial event', { ...baseCreate, initial_events: [] }],
+        ['too many initial events', { ...baseCreate, initial_events: repeatedEvents }],
+        ['outcome iterations zero', {
+          ...baseCreate,
+          initial_events: [{
+            type: 'user.define_outcome', description: 'x', rubric: { type: 'text', content: 'x' }, max_iterations: 0,
+          }],
+        }],
+        ['outcome iterations over max', {
+          ...baseCreate,
+          initial_events: [{
+            type: 'user.define_outcome', description: 'x', rubric: { type: 'text', content: 'x' }, max_iterations: 21,
+          }],
+        }],
+        ['too many metadata pairs', { ...baseCreate, metadata: metadata17 }],
+        ['metadata key too long', { ...baseCreate, metadata: { ['k'.repeat(65)]: 'v' } }],
+        ['metadata value too long', { ...baseCreate, metadata: { k: 'v'.repeat(513) } }],
+        ['too many resources', {
+          ...baseCreate,
+          resources: Array.from({ length: 501 }, (_, index) => ({ type: 'file', file_id: `file_${index}` })),
+        }],
+        ['too many vaults', {
+          ...baseCreate, vault_ids: Array.from({ length: 51 }, (_, index) => `vlt_${index}`),
+        }],
+        ['unknown create field', { ...baseCreate, parallel_owner: true }],
+      ];
+      const countBeforeBoundaryRejects = (await drain(client.beta.deployments.list({ betas: BETAS }))).length;
+      for (const [rule, body] of rejectedWrites) {
+        const response = await fetch(`${baseUrl}/v1/deployments`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'anthropic-beta': BETAS[0] },
+          body: JSON.stringify(body),
+        });
+        assert.equal(response.status, 400, `D9 ${rule}`);
+      }
+      assert.equal(
+        (await drain(client.beta.deployments.list({ betas: BETAS }))).length,
+        countBeforeBoundaryRejects,
+        'D9 rejected creates produce no aggregate',
+      );
+      await assert.rejects(client.beta.deployments.update(dep.id, {
+        name: 'must-not-stick', metadata: metadata17, betas: BETAS,
+      }));
+      assert.notEqual(
+        (await client.beta.deployments.retrieve(dep.id, { betas: BETAS })).name,
+        'must-not-stick',
+        'D9 rejected update is atomic',
+      );
+      pass('deployment admission boundaries reject atomically');
+
       const archived = await client.beta.deployments.archive(dep.id, { betas: BETAS });
       assert.ok(archived.archived_at, 'archived deployment carries archived_at');
-      const ids = (await drain(client.beta.deployments.list({ betas: BETAS }))).map((d) => d.id);
-      assert.ok(ids.includes(dep.id));
-      pass('beta.deployments.archive / list');
+      const defaultIds = (await drain(client.beta.deployments.list({ betas: BETAS }))).map((d) => d.id);
+      assert.ok(!defaultIds.includes(dep.id), 'D10 archived deployments are excluded by default');
+      const archivedIds = (await drain(client.beta.deployments.list({
+        include_archived: true, betas: BETAS,
+      }))).map((d) => d.id);
+      assert.ok(archivedIds.includes(dep.id), 'D10 include_archived');
+      const activeOnly = await drain(client.beta.deployments.list({ status: 'active', betas: BETAS }));
+      assert.ok(activeOnly.every((item) => item.status === 'active' && item.archived_at === null));
+      const agentMiss = await drain(client.beta.deployments.list({ agent_id: 'agent_missing', betas: BETAS }));
+      assert.deepEqual(agentMiss, [], 'D10 agent filter');
+      const inclusiveDeployments = await drain(client.beta.deployments.list({
+        'created_at[gte]': doomed.created_at, 'created_at[lte]': doomed.created_at, betas: BETAS,
+      }));
+      assert.ok(inclusiveDeployments.some((item) => item.id === doomed.id), 'D10 inclusive time bounds');
+      const incompatibleFilters = await fetch(
+        `${baseUrl}/v1/deployments?include_archived=true&status=active`,
+      );
+      assert.equal(incompatibleFilters.status, 400, 'D10 incompatible filters reject');
+      assert.equal((await fetch(`${baseUrl}/v1/deployments?limit=101`)).status, 400, 'D10 max page size');
+      pass('beta.deployments.archive and typed list-filter decision table');
     });
 
     console.log('E2E PASS: the deployments + deployment-runs families round-trip through the official @anthropic-ai/sdk.');

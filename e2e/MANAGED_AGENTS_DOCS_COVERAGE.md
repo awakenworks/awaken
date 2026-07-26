@@ -127,8 +127,16 @@ These are real coverage gaps: awaken implements the behavior, no e2e asserts it.
    ordering is covered by `managed_real_thinking_e2e.mjs` with a thinking-capable
    provider; generic reconnect/replay is covered by `managed_reconnect_real_e2e.mjs`.
    The combined thinking-specific no-replay assertion remains provider-gated.
-7. **Deployment run failure taxonomy + auto-pause/auto-archive** (`environment_archived_error`,
-   `agent_archived_error`, `session_rate_limited_error`; `has_error` run filter).
+7. ~~**Deployment run failure taxonomy + auto-pause**~~ — closed across
+   `management_deployments_e2e.mjs` and `management_deployment_schedule_e2e.mjs`:
+   the exact tagged run-error union replaces the former free-form/fixed-null field;
+   `session_id`/`error` is a structural XOR; manual persistent and scheduled
+   transient failures retain an active deployment, while a scheduled persistent
+   failure appends the failed run and auto-pauses with the exact matching reason.
+   Typed deployment/run list queries cover error, trigger, lifecycle, agent, RFC3339
+   time, archive and pagination partitions. Cron matching now uses the declared IANA
+   timezone and exposes five ordered future occurrences for active/paused schedules,
+   clearing them on archive.
 8. ~~**`limited` networking sub-flags**~~ — closed across
    `management_environments_e2e.mjs` and the Rust `session_egress` behavior suite:
    omitted/null defaults are false, update omission preserves exact aggregate state,

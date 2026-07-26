@@ -11,6 +11,7 @@ import _provider_env_fitness
 import _resource_plane_fitness
 from _sandbox_policy_boundary import SANDBOX_POLICY_ALLOWED_DEPS
 from _crate_boundary_workspace import iter_crate_manifests, load_manifest, package_name, text_files
+from _managed_protocol_boundary import MANAGED_PROTOCOL_ALLOWED_DEPS
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CRATES = REPO_ROOT / "crates"
 # Async runtime infrastructure (not domain or provider types) is permitted in
@@ -19,6 +20,7 @@ CRATES = REPO_ROOT / "crates"
 # is deliberately NOT in this set for any neutral crate; only provider adapters use it.
 ALLOWED_DEPS: dict[str, set[str]] = {
     **SANDBOX_POLICY_ALLOWED_DEPS,
+    **MANAGED_PROTOCOL_ALLOWED_DEPS,
     # zeroize backs RedactedString's zero-on-drop (ADR-0043); a leaf crypto-hygiene
     # primitive, not a model/provider SDK.
     "awaken-agent-contract": {"serde", "serde_json", "thiserror", "async-trait", "tokio", "zeroize"},
@@ -856,60 +858,6 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # `ChannelStreamSink` forwards live stream events onto an mpsc channel a
         # streaming adapter drains (the tool-input streaming path); `sync` only.
         "tokio",
-    },
-    # Managed Agents protocol adapter: the anti-corruption boundary between the
-    # public Anthropic wire and the neutral runtime. It owns the public DTOs and
-    # the axum router, so it may name `axum`/`tokio-stream`; it depends only on the
-    # agent-domain contract (for `Message`) and drives a `SessionRuntime` port, so
-    # it constructs no runtime. It is a product adapter, not a neutral crate.
-    "awaken-protocol-managed": {
-        "awaken-agent-contract",
-        "awaken-credential-contract",
-        # The neutral session-runtime ports + vocab extracted to a contract/ leaf; this
-        # adapter defines the wire DTOs + encoder over them and re-exports each moved
-        # port via a shim until consumers flip to the contract directly.
-        "awaken-session-contract",
-        # Compatibility re-export while the Managed adapter translates its
-        # Session-facing configuration into Memory extension inputs.
-        "awaken-ext-memory",
-        # Typed resource ids/bindings plus the Resource Catalog port used by this
-        # Managed ACL. Authorization policy remains outside the catalog.
-        "awaken-resource-contract",
-        # The in-memory reference WorkQueue + EnvRegistry + session-repository backends
-        # the Managed Default wires (the ports + value objects stay inward in
-        # session-contract; the backends live beside the durable sqlite/postgres siblings).
-        "awaken-work-store",
-        "awaken-env-store",
-        "awaken-session-store",
-        # Live SSE previews stream agent.message deltas over an SSE body;
-        # form_urlencoded parses the managed wire's cursor/query params.
-        "async-stream",
-        "form_urlencoded",
-        # Tenancy edge aspect (ADR-0051): the opaque `ScopeId` bound by the
-        # `ScopedRepo` decorator so session persistence is tenant-isolable.
-        "awaken-tenancy",
-        # Managed vault/credential front door (ADR-0043): the credential domain +
-        # the ACL that maps the Anthropic wire ⇄ the neutral credential model.
-        "awaken-credential-vault",
-        "awaken-managed-bridge",
-        # Neutral egress vocabulary: the environments ACL maps the Anthropic
-        # `BetaEnvironment.networking` config onto `NetworkPolicy`, so the sandbox
-        # egress decision is a shared neutral fact, not an inline string match.
-        "awaken-provisioning-contract",
-        "awaken-sandbox-policy-store",
-        "async-trait",
-        "serde",
-        "serde_json",
-        "thiserror",
-        "tokio",
-        "axum",
-        "tokio-stream",
-        "tracing",
-        "tower",
-        "http-body-util",
-        # dev-only: vault E2E resolves the entered credential through the resolver.
-        "awaken-config-resolver",
-        "awaken-model-catalog",
     },
     # ACP bridge + supervisor (ADR-0041 Slice 3): the anti-corruption boundary
     # between an opaque agent's protocol stream and the neutral runtime. It drives

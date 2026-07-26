@@ -74,18 +74,23 @@ impl Schedule {
         }
     }
 
-    pub fn with_last_run_at(&self, last: Option<String>) -> Self {
+    pub fn timezone(&self) -> &str {
+        match self {
+            Schedule::Cron { timezone, .. } => timezone,
+        }
+    }
+
+    pub fn with_runtime(&self, last_run_at: Option<String>, upcoming_runs_at: Vec<String>) -> Self {
         match self {
             Schedule::Cron {
                 expression,
                 timezone,
-                upcoming_runs_at,
                 ..
             } => Schedule::Cron {
                 expression: expression.clone(),
                 timezone: timezone.clone(),
-                last_run_at: last,
-                upcoming_runs_at: upcoming_runs_at.clone(),
+                last_run_at,
+                upcoming_runs_at,
             },
         }
     }
@@ -96,6 +101,7 @@ impl Schedule {
 /// the SDK models as unions (`initial_events`, `resources`, `schedule`) stay opaque
 /// `Value`s.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeploymentCreateParams {
     pub agent: AgentRef,
     pub environment_id: String,
@@ -115,6 +121,7 @@ pub struct DeploymentCreateParams {
 
 /// `DeploymentUpdateParams` — a partial update; every field replaces when present.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeploymentUpdateParams {
     #[serde(default)]
     pub agent: Option<AgentRef>,
@@ -145,23 +152,85 @@ pub enum TriggerContext {
     Schedule { scheduled_at: String },
 }
 
-/// `BetaManagedAgentsDeploymentPausedReason` — why a deployment is paused. This
-/// surface only pauses manually (`BetaManagedAgentsManualDeploymentPausedReason`);
-/// the auto-pause error union is not reproduced (never emitted here).
-#[derive(Debug, Clone, Serialize)]
+/// `BetaManagedAgentsDeploymentPausedReason` — why a deployment is paused.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PausedReason {
     Manual,
+    Error { error: PausedReasonError },
 }
 
-/// `BetaManagedAgentsRunError` — a run's terminal error. Runs never fail on this
-/// single-machine surface, so this is never constructed; it types
-/// [`DeploymentRun::error`] (always `null` here) rather than leaving it `Value`.
-#[derive(Debug, Clone, Serialize)]
-pub struct RunError {
-    #[serde(rename = "type")]
-    pub kind: String,
-    pub message: String,
+/// Error kinds that stop future scheduled fires until an operator unpauses the
+/// deployment. This is the exact SDK paused-reason union; transient rate limits
+/// and request validation failures deliberately do not appear here.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PausedReasonError {
+    EnvironmentArchivedError,
+    AgentArchivedError,
+    EnvironmentNotFoundError,
+    VaultNotFoundError,
+    FileNotFoundError,
+    SessionResourceNotFoundError,
+    WorkspaceArchivedError,
+    OrganizationDisabledError,
+    MemoryStoreArchivedError,
+    SkillNotFoundError,
+    VaultArchivedError,
+    UnknownError,
+    SelfHostedResourcesUnsupportedError,
+    McpEgressBlockedError,
+}
+
+/// Exact `BetaManagedAgentsDeploymentRun.error` tagged union.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RunError {
+    EnvironmentArchivedError { message: String },
+    AgentArchivedError { message: String },
+    EnvironmentNotFoundError { message: String },
+    VaultNotFoundError { message: String },
+    VaultArchivedError { message: String },
+    FileNotFoundError { message: String },
+    MemoryStoreArchivedError { message: String },
+    SkillNotFoundError { message: String },
+    SessionResourceNotFoundError { message: String },
+    WorkspaceArchivedError { message: String },
+    OrganizationDisabledError { message: String },
+    SessionRateLimitedError { message: String },
+    SessionCreationRejectedError { message: String },
+    UnknownError { message: String },
+    SelfHostedResourcesUnsupportedError { message: String },
+    McpEgressBlockedError { message: String },
+}
+
+impl RunError {
+    #[must_use]
+    pub fn paused_reason(&self) -> Option<PausedReasonError> {
+        Some(match self {
+            Self::EnvironmentArchivedError { .. } => PausedReasonError::EnvironmentArchivedError,
+            Self::AgentArchivedError { .. } => PausedReasonError::AgentArchivedError,
+            Self::EnvironmentNotFoundError { .. } => PausedReasonError::EnvironmentNotFoundError,
+            Self::VaultNotFoundError { .. } => PausedReasonError::VaultNotFoundError,
+            Self::VaultArchivedError { .. } => PausedReasonError::VaultArchivedError,
+            Self::FileNotFoundError { .. } => PausedReasonError::FileNotFoundError,
+            Self::MemoryStoreArchivedError { .. } => PausedReasonError::MemoryStoreArchivedError,
+            Self::SkillNotFoundError { .. } => PausedReasonError::SkillNotFoundError,
+            Self::SessionResourceNotFoundError { .. } => {
+                PausedReasonError::SessionResourceNotFoundError
+            }
+            Self::WorkspaceArchivedError { .. } => PausedReasonError::WorkspaceArchivedError,
+            Self::OrganizationDisabledError { .. } => PausedReasonError::OrganizationDisabledError,
+            Self::UnknownError { .. } => PausedReasonError::UnknownError,
+            Self::SelfHostedResourcesUnsupportedError { .. } => {
+                PausedReasonError::SelfHostedResourcesUnsupportedError
+            }
+            Self::McpEgressBlockedError { .. } => PausedReasonError::McpEgressBlockedError,
+            Self::SessionRateLimitedError { .. } | Self::SessionCreationRejectedError { .. } => {
+                return None;
+            }
+        })
+    }
 }
 
 /// `BetaManagedAgentsDeployment` — an agent bound to an environment with initial

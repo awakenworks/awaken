@@ -222,6 +222,20 @@ pub enum StateError {
 }
 
 impl ManagedState {
+    pub(crate) async fn deployment_environment(
+        &self,
+        environment_id: &str,
+    ) -> Option<Option<crate::env_registry::EnvItem>> {
+        let environments = self.environments.as_ref()?;
+        Some(environments.get(environment_id).await)
+    }
+
+    pub(crate) fn deployment_agent_unavailable(&self, workspace_id: &str, agent_id: &str) -> bool {
+        self.config_source
+            .as_ref()
+            .is_some_and(|source| source.agent_unavailable_in(workspace_id, agent_id))
+    }
+
     pub fn new(runtime: impl SessionRuntime + 'static) -> Self {
         Self::from_ports(
             Arc::new(runtime),

@@ -8,10 +8,14 @@
 //! (`*/n`, `a-b/n`); day-of-week `0`/`7` both mean Sunday; the classic dom∧dow
 //! quirk (when BOTH are restricted, a match on EITHER fires). Extended syntax
 //! (`L`, `W`, `#`, `?`, `@daily`, seconds/year) is unsupported, matching the SDK.
-//! Times are evaluated in UTC; a schedule `timezone` other than UTC is stored and
-//! echoed but not yet offset (tz-aware firing is a later step).
+//! Every match is evaluated in the schedule's validated IANA timezone. UTC remains
+//! a convenience wrapper for internal callers and tests; there is no second
+//! timezone-blind scheduler.
 
 use std::collections::BTreeSet;
+
+use chrono::{Datelike, TimeZone, Timelike, Utc};
+use chrono_tz::Tz;
 
 const MS_PER_MIN: u64 = 60_000;
 
@@ -55,7 +59,22 @@ impl Cron {
 
     /// True when `ts_ms` (epoch ms, UTC) falls on a scheduled minute.
     pub fn matches(&self, ts_ms: u64) -> bool {
-        let (month, day, hour, minute, weekday) = decompose(ts_ms);
+        self.matches_in(ts_ms, Tz::UTC)
+    }
+
+    /// True when the instant's local wall clock in `timezone` matches this cron.
+    pub fn matches_in(&self, ts_ms: u64, timezone: Tz) -> bool {
+        let Some(instant) = Utc.timestamp_millis_opt(ts_ms as i64).single() else {
+            return false;
+        };
+        let local = instant.with_timezone(&timezone);
+        let (month, day, hour, minute, weekday) = (
+            local.month(),
+            local.day(),
+            local.hour(),
+            local.minute(),
+            local.weekday().num_days_from_sunday(),
+        );
         if !self.minute.contains(&minute)
             || !self.hour.contains(&hour)
             || !self.month.contains(&month)
@@ -77,12 +96,19 @@ impl Cron {
     /// days ahead (bounded so an unsatisfiable expression terminates). `None` if
     /// none is found in the window.
     pub fn next_after(&self, after_ms: u64) -> Option<u64> {
+        self.next_after_in(after_ms, Tz::UTC)
+    }
+
+    /// Next occurrence evaluated in the supplied IANA timezone. Iterating UTC
+    /// instants naturally handles DST gaps and repeats without inventing local
+    /// timestamps that never occur.
+    pub fn next_after_in(&self, after_ms: u64, timezone: Tz) -> Option<u64> {
         // Start at the next whole minute boundary strictly after `after_ms`.
         let mut minute = after_ms / MS_PER_MIN + 1;
         let limit = minute + 366 * 24 * 60;
         while minute < limit {
             let ts = minute * MS_PER_MIN;
-            if self.matches(ts) {
+            if self.matches_in(ts, timezone) {
                 return Some(ts);
             }
             minute += 1;
@@ -146,20 +172,6 @@ pub fn to_rfc3339(ts_ms: u64) -> String {
     let (year, month, day) = civil_from_days(days);
     let (h, m, s) = (sod / 3_600, (sod / 60) % 60, sod % 60);
     format!("{year:04}-{month:02}-{day:02}T{h:02}:{m:02}:{s:02}Z")
-}
-
-/// Decompose an epoch-ms instant into `(month, day, hour, minute, weekday)` in UTC,
-/// with weekday 0=Sunday..6=Saturday.
-fn decompose(ts_ms: u64) -> (u32, u32, u32, u32, u32) {
-    let secs = (ts_ms / 1000) as i64;
-    let days = secs.div_euclid(86_400);
-    let sod = secs.rem_euclid(86_400);
-    let minute = ((sod / 60) % 60) as u32;
-    let hour = (sod / 3_600) as u32;
-    // 1970-01-01 was a Thursday (== 4 with Sunday=0).
-    let weekday = ((days.rem_euclid(7) + 4).rem_euclid(7)) as u32;
-    let (_year, month, day) = civil_from_days(days);
-    (month, day, hour, minute, weekday)
 }
 
 /// Convert a day count since 1970-01-01 into `(year, month, day)` — Howard
@@ -251,5 +263,24 @@ mod tests {
         // Chaining from the returned instant walks the schedule forward.
         let second = c.next_after(MON_0900 + 15 * 60_000).unwrap();
         assert_eq!(second, MON_0900 + 30 * 60_000);
+    }
+
+    /// Timezone cause/effect decision table:
+    /// | local rule | timezone | UTC instant | behavior |
+    /// |---|---|---|---|
+    /// | 09:00 | UTC | 09:00Z | match |
+    /// | 09:00 | America/New_York (winter) | 14:00Z | match |
+    /// | 09:00 | America/New_York (winter) | 09:00Z | reject |
+    #[test]
+    fn evaluates_the_same_expression_in_the_declared_iana_timezone() {
+        let cron = Cron::parse("0 9 * * *").unwrap();
+        let new_york: Tz = "America/New_York".parse().unwrap();
+        assert!(cron.matches_in(MON_0900, Tz::UTC));
+        assert!(cron.matches_in(MON_0900 + 5 * 60 * 60_000, new_york));
+        assert!(!cron.matches_in(MON_0900, new_york));
+        assert_eq!(
+            cron.next_after_in(MON_0900, new_york),
+            Some(MON_0900 + 5 * 60 * 60_000)
+        );
     }
 }

@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::env_registry::{
-    EnvRegistry, EnvUpdate, EnvironmentConfigMutation, EnvironmentNetworkingMutation,
+    EnvItem, EnvRegistry, EnvUpdate, EnvironmentConfigMutation, EnvironmentNetworkingMutation,
     EnvironmentPackagesMutation, InMemoryEnvRegistry,
 };
 use crate::routes::ManagedJson;
@@ -107,6 +107,14 @@ impl Default for EnvironmentState {
 }
 
 impl EnvironmentState {
+    /// Read the authoritative Environment row, including archived rows. Session
+    /// snapshot compilation intentionally hides archived rows; deployment launch
+    /// classification needs to distinguish archived from never-created without a
+    /// second Environment registry.
+    pub async fn get(&self, environment_id: &str) -> Option<EnvItem> {
+        self.envs.get(environment_id).await
+    }
+
     #[must_use]
     pub fn new() -> Self {
         Self::default()
