@@ -2,9 +2,9 @@
 //
 // The control plane owns several stores (catalog, credential vault, config, admin,
 // sessions). This test proves each can be pointed at its OWN database independently
-// via `AWAKEN_<COMPONENT>_DB`, then still resolves + runs the configured model. It
-// boots `awaken` with a bundle `AWAKEN_MGMT_DIR` plus catalog/credential/config
-// redirected to a SEPARATE directory, authors the model there, runs a session over a
+// via typed deployment fields, then still resolves + runs the configured model. It
+// boots `awaken` with one data root plus catalog/credential/config redirected to a
+// SEPARATE directory, authors the model there, runs a session over a
 // fake upstream, and asserts the stores physically landed where configured — the
 // redirected files exist in the other dir, and NOT in the bundle dir (admin/sessions
 // stay in the bundle). This is the precondition for splitting control / server into
@@ -15,15 +15,11 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
-import net from 'node:net';
 import path from 'node:path';
-import readline from 'node:readline';
-import { spawn, execSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
+import { spawnProduction, stopServer, waitForPort } from './harness.mjs';
 
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38421);
 const BETAS = ['managed-agents-2026-04-01'];
 const FAKE_KEY = 'sk-awaken-percomp-fake-key'; // awaken-allow: secret
@@ -32,43 +28,6 @@ const WORKSPACE = 'wrkspc_default';
 const AGENT = 'db-model-agent';
 const MODEL = 'fake-haiku';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-function awakenBin() {
-  const out = execSync('cargo build --quiet --message-format=json -p awaken-cli --bin awaken', {
-    cwd: REPO_ROOT,
-    maxBuffer: 64 * 1024 * 1024,
-  }).toString();
-  for (const line of out.split('\n')) {
-    if (!line.trim()) continue;
-    let msg;
-    try {
-      msg = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (msg.executable && msg.target?.name === 'awaken') return msg.executable;
-  }
-  throw new Error('could not resolve the awaken binary path');
-}
-
-function waitForPort(port, timeoutMs = 60_000) {
-  const deadline = Date.now() + timeoutMs;
-  return new Promise((resolve, reject) => {
-    const attempt = () => {
-      const sock = net.createConnection({ port, host: '127.0.0.1' });
-      sock.once('connect', () => {
-        sock.destroy();
-        resolve();
-      });
-      sock.once('error', () => {
-        sock.destroy();
-        if (Date.now() > deadline) reject(new Error(`server did not listen on ${port}`));
-        else setTimeout(attempt, 200);
-      });
-    };
-    attempt();
-  });
-}
 
 async function ready(base, timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs;
@@ -101,39 +60,26 @@ async function req(base, method, uri, body) {
 
 async function main() {
   const upstream = await startFakeAnthropic(FAKE_KEY);
-  const bin = awakenBin();
   const bundle = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-bundle-'));
   const other = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-other-'));
   const catalogDb = path.join(other, 'my-catalog.db');
   const credentialDb = path.join(other, 'secure', 'my-credential.db'); // nested: dir is created
   const configDb = path.join(other, 'my-config.db');
 
-  const server = spawn(bin, {
-    env: {
-      ...process.env,
-      AWAKEN_HTTP_ADDR: `127.0.0.1:${PORT}`,
-      AWAKEN_MGMT_DIR: bundle,
-      AWAKEN_MGMT_SEAL_KEY: SEAL_KEY,
-      // Redirect three components out of the bundle, each to its own file.
-      AWAKEN_CATALOG_DB: catalogDb,
-      AWAKEN_CREDENTIAL_DB: credentialDb,
-      AWAKEN_CONFIG_DB: configDb,
+  const server = spawnProduction(bundle, PORT, {
+    controlSealKey: SEAL_KEY,
+    databases: {
+      catalog_db: catalogDb,
+      credential_db: credentialDb,
+      config_db: configDb,
     },
-    stdio: ['ignore', 'inherit', 'pipe'],
   });
-  readline.createInterface({ input: server.stderr }).on('line', (l) => process.stderr.write(`${l}\n`));
-  const stop = () =>
-    new Promise((resolve) => {
-      if (server.exitCode !== null) return resolve();
-      server.on('exit', () => resolve());
-      server.kill('SIGINT');
-    });
 
   const base = `http://127.0.0.1:${PORT}`;
   try {
-    await waitForPort(PORT);
+    await waitForPort(PORT, 60_000, server);
     await ready(base);
-    console.log('ok: awaken booted with per-component AWAKEN_*_DB overrides');
+    console.log('ok: awaken booted with typed per-component database configuration');
 
     // Author the model in the (redirected) catalog + credential DBs.
     let r = await req(base, 'PUT', '/v1/config/providers/anthropic', {
@@ -192,7 +138,7 @@ async function main() {
     assert.ok(upstream.requests.length >= 1, 'fake upstream received the configured-model call');
     console.log('ok: model resolved + ran across per-component split databases');
   } finally {
-    await stop();
+    await stopServer(server);
     upstream.close();
     fs.rmSync(bundle, { recursive: true, force: true });
     fs.rmSync(other, { recursive: true, force: true });
