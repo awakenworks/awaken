@@ -80,17 +80,64 @@ impl AgUiEvent {
     }
 }
 
-/// The AG-UI `RunAgentInput` request body (only the fields the runtime slice
-/// reads; unknown fields — `tools`, `context`, `state`, `forwardedProps` — are
-/// ignored so the full input is accepted).
-#[derive(Debug, Clone, Deserialize)]
+/// The AG-UI `RunAgentInput` request body. Protocol-defined extensible JSON is
+/// confined to tool schemas/metadata, state, resume payloads and forwarded props;
+/// the surrounding contract is fully typed.
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct RunAgentInput {
     #[serde(rename = "threadId", default)]
     pub thread_id: Option<String>,
     #[serde(rename = "runId", default)]
     pub run_id: Option<String>,
+    #[serde(rename = "parentRunId", default)]
+    pub parent_run_id: Option<String>,
     #[serde(default)]
     pub messages: Vec<AgUiMessage>,
+    #[serde(default)]
+    pub tools: Vec<AgUiTool>,
+    #[serde(default)]
+    pub context: Vec<AgUiContext>,
+    #[serde(default)]
+    pub state: serde_json::Value,
+    #[serde(rename = "forwardedProps", default)]
+    pub forwarded_props: serde_json::Value,
+    #[serde(default)]
+    pub resume: Vec<AgUiResumeEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AgUiTool {
+    pub name: String,
+    pub description: String,
+    /// JSON Schema is defined by the caller's tool.
+    #[serde(default)]
+    pub parameters: serde_json::Value,
+    /// AG-UI explicitly defines metadata as an extension record.
+    #[serde(default)]
+    pub metadata: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AgUiContext {
+    pub description: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AgUiResumeEntry {
+    #[serde(rename = "interruptId")]
+    pub interrupt_id: String,
+    pub status: AgUiResumeStatus,
+    /// Interrupt payload is application-defined.
+    #[serde(default)]
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgUiResumeStatus {
+    Resolved,
+    Cancelled,
 }
 
 /// An AG-UI message. Content is a plain string in the common case, or a list of
@@ -100,7 +147,7 @@ pub struct RunAgentInput {
 pub struct AgUiMessage {
     #[serde(default)]
     pub id: Option<String>,
-    pub role: String,
+    pub role: AgUiRole,
     #[serde(default)]
     pub content: Option<AgUiContent>,
     #[serde(rename = "toolCallId", default)]
@@ -110,6 +157,18 @@ pub struct AgUiMessage {
     /// Absent for a plain result / an approval.
     #[serde(default)]
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgUiRole {
+    Developer,
+    System,
+    Assistant,
+    User,
+    Tool,
+    Activity,
+    Reasoning,
 }
 
 /// Message content: the plain-string form, or a multimodal list of typed parts.
@@ -124,8 +183,41 @@ pub enum AgUiContent {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum InputContentPart {
-    Text { text: String },
-    Image { source: InputContentSource },
+    Text {
+        text: String,
+    },
+    Image {
+        source: InputContentSource,
+        #[serde(default)]
+        metadata: Option<serde_json::Value>,
+    },
+    Audio {
+        source: InputContentSource,
+        #[serde(default)]
+        metadata: Option<serde_json::Value>,
+    },
+    Video {
+        source: InputContentSource,
+        #[serde(default)]
+        metadata: Option<serde_json::Value>,
+    },
+    Document {
+        source: InputContentSource,
+        #[serde(default)]
+        metadata: Option<serde_json::Value>,
+    },
+    Binary {
+        #[serde(rename = "mimeType")]
+        mime_type: String,
+        #[serde(default)]
+        id: Option<String>,
+        #[serde(default)]
+        url: Option<String>,
+        #[serde(default)]
+        data: Option<String>,
+        #[serde(default)]
+        filename: Option<String>,
+    },
 }
 
 /// Where an image part's bytes come from: inline base64 or a remote URL.
@@ -139,6 +231,8 @@ pub enum InputContentSource {
     },
     Url {
         value: String,
+        #[serde(rename = "mimeType", default)]
+        mime_type: Option<String>,
     },
 }
 
@@ -228,27 +322,41 @@ mod tests {
         );
     }
 
-    // `RunAgentInput` reads only the fields the runtime slice needs; the AG-UI SDK
-    // sends a much richer body (`tools`, `context`, `state`, `forwardedProps`,
-    // `runId` sibling keys). The decode must TOLERATE those unknown fields — a strict
-    // `deny_unknown_fields` regression would reject every real SDK request. Pin that
-    // a fully-populated real-shaped body still parses and reads the known fields.
+    // Causal graph: official RunAgentInput -> typed wire DTO -> runtime request ACL.
+    //
+    // Decision table:
+    // | SDK field       | static shell | intentionally dynamic leaf |
+    // | tools           | typed        | parameters + metadata      |
+    // | context         | typed        | none                       |
+    // | state           | typed slot   | complete value             |
+    // | forwardedProps  | typed slot   | complete value             |
+    // | resume          | typed        | payload                    |
     #[test]
-    fn run_agent_input_tolerates_unknown_fields() {
+    fn run_agent_input_retains_every_official_top_level_field() {
         let input: RunAgentInput = serde_json::from_value(json!({
             "threadId": "t1",
             "runId": "r1",
             "messages": [{ "role": "user", "content": "go" }],
-            "tools": [{ "name": "read", "parameters": {} }],
+            "parentRunId": "parent-1",
+            "tools": [{ "name": "read", "description": "read", "parameters": {"type":"object"}, "metadata":{"ui":"x"} }],
             "context": [{ "description": "d", "value": "v" }],
             "state": { "arbitrary": "blob" },
             "forwardedProps": { "anything": true },
+            "resume": [{"interruptId":"i1","status":"resolved","payload":{"answer":42}}],
         }))
-        .expect("a real-shaped AG-UI body with extra fields must parse");
+        .expect("the official AG-UI input shape parses");
         assert_eq!(input.thread_id.as_deref(), Some("t1"));
         assert_eq!(input.run_id.as_deref(), Some("r1"));
+        assert_eq!(input.parent_run_id.as_deref(), Some("parent-1"));
         assert_eq!(input.messages.len(), 1);
-        assert_eq!(input.messages[0].role, "user");
+        assert_eq!(input.messages[0].role, AgUiRole::User);
+        assert_eq!(input.tools[0].name, "read");
+        assert_eq!(input.tools[0].parameters["type"], "object");
+        assert_eq!(input.context[0].value, "v");
+        assert_eq!(input.state["arbitrary"], "blob");
+        assert_eq!(input.forwarded_props["anything"], true);
+        assert_eq!(input.resume[0].interrupt_id, "i1");
+        assert_eq!(input.resume[0].payload["answer"], 42);
     }
 
     #[test]
