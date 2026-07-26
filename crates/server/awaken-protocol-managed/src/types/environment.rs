@@ -9,73 +9,68 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EnvironmentConfigParams {
     Cloud {
         #[serde(default)]
         networking: Option<CloudNetworkingParams>,
         #[serde(default)]
         packages: Option<PackagesParams>,
-        #[serde(flatten)]
-        extra: BTreeMap<String, Value>,
     },
-    SelfHosted {
-        #[serde(flatten)]
-        extra: BTreeMap<String, Value>,
-    },
+    SelfHosted {},
 }
 
 impl Default for EnvironmentConfigParams {
     fn default() -> Self {
-        Self::SelfHosted {
-            extra: BTreeMap::new(),
-        }
+        Self::SelfHosted {}
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CloudNetworkingParams {
-    Unrestricted {
-        #[serde(flatten)]
-        extra: BTreeMap<String, Value>,
-    },
+    Unrestricted,
     Limited {
         #[serde(default)]
-        allowed_hosts: Vec<String>,
+        allowed_hosts: Option<Vec<String>>,
         #[serde(default)]
-        allow_mcp_servers: bool,
+        allow_mcp_servers: Option<bool>,
         #[serde(default)]
-        allow_package_managers: bool,
-        #[serde(flatten)]
-        extra: BTreeMap<String, Value>,
+        allow_package_managers: Option<bool>,
     },
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PackagesParams {
     #[serde(default)]
-    pub apt: Vec<String>,
+    pub apt: Option<Vec<String>>,
     #[serde(default)]
-    pub cargo: Vec<String>,
+    pub cargo: Option<Vec<String>>,
     #[serde(default)]
-    pub gem: Vec<String>,
+    pub gem: Option<Vec<String>>,
     #[serde(default)]
-    pub go: Vec<String>,
+    pub go: Option<Vec<String>>,
     #[serde(default)]
-    pub npm: Vec<String>,
+    pub npm: Option<Vec<String>>,
     #[serde(default)]
-    pub pip: Vec<String>,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
+    pub pip: Option<Vec<String>>,
+    #[serde(rename = "type", default)]
+    pub kind: Option<PackagesKind>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PackagesKind {
+    Packages,
 }
 
 /// `EnvironmentCreateParams` — the `POST /v1/environments` body. `config` is the
 /// `BetaCloudConfig | BetaSelfHostedConfig` union (opaque `Value`); absent defaults
 /// to `{ type: "self_hosted" }`.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EnvironmentCreateParams {
     pub name: String,
     #[serde(default)]
@@ -92,6 +87,7 @@ pub struct EnvironmentCreateParams {
 /// replace when present; `metadata` is a patch where an entry's `null` value
 /// removes the key.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EnvironmentUpdateParams {
     #[serde(default)]
     pub name: Option<String>,
@@ -124,6 +120,7 @@ impl EnvironmentScope {
 /// `BetaSelfHostedWorkUpdateRequest` — the `POST .../work/:wid` body: a metadata
 /// merge (each present key upserts).
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkUpdateParams {
     #[serde(default)]
     pub metadata: Option<BTreeMap<String, String>>,

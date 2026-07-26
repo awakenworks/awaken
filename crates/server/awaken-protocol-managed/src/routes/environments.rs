@@ -215,8 +215,7 @@ impl EnvironmentState {
     pub async fn author(&self, name: &str, config: serde_json::Value) -> Result<String, String> {
         let typed = serde_json::from_value::<EnvironmentConfigParams>(config)
             .map_err(|error| format!("invalid Environment config: {error}"))?;
-        let config =
-            canonical_environment_config(typed).map_err(|error| error.1.0.error.message)?;
+        let config = canonical_environment_config(typed);
         let item = self
             .envs
             .create_scoped(
@@ -437,20 +436,13 @@ fn not_found(what: &str) -> WireError {
     )
 }
 
-fn invalid_environment_config(reason: impl Into<String>) -> WireError {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(ErrorResponse::new("invalid_request_error", reason.into())),
-    )
-}
-
 // ---- Environment routes ----------------------------------------------------
 
 async fn create_env(
     State(state): State<Arc<EnvironmentState>>,
     ManagedJson(params): ManagedJson<EnvironmentCreateParams>,
 ) -> Result<Json<Environment>, WireError> {
-    let config = canonical_environment_config(params.config.unwrap_or_default())?;
+    let config = canonical_environment_config(params.config.unwrap_or_default());
     // No `scope` on the wire: ownership is credential-implicit (authz enforces the
     // workspace) and any awaken tenancy is an ingress concern.
     let item = state
@@ -499,10 +491,7 @@ async fn update_env(
     Path(id): Path<String>,
     ManagedJson(params): ManagedJson<EnvironmentUpdateParams>,
 ) -> Result<Json<Environment>, WireError> {
-    let config = params
-        .config
-        .map(canonical_environment_config)
-        .transpose()?;
+    let config = params.config.map(canonical_environment_config);
     let patch = EnvUpdate {
         name: params.name,
         description: params.description,
@@ -518,55 +507,25 @@ async fn update_env(
     Ok(Json(crate::env_registry::project_env(&item)))
 }
 
-fn canonical_environment_config(
-    config: EnvironmentConfigParams,
-) -> Result<serde_json::Value, WireError> {
+fn canonical_environment_config(config: EnvironmentConfigParams) -> serde_json::Value {
     match config {
-        EnvironmentConfigParams::SelfHosted { extra } => {
-            if !extra.is_empty() {
-                return Err(invalid_environment_config(
-                    "self_hosted config contains unsupported fields",
-                ));
-            }
-            Ok(json!({ "type": "self_hosted" }))
-        }
+        EnvironmentConfigParams::SelfHosted {} => json!({ "type": "self_hosted" }),
         EnvironmentConfigParams::Cloud {
             networking,
             packages,
-            extra,
         } => {
-            if !extra.is_empty() {
-                return Err(invalid_environment_config(
-                    "cloud config contains unsupported fields",
-                ));
-            }
-            let networking = match networking.unwrap_or(CloudNetworkingParams::Unrestricted {
-                extra: Default::default(),
-            }) {
-                CloudNetworkingParams::Unrestricted { extra } => {
-                    if !extra.is_empty() {
-                        return Err(invalid_environment_config(
-                            "unrestricted networking contains unsupported fields",
-                        ));
-                    }
-                    json!({ "type": "unrestricted" })
-                }
+            let networking = match networking.unwrap_or(CloudNetworkingParams::Unrestricted) {
+                CloudNetworkingParams::Unrestricted => json!({ "type": "unrestricted" }),
                 CloudNetworkingParams::Limited {
                     allowed_hosts,
                     allow_mcp_servers,
                     allow_package_managers,
-                    extra,
                 } => {
-                    if !extra.is_empty() {
-                        return Err(invalid_environment_config(
-                            "limited networking contains unsupported fields",
-                        ));
-                    }
                     json!({
                         "type": "limited",
-                        "allowed_hosts": allowed_hosts,
-                        "allow_mcp_servers": allow_mcp_servers,
-                        "allow_package_managers": allow_package_managers,
+                        "allowed_hosts": allowed_hosts.unwrap_or_default(),
+                        "allow_mcp_servers": allow_mcp_servers.unwrap_or(false),
+                        "allow_package_managers": allow_package_managers.unwrap_or(false),
                     })
                 }
             };
@@ -577,26 +536,21 @@ fn canonical_environment_config(
                 go,
                 npm,
                 pip,
-                extra,
+                kind: _,
             } = packages.unwrap_or_default();
-            if !extra.is_empty() {
-                return Err(invalid_environment_config(
-                    "packages contains unsupported fields",
-                ));
-            }
-            Ok(json!({
+            json!({
                 "type": "cloud",
                 "networking": networking,
                 "packages": {
                     "type": "packages",
-                    "apt": apt,
-                    "cargo": cargo,
-                    "gem": gem,
-                    "go": go,
-                    "npm": npm,
-                    "pip": pip,
+                    "apt": apt.unwrap_or_default(),
+                    "cargo": cargo.unwrap_or_default(),
+                    "gem": gem.unwrap_or_default(),
+                    "go": go.unwrap_or_default(),
+                    "npm": npm.unwrap_or_default(),
+                    "pip": pip.unwrap_or_default(),
                 }
-            }))
+            })
         }
     }
 }
@@ -1017,7 +971,11 @@ mod tests {
             ),
         ] {
             let error = state.author(case, config).await.expect_err(case);
-            assert!(error.contains("unsupported fields"), "{case}: {error}");
+            assert!(
+                error.contains("invalid Environment config"),
+                "{case}: {error}"
+            );
+            assert!(error.contains("unknown field"), "{case}: {error}");
         }
     }
 
