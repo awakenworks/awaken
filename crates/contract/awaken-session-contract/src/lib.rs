@@ -33,7 +33,9 @@ pub mod resource_plane {
     pub use awaken_resource_contract::*;
 }
 
-pub use agent_config::{AgentConfigSource, AgentConfigView, AgentMcpServerView};
+pub use agent_config::{
+    AgentConfigSource, AgentConfigView, AgentEnvironmentBindingView, AgentMcpServerView,
+};
 pub use application_contribution::{
     ApplicationSessionContribution, ApplicationSessionContributionFailure,
     ApplicationSessionContributionPort, ApplicationSessionContributionReceipt,

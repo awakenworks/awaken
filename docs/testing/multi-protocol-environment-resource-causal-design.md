@@ -77,3 +77,22 @@ Selected Environment snapshot                -> preserve exact revision/fingerpr
 | Compile succeeds | 1 | 1 | 0 |
 | Exact Environment preserved | 1 | 1 | 0 |
 | Collision error | 0 | 0 | 1 |
+
+## Phase 3: exact Agent default bundle
+
+```text
+Agent default Environment id + matching revision -> compile that snapshot
+Agent default Environment id + stale revision    -> fail closed
+Session explicit Environment override            -> resolve the explicit selection
+Resource-only update                             -> preserve Environment binding
+Current default-bundle revision != publication   -> reject projection
+```
+
+| Cause/effect | A1 exact | A2 stale | A3 explicit override | A4 resource update |
+|---|---:|---:|---:|---:|
+| Agent Environment binding | 1 | 1 | 1 | 1 |
+| Registry revision matches | 1 | 0 | - | 1 |
+| Explicit Session selection | 0 | 0 | 1 | 0 |
+| Session can compile | 1 | 0 | 1 | 1 |
+| Current revision substituted | 0 | 0 | 0 | 0 |
+| Binding survives Resource update | - | - | - | 1 |

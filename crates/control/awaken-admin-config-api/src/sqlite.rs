@@ -372,6 +372,10 @@ mod tests {
 
         let config = AgentInputConfig {
             agent_id: "agent-1".into(),
+            environment: Some(awaken_config_resolver::AgentEnvironmentBinding {
+                environment_id: "env-1".into(),
+                revision: 3,
+            }),
             inputs: vec![InputBinding {
                 binding_id: BindingId::from("memory"),
                 target: InputResourceId::MemoryStore(MemoryStoreId::from("memstore-7")),
@@ -405,6 +409,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(got.inputs.len(), 2);
+        assert_eq!(got.environment.as_ref().unwrap().revision, 3);
         assert_eq!(got.revision, 2);
         assert!(
             store

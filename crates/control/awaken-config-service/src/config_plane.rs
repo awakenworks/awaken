@@ -3,19 +3,17 @@
 //! `ConfigService` is the config domain's authoring authority — it validates and
 //! stores declarative [`AgentConfig`]s in a [`ConfigRegistry`], and on publish
 //! compiles one into a content-addressed [`StoredPublication`] and hot-swaps it
-//! into the installed catalog. The host then resolves a session's agent to its
-//! installed executable snapshot, so a published agent runs with its own instructions,
+//! into the installed catalog; the host resolves a session's agent to that snapshot,
 //! tools, and plugins (ADR-0031; the config/runtime seam is the compiled snapshot).
 //!
-//! The runtime never edits config records; it consumes only the compiled config.
-
+//! Runtime consumes compiled configuration and never edits authoring records.
 use std::sync::Arc;
 
 use awaken_config_resolver::AgentInputBindingRepository;
 use awaken_config_store::{
     AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigWrite,
-    DEFAULT_SCOPE, ExecutableAgentSnapshot, ManagementAuditEntry, ManagementAuditRecord,
-    ManagementEffect, ScopedConfig, ScopedConfigRegistry, StoredPublication,
+    DEFAULT_SCOPE, ManagementAuditEntry, ManagementAuditRecord, ManagementEffect, ScopedConfig,
+    ScopedConfigRegistry, StoredPublication,
 };
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_tenancy::{ExecutionWorkspace, ScopeId};
@@ -56,51 +54,12 @@ pub struct ConfigService {
     /// Resolves authored selection into complete ordered model candidates in one
     /// publication read. Required at construction so a config service can never
     /// publish through an implicit host/provider fallback.
-    model_publication_resolver: Arc<dyn ModelPublicationResolver>,
+    pub(crate) model_publication_resolver: Arc<dyn ModelPublicationResolver>,
     pub(crate) credential_reference_validator: Option<Arc<dyn CredentialReferenceValidator>>,
 }
 
 impl ConfigService {
     /// A scope-free config service with one mandatory model-publication policy.
-    /// The scoped registry + tool catalog are supplied per call by the edge, never
-    /// held here.
-    #[must_use]
-    pub fn new(model_publication_resolver: Arc<dyn ModelPublicationResolver>) -> Self {
-        Self {
-            installed: InstalledAgentCatalog::default(),
-            resources: None,
-            model_publication_resolver,
-            credential_reference_validator: None,
-        }
-    }
-
-    /// Agent ids whose current default-input configuration references `target` in
-    /// one Workspace. This is resource lifecycle evidence, not authorization.
-    pub fn agents_referencing_input(
-        &self,
-        workspace_id: &str,
-        target: &awaken_config_resolver::InputResourceId,
-    ) -> Vec<String> {
-        self.resources
-            .as_ref()
-            .map(|store| {
-                store
-                    .list_agent_inputs(workspace_id)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|config| config.inputs.iter().any(|input| &input.target == target))
-                    .map(|config| config.agent_id)
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    /// Published Agent ids whose current capability configuration names a Skill.
-    pub fn agents_referencing_skill(&self, workspace_id: &str, skill_id: &str) -> Vec<String> {
-        self.installed
-            .agents_referencing_skill(workspace_id, skill_id)
-    }
-
     /// Validate a config by compiling it against the caller-supplied tool `catalog`
     /// (a dry run of publish); no store write. Mirrors publish: an `Auto` model is
     /// resolved first (D5) so a draft with the default binding validates, and a config
@@ -265,10 +224,28 @@ impl ConfigService {
         )
         .await
         .map_err(PublishError::Unresolvable)?;
+        let mut metadata = snapshot_metadata(&resolved);
+        if let Some(defaults) = self.resources.as_ref().and_then(|store| {
+            store
+                .get_agent_inputs(workspace.as_str(), id)
+                .ok()
+                .flatten()
+        }) {
+            let mut inputs = std::mem::take(&mut metadata.resolution.inputs);
+            inputs.push(awaken_runtime_contract::ResolvedInputRef {
+                kind: "agent_session_defaults".into(),
+                id: id.to_string(),
+                version: awaken_runtime_contract::ResolvedInputVersion::Revision(
+                    defaults.revision as u64,
+                ),
+            });
+            metadata.resolution = awaken_runtime_contract::ResolutionManifest::new(inputs)
+                .map_err(|error| PublishError::Unresolvable(error.to_string()))?;
+        }
         let snapshot = awaken_config_store::compile_published(
             &resolved.config,
             catalog,
-            snapshot_metadata(&resolved),
+            metadata,
             resolved.models.primary,
             resolved.models.candidates,
         )
@@ -311,16 +288,6 @@ impl ConfigService {
             }
             _ => Ok(false),
         }
-    }
-
-    /// The installed (published) executable snapshot for `agent`, if any.
-    pub fn installed_in(&self, workspace: &str, agent: &str) -> Option<ExecutableAgentSnapshot> {
-        self.installed.snapshot_in(workspace, agent)
-    }
-
-    #[must_use]
-    pub fn agent_unavailable_in(&self, workspace: &str, agent: &str) -> bool {
-        self.installed.is_unavailable(workspace, agent)
     }
 }
 
@@ -1362,6 +1329,7 @@ mod resource_prompt_tests {
                 DEFAULT_SCOPE,
                 AgentInputConfig {
                     agent_id: "agent-1".into(),
+                    environment: None,
                     inputs: vec![InputBinding {
                         binding_id: BindingId::from("memory"),
                         target: InputResourceId::MemoryStore(MemoryStoreId::from("memstore-7")),
@@ -1396,7 +1364,7 @@ mod resource_prompt_tests {
     }
 
     #[tokio::test]
-    async fn publish_pins_agent_model_and_catalog_but_not_session_resources() {
+    async fn publish_pins_agent_model_catalog_and_session_defaults_revision() {
         let resources =
             Arc::new(awaken_config_resolver::InMemoryAgentInputBindingRepository::new());
         resources
@@ -1404,6 +1372,10 @@ mod resource_prompt_tests {
                 DEFAULT_SCOPE,
                 AgentInputConfig {
                     agent_id: "pinned-inputs".into(),
+                    environment: Some(awaken_config_resolver::AgentEnvironmentBinding {
+                        environment_id: "env-production".into(),
+                        revision: 9,
+                    }),
                     inputs: vec![],
                     revision: 1,
                 },
@@ -1418,7 +1390,7 @@ mod resource_prompt_tests {
         let plane = plane_with(
             Arc::new(crate::tool_catalog::StaticToolCatalog(vec![tool.clone()])),
             None,
-            Some(resources),
+            Some(resources.clone()),
         );
         let scope = ScopeId::from(DEFAULT_SCOPE);
         let mut config = agent_config("pinned-inputs");
@@ -1437,10 +1409,50 @@ mod resource_prompt_tests {
             .iter()
             .map(|input| input.kind.as_str())
             .collect();
-        assert_eq!(kinds, ["agent_config", "model_binding", "tool"]);
         assert_eq!(
-            metadata.resolution.inputs[2].version,
+            kinds,
+            [
+                "agent_config",
+                "agent_session_defaults",
+                "model_binding",
+                "tool"
+            ]
+        );
+        assert_eq!(
+            metadata.resolution.inputs[1].version,
+            awaken_runtime_contract::ResolvedInputVersion::Revision(1)
+        );
+        assert_eq!(
+            metadata.resolution.inputs[3].version,
             awaken_runtime_contract::ResolvedInputVersion::ContentHash(tool.content_hash)
+        );
+
+        use awaken_session_contract::AgentConfigSource as _;
+        let source = crate::ConfigServiceAgentSource(plane.service().clone());
+        let view = source
+            .agent_view_in(DEFAULT_SCOPE, "pinned-inputs")
+            .expect("matching published defaults");
+        assert_eq!(view.environment.unwrap().revision, 9);
+
+        resources
+            .put_agent_inputs(
+                DEFAULT_SCOPE,
+                AgentInputConfig {
+                    agent_id: "pinned-inputs".into(),
+                    environment: Some(awaken_config_resolver::AgentEnvironmentBinding {
+                        environment_id: "env-production".into(),
+                        revision: 9,
+                    }),
+                    inputs: vec![],
+                    revision: 2,
+                },
+            )
+            .unwrap();
+        assert!(
+            source
+                .agent_view_in(DEFAULT_SCOPE, "pinned-inputs")
+                .is_none(),
+            "current defaults cannot replace the publication-pinned revision"
         );
     }
 

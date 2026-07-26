@@ -35,7 +35,19 @@ impl ConfigServiceAgentSource {
         let snapshot = self.0.installed_in(workspace_id, agent_id)?;
         let spec = &snapshot.resolved_spec;
         let bindings = spec.plugin_config.agent.clone();
-        let resources = self
+        let pinned_defaults_revision = snapshot
+            .metadata
+            .resolution
+            .inputs
+            .iter()
+            .find(|input| input.kind == "agent_session_defaults" && input.id == agent_id)
+            .and_then(|input| match input.version {
+                awaken_runtime_contract::ResolvedInputVersion::Revision(revision) => {
+                    Some(revision as i64)
+                }
+                _ => None,
+            });
+        let current_defaults = self
             .0
             .resources
             .as_ref()
@@ -45,8 +57,22 @@ impl ConfigServiceAgentSource {
                     .ok()
                     .flatten()
             })
-            .map(|config| config.inputs)
-            .unwrap_or_default();
+            .unwrap_or(awaken_config_resolver::AgentInputConfig {
+                agent_id: agent_id.to_string(),
+                environment: None,
+                inputs: Vec::new(),
+                revision: 1,
+            });
+        let defaults = match pinned_defaults_revision {
+            Some(revision) if current_defaults.revision == revision => current_defaults,
+            Some(_) => return None,
+            None => awaken_config_resolver::AgentInputConfig {
+                agent_id: agent_id.to_string(),
+                environment: None,
+                inputs: Vec::new(),
+                revision: 1,
+            },
+        };
         Some(awaken_session_contract::AgentConfigView {
             model: Some(spec.model_binding.model_ref.clone()),
             system: (!spec.instructions.is_empty()).then(|| spec.instructions.clone()),
@@ -69,7 +95,13 @@ impl ConfigServiceAgentSource {
                 .collect(),
             skill_ids: bindings.skill_ids,
             delegate_ids: bindings.delegate_ids.into_iter().map(|id| id.0).collect(),
-            resources,
+            resources: defaults.inputs,
+            environment: defaults.environment.map(|binding| {
+                awaken_session_contract::AgentEnvironmentBindingView {
+                    environment_id: binding.environment_id,
+                    revision: binding.revision,
+                }
+            }),
         })
     }
 }

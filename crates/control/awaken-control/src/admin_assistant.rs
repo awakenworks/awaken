@@ -390,6 +390,7 @@ fn default_mount_path(target: &InputResourceId) -> &'static str {
 fn resource_config(
     agent_id: &str,
     resources: Vec<InputSpec>,
+    environment: Option<awaken_config_resolver::AgentEnvironmentBinding>,
     revision: i64,
 ) -> Result<AgentInputConfig, String> {
     let mut bindings = Vec::with_capacity(resources.len());
@@ -415,6 +416,7 @@ fn resource_config(
     }
     Ok(AgentInputConfig {
         agent_id: agent_id.to_string(),
+        environment,
         inputs: bindings,
         revision,
     })
@@ -443,13 +445,14 @@ impl DraftStore for ConfigServiceDraftStore {
         audit: &awaken_admin_assistant::AdminAuditEvent,
         resources: Option<Vec<InputSpec>>,
     ) -> Result<(), String> {
-        let revision = self
+        let current = self
             .resources
             .get_agent_inputs(self.scope.as_str(), &draft.id)
-            .map_err(|error| error.to_string())?
-            .map_or(1, |current| current.revision + 1);
+            .map_err(|error| error.to_string())?;
+        let revision = current.as_ref().map_or(1, |current| current.revision + 1);
+        let environment = current.and_then(|current| current.environment);
         let resource_config = resources
-            .map(|resources| resource_config(&draft.id, resources, revision))
+            .map(|resources| resource_config(&draft.id, resources, environment, revision))
             .transpose()?;
         let effect = match resource_config.as_ref() {
             Some(config) => Some(ManagementEffect {
@@ -483,15 +486,16 @@ impl DraftStore for ConfigServiceDraftStore {
     }
 
     async fn put_resources(&self, agent_id: &str, resources: Vec<InputSpec>) -> Result<(), String> {
-        let revision = self
+        let current = self
             .resources
             .get_agent_inputs(self.scope.as_str(), agent_id)
-            .map_err(|error| error.to_string())?
-            .map_or(1, |current| current.revision + 1);
+            .map_err(|error| error.to_string())?;
+        let revision = current.as_ref().map_or(1, |current| current.revision + 1);
+        let environment = current.and_then(|current| current.environment);
         self.resources
             .put_agent_inputs(
                 self.scope.as_str(),
-                resource_config(agent_id, resources, revision)?,
+                resource_config(agent_id, resources, environment, revision)?,
             )
             .map_err(|error| error.to_string())?;
         Ok(())

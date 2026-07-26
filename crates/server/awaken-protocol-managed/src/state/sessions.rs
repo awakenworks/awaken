@@ -584,19 +584,38 @@ impl ManagedState {
         // Resolve the session's environment (defaulting to the local one) and its
         // networking policy once, for both the SessionInit (staged before the first
         // turn) and the echoed Session object.
+        let agent_environment = config_view
+            .as_ref()
+            .and_then(|view| view.environment.as_ref());
         let environment_id = req
             .environment_id
             .clone()
+            .or_else(|| agent_environment.map(|binding| binding.environment_id.clone()))
             .unwrap_or_else(|| "env_local".to_string());
         let environment = match self.environments.as_ref() {
-            Some(environments) => environments
-                .snapshot(&environment_id, req.awaken_runtime())
-                .await
-                .ok_or_else(|| {
+            Some(environments) => {
+                let snapshot = match (req.environment_id.as_ref(), agent_environment) {
+                    (None, Some(binding)) => {
+                        environments
+                            .snapshot_exact(
+                                &binding.environment_id,
+                                binding.revision,
+                                req.awaken_runtime(),
+                            )
+                            .await
+                    }
+                    _ => {
+                        environments
+                            .snapshot(&environment_id, req.awaken_runtime())
+                            .await
+                    }
+                };
+                snapshot.ok_or_else(|| {
                     StateError::Run(RunError::bad_request(format!(
                         "environment `{environment_id}` is unavailable"
                     )))
-                })?,
+                })?
+            }
             None => crate::routes::environments::default_environment_snapshot(
                 environment_id.clone(),
                 req.awaken_runtime(),

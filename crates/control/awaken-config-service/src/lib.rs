@@ -20,6 +20,7 @@ mod installed_catalog;
 mod managed_agent;
 mod publication;
 mod runtime_snapshot_source;
+mod service_access;
 mod service_wiring;
 mod tool_catalog;
 mod warm_install;

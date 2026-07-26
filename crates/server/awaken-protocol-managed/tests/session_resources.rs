@@ -89,6 +89,7 @@ struct AgentWithResources;
 impl AgentConfigSource for AgentWithResources {
     fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
         (agent_id == "a").then(|| AgentConfigView {
+            environment: None,
             model: None,
             system: None,
             tool_ids: Vec::new(),
@@ -110,6 +111,7 @@ struct AgentWithIntegrations;
 impl AgentConfigSource for AgentWithIntegrations {
     fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
         (agent_id == "integrated").then(|| AgentConfigView {
+            environment: None,
             model: None,
             system: None,
             tool_ids: Vec::new(),
@@ -139,6 +141,7 @@ struct AgentWithPlatformRepository;
 impl AgentConfigSource for AgentWithPlatformRepository {
     fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
         (agent_id == "repo-agent").then(|| AgentConfigView {
+            environment: None,
             model: None,
             system: None,
             tool_ids: Vec::new(),
@@ -160,6 +163,7 @@ struct WorkspaceScopedAgent;
 impl AgentConfigSource for WorkspaceScopedAgent {
     fn agent_view_in(&self, workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
         (workspace_id == "default" && agent_id == "scoped").then(|| AgentConfigView {
+            environment: None,
             model: None,
             system: None,
             tool_ids: Vec::new(),
@@ -182,6 +186,72 @@ impl AgentConfigSource for WorkspaceScopedAgent {
             ],
         })
     }
+}
+
+struct AgentWithEnvironment {
+    environment_id: String,
+    revision: u64,
+}
+
+impl AgentConfigSource for AgentWithEnvironment {
+    fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
+        (agent_id == "environment-agent").then(|| AgentConfigView {
+            environment: Some(awaken_session_contract::AgentEnvironmentBindingView {
+                environment_id: self.environment_id.clone(),
+                revision: self.revision,
+            }),
+            model: None,
+            system: None,
+            tool_ids: Vec::new(),
+            mcp_servers: Vec::new(),
+            skill_ids: Vec::new(),
+            delegate_ids: Vec::new(),
+            resources: Vec::new(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn agent_default_environment_requires_the_exact_revision() {
+    let environments = std::sync::Arc::new(awaken_protocol_managed::EnvironmentState::new());
+    let environment_id = environments
+        .author(
+            "agent default",
+            json!({"type": "cloud", "networking": {"type": "unrestricted"}}),
+        )
+        .await
+        .unwrap();
+    let revision = environments
+        .snapshot(&environment_id, None)
+        .await
+        .unwrap()
+        .revision
+        .0;
+    let runtime = AcceptingFake::default();
+    let state = ManagedState::new(runtime.clone())
+        .with_environments(environments.clone())
+        .with_config_source(std::sync::Arc::new(AgentWithEnvironment {
+            environment_id: environment_id.clone(),
+            revision,
+        }));
+    let request = serde_json::from_value(json!({"agent": "environment-agent"})).unwrap();
+    state.create_session(request, None).await.unwrap();
+    assert_eq!(
+        runtime.prepared.lock().unwrap()[0]
+            .environment
+            .environment_id,
+        environment_id
+    );
+
+    let stale = ManagedState::new(AcceptingFake::default())
+        .with_environments(environments)
+        .with_config_source(std::sync::Arc::new(AgentWithEnvironment {
+            environment_id,
+            revision: revision + 1,
+        }));
+    let request = serde_json::from_value(json!({"agent": "environment-agent"})).unwrap();
+    let error = stale.create_session(request, None).await.unwrap_err();
+    assert!(error.to_string().contains("unavailable"));
 }
 
 #[async_trait::async_trait]

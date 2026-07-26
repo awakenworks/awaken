@@ -125,6 +125,7 @@ mod tests {
         let store = InMemoryAgentInputBindingRepository::new();
         let config = |resource_id: &str| AgentInputConfig {
             agent_id: "shared-agent".into(),
+            environment: None,
             inputs: vec![InputBinding {
                 binding_id: BindingId::from("input"),
                 target: InputResourceId::File(FileId::from(resource_id)),
@@ -183,6 +184,7 @@ mod tests {
         let store = InMemoryAgentInputBindingRepository::new();
         let config = |revision| AgentInputConfig {
             agent_id: "agent".into(),
+            environment: None,
             inputs: Vec::new(),
             revision,
         };

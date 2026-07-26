@@ -535,9 +535,21 @@ impl WebhookEndpointDef {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AgentInputConfig {
     pub agent_id: String,
+    /// Exact Environment revision selected as this Agent's Session default.
+    /// It is secret-free and shares the same CAS revision as Resource bindings,
+    /// so callers cannot observe a mixed default bundle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<AgentEnvironmentBinding>,
     #[cfg_attr(feature = "schema", schemars(with = "Vec<InputBindingSchema>"))]
     pub inputs: Vec<InputBinding>,
     pub revision: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct AgentEnvironmentBinding {
+    pub environment_id: String,
+    pub revision: u64,
 }
 
 // JSON Schema is an API representation concern, not part of the resource-domain
@@ -581,6 +593,8 @@ enum ResourceAccessSchema {
 enum AgentInputConfigWire {
     Canonical {
         agent_id: String,
+        #[serde(default)]
+        environment: Option<AgentEnvironmentBinding>,
         inputs: Vec<InputBinding>,
         revision: i64,
     },
@@ -622,10 +636,12 @@ impl<'de> serde::Deserialize<'de> for AgentInputConfig {
         match AgentInputConfigWire::deserialize(deserializer)? {
             AgentInputConfigWire::Canonical {
                 agent_id,
+                environment,
                 inputs,
                 revision,
             } => Ok(Self {
                 agent_id,
+                environment,
                 inputs,
                 revision,
             }),
@@ -667,6 +683,7 @@ impl<'de> serde::Deserialize<'de> for AgentInputConfig {
                 }
                 Ok(Self {
                     agent_id,
+                    environment: None,
                     inputs,
                     revision: version,
                 })
@@ -1566,12 +1583,17 @@ mod tests {
 #[cfg(test)]
 mod resource_binding_serde_contract {
     use super::{
-        AgentInputConfig, BindingId, InputBinding, InputResourceId, MemoryStoreId, ResourceAccess,
+        AgentEnvironmentBinding, AgentInputConfig, BindingId, InputBinding, InputResourceId,
+        MemoryStoreId, ResourceAccess,
     };
 
     fn cfg() -> AgentInputConfig {
         AgentInputConfig {
             agent_id: "a".into(),
+            environment: Some(AgentEnvironmentBinding {
+                environment_id: "env-production".into(),
+                revision: 7,
+            }),
             inputs: vec![InputBinding {
                 binding_id: BindingId::from("memory"),
                 target: InputResourceId::MemoryStore(MemoryStoreId::from("store-1")),
@@ -1589,6 +1611,7 @@ mod resource_binding_serde_contract {
         let json = serde_json::to_string(&c).expect("serializes");
         let back: AgentInputConfig = serde_json::from_str(&json).expect("deserializes");
         assert_eq!(back, c, "round-trip is lossless");
+        assert_eq!(back.environment.unwrap().revision, 7);
     }
 
     #[test]
