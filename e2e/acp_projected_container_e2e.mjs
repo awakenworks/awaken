@@ -21,7 +21,7 @@ const STORAGE = path.join(TMP, 'storage');
 const IMAGE = `awaken-acp-projected-e2e:${process.pid}`;
 const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
 const MCP_TOKEN = 'projected-container-mcp-token'; // awaken-allow: secret (fixture)
-const WORKSPACE = `workspace_acp_container_${process.pid}`;
+let WORKSPACE;
 const SEAL_KEY = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
 const AGENT = 'projected-container-agent';
 
@@ -203,17 +203,19 @@ async function main() {
     'AWAKEN_ACP_GATEWAY_URL',
     'AWAKEN_ACP_LEASE_TOKEN',
   ]) delete environment[key];
-  const server = spawn(binary, {
+  const configPath = path.join(TMP, 'config.toml');
+  fs.writeFileSync(configPath, [
+    `data_dir = ${JSON.stringify(STORAGE)}`,
+    `bind = ${JSON.stringify(`127.0.0.1:${PORT}`)}`,
+    `control_seal_key = ${JSON.stringify(SEAL_KEY)}`,
+    'sandbox_tier = "docker"',
+    `container_image = ${JSON.stringify(IMAGE)}`,
+    'acp_clis = ["gemini"]',
+    'acp_default_cli = "gemini"',
+  ].join('\n'));
+  const server = spawn(binary, ['serve', '--config', configPath], {
     env: {
       ...environment,
-      AWAKEN_HTTP_ADDR: `127.0.0.1:${PORT}`,
-      AWAKEN_LOCAL_WORKSPACE_ID: WORKSPACE,
-      AWAKEN_DEPLOYMENT_DATA_DIR: STORAGE,
-      AWAKEN_CONTROL_SEAL_KEY: SEAL_KEY,
-      AWAKEN_ACP_CLI: 'gemini',
-      AWAKEN_SANDBOX_TIER: 'docker',
-      AWAKEN_CONTAINER_IMAGE: IMAGE,
-      AWAKEN_SANDBOX_REAP_INTERVAL: '3600',
       // Ambient values are discovery hints only. The published endpoint, model,
       // and credential revision below must be the realized runtime inputs.
       GOOGLE_GEMINI_BASE_URL: 'http://ambient-container.invalid/v1',
@@ -227,6 +229,7 @@ async function main() {
 
   try {
     await ready(server);
+    WORKSPACE = fs.readFileSync(path.join(STORAGE, 'platform-workspace-id'), 'utf8').trim();
     const base = `http://127.0.0.1:${PORT}`;
     await publishAgent(base);
     client = new Anthropic({
@@ -238,11 +241,9 @@ async function main() {
       config: {
         type: 'cloud',
         networking: { type: 'unrestricted' },
-        // The environment declares the minimum guarantee shared by built-in tools
-        // and the agent. The worker's deployment tier independently strengthens the
-        // ACP process to Docker; claiming `container` here would correctly fail
-        // closed because the built-in tool environment remains Workdir.
-        sandbox: { isolation: 'workdir', network: { mode: 'unrestricted' } },
+        // Environment owns networking. The typed deployment independently selects
+        // the Docker realization tier; the public Environment DTO does not duplicate
+        // private sandbox-policy fields.
       },
       betas: BETAS,
     });
