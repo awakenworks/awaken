@@ -351,6 +351,110 @@ struct BoundMemoryTerminalExtraction {
     extractor: MemoryExtractorSnapshot,
 }
 
+/// Adapter from the Memory bounded context's durable claim to the common
+/// attempt-credential ports. It owns no materialization logic: it only proves
+/// the exact extraction claim and stores the common secret-free receipt back in
+/// that same aggregate.
+struct MemoryExtractionCredentialAuthority {
+    repository: Arc<dyn MemoryExtractionRepository>,
+    intent_id: String,
+    owner: String,
+    generation: u64,
+    bindings: Vec<awaken_runtime_contract::AttemptCredentialBinding>,
+}
+
+impl MemoryExtractionCredentialAuthority {
+    async fn current(&self) -> Result<MemoryExtractionIntent, String> {
+        let intent = self
+            .repository
+            .get_extraction(&self.intent_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Memory extraction credential claim disappeared".to_string())?;
+        let now = memory_unix_ms();
+        if intent.claim_owner.as_deref() != Some(self.owner.as_str())
+            || intent.claim_generation != self.generation
+            || intent
+                .lease_expires_at_unix_ms
+                .is_none_or(|expires| expires <= now)
+        {
+            return Err("Memory extraction credential claim is stale".into());
+        }
+        Ok(intent)
+    }
+}
+
+#[async_trait]
+impl awaken_runtime_contract::AttemptOwnershipVerifier for MemoryExtractionCredentialAuthority {
+    async fn verify_current(&self) -> Result<(), awaken_runtime_contract::AttemptOwnershipError> {
+        self.current()
+            .await
+            .map(|_| ())
+            .map_err(|_| awaken_runtime_contract::AttemptOwnershipError::Lost)
+    }
+}
+
+#[async_trait]
+impl awaken_runtime_contract::CredentialRealizationRecorder
+    for MemoryExtractionCredentialAuthority
+{
+    async fn record(
+        &self,
+        receipt: awaken_runtime_contract::CredentialRealizationReceipt,
+    ) -> Result<(), awaken_runtime_contract::CredentialRealizationRecordError> {
+        awaken_runtime_contract::verify_credential_realization_receipt(&self.bindings, &receipt)
+            .map_err(|error| {
+                awaken_runtime_contract::CredentialRealizationRecordError(error.to_string())
+            })?;
+        for _ in 0..4 {
+            let mut intent = self.current().await.map_err(|error| {
+                awaken_runtime_contract::CredentialRealizationRecordError(error.to_string())
+            })?;
+            let expected_revision = intent.revision;
+            intent
+                .record_credential_realization(
+                    &self.owner,
+                    self.generation,
+                    memory_unix_ms(),
+                    receipt.clone(),
+                )
+                .map_err(|error| {
+                    awaken_runtime_contract::CredentialRealizationRecordError(error.to_string())
+                })?;
+            if intent.revision == expected_revision {
+                // The aggregate already contains this exact receipt. Its
+                // idempotent command deliberately does not bump revision, so
+                // issuing a CAS that requires expected+1 would manufacture a
+                // conflict on the second model step.
+                return Ok(());
+            }
+            match self
+                .repository
+                .compare_and_swap_extraction(expected_revision, intent)
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(MemoryExtractionError::RevisionConflict(_)) => continue,
+                Err(error) => {
+                    return Err(awaken_runtime_contract::CredentialRealizationRecordError(
+                        error.to_string(),
+                    ));
+                }
+            }
+        }
+        Err(awaken_runtime_contract::CredentialRealizationRecordError(
+            "Memory extraction credential receipt CAS remained contended".into(),
+        ))
+    }
+}
+
+fn memory_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or_default()
+}
+
 #[async_trait]
 impl MemoryTerminalExtraction for BoundMemoryTerminalExtraction {
     async fn extract_terminal(
@@ -454,20 +558,45 @@ impl MemoryRuntime {
 
     fn materialize_extractor(
         &self,
-        snapshot: &MemoryExtractorSnapshot,
-    ) -> Result<Arc<dyn LlmExecutor>, String> {
+        intent: &MemoryExtractionIntent,
+    ) -> Result<(Arc<dyn LlmExecutor>, RuntimeRunContext), String> {
+        let snapshot = &intent.extractor;
         if let Some(materializer) = self
             .inference_materializer
             .read()
             .expect("Memory inference materializer lock poisoned")
             .as_ref()
         {
+            let holder =
+                awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native()
+                    .inference_holder;
+            let bindings = awaken_runtime_contract::compile_candidate_credential_bindings(
+                &[&snapshot.model],
+                Some(&holder),
+                &materializer.credential_realization_capabilities(),
+                intent.claim_generation,
+                memory_unix_ms(),
+            )
+            .map_err(|error| error.to_string())?;
+            let owner = intent
+                .claim_owner
+                .clone()
+                .ok_or_else(|| "Memory extractor has no durable claim owner".to_string())?;
+            let authority = Arc::new(MemoryExtractionCredentialAuthority {
+                repository: self.extraction_repository(),
+                intent_id: intent.intent_id.clone(),
+                owner,
+                generation: intent.claim_generation,
+                bindings: bindings.clone(),
+            });
+            let context = RuntimeRunContext::new()
+                .with_ownership(authority.clone())
+                .with_credential_realization(
+                    awaken_runtime_contract::AttemptCredentialRealization::new(bindings, authority),
+                );
             return materializer
-                // Extraction owns a separate durable claim aggregate today; it
-                // must not borrow a Session Run's credential authority. A
-                // credential-bearing candidate therefore fails closed until
-                // extraction is submitted as an ordinary claimed Run.
-                .materialize_pinned(&snapshot.model, &RuntimeRunContext::new())
+                .materialize_pinned(&snapshot.model, &context)
+                .map(|executor| (executor, context))
                 .ok_or_else(|| {
                     format!(
                         "published model candidate `{}` is unavailable",
@@ -479,7 +608,7 @@ impl MemoryRuntime {
             snapshot.model.provisioning,
             awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor
         )
-        .then(|| self.llm.clone())
+        .then(|| (self.llm.clone(), RuntimeRunContext::new()))
         .ok_or_else(|| {
             "published model candidate requires an installed credential materializer".into()
         })
@@ -627,10 +756,10 @@ impl BoundMemory {
             .filter(|value| !value.trim().is_empty())
             .unwrap_or(DEFAULT_MEMORY_INSTRUCTIONS);
         let catalog = AgentCatalog::new().with_agent(default_memory_agent(
-            &intent.extractor.model.binding.model_ref,
+            intent.extractor.model.clone(),
             instructions,
         ));
-        let executor = self.runtime.materialize_extractor(&intent.extractor)?;
+        let (executor, context) = self.runtime.materialize_extractor(intent)?;
         let tool = erase(WriteMemoryTool::from_handle(capture.clone()));
         let commit = self
             .execution
@@ -640,7 +769,7 @@ impl BoundMemory {
             .ok_or_else(|| {
                 "Memory extraction is waiting for the Session commit/history binding".to_string()
             })?;
-        let context = RuntimeRunContext::new()
+        let context = context
             .with_commit(commit.clone())
             .with_reader(commit.clone());
         let auxiliary_thread_id = intent.auxiliary_thread_id();
@@ -991,10 +1120,12 @@ mod tests {
         Arc<awaken_memory_store::VolatileMemoryRepository>,
         Arc<awaken_session_store::SqliteManagedSessionRepository>,
     ) {
-        let catalog = Arc::new(
-            AgentCatalog::new()
-                .with_agent(default_memory_agent("stub", DEFAULT_MEMORY_INSTRUCTIONS)),
-        );
+        let catalog = Arc::new(AgentCatalog::new().with_agent(default_memory_agent(
+            awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                awaken_runtime_contract::resolved::ModelBinding::new("default", "stub", "default"),
+            ),
+            DEFAULT_MEMORY_INSTRUCTIONS,
+        )));
         let extractions = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
                 .expect("open ephemeral Memory extraction repository"),

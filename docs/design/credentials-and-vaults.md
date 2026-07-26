@@ -300,6 +300,10 @@ successful publication updates the route expiry without changing its synthetic
 capability. Worker heartbeat or renewal authority loss invokes terminal Host
 disposal for all local Session projections. The relay cannot self-renew, retain
 material after authority loss, or become a second attachment registry.
+Authenticated relay routes are created only while staging through that port.
+Runtime construction consumes the already-published virtual endpoint and may
+not lazily start the relay or repair a missing route; restart recovery must
+rehydrate it through the same durable stage/publish protocol.
 The implemented MCP adapter consumes only canonical Authorization Bearer usage
 and verifies that exact `CredentialUsage` before opening material; it never
 coerces another published usage into bearer authentication.

@@ -78,9 +78,9 @@ impl CredentialInferenceMaterializer {
         &self,
         candidate: &ResolvedModelCandidate,
         context: &RuntimeRunContext,
-    ) -> Option<Arc<dyn LlmExecutor>> {
+    ) -> Result<Option<Arc<dyn LlmExecutor>>, String> {
         let ModelProvisioning::Provider { endpoint, .. } = &candidate.provisioning else {
-            return None;
+            return Ok(None);
         };
         let secret = self
             .credentials
@@ -89,21 +89,20 @@ impl CredentialInferenceMaterializer {
                 context,
                 awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
             )
-            .await
-            .ok()?;
+            .await?;
         if endpoint.upstream_model.is_empty() {
-            return None;
+            return Ok(None);
         }
         let executor = executor_from_materialized_access(
             &endpoint.adapter_kind,
             Some(&endpoint.base_url),
             secret.as_ref(),
         )
-        .ok()?;
-        Some(Arc::new(PinnedModelExecutor {
+        .map_err(|error| error.to_string())?;
+        Ok(Some(Arc::new(PinnedModelExecutor {
             inner: executor,
             upstream_model: endpoint.upstream_model.clone(),
-        }))
+        })))
     }
 
     /// Realize one complete publication candidate through the exact attempt
@@ -114,7 +113,10 @@ impl CredentialInferenceMaterializer {
         candidate: &ResolvedModelCandidate,
         context: &RuntimeRunContext,
     ) -> Option<Arc<dyn LlmExecutor>> {
-        self.materialize_secret(candidate, context).await
+        self.materialize_secret(candidate, context)
+            .await
+            .ok()
+            .flatten()
     }
 }
 
@@ -147,8 +149,9 @@ impl PinnedCandidateExecutor {
         };
         let executor = self
             .provider
-            .materialize_candidate(candidate, &context)
+            .materialize_secret(candidate, &context)
             .await
+            .map_err(LlmError::Binding)?
             .ok_or_else(|| {
                 LlmError::Binding(format!(
                     "publication-pinned model candidate is unavailable for {}",

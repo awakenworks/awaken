@@ -12,6 +12,13 @@ use crate::{
     RunError, SessionRealizationLease, StageMcpAttachment,
 };
 
+/// Canonical Session-realization lease boundary. A lease is half-open: it is
+/// live strictly before its expiry and stale at the exact expiry millisecond.
+#[must_use]
+pub const fn realization_lease_is_live_at(expires_at_unix_ms: u64, now_unix_ms: u64) -> bool {
+    expires_at_unix_ms > now_unix_ms
+}
+
 /// Opaque Runtime assignment selected outside the Session domain. Worker and
 /// local-process identities are mapped to these strings at the authenticated
 /// application edge; the aggregate never imports their protocol vocabulary.
@@ -290,4 +297,32 @@ pub trait ApplicationSessionControl:
 impl<T> ApplicationSessionControl for T where
     T: crate::ApplicationSessionContributionPort + SessionRealizationControl
 {
+}
+
+#[cfg(test)]
+mod tests {
+    use super::realization_lease_is_live_at;
+
+    /// Cause C1: expiry is strictly after observation time. Only C1 authorizes
+    /// another effect; equality is already outside the half-open lease.
+    ///
+    /// | Rule | expiry vs now | live |
+    /// |---|---|---|
+    /// | L1 | before | false |
+    /// | L2 | equal | false |
+    /// | L3 | after | true |
+    #[test]
+    fn realization_lease_boundary_decision_table() {
+        for (expiry, now, expected, rule) in [
+            (9, 10, false, "L1"),
+            (10, 10, false, "L2"),
+            (11, 10, true, "L3"),
+        ] {
+            assert_eq!(
+                realization_lease_is_live_at(expiry, now),
+                expected,
+                "{rule}"
+            );
+        }
+    }
 }

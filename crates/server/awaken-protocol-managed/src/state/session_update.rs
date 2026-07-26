@@ -176,7 +176,10 @@ impl ManagedState {
                 .unwrap_or_default();
             let lease_is_current = persisted.realization.as_ref().is_some_and(|lease| {
                 lease.runtime_incarnation == self.runtime_incarnation
-                    && lease.expires_at_unix_ms > now_unix_ms
+                    && awaken_session_contract::realization_lease_is_live_at(
+                        lease.expires_at_unix_ms,
+                        now_unix_ms,
+                    )
             });
             let projection_requires_completion =
                 persisted.mcp.attachments.iter().any(|attachment| {

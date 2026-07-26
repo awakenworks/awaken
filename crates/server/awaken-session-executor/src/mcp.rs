@@ -393,6 +393,30 @@ impl crate::SharedHost {
         &self,
         generation: &awaken_protocol_managed::McpGenerationRef,
     ) -> Result<(), HostError> {
+        if let Some(projection) = self.mcp_projection(generation) {
+            if matches!(
+                projection.state,
+                crate::session_slot::McpProjectionState::Draining
+                    | crate::session_slot::McpProjectionState::Removed
+            ) {
+                return Err(HostError::internal(
+                    "non-visible MCP generation cannot be published",
+                ));
+            }
+            if let Some(server) = &projection.server
+                && server.bearer.is_some()
+                && projection.native_wiring.is_none()
+            {
+                let relay = self.mcp_relay.get().ok_or_else(|| {
+                    HostError::internal("authenticated MCP generation has no staged relay")
+                })?;
+                if !relay.update_staged_route(generation, server) {
+                    return Err(HostError::internal(
+                        "authenticated MCP generation has no exact staged relay route",
+                    ));
+                }
+            }
+        }
         let changed = self.session_slots.modify(&generation.session_id, |slot| {
             let Some(index) = slot
                 .mcp
@@ -424,15 +448,6 @@ impl crate::SharedHost {
         match changed {
             Some(result) => {
                 result?;
-                if let Some(relay) = self.mcp_relay.get()
-                    && let Some(projection) = self.mcp_projection(generation)
-                    && let Some(server) = &projection.server
-                {
-                    // Exact-generation renewal updates the existing private
-                    // capability in place; generation replacement receives a
-                    // distinct route key/capability.
-                    relay.set_route(generation, server);
-                }
                 Ok(())
             }
             None => Err(HostError::internal("unknown MCP Session projection")),

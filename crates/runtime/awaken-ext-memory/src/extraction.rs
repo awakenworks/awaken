@@ -145,6 +145,12 @@ pub struct MemoryExtractionIntent {
     pub mutations: Vec<MemoryExtractionMutation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receipt: Option<MemoryExtractionReceipt>,
+    /// Secret-free proof that the current claim realized its frozen extractor
+    /// credential through the selected mechanism. This belongs to the same
+    /// durable aggregate as the extraction claim; a relay-local/process-local
+    /// receipt would not survive recovery or fence a stale claimant.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credential_realizations: Vec<awaken_runtime_contract::CredentialRealizationReceipt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
 }
@@ -245,6 +251,7 @@ impl MemoryExtractionIntent {
             lease_expires_at_unix_ms: None,
             mutations: Vec::new(),
             receipt: None,
+            credential_realizations: Vec::new(),
             last_error: None,
         };
         intent.validate()?;
@@ -395,6 +402,13 @@ impl MemoryExtractionIntent {
         if let Some(receipt) = &self.receipt {
             Self::validate_receipt(&self.mutations, receipt)?;
         }
+        for receipt in &self.credential_realizations {
+            if receipt.claim_epoch != self.claim_generation {
+                return Err(MemoryExtractionError::Invalid(
+                    "credential realization must belong to the current extraction claim".into(),
+                ));
+            }
+        }
         if self.status.is_terminal()
             && (self.claim_owner.is_some() || self.lease_expires_at_unix_ms.is_some())
         {
@@ -518,6 +532,7 @@ impl MemoryExtractionIntent {
         }
         self.claim_owner = Some(owner.to_string());
         self.lease_expires_at_unix_ms = Some(expires);
+        self.credential_realizations.clear();
         self.last_error = None;
         self.bump_revision()?;
         Ok(self.claim_generation)
@@ -627,6 +642,36 @@ impl MemoryExtractionIntent {
         self.status = MemoryExtractionStatus::TerminalFailed;
         self.last_error = Some(error.into());
         self.clear_claim();
+        self.bump_revision()
+    }
+
+    /// Record one exact credential effect under the live extraction claim.
+    /// Replaying the identical receipt is idempotent; a different receipt for the
+    /// same candidate/claim is rejected rather than becoming a second truth.
+    pub fn record_credential_realization(
+        &mut self,
+        owner: &str,
+        generation: u64,
+        now_unix_ms: u64,
+        receipt: awaken_runtime_contract::CredentialRealizationReceipt,
+    ) -> Result<(), MemoryExtractionError> {
+        self.require_claim(owner, generation, now_unix_ms)?;
+        if receipt.claim_epoch != generation {
+            return Err(MemoryExtractionError::StaleClaim);
+        }
+        if let Some(existing) = self.credential_realizations.iter().find(|existing| {
+            existing.candidate_fingerprint == receipt.candidate_fingerprint
+                && existing.claim_epoch == receipt.claim_epoch
+        }) {
+            return if existing == &receipt {
+                Ok(())
+            } else {
+                Err(MemoryExtractionError::Invalid(
+                    "conflicting credential realization receipt".into(),
+                ))
+            };
+        }
+        self.credential_realizations.push(receipt);
         self.bump_revision()
     }
 
@@ -1057,6 +1102,26 @@ impl MemoryExtractionController {
                     }
                 }
             };
+            // A driver may persist claim-fenced auxiliary facts (currently the
+            // common credential-realization receipt) while extraction is in
+            // flight. Reload the same claim before the lifecycle transition so
+            // its CAS revision is authoritative instead of being overwritten by
+            // the controller's pre-I/O snapshot.
+            let current = self
+                .repository
+                .get_extraction(&intent.intent_id)
+                .await
+                .map_err(|error| (error.to_string(), false))?
+                .ok_or_else(|| {
+                    (
+                        "Memory extraction disappeared during execution".into(),
+                        true,
+                    )
+                })?;
+            current
+                .require_claim(&self.owner, generation, unix_ms())
+                .map_err(|error| (error.to_string(), false))?;
+            *intent = current;
             let expected_revision = intent.revision;
             intent
                 .mark_extracted(&self.owner, generation, unix_ms(), mutations)
@@ -1153,6 +1218,69 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    fn credential_receipt(
+        generation: u64,
+    ) -> awaken_runtime_contract::CredentialRealizationReceipt {
+        let binding = awaken_runtime_contract::AttemptCredentialBinding {
+            candidate_fingerprint: awaken_runtime_contract::CandidateFingerprint(
+                "candidate-a".into(),
+            ),
+            credential: awaken_runtime_contract::CredentialRef {
+                id: "credential-a".into(),
+                revision: 3,
+            },
+            selected_plaintext_holder: awaken_runtime_contract::PlaintextHolder::new(
+                awaken_runtime_contract::PlaintextBoundary::Worker,
+                awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+            ),
+            selected_realization_kind:
+                awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
+            claim_epoch: generation,
+        };
+        awaken_runtime_contract::CredentialRealizationReceipt::new(
+            &binding,
+            binding.selected_realization_kind,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn credential_receipt_is_fenced_idempotent_and_claim_scoped() {
+        // Cause graph / decision table:
+        // C1=current owner+generation+lease; C2=identical receipt; C3=new claim.
+        // | Rule | C1 | C2 | C3 | result                         |
+        // | R1   | T  | -  | F  | persist and bump revision      |
+        // | R2   | T  | T  | F  | idempotent, no revision change |
+        // | R3   | F  | -  | F  | stale-claim rejection          |
+        // | R4   | T  | -  | T  | prior-attempt receipt cleared  |
+        let mut intent = intent();
+        let generation = intent.claim("worker-a", 100, 50).unwrap();
+        let receipt = credential_receipt(generation);
+        intent
+            .record_credential_realization("worker-a", generation, 110, receipt.clone())
+            .unwrap();
+        let recorded_revision = intent.revision;
+        intent
+            .record_credential_realization("worker-a", generation, 111, receipt)
+            .unwrap();
+        assert_eq!(intent.revision, recorded_revision, "R2");
+        assert!(
+            intent
+                .record_credential_realization(
+                    "worker-b",
+                    generation,
+                    112,
+                    credential_receipt(generation),
+                )
+                .is_err(),
+            "R3"
+        );
+        intent.retry("worker-a", generation, 113, "retry").unwrap();
+        let next = intent.claim("worker-b", 200, 50).unwrap();
+        assert!(next > generation);
+        assert!(intent.credential_realizations.is_empty(), "R4");
     }
 
     #[test]

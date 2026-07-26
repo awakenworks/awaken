@@ -483,7 +483,10 @@ async fn verify_session_realization_authority(
     let authority = claim_authority(service, worker, Some(identity), false).await?;
     if lease.owner != identity.worker_id
         || lease.runtime_incarnation != identity.lease_owner()
-        || lease.expires_at_unix_ms < authority.now_ms
+        || !awaken_protocol_managed::realization_lease_is_live_at(
+            lease.expires_at_unix_ms,
+            authority.now_ms,
+        )
     {
         return Err(HostError::bad_request(
             "Session realization lease is not owned by the authenticated Worker incarnation",
@@ -518,7 +521,10 @@ async fn begin_session_realization(
         if !target.renew_existing_lease
             || target.owner != request.identity.worker_id
             || target.runtime_incarnation != request.identity.lease_owner()
-            || target.lease_expires_at_unix_ms <= authority.now_ms
+            || !awaken_protocol_managed::realization_lease_is_live_at(
+                target.lease_expires_at_unix_ms,
+                authority.now_ms,
+            )
             || target.lease_expires_at_unix_ms > registry_expiry
         {
             return Err(HostError::bad_request(

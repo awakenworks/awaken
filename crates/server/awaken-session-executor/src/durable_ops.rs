@@ -38,12 +38,34 @@ impl SharedHost {
     /// dispatch store for a queued or awaiting run, committing a terminal `Cancelled`
     /// fact. Fail-closed: an unknown run id errors rather than silently succeeding.
     pub(crate) async fn cancel_durable(&self, thread: &str, run_id: &str) -> Result<(), HostError> {
-        self.durable_ingress(thread)
-            .await?
-            .live_control()
-            .cancel(run_id)
+        use awaken_runtime_contract::control::{LiveCommand, LiveRunControl};
+
+        let run_id = awaken_agent_contract::agent::run::Id(run_id.to_owned());
+        // Signal only an already-resident runtime. Cancellation must never open a
+        // Session, resolve current config, or touch its sandbox merely to stop the
+        // exact durable attempt.
+        if let Some(ctx) = self
+            .session_slots
+            .read(thread, |slot| slot.runtime.clone())
+            .flatten()
+        {
+            let _ = ctx.runtime.deliver(LiveCommand::Cancel {
+                run_id: run_id.clone(),
+            });
+        }
+
+        let cancelled = self
+            .dispatch_pool_or_err()?
+            .cancel(&run_id)
             .await
-            .map_err(|e| HostError::bad_request(e.to_string()))
+            .map_err(|error| HostError::bad_request(error.to_string()))?;
+        if !cancelled {
+            return Err(HostError::bad_request(format!(
+                "run not found: {}",
+                run_id.0
+            )));
+        }
+        Ok(())
     }
 
     /// Wake a live run by id through the durable live-control seam (ADR-0018): a

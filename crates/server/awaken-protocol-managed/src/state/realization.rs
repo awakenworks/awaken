@@ -27,7 +27,10 @@ fn validate_target(
     if command.session_id.trim().is_empty()
         || command.target.owner.trim().is_empty()
         || command.target.runtime_incarnation.trim().is_empty()
-        || command.target.lease_expires_at_unix_ms <= now_unix_ms()
+        || !awaken_session_contract::realization_lease_is_live_at(
+            command.target.lease_expires_at_unix_ms,
+            now_unix_ms(),
+        )
     {
         return Err(SessionRealizationControlFailure::Invalid(
             "Session id, Runtime owner/incarnation, and a future lease expiry are required".into(),
@@ -40,7 +43,11 @@ fn verify_lease(
     session: &PersistedSession,
     asserted: &SessionRealizationLease,
 ) -> Result<(), SessionRealizationControlFailure> {
-    if session.realization.as_ref() != Some(asserted) || asserted.expires_at_unix_ms < now_unix_ms()
+    if session.realization.as_ref() != Some(asserted)
+        || !awaken_session_contract::realization_lease_is_live_at(
+            asserted.expires_at_unix_ms,
+            now_unix_ms(),
+        )
     {
         return Err(SessionRealizationControlFailure::StaleOwnership);
     }
@@ -216,10 +223,9 @@ impl SessionRealizationControl for ManagedState {
             let (owner_scope, mut session) =
                 self.session_for_realization(&command.session_id).await?;
             let now = now_unix_ms();
-            let existing_live = session
-                .realization
-                .as_ref()
-                .is_some_and(|lease| lease.expires_at_unix_ms >= now);
+            let existing_live = session.realization.as_ref().is_some_and(|lease| {
+                awaken_session_contract::realization_lease_is_live_at(lease.expires_at_unix_ms, now)
+            });
             let same_owner = session
                 .realization
                 .as_ref()

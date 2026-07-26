@@ -100,6 +100,13 @@ pub struct CredentialExecutionPolicy {
 }
 
 impl CredentialExecutionPolicy {
+    fn self_hosted_holders() -> [PlaintextHolder; 2] {
+        [
+            PlaintextHolder::new(PlaintextBoundary::Worker, SELF_HOSTED_WORKER_TRUST_DOMAIN),
+            PlaintextHolder::new(PlaintextBoundary::Workload, SELF_HOSTED_ACP_TRUST_DOMAIN),
+        ]
+    }
+
     #[must_use]
     pub fn exact(holder: PlaintextHolder, model_exposure: ModelExposurePolicy) -> Self {
         Self {
@@ -122,12 +129,17 @@ impl CredentialExecutionPolicy {
     /// Default policy compiled by the self-hosted deployment profile.
     #[must_use]
     pub fn self_hosted_provider() -> Self {
+        Self::new(Self::self_hosted_holders(), ModelExposurePolicy::Forbidden)
+    }
+
+    /// Canonical authenticated MCP policy. A mediated ACP projection may expose
+    /// only the generation-scoped synthetic relay capability; backing material
+    /// remains Worker-held and is never model-visible.
+    #[must_use]
+    pub fn self_hosted_mcp() -> Self {
         Self::new(
-            [
-                PlaintextHolder::new(PlaintextBoundary::Worker, SELF_HOSTED_WORKER_TRUST_DOMAIN),
-                PlaintextHolder::new(PlaintextBoundary::Workload, SELF_HOSTED_ACP_TRUST_DOMAIN),
-            ],
-            ModelExposurePolicy::Forbidden,
+            Self::self_hosted_holders(),
+            ModelExposurePolicy::VirtualOnly,
         )
     }
 }
@@ -821,6 +833,30 @@ mod tests {
                 .expect("encode empty capabilities"),
             None
         );
+    }
+
+    /// Exposure decision table: provider material never needs a model-visible
+    /// credential representation; authenticated MCP may expose only a synthetic
+    /// generation capability. Both reuse the identical allowed-holder set.
+    ///
+    /// | Rule | purpose | exposure |
+    /// |---|---|---|
+    /// | E1 | inference/provider | Forbidden |
+    /// | E2 | MCP relay | VirtualOnly |
+    #[test]
+    fn self_hosted_exposure_profiles_share_holders_but_not_exposure() {
+        let provider = CredentialExecutionPolicy::self_hosted_provider();
+        let mcp = CredentialExecutionPolicy::self_hosted_mcp();
+        assert_eq!(
+            provider.allowed_plaintext_holders,
+            mcp.allowed_plaintext_holders
+        );
+        assert_eq!(
+            provider.model_exposure,
+            ModelExposurePolicy::Forbidden,
+            "E1"
+        );
+        assert_eq!(mcp.model_exposure, ModelExposurePolicy::VirtualOnly, "E2");
     }
 
     #[test]
