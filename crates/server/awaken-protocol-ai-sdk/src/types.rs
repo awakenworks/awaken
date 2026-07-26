@@ -143,36 +143,76 @@ pub struct AiSdkChatRequest {
     pub agent_id: Option<String>,
 }
 
-/// An AI SDK v6 `UIMessage`. The `parts` list stays raw JSON at the container
-/// level because a tool part's `type` is the dynamic `tool-<name>` — not a closed
-/// set — but each part is decoded into a typed view ([`UIPart`] for content,
-/// [`ToolDecisionPart`] for tool decisions) at the parsing boundary.
+/// An AI SDK v6 `UIMessage`. Dynamic `tool-<name>` discriminators are classified
+/// by [`UIMessagePart`]; they do not make the whole container untyped.
 #[derive(Debug, Clone, Deserialize)]
 pub struct UIMessage {
     #[serde(default)]
     pub id: Option<String>,
     pub role: String,
     #[serde(default)]
-    pub parts: Vec<Value>,
+    pub parts: Vec<UIMessagePart>,
 }
 
-/// A typed view of a user/system message content part. Non-content kinds
-/// (`reasoning`, `step-start`, dynamic `tool-*`) decode to [`UIPart::Other`].
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type", rename_all = "kebab-case")]
-pub enum UIPart {
+#[derive(Debug, Clone)]
+pub enum UIMessagePart {
     Text {
         text: String,
     },
     /// AI SDK v5 file part: `{ type: "file", mediaType, url }`, where `url` is a
     /// `data:` URI or a remote link.
     File {
-        #[serde(rename = "mediaType")]
         media_type: String,
         url: String,
     },
-    #[serde(other)]
-    Other,
+    Tool(ToolDecisionPart),
+    /// A valid UI part without neutral input semantics (`reasoning`, `step-start`,
+    /// `source-*`, or dynamic `data-*`). Its discriminator is retained for
+    /// diagnostics, while its provider-defined payload is intentionally discarded.
+    Other {
+        kind: String,
+    },
+}
+
+impl<'de> Deserialize<'de> for UIMessagePart {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        let kind = value
+            .get("type")
+            .and_then(Value::as_str)
+            .ok_or_else(|| serde::de::Error::custom("UI message part requires string `type`"))?;
+        match kind {
+            "text" => value
+                .get("text")
+                .and_then(Value::as_str)
+                .map(|text| Self::Text { text: text.into() })
+                .ok_or_else(|| serde::de::Error::custom("text part requires string `text`")),
+            "file" => {
+                let media_type =
+                    value
+                        .get("mediaType")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            serde::de::Error::custom("file part requires string `mediaType`")
+                        })?;
+                let url = value
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| serde::de::Error::custom("file part requires string `url`"))?;
+                Ok(Self::File {
+                    media_type: media_type.into(),
+                    url: url.into(),
+                })
+            }
+            _ if kind.starts_with("tool-") => serde_json::from_value(value)
+                .map(Self::Tool)
+                .map_err(serde::de::Error::custom),
+            _ => Ok(Self::Other { kind: kind.into() }),
+        }
+    }
 }
 
 /// A typed view of an assistant tool part carrying a client's decision. The
@@ -222,6 +262,38 @@ pub fn text_parts(content: &[ContentBlock]) -> Vec<Value> {
 mod wire_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn ui_part_admission_classifies_dynamic_discriminators_once() {
+        // Causal graph: UI JSON part -> UIMessagePart admission -> content/decision ACL.
+        //
+        // Decision table:
+        // | discriminator       | required payload     | result             |
+        // | text                | string text          | typed Text         |
+        // | file                | mediaType + url      | typed File         |
+        // | tool-<dynamic>      | optional state/id    | typed Tool         |
+        // | data-*/reasoning    | provider-defined     | explicit Other     |
+        // | known + bad payload | —                    | reject whole body  |
+        let text: UIMessagePart =
+            serde_json::from_value(json!({"type":"text","text":"hi"})).unwrap();
+        assert!(matches!(text, UIMessagePart::Text { text } if text == "hi"));
+        let tool: UIMessagePart = serde_json::from_value(json!({
+            "type":"tool-any-runtime-name","toolCallId":"c1","state":"output-available","output":{"ok":true}
+        })).unwrap();
+        assert!(
+            matches!(tool, UIMessagePart::Tool(ToolDecisionPart { kind, .. }) if kind == "tool-any-runtime-name")
+        );
+        let other: UIMessagePart =
+            serde_json::from_value(json!({"type":"data-weather","data":{"c":20}})).unwrap();
+        assert!(matches!(other, UIMessagePart::Other { kind } if kind == "data-weather"));
+        for invalid in [
+            json!({"text":"missing discriminator"}),
+            json!({"type":"text","text":7}),
+            json!({"type":"file","mediaType":"image/png"}),
+        ] {
+            assert!(serde_json::from_value::<UIMessagePart>(invalid).is_err());
+        }
+    }
 
     #[test]
     fn tool_input_start_wire_shape() {
