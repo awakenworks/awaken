@@ -1,6 +1,6 @@
 // The cross-node db-less worker, POOL-DRIVEN, over two real processes.
 //
-//   - A coordinator-only cell server (AWAKEN_SERVER_RUN_LOCAL_POOL=false): owns the
+//   - A coordinator-only cell server (`disable_local_pool` fixture axis): owns the
 //     durable queue + store, serves HTTP, but runs NO local pool — so it never
 //     drives runs itself.
 //   - A database-less worker (AWAKEN_UPSTREAM_URL=<server>): its dispatch pool
@@ -57,7 +57,7 @@ async function main() {
   const { server } = spawnServer('echo', SERVER_PORT, {
     AWAKEN_INGRESS: 'durable',
     AWAKEN_STORAGE_DIR: STORAGE,
-    AWAKEN_SERVER_RUN_LOCAL_POOL: 'false',
+    AWAKEN_DISABLE_LOCAL_POOL: '1',
   });
   let worker;
 
