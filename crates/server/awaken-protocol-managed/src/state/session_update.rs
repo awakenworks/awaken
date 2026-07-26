@@ -301,13 +301,11 @@ impl ManagedState {
         record.session.metadata = persisted.metadata;
         let agent_changed = tools_changed || mcp_changed;
         if let Some(tools) = command.tools.clone() {
-            record.session.agent.tools = tools
-                .iter()
-                .map(|tool| serde_json::to_value(tool).expect("typed AgentTool serializes"))
-                .collect();
+            record.session.agent.tools = tools;
         }
         if let Some(visible_mcp_servers) = visible_mcp_servers {
-            record.session.agent.mcp_servers = visible_mcp_servers;
+            record.session.agent.mcp_servers =
+                super::sessions::typed_mcp_servers(visible_mcp_servers);
         }
         record.events.push(Event {
             id: self.next_event_id(),

@@ -399,6 +399,17 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
 
 #[tokio::test]
 async fn session_inherits_published_agent_integrations_and_echoes_the_effective_set() {
+    // Causal graph:
+    // published Agent bindings + Session MCP override
+    //   -> normalize both sources -> Session wins on equal name without credential
+    //   -> prepare Runtime with exact delegate and credential revision
+    //   -> persist one authoritative Resource/MCP realization.
+    //
+    // Decision table:
+    // | Agent binding | Session override | Expected behavior |
+    // | exact credential@7 | absent | stage credential@7 with Agent origin |
+    // | public same-name URL | present | use Session URL with Session origin |
+    // | Skill + delegate | n/a | persist Skill pin and prepare delegate once |
     let runtime = AcceptingFake::default();
     let prepared = runtime.prepared.clone();
     let staged = runtime.staged.clone();
@@ -433,7 +444,10 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
         }),
         "Session origin wins over an uncredentialed Agent source with the same name"
     );
-    assert_eq!(session["agent"]["skills"][0]["id"], "skill_release");
+    assert_eq!(
+        session["agent"]["skills"][0],
+        json!({"type": "custom", "skill_id": "skill_release", "version": "latest"})
+    );
     assert_eq!(session["agent"]["multiagent"]["agents"][0], "researcher");
     assert_eq!(
         prepared.lock().unwrap()[0].delegate_ids,

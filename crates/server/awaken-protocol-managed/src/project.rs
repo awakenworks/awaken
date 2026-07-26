@@ -73,9 +73,6 @@ fn first_forbidden_schema_key(v: &serde_json::Value) -> Option<&'static str> {
     }
 }
 
-/// The versioned built-in toolset id (Managed Agents wire vocabulary, G16).
-const AGENT_TOOLSET_TYPE: &str = "agent_toolset_20260401";
-
 /// The canonical tools the versioned agent toolset bundles. A built-in tool the host
 /// does *not* register is disabled in `configs`; a registered tool that requires
 /// confirmation carries an `always_ask` permission policy.
@@ -95,7 +92,10 @@ const AGENT_TOOLSET_TOOLS: [&str; 8] = [
 /// definitions) with `configs` that disable the toolset tools the host does not
 /// register and mark the confirmation-gated ones `always_ask`; each client tool
 /// becomes a `custom` tool definition.
-pub fn agent_tools(caps: &AgentCapabilities) -> Vec<serde_json::Value> {
+pub fn agent_tools(caps: &AgentCapabilities) -> Vec<crate::types::agent::AgentTool> {
+    use crate::types::agent::{
+        AgentTool, CustomToolInputSchema, PermissionPolicy, ToolConfig, ToolDefaultConfig,
+    };
     let mut tools = Vec::new();
     if !caps.builtin_tools.is_empty() {
         // Each entry is the tool's *resolved* config — the SDK's
@@ -105,67 +105,75 @@ pub fn agent_tools(caps: &AgentCapabilities) -> Vec<serde_json::Value> {
         let mut configs = Vec::new();
         for name in AGENT_TOOLSET_TOOLS {
             match caps.builtin_tools.iter().find(|t| t.name == name) {
-                None => configs.push(serde_json::json!({
-                    "name": name,
-                    "enabled": false,
-                    "permission_policy": { "type": "always_allow" },
-                })),
-                Some(tool) if tool.ask => configs.push(serde_json::json!({
-                    "name": name,
-                    "enabled": true,
-                    "permission_policy": { "type": "always_ask" },
-                })),
+                None => configs.push(ToolConfig {
+                    name: name.to_string(),
+                    enabled: Some(false),
+                    permission_policy: Some(PermissionPolicy::AlwaysAllow),
+                }),
+                Some(tool) if tool.ask => configs.push(ToolConfig {
+                    name: name.to_string(),
+                    enabled: Some(true),
+                    permission_policy: Some(PermissionPolicy::AlwaysAsk),
+                }),
                 Some(_) => {} // registered + auto-allowed → matches default_config
             }
         }
         // `configs` and `default_config` are both required on the toolset object.
         // `default_config` is the resolved baseline every non-overridden tool
         // inherits: enabled and auto-allowed.
-        tools.push(serde_json::json!({
-            "type": AGENT_TOOLSET_TYPE,
-            "configs": configs,
-            "default_config": {
-                "enabled": true,
-                "permission_policy": { "type": "always_allow" },
-            },
-        }));
+        tools.push(AgentTool::AgentToolset20260401 {
+            configs,
+            default_config: Some(ToolDefaultConfig {
+                enabled: Some(true),
+                permission_policy: Some(PermissionPolicy::AlwaysAllow),
+            }),
+        });
     }
     for tool in &caps.custom_tools {
-        tools.push(serde_json::json!({
-            "type": "custom",
-            "name": tool.name,
-            "description": tool.description,
-            "input_schema": tool.input_schema,
-        }));
+        let input_schema = CustomToolInputSchema::from_value(tool.input_schema.clone())
+            .expect("runtime custom-tool schemas were validated as object schemas at publication");
+        tools.push(AgentTool::Custom {
+            name: tool.name.clone(),
+            description: tool.description.clone(),
+            input_schema,
+        });
     }
     tools
 }
 
 /// Project the agent's offered skills onto the public `agent.skills` array. Each is a
 /// `custom` skill reference (the host offers them locally, not from the Skills API).
-pub fn agent_skills(caps: &AgentCapabilities) -> Vec<serde_json::Value> {
+pub fn agent_skills(caps: &AgentCapabilities) -> Vec<crate::types::agent::AgentSkill> {
     caps.skills
         .iter()
-        .map(|id| serde_json::json!({ "type": "custom", "skill_id": id, "version": "latest" }))
+        .map(|id| crate::types::agent::AgentSkill::Custom {
+            skill_id: id.clone(),
+            version: Some("latest".into()),
+        })
         .collect()
 }
 
 /// Project the agent's delegate roster onto the public `agent.multiagent` coordinator
 /// object, or `None` when the agent delegates to no one.
-pub fn agent_multiagent(caps: &AgentCapabilities) -> Option<serde_json::Value> {
+pub fn agent_multiagent(caps: &AgentCapabilities) -> Option<crate::types::agent::MultiagentConfig> {
     agent_multiagent_ids(&caps.delegates)
 }
 
 /// Project an already-resolved published roster. Session creation uses this
 /// before runtime preparation, while later reads use [`agent_multiagent`].
-pub fn agent_multiagent_ids(delegate_ids: &[String]) -> Option<serde_json::Value> {
+pub fn agent_multiagent_ids(
+    delegate_ids: &[String],
+) -> Option<crate::types::agent::MultiagentConfig> {
     if delegate_ids.is_empty() {
         return None;
     }
-    Some(serde_json::json!({
-        "type": "coordinator",
-        "agents": delegate_ids,
-    }))
+    Some(crate::types::agent::MultiagentConfig::Coordinator {
+        agents: delegate_ids
+            .iter()
+            .cloned()
+            .map(crate::types::agent::MultiagentRosterEntry::Id)
+            .collect(),
+    })
 }
 
 /// The public wire object for one recorded outcome evaluation on the session: the

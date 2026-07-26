@@ -78,6 +78,12 @@ pub struct CustomToolInputSchema {
     pub keywords: BTreeMap<String, Value>,
 }
 
+impl CustomToolInputSchema {
+    pub fn from_value(value: Value) -> Result<Self, String> {
+        serde_json::from_value(value).map_err(|error| error.to_string())
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum ObjectSchemaKind {
     #[serde(rename = "object")]
@@ -261,12 +267,10 @@ pub struct Agent {
     pub model: ModelConfig,
     pub system: Option<String>,
     pub metadata: BTreeMap<String, String>,
-    // The durable config domain currently stores canonical JSON projections of
-    // these values; only typed admission can produce those projections.
-    pub mcp_servers: Vec<Value>,
-    pub skills: Vec<Value>,
-    pub tools: Vec<Value>,
-    pub multiagent: Option<Value>,
+    pub mcp_servers: Vec<UrlMcpServer>,
+    pub skills: Vec<AgentSkill>,
+    pub tools: Vec<AgentTool>,
+    pub multiagent: Option<MultiagentConfig>,
     pub version: u64,
 }
 

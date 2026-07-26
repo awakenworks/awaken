@@ -273,14 +273,12 @@ pub struct SessionAgent {
     /// SDK-required (nullable) fields; emitted as `null` when the host has none.
     pub description: Option<String>,
     pub system: Option<String>,
-    // Opaque SDK unions passed through verbatim (the tool / MCP-server / skill
-    // unions) — same treatment as [`Agent`](super::agent::Agent)'s.
-    pub tools: Vec<Value>,
-    pub mcp_servers: Vec<Value>,
-    pub skills: Vec<Value>,
+    pub tools: Vec<AgentTool>,
+    pub mcp_servers: Vec<UrlMcpServer>,
+    pub skills: Vec<AgentSkill>,
     /// The multiagent coordinator roster, omitted when the agent delegates to no one.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub multiagent: Option<Value>,
+    pub multiagent: Option<super::agent::MultiagentConfig>,
 }
 
 /// `BetaManagedAgentsSessionStats` — coarse per-session timing/counters. Empty on

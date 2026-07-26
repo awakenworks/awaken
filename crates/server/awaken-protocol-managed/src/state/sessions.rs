@@ -3,6 +3,48 @@
 
 use super::application::{ManagedMcpCandidate, initial_mcp_candidates};
 use super::*;
+
+fn typed_tools(values: Vec<serde_json::Value>) -> Vec<crate::types::agent::AgentTool> {
+    values
+        .into_iter()
+        .filter_map(|value| {
+            serde_json::from_value(value.clone()).ok().or_else(|| {
+                let name = value.get("name")?.as_str()?.to_string();
+                Some(crate::types::agent::AgentTool::Custom {
+                    description: value
+                        .get("description")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("Client-executed tool")
+                        .to_string(),
+                    name,
+                    input_schema: crate::types::agent::CustomToolInputSchema::from_value(
+                        value
+                            .get("input_schema")
+                            .cloned()
+                            .unwrap_or_else(|| json!({"type":"object"})),
+                    )
+                    .ok()?,
+                })
+            })
+        })
+        .collect()
+}
+
+fn stored_tools(values: &[crate::types::agent::AgentTool]) -> Vec<serde_json::Value> {
+    values
+        .iter()
+        .map(|tool| serde_json::to_value(tool).expect("typed AgentTool serializes"))
+        .collect()
+}
+
+pub(super) fn typed_mcp_servers(
+    values: Vec<serde_json::Value>,
+) -> Vec<crate::types::agent::UrlMcpServer> {
+    values
+        .into_iter()
+        .filter_map(|value| serde_json::from_value(value).ok())
+        .collect()
+}
 use crate::types::AgentRef;
 use serde_json::json;
 
@@ -108,7 +150,7 @@ impl ManagedState {
         record.session.metadata = persisted.metadata.clone();
         record.session.deployment_id = persisted.metadata.get("awaken.deployment_id").cloned();
         record.session.archived_at = persisted.archived_at.clone();
-        record.session.agent.mcp_servers = persisted.visible_mcp_servers();
+        record.session.agent.mcp_servers = typed_mcp_servers(persisted.visible_mcp_servers());
         record.resource_state = persisted.resources.clone();
     }
 
@@ -770,13 +812,16 @@ impl ManagedState {
                 system: config_view.as_ref().and_then(|view| view.system.clone()),
                 tools: project::agent_tools(&caps),
                 // Echo the accepted servers in the SDK's `{name, type:"url", url}` shape.
-                mcp_servers: persisted.visible_mcp_servers(),
+                mcp_servers: typed_mcp_servers(persisted.visible_mcp_servers()),
                 skills: config_view.as_ref().map_or_else(
                     || project::agent_skills(&caps),
                     |view| {
                         view.skill_ids
                             .iter()
-                            .map(|id| json!({ "id": id }))
+                            .map(|id| crate::types::agent::AgentSkill::Custom {
+                                skill_id: id.clone(),
+                                version: Some("latest".into()),
+                            })
                             .collect()
                     },
                 ),
@@ -818,33 +863,13 @@ impl ManagedState {
                         "cannot clear tools while skills are configured",
                     )));
                 }
-                session.agent.tools = tools
-                    .as_ref()
-                    .map(|tools| {
-                        tools
-                            .iter()
-                            .map(|tool| {
-                                serde_json::to_value(tool).expect("typed AgentTool serializes")
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                session.agent.tools = tools.clone().unwrap_or_default();
             }
             if let Some(skills) = &override_ref.skills {
-                session.agent.skills = skills
-                    .as_ref()
-                    .map(|skills| {
-                        skills
-                            .iter()
-                            .map(|skill| {
-                                serde_json::to_value(skill).expect("typed AgentSkill serializes")
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                session.agent.skills = skills.clone().unwrap_or_default();
             }
         }
-        persisted.agent_tools = Some(session.agent.tools.clone());
+        persisted.agent_tools = Some(stored_tools(&session.agent.tools));
         // Persist the session's config (secret-free) so a restart or a peer process
         // rehydrates its real agent/model/title/metadata/MCP, not a placeholder.
         // The core session record is tenancy-agnostic (authz is an edge aspect) —
@@ -1230,14 +1255,16 @@ impl ManagedState {
                             p.environment_id().to_string(),
                         )
                     });
-                let mcp_servers = p.visible_mcp_servers();
+                let mcp_servers = typed_mcp_servers(p.visible_mcp_servers());
                 (
                     agent_id,
                     model,
                     environment_id,
                     p.title,
                     p.metadata,
-                    p.agent_tools.unwrap_or_else(|| default_tools.clone()),
+                    p.agent_tools
+                        .map(typed_tools)
+                        .unwrap_or_else(|| default_tools.clone()),
                     mcp_servers,
                     Self::wire_session_status(&p.status),
                     p.archived_at,

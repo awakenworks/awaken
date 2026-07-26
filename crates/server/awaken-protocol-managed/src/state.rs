@@ -1029,10 +1029,10 @@ mod tests {
             1,
             "the accepted MCP server is restored"
         );
-        assert_eq!(
-            session.agent.tools,
-            vec![serde_json::json!({"name": "durable-tool"})]
-        );
+        assert!(matches!(
+            &session.agent.tools[..],
+            [crate::types::agent::AgentTool::Custom { name, .. }] if name == "durable-tool"
+        ));
         assert!(
             session.resources.is_empty(),
             "the stored Session DTO must not duplicate typed resource state"

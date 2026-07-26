@@ -13,13 +13,14 @@ use awaken_config_store::{
 };
 use awaken_protocol_managed::types::ModelConfig;
 use awaken_protocol_managed::types::agent::{
-    Agent, AgentCreateParams, AgentSkill, AgentTool, AgentUpdateParams,
-    MultiagentConfig as WireMultiagent, MultiagentRosterEntry, UrlMcpServer,
+    Agent, AgentCreateParams, AgentSkill, AgentTool, AgentUpdateParams, CustomToolInputSchema,
+    MultiagentConfig as WireMultiagent, MultiagentRosterEntry, ToolDefaultConfig, UrlMcpServer,
+    UrlMcpServerKind,
 };
 use awaken_protocol_managed::{ManagedAgentError, ManagedAgentRepository};
 use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
 use awaken_tenancy::ScopeId;
-use serde_json::{Value, json};
+use serde_json::json;
 use sha2::{Digest, Sha256};
 
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
@@ -192,10 +193,34 @@ fn config_from_create(
     })
 }
 
-fn wire_tools(ids: &[String]) -> Vec<Value> {
-    ids.iter()
-        .map(|id| json!({ "type": "custom", "name": id }))
-        .collect()
+fn wire_tools(ids: &[String], mcp_servers: &[AgentMcpServerBinding]) -> Vec<AgentTool> {
+    let mut tools = ids
+        .iter()
+        .map(|id| {
+            if id == "agent_toolset_20260401" {
+                AgentTool::AgentToolset20260401 {
+                    configs: Vec::new(),
+                    default_config: Some(ToolDefaultConfig {
+                        enabled: Some(true),
+                        permission_policy: None,
+                    }),
+                }
+            } else {
+                AgentTool::Custom {
+                    name: id.clone(),
+                    description: format!("Client-executed tool `{id}`"),
+                    input_schema: CustomToolInputSchema::from_value(json!({"type":"object"}))
+                        .expect("object schema"),
+                }
+            }
+        })
+        .collect::<Vec<_>>();
+    tools.extend(mcp_servers.iter().map(|server| AgentTool::McpToolset {
+        mcp_server_name: server.name.clone(),
+        configs: Vec::new(),
+        default_config: None,
+    }));
+    tools
 }
 
 fn project(revision: AgentConfigRevision) -> Agent {
@@ -206,6 +231,7 @@ fn project(revision: AgentConfigRevision) -> Agent {
         .resolved()
         .map(|binding| binding.model_ref.clone())
         .unwrap_or_default();
+    let tools = wire_tools(&config.tool_ids, &config.mcp_servers);
     Agent {
         id: id.clone(),
         object_type: "agent",
@@ -220,15 +246,28 @@ fn project(revision: AgentConfigRevision) -> Agent {
         mcp_servers: config
             .mcp_servers
             .into_iter()
-            .map(|server| json!(server))
+            .map(|server| UrlMcpServer {
+                name: server.name,
+                url: server.url,
+                kind: UrlMcpServerKind::Url,
+            })
             .collect(),
         skills: config
             .skill_ids
             .into_iter()
-            .map(|id| json!({"id": id}))
+            .map(|skill_id| AgentSkill::Custom {
+                skill_id,
+                version: Some("latest".into()),
+            })
             .collect(),
-        tools: wire_tools(&config.tool_ids),
-        multiagent: config.multiagent.map(|value| json!(value)),
+        tools,
+        multiagent: config.multiagent.map(|value| WireMultiagent::Coordinator {
+            agents: value
+                .agent_ids
+                .into_iter()
+                .map(MultiagentRosterEntry::Id)
+                .collect(),
+        }),
         version: revision.revision,
     }
 }
@@ -534,8 +573,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(created.version, 1);
-        assert_eq!(created.mcp_servers[0]["name"], "docs");
-        assert_eq!(created.skills[0]["id"], "skill-docs");
+        assert_eq!(created.mcp_servers[0].name, "docs");
+        assert!(matches!(
+            &created.skills[0],
+            AgentSkill::Custom { skill_id, .. } if skill_id == "skill-docs"
+        ));
         assert!(
             plane
                 .service()
