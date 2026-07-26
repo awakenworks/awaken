@@ -5,72 +5,24 @@
 // enforce ownership/state independently.
 
 import assert from 'node:assert/strict';
-import net from 'node:net';
-import path from 'node:path';
-import { execSync, spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { spawnServer, stopServer, waitForPort } from './harness.mjs';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38437);
 const WORKSPACE = `ephemeral-resource-${process.pid}`;
 const OTHER = `ephemeral-resource-other-${process.pid}`;
+const BETAS = 'managed-agents-2026-04-01,files-api-2025-04-14';
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
-function binary() {
-  const output = execSync('cargo build --quiet --message-format=json -p awaken-cli --bin awaken', {
-    cwd: ROOT,
-    env: process.env,
-    maxBuffer: 64 * 1024 * 1024,
-  }).toString();
-  for (const line of output.split('\n')) {
-    try {
-      const message = JSON.parse(line);
-      if (message.executable && message.target?.name === 'awaken') return message.executable;
-    } catch { /* cargo diagnostic */ }
-  }
-  throw new Error('awaken binary was not produced');
-}
-
 function start() {
-  const environment = { ...process.env };
-  for (const key of [
-    'AWAKEN_DEPLOYMENT_DATA_DIR',
-    'AWAKEN_MGMT_DIR',
-    'AWAKEN_RESOURCE_DATABASE_URL',
-    'AWAKEN_RESOURCE_LIFECYCLE_DB',
-    'AWAKEN_ADMIN_DB',
-    'AWAKEN_MGMT_IAM',
-    'AWAKEN_IDENTITY_MODE',
-  ]) delete environment[key];
-  return spawn(binary(), {
-    env: {
-      ...environment,
-      AWAKEN_HTTP_ADDR: `127.0.0.1:${PORT}`,
-      AWAKEN_SCENARIO_WORKSPACE: WORKSPACE,
-    },
-    stdio: ['ignore', 'ignore', 'inherit'],
-  });
+  return spawnServer('resource-ephemeral', PORT).server;
 }
 
 async function ready(child) {
-  const deadline = Date.now() + 60_000;
-  while (Date.now() < deadline) {
-    const connected = await new Promise((resolve) => {
-      const socket = net.createConnection({ host: '127.0.0.1', port: PORT });
-      socket.once('connect', () => { socket.destroy(); resolve(true); });
-      socket.once('error', () => { socket.destroy(); resolve(false); });
-    });
-    if (connected) return;
-    if (child.exitCode !== null) throw new Error(`awaken exited with ${child.exitCode}`);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  throw new Error('awaken did not become ready');
+  await waitForPort(PORT, 60_000, child);
 }
 
 async function stop(child) {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  child.kill('SIGINT');
-  await new Promise((resolve) => child.once('exit', resolve));
+  await stopServer(child);
 }
 
 const scoped = (workspace, tail) =>
@@ -79,7 +31,10 @@ const scoped = (workspace, tail) =>
 async function json(method, workspace, tail, body) {
   const response = await fetch(scoped(workspace, tail), {
     method,
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    headers: {
+      'anthropic-beta': BETAS,
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await response.text();
@@ -90,7 +45,11 @@ async function upload(workspace, content) {
   const form = new FormData();
   form.append('purpose', 'agent');
   form.append('file', new Blob([content]), 'input.txt');
-  const response = await fetch(scoped(workspace, 'files'), { method: 'POST', body: form });
+  const response = await fetch(scoped(workspace, 'files'), {
+    method: 'POST',
+    headers: { 'anthropic-beta': BETAS },
+    body: form,
+  });
   assert.equal(response.status, 200);
   return response.json();
 }
@@ -279,18 +238,19 @@ async function main() {
       'an archived store cannot publish another behavior version',
     );
 
+    // Skill is an independently durable aggregate. Ephemeral ResourcePlane
+    // composition must not invent a parallel volatile Skill implementation.
     const skillId = `volatile-skill-${process.pid}`;
     const skill = await json('POST', WORKSPACE, 'skills', {
       id: skillId,
       content: `---\nname: ${skillId}\ndescription: ephemeral\n---\nUse safely.`,
     });
-    assert.equal(skill.status, 200);
-    assert.equal((await json('GET', OTHER, `skills/${skillId}`)).status, 404);
-    assert.equal((await json('DELETE', WORKSPACE, `skills/${skillId}`)).status, 200);
+    assert.equal(skill.status, 409, JSON.stringify(skill.body));
+    assert.match(skill.body.error, /no durable skill store/u);
 
     assert.equal((await json('DELETE', OTHER, `files/${file.id}`)).status, 200);
     await sleep(5_500);
-    console.log('E2E PASS: production ephemeral resource adapters are scoped and lifecycle-complete.');
+    console.log('E2E PASS: ephemeral resource adapters are scoped, lifecycle-complete, and do not synthesize Skill durability.');
   } finally {
     await stop(server);
   }

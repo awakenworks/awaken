@@ -5,11 +5,11 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync, execSync, spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { spawnProduction, stopServer, waitForPort } from './harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38435);
@@ -17,50 +17,19 @@ const WS_A = `reclaim-a-${process.pid}`;
 const WS_B = `reclaim-b-${process.pid}`;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function binary() {
-  const output = execSync('cargo build --quiet --message-format=json -p awaken-cli --bin awaken', {
-    cwd: ROOT,
-    maxBuffer: 64 * 1024 * 1024,
-  }).toString();
-  for (const line of output.split('\n')) {
-    try {
-      const message = JSON.parse(line);
-      if (message.executable && message.target?.name === 'awaken') return message.executable;
-    } catch { /* cargo diagnostic */ }
-  }
-  throw new Error('awaken binary was not produced');
-}
-
-function start(bin, directory) {
-  const child = spawn(bin, {
-    env: {
-      ...process.env,
-      AWAKEN_HTTP_ADDR: `127.0.0.1:${PORT}`,
-      AWAKEN_SCENARIO_WORKSPACE: WS_A,
-      AWAKEN_STORAGE_DIR: directory,
-      AWAKEN_MGMT_DIR: directory,
-      AWAKEN_MGMT_SEAL_KEY: '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
-    },
-    stdio: ['ignore', 'ignore', 'inherit'],
+function start(directory) {
+  return spawnProduction(directory, PORT, {
+    workspace: WS_A,
+    controlSealKey: '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
   });
-  return child;
 }
 
 async function ready() {
-  const deadline = Date.now() + 60_000;
-  while (Date.now() < deadline) {
-    const socketReady = await new Promise((resolve) => {
-      const socket = net.createConnection({ port: PORT, host: '127.0.0.1' });
-      socket.once('connect', () => { socket.destroy(); resolve(true); });
-      socket.once('error', () => { socket.destroy(); resolve(false); });
-    });
-    if (socketReady) return;
-    await sleep(100);
-  }
-  throw new Error('awaken did not become ready');
+  await waitForPort(PORT, 60_000);
 }
 
 async function stop(child, signal = 'SIGINT') {
+  if (signal === 'SIGINT') return stopServer(child);
   if (child.exitCode !== null) return;
   child.kill(signal);
   await new Promise((resolve) => child.once('exit', resolve));
@@ -135,8 +104,7 @@ function seedRepository(root) {
 
 async function main() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-resource-reclaim-'));
-  const bin = binary();
-  let server = start(bin, directory);
+  let server = start(directory);
   try {
     await ready();
     assert.equal(
@@ -154,7 +122,7 @@ async function main() {
     const crashedFile = await upload(WS_A, 'crash-recovery');
     assert.equal((await json('DELETE', scoped(WS_A, `files/${crashedFile}`))).status, 200);
     await stop(server, 'SIGKILL');
-    server = start(bin, directory);
+    server = start(directory);
     await ready();
     const crashReceipt = await waitReceipt(directory, 'file', crashedFile);
     assert.equal(crashReceipt.receipt.evidence.blob_deleted, true);
