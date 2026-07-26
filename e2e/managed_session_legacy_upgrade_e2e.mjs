@@ -26,6 +26,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
 import {
+  deploymentEnv,
   pass,
   realServerEnv,
   spawnServer,
@@ -152,17 +153,13 @@ function client() {
 
 async function main() {
   const management = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-session-upgrade-mgmt-'));
-  const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-session-upgrade-store-'));
   const upstream = await startUpstream('mcp');
   const environment = {
-    AWAKEN_MGMT_DIR: management,
-    AWAKEN_MGMT_SEAL_KEY: SEAL_KEY,
-    AWAKEN_STORAGE_DIR: storage,
+    ...deploymentEnv(management, { controlSealKey: SEAL_KEY }),
     ...realServerEnv('mcp', upstream, { mode: 'management' }),
   };
-  // Management owns the Session aggregate. AWAKEN_STORAGE_DIR retains Runtime
-  // committed truth and extraction state, but is not a second Session API
-  // authority in this composition.
+  // One typed data root owns both the Session aggregate and Runtime committed
+  // truth; the retained upgrade never relies on a second management directory.
   const database = path.join(management, 'sessions.db');
   let server = null;
 
@@ -258,7 +255,6 @@ async function main() {
     if (server) await stopServer(server);
     upstream.close();
     fs.rmSync(management, { recursive: true, force: true });
-    fs.rmSync(storage, { recursive: true, force: true });
   }
 }
 
