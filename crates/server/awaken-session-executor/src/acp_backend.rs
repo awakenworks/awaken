@@ -32,6 +32,17 @@ pub(crate) struct AcpBackend {
 }
 
 impl AcpBackend {
+    pub(crate) fn combined_credential_realization_capabilities(
+        &self,
+    ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
+        match &self.source {
+            AcpExecutorSource::Static(_) => Default::default(),
+            AcpExecutorSource::Bound { launch, .. } => {
+                launch.combined_credential_realization_capabilities()
+            }
+        }
+    }
+
     pub(crate) fn credential_realization_capabilities(
         &self,
         backend: &awaken_runtime_contract::resolved::Backend,
