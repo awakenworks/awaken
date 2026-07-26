@@ -573,6 +573,10 @@ pub enum CredentialRealizationKind {
     PrivateSecretFile,
     WorkerProviderAdapter,
     WorkerRelay,
+    /// A trusted downstream platform adapter consumes the exact published
+    /// credential reference without exposing provider plaintext to the Worker
+    /// or workload.
+    PlatformProviderAdapter,
 }
 
 /// Installed last-mile capabilities.  This is evidence, not preference policy.

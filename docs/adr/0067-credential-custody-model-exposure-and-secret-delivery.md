@@ -335,6 +335,7 @@ enum CredentialRealizationKind {
     PrivateSecretFile,
     WorkerProviderAdapter,
     WorkerRelay,
+    PlatformProviderAdapter,
 }
 
 struct CredentialRealizationReceipt {
@@ -457,6 +458,19 @@ The initial implementation matrix is closed:
 | Workload | not used for in-process Native provider access | typed process-secret or private secret-file requirement | only an explicitly trusted workload MCP client | last-mile delivery, process/file scope, cleanup, no base-env persistence |
 | Worker | exact Worker provider adapter | Worker-mediated endpoint; no real secret in ACP workload | generation-fenced Worker MCP relay | exact substitution, no-bypass network, ownership/lease revoke |
 | Platform | deferred | deferred | deferred | separate accepted downstream-adapter ADR and conformance |
+
+### Amendment: neutral platform-provider realization contract (2026-07-26)
+
+An accepted downstream platform adapter may advertise
+`PlatformProviderAdapter` for Native inference. The publication still pins the
+exact credential reference and an exact Platform trust-domain holder; dispatch
+still atomically binds that tuple to the claim epoch. The downstream adapter may
+then exchange it for a short-lived gateway capability while the Worker and
+workload remain provider-secret-free, and records the ordinary claim-fenced
+realization receipt. Awaken defines only this neutral execution fact: it does not
+define a cloud gateway, lease protocol, IAM policy, provider route, or secret
+store. Absence of the exact holder, capability evidence, ownership fence, or
+receipt fails closed and never falls back to Worker or workload plaintext.
 
 An unsupported matrix cell fails admission with a stable error. It never falls
 through to another row.
