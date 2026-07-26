@@ -18,14 +18,15 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use serde_json::json;
 
 use crate::env_registry::{EnvRegistry, EnvUpdate, InMemoryEnvRegistry};
 use crate::routes::ManagedJson;
 use crate::types::environment::{
     CloudNetworkingParams, DeletedEnvironment, Environment, EnvironmentConfigParams,
-    EnvironmentCreateParams, EnvironmentUpdateParams, PackagesParams, Work, WorkHeartbeat,
-    WorkQueueStats, WorkUpdateParams,
+    EnvironmentCreateParams, EnvironmentUpdateParams, Work, WorkHeartbeat, WorkQueueStats,
+    WorkUpdateParams,
 };
 use crate::types::{ErrorResponse, Page, PageQuery, paginate};
 use awaken_work_store::InMemoryWorkQueue;
@@ -138,7 +139,7 @@ impl EnvironmentState {
         if item.archived_at.is_some() {
             return None;
         }
-        let network = crate::env_registry::env_network_policy(&item.config).normalized();
+        let network = item.config.network_policy().normalized();
         let acp = runtime.is_some_and(|value| value.starts_with("acp:"));
         let holder = if acp {
             awaken_credential_contract::PlaintextHolder::new(
@@ -507,50 +508,43 @@ async fn update_env(
     Ok(Json(crate::env_registry::project_env(&item)))
 }
 
-fn canonical_environment_config(config: EnvironmentConfigParams) -> serde_json::Value {
+fn canonical_environment_config(
+    config: EnvironmentConfigParams,
+) -> awaken_session_contract::env_registry::EnvironmentConfig {
+    use awaken_session_contract::env_registry::{
+        EnvironmentConfig, EnvironmentNetworking, EnvironmentPackages, EnvironmentPackagesKind,
+    };
     match config {
-        EnvironmentConfigParams::SelfHosted {} => json!({ "type": "self_hosted" }),
+        EnvironmentConfigParams::SelfHosted {} => EnvironmentConfig::SelfHosted,
         EnvironmentConfigParams::Cloud {
             networking,
             packages,
         } => {
             let networking = match networking.unwrap_or(CloudNetworkingParams::Unrestricted) {
-                CloudNetworkingParams::Unrestricted => json!({ "type": "unrestricted" }),
+                CloudNetworkingParams::Unrestricted => EnvironmentNetworking::Unrestricted,
                 CloudNetworkingParams::Limited {
                     allowed_hosts,
                     allow_mcp_servers,
                     allow_package_managers,
-                } => {
-                    json!({
-                        "type": "limited",
-                        "allowed_hosts": allowed_hosts.unwrap_or_default(),
-                        "allow_mcp_servers": allow_mcp_servers.unwrap_or(false),
-                        "allow_package_managers": allow_package_managers.unwrap_or(false),
-                    })
-                }
+                } => EnvironmentNetworking::Limited {
+                    allowed_hosts: allowed_hosts.unwrap_or_default(),
+                    allow_mcp_servers: allow_mcp_servers.unwrap_or(false),
+                    allow_package_managers: allow_package_managers.unwrap_or(false),
+                },
             };
-            let PackagesParams {
-                apt,
-                cargo,
-                gem,
-                go,
-                npm,
-                pip,
-                kind: _,
-            } = packages.unwrap_or_default();
-            json!({
-                "type": "cloud",
-                "networking": networking,
-                "packages": {
-                    "type": "packages",
-                    "apt": apt.unwrap_or_default(),
-                    "cargo": cargo.unwrap_or_default(),
-                    "gem": gem.unwrap_or_default(),
-                    "go": go.unwrap_or_default(),
-                    "npm": npm.unwrap_or_default(),
-                    "pip": pip.unwrap_or_default(),
-                }
-            })
+            let packages = packages.unwrap_or_default();
+            EnvironmentConfig::Cloud {
+                networking,
+                packages: EnvironmentPackages {
+                    kind: EnvironmentPackagesKind::Packages,
+                    apt: packages.apt.unwrap_or_default(),
+                    cargo: packages.cargo.unwrap_or_default(),
+                    gem: packages.gem.unwrap_or_default(),
+                    go: packages.go.unwrap_or_default(),
+                    npm: packages.npm.unwrap_or_default(),
+                    pip: packages.pip.unwrap_or_default(),
+                },
+            }
         }
     }
 }
@@ -782,6 +776,12 @@ mod tests {
 
     use super::*;
 
+    fn config(
+        value: serde_json::Value,
+    ) -> awaken_session_contract::env_registry::EnvironmentConfig {
+        serde_json::from_value(value).expect("valid neutral Environment config")
+    }
+
     #[tokio::test]
     async fn with_stores_selects_self_hosted_and_handles_missing() {
         let state = EnvironmentState::with_stores(
@@ -794,7 +794,7 @@ mod tests {
                 "e".into(),
                 String::new(),
                 BTreeMap::new(),
-                json!({ "type": "self_hosted" }),
+                config(json!({ "type": "self_hosted" })),
             )
             .await;
         assert!(state.is_self_hosted(&e.id).await);
@@ -828,10 +828,10 @@ mod tests {
                 "snapshot".into(),
                 String::new(),
                 BTreeMap::new(),
-                json!({
+                config(json!({
                     "type": "cloud",
                     "networking": {"type": "limited", "allowed_hosts": ["a.test", "shared.test"]}
-                }),
+                })),
             )
             .await;
         let native = state.snapshot(&item.id, None).await.expect("S1");
@@ -911,7 +911,7 @@ mod tests {
                 "closed".into(),
                 String::new(),
                 BTreeMap::new(),
-                json!({"type": "cloud", "networking": {"type": "limited"}}),
+                config(json!({"type": "cloud", "networking": {"type": "limited"}})),
             )
             .await;
         assert_eq!(
