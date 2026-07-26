@@ -12,7 +12,10 @@ use awaken_config_store::{
     AgentConfig, AgentConfigRevision, ConfigWrite, ModelSelection, MultiagentConfig,
 };
 use awaken_protocol_managed::types::ModelConfig;
-use awaken_protocol_managed::types::agent::{Agent, AgentCreateParams, AgentUpdateParams};
+use awaken_protocol_managed::types::agent::{
+    Agent, AgentCreateParams, AgentSkill, AgentTool, AgentUpdateParams,
+    MultiagentConfig as WireMultiagent, MultiagentRosterEntry, UrlMcpServer,
+};
 use awaken_protocol_managed::{ManagedAgentError, ManagedAgentRepository};
 use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
 use awaken_tenancy::ScopeId;
@@ -114,50 +117,48 @@ impl ConfigPlaneManagedAgentRepository {
     }
 }
 
-fn tool_id(value: &Value) -> Option<String> {
-    match value {
-        Value::String(id) => Some(id.clone()),
-        Value::Object(object) => object
-            .get("id")
-            .or_else(|| object.get("name"))
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        _ => None,
+fn tool_id(tool: &AgentTool) -> Option<String> {
+    match tool {
+        AgentTool::AgentToolset20260401 { .. } => Some("agent_toolset_20260401".into()),
+        AgentTool::McpToolset { .. } => None,
+        AgentTool::Custom { name, .. } => Some(name.clone()),
     }
 }
 
-fn typed_mcp_servers(values: Vec<Value>) -> Result<Vec<AgentMcpServerBinding>, ManagedAgentError> {
+fn typed_mcp_servers(values: Vec<UrlMcpServer>) -> Vec<AgentMcpServerBinding> {
     values
         .into_iter()
-        .map(|value| {
-            serde_json::from_value(value)
-                .map_err(|error| ManagedAgentError::Invalid(error.to_string()))
+        .map(|server| AgentMcpServerBinding {
+            name: server.name,
+            url: server.url,
+            credential: None,
         })
         .collect()
 }
 
-fn typed_skill_ids(values: Vec<Value>) -> Result<Vec<String>, ManagedAgentError> {
+fn typed_skill_ids(values: Vec<AgentSkill>) -> Vec<String> {
     values
         .into_iter()
-        .map(|value| {
-            value
-                .as_str()
-                .or_else(|| value.get("id").and_then(Value::as_str))
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
-                .map(str::to_string)
-                .ok_or_else(|| {
-                    ManagedAgentError::Invalid(
-                        "Skill must be a non-empty id or object with `id`".into(),
-                    )
-                })
+        .map(|skill| match skill {
+            AgentSkill::Anthropic { skill_id, .. } | AgentSkill::Custom { skill_id, .. } => {
+                skill_id
+            }
         })
         .collect()
 }
 
-fn typed_multiagent(value: Value) -> Result<MultiagentConfig, ManagedAgentError> {
-    serde_json::from_value(value)
-        .map_err(|error| ManagedAgentError::Invalid(format!("invalid multiagent roster: {error}")))
+fn typed_multiagent(owner_id: &str, value: WireMultiagent) -> MultiagentConfig {
+    let WireMultiagent::Coordinator { agents } = value;
+    MultiagentConfig {
+        agent_ids: agents
+            .into_iter()
+            .map(|entry| match entry {
+                MultiagentRosterEntry::Id(id) => id,
+                MultiagentRosterEntry::Reference(reference) => reference.id,
+                MultiagentRosterEntry::SelfReference(_) => owner_id.to_string(),
+            })
+            .collect(),
+    }
 }
 
 fn config_from_create(
@@ -165,6 +166,7 @@ fn config_from_create(
     params: AgentCreateParams,
 ) -> Result<AgentConfig, ManagedAgentError> {
     let model = params.model.into_config();
+    let multiagent = params.multiagent.map(|value| typed_multiagent(&id, value));
     Ok(AgentConfig {
         id,
         instructions: params.system.unwrap_or_default(),
@@ -180,9 +182,9 @@ fn config_from_create(
         name: Some(params.name),
         description: params.description,
         metadata: params.metadata,
-        mcp_servers: typed_mcp_servers(params.mcp_servers)?,
-        skill_ids: typed_skill_ids(params.skills)?,
-        multiagent: params.multiagent.map(typed_multiagent).transpose()?,
+        mcp_servers: typed_mcp_servers(params.mcp_servers),
+        skill_ids: typed_skill_ids(params.skills),
+        multiagent,
         archived_at: None,
         tool_overrides: Vec::new(),
         recovery_policies: BTreeMap::new(),
@@ -336,16 +338,16 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             config.metadata = metadata;
         }
         if let Some(mcp_servers) = params.mcp_servers {
-            config.mcp_servers = typed_mcp_servers(mcp_servers)?;
+            config.mcp_servers = typed_mcp_servers(mcp_servers);
         }
         if let Some(skills) = params.skills {
-            config.skill_ids = typed_skill_ids(skills)?;
+            config.skill_ids = typed_skill_ids(skills);
         }
         if let Some(tools) = params.tools {
             config.tool_ids = tools.iter().filter_map(tool_id).collect();
         }
         if let Some(multiagent) = params.multiagent {
-            config.multiagent = Some(typed_multiagent(multiagent)?);
+            config.multiagent = Some(typed_multiagent(id, multiagent));
         }
         match self
             .plane
@@ -477,12 +479,21 @@ mod tests {
             description: None,
             system: Some("be helpful".into()),
             metadata: BTreeMap::new(),
-            mcp_servers: vec![json!({
-                "type": "url",
-                "name": "docs",
-                "url": "https://mcp.example.test"
-            })],
-            skills: vec![json!({ "id": "skill-docs" })],
+            mcp_servers: vec![
+                serde_json::from_value(json!({
+                    "type": "url",
+                    "name": "docs",
+                    "url": "https://mcp.example.test"
+                }))
+                .unwrap(),
+            ],
+            skills: vec![
+                serde_json::from_value(json!({
+                    "type": "custom",
+                    "skill_id": "skill-docs"
+                }))
+                .unwrap(),
+            ],
             tools: Vec::new(),
             multiagent: None,
         }
