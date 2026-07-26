@@ -67,6 +67,8 @@ fn scenario_deployment() -> awaken_runtime_host::DeploymentConfig {
         .filter(|value| !value.trim().is_empty())
         .map(std::path::PathBuf::from);
     deployment.durable = std::env::var("AWAKEN_INGRESS").as_deref() == Ok("durable");
+    deployment.disable_local_pool =
+        std::env::var("AWAKEN_DISABLE_LOCAL_POOL").as_deref() == Ok("1");
     deployment
 }
 

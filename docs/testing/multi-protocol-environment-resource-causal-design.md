@@ -172,6 +172,11 @@ typed deployment with storage root
 | present | yes | no | durable | persisted | durable operations enabled |
 | present | any | yes | durable | same persisted id | rehydrate and resume |
 
+The worker-drain axis is independent: `disable_local_pool=false` lets the local
+pool claim; `disable_local_pool=true` leaves the same durable queue exclusively
+for an authenticated external Worker. Scenario fixtures project that axis into
+the same `DeploymentConfig` before Host construction, never as a later override.
+
 Constructing an ephemeral Host and adding storage afterward is forbidden: it mints
 a process-specific owner before durability exists and creates a second resource
 composition path.
