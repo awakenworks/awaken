@@ -57,11 +57,7 @@ fn mount(host: Arc<SharedHost>) -> Router {
 }
 
 fn resource_host(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> SharedHost {
-    resource_host_with_deployment(
-        llm,
-        model_ref,
-        awaken_runtime_host::DeploymentConfig::ephemeral(),
-    )
+    resource_host_with_deployment(llm, model_ref, scenario_deployment())
 }
 
 fn scenario_deployment() -> awaken_runtime_host::DeploymentConfig {
@@ -1725,18 +1721,10 @@ pub fn build_skills_router() -> Router {
 /// restart. `AWAKEN_MODEL_MODE=skills-durable`.
 pub async fn build_skills_durable_router() -> Router {
     let (model, model_ref) = scenario_model(Arc::new(SkillDrivingModel), "skills-durable");
-    let directory = scenario_skill_store_dir();
-    let storage_root = directory
-        .parent()
-        .expect("Skill store directory has a storage root");
-    let resources = awaken_server::embedded_resource_plane(storage_root);
-    let (files, memory, skills, lifecycle) = resources.into_parts();
-    awaken_server::migrate_legacy_skill_registry(storage_root, skills.as_ref())
-        .await
-        .expect("migrate legacy Skill registry before serving");
-    let resources = awaken_runtime_host::ResourcePlanePorts::new(files, memory, skills, lifecycle);
-    mount(Arc::new(SharedHost::new_with_resource_plane(
-        model, model_ref, resources,
+    mount(Arc::new(resource_host_with_deployment(
+        model,
+        model_ref,
+        scenario_deployment(),
     )))
 }
 pub async fn build_config_router() -> Router {

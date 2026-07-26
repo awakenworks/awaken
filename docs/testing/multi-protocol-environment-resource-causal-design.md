@@ -171,6 +171,9 @@ typed deployment with storage root
 Constructing an ephemeral Host and adding storage afterward is forbidden: it mints
 a process-specific owner before durability exists and creates a second resource
 composition path.
+The same rule covers every Resource family, including the delivered Skill store:
+durable File, Memory, Skill, lifecycle, Session, and sandbox adapters come from the
+one ResourcePlane/deployment constructor and survive or fail together.
 
 Gate composition follows one ordering rule: ordinary authorization is built first,
 Skill wiring may decorate that base, and an explicit Host override is applied last.
