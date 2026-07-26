@@ -2,16 +2,75 @@
 //! (`beta.environments.*` / `beta.environments.work.*`): `BetaEnvironment`, the
 //! work item, and the small action responses (delete / queue stats / heartbeat).
 //!
-//! Pure serde shapes. Polymorphic sub-fields the SDK models as unions — an
-//! environment's `config` (`BetaCloudConfig | BetaSelfHostedConfig`) and a work
-//! item's `data` (`BetaSessionWorkData | BetaHealthCheckWorkData`) — stay opaque
-//! `Value`s. The store, the record→wire projection, and the neutral network-policy
-//! mapping live in `routes::environments`.
+//! Pure serde shapes. The Environment config is the exact Anthropic tagged union;
+//! Awaken execution policy is deliberately not accepted in this wire object.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum EnvironmentConfigParams {
+    Cloud {
+        #[serde(default)]
+        networking: Option<CloudNetworkingParams>,
+        #[serde(default)]
+        packages: Option<PackagesParams>,
+        #[serde(flatten)]
+        extra: BTreeMap<String, Value>,
+    },
+    SelfHosted {
+        #[serde(flatten)]
+        extra: BTreeMap<String, Value>,
+    },
+}
+
+impl Default for EnvironmentConfigParams {
+    fn default() -> Self {
+        Self::SelfHosted {
+            extra: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CloudNetworkingParams {
+    Unrestricted {
+        #[serde(flatten)]
+        extra: BTreeMap<String, Value>,
+    },
+    Limited {
+        #[serde(default)]
+        allowed_hosts: Vec<String>,
+        #[serde(default)]
+        allow_mcp_servers: bool,
+        #[serde(default)]
+        allow_package_managers: bool,
+        #[serde(flatten)]
+        extra: BTreeMap<String, Value>,
+    },
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PackagesParams {
+    #[serde(default)]
+    pub apt: Vec<String>,
+    #[serde(default)]
+    pub cargo: Vec<String>,
+    #[serde(default)]
+    pub gem: Vec<String>,
+    #[serde(default)]
+    pub go: Vec<String>,
+    #[serde(default)]
+    pub npm: Vec<String>,
+    #[serde(default)]
+    pub pip: Vec<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
 
 /// `EnvironmentCreateParams` — the `POST /v1/environments` body. `config` is the
 /// `BetaCloudConfig | BetaSelfHostedConfig` union (opaque `Value`); absent defaults
@@ -24,7 +83,7 @@ pub struct EnvironmentCreateParams {
     #[serde(default)]
     pub metadata: BTreeMap<String, String>,
     #[serde(default)]
-    pub config: Option<Value>,
+    pub config: Option<EnvironmentConfigParams>,
 }
 
 /// `EnvironmentUpdateParams` — a partial update. `name` / `description` / `config`
@@ -37,7 +96,7 @@ pub struct EnvironmentUpdateParams {
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
-    pub config: Option<Value>,
+    pub config: Option<EnvironmentConfigParams>,
     #[serde(default)]
     pub metadata: Option<BTreeMap<String, Option<String>>>,
 }

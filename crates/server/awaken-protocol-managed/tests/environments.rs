@@ -121,6 +121,60 @@ async fn environment_carries_no_scope_and_ignores_a_body_scope() {
     );
 }
 
+/// Environment config admission cause graph:
+/// C1 official tagged variant; C2 every nested field belongs to that variant.
+/// E1 persist canonical config; E2 reject before creating an Environment/work item.
+///
+/// | Rule | C1 | C2 | Result |
+/// |---|---|---|---|
+/// | A1 self_hosted | T | T | canonical self_hosted |
+/// | A2 cloud | T | T | defaulted network/packages |
+/// | A3 private sandbox extension | T | F | 400 |
+/// | A4 unknown variant | F | - | 400 |
+/// | A5 unknown nested network/package field | T | F | 400 |
+#[tokio::test]
+async fn environment_config_admission_follows_the_official_union_decision_table() {
+    let app = app();
+    let cases = [
+        (
+            "A3",
+            json!({"type":"self_hosted", "sandbox": {"isolation":"container"}}),
+        ),
+        ("A4", json!({"type":"custom_cloud"})),
+        (
+            "A5-network",
+            json!({"type":"cloud", "networking":{"type":"limited", "proxy":"x"}}),
+        ),
+        (
+            "A5-package",
+            json!({"type":"cloud", "packages":{"docker":["x"]}}),
+        ),
+    ];
+    for (rule, config) in cases {
+        let (status, _) = call(
+            &app,
+            "POST",
+            "/v1/environments",
+            Some(json!({"name": rule, "config": config})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{rule}");
+    }
+
+    let (status, cloud) = call(
+        &app,
+        "POST",
+        "/v1/environments",
+        Some(json!({"name":"A2", "config":{"type":"cloud"}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(cloud["config"]["networking"]["type"], "unrestricted");
+    for manager in ["apt", "cargo", "gem", "go", "npm", "pip"] {
+        assert_eq!(cloud["config"]["packages"][manager], json!([]), "{manager}");
+    }
+}
+
 #[tokio::test]
 async fn official_worker_header_and_heartbeat_cas_are_wired() {
     let app = app();
