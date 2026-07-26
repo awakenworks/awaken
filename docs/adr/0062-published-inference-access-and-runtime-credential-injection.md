@@ -280,3 +280,59 @@ Automatic LLM Vault authoring is not decided here. It requires a separate
 application-workflow proposal naming its service owner, transaction or durable
 saga, idempotency, compensation, repositories, outbox, and orphan-material
 reclamation before implementation.
+
+## Amendment: remote consumers read the scoped publication, never host it (2026-07-26)
+
+An embedding product deployed in another process is a consumer of Awaken's
+configuration authority, not another configuration authority. Its trusted
+Awaken Workspace is therefore both the owner of ordinary Agent drafts and the
+execution Workspace used to resolve and fingerprint a publication. A product
+Project may namespace the Agent id that it authors, but it is not passed to
+Awaken as an unrecognized tenancy scope.
+
+The management plane exposes one read-only, Workspace-scoped projection for an
+exact publication fingerprint. It returns the existing `StoredPublication`
+value and performs no compilation, installation, route selection, credential
+lookup, or fallback. The existing management IAM guard remains the only
+authorization edge; a missing or cross-Workspace fingerprint is indistinguishable
+from absence.
+
+Static structure:
+
+```text
+embedding product adapter
+  -> authenticated Awaken Workspace management API
+       -> ConfigPlane
+            -> ScopedConfigRegistry
+                 -> StoredPublication (single durable authority)
+
+RunDispatch -> copies StoredPublication.snapshot
+Runtime     -> consumes that immutable snapshot
+```
+
+Dynamic causal graph:
+
+```text
+trusted Workspace + exact fingerprint
+  -> management IAM allow?
+       no  -> 401/403; no repository read exposed
+       yes -> scoped publication lookup
+                missing -> 404
+                store failure -> 500
+                found -> 200 with the exact stored publication
+```
+
+Decision table:
+
+| authenticated | authorized Workspace | scoped publication | outcome | mutation |
+|---|---|---|---|---|
+| no | n/a | n/a | `401` | none |
+| yes | no | n/a | `403` | none |
+| yes | yes | absent | `404` | none |
+| yes | yes | store error | `500` | none |
+| yes | yes | present | `200` exact `StoredPublication` | none |
+
+This endpoint is deliberately not a product-specific Agent-control API and does
+not add a publication cache or DTO. Local embedded composition continues to use
+the same `ConfigPlane`/`ScopedConfigRegistry` authority directly; remote
+composition uses the HTTP adapter over that authority.

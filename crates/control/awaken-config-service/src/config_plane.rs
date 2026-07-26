@@ -485,6 +485,18 @@ impl ConfigPlane {
             .await
     }
 
+    /// Read one exact immutable publication owned by `scope`.
+    pub async fn publication(
+        &self,
+        scope: &ScopeId,
+        fingerprint: &str,
+    ) -> Result<Option<StoredPublication>, String> {
+        self.registry_for(scope)
+            .get_publication(fingerprint)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
     /// Every stored config draft owned by `scope`.
     pub async fn list(&self, scope: &ScopeId) -> Result<Vec<AgentConfig>, String> {
         self.service.list(&self.registry_for(scope)).await
@@ -561,7 +573,7 @@ impl ConfigPlane {
 }
 
 #[cfg(test)]
-mod resource_prompt_tests {
+pub(crate) mod resource_prompt_tests {
     use super::*;
     use awaken_config_resolver::{
         AgentInputConfig, BindingId, InputBinding, InputResourceId, MemoryStoreId, ResourceAccess,
@@ -579,7 +591,7 @@ mod resource_prompt_tests {
         ScopeId::from(id)
     }
 
-    fn agent_config(id: &str) -> AgentConfig {
+    pub(crate) fn agent_config(id: &str) -> AgentConfig {
         AgentConfig {
             id: id.to_string(),
             instructions: "be helpful".to_string(),
@@ -641,7 +653,7 @@ mod resource_prompt_tests {
         }
     }
 
-    fn test_service() -> ConfigService {
+    pub(crate) fn test_service() -> ConfigService {
         ConfigService::new(Arc::new(FakeResolver))
     }
 
@@ -913,7 +925,7 @@ mod resource_prompt_tests {
         }
     }
 
-    fn failing_scoped_plane() -> ConfigPlane {
+    pub(crate) fn failing_scoped_plane() -> ConfigPlane {
         ConfigPlane::new(
             Arc::new(test_service()),
             Arc::new(FailingScopedRegistry),

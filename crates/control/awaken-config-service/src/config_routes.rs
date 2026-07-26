@@ -21,6 +21,10 @@ use crate::tool_catalog::RESERVED_ADMIN_SCOPE;
 pub fn config_router(plane: ConfigPlane) -> Router {
     Router::new()
         .route("/v1/config/agents", get(list_configs))
+        .route(
+            "/v1/config/publications/{fingerprint}",
+            get(get_publication),
+        )
         .route("/v1/config/agents/{id}/validate", post(validate))
         .route("/v1/config/agents/{id}/publish", post(publish))
         .route("/v1/config/agents/{id}", get(get_config).put(put_config))
@@ -30,6 +34,34 @@ pub fn config_router(plane: ConfigPlane) -> Router {
 pub(crate) fn request_scope(ext: Option<Extension<awaken_tenancy::WorkspaceScope>>) -> ScopeId {
     ext.map(|Extension(w)| ScopeId::from(w.0))
         .unwrap_or_else(|| ScopeId::from(DEFAULT_SCOPE))
+}
+
+/// Absence is scoped, so another Workspace's fingerprint is never disclosed.
+async fn get_publication(
+    State(plane): State<ConfigPlane>,
+    Path(fingerprint): Path<String>,
+    scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
+) -> (StatusCode, Json<Value>) {
+    if fingerprint.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "publication fingerprint is required" })),
+        );
+    }
+    match plane.publication(&request_scope(scope), &fingerprint).await {
+        Ok(Some(publication)) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(publication).expect("StoredPublication serializes")),
+        ),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "publication not found" })),
+        ),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": error })),
+        ),
+    }
 }
 
 async fn list_configs(
@@ -216,4 +248,55 @@ fn publication_workspace<'a>(
     (scope.as_str() != RESERVED_ADMIN_SCOPE)
         .then(|| scope.as_str())
         .or_else(|| execution.map(|Extension(workspace)| workspace.0.as_str()))
+}
+
+#[cfg(test)]
+mod publication_projection_tests {
+    use std::sync::Arc;
+
+    use awaken_config_store::SqliteConfigStore;
+
+    use super::*;
+    use crate::config_plane::resource_prompt_tests::{
+        agent_config, failing_scoped_plane, test_service,
+    };
+
+    // Causal decision table: present in trusted scope => exact value;
+    // absent/cross-scope => 404; repository failure => 500.
+    #[tokio::test]
+    async fn exact_scoped_and_fail_closed() {
+        let plane = ConfigPlane::new(
+            Arc::new(test_service()),
+            Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
+            Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
+        );
+        let owner = ScopeId::from("workspace-owner");
+        plane.put(&owner, &agent_config("agent-a")).await.unwrap();
+        let published = plane.publish(&owner, "agent-a").await.unwrap();
+
+        let (status, body) = get_publication(
+            State(plane.clone()),
+            Path(published.fingerprint.clone()),
+            Some(Extension(awaken_tenancy::WorkspaceScope(
+                owner.as_str().to_owned(),
+            ))),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.0["fingerprint"], published.fingerprint);
+
+        let (status, _) = get_publication(
+            State(plane),
+            Path(published.fingerprint),
+            Some(Extension(awaken_tenancy::WorkspaceScope("intruder".into()))),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(
+            get_publication(State(failing_scoped_plane()), Path("fp".into()), None)
+                .await
+                .0,
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
 }
