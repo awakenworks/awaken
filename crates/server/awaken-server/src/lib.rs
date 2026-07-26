@@ -370,7 +370,29 @@ fn mount_with_managed_over(
     let managed = router(managed_state.clone());
     // One neutral port impl behind the three wire adapters (each `router` takes
     // `Arc<dyn ProtocolRuntime>`), so they share the host with no per-protocol twin.
-    let port: Arc<dyn ProtocolRuntime> = Arc::new(ProtocolHost::new(host.clone()));
+    struct ManagedSessionDefaults(Arc<ManagedState>);
+
+    #[async_trait::async_trait]
+    impl awaken_session_executor::SessionDefaultsPreparer for ManagedSessionDefaults {
+        async fn prepare(
+            &self,
+            workspace_id: &str,
+            thread_id: &str,
+            agent_id: &str,
+        ) -> Result<(), awaken_session_executor::SessionDefaultsPreparationError> {
+            self.0
+                .prepare_protocol_session(workspace_id, thread_id, agent_id)
+                .await
+                .map_err(|error| {
+                    awaken_session_executor::SessionDefaultsPreparationError(error.to_string())
+                })
+        }
+    }
+
+    let port: Arc<dyn ProtocolRuntime> = Arc::new(
+        ProtocolHost::new(host.clone())
+            .with_session_defaults(Arc::new(ManagedSessionDefaults(managed_state.clone()))),
+    );
     let mut ai_sdk = awaken_protocol_ai_sdk::router(port.clone());
     let mut ag_ui = awaken_protocol_ag_ui::router(port.clone());
     if let Some(application_access) = application_access {

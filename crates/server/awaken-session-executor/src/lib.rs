@@ -1752,11 +1752,49 @@ fn to_port_step_outcome(result: RunResult) -> PortStepOutcome {
 /// protocol is resumable and observable through the others on the same thread.
 pub struct ProtocolHost {
     host: Arc<SharedHost>,
+    session_defaults: Option<Arc<dyn SessionDefaultsPreparer>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("Session defaults could not be prepared: {0}")]
+pub struct SessionDefaultsPreparationError(pub String);
+
+#[async_trait::async_trait]
+pub trait SessionDefaultsPreparer: Send + Sync {
+    async fn prepare(
+        &self,
+        workspace_id: &str,
+        thread_id: &str,
+        agent_id: &str,
+    ) -> Result<(), SessionDefaultsPreparationError>;
 }
 
 impl ProtocolHost {
     pub fn new(host: Arc<SharedHost>) -> Self {
-        Self { host }
+        Self {
+            host,
+            session_defaults: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_session_defaults(mut self, preparer: Arc<dyn SessionDefaultsPreparer>) -> Self {
+        self.session_defaults = Some(preparer);
+        self
+    }
+
+    async fn prepare_defaults(&self, thread: &str, agent: Option<&str>) -> Result<(), DriverError> {
+        let Some(preparer) = &self.session_defaults else {
+            return Ok(());
+        };
+        preparer
+            .prepare(
+                &self.host.thread_workspace(thread),
+                thread,
+                agent.unwrap_or("assistant"),
+            )
+            .await
+            .map_err(|error| DriverError::BadRequest(error.to_string()))
     }
 }
 
@@ -1768,6 +1806,7 @@ impl ProtocolRuntime for ProtocolHost {
         agent: Option<String>,
         messages: Vec<Message>,
     ) -> Result<PortStepOutcome, DriverError> {
+        self.prepare_defaults(thread, agent.as_deref()).await?;
         let result = self
             .host
             .run(agent.as_deref(), thread, messages)
@@ -1783,6 +1822,7 @@ impl ProtocolRuntime for ProtocolHost {
         messages: Vec<Message>,
         sink: std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>,
     ) -> Result<PortStepOutcome, DriverError> {
+        self.prepare_defaults(thread, agent.as_deref()).await?;
         let result = self
             .host
             .run_streaming(agent.as_deref(), thread, messages, sink)

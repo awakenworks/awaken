@@ -46,6 +46,40 @@ pub(super) fn stage_mcp_request(
 }
 
 impl ManagedState {
+    pub async fn prepare_protocol_session(
+        &self,
+        workspace_id: &str,
+        thread_id: &str,
+        agent_id: &str,
+    ) -> Result<(), StateError> {
+        if self.sessions_repo.get(thread_id).await.is_some() {
+            // A durable row does not imply that this process has reconstructed
+            // the runtime projection.  Reuse the authoritative restart path so
+            // resources and the exact Environment snapshot are restored before
+            // a non-Managed adapter is allowed to execute the next turn.
+            return self.ensure_session(thread_id).await;
+        }
+        let request = serde_json::from_value(serde_json::json!({"agent": agent_id}))
+            .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
+        match self
+            .create_session_with_identity(
+                request,
+                Some(workspace_id.to_string()),
+                Some(thread_id.to_string()),
+            )
+            .await
+        {
+            Ok(_) => Ok(()),
+            // Concurrent first turns share the explicit protocol thread id. The
+            // durable create fence chooses one winner; every loser adopts that
+            // exact committed Session through the normal recovery seam.
+            Err(StateError::Conflict) if self.sessions_repo.get(thread_id).await.is_some() => {
+                self.ensure_session(thread_id).await
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// Bounded retry for a root Session CAS. A retry always reloads the
     /// aggregate and reruns the command's domain checks; stale snapshots are
     /// never merged wholesale.

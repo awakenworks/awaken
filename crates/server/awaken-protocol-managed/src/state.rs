@@ -1121,6 +1121,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn protocol_defaults_preparer_rehydrates_the_exact_durable_baseline() {
+        // Phase-4 rule M5: an existing durable Session after process restart is
+        // not merely "present".  The shared preparer must traverse the same
+        // recovery path that reinstalls its frozen Resource and Environment
+        // snapshot before a wire adapter may execute.
+        let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
+        let mut persisted = sample_persisted("external-thread");
+        persisted.environment_binding = Some("opaque-runtime-binding".to_string());
+        create_session_fixture(repo.as_ref(), "workspace-a", persisted).await;
+
+        let runtime = RehydrateFake::default();
+        let restored = runtime.restored.clone();
+        let restored_environments = runtime.restored_environments.clone();
+        let restarted = ManagedState::new_with_mcp(runtime).with_session_repo(repo);
+
+        restarted
+            .prepare_protocol_session("workspace-a", "external-thread", "ignored-on-recovery")
+            .await
+            .expect("prepare existing protocol thread");
+
+        assert_eq!(restored.lock().unwrap().len(), 1);
+        assert_eq!(restored.lock().unwrap()[0].2, sample_inputs());
+        assert_eq!(
+            restored_environments.lock().unwrap().as_slice(),
+            &[(
+                "coder".to_string(),
+                "external-thread".to_string(),
+                "opaque-runtime-binding".to_string(),
+            )],
+            "the durable agent and opaque Environment binding win over request-time defaults"
+        );
+    }
+
+    #[tokio::test]
     async fn ensure_session_retries_and_commits_a_crash_interrupted_activation() {
         let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
         let mut pending = sample_persisted("sesn_pending");
