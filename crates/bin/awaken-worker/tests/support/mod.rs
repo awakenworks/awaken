@@ -14,14 +14,16 @@ pub struct FakeWorkerUpstream {
 }
 
 impl FakeWorkerUpstream {
-    pub fn start() -> Self {
+    pub fn start(block_drain: bool) -> (Self, Arc<AtomicBool>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         listener.set_nonblocking(true).unwrap();
         let stop = Arc::new(AtomicBool::new(false));
         let requests = Arc::new(Mutex::new(Vec::new()));
+        let drain_release = Arc::new(AtomicBool::new(!block_drain));
         let thread_stop = stop.clone();
         let thread_requests = requests.clone();
+        let thread_drain_release = drain_release.clone();
         let thread = std::thread::spawn(move || {
             while !thread_stop.load(Ordering::Acquire) {
                 match listener.accept() {
@@ -30,7 +32,12 @@ impl FakeWorkerUpstream {
                             break;
                         }
                         stream.set_nonblocking(false).unwrap();
-                        handle(stream, &thread_requests);
+                        handle(
+                            stream,
+                            &thread_requests,
+                            &thread_stop,
+                            &thread_drain_release,
+                        );
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(2));
@@ -39,12 +46,15 @@ impl FakeWorkerUpstream {
                 }
             }
         });
-        Self {
-            url: format!("http://{addr}"),
-            stop,
-            requests,
-            thread: Some(thread),
-        }
+        (
+            Self {
+                url: format!("http://{addr}"),
+                stop,
+                requests,
+                thread: Some(thread),
+            },
+            drain_release,
+        )
     }
 
     pub fn url(&self) -> &str {
@@ -68,7 +78,12 @@ impl Drop for FakeWorkerUpstream {
     }
 }
 
-fn handle(mut stream: TcpStream, requests: &Mutex<Vec<String>>) {
+fn handle(
+    mut stream: TcpStream,
+    requests: &Mutex<Vec<String>>,
+    stop: &AtomicBool,
+    drain_release: &AtomicBool,
+) {
     let request = read_request(&mut stream);
     let header_end = request
         .windows(4)
@@ -82,6 +97,11 @@ fn handle(mut stream: TcpStream, requests: &Mutex<Vec<String>>) {
         .unwrap();
     let path = request_line.split_whitespace().nth(1).unwrap();
     requests.lock().unwrap().push(path.to_string());
+    if path == "/v1/worker/drain" {
+        while !drain_release.load(Ordering::Acquire) && !stop.load(Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
     let body = std::str::from_utf8(&request[header_end..]).unwrap();
     let response = match path {
         "/v1/worker/register" => {

@@ -168,7 +168,7 @@ fn explicit_and_standard_manifest_sources_are_mutually_exclusive() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_runs_register_ready_drain_quiesce_and_deregister() {
-    let upstream = FakeWorkerUpstream::start();
+    let (upstream, _drain_release) = FakeWorkerUpstream::start(false);
     let registered_identity = Arc::new(Mutex::new(None));
     let observed = registered_identity.clone();
     WorkerNodeBuilder::new(WorkerUpstream::new(upstream.url()).with_worker_id("worker-node-test"))

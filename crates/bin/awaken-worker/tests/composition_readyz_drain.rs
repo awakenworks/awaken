@@ -81,7 +81,7 @@ fn poll_until(addr: &str, method: &str, path: &str, want: u16) -> bool {
 #[test]
 fn run_brings_readyz_up_then_drain_flips_it_down() {
     let admin_addr = format!("127.0.0.1:{}", free_port());
-    let upstream = FakeWorkerUpstream::start();
+    let (upstream, _drain_release) = FakeWorkerUpstream::start(false);
 
     let worker = Worker(
         Command::new(env!("CARGO_BIN_EXE_awaken-worker"))
@@ -138,4 +138,57 @@ fn run_brings_readyz_up_then_drain_flips_it_down() {
     );
 
     drop(worker); // explicit: kill the child now (also happens on panic via Drop)
+}
+
+#[test]
+fn drain_fences_local_claims_before_control_acknowledges_it() {
+    let admin_addr = format!("127.0.0.1:{}", free_port());
+    let (upstream, drain_release) = FakeWorkerUpstream::start(true);
+
+    let worker = Worker(
+        Command::new(env!("CARGO_BIN_EXE_awaken-worker"))
+            .env("AWAKEN_UPSTREAM_URL", upstream.url())
+            .env("AWAKEN_INGRESS", "durable")
+            .env("AWAKEN_WORKER_ADMIN_LISTEN", &admin_addr)
+            .env_remove("AWAKEN_MGMT_DIR")
+            .env_remove("AWAKEN_ACP_CLIS")
+            .env_remove("AWAKEN_ACP_CLI")
+            .spawn()
+            .expect("spawn the awaken-worker binary"),
+    );
+    assert!(
+        poll_until(&admin_addr, "GET", "/readyz", 200),
+        "worker reaches accepting before the drain request"
+    );
+
+    let drain_addr = admin_addr.clone();
+    let drain_request =
+        std::thread::spawn(move || http_status(&drain_addr, "POST", "/admin/drain"));
+    for _ in 0..500 {
+        if upstream
+            .requests()
+            .iter()
+            .any(|path| path == "/v1/worker/drain")
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        upstream
+            .requests()
+            .iter()
+            .any(|path| path == "/v1/worker/drain"),
+        "control receives the drain mutation"
+    );
+
+    assert_eq!(
+        http_status(&admin_addr, "GET", "/readyz"),
+        503,
+        "the local admission fence closes before the blocked control response returns"
+    );
+    drain_release.store(true, std::sync::atomic::Ordering::Release);
+    assert_eq!(drain_request.join().expect("drain request joins"), 200);
+
+    drop(worker);
 }

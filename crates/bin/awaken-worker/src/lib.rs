@@ -756,8 +756,8 @@ struct WorkerLifecycle {
 
 impl WorkerLifecycle {
     async fn begin_drain(&self, deadline_ms: Option<u64>) -> Result<(), String> {
-        let remote = self.control.begin_drain(&self.identity, deadline_ms).await;
         self.host.begin_pool_drain().await;
+        let remote = self.control.begin_drain(&self.identity, deadline_ms).await;
         match remote? {
             RegistryMutation::Applied => Ok(()),
             other => Err(format!("worker drain rejected: {other:?}")),
