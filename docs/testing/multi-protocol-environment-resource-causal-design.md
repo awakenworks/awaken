@@ -260,3 +260,24 @@ explicit config.toml
 The public Environment contract owns network policy only. Container image and
 realization tier remain deployment/Worker facts; a private Environment `sandbox`
 field would duplicate the versioned SandboxExecutionPolicy boundary.
+
+## Phase 11: one scenario Host composition
+
+```text
+scenario_deployment()
+  -> resource_host_with_deployment()
+  -> ResourcePlane + durable queue/store + sandbox provider
+  -> scenario-specific decorators (ACP, delegate, tools, skills, gate)
+```
+
+| Rule | Storage | Durable | Decorator | Expected |
+|---|---:|---:|---|---|
+| H1 | absent | no | any | ephemeral canonical Host |
+| H2 | present | yes | delegate | parent/child queue and sandbox survive crash |
+| H3 | present | yes | ACP/tools/skills | decorator retains the same deployment |
+| H4 | present | yes | direct `SharedHost::new` | forbidden duplicate composition |
+
+Scenario behavior is a decorator, never an alternative constructor. The helper
+is the only owner of the ephemeral-versus-durable ResourcePlane decision, so a
+special protocol cannot silently discard storage, pool, Environment, or Resource
+ownership selected by the test deployment.

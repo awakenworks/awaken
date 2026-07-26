@@ -104,7 +104,7 @@ fn mount_with_environments(host: Arc<SharedHost>) -> Router {
 /// the Host. Production always supplies either the local default-scope layer or an
 /// authenticated PEP before these routers.
 pub fn build_unscoped_resource_router() -> Router {
-    let host = Arc::new(SharedHost::new(Arc::new(EchoModel), "unscoped-resource"));
+    let host = Arc::new(resource_host(Arc::new(EchoModel), "unscoped-resource"));
     let purge: Arc<dyn awaken_protocol_managed::resource_plane::ResourcePurgeScheduler> =
         host.clone();
     Router::new()
@@ -151,7 +151,7 @@ impl InferenceExecutorMaterializer for RouteProvider {
 pub fn build_model_route_router() -> Router {
     let (default_model, _) = scenario_model(Arc::new(LabelModel("default")), "default");
     mount(Arc::new(
-        SharedHost::new(default_model, "default")
+        resource_host(default_model, "default")
             .with_inference_materializer(Arc::new(RouteProvider)),
     ))
 }
@@ -216,7 +216,7 @@ pub fn build_outcome_matrix_router() -> Router {
         .max_steps(2)
         .build();
     mount(Arc::new(
-        SharedHost::new(model, model_ref)
+        resource_host(model, model_ref)
             .with_acp(acp)
             .with_judge_snapshot(judge),
     ))
@@ -360,7 +360,7 @@ pub fn build_compaction_router() -> Router {
 /// stays usable after a failure. `AWAKEN_MODEL_MODE=error`.
 pub fn build_error_router() -> Router {
     let (model, model_ref) = scenario_model(Arc::new(crate::models::ErrorModel), "error");
-    let host = SharedHost::new(model, model_ref);
+    let host = resource_host(model, model_ref);
     mount(Arc::new(host))
 }
 
@@ -410,7 +410,7 @@ pub async fn run_echo_worker(
 pub fn build_worker_router() -> Router {
     let client_tools = HashSet::from(["submit_answer".to_string()]);
     let (model, model_ref) = scenario_model(Arc::new(CustomToolModel), "worker");
-    let host = Arc::new(SharedHost::new(model, model_ref).with_client_tools(client_tools));
+    let host = Arc::new(resource_host(model, model_ref).with_client_tools(client_tools));
     mount_with_environments(host)
 }
 
@@ -486,7 +486,7 @@ pub fn build_acp_control_router() -> Router {
         slow_acp_source(),
     )));
     mount(Arc::new(
-        SharedHost::new(Arc::new(EchoModel), "awaken").with_acp(acp),
+        resource_host(Arc::new(EchoModel), "awaken").with_acp(acp),
     ))
 }
 
@@ -521,7 +521,7 @@ pub fn build_acp_relaunch_failure_router() -> Router {
     });
     let acp = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
     mount(Arc::new(
-        SharedHost::new(Arc::new(EchoModel), "awaken").with_acp(acp),
+        resource_host(Arc::new(EchoModel), "awaken").with_acp(acp),
     ))
 }
 
@@ -543,7 +543,7 @@ pub fn build_acp_jsonrpc_router() -> Router {
     );
     let acp = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
     mount(Arc::new(
-        SharedHost::new(Arc::new(EchoModel), "awaken").with_acp(acp),
+        resource_host(Arc::new(EchoModel), "awaken").with_acp(acp),
     ))
 }
 
@@ -564,7 +564,7 @@ pub fn build_acp_permission_router() -> Router {
     );
     let acp = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
     mount(Arc::new(
-        SharedHost::new(Arc::new(EchoModel), "awaken").with_acp(acp),
+        resource_host(Arc::new(EchoModel), "awaken").with_acp(acp),
     ))
 }
 
@@ -588,7 +588,7 @@ pub fn build_acp_router() -> Router {
     // (`AWAKEN_MODEL_SOURCE=http`); the ACP `runtime:"acp:*"` path is unaffected — it
     // runs on the real CLI subprocess either way.
     let (model, model_ref) = scenario_model(Arc::new(EchoModel), "awaken");
-    mount(Arc::new(SharedHost::new(model, model_ref).with_acp(acp)))
+    mount(Arc::new(resource_host(model, model_ref).with_acp(acp)))
 }
 
 /// A JSON-RPC fake agent (the codec [`ProjectingChannelSource`] speaks) that echoes
@@ -802,8 +802,10 @@ pub async fn build_acp_sandboxed_router() -> Router {
         .unwrap_or_else(|| {
             std::env::temp_dir().join(format!("awaken-acp-sbx-{}", std::process::id()))
         });
-    let host = SharedHost::new(Arc::new(EchoModel), "awaken")
-        .with_store_dir(base)
+    let mut deployment = scenario_deployment();
+    deployment.storage_dir = Some(base.clone());
+    deployment.sandbox_dir = Some(base.join("sandboxes"));
+    let host = resource_host_with_deployment(Arc::new(EchoModel), "awaken", deployment)
         .with_acp_launch_source(
             awaken_server::relay_hand_executor_factory(),
             awaken_runtime_host::LaunchSource::Fixed(launch),
@@ -884,12 +886,7 @@ pub fn build_router_with_deployment(
     model_ref: impl Into<String>,
     deployment: awaken_runtime_host::DeploymentConfig,
 ) -> Router {
-    let host = SharedHost::new_with_deployment(llm, model_ref, deployment).with_resource_lifecycle(
-        Arc::new(
-            awaken_resource_store::SqliteResourceStore::in_memory()
-                .expect("open scenario resource lifecycle sqlite"),
-        ),
-    );
+    let host = resource_host_with_deployment(llm, model_ref, deployment);
     mount(Arc::new(host))
 }
 
@@ -1228,9 +1225,7 @@ pub fn build_router_with_skills(
     model_ref: impl Into<String>,
     skills: Vec<SkillSpec>,
 ) -> Router {
-    mount(Arc::new(
-        SharedHost::new(llm, model_ref).with_skills(skills),
-    ))
+    mount(Arc::new(resource_host(llm, model_ref).with_skills(skills)))
 }
 
 /// A router whose Outcomes are graded by the named Judge Agent through the
@@ -1241,7 +1236,7 @@ pub fn build_graded_router(
     judge_agent_id: impl Into<String>,
 ) -> Router {
     mount(Arc::new(
-        SharedHost::new(llm, model_ref).with_judge(judge_agent_id),
+        resource_host(llm, model_ref).with_judge(judge_agent_id),
     ))
 }
 
@@ -1261,7 +1256,7 @@ pub fn build_vision_router() -> Router {
 pub fn build_custom_router() -> Router {
     let client_tools = HashSet::from(["submit_answer".to_string()]);
     let (model, model_ref) = scenario_model(Arc::new(CustomToolModel), "custom");
-    let host = SharedHost::new(model, model_ref).with_client_tools(client_tools);
+    let host = resource_host(model, model_ref).with_client_tools(client_tools);
     mount(Arc::new(host))
 }
 
@@ -1383,7 +1378,7 @@ pub fn build_remote_hand_router() -> Router {
     let provider = Arc::new(placement::ConfigToolExecutorProvider::new(vec![
         placement::PlacementEntry::any(executor),
     ]));
-    let host = SharedHost::new(model, model_ref)
+    let host = resource_host(model, model_ref)
         .with_gate_override(Arc::new(AllowAllGate))
         .with_tool_executor_provider(provider);
     mount(Arc::new(host))
@@ -1412,7 +1407,7 @@ pub fn build_delegation_router() -> Router {
         snapshot("researcher", Vec::new()),
     ])
     .expect("valid scenario Agent publications");
-    let host = SharedHost::new(model, model_ref).with_agent_publications(Arc::new(publications));
+    let host = resource_host(model, model_ref).with_agent_publications(Arc::new(publications));
     mount(Arc::new(host))
 }
 
@@ -1436,7 +1431,7 @@ pub fn build_statemachine_router() -> Router {
         }]
     });
     let (model, model_ref) = scenario_model(Arc::new(StateMachineModel), "statemachine");
-    let host = SharedHost::new(model, model_ref).with_state_machine(machine);
+    let host = resource_host(model, model_ref).with_state_machine(machine);
     mount(Arc::new(host))
 }
 
@@ -1573,7 +1568,7 @@ pub fn build_statemachine_rich_router() -> Router {
         }]
     });
     let (model, model_ref) = scenario_model(Arc::new(StateMachineModel), "statemachine-rich");
-    let host = SharedHost::new(model, model_ref).with_state_machine(machine);
+    let host = resource_host(model, model_ref).with_state_machine(machine);
     mount(Arc::new(host))
 }
 
@@ -1633,7 +1628,7 @@ pub fn build_remote_delegation_router() -> Router {
         .build();
     let publications = StaticPublishedAgentSnapshots::try_new([assistant])
         .expect("valid remote delegation publication");
-    let host = SharedHost::new(model, model_ref)
+    let host = resource_host(model, model_ref)
         .with_agent_publications(Arc::new(publications))
         .with_remote_agent(
             "researcher",
