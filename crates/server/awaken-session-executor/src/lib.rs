@@ -79,9 +79,9 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, RunState};
 use awaken_protocol_managed::resource_plane as awaken_resource_contract;
 use awaken_protocol_managed::{
-    AgentCapabilities, BuiltinTool, CustomTool, LiveInboxEntry, LiveInboxError, LiveInboxSnapshot,
-    OutcomeIteration, OutcomeReport, Pending, RunError, SessionRuntime, StepOutcome,
-    ToolPermissionDecision,
+    AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
+    LiveInboxSnapshot, OutcomeIteration, OutcomeReport, Pending, RunError, SessionRuntime,
+    StepOutcome, ToolPermissionDecision,
 };
 use awaken_protocol_transport::{
     DriverError, Pending as PortPending, ProtocolRuntime, Resume as PortResume,
@@ -696,6 +696,7 @@ impl ManagedHost {
                             mount_path: logical,
                             remote_url: config.remote_url.clone(),
                             initial_branch: config.initial_branch.clone(),
+                            initial_commit: config.initial_commit.clone(),
                             access: mount_access,
                         },
                         credential,
@@ -912,6 +913,10 @@ impl ManagedHost {
 
 #[async_trait::async_trait]
 impl SessionRuntime for ManagedHost {
+    async fn delegated_runs(&self, thread: &str) -> Result<Vec<DelegatedRun>, RunError> {
+        self.host.delegated_runs(thread).await.map_err(to_run_error)
+    }
+
     async fn owns_thread(&self, thread: &str) -> bool {
         self.host.has_durable_thread(thread)
     }
@@ -1115,6 +1120,7 @@ impl SessionRuntime for ManagedHost {
                 .map(|it| OutcomeIteration {
                     messages: it.messages,
                     outcome_id: it.outcome_id,
+                    description: description.to_string(),
                     iteration: it.iteration,
                     result: it.result,
                     explanation: it.explanation,

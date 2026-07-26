@@ -343,21 +343,16 @@ async function main() {
           AND intent_id = 'external-active-fence';`,
     );
 
-    // Repository creation publishes a governed config before activation. If the
-    // same intrinsic fence rejects its Session reference, compensation must retire
-    // that newly-created resource and durably schedule its purge.
+    // Live Repository attachment is not an activation path: the official
+    // subresource is File-only. Admission must reject before catalog/runtime
+    // effects, so no compensating reclamation intent is manufactured.
     const repositorySession = await json('POST', 'sessions', {
       agent: 'assistant',
       environment_id: 'env_local',
     });
     assert.equal(repositorySession.status, 200, JSON.stringify(repositorySession.body));
-    const repositoryBinding = `session:${repositorySession.body.id}:live:0`;
-    const fencedRepository = `managed:${repositorySession.body.id}:repository:${repositoryBinding}`;
-    sqlite(
-      lifecycle,
-      `INSERT INTO resource_lifecycle_reclamation_fences(resource_kind, resource_id, intent_id)
-         VALUES ('repository', ${sqlQuote(fencedRepository)}, 'external-repository-fence');`,
-    );
+    const repositoryIntentsBefore = intents(directory)
+      .filter((intent) => intent.target.kind === 'repository').length;
     const repositoryActivation = await json(
       'POST',
       `sessions/${repositorySession.body.id}/resources`,
@@ -367,18 +362,15 @@ async function main() {
         mount_path: '/workspace/fenced-repository',
       },
     );
-    assert.equal(repositoryActivation.status, 500, JSON.stringify(repositoryActivation.body));
-    assert.match(JSON.stringify(repositoryActivation.body), /fenced for physical reclamation/u);
+    assert.equal(repositoryActivation.status, 400, JSON.stringify(repositoryActivation.body));
     assert.deepEqual(
       (await json('GET', `sessions/${repositorySession.body.id}/resources`)).body.data,
       [],
     );
-    assert.equal(intentFor(directory, fencedRepository).status, 'pending');
-    sqlite(
-      lifecycle,
-      `DELETE FROM resource_lifecycle_reclamation_fences
-        WHERE resource_kind = 'repository' AND resource_id = ${sqlQuote(fencedRepository)}
-          AND intent_id = 'external-repository-fence';`,
+    assert.equal(
+      intents(directory).filter((intent) => intent.target.kind === 'repository').length,
+      repositoryIntentsBefore,
+      'typed admission failure creates no Repository lifecycle side effect',
     );
 
     // Keep the tombstoned Skill valid while unrelated File/Repository Sessions
@@ -480,7 +472,6 @@ async function main() {
         lateGuardError,
         saveConflict,
         saveFailure,
-        fencedRepository,
         skillId,
       ],
       (intent) => intent.status === 'completed',
@@ -489,10 +480,6 @@ async function main() {
     assert.equal(byResource.get(releaseFailure).attempts + 1, intentFor(directory, releaseFailure).attempts);
     assert.equal(intentFor(directory, releaseFailure).receipt.evidence.blob_deleted, false);
     assert.equal(intentFor(directory, skillId).receipt.evidence.versions_deleted, 1);
-    assert.equal(
-      intentFor(directory, fencedRepository).receipt.evidence.local_realizations_deleted,
-      0,
-    );
 
     // A durable adapter must not deserialize malformed-but-well-typed lifecycle
     // state and continue reclaiming. Exercise each invariant through the real

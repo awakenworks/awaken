@@ -291,14 +291,6 @@ impl CredentialCreateWire {
 /// `null` (`Some(None)`) from a present value (`Some(Some(v))`). Lets an update
 /// PATCH a nullable field to `null` (clear) without conflating it with "omitted"
 /// (keep) — the `display_name` semantics the SDK documents.
-pub(crate) fn double_option<'de, T, D>(de: D) -> Result<Option<Option<T>>, D::Error>
-where
-    T: Deserialize<'de>,
-    D: serde::Deserializer<'de>,
-{
-    Deserialize::deserialize(de).map(Some)
-}
-
 /// `VaultUpdateParams` body — a partial update. `display_name` replaces when
 /// present (a vault name cannot be cleared, so `null`/absent both mean "keep");
 /// `metadata` is a patch (an entry's `null` value deletes the key).
@@ -313,12 +305,12 @@ pub struct VaultUpdateParams {
 /// `CredentialUpdateParams` body — a partial update. `auth` (when present) must
 /// carry the credential's own `type` (the kind is immutable, as are `secret_name`
 /// / `mcp_server_url`); a mismatch is a clean `400`. `display_name` uses
-/// [`double_option`] so `null` clears it. `metadata` is a patch.
+/// the shared presence-aware serde helper so `null` clears it. `metadata` is a patch.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CredentialUpdateParams {
     #[serde(default)]
     pub auth: Option<CredentialUpdateAuth>,
-    #[serde(default, deserialize_with = "double_option")]
+    #[serde(default, deserialize_with = "super::presence::double_option")]
     pub display_name: Option<Option<String>>,
     #[serde(default)]
     pub metadata: Option<BTreeMap<String, Option<String>>>,

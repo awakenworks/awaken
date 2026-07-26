@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::agent::{AgentSkill, AgentTool, UrlMcpServer};
-use super::resource::ResourceInput;
+use super::resource::{ResourceInput, SessionResource};
 
 /// The Anthropic error envelope: `{ "type": "error", "error": { "type", "message" } }`.
 /// The SDK parses this shape to populate `err.error.type` / `err.error.message`;
@@ -91,31 +91,23 @@ pub struct AgentRefObject {
     pub kind: Option<AgentRefKind>,
     #[serde(default)]
     pub version: Option<u32>,
-    #[serde(default, deserialize_with = "deserialize_double_option")]
+    #[serde(default, deserialize_with = "super::presence::double_option")]
     pub system: Option<Option<String>>,
-    #[serde(default, deserialize_with = "deserialize_double_option")]
+    #[serde(default, deserialize_with = "super::presence::double_option")]
     pub tools: Option<Option<Vec<AgentTool>>>,
-    #[serde(default, deserialize_with = "deserialize_double_option")]
+    #[serde(default, deserialize_with = "super::presence::double_option")]
     pub mcp_servers: Option<Option<Vec<UrlMcpServer>>>,
-    #[serde(default, deserialize_with = "deserialize_double_option")]
+    #[serde(default, deserialize_with = "super::presence::double_option")]
     pub skills: Option<Option<Vec<AgentSkill>>>,
     /// Outer `None` = `model` omitted; `Some(None)` = `model: null`; `Some(Some(_))` =
     /// a value. Only meaningful when `kind` is `agent_with_overrides`.
-    #[serde(default, deserialize_with = "deserialize_double_option")]
+    #[serde(default, deserialize_with = "super::presence::double_option")]
     pub model: Option<Option<super::agent::ModelInput>>,
 }
 
 /// The standard serde double-`Option` reader: distinguishes an absent field (handled
 /// by `#[serde(default)]` → outer `None`) from a present `null` (`Some(None)`) from a
 /// present value (`Some(Some(_))`). Load-bearing for the model not-clearable rule.
-fn deserialize_double_option<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
-where
-    T: Deserialize<'de>,
-    D: serde::Deserializer<'de>,
-{
-    Deserialize::deserialize(deserializer).map(Some)
-}
-
 /// `agent` in a create-session request — the SDK's
 /// `string | {id, type:'agent', version?} | {id, type:'agent_with_overrides',
 /// version?, model?, system?, tools?, ...}` (`BetaManagedAgentsAgentParams`).
@@ -209,9 +201,9 @@ pub struct SessionAgentUpdate {
 pub struct SessionUpdateParams {
     #[serde(default)]
     pub agent: Option<SessionAgentUpdate>,
-    #[serde(default, deserialize_with = "deserialize_double_option")]
+    #[serde(default, deserialize_with = "super::presence::double_option")]
     pub title: Option<Option<String>>,
-    #[serde(default, deserialize_with = "deserialize_double_option")]
+    #[serde(default, deserialize_with = "super::presence::double_option")]
     pub metadata: Option<Option<std::collections::BTreeMap<String, Option<String>>>>,
     /// Reserved by the SDK but not supported by the product yet. The route rejects
     /// a present value before any state mutation.
@@ -281,6 +273,104 @@ pub struct SessionAgent {
     pub multiagent: Option<super::agent::MultiagentConfig>,
 }
 
+/// `BetaManagedAgentsSessionThreadAgent` — the agent snapshot frozen for one
+/// execution thread. The coordinator roster belongs only to [`SessionAgent`] and
+/// is deliberately absent from this projection, matching the official contract.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionThreadAgent {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+    pub version: u32,
+    pub model: ModelConfig,
+    pub name: String,
+    pub description: Option<String>,
+    pub system: Option<String>,
+    pub tools: Vec<AgentTool>,
+    pub mcp_servers: Vec<UrlMcpServer>,
+    pub skills: Vec<AgentSkill>,
+}
+
+impl From<&SessionAgent> for SessionThreadAgent {
+    fn from(agent: &SessionAgent) -> Self {
+        Self {
+            id: agent.id.clone(),
+            kind: "agent",
+            version: agent.version,
+            model: agent.model.clone(),
+            name: agent.name.clone(),
+            description: agent.description.clone(),
+            system: agent.system.clone(),
+            tools: agent.tools.clone(),
+            mcp_servers: agent.mcp_servers.clone(),
+            skills: agent.skills.clone(),
+        }
+    }
+}
+
+/// `BetaManagedAgentsSessionThreadStatus`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionThreadStatus {
+    Running,
+    Idle,
+    Rescheduling,
+    Terminated,
+}
+
+/// `BetaManagedAgentsSessionThreadStats`. Values are optional because a worker
+/// may not expose timing telemetry.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SessionThreadStats {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_seconds: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_seconds: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub startup_seconds: Option<f64>,
+}
+
+/// `BetaManagedAgentsSessionThreadUsage`. The thread view stays `null` until
+/// per-thread accounting is available; this type prevents an ad-hoc JSON shape
+/// becoming a second usage vocabulary when it is populated.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SessionThreadUsage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_creation: Option<SessionThreadCacheCreationUsage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+}
+
+/// `BetaManagedAgentsCacheCreationUsage`.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SessionThreadCacheCreationUsage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ephemeral_1h_input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ephemeral_5m_input_tokens: Option<u64>,
+}
+
+/// `BetaManagedAgentsSessionThread` — one primary or delegated execution thread.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionThread {
+    pub id: String,
+    pub agent: SessionThreadAgent,
+    pub archived_at: Option<String>,
+    pub created_at: String,
+    pub parent_thread_id: Option<String>,
+    pub session_id: String,
+    pub stats: Option<SessionThreadStats>,
+    pub status: SessionThreadStatus,
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+    pub updated_at: String,
+    pub usage: Option<SessionThreadUsage>,
+}
+
 /// `BetaManagedAgentsSessionStats` — coarse per-session timing/counters. Empty on
 /// this surface (serializes as `{}`).
 #[derive(Debug, Clone, Default, Serialize)]
@@ -322,8 +412,8 @@ pub struct Session {
     pub archived_at: Option<String>,
     pub title: Option<String>,
     pub metadata: std::collections::BTreeMap<String, String>,
-    pub resources: Vec<Value>,
-    pub outcome_evaluations: Vec<Value>,
+    pub resources: Vec<SessionResource>,
+    pub outcome_evaluations: Vec<OutcomeEvaluation>,
     pub status: &'static str,
     pub stats: SessionStats,
     pub usage: Usage,
@@ -332,6 +422,26 @@ pub struct Session {
     /// Set when the session was launched by a deployment run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deployment_id: Option<String>,
+}
+
+/// `BetaManagedAgentsDeletedSession`.
+#[derive(Debug, Clone, Serialize)]
+pub struct DeletedSession {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct OutcomeEvaluation {
+    pub completed_at: Option<String>,
+    pub description: String,
+    pub explanation: Option<String>,
+    pub iteration: u32,
+    pub outcome_id: String,
+    pub result: String,
+    #[serde(rename = "type")]
+    pub kind: &'static str,
 }
 
 /// A client's `user.tool_confirmation` decision.
@@ -658,14 +768,16 @@ pub enum OutboundKind {
     #[serde(rename = "agent.thread_message_sent")]
     AgentThreadMessageSent {
         to_session_thread_id: String,
-        to_agent_name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        to_agent_name: Option<String>,
         content: Vec<ContentBlock>,
     },
     /// The coordinator received the delegate's reply (`agent.thread_message_received`).
     #[serde(rename = "agent.thread_message_received")]
     AgentThreadMessageReceived {
         from_session_thread_id: String,
-        from_agent_name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        from_agent_name: Option<String>,
         content: Vec<ContentBlock>,
     },
     /// The conversation history was summarized to fit context (the compact plugin
@@ -1092,5 +1204,42 @@ mod tests {
         assert_eq!(connection.kind, "mcp_connection_failed_error");
         assert_eq!(connection.mcp_server_name.as_deref(), Some("offline"));
         assert_eq!(connection.retry_status, RetryStatus::Retrying);
+    }
+
+    /// Cause graph: resolved Session agent snapshot -> thread-specific projection
+    /// -> official wire fields. The coordinator roster must remain owned by the
+    /// Session and must not leak into a thread snapshot.
+    ///
+    /// | Agent roster | Thread projection | Result |
+    /// |---|---|---|
+    /// | absent | typed fields | exact agent snapshot |
+    /// | present | typed fields | exact snapshot without `multiagent` |
+    #[test]
+    fn thread_agent_projection_never_repeats_the_coordinator_roster() {
+        let session_agent = SessionAgent {
+            id: "coordinator".into(),
+            kind: "agent",
+            version: 7,
+            model: ModelConfig::new("model-1"),
+            name: "Coordinator".into(),
+            description: Some("coordinates".into()),
+            system: Some("delegate carefully".into()),
+            tools: Vec::new(),
+            mcp_servers: Vec::new(),
+            skills: Vec::new(),
+            multiagent: Some(super::super::agent::MultiagentConfig::Coordinator {
+                agents: vec![super::super::agent::MultiagentRosterEntry::Id(
+                    "researcher".into(),
+                )],
+            }),
+        };
+        let projected = serde_json::to_value(SessionThreadAgent::from(&session_agent)).unwrap();
+        assert_eq!(projected["id"], "coordinator");
+        assert_eq!(projected["version"], 7);
+        assert_eq!(projected["model"]["id"], "model-1");
+        assert!(
+            projected.get("multiagent").is_none(),
+            "the thread contract has no duplicate roster field"
+        );
     }
 }

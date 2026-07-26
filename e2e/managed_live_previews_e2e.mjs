@@ -192,12 +192,17 @@ async function main() {
         );
         assert.equal(status, 400, 'an unsupported event_deltas value is a 400');
 
-        // The per-thread stream rejects the opt-in (session-level only). The primary
-        // thread id mirrors the session id in this server.
-        const thread = `${baseUrl}/v1/sessions/${session.id}/threads/${session.id}/stream?event_deltas[]=agent.message`;
+        // Thread EventStreamParams officially supports the same selector. This
+        // completed primary has no outstanding live deltas, but admission succeeds
+        // and its committed terminal backfill closes the stream.
+        await client.beta.sessions.events.send(session.id, {
+          events: [{ type: 'user.message', content: [{ type: 'text', text: 'thread-preview-admission' }] }],
+          betas: BETAS,
+        });
+        const thread = `${baseUrl}/v1/sessions/${session.id}/threads/${session.id}:primary/stream?event_deltas[]=agent.message`;
         const threadRes = await readSseToEnd(thread);
-        assert.equal(threadRes.status, 400, 'the per-thread stream rejects event_deltas[] with 400');
-        pass('event_deltas[] validation: bad value 400, and rejected on the per-thread stream');
+        assert.equal(threadRes.status, 200, 'the per-thread stream accepts official event_deltas[]');
+        pass('event_deltas[] validation: unsupported value 400; official Thread selector accepted');
       }
     });
 

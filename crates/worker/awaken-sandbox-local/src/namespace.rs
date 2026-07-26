@@ -781,14 +781,16 @@ impl NamespaceSandbox {
         &self,
         logical: &str,
         url: &str,
-        git_ref: Option<&str>,
+        initial_branch: Option<&str>,
+        initial_commit: Option<&str>,
         token: Option<&str>,
     ) -> Result<(), pc::SandboxError> {
         provision_repo_at(
             &self.workspace_root(),
             workspace_relative(logical),
             url,
-            git_ref,
+            initial_branch,
+            initial_commit,
             token,
         )
         .map_err(err)

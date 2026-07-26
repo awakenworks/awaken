@@ -763,6 +763,7 @@ impl SessionRuntime for OutcomeFake {
                 OutcomeIteration {
                     messages: Vec::new(),
                     outcome_id: "outc_1".into(),
+                    description: "produce final answer".into(),
                     iteration: 1,
                     result: "needs_revision".into(),
                     explanation: "add FINAL".into(),
@@ -774,6 +775,7 @@ impl SessionRuntime for OutcomeFake {
                         "FINAL answer",
                     )],
                     outcome_id: "outc_1".into(),
+                    description: "produce final answer".into(),
                     iteration: 2,
                     result: "satisfied".into(),
                     explanation: "ok".into(),
@@ -837,9 +839,13 @@ async fn outcome_loop_projects_evaluations() {
     assert_eq!(ends[1]["result"], "satisfied");
 }
 
-/// After the outcome loop runs, the session object's `outcome_evaluations` records
-/// each graded round in its wire shape — durable state, distinct from the transient
-/// `span.outcome_evaluation_*` events — so a `GET /v1/sessions/{id}` is no longer [].
+/// Causal graph: two grading rounds for one outcome -> two transient span sequences
+/// -> one durable current-state resource keyed by outcome_id.
+///
+/// Decision table:
+/// | rounds | outcome ids | transient ends | durable resources | final state |
+/// | 2 | same | 2 | 1 | latest round |
+/// This proves replacement behavior, not merely the response shape.
 #[tokio::test]
 async fn session_records_outcome_evaluations() {
     let app = router(Arc::new(ManagedState::new(OutcomeFake)));
@@ -861,8 +867,15 @@ async fn session_records_outcome_evaluations() {
     assert_eq!(
         session["outcome_evaluations"],
         serde_json::json!([
-            { "outcome_id": "outc_1", "result": "needs_revision" },
-            { "outcome_id": "outc_1", "result": "satisfied" },
+            {
+                "completed_at": "2026-01-01T00:00:00Z",
+                "description": "produce final answer",
+                "explanation": "ok",
+                "iteration": 2,
+                "outcome_id": "outc_1",
+                "result": "satisfied",
+                "type": "outcome_evaluation"
+            },
         ])
     );
 }

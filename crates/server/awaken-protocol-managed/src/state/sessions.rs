@@ -621,7 +621,9 @@ impl ManagedState {
         for (index, resource) in resources.iter().enumerate() {
             let repository_id = if let ParsedInputTarget::Repository {
                 remote_url,
+                credential_binding,
                 initial_branch,
+                initial_commit,
             } = &resource.target
             {
                 let catalog = self.resource_catalog.as_ref().ok_or_else(|| {
@@ -647,8 +649,9 @@ impl ManagedState {
                             repository_id: repository_id.clone().into(),
                             version: awaken_resource_contract::ConfigVersion::INITIAL,
                             remote_url: remote_url.clone(),
-                            credential_binding: None,
+                            credential_binding: credential_binding.clone(),
                             initial_branch: initial_branch.clone(),
+                            initial_commit: initial_commit.clone(),
                             clone_policy: awaken_resource_contract::ClonePolicy::default(),
                         },
                     )
@@ -1448,13 +1451,20 @@ impl ManagedState {
             .as_ref()
             .map(|session| session.resources.clone())
             .unwrap_or_default();
-        let record = SessionRecord {
+        let session = self.rehydrated_session(id, persisted)?;
+        let delegated_runs = self
+            .runtime
+            .delegated_runs(id)
+            .await
+            .map_err(StateError::Run)?;
+        let mut record = SessionRecord {
             agent_id,
-            session: self.rehydrated_session(id, persisted)?,
+            session,
             resource_state,
             events,
             child_threads: Vec::new(),
         };
+        self.append_delegation_projections(&mut record, &delegated_runs);
         self.sessions
             .lock()
             .unwrap()
@@ -1621,12 +1631,10 @@ impl ManagedState {
     /// a dispose failure is logged, never propagated (it must not resurrect the
     /// session). `SessionRuntime::end_session` is a no-op for a thread that never
     /// materialized a sandbox, so deriving child ids is safe.
-    async fn end_session_sandboxes(&self, id: &str, child_threads: &[serde_json::Value]) -> bool {
+    async fn end_session_sandboxes(&self, id: &str, child_threads: &[SessionThread]) -> bool {
         let mut threads: Vec<String> = vec![id.to_string()];
         for child in child_threads {
-            if let Some(child_run_id) = child["id"].as_str() {
-                threads.push(child_run_id.to_string());
-            }
+            threads.push(child.id.clone());
         }
         let mut released = true;
         for thread in threads {
@@ -1647,7 +1655,7 @@ impl ManagedState {
         &self,
         id: &str,
         owner_scope: Option<&str>,
-        child_threads: &[serde_json::Value],
+        child_threads: &[SessionThread],
     ) -> bool {
         let Some(mut persisted) = self.sessions_repo.get(id).await else {
             return self.end_session_sandboxes(id, child_threads).await;

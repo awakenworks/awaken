@@ -102,6 +102,7 @@ fn repository() -> (RepositoryDefinition, RepositoryConfigVersion) {
             remote_url: "https://example.test/repo.git".into(),
             credential_binding: Some("credential-1".into()),
             initial_branch: None,
+            initial_commit: None,
             clone_policy: ClonePolicy::default(),
         },
     )

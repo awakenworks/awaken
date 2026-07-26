@@ -21,7 +21,8 @@ use crate::routes::vaults::VaultState;
 use crate::types::{
     ConfirmResult, Event, EventReceipt, InboundEvent, ListEventsResponse, ModelConfig,
     ModelOverride, OutboundKind, SendEventsRequest, SendEventsResponse, Session, SessionAgent,
-    SessionCreateParams, SessionError, SessionStats, StopReason, StreamFrame, Usage,
+    SessionCreateParams, SessionError, SessionStats, SessionThread, SessionThreadAgent,
+    SessionThreadStatus, StopReason, StreamFrame, Usage,
 };
 use awaken_session_contract::{ManagedSessionRepository, PersistedSession, SessionLifecycleFact};
 use awaken_session_store::SqliteManagedSessionRepository;
@@ -34,7 +35,7 @@ pub(crate) const DEFAULT_SCOPE: &str = "default";
 
 /// A fixed projection timestamp (M1). Real per-event timestamps arrive with a
 /// clock port; the wire only needs a valid RFC 3339 value here.
-const PROCESSED_AT: &str = "2026-01-01T00:00:00Z";
+pub(crate) const PROCESSED_AT: &str = "2026-01-01T00:00:00Z";
 
 /// The Managed Agents contract error for a `memory_store` add/remove on a running
 /// session — memory stores bind at session creation only.
@@ -56,8 +57,8 @@ mod types;
 
 pub(crate) use helpers::{content_text, lifecycle_fact, rubric_text, session_usage_value};
 pub(crate) use resource::{
-    ParsedInputTarget, ParsedSessionInput, input_binding, parse_session_input,
-    resolved_resource_dto, resource_binding_id,
+    ParsedInputTarget, ParsedSessionInput, input_binding, resolved_resource_dto,
+    resource_binding_id,
 };
 pub use types::{
     AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
@@ -71,11 +72,10 @@ struct SessionRecord {
     /// Durable source of truth for the runtime's currently applied input projection.
     resource_state: awaken_session_contract::SessionResourceState,
     events: Vec<Event>,
-    /// Subagent (multiagent delegate) child threads spawned in the session, each a
-    /// projected `session_thread` object (parent = the primary thread). Enumerated
+    /// Subagent (multiagent delegate) child threads spawned in the session. Enumerated
     /// by `list_threads`/`get_thread`; each is announced by a `session.thread_created`
     /// event (ADR-0047 D4, first slice).
-    child_threads: Vec<serde_json::Value>,
+    child_threads: Vec<SessionThread>,
 }
 
 impl SessionRecord {
@@ -457,6 +457,7 @@ mod tests {
         >,
         restored_environments: Arc<std::sync::Mutex<Vec<(String, String, String)>>>,
         restored_runtimes: Arc<std::sync::Mutex<Vec<RestoredRuntime>>>,
+        delegated: Arc<std::sync::Mutex<Vec<DelegatedRun>>>,
         order: Arc<std::sync::Mutex<Vec<&'static str>>>,
     }
 
@@ -518,6 +519,10 @@ mod tests {
                 awaken_agent_contract::agent::message::Role::User,
                 "hello",
             )]
+        }
+        async fn delegated_runs(&self, _thread: &str) -> Result<Vec<DelegatedRun>, RunError> {
+            self.order.lock().unwrap().push("delegations");
+            Ok(self.delegated.lock().unwrap().clone())
         }
         async fn restore_session_environment(
             &self,
@@ -646,6 +651,59 @@ mod tests {
         fn model(&self) -> String {
             "host-default-model".to_string()
         }
+    }
+
+    /// Cause graph: exact child -> runtime termination -> one terminal projection.
+    /// Runtime failure stops before status/event mutation; a repeated successful
+    /// archive observes the terminal projection and performs no second effect.
+    ///
+    /// | Child | Runtime | Prior status | Result | Runtime calls | terminal events |
+    /// |---|---|---|---|---|---|
+    /// | absent | n/a | n/a | 404 | 0 | 0 |
+    /// | present | fail | running | error, still running | 1 | 0 |
+    /// | present | succeed | running | terminated | 1 | 1 |
+    /// | present | n/a | terminated | same receipt | unchanged | unchanged |
+    #[tokio::test]
+    async fn child_thread_archive_is_runtime_backed_fail_closed_and_idempotent() {
+        let runtime = EndSessionRecorder::default();
+        let ended = runtime.ended.clone();
+        let state = ManagedState::new(runtime);
+        let request = serde_json::from_value(serde_json::json!({ "agent": "assistant" })).unwrap();
+        let session = state.create_session(request, None).await.unwrap();
+        {
+            let mut sessions = state.sessions.lock().unwrap();
+            let record = sessions.get_mut(&session.id).unwrap();
+            record.child_threads.push(ManagedState::child_thread(
+                &record.session,
+                "child-1",
+                "researcher",
+            ));
+        }
+
+        let archived = state.archive_thread(&session.id, "child-1").await.unwrap();
+        assert_eq!(archived.status, SessionThreadStatus::Terminated);
+        assert_eq!(ended.lock().unwrap().as_slice(), &["child-1"]);
+        let terminal_count = state
+            .list_events(&session.id, None, None)
+            .unwrap()
+            .data
+            .iter()
+            .filter(|event| event.type_str() == "session.thread_status_terminated")
+            .count();
+        assert_eq!(terminal_count, 1);
+
+        state.archive_thread(&session.id, "child-1").await.unwrap();
+        assert_eq!(ended.lock().unwrap().as_slice(), &["child-1"]);
+        assert_eq!(
+            state
+                .list_events(&session.id, None, None)
+                .unwrap()
+                .data
+                .iter()
+                .filter(|event| event.type_str() == "session.thread_status_terminated")
+                .count(),
+            1
+        );
     }
 
     // Delete finalization tests are generated from this causal graph:
@@ -798,6 +856,40 @@ mod tests {
         fn model(&self) -> String {
             "host-default-model".to_string()
         }
+    }
+
+    #[tokio::test]
+    async fn child_thread_archive_failure_commits_no_terminal_projection() {
+        let state = ManagedState::new(EndSessionFailer);
+        let request = serde_json::from_value(serde_json::json!({ "agent": "assistant" })).unwrap();
+        let session = state.create_session(request, None).await.unwrap();
+        {
+            let mut sessions = state.sessions.lock().unwrap();
+            let record = sessions.get_mut(&session.id).unwrap();
+            record.child_threads.push(ManagedState::child_thread(
+                &record.session,
+                "child-fails",
+                "researcher",
+            ));
+        }
+
+        let error = state
+            .archive_thread(&session.id, "child-fails")
+            .await
+            .expect_err("runtime failure must fail closed");
+        assert!(error.to_string().contains("sandbox dispose blew up"));
+        assert_eq!(
+            state.get_thread(&session.id, "child-fails").unwrap().status,
+            SessionThreadStatus::Running
+        );
+        assert!(
+            !state
+                .list_events(&session.id, None, None)
+                .unwrap()
+                .data
+                .iter()
+                .any(|event| event.type_str() == "session.thread_status_terminated")
+        );
     }
 
     /// D2: a sandbox teardown failure at delete is swallowed (best-effort): the delete is
@@ -1103,6 +1195,12 @@ mod tests {
 
         // Fresh state (empty cache) sharing the durable repo — simulates a restart.
         let runtime = RehydrateFake::default();
+        runtime.delegated.lock().unwrap().push(DelegatedRun {
+            run_id: awaken_agent_contract::agent::run::Id("child-durable".into()),
+            parent_call_id: "call-durable".into(),
+            agent_id: "researcher".into(),
+            status: awaken_agent_contract::agent::delegation::DelegationStatus::Completed,
+        });
         let restored = runtime.restored.clone();
         let restored_environments = runtime.restored_environments.clone();
         let restored_runtimes = runtime.restored_runtimes.clone();
@@ -1119,7 +1217,18 @@ mod tests {
         assert_eq!(session.title.as_deref(), Some("My session"));
         assert_eq!(session.agent.mcp_servers.len(), 1);
         assert_eq!(session.resources.len(), 1);
-        assert_eq!(session.resources[0]["file_id"], "file-hash");
+        assert!(matches!(
+            &session.resources[0],
+            crate::types::resource::SessionResource::File { file_id, .. }
+                if file_id == "file-hash"
+        ));
+        let threads = restarted.list_threads("sesn_1").expect("threads restored");
+        assert_eq!(threads.len(), 2, "primary plus the durable runtime child");
+        assert!(threads.iter().any(|thread| {
+            thread.id == "child-durable"
+                && thread.agent.id == "researcher"
+                && thread.status == SessionThreadStatus::Idle
+        }));
         assert_eq!(
             restored.lock().unwrap().as_slice(),
             &[(
@@ -1131,7 +1240,13 @@ mod tests {
         );
         assert_eq!(
             order.lock().unwrap().as_slice(),
-            &["resources", "runtime", "environment", "history"],
+            &[
+                "resources",
+                "runtime",
+                "environment",
+                "history",
+                "delegations"
+            ],
             "resources must be staged before environment adoption and history opening"
         );
         assert_eq!(
@@ -1283,7 +1398,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn live_input_mutations_survive_restart_without_changing_resource_identity() {
+    async fn live_file_attach_and_delete_survive_restart_without_projection_truth() {
+        // Cause graph:
+        // typed add/update/delete command -> prepare exact next generation
+        // -> Runtime applies it -> aggregate commits it -> restart replays only
+        // the committed generation. A projection is never persisted as truth.
+        //
+        // Decision table:
+        // | Rule | Command | Runtime | Durable state | Restart behavior |
+        // | R1 | add | success | revision +1, one Active | exact id/path restored |
+        // | R2 | delete | success | revision +1, no Active | resource absent |
         let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
         let catalog = Arc::new(ephemeral_resource_catalog());
         let state = ManagedState::new_with_mcp(RehydrateFake::default())
@@ -1298,27 +1422,20 @@ mod tests {
         let resource = state
             .create_resource(
                 &id,
-                serde_json::json!({
+                serde_json::from_value(serde_json::json!({
                     "type": "file",
                     "file_id": "immutable-file-hash",
                     "mount_path": "/input.txt"
-                }),
+                }))
+                .unwrap(),
             )
             .await
             .expect("attach");
-        let resource_id = resource["id"].as_str().unwrap().to_string();
-        state
-            .update_resource(
-                &id,
-                &resource_id,
-                serde_json::json!({"mount_path": "/renamed/input.txt"}),
-            )
-            .await
-            .expect("update");
-        let after_update = repo.get(&id).await.unwrap();
-        assert_eq!(after_update.resources.revision, 3);
+        let resource_id = resource.id().unwrap().to_string();
+        let after_attach = repo.get(&id).await.unwrap();
+        assert_eq!(after_attach.resources.revision, 2);
         assert_eq!(
-            after_update
+            after_attach
                 .resources
                 .activations
                 .iter()
@@ -1335,15 +1452,18 @@ mod tests {
         restarted.ensure_session(&id).await.expect("rehydrate");
         let restored = restarted.list_resources(&id).expect("list restored");
         assert_eq!(restored.len(), 1);
-        assert_eq!(restored[0]["id"], resource_id);
-        assert_eq!(restored[0]["mount_path"], "/renamed/input.txt");
+        assert!(matches!(
+            &restored[0],
+            crate::types::resource::SessionResource::File { id, mount_path, .. }
+                if id == &resource_id && mount_path == "/input.txt"
+        ));
 
         restarted
             .delete_resource(&id, &resource_id)
             .await
             .expect("detach");
         let after_delete = repo.get(&id).await.unwrap();
-        assert_eq!(after_delete.resources.revision, 4);
+        assert_eq!(after_delete.resources.revision, 3);
         assert!(
             after_delete
                 .resources

@@ -222,6 +222,7 @@ struct TestInput {
     access: awaken_resource_contract::ResourceAccess,
     instructions: Option<String>,
     initial_branch: Option<String>,
+    initial_commit: Option<String>,
 }
 
 use awaken_resource_contract::ResourceAccess;
@@ -309,6 +310,7 @@ fn effective_resources(
                             remote_url: resource.id,
                             credential_binding: None,
                             initial_branch: resource.initial_branch,
+                            initial_commit: resource.initial_commit,
                             clone_policy: Default::default(),
                         },
                         credential: None,
@@ -367,6 +369,7 @@ fn effective_repository(
                     remote_url: url.into(),
                     credential_binding,
                     initial_branch: None,
+                    initial_commit: None,
                     clone_policy: Default::default(),
                 },
                 credential,
@@ -1298,6 +1301,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
                         access: ResourceAccess::ReadWrite,
                         instructions: None,
                         initial_branch: None,
+                        initial_commit: None,
                     })
                     .into_iter()
                     .collect(),
@@ -1426,6 +1430,7 @@ async fn pinned_memory_policy_can_disable_recall_and_extraction() {
         access: ResourceAccess::ReadWrite,
         instructions: None,
         initial_branch: None,
+        initial_commit: None,
     }]);
     let ResolvedInputSource::MemoryStore { config, .. } = &mut init.resources.inputs[0].source
     else {
@@ -1747,6 +1752,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         access: ResourceAccess::ReadOnly,
         instructions: None,
         initial_branch: None,
+        initial_commit: None,
     };
     let attached = effective_resources(vec![res.clone()]);
     managed
@@ -2000,6 +2006,7 @@ async fn prepare_session_mounts_an_effective_memory_resource() {
                     access: ResourceAccess::ReadWrite,
                     instructions: None,
                     initial_branch: None,
+                    initial_commit: None,
                 })
                 .into_iter()
                 .collect(),
@@ -2086,6 +2093,7 @@ async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
         access: ResourceAccess::ReadOnly,
         instructions: None,
         initial_branch: None,
+        initial_commit: None,
     }]);
     catalog
         .set_memory_state(host.local_workspace(), &store_id, ResourceState::Suspended)
@@ -2144,6 +2152,7 @@ async fn memory_activation_enforces_catalog_workspace_without_iam_policy_logic()
         access: ResourceAccess::ReadWrite,
         instructions: None,
         initial_branch: None,
+        initial_commit: None,
     }]);
 
     let error = managed
@@ -2186,6 +2195,7 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
                         access: ResourceAccess::ReadOnly,
                         instructions: None,
                         initial_branch: None,
+                        initial_commit: None,
                     },
                     TestInput {
                         kind: "github_repository".into(),
@@ -2194,6 +2204,7 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
                         access: ResourceAccess::ReadOnly,
                         instructions: None,
                         initial_branch: None,
+                        initial_commit: None,
                     },
                 ]),
                 model: None,
@@ -2283,6 +2294,7 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
         access: ResourceAccess::ReadOnly,
         instructions: None,
         initial_branch: None,
+        initial_commit: None,
     }]);
 
     let error = managed.prepare_session("t-corrupt-file", init).await;
@@ -2311,6 +2323,7 @@ async fn file_activation_enforces_workspace_ownership_without_iam_policy_logic()
         access: ResourceAccess::ReadOnly,
         instructions: None,
         initial_branch: None,
+        initial_commit: None,
     }]);
 
     let error = managed.prepare_session("t-cross-workspace", init).await;
@@ -3589,6 +3602,7 @@ async fn told_equals_mounted_the_prompt_path_and_access_match_the_realized_mount
         access: ResourceAccess::ReadOnly,
         instructions: None,
         initial_branch: None,
+        initial_commit: None,
     };
     let managed = managed_with_resource_source(host.clone());
     let mut init = bare_session("a", host.local_workspace());
@@ -3633,6 +3647,7 @@ async fn runtime_stages_exactly_the_effective_resource_list() {
         access: ResourceAccess::ReadWrite,
         instructions: None,
         initial_branch: None,
+        initial_commit: None,
     }]);
     managed.prepare_session("t-g3", init).await.unwrap();
 
@@ -3675,6 +3690,7 @@ async fn a_bound_resource_with_a_missing_backing_store_fails_the_session_closed(
         access: ResourceAccess::ReadWrite,
         instructions: None,
         initial_branch: None,
+        initial_commit: None,
     }]);
 
     let result = managed.prepare_session("t-g4", init).await;
@@ -3738,6 +3754,7 @@ async fn activation_validates_the_frozen_config_without_selecting_current_again(
         access: ResourceAccess::ReadOnly,
         instructions: None,
         initial_branch: None,
+        initial_commit: None,
     }]);
     let managed = crate::ManagedHost::new(host.clone()).with_resource_validator(catalog.clone());
     let mut valid = bare_session("a", &workspace);
@@ -3896,6 +3913,7 @@ async fn an_effective_resource_mounts_on_a_worker_without_the_binding_repository
         access: ResourceAccess::ReadOnly,
         instructions: None,
         initial_branch: None,
+        initial_commit: None,
     }]);
     managed_worker
         .prepare_session("t-g5-worker", init)

@@ -10,12 +10,13 @@ use crate::{IsolatedRoot, git_bytes, provision_repo_at, push_repo_to_at, run_git
 /// bundle. The persisted origin in the bundle is tokenless.
 pub fn clone_repo_bundle(
     url: &str,
-    git_ref: Option<&str>,
+    initial_branch: Option<&str>,
+    initial_commit: Option<&str>,
     token: Option<&str>,
 ) -> Result<Vec<u8>, pc::SandboxError> {
     let temp = tempfile::tempdir().map_err(|error| pc::SandboxError::new(error.to_string()))?;
     let root = IsolatedRoot::new(temp.path());
-    provision_repo_at(&root, "repo", url, git_ref, token)
+    provision_repo_at(&root, "repo", url, initial_branch, initial_commit, token)
         .map_err(|error| pc::SandboxError::new(error.to_string()))?;
     git_bytes(
         Some(&temp.path().join("repo")),
@@ -79,7 +80,7 @@ mod tests {
         git(&seed, &["commit", "-m", "base"]);
         git(&seed, &["push", "-u", "origin", "HEAD"]);
 
-        let initial = clone_repo_bundle(remote.to_str().unwrap(), None, None).unwrap();
+        let initial = clone_repo_bundle(remote.to_str().unwrap(), None, None, None).unwrap();
         let agent = temp.path().join("agent");
         let initial_path = temp.path().join("initial.bundle");
         std::fs::write(&initial_path, initial).unwrap();

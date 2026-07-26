@@ -313,77 +313,34 @@ impl ManagedState {
         Ok(())
     }
 
-    async fn resolve_live_input(
+    fn resolve_live_file_input(
         &self,
-        session_id: &str,
         owner_scope: &str,
-        selected_holder: &awaken_credential_contract::PlaintextHolder,
         binding_id: String,
         parsed: &ParsedSessionInput,
     ) -> Result<awaken_session_contract::ResolvedInput, StateError> {
-        let repository_id = if let ParsedInputTarget::Repository {
-            remote_url,
-            initial_branch,
-        } = &parsed.target
-        {
-            let catalog = self.resource_catalog.as_ref().ok_or_else(|| {
-                StateError::Run(RunError::bad_request(
-                    "repository resources require a configured Resource Catalog",
-                ))
-            })?;
-            let repository_id = format!("managed:{session_id}:repository:{binding_id}");
-            catalog
-                .create_repository(
-                    awaken_resource_contract::RepositoryDefinition {
-                        id: repository_id.clone().into(),
-                        workspace_id: owner_scope.to_string(),
-                        name: "Live Session repository".into(),
-                        description: "Managed compatibility Session input".into(),
-                        metadata: Default::default(),
-                        state: awaken_resource_contract::ResourceState::Active,
-                        current_config_version: awaken_resource_contract::ConfigVersion::INITIAL,
-                        timestamps: Default::default(),
-                    },
-                    awaken_resource_contract::RepositoryConfigVersion {
-                        repository_id: repository_id.clone().into(),
-                        version: awaken_resource_contract::ConfigVersion::INITIAL,
-                        remote_url: remote_url.clone(),
-                        credential_binding: None,
-                        initial_branch: initial_branch.clone(),
-                        clone_policy: awaken_resource_contract::ClonePolicy::default(),
-                    },
-                )
-                .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-            Some(awaken_resource_contract::RepositoryId::from(repository_id))
-        } else {
-            None
-        };
-        let binding = input_binding(binding_id, parsed, repository_id);
+        debug_assert!(matches!(parsed.target, ParsedInputTarget::File(_)));
+        let binding = input_binding(binding_id, parsed, None);
         let attachment = awaken_session_contract::SessionInputAttachment {
             binding,
             replaces: None,
         };
-        let catalog = self.resource_catalog.as_deref().ok_or_else(|| {
-            StateError::Run(RunError::bad_request(
-                "live resources require a configured Resource Catalog",
-            ))
-        })?;
-        let mut input = awaken_session_contract::SessionInputResolver::resolve_inputs(
+        awaken_session_contract::SessionInputResolver::resolve_inputs(
             owner_scope,
-            Some(catalog),
+            None,
             &[],
             &[attachment],
         )
         .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?
         .inputs
         .pop()
-        .ok_or_else(|| StateError::Run(RunError::internal("resolved input is empty")))?;
-        self.pin_repository_credential(owner_scope, selected_holder, &mut input)
-            .await?;
-        Ok(input)
+        .ok_or_else(|| StateError::Run(RunError::internal("resolved input is empty")))
     }
 
-    pub fn list_resources(&self, id: &str) -> Result<Vec<serde_json::Value>, StateError> {
+    pub fn list_resources(
+        &self,
+        id: &str,
+    ) -> Result<Vec<crate::types::resource::SessionResource>, StateError> {
         let sessions = self.sessions.lock().unwrap();
         let record = sessions.get(id).ok_or(StateError::NotFound)?;
         Ok(record
@@ -398,23 +355,15 @@ impl ManagedState {
     pub async fn create_resource(
         &self,
         id: &str,
-        body: serde_json::Value,
-    ) -> Result<serde_json::Value, StateError> {
-        let parsed = parse_session_input(&body).ok_or_else(|| {
-            StateError::Run(RunError::bad_request(
-                "resource must be a file or github_repository with its backing id",
-            ))
-        })?;
-        if matches!(parsed.target, ParsedInputTarget::MemoryStore(_)) {
-            return Err(StateError::Run(RunError::bad_request(MEMORY_CREATE_ONLY)));
-        }
+        body: crate::types::resource::ResourceAddParams,
+    ) -> Result<crate::types::resource::SessionResource, StateError> {
+        let parsed = body.into_resource_input().to_parsed_input();
         let owner_scope = self.resolve_owner(id).await.ok_or(StateError::NotFound)?;
         let persisted = self
             .sessions_repo
             .get(id)
             .await
             .ok_or(StateError::NotFound)?;
-        let selected_holder = Self::resource_plaintext_holder(&persisted)?;
         let current = persisted.resources.active.clone();
         let mut suffix = current.inputs.len();
         let binding_id = loop {
@@ -434,23 +383,11 @@ impl ManagedState {
                 &parsed.mount_path,
             )
             .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        let input = self
-            .resolve_live_input(id, &owner_scope, &selected_holder, binding_id, &parsed)
-            .await?;
+        let input = self.resolve_live_file_input(&owner_scope, binding_id, &parsed)?;
         let next = current
             .attach(input.clone())
             .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        if let Err(error) = self.activate_inputs(persisted, &owner_scope, next).await {
-            if let awaken_session_contract::ResolvedInputSource::Repository {
-                repository_id, ..
-            } = &input.source
-            {
-                let _ = self
-                    .retire_repository(&owner_scope, repository_id.as_str())
-                    .await;
-            }
-            return Err(error);
-        }
+        self.activate_inputs(persisted, &owner_scope, next).await?;
         Ok(resolved_resource_dto(id, &input))
     }
 
@@ -458,7 +395,7 @@ impl ManagedState {
         &self,
         id: &str,
         resource_id: &str,
-    ) -> Result<serde_json::Value, StateError> {
+    ) -> Result<crate::types::resource::SessionResource, StateError> {
         let sessions = self.sessions.lock().unwrap();
         let record = sessions.get(id).ok_or(StateError::NotFound)?;
         let binding_id = resource_binding_id(id, resource_id).ok_or(StateError::NotFound)?;
@@ -474,52 +411,13 @@ impl ManagedState {
 
     pub async fn update_resource(
         &self,
-        id: &str,
-        resource_id: &str,
-        patch: serde_json::Value,
-    ) -> Result<serde_json::Value, StateError> {
-        let owner_scope = self.resolve_owner(id).await.ok_or(StateError::NotFound)?;
-        let binding_id = resource_binding_id(id, resource_id).ok_or(StateError::NotFound)?;
-        let persisted = self
-            .sessions_repo
-            .get(id)
-            .await
-            .ok_or(StateError::NotFound)?;
-        let selected_holder = Self::resource_plaintext_holder(&persisted)?;
-        let (current, previous) = {
-            let current = persisted.resources.active.clone();
-            let previous = current
-                .inputs
-                .iter()
-                .find(|input| input.binding_id == binding_id)
-                .cloned()
-                .ok_or(StateError::NotFound)?;
-            (current, previous)
-        };
-        let mut replacement = previous.clone();
-        if let Some(path) = patch.get("mount_path").and_then(serde_json::Value::as_str) {
-            replacement.mount_path = path.to_string();
-        }
-        if let Some(value) = patch.get("instructions") {
-            replacement.instructions = value.as_str().map(str::to_string);
-        }
-        // Validate all side-effect-free fields before sealing a new credential or
-        // publishing a Repository config version.
-        current
-            .replace(replacement.clone())
-            .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        if patch.get("authorization_token").is_some() {
-            return Err(StateError::Run(RunError::bad_request(
-                "raw_repository_credentials_unsupported",
-            )));
-        }
-        self.pin_repository_credential(&owner_scope, &selected_holder, &mut replacement)
-            .await?;
-        let next = current
-            .replace(replacement.clone())
-            .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        self.activate_inputs(persisted, &owner_scope, next).await?;
-        self.get_resource(id, resource_id)
+        _id: &str,
+        _resource_id: &str,
+        _patch: crate::types::resource::ResourceUpdateParams,
+    ) -> Result<crate::types::resource::SessionResource, StateError> {
+        Err(StateError::Run(RunError::bad_request(
+            "repository_credential_update_requires_preexisting_binding",
+        )))
     }
 
     pub async fn delete_resource(&self, id: &str, resource_id: &str) -> Result<(), StateError> {

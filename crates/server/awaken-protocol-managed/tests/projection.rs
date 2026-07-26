@@ -485,6 +485,16 @@ async fn a_retries_exhausted_turn_idles_with_that_stop_reason() {
 
 // --- CE: subagent-delegate child-thread lifecycle ----------------------------
 
+/// Cause graph: completed delegated Run -> one typed child Thread -> ordered
+/// lifecycle events -> idle terminal state. Re-observing the same Run id updates
+/// the same Thread and must not create a parallel projection.
+///
+/// | Run id | completion | prior child | Thread effect | Event effect |
+/// |---|---|---|---|---|
+/// | exact | complete | absent | create idle child | create, running, sent, received, idle |
+/// | exact | pending | absent | create running child | create, running, sent |
+/// | exact | complete | running | update same child idle | received, idle only |
+///
 /// An inline `agent_run` delegation projects the delegate's full child-thread
 /// lifecycle after the turn's own idle — `session.thread_created` →
 /// `session.thread_status_running` → the input sent → the reply received →
@@ -581,6 +591,35 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
         .unwrap();
     assert_eq!(child["parent_thread_id"], format!("{id}:primary"));
     assert_eq!(child["agent"]["name"], "researcher");
+
+    // The child endpoint is not an alias of the Session log. It projects the
+    // same committed facts from the child's perspective: coordinator input is a
+    // received message and the child's reply is a sent message.
+    let child_events = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/threads/{child_thread_id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(
+        types(&child_events),
+        vec![
+            "session.thread_status_running",
+            "agent.thread_message_received",
+            "agent.thread_message_sent",
+            "session.thread_status_idle",
+        ],
+        "child stream contains only child-owned and cross-posted facts"
+    );
+    let received = &child_events["data"][1];
+    assert_eq!(received["from_session_thread_id"], format!("{id}:primary"));
+    assert!(received.get("from_agent_name").is_none());
+    assert_eq!(received["content"][0]["text"], "find the docs");
+    let sent = &child_events["data"][2];
+    assert_eq!(sent["to_session_thread_id"], format!("{id}:primary"));
+    assert!(sent.get("to_agent_name").is_none());
+    assert_eq!(sent["content"][0]["text"], "here are the docs");
 }
 
 // --- CE: session.updated event -----------------------------------------------

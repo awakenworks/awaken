@@ -21,8 +21,8 @@ use tokio_stream::Stream;
 
 use crate::state::{LiveInboxError, ManagedState, RunError, RunErrorKind, StateError};
 use crate::types::{
-    ErrorResponse, ListEventsResponse, Page, PageQuery, SendEventsRequest, SendEventsResponse,
-    Session, SessionCreateParams, paginate,
+    DeletedSession, ErrorResponse, ListEventsResponse, Page, PageQuery, SendEventsRequest,
+    SendEventsResponse, Session, SessionCreateParams, SessionThread, paginate,
 };
 use crate::types::{Event, StreamFrame};
 
@@ -317,13 +317,6 @@ fn versioned_session_response_at_revision(
 
 type WireErr = (StatusCode, Json<ErrorResponse>);
 
-/// A single (bounded) page for the thread/resource sub-lists the state layer
-/// projects as `Value`. These are bounded per session, so they are not cursor-
-/// paginated (unlike the top-level typed lists, which use `paginate`).
-fn page(data: Vec<serde_json::Value>) -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "data": data, "has_more": false, "next_page": null }))
-}
-
 /// `GET /v1/sessions` — a cursor page of the request scope's sessions (ADR-0051:
 /// tenancy-fenced, so a workspace never lists another's).
 async fn list_sessions(
@@ -427,11 +420,12 @@ async fn update_session(
 async fn delete_session(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, WireErr> {
+) -> Result<Json<DeletedSession>, WireErr> {
     state.delete_session(&id).await.map_err(error_response)?;
-    Ok(Json(
-        serde_json::json!({ "id": id, "type": "session_deleted" }),
-    ))
+    Ok(Json(DeletedSession {
+        id,
+        kind: "session_deleted",
+    }))
 }
 
 /// `POST /v1/sessions/:id/archive`.
@@ -451,14 +445,20 @@ async fn archive_session(
 async fn list_threads(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, WireErr> {
-    state.list_threads(&id).map(page).map_err(error_response)
+) -> Result<Json<Page<SessionThread>>, WireErr> {
+    state.ensure_session(&id).await.map_err(error_response)?;
+    state
+        .list_threads(&id)
+        .map(Page::single)
+        .map(Json)
+        .map_err(error_response)
 }
 
 async fn get_thread(
     State(state): State<Arc<ManagedState>>,
     Path((id, tid)): Path<(String, String)>,
-) -> Result<Json<serde_json::Value>, WireErr> {
+) -> Result<Json<SessionThread>, WireErr> {
+    state.ensure_session(&id).await.map_err(error_response)?;
     state
         .get_thread(&id, &tid)
         .map(Json)
@@ -468,23 +468,24 @@ async fn get_thread(
 async fn archive_thread(
     State(state): State<Arc<ManagedState>>,
     Path((id, tid)): Path<(String, String)>,
-) -> Result<Json<serde_json::Value>, WireErr> {
+) -> Result<Json<SessionThread>, WireErr> {
+    state.ensure_session(&id).await.map_err(error_response)?;
     state
         .archive_thread(&id, &tid)
+        .await
         .map(Json)
         .map_err(error_response)
 }
 
-/// Thread events == the session's events (the primary thread), after validating
-/// the thread id belongs to the session.
+/// Thread events are a typed projection of the Session's one committed event log.
 async fn list_thread_events(
     State(state): State<Arc<ManagedState>>,
     Path((id, tid)): Path<(String, String)>,
     Query(query): Query<PageQuery>,
 ) -> Result<Json<ListEventsResponse>, WireErr> {
-    state.get_thread(&id, &tid).map_err(error_response)?;
+    state.ensure_session(&id).await.map_err(error_response)?;
     state
-        .list_events(&id, query.page.as_deref(), query.limit)
+        .list_thread_events(&id, &tid, query.page.as_deref(), query.limit)
         .map(Json)
         .map_err(error_response)
 }
@@ -525,7 +526,11 @@ fn is_terminal(frame: &StreamFrame) -> bool {
         StreamFrame::Committed(e)
             if matches!(
                 e.type_str(),
-                "session.status_idle" | "session.status_terminated" | "session.deleted"
+                "session.status_idle"
+                    | "session.status_terminated"
+                    | "session.deleted"
+                    | "session.thread_status_idle"
+                    | "session.thread_status_terminated"
             )
     )
 }
@@ -541,15 +546,22 @@ fn sse_frame(frame: &StreamFrame) -> SseEvent {
 /// The live SSE body: the committed snapshot (backfill, deduped against the live
 /// tail by id), then live broadcast frames until a terminal committed event or the
 /// session's sender drops. Preview frames are forwarded only if `previews` is set.
-fn live_sse_stream(
+fn live_sse_stream<F>(
     snapshot: Vec<Event>,
     mut rx: broadcast::Receiver<StreamFrame>,
     previews: bool,
-) -> impl Stream<Item = Result<SseEvent, Infallible>> {
+    project: F,
+) -> impl Stream<Item = Result<SseEvent, Infallible>>
+where
+    F: Fn(StreamFrame) -> Option<StreamFrame> + Send + Sync + 'static,
+{
     async_stream::stream! {
         let mut seen: HashSet<String> = HashSet::new();
         let mut backfill_terminal = false;
         for event in snapshot {
+            let Some(StreamFrame::Committed(event)) = project(StreamFrame::Committed(event)) else {
+                continue;
+            };
             seen.insert(event.id.clone());
             let frame = StreamFrame::Committed(event);
             backfill_terminal = is_terminal(&frame);
@@ -561,7 +573,16 @@ fn live_sse_stream(
         if !backfill_terminal {
             loop {
                 match rx.recv().await {
-                    Ok(StreamFrame::Committed(event)) => {
+                    Ok(frame) => {
+                        let Some(frame) = project(frame) else {
+                            continue;
+                        };
+                        let StreamFrame::Committed(event) = frame else {
+                            if previews {
+                                yield Ok(sse_frame(&frame));
+                            }
+                            continue;
+                        };
                         // Dedupe the snapshot/live overlap by id; only end on a
                         // committed terminal.
                         if !seen.insert(event.id.clone()) {
@@ -572,11 +593,6 @@ fn live_sse_stream(
                         yield Ok(sse_frame(&frame));
                         if terminal {
                             break;
-                        }
-                    }
-                    Ok(frame @ StreamFrame::Preview(_)) => {
-                        if previews {
-                            yield Ok(sse_frame(&frame));
                         }
                     }
                     // Best-effort: a lagging subscriber skips the dropped frames
@@ -594,18 +610,30 @@ async fn stream_thread_events(
     Path((id, tid)): Path<(String, String)>,
     RawQuery(raw): RawQuery,
 ) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, WireErr> {
-    // Per-thread streams reject the preview opt-in entirely (only the session-level
-    // stream supports it) — before resolving the thread, matching the official wire:
-    // the parameter is unsupported on this endpoint regardless of the thread.
-    if parse_event_deltas(raw.as_deref())? {
-        return Err(error_response(
-            RunError::bad_request("event_deltas is only supported on the session event stream")
-                .into(),
-        ));
-    }
+    // The official Thread EventStreamParams carries the same preview selector as
+    // the Session stream. Primary-thread previews are the Session previews; child
+    // execution currently has no independent preview producer.
+    let previews = parse_event_deltas(raw.as_deref())?;
+    state.ensure_session(&id).await.map_err(error_response)?;
     state.get_thread(&id, &tid).map_err(error_response)?;
     let (snapshot, rx) = state.stream_subscribe(&id).map_err(error_response)?;
-    Ok(Sse::new(live_sse_stream(snapshot, rx, false)).keep_alive(KeepAlive::default()))
+    let primary = tid == format!("{id}:primary");
+    let project_session = id.clone();
+    let project_thread = tid.clone();
+    Ok(Sse::new(live_sse_stream(
+        snapshot,
+        rx,
+        previews,
+        move |frame| match frame {
+            StreamFrame::Committed(event) => {
+                ManagedState::project_event_for_thread(&project_session, &project_thread, event)
+                    .map(StreamFrame::Committed)
+            }
+            preview @ StreamFrame::Preview(_) if primary => Some(preview),
+            StreamFrame::Preview(_) => None,
+        },
+    ))
+    .keep_alive(KeepAlive::default()))
 }
 
 // -- Resources --
@@ -613,8 +641,8 @@ async fn stream_thread_events(
 async fn create_resource(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
-    ManagedJson(body): ManagedJson<serde_json::Value>,
-) -> Result<Json<serde_json::Value>, WireErr> {
+    ManagedJson(body): ManagedJson<crate::types::resource::ResourceAddParams>,
+) -> Result<Json<crate::types::resource::SessionResource>, WireErr> {
     state
         .create_resource(&id, body)
         .await
@@ -625,14 +653,18 @@ async fn create_resource(
 async fn list_resources(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, WireErr> {
-    state.list_resources(&id).map(page).map_err(error_response)
+) -> Result<Json<Page<crate::types::resource::SessionResource>>, WireErr> {
+    state
+        .list_resources(&id)
+        .map(Page::single)
+        .map(Json)
+        .map_err(error_response)
 }
 
 async fn get_resource(
     State(state): State<Arc<ManagedState>>,
     Path((id, rid)): Path<(String, String)>,
-) -> Result<Json<serde_json::Value>, WireErr> {
+) -> Result<Json<crate::types::resource::SessionResource>, WireErr> {
     state
         .get_resource(&id, &rid)
         .map(Json)
@@ -642,8 +674,8 @@ async fn get_resource(
 async fn update_resource(
     State(state): State<Arc<ManagedState>>,
     Path((id, rid)): Path<(String, String)>,
-    ManagedJson(body): ManagedJson<serde_json::Value>,
-) -> Result<Json<serde_json::Value>, WireErr> {
+    ManagedJson(body): ManagedJson<crate::types::resource::ResourceUpdateParams>,
+) -> Result<Json<crate::types::resource::SessionResource>, WireErr> {
     state
         .update_resource(&id, &rid, body)
         .await
@@ -654,14 +686,15 @@ async fn update_resource(
 async fn delete_resource(
     State(state): State<Arc<ManagedState>>,
     Path((id, rid)): Path<(String, String)>,
-) -> Result<Json<serde_json::Value>, WireErr> {
+) -> Result<Json<crate::types::resource::DeletedSessionResource>, WireErr> {
     state
         .delete_resource(&id, &rid)
         .await
         .map_err(error_response)?;
-    Ok(Json(
-        serde_json::json!({ "id": rid, "type": "session_resource_deleted" }),
-    ))
+    Ok(Json(crate::types::resource::DeletedSessionResource {
+        id: rid,
+        kind: "session_resource_deleted",
+    }))
 }
 
 async fn send_events(
@@ -695,5 +728,5 @@ async fn stream_events(
     // Opt in to live previews (`event_start`/`event_delta`) via `event_deltas[]`.
     let previews = parse_event_deltas(raw.as_deref())?;
     let (snapshot, rx) = state.stream_subscribe(&id).map_err(error_response)?;
-    Ok(Sse::new(live_sse_stream(snapshot, rx, previews)).keep_alive(KeepAlive::default()))
+    Ok(Sse::new(live_sse_stream(snapshot, rx, previews, Some)).keep_alive(KeepAlive::default()))
 }

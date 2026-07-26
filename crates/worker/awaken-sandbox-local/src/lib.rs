@@ -391,6 +391,7 @@ pub(crate) fn provision_repo_at(
     logical: &str,
     url: &str,
     initial_branch: Option<&str>,
+    initial_commit: Option<&str>,
     token: Option<&str>,
 ) -> Result<(), SandboxError> {
     let dest = jailed_at(root, logical)?;
@@ -405,6 +406,9 @@ pub(crate) fn provision_repo_at(
     args.push(authed_url(url, token));
     args.push(dest.to_string_lossy().into_owned());
     run_git(None, &args)?;
+    if let Some(commit) = initial_commit {
+        run_git(Some(&dest), &["checkout", "--detach", commit])?;
+    }
     if token.is_some() {
         // Scrub the token from the jail's origin: the agent inside never sees the credential
         // (the host re-injects it only on the harvest push transport).

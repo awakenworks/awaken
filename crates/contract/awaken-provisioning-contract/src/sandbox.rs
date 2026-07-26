@@ -103,15 +103,16 @@ pub trait MemoryMount: Send + Sync {
 }
 
 /// Secret-free, per-Sandbox projection of one already-resolved Repository config.
-/// It pins configuration semantics only: `initial_branch` is a clone preference,
-/// never a commit/tree pin. Principal, role, API key, policy, Workspace hierarchy,
-/// and credential bytes are deliberately absent.
+/// It pins configuration semantics only. Branch is a clone preference; commit is
+/// an exact immutable checkout. Principal, role, API key, policy, Workspace
+/// hierarchy, and credential bytes are deliberately absent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepositoryRealizationPlan {
     pub repository_id: String,
     pub mount_path: String,
     pub remote_url: String,
     pub initial_branch: Option<String>,
+    pub initial_commit: Option<String>,
     pub access: MountAccess,
 }
 
