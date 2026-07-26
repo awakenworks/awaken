@@ -1477,6 +1477,7 @@ mod grace_tests {
                 .into_iter()
                 .collect(),
                 recipient_bound_envelopes: false,
+                alternatives: Vec::new(),
             }
         }
 

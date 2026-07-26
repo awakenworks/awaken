@@ -154,6 +154,7 @@ impl LaunchResolver for PublishedAcpLaunchResolver {
             .into_iter()
             .collect(),
             recipient_bound_envelopes,
+            alternatives: Vec::new(),
         }
     }
 }

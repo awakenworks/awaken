@@ -215,3 +215,26 @@ removed AWAKEN_MGMT_* inputs
 The shared E2E harness authors this standard config once per isolated deployment.
 Individual scenarios supply typed values to that helper; they must not reproduce
 TOML serialization or revive environment-variable precedence.
+
+## Phase 9: independent credential-adapter admission
+
+```text
+Native adapter capability profile ─┐
+                                   ├─> one process capability declaration
+ACP route capability profile(s) ───┘      retaining independent alternatives
+exact Run backend + holder + source + realization
+    -> one complete profile supports all four causes -> claim
+    -> facts split across profiles                    -> reject
+```
+
+| Rule | Exact route installed | Holder/source/kind in one profile | Credential shape | Expected |
+|---|---:|---:|---|---|
+| C1 | yes | yes | Gemini bearer/process secret | claim and launch |
+| C2 | yes | yes | Codex OAuth/artifact | claim and provision private file |
+| C3 | yes | no | synthetic cross-profile tuple | reject admission |
+| C4 | yes | yes | Codex bearer only | `credential_driver_required: codex`; no launch |
+| C5 | no | any | any | route unavailable; no fallback adapter |
+
+The process dispatch pool and per-Session durable ingress both read the same Host
+composition. Flattening profiles into independent holder/source/kind sets is
+forbidden because their Cartesian product creates authority no adapter owns.

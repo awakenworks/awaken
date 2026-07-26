@@ -501,6 +501,7 @@ fn admit_exact_adapter(
             material_sources,
             realization_kinds: [realization].into_iter().collect(),
             recipient_bound_envelopes,
+            alternatives: Vec::new(),
         },
         unix_time_ms(),
     )?;

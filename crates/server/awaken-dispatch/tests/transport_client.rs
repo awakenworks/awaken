@@ -91,6 +91,7 @@ async fn spawn_transport_server() -> (String, Arc<MemoryDispatchStore>, Arc<Atom
             .into_iter()
             .collect(),
             recipient_bound_envelopes: false,
+            alternatives: Vec::new(),
         },
     });
     let app = Router::new()
