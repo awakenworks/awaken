@@ -41,32 +41,33 @@ pub(crate) struct McpTransportMaterial {
 /// Project private Worker material to ACP configuration. A real bearer is never
 /// projected inline: ACP receives an exact-generation loopback route or an
 /// unresolved opaque reference and the Worker retains plaintext.
-#[must_use]
 pub(crate) fn project_mcp_transport(
     prepared: &McpTransportMaterial,
     generation: &awaken_protocol_managed::McpGenerationRef,
     relay: Option<&crate::mcp_relay::McpRelay>,
-) -> awaken_run_executor_acp::McpServerConfig {
+) -> Result<awaken_run_executor_acp::McpServerConfig, HostError> {
     use awaken_run_executor_acp::{McpCredential, McpServerConfig, McpTransport};
     let (url, credential) = match (&prepared.bearer, relay) {
         // α RESOLVED: a sandboxed run dials the host's loopback relay, which injects the real
         // bearer out of the sandbox's address space — the sandbox itself holds no credential.
         (Some(_), Some(relay)) => (relay.route_url(generation), McpCredential::None),
-        // α UNRESOLVED (no relay wired): a secretless reference a broker/gateway resolves
-        // out-of-band — the raw bearer still never enters the sandbox.
-        (Some(_), None) => (
-            prepared.url.clone(),
-            McpCredential::Reference {
-                reference: format!("session-mcp:{}", prepared.name),
-            },
-        ),
+        // There is no installed ACP-side resolver for a bare reference. Returning
+        // the original URL plus a placeholder would report false success and send
+        // an unusable bearer to the target. Fail closed until an explicit mediated
+        // endpoint has actually been realized.
+        (Some(_), None) => {
+            return Err(HostError::internal(format!(
+                "authenticated MCP generation {}:{} requires the Worker relay",
+                generation.attachment_id.0, generation.generation.0
+            )));
+        }
         (None, _) => (prepared.url.clone(), McpCredential::None),
     };
-    McpServerConfig {
+    Ok(McpServerConfig {
         name: prepared.name.clone(),
         transport: McpTransport::Http { url },
         credential,
-    }
+    })
 }
 
 /// The refresh half of a prepared MCP server (an `mcp_oauth` vault credential
@@ -483,15 +484,14 @@ mod alpha_beta_tests {
     fn acp_projection_never_contains_the_real_bearer() {
         let p = prepared(Some("sk-RAW-SECRET"));
         let generation = generation();
-        // Without a live relay, fail closed to an opaque reference; there is no
-        // trusted-inline compatibility branch.
-        let s = project_mcp_transport(&p, &generation, None);
-        assert!(matches!(s.credential, McpCredential::Reference { .. }));
-        assert!(s.is_sandbox_safe());
-        assert!(!serde_json::to_string(&s).unwrap().contains("sk-RAW-SECRET"));
+        // Without a live relay, fail closed: this process has no alternate
+        // reference resolver and may not report a non-functional projection.
+        assert!(project_mcp_transport(&p, &generation, None).is_err());
         // No bearer → None.
         assert!(matches!(
-            project_mcp_transport(&prepared(None), &generation, None).credential,
+            project_mcp_transport(&prepared(None), &generation, None)
+                .unwrap()
+                .credential,
             McpCredential::None
         ));
     }
@@ -504,7 +504,7 @@ mod alpha_beta_tests {
         relay.set_route(&generation, &p);
         // Sandboxed + relay: the projected server dials the relay (loopback), holds NO
         // credential (the relay injects the real bearer host-side), never the raw secret.
-        let s = project_mcp_transport(&p, &generation, Some(&relay));
+        let s = project_mcp_transport(&p, &generation, Some(&relay)).unwrap();
         assert!(matches!(s.credential, McpCredential::None));
         assert!(s.is_sandbox_safe());
         let url = match &s.transport {

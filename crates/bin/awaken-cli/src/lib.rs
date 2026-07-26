@@ -1381,7 +1381,8 @@ fn local_org_id() -> String {
 mod runtime_session_store_tests {
     use super::*;
     use awaken_protocol_managed::{
-        ApplicationContributionState, PersistedSession, SessionBaselineState, SessionCreationIntent,
+        ApplicationContributionState, IdempotencyRecord, PersistedSession, SessionBaselineState,
+        SessionCreationIntent, stable_fingerprint,
     };
     use awaken_runtime_host::ModelPublicationResolver;
 
@@ -1414,10 +1415,21 @@ mod runtime_session_store_tests {
         let dir = tempfile::tempdir().expect("temporary runtime storage");
         {
             let stores = management_stores_for_runtime_storage(Some(dir.path()));
+            let value = session("sesn-restart");
+            let payload_hash = stable_fingerprint(&value);
             stores
                 .sessions
-                .save_owned("workspace-a", session("sesn-restart"))
-                .await;
+                .create(
+                    "workspace-a",
+                    value,
+                    IdempotencyRecord {
+                        key: "test:runtime-session-restart".into(),
+                        payload_hash,
+                    },
+                    Vec::new(),
+                )
+                .await
+                .unwrap();
         }
 
         let reopened = management_stores_for_runtime_storage(Some(dir.path()));

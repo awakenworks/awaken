@@ -585,10 +585,10 @@ impl SharedHost {
         // merely an environment hint. Reflect it into the neutral resolved
         // snapshot so the shared AttemptExecutorRegistry routes the activation
         // instead of silently using the native fallback.
-        if let Some(adapter) = self.acp.as_ref().and_then(|acp| acp.adapter_for(thread)) {
-            if awaken_runtime_contract::resolved::Backend::from_ref(&adapter).is_acp() {
-                config.resolved_spec.model_binding.binding.backend_ref = adapter;
-            }
+        if let Some(adapter) = self.acp.as_ref().and_then(|acp| acp.adapter_for(thread))
+            && awaken_runtime_contract::resolved::Backend::from_ref(&adapter).is_acp()
+        {
+            config.resolved_spec.model_binding.binding.backend_ref = adapter;
         }
         // D6: for an ACP run, hand the session's staged MCP servers to the CLI's own MCP
         // client via `plugin_config.acp.mcp_servers`. Whether this run executes on ACP is
@@ -616,8 +616,8 @@ impl SharedHost {
                     }
                     Some(r)
                 }
-                // A relay that cannot bind falls back to the (unresolved) α reference rather
-                // than failing the session — the raw bearer still never enters the sandbox.
+                // Projection below rejects authenticated servers when the relay
+                // cannot bind. There is no implicit placeholder/broker fallback.
                 Err(_) => None,
             }
         } else {
@@ -635,7 +635,7 @@ impl SharedHost {
                 .map(|(projection, server)| {
                     crate::mcp::project_mcp_transport(server, &projection.generation, relay)
                 })
-                .collect()
+                .collect::<Result<Vec<_>, _>>()?
         } else {
             Vec::new()
         };

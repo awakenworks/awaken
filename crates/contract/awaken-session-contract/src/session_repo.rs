@@ -157,6 +157,10 @@ pub struct SessionIdempotencyReceipt {
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the public root-mutation contract intentionally carries a complete replacement aggregate"
+)]
 pub enum SessionMutationPayload {
     Replace(PersistedSession),
     Delete(SessionTombstone),
@@ -298,286 +302,15 @@ pub trait ManagedSessionRepository: Send + Sync {
         ))
     }
 
-    /// Persist a session and its owning scope in one repository operation.
-    ///
-    /// The owner is part of the adapter-side persistence envelope rather than the
-    /// tenancy-agnostic [`PersistedSession`] value. Keeping both arguments on one
-    /// required method makes the crash invariant explicit: a visible session row
-    /// can never exist without its ownership fence.
-    async fn save_owned(&self, owner_scope: &str, mut session: PersistedSession) {
-        loop {
-            let Some(current) = self.get(&session.session_id).await else {
-                session.revision = SessionRevision(0);
-                let payload = SessionMutationPayload::Replace(session.clone());
-                let hash = payload.stable_hash();
-                let created = self
-                    .create(
-                        owner_scope,
-                        session.clone(),
-                        IdempotencyRecord {
-                            key: format!("compat:save:0:{hash}"),
-                            payload_hash: hash,
-                        },
-                        Vec::new(),
-                    )
-                    .await;
-                match created {
-                    Ok(_) => return,
-                    Err(SessionRepositoryError::AlreadyExists) => continue,
-                    Err(error) => panic!("persist managed Session: {error}"),
-                }
-            };
-            if self.owner(&session.session_id).await.as_deref() != Some(owner_scope) {
-                panic!("cannot move a managed Session between owner scopes");
-            }
-            session.revision = current.revision;
-            let payload = SessionMutationPayload::Replace(session.clone());
-            let hash = payload.stable_hash();
-            let result = self
-                .commit_mutation(
-                    owner_scope,
-                    SessionMutation {
-                        expected_revision: current.revision,
-                        idempotency: IdempotencyRecord {
-                            key: format!("compat:save:{}:{hash}", current.revision.0),
-                            payload_hash: hash,
-                        },
-                        payload,
-                        lifecycle_facts: Vec::new(),
-                    },
-                )
-                .await
-                .unwrap_or_else(|error| panic!("persist managed Session: {error}"));
-            match result {
-                SessionMutationResult::Applied { .. } | SessionMutationResult::Replayed { .. } => {
-                    return;
-                }
-                SessionMutationResult::Conflict { .. } => continue,
-                SessionMutationResult::IdempotencyMismatch => {
-                    panic!("managed Session compatibility idempotency mismatch")
-                }
-            }
-        }
-    }
-
-    /// Atomically persist the session, owner fence, and lifecycle outbox fact.
-    async fn save_owned_with_lifecycle(
-        &self,
-        owner_scope: &str,
-        mut session: PersistedSession,
-        fact: SessionLifecycleFact,
-    ) {
-        loop {
-            let Some(current) = self.get(&session.session_id).await else {
-                session.revision = SessionRevision(0);
-                let payload = SessionMutationPayload::Replace(session.clone());
-                let hash = payload.stable_hash();
-                match self
-                    .create(
-                        owner_scope,
-                        session.clone(),
-                        IdempotencyRecord {
-                            key: format!("compat:save-lifecycle:0:{hash}"),
-                            payload_hash: hash,
-                        },
-                        vec![fact.clone()],
-                    )
-                    .await
-                {
-                    Ok(_) => return,
-                    Err(SessionRepositoryError::AlreadyExists) => continue,
-                    Err(error) => panic!("persist managed Session lifecycle: {error}"),
-                }
-            };
-            if self.owner(&session.session_id).await.as_deref() != Some(owner_scope) {
-                panic!("cannot move a managed Session between owner scopes");
-            }
-            session.revision = current.revision;
-            let payload = SessionMutationPayload::Replace(session.clone());
-            let hash = payload.stable_hash();
-            let result = self
-                .commit_mutation(
-                    owner_scope,
-                    SessionMutation {
-                        expected_revision: current.revision,
-                        idempotency: IdempotencyRecord {
-                            key: format!("compat:save-lifecycle:{}:{hash}", current.revision.0),
-                            payload_hash: hash,
-                        },
-                        payload,
-                        lifecycle_facts: vec![fact.clone()],
-                    },
-                )
-                .await
-                .unwrap_or_else(|error| panic!("persist managed Session lifecycle: {error}"));
-            match result {
-                SessionMutationResult::Applied { .. } | SessionMutationResult::Replayed { .. } => {
-                    return;
-                }
-                SessionMutationResult::Conflict { .. } => continue,
-                SessionMutationResult::IdempotencyMismatch => {
-                    panic!("managed Session compatibility idempotency mismatch")
-                }
-            }
-        }
-    }
-
     /// Commit a lifecycle transition fact idempotently by stable id.
     async fn append_lifecycle(&self, fact: SessionLifecycleFact);
-
-    /// Atomically mark the durable session terminated and commit its fact.
-    async fn archive_with_lifecycle(
-        &self,
-        session_id: &str,
-        archived_at: &str,
-        fact: SessionLifecycleFact,
-    ) {
-        loop {
-            let Some(mut current) = self.get(session_id).await else {
-                return;
-            };
-            let owner = self
-                .owner(session_id)
-                .await
-                .unwrap_or_else(|| "default".into());
-            current.status = "terminated".into();
-            current.archived_at = Some(archived_at.into());
-            let payload = SessionMutationPayload::Replace(current.clone());
-            let hash = payload.stable_hash();
-            match self
-                .commit_mutation(
-                    &owner,
-                    SessionMutation {
-                        expected_revision: current.revision,
-                        idempotency: IdempotencyRecord {
-                            key: format!("compat:archive:{}:{hash}", current.revision.0),
-                            payload_hash: hash,
-                        },
-                        payload,
-                        lifecycle_facts: vec![fact.clone()],
-                    },
-                )
-                .await
-                .expect("archive managed Session")
-            {
-                SessionMutationResult::Applied { .. } | SessionMutationResult::Replayed { .. } => {
-                    return;
-                }
-                SessionMutationResult::Conflict { .. } => continue,
-                SessionMutationResult::IdempotencyMismatch => {
-                    panic!("managed Session archive idempotency mismatch")
-                }
-            }
-        }
-    }
-
-    /// Atomically delete the session row and commit its terminal fact.
-    async fn delete_with_lifecycle(&self, session_id: &str, fact: SessionLifecycleFact) {
-        loop {
-            let Some(current) = self.get(session_id).await else {
-                return;
-            };
-            let owner = self
-                .owner(session_id)
-                .await
-                .unwrap_or_else(|| "default".into());
-            let deleted_revision = SessionRevision(
-                current
-                    .revision
-                    .0
-                    .checked_add(1)
-                    .expect("Session revision exhausted"),
-            );
-            let payload = SessionMutationPayload::Delete(SessionTombstone {
-                session_id: session_id.into(),
-                deleted_revision,
-                deleted_at: fact.timestamp.to_string(),
-            });
-            let hash = payload.stable_hash();
-            match self
-                .commit_mutation(
-                    &owner,
-                    SessionMutation {
-                        expected_revision: current.revision,
-                        idempotency: IdempotencyRecord {
-                            key: format!("compat:delete:{}:{hash}", current.revision.0),
-                            payload_hash: hash,
-                        },
-                        payload,
-                        lifecycle_facts: vec![fact.clone()],
-                    },
-                )
-                .await
-                .expect("delete managed Session")
-            {
-                SessionMutationResult::Applied { .. } | SessionMutationResult::Replayed { .. } => {
-                    return;
-                }
-                SessionMutationResult::Conflict { .. } => continue,
-                SessionMutationResult::IdempotencyMismatch => {
-                    panic!("managed Session delete idempotency mismatch")
-                }
-            }
-        }
-    }
 
     async fn pending_lifecycle(&self) -> Vec<SessionLifecycleFact>;
 
     async fn complete_lifecycle(&self, fact_id: &str);
 
-    /// Persist under the self-hosted default scope. Production request paths with
-    /// an edge-resolved owner use [`Self::save_owned`] directly; this convenience
-    /// keeps scope-free local/test callers deterministic without reintroducing a
-    /// second owner write.
-    async fn save(&self, session: PersistedSession) {
-        self.save_owned("default", session).await;
-    }
-
     /// The stored configuration for `session_id`, if any.
     async fn get(&self, session_id: &str) -> Option<PersistedSession>;
-
-    /// Atomically attach the runtime's opaque environment binding to an existing
-    /// Session row. Returns `false` when the Session is unknown. This narrow
-    /// update avoids overwriting concurrent resource/lifecycle mutations with a
-    /// stale aggregate snapshot.
-    async fn bind_environment(&self, session_id: &str, binding: &str) -> bool {
-        loop {
-            let Some(mut current) = self.get(session_id).await else {
-                return false;
-            };
-            let owner = self
-                .owner(session_id)
-                .await
-                .unwrap_or_else(|| "default".into());
-            current.environment_binding = Some(binding.into());
-            let payload = SessionMutationPayload::Replace(current.clone());
-            let hash = payload.stable_hash();
-            match self
-                .commit_mutation(
-                    &owner,
-                    SessionMutation {
-                        expected_revision: current.revision,
-                        idempotency: IdempotencyRecord {
-                            key: format!("compat:bind:{}:{hash}", current.revision.0),
-                            payload_hash: hash,
-                        },
-                        payload,
-                        lifecycle_facts: Vec::new(),
-                    },
-                )
-                .await
-                .expect("bind managed Session environment")
-            {
-                SessionMutationResult::Applied { .. } | SessionMutationResult::Replayed { .. } => {
-                    return true;
-                }
-                SessionMutationResult::Conflict { .. } => continue,
-                SessionMutationResult::IdempotencyMismatch => {
-                    panic!("managed Session bind idempotency mismatch")
-                }
-            }
-        }
-    }
 
     /// Sessions carrying any durable Resource or MCP reconciliation work.
     /// Implementations preserve the intrinsic Workspace partition in the same
@@ -605,9 +338,8 @@ pub trait ManagedSessionRepository: Send + Sync {
 }
 
 // In-memory and durable adapters live outward in `awaken-session-store`.
-// Workspace ownership is persisted atomically beside each row through
-// `save_owned*`; authorization scope decorators do not belong in this resource
-// persistence port.
+// Workspace ownership is persisted atomically beside each row through `create`;
+// authorization scope decorators do not belong in this resource persistence port.
 
 #[cfg(test)]
 mod mutation_tests {

@@ -107,13 +107,65 @@ fn fact(id: &str, session_id: &str, event_type: &str) -> SessionLifecycleFact {
     }
 }
 
+async fn create_session<R: ManagedSessionRepository>(
+    repo: &R,
+    owner: &str,
+    mut value: PersistedSession,
+    facts: Vec<SessionLifecycleFact>,
+) -> PersistedSession {
+    value.revision = SessionRevision(0);
+    let payload = SessionMutationPayload::Replace(value.clone());
+    value.revision = repo
+        .create(
+            owner,
+            value.clone(),
+            record(&format!("test:create:{}", value.session_id), &payload),
+            facts,
+        )
+        .await
+        .expect("create Session fixture");
+    value
+}
+
+async fn replace_session<R: ManagedSessionRepository>(
+    repo: &R,
+    owner: &str,
+    mut value: PersistedSession,
+    key: &str,
+    facts: Vec<SessionLifecycleFact>,
+) -> PersistedSession {
+    value.revision = repo
+        .get(&value.session_id)
+        .await
+        .expect("replace Session fixture exists")
+        .revision;
+    let payload = SessionMutationPayload::Replace(value.clone());
+    let result = repo
+        .commit_mutation(
+            owner,
+            SessionMutation {
+                expected_revision: value.revision,
+                idempotency: record(key, &payload),
+                payload,
+                lifecycle_facts: facts,
+            },
+        )
+        .await
+        .expect("replace Session fixture");
+    let revision = match result {
+        SessionMutationResult::Applied { new_revision }
+        | SessionMutationResult::Replayed { new_revision } => new_revision,
+        other => panic!("replace Session fixture failed: {other:?}"),
+    };
+    value.revision = revision;
+    value
+}
+
 // ── The universal port contract, trait-generic over any backend ──────────────────
 
 /// Round-trip: a saved aggregate reads back byte-for-byte (every field persists).
 async fn save_get_round_trips<R: ManagedSessionRepository>(r: &R) {
-    let mut want = session("sesn_1", "hello");
-    r.save(want.clone()).await;
-    want.revision = awaken_session_contract::SessionRevision(1);
+    let want = create_session(r, "default", session("sesn_1", "hello"), Vec::new()).await;
     assert_eq!(
         r.get("sesn_1").await,
         Some(want),
@@ -128,8 +180,15 @@ async fn absent_id_reads_none<R: ManagedSessionRepository>(r: &R) {
 
 /// Idempotent upsert: saving the same id twice keeps the latest, not two rows.
 async fn save_is_idempotent_upsert<R: ManagedSessionRepository>(r: &R) {
-    r.save(session("sesn_1", "first")).await;
-    r.save(session("sesn_1", "second")).await;
+    create_session(r, "default", session("sesn_1", "first"), Vec::new()).await;
+    replace_session(
+        r,
+        "default",
+        session("sesn_1", "second"),
+        "test:replace:second",
+        Vec::new(),
+    )
+    .await;
     assert_eq!(
         r.get("sesn_1").await.and_then(|s| s.title),
         Some("second".into())
@@ -137,13 +196,20 @@ async fn save_is_idempotent_upsert<R: ManagedSessionRepository>(r: &R) {
 }
 
 /// A visible row and its owner are one write: no backend may expose the row with
-/// a missing or stale scope after `save_owned` returns.
-async fn save_owned_is_one_atomic_repository_fact<R: ManagedSessionRepository>(r: &R) {
-    r.save_owned("ws_a", session("sesn_owned", "owned")).await;
+/// a missing or stale scope after aggregate creation or replacement returns.
+async fn ownership_is_one_atomic_repository_fact<R: ManagedSessionRepository>(r: &R) {
+    create_session(r, "ws_a", session("sesn_owned", "owned"), Vec::new()).await;
     assert!(r.get("sesn_owned").await.is_some());
     assert_eq!(r.owner("sesn_owned").await.as_deref(), Some("ws_a"));
 
-    r.save_owned("ws_a", session("sesn_owned", "updated")).await;
+    replace_session(
+        r,
+        "ws_a",
+        session("sesn_owned", "updated"),
+        "test:replace:owned",
+        Vec::new(),
+    )
+    .await;
     assert_eq!(r.owner("sesn_owned").await.as_deref(), Some("ws_a"));
     assert_eq!(
         r.get("sesn_owned").await.and_then(|s| s.title),
@@ -154,13 +220,12 @@ async fn save_owned_is_one_atomic_repository_fact<R: ManagedSessionRepository>(r
 /// Binding is a narrow update: it fails closed for an unknown id and changes no
 /// other aggregate field for a known Session.
 async fn environment_binding_is_atomic_and_non_destructive<R: ManagedSessionRepository>(r: &R) {
-    assert!(!r.bind_environment("unknown", "opaque").await);
+    assert!(r.get("unknown").await.is_none());
     let want = session("sesn_bound", "unchanged");
-    r.save_owned("ws_a", want.clone()).await;
-    assert!(
-        r.bind_environment("sesn_bound", r#"{"provider_kind":"bwrap"}"#)
-            .await
-    );
+    create_session(r, "ws_a", want.clone(), Vec::new()).await;
+    let mut bound = want.clone();
+    bound.environment_binding = Some(r#"{"provider_kind":"bwrap"}"#.into());
+    replace_session(r, "ws_a", bound, "test:bind", Vec::new()).await;
     let mut got = r.get("sesn_bound").await.expect("bound Session");
     assert_eq!(
         got.environment_binding.as_deref(),
@@ -176,10 +241,11 @@ async fn environment_binding_is_atomic_and_non_destructive<R: ManagedSessionRepo
 /// aggregate and owner. Notification may crash afterwards without losing the fact.
 async fn lifecycle_outbox_tracks_every_committed_transition<R: ManagedSessionRepository>(r: &R) {
     let created = fact("evt:create", "sesn_lifecycle", "session.created");
-    r.save_owned_with_lifecycle(
+    create_session(
+        r,
         "ws_a",
         session("sesn_lifecycle", "lifecycle"),
-        created.clone(),
+        vec![created.clone()],
     )
     .await;
     assert!(r.get("sesn_lifecycle").await.is_some());
@@ -193,8 +259,10 @@ async fn lifecycle_outbox_tracks_every_committed_transition<R: ManagedSessionRep
     assert!(r.pending_lifecycle().await.is_empty());
 
     let archived = fact("evt:archive", "sesn_lifecycle", "session.archived");
-    r.archive_with_lifecycle("sesn_lifecycle", "2026-07-19T00:00:00Z", archived.clone())
-        .await;
+    let mut archive = r.get("sesn_lifecycle").await.unwrap();
+    archive.status = "terminated".into();
+    archive.archived_at = Some("2026-07-19T00:00:00Z".into());
+    replace_session(r, "ws_a", archive, "test:archive", vec![archived.clone()]).await;
     let durable = r.get("sesn_lifecycle").await.expect("archived session");
     assert_eq!(durable.status, "terminated");
     assert_eq!(durable.archived_at.as_deref(), Some("2026-07-19T00:00:00Z"));
@@ -202,8 +270,26 @@ async fn lifecycle_outbox_tracks_every_committed_transition<R: ManagedSessionRep
     r.complete_lifecycle(&archived.id).await;
 
     let deleted = fact("evt:delete", "sesn_lifecycle", "session.deleted");
-    r.delete_with_lifecycle("sesn_lifecycle", deleted.clone())
-        .await;
+    let current = r.get("sesn_lifecycle").await.unwrap();
+    let payload = SessionMutationPayload::Delete(SessionTombstone {
+        session_id: current.session_id.clone(),
+        deleted_revision: SessionRevision(current.revision.0 + 1),
+        deleted_at: deleted.timestamp.to_string(),
+    });
+    assert!(matches!(
+        r.commit_mutation(
+            "ws_a",
+            SessionMutation {
+                expected_revision: current.revision,
+                idempotency: record("test:delete", &payload),
+                payload,
+                lifecycle_facts: vec![deleted.clone()],
+            },
+        )
+        .await
+        .unwrap(),
+        SessionMutationResult::Applied { .. }
+    ));
     assert!(r.get("sesn_lifecycle").await.is_none());
     assert_eq!(r.pending_lifecycle().await, vec![deleted]);
 }
@@ -218,8 +304,7 @@ async fn pending_resource_activation_index_is_durable<R: ManagedSessionRepositor
         .resources
         .prepare(&pending.session_id, desired)
         .unwrap();
-    r.save_owned("ws_a", pending.clone()).await;
-    pending.revision = awaken_session_contract::SessionRevision(1);
+    pending = create_session(r, "ws_a", pending, Vec::new()).await;
 
     assert_eq!(
         r.reconcilable_sessions().await,
@@ -231,13 +316,13 @@ async fn pending_resource_activation_index_is_durable<R: ManagedSessionRepositor
 
     pending.resources.start_attempt().unwrap();
     pending.resources.commit().unwrap();
-    r.save_owned("ws_a", pending.clone()).await;
+    pending = replace_session(r, "ws_a", pending, "test:resource-active", Vec::new()).await;
     let indexed = r.reconcilable_sessions().await;
     assert_eq!(indexed.len(), 1, "active MCP remains restart work");
     assert!(indexed[0].session.mcp.needs_reconciliation());
 
     pending.mcp.attachments[0].state = awaken_session_contract::McpAttachmentState::Failed;
-    r.save_owned("ws_a", pending).await;
+    replace_session(r, "ws_a", pending, "test:mcp-failed", Vec::new()).await;
     assert!(r.reconcilable_sessions().await.is_empty());
 }
 
@@ -436,7 +521,7 @@ async fn run_suite<R: ManagedSessionRepository>(fresh: impl Fn() -> R) {
     save_get_round_trips(&fresh()).await;
     absent_id_reads_none(&fresh()).await;
     save_is_idempotent_upsert(&fresh()).await;
-    save_owned_is_one_atomic_repository_fact(&fresh()).await;
+    ownership_is_one_atomic_repository_fact(&fresh()).await;
     environment_binding_is_atomic_and_non_destructive(&fresh()).await;
     lifecycle_outbox_tracks_every_committed_transition(&fresh()).await;
     pending_resource_activation_index_is_durable(&fresh()).await;

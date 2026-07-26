@@ -456,7 +456,7 @@ async fn published_agent_mcp_binding_takes_effect_without_session_inline_servers
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn missing_vault_credential_fails_the_first_turn_loudly() {
+async fn missing_vault_credential_fails_initial_mcp_realization_loudly() {
     let url = mock_calc_mcp().await;
     let app = build_management_router().await;
 
@@ -472,20 +472,13 @@ async fn missing_vault_credential_fails_the_first_turn_loudly() {
         })),
     )
     .await;
-    assert_eq!(
-        s,
-        StatusCode::OK,
-        "create binds lazily; the connect is per turn"
-    );
-    let id = session["id"].as_str().unwrap().to_string();
-
-    // The first turn fails loudly with the error envelope — a configured MCP
-    // server that cannot connect never silently vanishes.
-    let (s, body) = send_user_message(&app, &id, "add 2 3").await;
+    // Initial MCP generation 1 is realized before the Session becomes visible.
+    // A configured server that cannot connect never produces a falsely healthy
+    // Session or silently vanishes from its tool surface.
     assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR);
-    assert_eq!(body["type"], "error");
-    assert_eq!(body["error"]["type"], "api_error");
-    let message = body["error"]["message"].as_str().unwrap_or_default();
+    assert_eq!(session["type"], "error");
+    assert_eq!(session["error"]["type"], "api_error");
+    let message = session["error"]["message"].as_str().unwrap_or_default();
     assert!(
         message.contains("mcp server `calc`"),
         "the failure names the server: {message}"
@@ -533,9 +526,15 @@ async fn vault_with_refreshable_credential(
     vault_id
 }
 
-/// Create a session binding `url` as MCP server `calc` through `vault_id`.
-async fn create_mcp_session(app: &Router, vault_id: &str, url: &str) -> String {
-    let (s, session) = call(
+/// Attempt to create a session binding `url` as MCP server `calc` through
+/// `vault_id`. Successful scenarios use [`create_mcp_session`]; failure scenarios
+/// assert this exact initial-realization response.
+async fn create_mcp_session_response(
+    app: &Router,
+    vault_id: &str,
+    url: &str,
+) -> (StatusCode, Value) {
+    call(
         app,
         "POST",
         "/v1/sessions",
@@ -545,7 +544,11 @@ async fn create_mcp_session(app: &Router, vault_id: &str, url: &str) -> String {
             "vault_ids": [vault_id],
         })),
     )
-    .await;
+    .await
+}
+
+async fn create_mcp_session(app: &Router, vault_id: &str, url: &str) -> String {
+    let (s, session) = create_mcp_session_response(app, vault_id, url).await;
     assert_eq!(s, StatusCode::OK);
     session["id"].as_str().unwrap().to_string()
 }
@@ -633,7 +636,7 @@ async fn expired_mcp_oauth_token_is_refreshed_mid_connect_and_resealed() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn refused_refresh_exchange_fails_the_turn_with_the_challenge() {
+async fn refused_refresh_exchange_fails_initial_realization_with_the_challenge() {
     // `token_response: None` = the token endpoint answers 400 invalid_grant.
     let mock = Arc::new(Mutex::new(OauthMock::default()));
     let url = mock_oauth_calc_mcp(mock.clone()).await;
@@ -641,11 +644,9 @@ async fn refused_refresh_exchange_fails_the_turn_with_the_challenge() {
     let vault_id =
         vault_with_refreshable_credential(&app, &url, "expired-token", json!({ "type": "none" }))
             .await;
-    let id = create_mcp_session(&app, &vault_id, &url).await;
-
-    // Fail closed: the refresher returned None, so ext-mcp surfaces the original
-    // auth challenge and the turn fails loudly, naming the server.
-    let (s, body) = send_user_message(&app, &id, "add 2 3").await;
+    // Fail closed during initial generation realization: the refresher returned
+    // None, so ext-mcp surfaces the original challenge and no Session is exposed.
+    let (s, body) = create_mcp_session_response(&app, &vault_id, &url).await;
     assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(body["error"]["type"], "api_error");
     let message = body["error"]["message"].as_str().unwrap_or_default();
@@ -761,7 +762,7 @@ async fn expired_token_turn_succeeds_with_client_secret_post_refresh() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn wrong_client_secret_refuses_the_grant_and_surfaces_the_challenge() {
+async fn wrong_client_secret_refuses_initial_realization_and_surfaces_the_challenge() {
     // The mock demands the right Basic creds; the credential was entered with
     // a DIFFERENT secret, so the exchange is refused and the original 401
     // challenge fails the turn loudly.
@@ -781,9 +782,7 @@ async fn wrong_client_secret_refuses_the_grant_and_surfaces_the_challenge() {
         json!({ "type": "client_secret_basic", "client_secret": "not-the-secret" }), // awaken-allow: secret
     )
     .await;
-    let id = create_mcp_session(&app, &vault_id, &url).await;
-
-    let (s, body) = send_user_message(&app, &id, "add 2 3").await;
+    let (s, body) = create_mcp_session_response(&app, &vault_id, &url).await;
     assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(body["error"]["type"], "api_error");
     let message = body["error"]["message"].as_str().unwrap_or_default();

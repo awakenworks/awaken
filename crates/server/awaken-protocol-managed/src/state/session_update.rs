@@ -5,8 +5,6 @@ use super::*;
 use crate::types::McpServer;
 
 impl ManagedState {
-    const UPDATE_CAS_ATTEMPTS: usize = 3;
-
     #[must_use]
     pub(crate) fn update_operation_id(id: &str, idempotency_key: &str) -> String {
         awaken_session_contract::stable_fingerprint(&(id, idempotency_key))
@@ -75,7 +73,7 @@ impl ManagedState {
             return self.get_session(id);
         }
 
-        for attempt in 0..Self::UPDATE_CAS_ATTEMPTS {
+        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             match self
                 .update_session_once(
                     id,
@@ -89,7 +87,7 @@ impl ManagedState {
                 .await
             {
                 Err(StateError::Conflict)
-                    if if_match.is_none() && attempt + 1 < Self::UPDATE_CAS_ATTEMPTS =>
+                    if if_match.is_none() && attempt + 1 < Self::ROOT_CAS_ATTEMPTS =>
                 {
                     continue;
                 }

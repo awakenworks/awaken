@@ -30,6 +30,49 @@ use awaken_work_store::InMemoryWorkQueue;
 
 use crate::work_queue::{HeartbeatResult, LeaseHeartbeat, WorkQueue};
 
+/// Canonical unrestricted snapshot for a composition without an Environment
+/// registry. An installed registry reuses it only for its implicit `env_local`.
+pub(crate) fn default_environment_snapshot(
+    environment_id: String,
+    runtime: Option<&str>,
+) -> awaken_session_contract::EnvironmentSnapshot {
+    let acp = runtime.is_some_and(|runtime| runtime.starts_with("acp:"));
+    let inference_holder = if acp {
+        awaken_credential_contract::PlaintextHolder::new(
+            awaken_credential_contract::PlaintextBoundary::Workload,
+            "awaken.workload.acp",
+        )
+    } else {
+        awaken_credential_contract::PlaintextHolder::new(
+            awaken_credential_contract::PlaintextBoundary::Worker,
+            "awaken.worker",
+        )
+    };
+    let sandbox = serde_json::json!({});
+    let network = awaken_session_contract::SessionNetworkPolicy::Unrestricted;
+    let credential_realization = awaken_credential_contract::CredentialRealizationProfile {
+        inference_holder,
+        mcp_holder: awaken_credential_contract::PlaintextHolder::new(
+            awaken_credential_contract::PlaintextBoundary::Worker,
+            awaken_credential_contract::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+        ),
+    };
+    awaken_session_contract::EnvironmentSnapshot {
+        environment_id,
+        revision: awaken_session_contract::env_registry::EnvironmentRevision(0),
+        config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
+            awaken_session_contract::stable_fingerprint(&(
+                &sandbox,
+                &network,
+                &credential_realization,
+            )),
+        ),
+        sandbox,
+        network,
+        credential_realization,
+    }
+}
+
 /// The self-hosted environment registry + work queue, both behind ports so a
 /// durable backend (sqlite/postgres) serves standalone and distributed deployments
 /// unchanged; the default is in-memory.
@@ -67,7 +110,10 @@ impl EnvironmentState {
         env_id: &str,
         runtime: Option<&str>,
     ) -> Option<awaken_session_contract::EnvironmentSnapshot> {
-        let item = self.envs.get(env_id).await?;
+        let Some(item) = self.envs.get(env_id).await else {
+            return (env_id == "env_local")
+                .then(|| default_environment_snapshot(env_id.to_string(), runtime));
+        };
         if item.archived_at.is_some() {
             return None;
         }
@@ -582,7 +628,8 @@ mod tests {
         // | S1   | active | native  | F          | Worker inference + MCP |
         // | S2   | active | ACP     | F          | Workload inference + Worker MCP |
         // | S3   | active | native  | T          | new rev/fingerprint; old frozen |
-        // | S4   | missing/archived | any | -    | None |
+        // | S4   | missing/archived custom | any | - | None |
+        // | S5   | implicit env_local | native/ACP | - | canonical local snapshot |
         let state = EnvironmentState::new();
         let item = state
             .envs
@@ -646,6 +693,21 @@ mod tests {
         assert!(
             state.snapshot(&item.id, None).await.is_none(),
             "S4 archived"
+        );
+        let local = state.snapshot("env_local", None).await.expect("S5");
+        assert_eq!(
+            local,
+            default_environment_snapshot("env_local".into(), None),
+            "S5 native"
+        );
+        let local_acp = state
+            .snapshot("env_local", Some("acp:claude"))
+            .await
+            .expect("S5 ACP");
+        assert_eq!(
+            local_acp,
+            default_environment_snapshot("env_local".into(), Some("acp:claude")),
+            "S5 ACP"
         );
     }
 }

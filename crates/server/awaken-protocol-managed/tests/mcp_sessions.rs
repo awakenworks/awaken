@@ -3,7 +3,8 @@
 //! `SessionRuntime::prepare_session` BEFORE the record exists — a failed
 //! preparation fails the create with the mapped error envelope.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+mod support;
+
 use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::content::ContentBlock;
@@ -21,6 +22,8 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
+
+use support::{ScheduledConflictRepository, replace_session_fixture};
 
 /// A fake runtime that records every `prepare_session` init (and optionally
 /// fails it), so a test can assert exactly what a session create provisions.
@@ -278,77 +281,6 @@ fn hot_harness_with_repo(repo: Arc<dyn ManagedSessionRepository>) -> HotHarness 
         managed,
         state: runtime_state,
         repo,
-    }
-}
-
-struct ConflictOnceRepository {
-    inner: Arc<SqliteManagedSessionRepository>,
-    commits_until_conflict: AtomicUsize,
-}
-
-#[async_trait::async_trait]
-impl ManagedSessionRepository for ConflictOnceRepository {
-    async fn create(
-        &self,
-        owner_scope: &str,
-        session: PersistedSession,
-        idempotency: awaken_session_contract::IdempotencyRecord,
-        lifecycle_facts: Vec<awaken_session_contract::SessionLifecycleFact>,
-    ) -> Result<
-        awaken_session_contract::SessionRevision,
-        awaken_session_contract::SessionRepositoryError,
-    > {
-        self.inner
-            .create(owner_scope, session, idempotency, lifecycle_facts)
-            .await
-    }
-
-    async fn commit_mutation(
-        &self,
-        owner_scope: &str,
-        mutation: awaken_session_contract::SessionMutation,
-    ) -> Result<
-        awaken_session_contract::SessionMutationResult,
-        awaken_session_contract::SessionRepositoryError,
-    > {
-        let remaining = self.commits_until_conflict.load(Ordering::SeqCst);
-        if remaining > 0 && self.commits_until_conflict.fetch_sub(1, Ordering::SeqCst) == 1 {
-            let current_revision = self
-                .inner
-                .get(mutation.payload.session_id())
-                .await
-                .map_or(Default::default(), |session| session.revision);
-            return Ok(awaken_session_contract::SessionMutationResult::Conflict {
-                current_revision,
-            });
-        }
-        self.inner.commit_mutation(owner_scope, mutation).await
-    }
-
-    async fn append_lifecycle(&self, fact: awaken_session_contract::SessionLifecycleFact) {
-        self.inner.append_lifecycle(fact).await;
-    }
-    async fn pending_lifecycle(&self) -> Vec<awaken_session_contract::SessionLifecycleFact> {
-        self.inner.pending_lifecycle().await
-    }
-    async fn complete_lifecycle(&self, fact_id: &str) {
-        self.inner.complete_lifecycle(fact_id).await;
-    }
-    async fn get(&self, session_id: &str) -> Option<PersistedSession> {
-        self.inner.get(session_id).await
-    }
-    async fn reconcilable_sessions(&self) -> Vec<awaken_session_contract::ScopedPersistedSession> {
-        self.inner.reconcilable_sessions().await
-    }
-    async fn idempotency_receipt(
-        &self,
-        session_id: &str,
-        key: &str,
-    ) -> Option<awaken_session_contract::SessionIdempotencyReceipt> {
-        self.inner.idempotency_receipt(session_id, key).await
-    }
-    async fn owner(&self, session_id: &str) -> Option<String> {
-        self.inner.owner(session_id).await
     }
 }
 
@@ -1261,7 +1193,13 @@ async fn mcp_recovery_tests_are_generated_from_decision_table() {
             None,
         )
         .unwrap();
-    h.repo.save_owned("default", requested).await;
+    replace_session_fixture(
+        h.repo.as_ref(),
+        "default",
+        requested,
+        "test:recovery-requested",
+    )
+    .await;
 
     assert_eq!(h.managed.reconcile_mcp_attachments().await, 1, "R1");
     let active = h.repo.get(id).await.unwrap();
@@ -1292,7 +1230,13 @@ async fn mcp_recovery_tests_are_generated_from_decision_table() {
         .mcp
         .begin_drain(&attachment_id, awaken_session_contract::McpGeneration(1))
         .unwrap();
-    h.repo.save_owned("default", draining).await;
+    replace_session_fixture(
+        h.repo.as_ref(),
+        "default",
+        draining,
+        "test:recovery-draining",
+    )
+    .await;
     let staged_before = h.state.lock().unwrap().staged.len();
     assert_eq!(h.managed.reconcile_mcp_attachments().await, 1, "R3");
     let removed = h.repo.get(id).await.unwrap();
@@ -1346,7 +1290,7 @@ async fn mcp_recovery_tests_are_generated_from_decision_table() {
             None,
         )
         .unwrap();
-    h.repo.save_owned("default", retry).await;
+    replace_session_fixture(h.repo.as_ref(), "default", retry, "test:recovery-retry").await;
     h.state.lock().unwrap().mode = HotStageMode::FailNext;
     assert_eq!(h.managed.reconcile_mcp_attachments().await, 0, "R5");
     assert_eq!(
@@ -1604,10 +1548,7 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
     let inner = Arc::new(
         SqliteManagedSessionRepository::open_in_memory().expect("open conflict repository"),
     );
-    let conflicts = Arc::new(ConflictOnceRepository {
-        inner,
-        commits_until_conflict: AtomicUsize::new(0),
-    });
+    let conflicts = Arc::new(ScheduledConflictRepository::new(inner));
     let h = hot_harness_with_repo(conflicts.clone());
     let (status, _, created) = call_with_headers(
         &h.app,
@@ -1620,7 +1561,7 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
     assert_eq!(status, StatusCode::OK);
     let id = created["id"].as_str().unwrap();
 
-    conflicts.commits_until_conflict.store(1, Ordering::SeqCst);
+    conflicts.conflict_on_next(1);
     let desired = json!({"name": "cas", "type": "url", "url": "https://cas.example/mcp"});
     let (status, _, updated) = call_with_headers(
         &h.app,
@@ -1640,7 +1581,7 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
     assert_eq!(status, StatusCode::OK);
     let etag = get_headers["etag"].to_str().unwrap();
     let effects = h.state.lock().unwrap().staged.len();
-    conflicts.commits_until_conflict.store(1, Ordering::SeqCst);
+    conflicts.conflict_on_next(1);
     let (status, _, _) = call_with_headers(
         &h.app,
         "POST",
@@ -1658,7 +1599,7 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
     );
 
     let replacement = json!({"name": "cas", "type": "url", "url": "https://cas-2.example/mcp"});
-    conflicts.commits_until_conflict.store(4, Ordering::SeqCst);
+    conflicts.conflict_on_next(4);
     let staged_before = h.state.lock().unwrap().staged.len();
     let (status, _, updated) = call_with_headers(
         &h.app,
@@ -1687,7 +1628,7 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
         call_with_headers(&h.app, "GET", &format!("/v1/sessions/{id}"), None, &[]).await;
     assert_eq!(status, StatusCode::OK);
     let etag = get_headers["etag"].to_str().unwrap();
-    conflicts.commits_until_conflict.store(3, Ordering::SeqCst);
+    conflicts.conflict_on_next(3);
     let drain_before = h.state.lock().unwrap().drained.len();
     let (status, _, _) = call_with_headers(
         &h.app,
