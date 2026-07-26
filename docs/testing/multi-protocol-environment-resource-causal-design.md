@@ -406,3 +406,17 @@ empty. Provider wrappers are capability-transparent: the warm pool cannot replac
 the concrete Docker/Podman evidence with the trait's conservative default. This
 keeps Environment networking, sandbox policy, and the physical container on one
 causal path.
+
+## Phase 18: opaque Session environment recovery binding
+
+| Rule | Binding damage | Physical environment | Expected |
+|---|---|---|---|
+| B1 | invalid encoding | live | fail closed |
+| B2 | wrong Session id | live | fail closed |
+| B3 | wrong provider kind | live | fail closed |
+| B4 | missing provider locator | live | fail closed |
+| B5 | exact binding | stopped/deleted | fail closed; no replacement |
+
+The scenario explicitly selects Docker through its test-only Session tier. The
+Session aggregate remains the sole owner of the opaque binding; retained columns
+and a default local/namespace provider cannot participate in recovery.
