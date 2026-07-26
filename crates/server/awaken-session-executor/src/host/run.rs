@@ -13,7 +13,11 @@ impl SharedHost {
     /// session context (the layout probe lives with the commit boundary in
     /// [`crate::store`]).
     pub fn has_durable_thread(&self, thread: &str) -> bool {
-        crate::store::durable_thread_exists(self.store_dir.as_deref(), thread)
+        crate::store::durable_thread_exists_with_store(
+            self.deployment.store,
+            self.store_dir.as_deref(),
+            thread,
+        )
     }
 
     pub async fn committed_messages(&self, thread: &str) -> Vec<Message> {

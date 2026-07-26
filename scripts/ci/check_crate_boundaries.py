@@ -1601,7 +1601,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tempfile",
         "http-body-util",
         "tower",
-        "serde_json",
+        "serde_json", "serde", "toml",  # bootstrap TOML is decoded only at this root
     },
     # The EXECUTION-plane binary (the sandbox side): the ACP stdio<->TCP bridge, and
     # (later slices) the hand tool-executor + memoryd sidecar. A leaf that names no

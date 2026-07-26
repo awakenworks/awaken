@@ -167,7 +167,7 @@ impl SharedHost {
             runtime,
             store,
             commit,
-            crate::dispatch_backend::dispatch_owner(),
+            self.deployment.dispatch_owner.clone(),
             Some(stream_checkpoint),
             inference_materializer,
         )

@@ -46,8 +46,9 @@ pub use crate::managed_agents::ConfigPlaneManagedAgentRepository;
 // The database-less worker's materialization subset (Stage C): only the credential
 // vault + secret store needed by snapshot-pinned inference access.
 pub use crate::worker_stores::{
-    InferenceMaterializationStores, open_inference_materialization_stores,
-    open_inference_materialization_stores_from_env, open_shared_resource_validator_from_env,
+    InferenceMaterializationStores, control_seal_key_from_env,
+    open_inference_materialization_stores, open_inference_materialization_stores_from_env,
+    open_shared_resource_validator, open_shared_resource_validator_from_env,
 };
 
 use awaken_admin_config_api::{
