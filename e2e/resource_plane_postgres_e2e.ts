@@ -102,6 +102,63 @@ async function upload(content: string, workspace = WORKSPACE): Promise<string> {
   return (await response.json()).id;
 }
 
+async function proveSandboxPolicyPostgresAuthority(): Promise<void> {
+  // Causal graph / decision table for the durable Environment policy seam:
+  //
+  // | exact policy | disabled | current fence | effect |
+  // | present      | false    | matches       | bind immutable revision |
+  // | present      | false    | stale         | reject publish (409)    |
+  // | present      | true     | n/a           | reject bind (422)       |
+  //
+  // This runs through the served API with the production Postgres adapter. It
+  // complements the same table's SQLite run instead of creating a store-local
+  // test protocol.
+  const environment = await json('POST', `http://127.0.0.1:${PORT}/v1/environments`, {
+    name: `postgres-policy-${process.pid}`,
+    config: { type: 'self_hosted' },
+  });
+  assert.equal(environment.status, 200, JSON.stringify(environment.body));
+  const environmentId = environment.body.id as string;
+  const policyId = `postgres-policy-${process.pid}`;
+  const policyBase = `http://127.0.0.1:${PORT}/v1/awaken/sandbox-execution-policies`;
+  assert.equal((await json('POST', policyBase, {
+    id: policyId,
+    config: { isolation: 'namespace', limits: { cpu_millis: 500 } },
+  })).status, 201);
+  assert.equal((await json(
+    'POST',
+    `http://127.0.0.1:${PORT}/v1/awaken/environments/${environmentId}/sandbox-execution-policy`,
+    { policy_id: policyId, version: 1 },
+  )).status, 200);
+  assert.equal((await json('POST', `${policyBase}/${policyId}/versions`, {
+    expected_current: 1,
+    config: { isolation: 'container' },
+  })).status, 200);
+  assert.equal((await json('POST', `${policyBase}/${policyId}/versions`, {
+    expected_current: 1,
+    config: { isolation: 'workdir' },
+  })).status, 409);
+  assert.deepEqual(
+    (await json(
+      'GET',
+      `http://127.0.0.1:${PORT}/v1/awaken/environments/${environmentId}/sandbox-execution-policy`,
+    )).body,
+    { environment_id: environmentId, policy_id: policyId, version: 1 },
+  );
+
+  const disabledId = `${policyId}-disabled`;
+  assert.equal((await json('POST', policyBase, {
+    id: disabledId,
+    config: { isolation: 'workdir' },
+    disabled: true,
+  })).status, 201);
+  assert.equal((await json(
+    'POST',
+    `http://127.0.0.1:${PORT}/v1/awaken/environments/${environmentId}/sandbox-execution-policy`,
+    { policy_id: disabledId, version: 1 },
+  )).status, 422);
+}
+
 async function uploadSkillVersion(route: string, marker: string, binary?: Uint8Array) {
   const form = new FormData();
   form.append(
@@ -412,6 +469,7 @@ async function main(): Promise<void> {
   let server = start(firstDirectory, pg.url);
   try {
     await ready();
+    await proveSandboxPolicyPostgresAuthority();
     const fileId = await upload('shared postgres file bytes');
     assert.equal(
       await upload('shared postgres file bytes'),

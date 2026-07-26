@@ -565,3 +565,27 @@ The MCP recovery fixture now consumes the harness's single availability resolver
 before its three-boot sequence. It also drops ignored `AWAKEN_MGMT_*` metadata;
 the isolated scenario HOME owns management persistence and the separately named
 Session deployment root owns runtime persistence.
+
+## Phase 27: production Postgres sandbox-policy authority
+
+```text
+typed sessions_db = Postgres
+  -> production EnvironmentState composition
+  -> canonical SandboxExecutionPolicyStore port
+  -> Postgres exact-version aggregate
+  -> Environment snapshot consumes the pinned revision
+```
+
+| Rule | Exact policy | Disabled | Current fence | Expected |
+|---|---|---|---|---|
+| PG1 | present v1 | false | 1 | bind Environment to immutable v1 |
+| PG2 | publish v2 | false | 1 | commit v2; existing binding remains v1 |
+| PG3 | publish v3 | false | stale 1 | reject with conflict |
+| PG4 | present v1 | true | n/a | reject binding as disabled |
+
+The Postgres E2E now drives the same public policy routes and canonical store
+port as the SQLite matrix. This closed a real backend-axis gap without adding a
+store-specific API or a second Environment realization path. The changed-line
+gate retains only audited pre-bind/composition or corrupt-store branches that no
+served TypeScript request can deterministically select; every stale historical
+waiver was removed.
