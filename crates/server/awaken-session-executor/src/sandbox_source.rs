@@ -473,8 +473,8 @@ impl SandboxChannelSource {
     /// The provisioning request for one run: sandbox scoped to the thread (so a
     /// multi-turn session reuses one workspace), network from its registration, and the
     /// session's staged file/resource mounts (ADR-0038) bound into the bwrap interior.
-    /// The environment's `config.sandbox` overlay (if any) then supersedes isolation /
-    /// network / limits — so a UI-authored sandbox shapes the ACP CLI's confinement.
+    /// The frozen exact SandboxExecutionPolicy projection (if any) then supersedes
+    /// isolation and limits for the ACP CLI's confinement.
     fn spec(&self, thread: &str) -> pc::SandboxSpec {
         let network = self
             .resources

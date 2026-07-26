@@ -17,6 +17,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::env_registry::{EnvRegistry, EnvUpdate, InMemoryEnvRegistry};
@@ -84,6 +85,7 @@ pub(crate) fn default_environment_snapshot(
 pub struct EnvironmentState {
     envs: Arc<dyn EnvRegistry>,
     work: Arc<dyn WorkQueue>,
+    sandbox_policies: Option<Arc<dyn awaken_provisioning_contract::SandboxExecutionPolicyStore>>,
 }
 
 impl Default for EnvironmentState {
@@ -91,6 +93,7 @@ impl Default for EnvironmentState {
         Self {
             envs: Arc::new(InMemoryEnvRegistry::new()),
             work: Arc::new(InMemoryWorkQueue::new()),
+            sandbox_policies: None,
         }
     }
 }
@@ -105,7 +108,20 @@ impl EnvironmentState {
     /// the in-memory defaults; the same routes then serve any deployment mode.
     #[must_use]
     pub fn with_stores(envs: Arc<dyn EnvRegistry>, work: Arc<dyn WorkQueue>) -> Self {
-        Self { envs, work }
+        Self {
+            envs,
+            work,
+            sandbox_policies: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_sandbox_policies(
+        mut self,
+        store: Arc<dyn awaken_provisioning_contract::SandboxExecutionPolicyStore>,
+    ) -> Self {
+        self.sandbox_policies = Some(store);
+        self
     }
 
     /// Compile the one immutable, normalized Environment snapshot consumed by a
@@ -148,7 +164,20 @@ impl EnvironmentState {
         };
         // Anthropic Environment config owns cloud networking/packages and
         // self-hosted routing only. Awaken sandbox policy has a separate owner.
-        let sandbox = serde_json::json!({});
+        let sandbox = match &self.sandbox_policies {
+            Some(store) => match store.environment_binding(env_id).await {
+                Ok(Some(reference)) => {
+                    let policy = store.get_exact(&reference).await.ok()?;
+                    if policy.disabled {
+                        return None;
+                    }
+                    serde_json::to_value(policy.config).ok()?
+                }
+                Ok(None) => serde_json::json!({}),
+                Err(_) => return None,
+            },
+            None => serde_json::json!({}),
+        };
         let config_fingerprint = awaken_session_contract::EnvironmentFingerprint(
             awaken_session_contract::stable_fingerprint(&(
                 &sandbox,
@@ -241,7 +270,159 @@ pub fn environments_router(state: Arc<EnvironmentState>) -> Router {
             post(heartbeat_work),
         )
         .route("/v1/environments/{id}/work/{wid}/stop", post(stop_work))
+        .route(
+            "/v1/awaken/sandbox-execution-policies",
+            post(create_sandbox_policy),
+        )
+        .route(
+            "/v1/awaken/sandbox-execution-policies/{id}/versions",
+            post(publish_sandbox_policy),
+        )
+        .route(
+            "/v1/awaken/environments/{id}/sandbox-execution-policy",
+            get(get_environment_sandbox_policy).post(bind_environment_sandbox_policy),
+        )
         .with_state(state)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SandboxPolicyCreate {
+    id: String,
+    config: awaken_provisioning_contract::SandboxOverride,
+    #[serde(default)]
+    disabled: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SandboxPolicyPublish {
+    expected_current: u64,
+    config: awaken_provisioning_contract::SandboxOverride,
+    #[serde(default)]
+    disabled: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SandboxPolicyBindingInput {
+    policy_id: String,
+    version: u64,
+}
+
+#[derive(Serialize)]
+struct SandboxPolicyBindingOutput {
+    environment_id: String,
+    policy_id: String,
+    version: u64,
+}
+
+fn policy_store(
+    state: &EnvironmentState,
+) -> Result<&dyn awaken_provisioning_contract::SandboxExecutionPolicyStore, StatusCode> {
+    state
+        .sandbox_policies
+        .as_deref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)
+}
+
+async fn create_sandbox_policy(
+    State(state): State<Arc<EnvironmentState>>,
+    Json(input): Json<SandboxPolicyCreate>,
+) -> Result<
+    (
+        StatusCode,
+        Json<awaken_provisioning_contract::SandboxExecutionPolicy>,
+    ),
+    StatusCode,
+> {
+    let policy = awaken_provisioning_contract::SandboxExecutionPolicy {
+        id: awaken_provisioning_contract::SandboxExecutionPolicyId(input.id),
+        version: awaken_provisioning_contract::SandboxExecutionPolicyVersion::INITIAL,
+        config: input.config,
+        disabled: input.disabled,
+    };
+    policy_store(&state)?
+        .create(policy.clone())
+        .await
+        .map_err(map_policy_error)?;
+    Ok((StatusCode::CREATED, Json(policy)))
+}
+
+async fn publish_sandbox_policy(
+    State(state): State<Arc<EnvironmentState>>,
+    Path(id): Path<String>,
+    Json(input): Json<SandboxPolicyPublish>,
+) -> Result<Json<awaken_provisioning_contract::SandboxExecutionPolicy>, StatusCode> {
+    let next = input
+        .expected_current
+        .checked_add(1)
+        .ok_or(StatusCode::CONFLICT)?;
+    let policy = awaken_provisioning_contract::SandboxExecutionPolicy {
+        id: awaken_provisioning_contract::SandboxExecutionPolicyId(id),
+        version: awaken_provisioning_contract::SandboxExecutionPolicyVersion(next),
+        config: input.config,
+        disabled: input.disabled,
+    };
+    policy_store(&state)?
+        .publish(
+            awaken_provisioning_contract::SandboxExecutionPolicyVersion(input.expected_current),
+            policy.clone(),
+        )
+        .await
+        .map_err(map_policy_error)?;
+    Ok(Json(policy))
+}
+
+async fn bind_environment_sandbox_policy(
+    State(state): State<Arc<EnvironmentState>>,
+    Path(environment_id): Path<String>,
+    Json(input): Json<SandboxPolicyBindingInput>,
+) -> Result<Json<SandboxPolicyBindingOutput>, StatusCode> {
+    if !state.envs.exists(&environment_id).await {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let reference = awaken_provisioning_contract::SandboxExecutionPolicyRef {
+        id: awaken_provisioning_contract::SandboxExecutionPolicyId(input.policy_id),
+        version: awaken_provisioning_contract::SandboxExecutionPolicyVersion(input.version),
+    };
+    policy_store(&state)?
+        .bind_environment(&environment_id, reference.clone())
+        .await
+        .map_err(map_policy_error)?;
+    Ok(Json(SandboxPolicyBindingOutput {
+        environment_id,
+        policy_id: reference.id.0,
+        version: reference.version.0,
+    }))
+}
+
+async fn get_environment_sandbox_policy(
+    State(state): State<Arc<EnvironmentState>>,
+    Path(environment_id): Path<String>,
+) -> Result<Json<SandboxPolicyBindingOutput>, StatusCode> {
+    let reference = policy_store(&state)?
+        .environment_binding(&environment_id)
+        .await
+        .map_err(map_policy_error)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(SandboxPolicyBindingOutput {
+        environment_id,
+        policy_id: reference.id.0,
+        version: reference.version.0,
+    }))
+}
+
+fn map_policy_error(
+    error: awaken_provisioning_contract::SandboxExecutionPolicyError,
+) -> StatusCode {
+    use awaken_provisioning_contract::SandboxExecutionPolicyError::*;
+    match error {
+        NotFound | BindingUnavailable => StatusCode::NOT_FOUND,
+        VersionConflict => StatusCode::CONFLICT,
+        Disabled | Invalid(_) => StatusCode::UNPROCESSABLE_ENTITY,
+        StoreFailed(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
 }
 
 type WireError = (StatusCode, Json<ErrorResponse>);
@@ -838,5 +1019,61 @@ mod tests {
             let error = state.author(case, config).await.expect_err(case);
             assert!(error.contains("unsupported fields"), "{case}: {error}");
         }
+    }
+
+    #[tokio::test]
+    async fn environment_snapshot_freezes_the_exact_sandbox_policy_version() {
+        use awaken_provisioning_contract::{
+            IsolationClass, SandboxExecutionPolicy, SandboxExecutionPolicyId,
+            SandboxExecutionPolicyRef, SandboxExecutionPolicyStore, SandboxExecutionPolicyVersion,
+            SandboxOverride,
+        };
+
+        let policies =
+            Arc::new(awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default());
+        let state = EnvironmentState::new().with_sandbox_policies(policies.clone());
+        let environment_id = state
+            .author("bound", json!({"type": "self_hosted"}))
+            .await
+            .unwrap();
+        let v1 = SandboxExecutionPolicy {
+            id: SandboxExecutionPolicyId("strict".into()),
+            version: SandboxExecutionPolicyVersion(1),
+            config: SandboxOverride {
+                isolation: Some(IsolationClass::Namespace),
+                ..Default::default()
+            },
+            disabled: false,
+        };
+        policies.create(v1.clone()).await.unwrap();
+        policies
+            .bind_environment(
+                &environment_id,
+                SandboxExecutionPolicyRef {
+                    id: v1.id.clone(),
+                    version: v1.version,
+                },
+            )
+            .await
+            .unwrap();
+        policies
+            .publish(
+                SandboxExecutionPolicyVersion(1),
+                SandboxExecutionPolicy {
+                    id: v1.id,
+                    version: SandboxExecutionPolicyVersion(2),
+                    config: SandboxOverride {
+                        isolation: Some(IsolationClass::Container),
+                        ..Default::default()
+                    },
+                    disabled: false,
+                },
+            )
+            .await
+            .unwrap();
+
+        let snapshot = state.snapshot(&environment_id, None).await.unwrap();
+        let frozen: SandboxOverride = serde_json::from_value(snapshot.sandbox).unwrap();
+        assert_eq!(frozen.isolation, Some(IsolationClass::Namespace));
     }
 }
