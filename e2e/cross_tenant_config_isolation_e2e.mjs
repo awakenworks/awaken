@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { deploymentEnv, spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38612);
 const SEAL_KEY = 'ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100';
@@ -58,13 +58,12 @@ const cfgPath = (ws, tail) => `/v1/workspaces/${ws}/config/agents${tail}`;
 
 async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-xtenant-'));
-  const env = {
-    AWAKEN_MGMT_DIR: dir,
-    AWAKEN_MGMT_SEAL_KEY: SEAL_KEY,
-    AWAKEN_MGMT_IAM: 'embedded',
-    // Platform topology is explicit: token minting never auto-registers a scope.
-    AWAKEN_IAM_WORKSPACES: `${WS_A},${WS_B}`,
-  };
+  // Platform topology is explicit: token minting never auto-registers a scope.
+  const env = deploymentEnv(dir, {
+    identityMode: 'self-managed',
+    iamWorkspaces: [WS_A, WS_B],
+    controlSealKey: SEAL_KEY,
+  });
   const { server, baseUrl: base } = spawnServer('management', PORT, env);
   try {
     await waitForPort(PORT);
