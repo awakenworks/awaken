@@ -19,6 +19,7 @@ use awaken_protocol_managed::types::agent::{
 };
 use awaken_protocol_managed::{ManagedAgentError, ManagedAgentRepository};
 use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
+use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_tenancy::ScopeId;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -122,8 +123,26 @@ fn tool_id(tool: &AgentTool) -> Option<String> {
     match tool {
         AgentTool::AgentToolset20260401 { .. } => Some("agent_toolset_20260401".into()),
         AgentTool::McpToolset { .. } => None,
-        AgentTool::Custom { name, .. } => Some(name.clone()),
+        AgentTool::Custom { .. } => None,
     }
+}
+
+fn client_tools(tools: &[AgentTool]) -> Vec<ToolDescriptor> {
+    tools
+        .iter()
+        .filter_map(|tool| match tool {
+            AgentTool::Custom {
+                name,
+                description,
+                input_schema,
+            } => Some(ToolDescriptor::client_executed(
+                name,
+                description,
+                serde_json::to_value(input_schema).expect("typed custom-tool schema serializes"),
+            )),
+            AgentTool::AgentToolset20260401 { .. } | AgentTool::McpToolset { .. } => None,
+        })
+        .collect()
 }
 
 fn typed_mcp_servers(values: Vec<UrlMcpServer>) -> Vec<AgentMcpServerBinding> {
@@ -175,6 +194,7 @@ fn config_from_create(
         delegation_limits: Default::default(),
         model_binding: ModelSelection::pinned("", model.id, ""),
         tool_ids: params.tools.iter().filter_map(tool_id).collect(),
+        client_tools: client_tools(&params.tools),
         plugin_ids: Vec::new(),
         plugin_config: BTreeMap::new(),
         context_policy: Default::default(),
@@ -193,7 +213,7 @@ fn config_from_create(
     })
 }
 
-fn wire_tools(ids: &[String], mcp_servers: &[AgentMcpServerBinding]) -> Vec<AgentTool> {
+fn wire_tools(ids: &[String], client_tools: &[ToolDescriptor]) -> Vec<AgentTool> {
     let mut tools = ids
         .iter()
         .map(|id| {
@@ -215,10 +235,13 @@ fn wire_tools(ids: &[String], mcp_servers: &[AgentMcpServerBinding]) -> Vec<Agen
             }
         })
         .collect::<Vec<_>>();
-    tools.extend(mcp_servers.iter().map(|server| AgentTool::McpToolset {
-        mcp_server_name: server.name.clone(),
-        configs: Vec::new(),
-        default_config: None,
+    tools.extend(client_tools.iter().map(|tool| {
+        AgentTool::Custom {
+            name: tool.id.clone(),
+            description: tool.description.clone(),
+            input_schema: CustomToolInputSchema::from_value(tool.parameters.clone())
+                .expect("published client-tool schemas were validated at admission"),
+        }
     }));
     tools
 }
@@ -231,7 +254,7 @@ fn project(revision: AgentConfigRevision) -> Agent {
         .resolved()
         .map(|binding| binding.model_ref.clone())
         .unwrap_or_default();
-    let tools = wire_tools(&config.tool_ids, &config.mcp_servers);
+    let tools = wire_tools(&config.tool_ids, &config.client_tools);
     Agent {
         id: id.clone(),
         object_type: "agent",
@@ -384,6 +407,7 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         }
         if let Some(tools) = params.tools {
             config.tool_ids = tools.iter().filter_map(tool_id).collect();
+            config.client_tools = client_tools(&tools);
         }
         if let Some(multiagent) = params.multiagent {
             config.multiagent = Some(typed_multiagent(id, multiagent));

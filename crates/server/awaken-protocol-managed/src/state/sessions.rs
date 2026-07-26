@@ -822,6 +822,21 @@ impl ManagedState {
             };
         }
         let deployment_id = req.metadata.get("awaken.deployment_id").cloned();
+        let session_tools = if let Some(view) = &config_view {
+            let mut tools = project::agent_tools(&caps);
+            let client_tools = project::agent_client_tools(&view.client_tools)
+                .map_err(|error| StateError::Run(RunError::bad_request(error)))?;
+            tools.retain(|candidate| match candidate {
+                crate::types::agent::AgentTool::Custom { name, .. } => !client_tools.iter().any(
+                    |tool| matches!(tool, crate::types::agent::AgentTool::Custom { name: client_name, .. } if client_name == name),
+                ),
+                _ => true,
+            });
+            tools.extend(client_tools);
+            tools
+        } else {
+            project::agent_tools(&caps)
+        };
         let mut session = Session {
             id: id.clone(),
             kind: "session",
@@ -836,7 +851,7 @@ impl ManagedState {
                 name: agent_id.clone(),
                 description: None,
                 system: config_view.as_ref().and_then(|view| view.system.clone()),
-                tools: project::agent_tools(&caps),
+                tools: session_tools,
                 // Echo the accepted servers in the SDK's `{name, type:"url", url}` shape.
                 mcp_servers: typed_mcp_servers(persisted.visible_mcp_servers())?,
                 skills: config_view.as_ref().map_or_else(

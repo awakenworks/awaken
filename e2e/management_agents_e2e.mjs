@@ -107,7 +107,16 @@ async function main() {
         multiagent: { type: 'coordinator', agents: ['researcher'] },
       });
       assert.equal(rich.status, 200, JSON.stringify(rich.body));
-      assert.deepEqual(rich.body.tools.map((tool) => tool.name), ['bash', 'glob', 'read']);
+      assert.deepEqual(
+        rich.body.tools,
+        ['bash', 'glob', 'read'].map((name) => ({
+          type: 'custom',
+          name,
+          description: `${name} tool`,
+          input_schema: { type: 'object', properties: {} },
+        })),
+        'create preserves the complete client-tool behavior contract',
+      );
       assert.deepEqual(rich.body.multiagent, { type: 'coordinator', agents: ['researcher'] });
 
       const richUpdated = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}`, {
@@ -131,7 +140,12 @@ async function main() {
       assert.deepEqual(richUpdated.body.metadata, { team: 'runtime' });
       assert.deepEqual(richUpdated.body.mcp_servers, []);
       assert.deepEqual(richUpdated.body.skills, []);
-      assert.deepEqual(richUpdated.body.tools.map((tool) => tool.name), ['write']);
+      assert.deepEqual(richUpdated.body.tools, [{
+        type: 'custom',
+        name: 'write',
+        description: 'write tool',
+        input_schema: { type: 'object', properties: {} },
+      }], 'replacement preserves the complete client-tool behavior contract');
       assert.deepEqual(
         richUpdated.body.multiagent,
         { type: 'coordinator', agents: ['researcher'] },

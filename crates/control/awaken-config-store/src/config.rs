@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use awaken_runtime_contract::delegation::DelegationLimits;
-use awaken_runtime_contract::resolved::{ContextPolicy, ModelBinding};
+use awaken_runtime_contract::resolved::{ContextPolicy, ModelBinding, ToolDescriptor};
 use awaken_runtime_contract::tool::ToolRecoveryPolicy;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -156,6 +156,12 @@ pub struct AgentConfig {
     /// every pre-existing config are unchanged.
     pub model_binding: ModelSelection,
     pub tool_ids: Vec<String>,
+    /// Inline client-executed tools. These are capabilities advertised to the
+    /// model, not aliases for host catalog tools with the same name. Their exact
+    /// description and schema are part of the Agent revision and publication
+    /// fingerprint.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub client_tools: Vec<ToolDescriptor>,
     /// Plugins active for this agent, by id. A plugin installed on the runtime
     /// contributes only when listed here (G30).
     #[serde(default)]

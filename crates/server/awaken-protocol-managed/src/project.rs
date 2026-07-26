@@ -141,6 +141,26 @@ pub fn agent_tools(caps: &AgentCapabilities) -> Vec<crate::types::agent::AgentTo
     tools
 }
 
+/// Project exact client-owned descriptors from a published Agent snapshot. This
+/// path is separate from host capabilities because equal names must not transfer
+/// execution ownership to the host registry.
+pub fn agent_client_tools(
+    tools: &[awaken_session_contract::AgentClientToolView],
+) -> Result<Vec<crate::types::agent::AgentTool>, String> {
+    tools
+        .iter()
+        .map(|tool| {
+            Ok(crate::types::agent::AgentTool::Custom {
+                name: tool.name.clone(),
+                description: tool.description.clone(),
+                input_schema: crate::types::agent::CustomToolInputSchema::from_value(
+                    tool.input_schema.clone(),
+                )?,
+            })
+        })
+        .collect()
+}
+
 /// Project the agent's offered skills onto the public `agent.skills` array. Each is a
 /// `custom` skill reference (the host offers them locally, not from the Skills API).
 pub fn agent_skills(caps: &AgentCapabilities) -> Vec<crate::types::agent::AgentSkill> {

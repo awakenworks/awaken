@@ -869,6 +869,7 @@ impl RawTool for DraftAgent {
             delegation_limits: Default::default(),
             model_binding,
             tool_ids: args.tool_ids,
+            client_tools: Vec::new(),
             plugin_ids,
             plugin_config: args.plugin_config,
             context_policy: args.context_policy.unwrap_or_default(),

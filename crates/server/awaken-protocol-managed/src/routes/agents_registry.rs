@@ -17,7 +17,9 @@ use axum::{Extension, Json, Router};
 
 // Compatibility re-exports for session consumers. Agent registry persistence no
 // longer uses this read-only projection port.
-pub use awaken_session_contract::{AgentConfigSource, AgentConfigView, AgentMcpServerView};
+pub use awaken_session_contract::{
+    AgentClientToolView, AgentConfigSource, AgentConfigView, AgentMcpServerView,
+};
 
 /// Storage-neutral failures exposed by the Managed Agent repository port.
 #[derive(Debug, thiserror::Error)]

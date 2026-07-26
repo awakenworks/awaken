@@ -15,10 +15,21 @@ pub struct AgentMcpServerView {
     pub credential_revision: Option<u64>,
 }
 
+/// Exact model-visible contract for a tool executed by the protocol client.
+/// JSON Schema remains open by definition; identity, description, and ownership
+/// are otherwise typed and frozen in the published Agent snapshot.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentClientToolView {
+    pub name: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+}
+
 pub struct AgentConfigView {
     pub model: Option<String>,
     pub system: Option<String>,
     pub tool_ids: Vec<String>,
+    pub client_tools: Vec<AgentClientToolView>,
     /// Direct MCP servers inherited by Sessions of this published Agent.
     pub mcp_servers: Vec<AgentMcpServerView>,
     /// The delivered Skills selected by this Agent. Empty is an intentional empty

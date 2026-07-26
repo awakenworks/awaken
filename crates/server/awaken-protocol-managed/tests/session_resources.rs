@@ -9,8 +9,8 @@ use awaken_admin_config_api::SqliteAdminStore;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_protocol_managed::{
-    AgentConfigSource, AgentConfigView, ManagedState, OutcomeReport, RunError, SessionInit,
-    SessionRuntime, StepOutcome, ToolPermissionDecision, router,
+    AgentClientToolView, AgentConfigSource, AgentConfigView, ManagedState, OutcomeReport, RunError,
+    SessionInit, SessionRuntime, StepOutcome, ToolPermissionDecision, router,
 };
 use awaken_resource_contract::{
     BindingId, ClonePolicy, ConfigVersion, ExtractionPolicy, FileId, InputBinding, InputResourceId,
@@ -93,6 +93,7 @@ impl AgentConfigSource for AgentWithResources {
             model: None,
             system: None,
             tool_ids: Vec::new(),
+            client_tools: Vec::new(),
             mcp_servers: Vec::new(),
             skill_ids: Vec::new(),
             delegate_ids: Vec::new(),
@@ -115,6 +116,7 @@ impl AgentConfigSource for AgentWithIntegrations {
             model: None,
             system: None,
             tool_ids: Vec::new(),
+            client_tools: Vec::new(),
             mcp_servers: vec![
                 awaken_protocol_managed::AgentMcpServerView {
                     name: "docs".into(),
@@ -136,6 +138,32 @@ impl AgentConfigSource for AgentWithIntegrations {
     }
 }
 
+struct AgentWithClientTool;
+
+impl AgentConfigSource for AgentWithClientTool {
+    fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
+        (agent_id == "client-tool-agent").then(|| AgentConfigView {
+            environment: None,
+            model: None,
+            system: None,
+            tool_ids: Vec::new(),
+            client_tools: vec![AgentClientToolView {
+                name: "lookup".into(),
+                description: "exact client lookup".into(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"]
+                }),
+            }],
+            mcp_servers: Vec::new(),
+            skill_ids: Vec::new(),
+            delegate_ids: Vec::new(),
+            resources: Vec::new(),
+        })
+    }
+}
+
 struct AgentWithPlatformRepository;
 
 impl AgentConfigSource for AgentWithPlatformRepository {
@@ -145,6 +173,7 @@ impl AgentConfigSource for AgentWithPlatformRepository {
             model: None,
             system: None,
             tool_ids: Vec::new(),
+            client_tools: Vec::new(),
             mcp_servers: Vec::new(),
             skill_ids: Vec::new(),
             delegate_ids: Vec::new(),
@@ -167,6 +196,7 @@ impl AgentConfigSource for WorkspaceScopedAgent {
             model: None,
             system: None,
             tool_ids: Vec::new(),
+            client_tools: Vec::new(),
             mcp_servers: Vec::new(),
             skill_ids: Vec::new(),
             delegate_ids: Vec::new(),
@@ -203,6 +233,7 @@ impl AgentConfigSource for AgentWithEnvironment {
             model: None,
             system: None,
             tool_ids: Vec::new(),
+            client_tools: Vec::new(),
             mcp_servers: Vec::new(),
             skill_ids: Vec::new(),
             delegate_ids: Vec::new(),
@@ -395,6 +426,37 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
         serde_json::from_slice(&bytes).unwrap_or(Value::Null)
     };
     (status, value)
+}
+
+#[tokio::test]
+async fn session_projects_exact_published_client_tool_contract() {
+    // Causal graph:
+    // published ClientExecuted descriptor -> Session preparation -> wire Agent
+    // -> exact schema/description; equal-name host defaults cannot replace it.
+    //
+    // Decision table:
+    // | published descriptor | host projection | expected Session tool |
+    // | absent | present | host capability |
+    // | present | absent/equal-name | exact published client descriptor |
+    let state = ManagedState::new(AcceptingFake::default())
+        .with_config_source(std::sync::Arc::new(AgentWithClientTool));
+    let app = router(std::sync::Arc::new(state));
+
+    let (status, session) = call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({"agent": "client-tool-agent"})),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    let lookup = session["agent"]["tools"]
+        .as_array()
+        .and_then(|tools| tools.iter().find(|tool| tool["name"] == "lookup"))
+        .expect("published client tool is visible");
+    assert_eq!(lookup["description"], "exact client lookup");
+    assert_eq!(lookup["input_schema"]["required"], json!(["query"]));
 }
 
 #[tokio::test]
