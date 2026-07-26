@@ -9,6 +9,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { spawnProduction, stopServer, waitForPort } from './harness.mjs';
+import { sqliteExec, sqliteRows } from './sqlite.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38436);
@@ -75,19 +76,14 @@ function sqlQuote(value) {
 }
 
 function sqlite(database, sql) {
-  return execFileSync('sqlite3', ['-cmd', '.timeout 10000', database], {
-    input: sql,
-    encoding: 'utf8',
-  });
+  return sqliteExec(database, sql);
 }
 
 function sessionRow(database, sessionId) {
-  const output = execFileSync('sqlite3', [
-    '-json',
+  const rows = sqliteRows(
     database,
     `SELECT aggregate_json FROM managed_session WHERE session_id=${sqlQuote(sessionId)}`,
-  ]).toString().trim();
-  const rows = output ? JSON.parse(output) : [];
+  );
   assert.equal(rows.length, 1, `missing durable Session ${sessionId}`);
   assert.ok(rows[0].aggregate_json, `Session ${sessionId} has no canonical aggregate`);
   const aggregate = JSON.parse(rows[0].aggregate_json);
@@ -107,11 +103,11 @@ function updateSessionRow(database, sessionId, status, archivedAt, resources) {
     archived_at: archivedAt,
     resources,
   };
-  execFileSync('sqlite3', [
+  sqliteExec(
     database,
     `UPDATE managed_session SET aggregate_json=${sqlQuote(JSON.stringify(aggregate))}
        WHERE session_id=${sqlQuote(sessionId)}`,
-  ]);
+  );
 }
 
 function persistPreparedGeneration(database, sessionId) {
@@ -187,12 +183,10 @@ function persistInconsistentRelease(database, sessionId) {
 }
 
 function repositoryRecord(database, id) {
-  const output = execFileSync('sqlite3', [
-    '-json',
+  const rows = sqliteRows(
     database,
     `SELECT data FROM admin_resource_catalog WHERE kind='repository' AND id=${sqlQuote(id)}`,
-  ]).toString().trim();
-  const rows = output ? JSON.parse(output) : [];
+  );
   assert.equal(rows.length, 1, `missing Repository aggregate ${id}`);
   return rows[0].data;
 }
@@ -200,12 +194,8 @@ function repositoryRecord(database, id) {
 function receipts(directory) {
   const database = path.join(directory, 'resource-lifecycle.db');
   if (!fs.existsSync(database)) return [];
-  const output = execFileSync('sqlite3', [
-    '-json',
-    database,
-    'SELECT data FROM resource_lifecycle_purge_intents',
-  ]).toString().trim();
-  return output ? JSON.parse(output).map((row) => JSON.parse(row.data)) : [];
+  return sqliteRows(database, 'SELECT data FROM resource_lifecycle_purge_intents')
+    .map((row) => JSON.parse(row.data));
 }
 
 async function waitRepositoryReceipt(directory, resourceId) {

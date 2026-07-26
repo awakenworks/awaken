@@ -607,6 +607,32 @@ pub async fn run_with_inference_and_credential_resolver_and_resources(
     .await
 }
 
+/// Run a secretless worker with a caller-provided shutdown source.
+///
+/// Embedders and deterministic process tests use this seam when platform process
+/// signals cannot express a graceful stop (notably Node child processes on
+/// Windows). Production binaries should normally use
+/// [`run_with_inference_materializer`].
+pub async fn run_with_inference_materializer_until<F>(
+    upstream: &str,
+    materializer: Arc<dyn InferenceExecutorMaterializer>,
+    shutdown: F,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+where
+    F: std::future::Future<
+            Output = Result<WorkerShutdown, Box<dyn std::error::Error + Send + Sync>>,
+        >,
+{
+    build_secretless_worker(
+        WorkerUpstream::new(upstream),
+        WorkerProcessConfig::from_env(),
+        materializer,
+    )
+    .await?
+    .run_until(shutdown)
+    .await
+}
+
 async fn build_secretless_worker(
     upstream: WorkerUpstream,
     process: WorkerProcessConfig,
@@ -641,6 +667,17 @@ impl WorkerNode {
     /// Register, enter Ready, run until SIGINT/SIGTERM, then drain, quiesce, and
     /// deregister. Losing registry authority closes the local claim gate.
     pub async fn run_until_shutdown(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if std::env::var("AWAKEN_E2E_SHUTDOWN_ON_STDIN_EOF").as_deref() == Ok("1") {
+            return self
+                .run_until(async {
+                    use tokio::io::{AsyncReadExt, stdin};
+
+                    let mut byte = [0_u8; 1];
+                    let _ = stdin().read(&mut byte).await;
+                    Ok(WorkerShutdown::Graceful)
+                })
+                .await;
+        }
         self.run_until(async {
             #[cfg(unix)]
             {

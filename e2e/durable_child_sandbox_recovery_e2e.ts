@@ -7,19 +7,15 @@
 // the result resumes the parent, and no duplicate child relationship appears.
 
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import fs, { mkdtempSync } from 'node:fs';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import Anthropic from '@anthropic-ai/sdk';
-import {
-  FAKE_KEY,
-  realServerEnv,
-  spawnServer,
-  stopServer,
-  waitForPort,
-} from './harness.mjs';
+// @ts-ignore -- shared JavaScript harness intentionally serves TS scenarios.
+import { FAKE_KEY, realServerEnv, spawnServer, stopServer, waitForPort } from './harness.mjs';
+// @ts-ignore -- shared JavaScript fixture intentionally serves TS scenarios.
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
 type DispatchRow = {
@@ -65,35 +61,41 @@ function allFiles(root: string): string[] {
 }
 
 function rows(database: string): DispatchRow[] {
-  const output = execFileSync(
-    'sqlite3',
-    [
-      '-cmd',
-      '.timeout 2000',
-      '-json',
-      database,
-      'SELECT run_id, thread_id, status, lease_until, sandbox, request FROM runtime_dispatch ORDER BY created_at',
-    ],
-    { encoding: 'utf8' },
-  ).trim();
-  return output ? (JSON.parse(output) as DispatchRow[]) : [];
+  return withSqlite(database, true, (connection) => connection.prepare(
+    'SELECT run_id, thread_id, status, lease_until, sandbox, request FROM runtime_dispatch ORDER BY created_at',
+  ).all() as unknown as DispatchRow[]);
 }
 
 function committedMessages(database: string, threadId: string): any[] {
-  const escapedThread = threadId.replaceAll("'", "''");
-  const output = execFileSync(
-    'sqlite3',
-    [
-      '-cmd',
-      '.timeout 2000',
-      '-json',
-      database,
-      `SELECT data FROM runtime_message WHERE thread_id = '${escapedThread}' ORDER BY id`,
-    ],
-    { encoding: 'utf8' },
-  ).trim();
-  if (!output) return [];
-  return (JSON.parse(output) as Array<{ data: string }>).map((row) => JSON.parse(row.data));
+  return withSqlite(database, true, (connection) => (
+    connection.prepare(
+      'SELECT data FROM runtime_message WHERE thread_id = ? ORDER BY id',
+    ).all(threadId) as unknown as Array<{ data: string }>
+  ).map((row) => JSON.parse(row.data)));
+}
+
+function withSqlite<T>(
+  database: string,
+  readOnly: boolean,
+  operation: (connection: DatabaseSync) => T,
+): T {
+  // Persistence-inspection cause graph:
+  // C1 external sqlite3 CLI installed -> legacy fixture can inspect/mutate;
+  // C2 Node runtime provides SQLite -> portable fixture can inspect/mutate.
+  // C2 is sufficient and removes C1 from the E2E environment contract. A bounded
+  // busy timeout still serializes with the real server's concurrent transaction.
+  //
+  // | Rule | sqlite3 CLI | node:sqlite | Result |
+  // |---|---|---|---|
+  // | Q1 | F | T | inspect/recover |
+  // | Q2 | T | T | inspect/recover without subprocess |
+  const connection = new DatabaseSync(database, { readOnly });
+  try {
+    connection.exec('PRAGMA busy_timeout = 10000');
+    return operation(connection);
+  } finally {
+    connection.close();
+  }
 }
 
 function boundChild(root: string): {
@@ -158,6 +160,7 @@ async function waitForReply(thread: string, timeoutMs = 30_000): Promise<string>
 }
 
 async function main(): Promise<void> {
+  console.log('[child-recovery] preparing fixtures');
   const storage = mkdtempSync(path.join(tmpdir(), 'awaken-child-sandbox-recovery-'));
   const metricBodies: string[] = [];
   const metricReceiver = http.createServer((request, response) => {
@@ -187,6 +190,7 @@ async function main(): Promise<void> {
   });
   let server = spawnServer('delegate', PORT, environment).server;
   try {
+    console.log('[child-recovery] waiting for initial server');
     await waitForPort(PORT);
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE });
     const session = await client.beta.sessions.create({
@@ -201,12 +205,14 @@ async function main(): Promise<void> {
     });
     assert.equal(submitted.status, 200, `parent background run accepted: ${await submitted.text()}`);
 
+    console.log('[child-recovery] waiting for bound child inference');
     await waitForChildInference(upstream);
 
     // Simulate a hard worker crash: no graceful settle/commit hooks run.
     const crashed = new Promise<void>((resolve) => server.once('exit', () => resolve()));
     server.kill('SIGKILL');
     await crashed;
+    console.log('[child-recovery] initial server crashed');
 
     const before = boundChild(storage);
     const childRunId = before.child.run_id;
@@ -219,15 +225,16 @@ async function main(): Promise<void> {
 
     // Deterministically advance the lease boundary without making the e2e sleep
     // 30 seconds. This mutates only the throwaway dispatch DB created above.
-    execFileSync('sqlite3', [
-      before.database,
-      "UPDATE runtime_dispatch SET lease_until = 0 WHERE status = 'running'",
-    ]);
+    withSqlite(before.database, false, (connection) => {
+      connection.exec("UPDATE runtime_dispatch SET lease_until = 0 WHERE status = 'running'");
+    });
 
     const receivedBeforeRestart = upstream.received;
     server = spawnServer('delegate', PORT, environment).server;
+    console.log('[child-recovery] waiting for replacement server');
     await waitForPort(PORT);
     await waitForMoreInference(upstream, receivedBeforeRestart);
+    console.log('[child-recovery] replacement re-entered inference');
     const duringRecovery = boundChild(storage);
     const recoveringRows = rows(duringRecovery.database);
     assert.equal(recoveringRows.length, 2, 'recovery retained exactly the parent and one child');
@@ -251,6 +258,7 @@ async function main(): Promise<void> {
       );
     }
     assert.ok(reply.includes('delegate said: researched: 42'));
+    console.log('[child-recovery] parent result committed');
 
     // The public session registry is process-local. The parent's durable commit
     // boundary nevertheless contains the ordinary child thread as committed
@@ -290,6 +298,7 @@ async function main(): Promise<void> {
       'DURABLE CHILD/SANDBOX TS E2E PASS: hard crash recovered one stable child, adopted its session sandbox, resumed the parent and avoided duplicate execution.',
     );
   } finally {
+    console.log('[child-recovery] cleaning up');
     await stopServer(server).catch(() => {});
     upstream.close();
     metricReceiver.close();

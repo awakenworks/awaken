@@ -477,6 +477,8 @@ async function main(): Promise<void> {
       AWAKEN_TEST_ADMIN_DATABASE_URL: database.url,
       AWAKEN_TEST_WORKER_STORAGE_DIR: workerStorage,
       AWAKEN_WORKER_ID: `resource-worker-${process.pid}`,
+      AWAKEN_WORKER_ADMIN_LISTEN: `127.0.0.1:${WORKER_ADMIN_PORT}`,
+      AWAKEN_E2E_SHUTDOWN_ON_STDIN_EOF: '1',
     });
     worker = spawn(buildWorker(), [], { cwd: ROOT, env, stdio: ['pipe', 'pipe', 'pipe'] });
     worker.stdout.on('data', (chunk) => (workerOutput += chunk.toString()));

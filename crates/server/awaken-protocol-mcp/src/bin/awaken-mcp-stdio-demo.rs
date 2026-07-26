@@ -23,6 +23,34 @@ use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 use serde_json::json;
 use tokio::sync::mpsc;
 
+// Cause graph for the demo's HTTP lifetime:
+// C1 an operator sends Ctrl+C; C2 a subprocess owner closes stdin; C3 neither
+// happens. E1 gracefully drain HTTP and flush coverage; E2 keep serving.
+//
+// Decision table:
+// | Rule | C1 | C2 | C3 | Effect |
+// | H1   | T  | -  | F  | E1     |
+// | H2   | F  | T  | F  | E1     |
+// | H3   | F  | F  | T  | E2     |
+async fn http_shutdown_signal() {
+    use tokio::io::AsyncReadExt as _;
+
+    let stdin_eof = async {
+        let mut stdin = tokio::io::stdin();
+        let mut buffer = [0_u8; 256];
+        loop {
+            match stdin.read(&mut buffer).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+    };
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = stdin_eof => {}
+    }
+}
+
 struct EchoTool;
 
 #[async_trait]
@@ -120,6 +148,7 @@ async fn main() {
             ..McpHttpConfig::default()
         };
         axum::serve(listener, awaken_protocol_mcp::router(service, config))
+            .with_graceful_shutdown(http_shutdown_signal())
             .await
             .expect("serve MCP HTTP demo");
         return;

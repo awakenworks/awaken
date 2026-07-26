@@ -10,6 +10,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { spawnProduction, stopServer, waitForPort } from './harness.mjs';
+import { sqliteExec, sqliteRows } from './sqlite.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38439);
@@ -67,12 +68,10 @@ function sqlQuote(value) {
 }
 
 function catalogRecord(database, kind, id) {
-  const output = execFileSync('sqlite3', [
-    '-json',
+  const rows = sqliteRows(
     database,
     `SELECT data FROM admin_resource_catalog WHERE kind=${sqlQuote(kind)} AND id=${sqlQuote(id)}`,
-  ]).toString().trim();
-  const rows = output ? JSON.parse(output) : [];
+  );
   assert.equal(rows.length, 1, `missing ${kind}/${id} catalog aggregate`);
   return JSON.parse(rows[0].data);
 }
@@ -82,21 +81,19 @@ function writeCatalogRecord(database, kind, id, record) {
 }
 
 function writeCatalogRaw(database, kind, id, data) {
-  execFileSync('sqlite3', [
+  sqliteExec(
     database,
     `UPDATE admin_resource_catalog SET data=${sqlQuote(data)} WHERE kind=${
       sqlQuote(kind)
     } AND id=${sqlQuote(id)}`,
-  ]);
+  );
 }
 
 function sessionAggregate(database, sessionId) {
-  const output = execFileSync('sqlite3', [
-    '-json',
+  const rows = sqliteRows(
     database,
     `SELECT aggregate_json FROM managed_session WHERE session_id=${sqlQuote(sessionId)}`,
-  ]).toString().trim();
-  const rows = output ? JSON.parse(output) : [];
+  );
   assert.equal(rows.length, 1, `missing Session ${sessionId}`);
   assert.ok(rows[0].aggregate_json, `Session ${sessionId} has no canonical aggregate`);
   return JSON.parse(rows[0].aggregate_json);
@@ -130,13 +127,13 @@ function persistPreparedGeneration(database, sessionId) {
     pending: state.active,
     activations: [...previous, ...prepared],
   };
-  execFileSync('sqlite3', [
+  sqliteExec(
     database,
     `UPDATE managed_session SET aggregate_json=${sqlQuote(JSON.stringify({
       ...aggregate,
       resources: next,
     }))} WHERE session_id=${sqlQuote(sessionId)}`,
-  ]);
+  );
 }
 
 async function main() {

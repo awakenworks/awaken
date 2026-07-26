@@ -1162,7 +1162,21 @@ pub async fn build_oauth_resolved_router() -> Router {
         provider_id: Some("anthropic".into()),
         env_key: None,
         material_ref: None,
-        oauth_command: Some(vec!["printf".into(), OAUTH_MINTED_KEY.into()]),
+        // OAuth helper portability decision table:
+        // | Windows | helper                                      | token bytes |
+        // | true    | cmd.exe /D /C echo|set /p=<token>           | exact       |
+        // | false   | printf <token>                              | exact       |
+        // Both rules avoid a trailing newline after materialization trims stdout.
+        oauth_command: Some(if cfg!(windows) {
+            vec![
+                "cmd.exe".into(),
+                "/D".into(),
+                "/C".into(),
+                format!("echo|set /p={OAUTH_MINTED_KEY} & exit /b 0"),
+            ]
+        } else {
+            vec!["printf".into(), OAUTH_MINTED_KEY.into()]
+        }),
         status: CredentialStatus::Active,
         version: 1,
     };

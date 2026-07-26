@@ -23,7 +23,6 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
 import {
   deploymentEnv,
@@ -34,6 +33,7 @@ import {
   stopServer,
   waitForPort,
 } from './harness.mjs';
+import { sqliteExec, sqliteRows } from './sqlite.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT ?? 38671);
@@ -45,12 +45,11 @@ function sqlQuote(value) {
 }
 
 function sqlite(database, sql) {
-  return execFileSync('sqlite3', [database], { input: sql, encoding: 'utf8' });
+  return sqliteExec(database, sql);
 }
 
 function sqliteJson(database, sql) {
-  const output = execFileSync('sqlite3', ['-json', database, sql], { encoding: 'utf8' });
-  return output.trim() ? JSON.parse(output) : [];
+  return sqliteRows(database, sql);
 }
 
 function rewriteAsLegacySession(database) {
