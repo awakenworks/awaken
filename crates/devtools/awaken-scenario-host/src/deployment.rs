@@ -21,3 +21,38 @@ pub fn scenario_deployment() -> awaken_runtime_host::DeploymentConfig {
     }
     deployment
 }
+
+pub(crate) fn resource_host(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> SharedHost {
+    resource_host_with_deployment(llm, model_ref, scenario_deployment())
+}
+
+pub(crate) fn resource_host_with_deployment(
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: impl Into<String>,
+    deployment: awaken_runtime_host::DeploymentConfig,
+) -> SharedHost {
+    let host = if let Some(storage_dir) = deployment.storage_dir.clone() {
+        let resources = awaken_server::embedded_resource_plane(&storage_dir);
+        let host = SharedHost::new_with_resource_plane_and_deployment(
+            llm, model_ref, resources, deployment,
+        );
+        awaken_server::install_platform_memory_data_plane(&host);
+        host
+    } else {
+        SharedHost::new(llm, model_ref).with_resource_lifecycle(Arc::new(
+            awaken_resource_store::SqliteResourceStore::in_memory()
+                .expect("open scenario resource lifecycle sqlite"),
+        ))
+    };
+    let scenario_workspace = std::env::var("AWAKEN_SCENARIO_WORKSPACE")
+        .ok()
+        .filter(|workspace| !workspace.trim().is_empty());
+    match scenario_workspace {
+        Some(workspace) => host.with_local_workspace(workspace),
+        None => host,
+    }
+}
+use std::sync::Arc;
+
+use awaken_runtime_contract::llm::LlmExecutor;
+use awaken_runtime_host::SharedHost;

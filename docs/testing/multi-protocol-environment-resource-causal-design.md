@@ -344,3 +344,25 @@ typed deployment construction, process lifecycle, and readiness are no longer
 copied per protocol test. Fault injection edits `aggregate_json` as one value.
 Only the explicit retained-row case clears it and writes legacy columns, so the
 test cannot accidentally create a second live Session state authority.
+
+## Phase 15: ephemeral ResourcePlane without inferred durability
+
+```text
+scenario DeploymentConfig::ephemeral
+  -> canonical in-memory ResourcePlane
+  -> production workspace-path adapter
+  -> File/Memory ownership + lifecycle
+  -> Skill requires its independent durable store
+```
+
+| Rule | Resource | Workspace | Durable owner installed | Expected |
+|---|---|---|---:|---|
+| E1 | File | A then B | no | content-addressed bytes, independent ownership |
+| E2 | File | A with live Session edge | no | logical delete; purge after archive |
+| E3 | Memory | exact A | no | volatile aggregate lifecycle succeeds |
+| E4 | Skill | exact A | no | `409 no durable skill store` |
+| E5 | any | path-selected A vs B | no | exact workspace scope; no local default |
+
+The fixture decorates the canonical ephemeral Host with the existing workspace
+path adapter. It neither launches production with an implicit missing config nor
+adds a volatile Skill store, preserving one owner per Resource kind.

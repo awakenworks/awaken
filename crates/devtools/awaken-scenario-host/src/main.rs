@@ -136,6 +136,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok("memory") => awaken_scenario_host::build_memory_router(),
         Ok("memory-resource") => awaken_scenario_host::build_memory_resource_router(),
         Ok("resource-scope-boundary") => awaken_scenario_host::build_unscoped_resource_router(),
+        Ok("resource-ephemeral") => awaken_scenario_host::build_ephemeral_resource_router(),
         Ok("git-repo") => awaken_scenario_host::build_git_repo_router(),
         Ok("compaction") => awaken_scenario_host::build_compaction_router(),
         Ok("error") => awaken_scenario_host::build_error_router(),

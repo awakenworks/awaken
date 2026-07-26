@@ -12,6 +12,7 @@ mod models;
 pub use crate::models::*;
 pub use acp_gateway::build_acp_gateway_router;
 pub use deployment::scenario_deployment;
+use deployment::{resource_host, resource_host_with_deployment};
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -56,37 +57,6 @@ fn mount(host: Arc<SharedHost>) -> Router {
     let catalog = scenario_resource_catalog();
     let managed = awaken_server::local_managed_state(host.clone(), catalog.clone());
     awaken_server::mount_with_managed_and_resource_catalog(host, managed, catalog)
-}
-
-fn resource_host(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> SharedHost {
-    resource_host_with_deployment(llm, model_ref, scenario_deployment())
-}
-
-fn resource_host_with_deployment(
-    llm: Arc<dyn LlmExecutor>,
-    model_ref: impl Into<String>,
-    deployment: awaken_runtime_host::DeploymentConfig,
-) -> SharedHost {
-    let host = if let Some(storage_dir) = deployment.storage_dir.clone() {
-        let resources = awaken_server::embedded_resource_plane(&storage_dir);
-        let host = SharedHost::new_with_resource_plane_and_deployment(
-            llm, model_ref, resources, deployment,
-        );
-        awaken_server::install_platform_memory_data_plane(&host);
-        host
-    } else {
-        SharedHost::new(llm, model_ref).with_resource_lifecycle(Arc::new(
-            awaken_resource_store::SqliteResourceStore::in_memory()
-                .expect("open scenario resource lifecycle sqlite"),
-        ))
-    };
-    let scenario_workspace = std::env::var("AWAKEN_SCENARIO_WORKSPACE")
-        .ok()
-        .filter(|workspace| !workspace.trim().is_empty());
-    match scenario_workspace {
-        Some(workspace) => host.with_local_workspace(workspace),
-        None => host,
-    }
 }
 
 /// Scenario composition with the Environment API and the same Resource Catalog,
@@ -1252,6 +1222,14 @@ pub fn build_graded_router(
 /// The default deterministic router (echo model) — the CI / e2e server.
 pub fn build_echo_router() -> Router {
     build_router(Arc::new(EchoModel), "echo-model")
+}
+
+/// Ephemeral ResourcePlane behind the production workspace-path adapter. This
+/// is the sole multi-workspace process fixture for volatile resource semantics;
+/// it decorates the canonical scenario Host instead of defining another store.
+pub fn build_ephemeral_resource_router() -> Router {
+    let flat = mount(Arc::new(resource_host(Arc::new(EchoModel), "echo-model")));
+    awaken_server::workspace_path::with_workspace_path_addressing(flat)
 }
 
 /// A router whose model reports the media it received (the multimodal e2e): every
