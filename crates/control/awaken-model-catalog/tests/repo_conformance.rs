@@ -39,6 +39,7 @@ fn offering(model: &str, ep: &str, dialect: ApiDialect) -> Offering {
         upstream_model: None,
         source: Default::default(),
         status: Default::default(),
+        last_seen_at_unix_ms: None,
     }
 }
 
@@ -211,6 +212,7 @@ async fn put_model_attributes_round_trips(repo: &dyn CatalogRepo) {
         ModelAttributes {
             context_window: Some(200_000),
             max_output_tokens: Some(64_000),
+            provenance: Default::default(),
         },
     )
     .await
@@ -221,6 +223,7 @@ async fn put_model_attributes_round_trips(repo: &dyn CatalogRepo) {
         ModelAttributes {
             context_window: Some(190_000),
             max_output_tokens: None,
+            provenance: Default::default(),
         },
     )
     .await
@@ -311,12 +314,14 @@ async fn provider_discovery_reconciles_without_deleting_manual_truth(repo: &dyn 
                     upstream_model: Some("upstream-b".into()),
                 },
             ],
+            1_000,
         )
         .await
         .unwrap();
     assert_eq!(first.discovered, 2);
     assert_eq!(first.activated, 2);
     assert_eq!(first.marked_unavailable, 0);
+    assert_eq!(first.observed_at_unix_ms, 1_000);
 
     let second = repo
         .reconcile_discovered_models(
@@ -331,6 +336,7 @@ async fn provider_discovery_reconciles_without_deleting_manual_truth(repo: &dyn 
                     upstream_model: None,
                 },
             ],
+            2_000,
         )
         .await
         .unwrap();
@@ -346,12 +352,14 @@ async fn provider_discovery_reconciles_without_deleting_manual_truth(repo: &dyn 
         .unwrap();
     assert_eq!(manual.source, OfferingSource::Manual);
     assert_eq!(manual.status, OfferingStatus::Active);
+    assert_eq!(manual.last_seen_at_unix_ms, None);
     let unavailable = snapshot
         .offerings
         .iter()
         .find(|offering| offering.model_id == "provider-a")
         .unwrap();
     assert_eq!(unavailable.status, OfferingStatus::Unavailable);
+    assert_eq!(unavailable.last_seen_at_unix_ms, Some(1_000));
     assert!(
         snapshot
             .resolve_offering("provider-a", ApiDialect::AnthropicMessages)
@@ -362,6 +370,20 @@ async fn provider_discovery_reconciles_without_deleting_manual_truth(repo: &dyn 
         .resolve_offering("provider-b", ApiDialect::AnthropicMessages)
         .unwrap();
     assert_eq!(refreshed.upstream_model.as_deref(), Some("upstream-b2"));
+    assert_eq!(refreshed.last_seen_at_unix_ms, Some(2_000));
+
+    let mut manual_override = refreshed.clone();
+    repo.put_offering(manual_override.clone()).await.unwrap();
+    manual_override = repo
+        .snapshot()
+        .await
+        .unwrap()
+        .offerings
+        .into_iter()
+        .find(|offering| offering.model_id == "provider-b")
+        .unwrap();
+    assert_eq!(manual_override.source, OfferingSource::Manual);
+    assert_eq!(manual_override.last_seen_at_unix_ms, None);
 }
 
 async fn rejected_discovery_is_atomic(repo: &dyn CatalogRepo) {
@@ -375,6 +397,7 @@ async fn rejected_discovery_is_atomic(repo: &dyn CatalogRepo) {
             model_id: "sound".into(),
             upstream_model: None,
         }],
+        1_000,
     )
     .await
     .unwrap();
@@ -385,6 +408,7 @@ async fn rejected_discovery_is_atomic(repo: &dyn CatalogRepo) {
                 model_id: "  ".into(),
                 upstream_model: None,
             }],
+            2_000,
         )
         .await,
         Err(RepoError::Invariant(CatalogError::EmptyDiscoveredModelId))
@@ -393,6 +417,41 @@ async fn rejected_discovery_is_atomic(repo: &dyn CatalogRepo) {
     assert_eq!(snapshot.offerings.len(), 1);
     assert_eq!(snapshot.offerings[0].model_id, "sound");
     assert_eq!(snapshot.offerings[0].status, OfferingStatus::Active);
+    assert_eq!(snapshot.offerings[0].last_seen_at_unix_ms, Some(1_000));
+}
+
+async fn discovered_connection_is_atomic(repo: &dyn CatalogRepo) {
+    repo.put_discovered_connection(
+        provider("anthropic"),
+        endpoint("ep1", "anthropic", ApiDialect::AnthropicMessages),
+        vec![DiscoveredModel {
+            model_id: "sound".into(),
+            upstream_model: None,
+        }],
+        1_000,
+    )
+    .await
+    .unwrap();
+    let snapshot = repo.snapshot().await.unwrap();
+    assert_eq!(snapshot.providers.len(), 1);
+    assert_eq!(snapshot.endpoints.len(), 1);
+    assert_eq!(snapshot.offerings.len(), 1);
+
+    let before = snapshot;
+    assert!(
+        repo.put_discovered_connection(
+            provider("openai"),
+            endpoint("bad", "openai", ApiDialect::OpenAiResponses),
+            vec![DiscoveredModel {
+                model_id: " ".into(),
+                upstream_model: None,
+            }],
+            2_000,
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(repo.snapshot().await.unwrap(), before);
 }
 
 /// Run every suite, each on a fresh repo from `make`.
@@ -409,6 +468,7 @@ async fn run_all(make: impl Fn() -> Box<dyn CatalogRepo>) {
     resolve_first_match_follows_stored_order_deterministically(&*make()).await;
     provider_discovery_reconciles_without_deleting_manual_truth(&*make()).await;
     rejected_discovery_is_atomic(&*make()).await;
+    discovered_connection_is_atomic(&*make()).await;
 }
 
 /// Reload-time integrity guard, at the pure `ValidCatalog::parse` boundary: the
@@ -502,6 +562,7 @@ mod postgres {
             &repo("t_cat_resolve").await.unwrap(),
         )
         .await;
+        discovered_connection_is_atomic(&repo("t_cat_connection").await.unwrap()).await;
     }
 
     /// Reload-time integrity guard on the network backend: an offering row that

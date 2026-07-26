@@ -8,15 +8,16 @@
 //! speak RFC-9457 problem details ([`ApiError`]); a credential's secret is
 //! write-only (secret-in) and never echoed on a response (secret-free-out).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use awaken_agent_contract::RedactedString;
 use awaken_api_contract::{ApiError, PROBLEM_JSON_CONTENT_TYPE, REQUEST_ID_HEADER};
 use awaken_config_resolver::{
     AgentInputBindingRepository, AgentInputConfig, ConfigRepositoryError, InferenceProfile,
-    InferenceProfileStore, ResolveError, ResolvedInference, SourceLookup, cooldown_deadline,
-    resolve_inference, resolve_profile, resolve_profile_candidates,
+    InferenceProfileStore, ModelTarget, ResolveError, ResolvedInference, SourceLookup,
+    cooldown_deadline, get_workspace_profile, put_workspace_profile, resolve_inference,
+    resolve_inference_target, resolve_profile, resolve_profile_candidates,
 };
 use awaken_credential_vault::repo::{CredentialRepo, enter_credential};
 use awaken_credential_vault::{
@@ -26,8 +27,8 @@ use awaken_credential_vault::{
 };
 use awaken_model_catalog::repo::{CatalogRepo, RepoError};
 use awaken_model_catalog::{
-    CatalogSyncResult, DiscoveredModel, ModelAttributes, Offering, OfferingSource, OfferingStatus,
-    ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
+    CatalogSyncResult, DiscoveredModel, ModelAttributeSource, ModelAttributes, Offering,
+    OfferingSource, OfferingStatus, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
 };
 use awaken_runtime_contract::resilience::Disposition;
 use awaken_tenancy::WorkspaceScope as ResourceWorkspace;
@@ -95,6 +96,18 @@ pub trait ModelCatalogDiscovery: Send + Sync {
         endpoint: &ProtocolEndpoint,
         credential: &CredentialSource,
     ) -> Result<Vec<DiscoveredModel>, ModelCatalogDiscoveryError>;
+
+    /// Test a not-yet-persisted API key. The default is fail-closed so an
+    /// adapter must opt into Test & Save explicitly.
+    async fn discover_with_secret(
+        &self,
+        _endpoint: &ProtocolEndpoint,
+        _secret: &RedactedString,
+    ) -> Result<Vec<DiscoveredModel>, ModelCatalogDiscoveryError> {
+        Err(ModelCatalogDiscoveryError::CredentialUnavailable(
+            "adapter does not support pre-save credential testing".into(),
+        ))
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -111,6 +124,14 @@ pub enum ModelCatalogDiscoveryError {
 /// catalog snapshot (`GET /v1/config/catalog`) to bind a run.
 pub fn admin_router(state: AdminState) -> Router {
     Router::new()
+        .route(
+            "/v1/config/provider-descriptors",
+            get(get_provider_descriptors),
+        )
+        .route(
+            "/v1/config/provider-connections",
+            post(test_and_save_provider_connection).get(list_provider_connections),
+        )
         .route("/v1/config/provider-proposals", get(get_provider_proposals))
         .route(
             "/v1/config/providers/{id}",
@@ -319,6 +340,22 @@ fn repo_problem(error: &RepoError, rid: &str) -> Problem {
     ))
 }
 
+fn model_discovery_problem(error: &ModelCatalogDiscoveryError, rid: &str) -> Problem {
+    let (status, code) = match error {
+        ModelCatalogDiscoveryError::CredentialUnavailable(_) => {
+            (409, "discovery_credential_unavailable")
+        }
+        ModelCatalogDiscoveryError::Provider(_) => (502, "model_discovery_failed"),
+    };
+    Problem(ApiError::new(
+        status,
+        code,
+        "Provider model discovery failed",
+        error.to_string(),
+        rid,
+    ))
+}
+
 fn config_repository_problem(error: &ConfigRepositoryError, rid: &str) -> Problem {
     Problem(ApiError::new(
         500,
@@ -431,6 +468,7 @@ async fn post_offering(
         upstream_model: request.upstream_model,
         source: OfferingSource::Manual,
         status: OfferingStatus::Active,
+        last_seen_at_unix_ms: None,
     };
     // Fail-closed reference integrity (offering → provider/endpoint) lives in the
     // repo's put_offering: a dangling endpoint ref is a 404 (referenced resource
@@ -515,44 +553,361 @@ async fn discover_endpoint_models(
     let models = discovery
         .discover(&endpoint, &credential)
         .await
-        .map_err(|error| {
-            let (status, code) = match &error {
-                ModelCatalogDiscoveryError::CredentialUnavailable(_) => {
-                    (409, "discovery_credential_unavailable")
-                }
-                ModelCatalogDiscoveryError::Provider(_) => (502, "model_discovery_failed"),
-            };
-            Problem(ApiError::new(
-                status,
-                code,
-                "Provider model discovery failed",
-                error.to_string(),
-                &rid,
-            ))
-        })?;
+        .map_err(|error| model_discovery_problem(&error, &rid))?;
     state
         .catalog
-        .reconcile_discovered_models(&endpoint_id, models)
+        .reconcile_discovered_models(&endpoint_id, models, unix_time_ms())
         .await
         .map(Json)
         .map_err(|error| repo_problem(&error, &rid))
+}
+
+async fn get_provider_descriptors() -> Json<Vec<awaken_model_catalog::ProviderDriverDescriptor>> {
+    Json(awaken_model_catalog::provider_driver_descriptors())
+}
+
+#[derive(serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct SaveProviderConnectionRequest {
+    pub workspace_id: String,
+    pub provider_id: String,
+    pub display_name: String,
+    pub endpoint_id: String,
+    pub dialect: awaken_model_catalog::ApiDialect,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default = "default_connection_timeout")]
+    pub timeout_secs: u64,
+    /// Write-only API key. It is tested before entering the vault and never
+    /// appears in the response or any catalog row.
+    pub secret: String,
+}
+
+const fn default_connection_timeout() -> u64 {
+    60
+}
+
+#[derive(serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ProviderConnectionView {
+    pub provider: Provider,
+    pub endpoint: ProtocolEndpoint,
+    pub credential: CredentialSourceView,
+    pub sync: CatalogSyncResult,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderConnectionStatus {
+    NotConfigured,
+    Connected,
+    Ready,
+    Stale,
+    NeedsAttention,
+    Unavailable,
+}
+
+#[derive(serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ProviderConnectionSummary {
+    pub provider_id: String,
+    pub display_name: String,
+    pub status: ProviderConnectionStatus,
+    pub endpoint_ids: Vec<String>,
+    pub active_credentials: usize,
+    pub active_models: usize,
+    pub unavailable_models: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_seen_at_unix_ms: Option<u64>,
+}
+
+#[derive(serde::Deserialize)]
+struct ListProviderConnectionsQuery {
+    workspace_id: String,
+}
+
+const PROVIDER_CATALOG_STALE_AFTER_MS: u64 = 24 * 60 * 60 * 1_000;
+
+async fn list_provider_connections(
+    State(state): State<AdminState>,
+    scope: Option<Extension<ResourceWorkspace>>,
+    Query(query): Query<ListProviderConnectionsQuery>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<ProviderConnectionSummary>>, Problem> {
+    let rid = req_id(&headers);
+    let workspace_id = scope.map_or(query.workspace_id, |Extension(scope)| scope.0);
+    let catalog = state
+        .catalog
+        .snapshot()
+        .await
+        .map_err(|error| repo_problem(&error, &rid))?;
+    let credentials = state
+        .credentials
+        .list(&workspace_id)
+        .await
+        .map_err(|error| cred_problem(&error, &rid))?;
+    let now = unix_time_ms();
+    let summaries = awaken_model_catalog::provider_driver_descriptors()
+        .into_iter()
+        .map(|descriptor| {
+            let provider_id = descriptor.provider_kind;
+            let provider = catalog.providers.get(&provider_id);
+            let mut endpoint_ids = catalog
+                .endpoints
+                .values()
+                .filter(|endpoint| endpoint.provider_id.as_str() == provider_id)
+                .map(|endpoint| endpoint.id.0.clone())
+                .collect::<Vec<_>>();
+            endpoint_ids.sort();
+            let provider_credentials = credentials
+                .iter()
+                .filter(|credential| {
+                    credential.provider_id.as_deref() == Some(provider_id.as_str())
+                })
+                .collect::<Vec<_>>();
+            let active_credentials = provider_credentials
+                .iter()
+                .filter(|credential| credential.status == CredentialStatus::Active)
+                .count();
+            let offerings = catalog
+                .offerings
+                .iter()
+                .filter(|offering| offering.provider_id.as_str() == provider_id)
+                .collect::<Vec<_>>();
+            let active_models = offerings
+                .iter()
+                .filter(|offering| offering.status == OfferingStatus::Active)
+                .count();
+            let unavailable_models = offerings.len().saturating_sub(active_models);
+            let last_seen_at_unix_ms = offerings
+                .iter()
+                .filter_map(|offering| offering.last_seen_at_unix_ms)
+                .max();
+            let active_last_seen_at_unix_ms = offerings
+                .iter()
+                .filter(|offering| offering.status == OfferingStatus::Active)
+                .filter_map(|offering| offering.last_seen_at_unix_ms)
+                .max();
+            let status = if provider.is_none() && provider_credentials.is_empty() {
+                ProviderConnectionStatus::NotConfigured
+            } else if active_credentials == 0 {
+                ProviderConnectionStatus::NeedsAttention
+            } else if offerings.is_empty() {
+                ProviderConnectionStatus::Connected
+            } else if active_models == 0 {
+                ProviderConnectionStatus::Unavailable
+            } else if active_last_seen_at_unix_ms
+                .is_some_and(|seen| now.saturating_sub(seen) > PROVIDER_CATALOG_STALE_AFTER_MS)
+            {
+                ProviderConnectionStatus::Stale
+            } else {
+                ProviderConnectionStatus::Ready
+            };
+            ProviderConnectionSummary {
+                provider_id,
+                display_name: provider.map_or(descriptor.display_name, |provider| {
+                    provider.display_name.clone()
+                }),
+                status,
+                endpoint_ids,
+                active_credentials,
+                active_models,
+                unavailable_models,
+                last_seen_at_unix_ms,
+            }
+        })
+        .collect();
+    Ok(Json(summaries))
+}
+
+async fn test_and_save_provider_connection(
+    State(state): State<AdminState>,
+    scope: Option<Extension<ResourceWorkspace>>,
+    headers: HeaderMap,
+    Json(body): Json<SaveProviderConnectionRequest>,
+) -> Result<(StatusCode, Json<ProviderConnectionView>), Problem> {
+    let rid = req_id(&headers);
+    let descriptor = awaken_model_catalog::provider_driver_descriptors()
+        .into_iter()
+        .find(|descriptor| descriptor.provider_kind == body.provider_id)
+        .ok_or_else(|| {
+            Problem(ApiError::new(
+                422,
+                "provider_unsupported",
+                "Unsupported provider",
+                format!(
+                    "provider `{}` has no installed descriptor",
+                    body.provider_id
+                ),
+                &rid,
+            ))
+        })?;
+    if !descriptor.supported_dialects.contains(&body.dialect) {
+        return Err(Problem(ApiError::new(
+            422,
+            "dialect_unsupported",
+            "Unsupported provider protocol",
+            format!(
+                "provider `{}` does not support {:?}",
+                body.provider_id, body.dialect
+            ),
+            &rid,
+        )));
+    }
+    if body.secret.trim().is_empty() {
+        return Err(cred_problem(
+            &CredentialError::InvalidSource("vault secret is required".into()),
+            &rid,
+        ));
+    }
+    let provider = Provider {
+        id: ProviderId::new(body.provider_id.clone()),
+        slug: body.provider_id.clone(),
+        display_name: body.display_name,
+        version: 1,
+    };
+    let base_url = body
+        .base_url
+        .filter(|url| !url.trim().is_empty())
+        .or_else(|| {
+            descriptor
+                .default_endpoints
+                .iter()
+                .find(|endpoint| endpoint.dialect == body.dialect)
+                .map(|endpoint| endpoint.base_url.clone())
+        });
+    let endpoint = ProtocolEndpoint {
+        id: ProtocolEndpointId::new(body.endpoint_id),
+        provider_id: provider.id.clone(),
+        dialect: body.dialect,
+        base_url,
+        timeout_secs: body.timeout_secs,
+        display_name: format!("{} · {:?}", provider.display_name, body.dialect),
+        version: 1,
+    };
+    let secret = RedactedString::new(body.secret);
+    let discovery = state.model_discovery.as_ref().ok_or_else(|| {
+        Problem(ApiError::new(
+            503,
+            "connection_test_unavailable",
+            "Connection testing unavailable",
+            "no provider discovery adapter is installed",
+            &rid,
+        ))
+    })?;
+    let models = discovery
+        .discover_with_secret(&endpoint, &secret)
+        .await
+        .map_err(|error| model_discovery_problem(&error, &rid))?;
+    if models.is_empty() {
+        return Err(Problem(ApiError::new(
+            422,
+            "no_models_discovered",
+            "No models discovered",
+            "the provider connection succeeded but returned no models",
+            &rid,
+        )));
+    }
+
+    let workspace_id = scope.map_or(body.workspace_id, |Extension(scope)| scope.0);
+    let source = enter_credential(
+        CredentialCreateParams {
+            workspace_id,
+            kind: CredentialKind::Vault,
+            provider_id: Some(provider.id.0.clone()),
+            env_key: None,
+            secret: Some(secret),
+            oauth_command: None,
+        },
+        &*state.secrets,
+        &*state.credentials,
+    )
+    .await
+    .map_err(|error| cred_problem(&error, &rid))?;
+
+    // Stage fail-closed: the generic credential creation path publishes Active,
+    // so immediately disable this new source before any catalog fact can refer
+    // to it. Only a successful atomic catalog commit promotes it back to Active.
+    let mut staged = source.clone();
+    staged.status = CredentialStatus::Disabled;
+    staged.version += 1;
+    state
+        .credentials
+        .put(staged.clone())
+        .await
+        .map_err(|error| cred_problem(&error, &rid))?;
+
+    let sync = match state
+        .catalog
+        .put_discovered_connection(provider.clone(), endpoint.clone(), models, unix_time_ms())
+        .await
+    {
+        Ok(sync) => sync,
+        Err(error) => return Err(repo_problem(&error, &rid)),
+    };
+    staged.status = CredentialStatus::Active;
+    staged.version += 1;
+    state
+        .credentials
+        .put(staged.clone())
+        .await
+        .map_err(|error| cred_problem(&error, &rid))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(ProviderConnectionView {
+            provider,
+            endpoint,
+            credential: staged.into(),
+            sync,
+        }),
+    ))
+}
+
+fn unix_time_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
 }
 
 async fn put_model_attributes(
     State(state): State<AdminState>,
     Path(model_id): Path<String>,
     headers: HeaderMap,
-    Json(attrs): Json<ModelAttributes>,
+    Json(request): Json<PutModelAttributesRequest>,
 ) -> Result<Json<ModelAttributes>, Problem> {
     // Model attributes publish independently of offerings — they carry no
     // provider/endpoint reference (`ProviderCatalog::validate` leaves them
     // unconstrained), so the only failure surface is a whole-catalog invariant (422).
+    let attrs = ModelAttributes {
+        context_window: request.context_window,
+        max_output_tokens: request.max_output_tokens,
+        provenance: Default::default(),
+    }
+    .stamped(ModelAttributeSource::Manual, unix_time_ms());
     state
         .catalog
         .put_model_attributes(model_id, attrs.clone())
         .await
         .map_err(|e| repo_problem(&e, &req_id(&headers)))?;
     Ok(Json(attrs))
+}
+
+/// Secret-free authoring input. Provenance is intentionally absent: external
+/// callers cannot claim that a manual value came from a provider or curated source.
+#[derive(Debug, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct PutModelAttributesRequest {
+    #[serde(default)]
+    pub context_window: Option<u32>,
+    #[serde(default)]
+    pub max_output_tokens: Option<u32>,
 }
 
 async fn get_catalog(
@@ -638,6 +993,7 @@ impl SourceLookup for WorkspaceLookup {
 fn resolve_problem(error: &ResolveError, rid: &str) -> Problem {
     let (status, code) = match error {
         ResolveError::ModelUnresolved(_) => (404, "model_unresolved"),
+        ResolveError::ModelAmbiguous { .. } => (409, "model_ambiguous"),
         ResolveError::EndpointMissing(_) => (422, "endpoint_missing"),
         ResolveError::SourceMissing(_) | ResolveError::PoolMissing(_) => (404, "not_found"),
         ResolveError::IncompatibleCredential { .. } => (422, "incompatible_credential"),
@@ -655,14 +1011,29 @@ fn resolve_problem(error: &ResolveError, rid: &str) -> Problem {
     ))
 }
 
-/// A dry-run resolve request: bind `model_id` (+ credential `binding`) against the
-/// authored catalog. The workspace scopes which credential sources are visible.
+/// A dry-run resolve request. New callers send a complete `target`; legacy
+/// `model_id` remains accepted only when it resolves to exactly one active offering.
 #[derive(serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct ResolveRequest {
     workspace_id: String,
-    model_id: String,
+    #[serde(default)]
+    model_id: Option<String>,
+    #[serde(default)]
+    target: Option<ModelTarget>,
     binding: CredentialBinding,
+}
+
+impl ResolveRequest {
+    fn target(&self) -> Result<ModelTarget, &'static str> {
+        match (&self.target, &self.model_id) {
+            (Some(target), None) => Ok(target.clone()),
+            (None, Some(model_id)) => Ok(ModelTarget::unqualified(model_id)),
+            (Some(_), Some(_)) => Err("send target or legacy model_id, not both"),
+            (None, None) => Err("target is required"),
+        }
+    }
 }
 
 /// The **secret-free** result of a resolve (ADR-0043): the execution triple + the
@@ -697,11 +1068,21 @@ async fn resolve_route(
         .snapshot()
         .await
         .map_err(|e| repo_problem(&e, &rid))?;
-    let workspace = scope.map_or(request.workspace_id, |Extension(scope)| scope.0);
+    let target = request.target().map_err(|detail| {
+        Problem(ApiError::new(
+            400,
+            "model_target_invalid",
+            "Invalid model target",
+            detail,
+            &rid,
+        ))
+    })?;
+    let workspace = scope.map_or_else(|| request.workspace_id.clone(), |Extension(scope)| scope.0);
     let lookup = workspace_lookup(&state, &workspace, &rid).await?;
-    let resolved = resolve_inference(
+    let resolved = resolve_inference_target(
         &catalog,
-        &request.model_id,
+        &target,
+        &[],
         &request.binding,
         &lookup,
         &*state.secrets,
@@ -742,13 +1123,15 @@ async fn resolve_profile_candidates_route(
     Json(request): Json<ResolveProfileRequest>,
 ) -> Result<Json<ResolvedCandidatesView>, Problem> {
     let rid = req_id(&headers);
-    let profile = state
-        .profiles
-        .get(&id)
-        .map_err(|error| config_repository_problem(&error, &rid))?
-        .ok_or_else(|| profile_missing(&id, &rid))?;
     let scoped_workspace = scope.map(|Extension(scope)| scope.0);
     let workspace = scoped_workspace.clone().unwrap_or(request.workspace_id);
+    let profile = if scoped_workspace.is_some() {
+        get_workspace_profile(state.profiles.as_ref(), &workspace, &id)
+    } else {
+        state.profiles.get(&id)
+    }
+    .map_err(|error| config_repository_problem(&error, &rid))?
+    .ok_or_else(|| profile_missing(&id, &rid))?;
     if scoped_workspace.is_some() && profile.workspace_id != workspace {
         return Err(profile_missing(&id, &rid));
     }
@@ -941,22 +1324,62 @@ async fn put_profile(
     Json(mut profile): Json<InferenceProfile>,
 ) -> Result<Json<InferenceProfile>, Problem> {
     let rid = req_id(&headers);
-    if let Some(Extension(scope)) = scope {
-        if state
-            .profiles
-            .get(&id)
-            .map_err(|error| config_repository_problem(&error, &rid))?
-            .is_some_and(|current| current.workspace_id != scope.0)
-        {
-            return Err(profile_missing(&id, &rid));
-        }
-        profile.workspace_id = scope.0;
+    let scoped_workspace = scope.map(|Extension(scope)| scope.0);
+    if let Some(workspace) = &scoped_workspace {
+        profile.workspace_id.clone_from(workspace);
     }
-    state
-        .profiles
-        .put(id, profile.clone())
-        .map_err(|error| config_repository_problem(&error, &rid))?;
+    validate_profile(&profile).map_err(|detail| {
+        Problem(ApiError::new(
+            422,
+            "invalid_inference_profile",
+            "Invalid inference profile",
+            detail,
+            &rid,
+        ))
+    })?;
+    if let Some(workspace) = &scoped_workspace {
+        put_workspace_profile(state.profiles.as_ref(), workspace, &id, profile.clone())
+    } else {
+        state.profiles.put(id, profile.clone())
+    }
+    .map_err(|error| config_repository_problem(&error, &rid))?;
     Ok(Json(profile))
+}
+
+fn validate_profile(profile: &InferenceProfile) -> Result<(), String> {
+    const MAX_FALLBACKS: usize = 8;
+    if profile.primary.target.model_id.trim().is_empty() {
+        return Err("primary.model_id must not be empty".into());
+    }
+    if profile.fallbacks.len() > MAX_FALLBACKS {
+        return Err(format!(
+            "at most {MAX_FALLBACKS} fallback targets are allowed"
+        ));
+    }
+    let key = |target: &ModelTarget| {
+        (
+            target.model_id.trim().to_owned(),
+            target.provider_id.as_deref().unwrap_or_default().to_owned(),
+            target
+                .protocol_endpoint_id
+                .as_deref()
+                .unwrap_or_default()
+                .to_owned(),
+        )
+    };
+    let mut seen = HashSet::from([key(&profile.primary.target)]);
+    for (index, candidate) in profile.fallbacks.iter().enumerate() {
+        let target = &candidate.target;
+        if target.model_id.trim().is_empty() {
+            return Err(format!("fallbacks[{index}].model_id must not be empty"));
+        }
+        if !seen.insert(key(target)) {
+            return Err(format!(
+                "fallbacks[{index}] duplicates an earlier model target"
+            ));
+        }
+    }
+    Ok(())
 }
 
 async fn get_profile(
@@ -965,14 +1388,14 @@ async fn get_profile(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<InferenceProfile>, Problem> {
-    let profile = state
-        .profiles
-        .get(&id)
-        .map_err(|error| config_repository_problem(&error, &req_id(&headers)))?
-        .ok_or_else(|| profile_missing(&id, &req_id(&headers)))?;
-    if scope.is_some_and(|Extension(scope)| profile.workspace_id != scope.0) {
-        return Err(profile_missing(&id, &req_id(&headers)));
+    let workspace = scope.map(|Extension(scope)| scope.0);
+    let profile = if let Some(workspace) = &workspace {
+        get_workspace_profile(state.profiles.as_ref(), workspace, &id)
+    } else {
+        state.profiles.get(&id)
     }
+    .map_err(|error| config_repository_problem(&error, &req_id(&headers)))?
+    .ok_or_else(|| profile_missing(&id, &req_id(&headers)))?;
     Ok(Json(profile))
 }
 
@@ -993,13 +1416,15 @@ async fn resolve_profile_route(
     Json(request): Json<ResolveProfileRequest>,
 ) -> Result<Json<ResolvedInferenceView>, Problem> {
     let rid = req_id(&headers);
-    let profile = state
-        .profiles
-        .get(&id)
-        .map_err(|error| config_repository_problem(&error, &rid))?
-        .ok_or_else(|| profile_missing(&id, &rid))?;
     let scoped_workspace = scope.map(|Extension(scope)| scope.0);
     let workspace = scoped_workspace.clone().unwrap_or(request.workspace_id);
+    let profile = if scoped_workspace.is_some() {
+        get_workspace_profile(state.profiles.as_ref(), &workspace, &id)
+    } else {
+        state.profiles.get(&id)
+    }
+    .map_err(|error| config_repository_problem(&error, &rid))?
+    .ok_or_else(|| profile_missing(&id, &rid))?;
     if scoped_workspace.is_some() && profile.workspace_id != workspace {
         return Err(profile_missing(&id, &rid));
     }
@@ -1420,6 +1845,19 @@ mod tests {
         let p = resolve_problem(&ResolveError::ModelUnresolved("m".into()), "rid");
         assert_eq!(p.0.status, 404);
         assert_eq!(p.0.code, "model_unresolved");
+    }
+
+    #[test]
+    fn resolve_problem_model_ambiguous_is_409() {
+        let p = resolve_problem(
+            &ResolveError::ModelAmbiguous {
+                model_id: "m".into(),
+                candidates: vec!["p/ep1".into(), "p/ep2".into()],
+            },
+            "rid",
+        );
+        assert_eq!(p.0.status, 409);
+        assert_eq!(p.0.code, "model_ambiguous");
     }
 
     #[test]

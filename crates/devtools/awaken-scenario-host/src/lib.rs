@@ -1033,6 +1033,7 @@ pub async fn build_resolved_real_router() -> Router {
             upstream_model: None,
             source: Default::default(),
             status: Default::default(),
+            last_seen_at_unix_ms: None,
         })
         .await
         .expect("put offering");
@@ -1133,6 +1134,7 @@ pub async fn build_oauth_resolved_router() -> Router {
             upstream_model: None,
             source: Default::default(),
             status: Default::default(),
+            last_seen_at_unix_ms: None,
         })
         .await
         .expect("put offering");
@@ -1757,6 +1759,7 @@ pub async fn build_config_router() -> Router {
             upstream_model: None,
             source: Default::default(),
             status: Default::default(),
+            last_seen_at_unix_ms: None,
         })
         .await
         .expect("put offering");

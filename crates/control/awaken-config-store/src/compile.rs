@@ -1159,6 +1159,7 @@ mod tests {
                 )),
                 awaken_runtime_contract::InferenceEndpoint {
                     adapter_kind: "anthropic".into(),
+                    api_dialect: "anthropic_messages".into(),
                     base_url: "https://api.example/v1".into(),
                     upstream_model: "model-a".into(),
                 },

@@ -235,6 +235,7 @@ async fn seed_catalog(_h: &Harness) -> awaken_model_catalog::ProviderCatalog {
         upstream_model: None,
         source: Default::default(),
         status: Default::default(),
+        last_seen_at_unix_ms: None,
     })
     .await
     .unwrap();

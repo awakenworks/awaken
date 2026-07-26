@@ -22,6 +22,11 @@ pub fn awaken_provider_genai::GenaiExecutor::with_timeout(self, core::time::Dura
 impl awaken_runtime_contract::llm::LlmExecutor for awaken_provider_genai::GenaiExecutor
 pub fn awaken_provider_genai::GenaiExecutor::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_provider_genai::GenaiExecutor::infer_streaming<'life0, 'life1, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest, &'life1 dyn awaken_runtime_contract::llm::DeltaSink) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub struct awaken_provider_genai::OpenAiResponsesExecutor
+impl awaken_provider_genai::OpenAiResponsesExecutor
+pub fn awaken_provider_genai::OpenAiResponsesExecutor::new(&str, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_runtime_contract::llm::Error>
+impl awaken_runtime_contract::llm::LlmExecutor for awaken_provider_genai::OpenAiResponsesExecutor
+pub fn awaken_provider_genai::OpenAiResponsesExecutor::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_provider_genai::classify_error(&str) -> awaken_runtime_contract::llm::Error
 pub async fn awaken_provider_genai::discover_model_ids(genai::adapter::adapter_kind::AdapterKind, core::option::Option<&str>, &str) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, awaken_provider_genai::ModelDiscoveryError>
 pub fn awaken_provider_genai::from_genai_response(genai::chat::chat_response::ChatResponse) -> awaken_runtime_contract::llm::ChatResponse

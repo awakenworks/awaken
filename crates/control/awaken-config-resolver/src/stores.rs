@@ -25,6 +25,41 @@ pub trait InferenceProfileStore: Send + Sync {
     fn get(&self, id: &str) -> Result<Option<InferenceProfile>, ConfigRepositoryError>;
 }
 
+/// Opaque durable key for a profile id inside one trusted Workspace. Length
+/// framing makes the mapping injective even when either coordinate contains `:`.
+#[must_use]
+pub fn workspace_profile_key(workspace_id: &str, profile_id: &str) -> String {
+    format!("ws:{}:{workspace_id}:{profile_id}", workspace_id.len())
+}
+
+/// Read a Workspace-owned profile without allowing a common id such as
+/// `workspace-default` to collide across tenants. A matching legacy unscoped row
+/// remains readable for in-place upgrades; a row owned by another Workspace is
+/// treated as absent.
+pub fn get_workspace_profile(
+    store: &dyn InferenceProfileStore,
+    workspace_id: &str,
+    profile_id: &str,
+) -> Result<Option<InferenceProfile>, ConfigRepositoryError> {
+    if let Some(profile) = store.get(&workspace_profile_key(workspace_id, profile_id))? {
+        return Ok((profile.workspace_id == workspace_id).then_some(profile));
+    }
+    Ok(store
+        .get(profile_id)?
+        .filter(|profile| profile.workspace_id == workspace_id))
+}
+
+/// Persist under the Workspace-qualified key. Callers must stamp and validate the
+/// trusted owner before invoking this helper.
+pub fn put_workspace_profile(
+    store: &dyn InferenceProfileStore,
+    workspace_id: &str,
+    profile_id: &str,
+    profile: InferenceProfile,
+) -> Result<(), ConfigRepositoryError> {
+    store.put(workspace_profile_key(workspace_id, profile_id), profile)
+}
+
 /// A store for authored [`WebhookEndpointDef`]s (an admin-plane aggregate,
 /// ADR-0048). Sync + in-memory by default; the durable admin backend implements
 /// the same port. Unlike [`InferenceProfileStore`] it enumerates by

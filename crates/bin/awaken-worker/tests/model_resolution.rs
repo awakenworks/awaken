@@ -118,6 +118,7 @@ async fn services() -> TestServices {
         )),
         InferenceEndpoint {
             adapter_kind: "anthropic".into(),
+            api_dialect: "anthropic_messages".into(),
             base_url: "https://api.anthropic.com/v1/".into(),
             upstream_model: "claude-x".into(),
         },
