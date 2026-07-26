@@ -533,32 +533,47 @@ async fn open_management_stores(
     // Self-hosted env registry + work queue follow the session store's backend kind
     // (their own table namespaces, so a shared DB is fine).
     let environments: Arc<EnvironmentState> = match &cfg.sessions {
-        StoreBackend::Sqlite(sp) => Arc::new(EnvironmentState::with_stores(
-            Arc::new(
-                awaken_runtime_host::SqliteEnvRegistry::open(&path(
-                    &sp.with_file_name("environments.db"),
+        StoreBackend::Sqlite(sp) => Arc::new(
+            EnvironmentState::with_stores(
+                Arc::new(
+                    awaken_runtime_host::SqliteEnvRegistry::open(&path(
+                        &sp.with_file_name("environments.db"),
+                    ))
+                    .map_err(|error| format!("open environments SQLite: {error}"))?,
+                ),
+                Arc::new(
+                    awaken_runtime_host::SqliteWorkQueue::open(&path(
+                        &sp.with_file_name("work_queue.db"),
+                    ))
+                    .map_err(|error| format!("open work queue SQLite: {error}"))?,
+                ),
+            )
+            .with_sandbox_policies(Arc::new(
+                awaken_sandbox_policy_store::SqliteSandboxExecutionPolicyStore::open(&path(
+                    &sp.with_file_name("sandbox_policies.db"),
                 ))
-                .map_err(|error| format!("open environments SQLite: {error}"))?,
-            ),
-            Arc::new(
-                awaken_runtime_host::SqliteWorkQueue::open(&path(
-                    &sp.with_file_name("work_queue.db"),
-                ))
-                .map_err(|error| format!("open work queue SQLite: {error}"))?,
-            ),
-        )),
-        StoreBackend::Postgres(url) => Arc::new(EnvironmentState::with_stores(
-            Arc::new(
-                awaken_runtime_host::PostgresEnvRegistry::connect(url)
+                .map_err(|error| format!("open sandbox policies SQLite: {error}"))?,
+            )),
+        ),
+        StoreBackend::Postgres(url) => Arc::new(
+            EnvironmentState::with_stores(
+                Arc::new(
+                    awaken_runtime_host::PostgresEnvRegistry::connect(url)
+                        .await
+                        .map_err(|error| format!("connect environments Postgres: {error}"))?,
+                ),
+                Arc::new(
+                    awaken_runtime_host::PostgresWorkQueue::connect(url)
+                        .await
+                        .map_err(|error| format!("connect work queue Postgres: {error}"))?,
+                ),
+            )
+            .with_sandbox_policies(Arc::new(
+                awaken_sandbox_policy_store::PostgresSandboxExecutionPolicyStore::connect(url)
                     .await
-                    .map_err(|error| format!("connect environments Postgres: {error}"))?,
-            ),
-            Arc::new(
-                awaken_runtime_host::PostgresWorkQueue::connect(url)
-                    .await
-                    .map_err(|error| format!("connect work queue Postgres: {error}"))?,
-            ),
-        )),
+                    .map_err(|error| format!("connect sandbox policies Postgres: {error}"))?,
+            )),
+        ),
     };
 
     Ok(ManagementStores {

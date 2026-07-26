@@ -458,16 +458,17 @@ mod tests {
     }
 }
 
-/// A per-session overlay onto a synthesized [`SandboxSpec`], sourced from an
-/// environment's UI-authored `config.sandbox`. It carries only the fields a
-/// declarative environment can *enforce* — execution root, `isolation`, `network`,
-/// and `limits` — each optional so a partial blob overrides just what it sets and
+/// A typed policy projection onto a synthesized [`SandboxSpec`]. New snapshots
+/// source it from an exact [`crate::SandboxExecutionPolicyRef`]; retained Sessions
+/// may still contain the equivalent serialized value. It carries execution root,
+/// `isolation`, legacy `network`, and `limits` — each optional so a partial value
+/// overrides just what it sets and
 /// leaves the rest at the host default. Content mounts are deliberately NOT here:
 /// those are the ADR-0038
 /// resource plane (files/memory/repos), realized as [`MountRequirement`]s from a
 /// content source; a bare UI mount path has no source to realize.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SandboxOverride {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub environment: Option<EnvironmentKind>,
@@ -479,8 +480,7 @@ pub struct SandboxOverride {
 }
 
 impl SandboxOverride {
-    /// Parse an environment's `config.sandbox` blob (the console's UI projection:
-    /// `{isolation, network:{mode,hosts}, limits:{cpu_millis,memory_bytes}, ...}`).
+    /// Parse a frozen policy projection (or a retained legacy snapshot).
     /// The `network`/`limits`/`isolation` shapes deserialize straight onto the contract
     /// enums, so this is a lenient field-by-field lift — unknown keys (e.g. UI `mounts`)
     /// are ignored, and a field that fails to parse is simply left unset (never a hard
@@ -558,7 +558,7 @@ mod sandbox_override_tests {
 
     #[test]
     fn parses_the_console_blob_and_overlays_every_enforceable_field() {
-        // Exactly the shape the console's SandboxEditor / capabilities preset emit.
+        // Exactly the shape a retained frozen policy projection carries.
         let blob = serde_json::json!({
             "environment": { "kind": "image", "reference": "registry.example/agent:v2" },
             "isolation": "namespace",

@@ -113,6 +113,7 @@ awaken-env-store = { path = "crates/stores/awaken-env-store" }
 awaken-config-store = { path = "crates/control/awaken-config-store" }
 awaken-config-service = { path = "crates/control/awaken-config-service" }
 awaken-provisioning-contract = { path = "crates/worker/awaken-provisioning-contract" }
+awaken-sandbox-policy-store = { path = "crates/server/awaken-sandbox-policy-store" }
 awaken-worker-contract = { path = "crates/worker/awaken-worker-contract" }
 awaken-worker-registry = { path = "crates/server/awaken-worker-registry" }
 awaken-agent-channel = { path = "crates/worker/awaken-agent-channel" }

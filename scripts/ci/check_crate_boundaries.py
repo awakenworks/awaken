@@ -2,21 +2,15 @@
 """Enforce Awaken crate dependency, vocabulary, and core/extension boundaries."""
 
 from __future__ import annotations
-
 import re
 import sys
 from pathlib import Path
-
 import _arch_fitness
 import _crate_dependency_fitness
 import _provider_env_fitness
 import _resource_plane_fitness
-from _crate_boundary_workspace import (
-    iter_crate_manifests,
-    load_manifest,
-    package_name,
-    text_files,
-)
+from _sandbox_policy_boundary import SANDBOX_POLICY_ALLOWED_DEPS
+from _crate_boundary_workspace import iter_crate_manifests, load_manifest, package_name, text_files
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CRATES = REPO_ROOT / "crates"
 # Async runtime infrastructure (not domain or provider types) is permitted in
@@ -24,6 +18,7 @@ CRATES = REPO_ROOT / "crates"
 # tokio-util carries the cancellation token. A model/provider SDK such as genai
 # is deliberately NOT in this set for any neutral crate; only provider adapters use it.
 ALLOWED_DEPS: dict[str, set[str]] = {
+    **SANDBOX_POLICY_ALLOWED_DEPS,
     # zeroize backs RedactedString's zero-on-drop (ADR-0043); a leaf crypto-hygiene
     # primitive, not a model/provider SDK.
     "awaken-agent-contract": {"serde", "serde_json", "thiserror", "async-trait", "tokio", "zeroize"},
@@ -181,6 +176,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # feature `sqlite`: embedded durable CatalogRepo backend over the crate's
         # own `catalog` migration scope (ADR-0043 sqlite-repos).
         "rusqlite",
+        "sqlx",
         # feature `postgres`: network-DB CatalogRepo backend over the same
         # `catalog` migration scope (ADR-0043); the SQL driver, as config-store.
         "sqlx",
@@ -900,6 +896,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # `BetaEnvironment.networking` config onto `NetworkPolicy`, so the sandbox
         # egress decision is a shared neutral fact, not an inline string match.
         "awaken-provisioning-contract",
+        "awaken-sandbox-policy-store",
         "async-trait",
         "serde",
         "serde_json",
@@ -1409,6 +1406,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-runtime-contract",
         "awaken-runtime-host",
         "awaken-managed-routers",
+        "awaken-sandbox-policy-store",
         "awaken-server",
         "awaken-tenancy",
         "awaken-tool-relay",
@@ -1564,6 +1562,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # Stage C: the Worker role delegates to the production database-less worker.
         "awaken-worker",
         "awaken-runtime-host",
+        "awaken-sandbox-policy-store",
         "awaken-resource-store",
         "awaken-resource-reclaimer",
         "awaken-file-store", "awaken-memory-store",

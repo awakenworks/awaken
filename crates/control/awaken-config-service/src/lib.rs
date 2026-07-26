@@ -30,7 +30,7 @@ pub use binding_resolver::{
     AssistantBindingReconciler, ConfigServiceReconciler, ModelPublicationResolver,
     PublicationResolutionError, ResolvedPublicationModels,
 };
-pub use capabilities::{capabilities_router, runtime_catalog, sandbox_capability};
+pub use capabilities::{capabilities_router, runtime_catalog, sandbox_execution_policy_capability};
 pub use config_plane::{ConfigPlane, ConfigService, config_router};
 pub use credential_reference::CredentialReferenceValidator;
 pub use managed_agent::{agent_config_from_managed, managed_from_agent_config};

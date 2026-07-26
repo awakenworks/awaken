@@ -43,7 +43,7 @@ async fn get_capabilities(State(tools): State<Arc<Vec<ToolDescriptor>>>) -> Json
         "plugins": plugin_catalog(),
         "policies": policy_catalog(),
         "runtimes": runtime_catalog(),
-        "sandbox": sandbox_capability(),
+        "sandbox_execution_policy": sandbox_execution_policy_capability(),
     }))
 }
 
@@ -114,15 +114,13 @@ fn runtime(id: &str, label: &str, kind: &str, cli: Option<&str>, description: &s
     json!({ "id": id, "label": label, "kind": kind, "cli": cli, "description": description })
 }
 
-/// The sandbox the environment realizes for a run — a UI-facing projection of the
-/// backend `SandboxSpec` (`awaken_provisioning_contract`). Carries a JSON Schema the
-/// console renders as a form AND a set of named presets so the common cases are one
-/// click; the raw schema stays the escape hatch. The assistant authors from the same
-/// schema (the "feed the schema" lever), so natural-language sandbox authoring is free.
-pub fn sandbox_capability() -> Value {
+/// Authoring contract for the independent, versioned SandboxExecutionPolicy.
+/// Environment networking and Resource mounts deliberately do not appear here.
+pub fn sandbox_execution_policy_capability() -> Value {
     json!({
         "config_schema": sandbox_config_schema(),
         "presets": sandbox_presets(),
+        "collection_path": "/v1/awaken/sandbox-execution-policies",
     })
 }
 
@@ -166,59 +164,28 @@ fn plugin_cap(id: &str, config_schema: Value) -> Value {
     json!({ "id": id, "config_sections": [id], "config_schema": config_schema })
 }
 
-/// Grammar the field schema can't convey (isolation ranking, egress modes, the
-/// mount shape), so an author — human form or LLM — doesn't guess. Field names mirror
-/// `awaken_provisioning_contract::{SandboxSpec, vocab}` so the console value maps 1:1
-/// onto the backend spec at provisioning time.
+/// Grammar the field schema cannot convey (isolation ranking and enforceability).
 const SANDBOX_AUTHORING_GUIDE: &str = "\
-How a run is isolated (a projection of the backend SandboxSpec). Authoring rules:\n\
+How a run is isolated (a versioned SandboxExecutionPolicy). Authoring rules:\n\
 - `isolation`: `workdir` (cwd only, no OS isolation — trusted/dev), `namespace` \
 (OS-namespace isolation via bubblewrap/sandbox-exec — the default for an ACP CLI), or \
 `container` (full container/VM). A provider must meet or exceed what you ask for.\n\
-- `network.mode`: `unrestricted` (full egress — still needed to reach the model), \
-`allowlist` (deny-by-default; only `network.hosts` are reachable, via the egress \
-gateway), or `none` (no egress). More restrictive is always safe to ask for.\n\
-- `mounts[]`: each is `{mount_path, access}` where `access` is `read_only` or \
-`read_write`; `mount_path` is sandbox-absolute (e.g. `/work`, `/repo`).\n\
 - `limits`: best-effort caps `cpu_millis` (1000 = 1 core) and `memory_bytes`; omit for \
-provider defaults. A backend that can't enforce a set limit fails closed, never ignores it.";
+provider defaults. A backend that can't enforce a set limit fails closed, never ignores it.\n\
+Networking belongs to Environment; mounts belong to typed Resources.";
 
-/// The `SandboxSpec` projection an environment persists under `config.sandbox`.
+/// The exact config persisted in a SandboxExecutionPolicy version.
 fn sandbox_config_schema() -> Value {
     json!({
         "type": "object",
         "title": "Sandbox",
         "description": SANDBOX_AUTHORING_GUIDE,
-        "examples": [sandbox_preset_spec_network_isolated()],
+        "additionalProperties": false,
         "properties": {
             "isolation": {
                 "type": "string", "enum": ["workdir", "namespace", "container"],
                 "default": "namespace",
                 "description": "Isolation class; the provider must meet or exceed it."
-            },
-            "mounts": {
-                "type": "array",
-                "description": "Filesystem made visible inside the sandbox.",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "mount_path": { "type": "string", "description": "Sandbox-absolute path, e.g. /work." },
-                        "access": { "type": "string", "enum": ["read_only", "read_write"] }
-                    },
-                    "required": ["mount_path", "access"]
-                }
-            },
-            "network": {
-                "type": "object",
-                "description": "Egress policy.",
-                "properties": {
-                    "mode": { "type": "string", "enum": ["unrestricted", "allowlist", "none"], "default": "unrestricted" },
-                    "hosts": {
-                        "type": "array", "items": { "type": "string" },
-                        "description": "Reachable hosts when mode is allowlist (globs allowed)."
-                    }
-                },
-                "required": ["mode"]
             },
             "limits": {
                 "type": "object",
@@ -232,47 +199,24 @@ fn sandbox_config_schema() -> Value {
     })
 }
 
-/// Named starting points, from most-open to locked-down. Each `spec` validates against
+/// Named starting points. Each `spec` validates against
 /// [`sandbox_config_schema`]; the console shows them as one-click presets over the form.
 fn sandbox_presets() -> Vec<Value> {
     vec![
         json!({
             "id": "standard", "label": "Standard",
-            "description": "bwrap isolation, full egress. A scratch /work the agent can write.",
-            "spec": {
-                "isolation": "namespace",
-                "mounts": [{ "mount_path": "/work", "access": "read_write" }],
-                "network": { "mode": "unrestricted" }
-            }
-        }),
-        json!({
-            "id": "network-isolated", "label": "Network-isolated",
-            "description": "bwrap isolation, egress denied except an allowlist. For untrusted work that still needs a few APIs.",
-            "spec": sandbox_preset_spec_network_isolated()
+            "description": "Namespace isolation with provider-default resource limits.",
+            "spec": { "isolation": "namespace" }
         }),
         json!({
             "id": "locked-down", "label": "Locked-down",
-            "description": "bwrap isolation, no egress, read-only inputs, tight caps. Maximum containment.",
+            "description": "Container isolation with tight compute limits.",
             "spec": {
-                "isolation": "namespace",
-                "mounts": [{ "mount_path": "/repo", "access": "read_only" }],
-                "network": { "mode": "none" },
+                "isolation": "container",
                 "limits": { "cpu_millis": 2000, "memory_bytes": 2147483648u64 }
             }
         }),
     ]
-}
-
-fn sandbox_preset_spec_network_isolated() -> Value {
-    json!({
-        "isolation": "namespace",
-        "mounts": [
-            { "mount_path": "/work", "access": "read_write" },
-            { "mount_path": "/repo", "access": "read_only" }
-        ],
-        "network": { "mode": "allowlist", "hosts": ["api.github.com"] },
-        "limits": { "cpu_millis": 2000, "memory_bytes": 4294967296u64 }
-    })
 }
 
 #[cfg(test)]
@@ -338,19 +282,19 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_capability_carries_schema_and_presets() {
-        let sb = sandbox_capability();
+    fn sandbox_execution_policy_capability_has_no_resource_or_network_overlap() {
+        let sb = sandbox_execution_policy_capability();
         let schema = &sb["config_schema"];
         assert!(schema.is_object());
-        // The grammar (isolation ranking, egress modes) rides on the schema description.
+        // The grammar and ownership split ride on the schema description.
         let desc = schema["description"].as_str().unwrap();
-        assert!(desc.contains("namespace") && desc.contains("allowlist"));
-        // Three presets, most-open → locked-down, each with a spec.
+        assert!(desc.contains("namespace") && desc.contains("Networking belongs"));
+        assert!(schema["properties"].get("network").is_none());
+        assert!(schema["properties"].get("mounts").is_none());
         let presets = sb["presets"].as_array().unwrap();
         let preset_ids: Vec<&str> = presets.iter().map(|p| p["id"].as_str().unwrap()).collect();
-        assert_eq!(preset_ids, ["standard", "network-isolated", "locked-down"]);
-        // The locked-down preset denies egress — the guard that it's actually the strict one.
+        assert_eq!(preset_ids, ["standard", "locked-down"]);
         let locked = presets.iter().find(|p| p["id"] == "locked-down").unwrap();
-        assert_eq!(locked["spec"]["network"]["mode"], "none");
+        assert_eq!(locked["spec"]["isolation"], "container");
     }
 }

@@ -84,6 +84,48 @@ async function main() {
       }
       pass('official Environment config union accepts canonical cases and rejects extensions');
 
+      // Awaken sandbox policy is a separate, versioned aggregate. The Environment
+      // carries an exact reference, so publishing v2 cannot silently move a v1
+      // binding. Networking is rejected here because the official Environment
+      // contract remains its sole owner.
+      const policyHeaders = { 'content-type': 'application/json' };
+      const policyId = `strict-${process.pid}-${Date.now()}`;
+      const createdPolicy = await fetch(`${baseUrl}/v1/awaken/sandbox-execution-policies`, {
+        method: 'POST', headers: policyHeaders,
+        body: JSON.stringify({ id: policyId, config: { isolation: 'namespace', limits: { cpu_millis: 500 } } }),
+      });
+      assert.equal(createdPolicy.status, 201);
+      const overlappingNetwork = await fetch(`${baseUrl}/v1/awaken/sandbox-execution-policies`, {
+        method: 'POST', headers: policyHeaders,
+        body: JSON.stringify({ id: `${policyId}-overlap`, config: { network: { mode: 'none' } } }),
+      });
+      assert.equal(overlappingNetwork.status, 422);
+      const unknownPolicyField = await fetch(`${baseUrl}/v1/awaken/sandbox-execution-policies`, {
+        method: 'POST', headers: policyHeaders,
+        body: JSON.stringify({ id: `${policyId}-unknown`, config: { image: 'implicit:latest' } }),
+      });
+      assert.ok([400, 422].includes(unknownPolicyField.status));
+      const missingBinding = await fetch(`${baseUrl}/v1/awaken/environments/${env.id}/sandbox-execution-policy`, {
+        method: 'POST', headers: policyHeaders,
+        body: JSON.stringify({ policy_id: 'missing', version: 1 }),
+      });
+      assert.equal(missingBinding.status, 404);
+      const bound = await fetch(`${baseUrl}/v1/awaken/environments/${env.id}/sandbox-execution-policy`, {
+        method: 'POST', headers: policyHeaders,
+        body: JSON.stringify({ policy_id: policyId, version: 1 }),
+      });
+      assert.equal(bound.status, 200);
+      const published = await fetch(`${baseUrl}/v1/awaken/sandbox-execution-policies/${policyId}/versions`, {
+        method: 'POST', headers: policyHeaders,
+        body: JSON.stringify({ expected_current: 1, config: { isolation: 'container' } }),
+      });
+      assert.equal(published.status, 200);
+      const exactBinding = await fetch(`${baseUrl}/v1/awaken/environments/${env.id}/sandbox-execution-policy`);
+      assert.deepEqual(await exactBinding.json(), {
+        environment_id: env.id, policy_id: policyId, version: 1,
+      });
+      pass('SandboxExecutionPolicy exact-version binding and ownership decision table');
+
       const gotEnv = await client.beta.environments.retrieve(env.id, { betas: BETAS });
       assert.equal(gotEnv.id, env.id);
       const upEnv = await client.beta.environments.update(env.id, {

@@ -31,6 +31,7 @@
 
 mod admission;
 mod approval;
+mod execution_policy;
 mod lease;
 mod poison;
 mod prepare;
@@ -42,6 +43,10 @@ mod vocab;
 
 pub use admission::{AdmissionError, EnvironmentDecl, check_environment_soundness};
 pub use approval::{ApprovalDecision, ApprovalPolicy, SandboxAction, decide as approval_decide};
+pub use execution_policy::{
+    SandboxExecutionPolicy, SandboxExecutionPolicyError, SandboxExecutionPolicyId,
+    SandboxExecutionPolicyRef, SandboxExecutionPolicyStore, SandboxExecutionPolicyVersion,
+};
 pub use lease::{
     AdoptionPlan, LeaseGrant, LeaseLiveness, LivenessSignals, ReapCause, ReconcileOutcome,
     apply_adoption_plan, capped_expiry, decide_reap, egress_permitted, reconcile_adoption,

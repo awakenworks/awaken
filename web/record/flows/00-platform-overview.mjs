@@ -6,8 +6,8 @@ const MODEL = "overview-model";
 
 export const story = {
   promise: "Follow one portable Agent from model supply through governed execution instead of touring unrelated pages.",
-  effect: "The same Agent configuration visibly reaches a Managed session with explicit ACP runtime and sandbox boundaries.",
-  aha: "One portable Agent configuration; many model, tool, protocol, and sandbox realizations—each visibly proven.",
+  effect: "The same Agent configuration visibly reaches a Managed session with exact Environment and sandbox-policy boundaries.",
+  aha: "One portable Agent configuration; models, tools, resources, Environment, and policy are visibly pinned.",
   loyalty: "A coherent end-to-end mental model makes the platform predictable and worth returning to.",
   satisfaction: "Viewers understand where every major capability fits without sitting through a feature inventory.",
   advocacy: "The one-Agent-many-runtimes contrast is concise enough to share as the series trailer.",
@@ -51,8 +51,14 @@ export async function run({ page, goto, intro, beat, clearCaption, checkpoint, a
     data: { agent_id: AGENT, revision: 1, inputs: [{ binding_id: "memory", target: { kind: "memory_store", id: store.id }, mount_path: "/mnt/memory/project", access: "read_write" }] },
   });
   const environment = await (await page.request.post("http://127.0.0.1:38080/v1/environments", {
-    data: { name: "Claude Code · locked", config: { type: "cloud", runtime: "acp:claude", sandbox: { isolation: "namespace", network: { mode: "none" }, limits: {} } } },
+    data: { name: "Restricted cloud", config: { type: "cloud", networking: { type: "limited" } } },
   })).json();
+  await page.request.post("http://127.0.0.1:38080/v1/awaken/sandbox-execution-policies", {
+    data: { id: "overview-strict", config: { isolation: "namespace" } },
+  });
+  await page.request.post(`http://127.0.0.1:38080/v1/awaken/environments/${environment.id}/sandbox-execution-policy`, {
+    data: { policy_id: "overview-strict", version: 1 },
+  });
   const published = await page.request.post(`http://127.0.0.1:38080/v1/config/agents/${AGENT}/publish`);
   expect(published.ok()).toBeTruthy();
   const managedSession = await (await page.request.post("http://127.0.0.1:38080/v1/sessions", {
@@ -60,7 +66,6 @@ export async function run({ page, goto, intro, beat, clearCaption, checkpoint, a
       agent: AGENT,
       environment_id: environment.id,
       title: "One Agent · many realizations",
-      metadata: { "awaken.runtime": "acp:claude" },
     },
   })).json();
 
@@ -89,10 +94,10 @@ export async function run({ page, goto, intro, beat, clearCaption, checkpoint, a
   await beat("A bound Memory store is explicit, writable, and mounted into every new Agent session.", page.locator(".editor-content"), 2800);
 
   await goto("/w/default/environments");
-  await beat("Execution stays independent: this environment combines Claude Code over ACP with a no-egress sandbox.", page.locator("tr", { hasText: environment.id }), 3000);
+  await beat("Execution stays independent: this official Environment has restricted networking and an exact sandbox policy.", page.locator("tr", { hasText: environment.id }), 3000);
 
   await goto(`/w/default/sessions/${managedSession.id}`);
-  await beat("The story closes in a Managed session: the same Agent now carries explicit ACP runtime provenance.", page.getByText("acp:claude", { exact: true }), 3000);
+  await beat("The story closes in a Managed session pinned to the same Environment.", page.getByText(environment.id, { exact: true }), 3000);
 
   await checkpoint("the visible sweep is backed by models, MCP, Skill, Memory, State Machine, ACP, and sandbox config", async () => {
     const capsResponse = await page.request.get("http://127.0.0.1:38080/v1/capabilities");
@@ -110,15 +115,14 @@ export async function run({ page, goto, intro, beat, clearCaption, checkpoint, a
     expect(config.skills[0].id).toBe("release-review");
     expect(config.tool_overrides[0].target).toBe("mcp__issues__create_issue");
     expect(resources.resources[0].resource_id).toBe(store.id);
-    expect(environment.config.runtime).toBe("acp:claude");
-    expect(environment.config.sandbox.network.mode).toBe("none");
+    const policyBinding = await (await page.request.get(`http://127.0.0.1:38080/v1/awaken/environments/${environment.id}/sandbox-execution-policy`)).json();
+    expect(policyBinding).toMatchObject({ policy_id: "overview-strict", version: 1 });
     expect(managedSession.agent.id).toBe(AGENT);
     expect(managedSession.environment_id).toBe(environment.id);
-    expect(managedSession.metadata["awaken.runtime"]).toBe("acp:claude");
   });
 
   await clearCaption();
-  await aha("One portable Agent configuration; many model, tool, protocol, and sandbox realizations—each visibly proven.");
+  await aha("One portable Agent configuration with exact Environment, Resource, and policy pins—visibly proven.");
   await wait(700);
   await clearCaption();
 }

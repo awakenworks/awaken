@@ -114,3 +114,24 @@ Preparation failure                   -> no Host run
 | Defaults valid | 1 | 1 | 1 | 1 | 1 | 0 |
 | Same baseline path | 1 | 1 | 1 | 1 | 1 | 1 |
 | Runtime invoked | 0 | 1 | 1 | 1 | 1 | 0 |
+
+## Phase 5: versioned SandboxExecutionPolicy
+
+```text
+typed policy v1 + matching current fence -> immutable v1
+publish v2 + expected current v1        -> immutable v2; v1 remains addressable
+Environment exact ref v1                -> snapshot freezes v1 after v2 exists
+missing/disabled ref                     -> binding or snapshot fails closed
+policy network field                     -> reject (Environment is sole network owner)
+snapshot                                 -> existing SandboxOverride -> SandboxSpec -> provider
+```
+
+| Cause/effect | S1 create | S2 publish | S3 bind old | S4 stale publish | S5 missing | S6 network overlap |
+|---|---:|---:|---:|---:|---:|---:|
+| Typed policy | 1 | 1 | 1 | 1 | - | 1 |
+| Expected current matches | - | 1 | - | 0 | - | - |
+| Exact target exists | - | - | 1 | - | 0 | - |
+| Network field absent | 1 | 1 | 1 | 1 | - | 0 |
+| Commit succeeds | 1 | 1 | 1 | 0 | 0 | 0 |
+| Current version substituted | 0 | 0 | 0 | 0 | 0 | 0 |
+| Existing SandboxSpec/provider path | 1 | 1 | 1 | - | - | - |

@@ -345,6 +345,7 @@ dependencies = [
  "awaken-run-executor-acp",
  "awaken-runtime-contract",
  "awaken-runtime-host",
+ "awaken-sandbox-policy-store",
  "awaken-scenario-host",
  "awaken-server",
  "awaken-skill-store",
@@ -993,6 +994,7 @@ dependencies = [
  "awaken-model-catalog",
  "awaken-provisioning-contract",
  "awaken-resource-contract",
+ "awaken-sandbox-policy-store",
  "awaken-session-contract",
  "awaken-session-store",
  "awaken-tenancy",
@@ -1396,6 +1398,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-sandbox-policy-store"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-provisioning-contract",
+ "rusqlite",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-scenario-host"
 version = "1.0.0-dev"
 dependencies = [
@@ -1434,6 +1449,7 @@ dependencies = [
  "awaken-runtime",
  "awaken-runtime-contract",
  "awaken-runtime-host",
+ "awaken-sandbox-policy-store",
  "awaken-server",
  "awaken-tenancy",
  "awaken-tool-relay",

@@ -1,0 +1,512 @@
+//! Durable SandboxExecutionPolicy versions and exact Environment bindings.
+
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+use awaken_provisioning_contract::{
+    SandboxExecutionPolicy, SandboxExecutionPolicyError, SandboxExecutionPolicyRef,
+    SandboxExecutionPolicyStore, SandboxExecutionPolicyVersion,
+};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use sqlx::{PgPool, Row};
+
+fn validate(policy: &SandboxExecutionPolicy) -> Result<(), SandboxExecutionPolicyError> {
+    if policy.config.network.is_some() {
+        return Err(SandboxExecutionPolicyError::Invalid(
+            "network belongs to the Environment contract".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct InMemoryState {
+    policies: BTreeMap<String, BTreeMap<u64, SandboxExecutionPolicy>>,
+    current: BTreeMap<String, u64>,
+    bindings: BTreeMap<String, SandboxExecutionPolicyRef>,
+}
+
+#[derive(Default)]
+pub struct InMemorySandboxExecutionPolicyStore(Mutex<InMemoryState>);
+
+#[async_trait]
+impl SandboxExecutionPolicyStore for InMemorySandboxExecutionPolicyStore {
+    async fn create(
+        &self,
+        policy: SandboxExecutionPolicy,
+    ) -> Result<(), SandboxExecutionPolicyError> {
+        validate(&policy)?;
+        if policy.version != SandboxExecutionPolicyVersion::INITIAL {
+            return Err(SandboxExecutionPolicyError::VersionConflict);
+        }
+        let mut state = self.0.lock().unwrap();
+        if state.current.contains_key(&policy.id.0) {
+            return Err(SandboxExecutionPolicyError::VersionConflict);
+        }
+        state.current.insert(policy.id.0.clone(), policy.version.0);
+        state
+            .policies
+            .entry(policy.id.0.clone())
+            .or_default()
+            .insert(policy.version.0, policy);
+        Ok(())
+    }
+
+    async fn publish(
+        &self,
+        expected_current: SandboxExecutionPolicyVersion,
+        policy: SandboxExecutionPolicy,
+    ) -> Result<(), SandboxExecutionPolicyError> {
+        validate(&policy)?;
+        let mut state = self.0.lock().unwrap();
+        if state.current.get(&policy.id.0).copied() != Some(expected_current.0)
+            || policy.version.0 != expected_current.0.checked_add(1).unwrap_or(u64::MAX)
+        {
+            return Err(SandboxExecutionPolicyError::VersionConflict);
+        }
+        state.current.insert(policy.id.0.clone(), policy.version.0);
+        state
+            .policies
+            .entry(policy.id.0.clone())
+            .or_default()
+            .insert(policy.version.0, policy);
+        Ok(())
+    }
+
+    async fn get_exact(
+        &self,
+        reference: &SandboxExecutionPolicyRef,
+    ) -> Result<SandboxExecutionPolicy, SandboxExecutionPolicyError> {
+        self.0
+            .lock()
+            .unwrap()
+            .policies
+            .get(&reference.id.0)
+            .and_then(|versions| versions.get(&reference.version.0))
+            .cloned()
+            .ok_or(SandboxExecutionPolicyError::NotFound)
+    }
+
+    async fn bind_environment(
+        &self,
+        environment_id: &str,
+        reference: SandboxExecutionPolicyRef,
+    ) -> Result<(), SandboxExecutionPolicyError> {
+        let policy = self.get_exact(&reference).await?;
+        if policy.disabled {
+            return Err(SandboxExecutionPolicyError::Disabled);
+        }
+        self.0
+            .lock()
+            .unwrap()
+            .bindings
+            .insert(environment_id.to_string(), reference);
+        Ok(())
+    }
+
+    async fn environment_binding(
+        &self,
+        environment_id: &str,
+    ) -> Result<Option<SandboxExecutionPolicyRef>, SandboxExecutionPolicyError> {
+        Ok(self.0.lock().unwrap().bindings.get(environment_id).cloned())
+    }
+}
+
+pub struct SqliteSandboxExecutionPolicyStore {
+    conn: Arc<Mutex<Connection>>,
+}
+
+pub struct PostgresSandboxExecutionPolicyStore {
+    pool: PgPool,
+}
+
+impl PostgresSandboxExecutionPolicyStore {
+    pub async fn connect(url: &str) -> Result<Self, String> {
+        let pool = PgPool::connect(url)
+            .await
+            .map_err(|error| error.to_string())?;
+        for statement in [
+            "CREATE TABLE IF NOT EXISTS sandbox_execution_policy_version (policy_id TEXT NOT NULL, version BIGINT NOT NULL, policy_json TEXT NOT NULL, PRIMARY KEY(policy_id, version))",
+            "CREATE TABLE IF NOT EXISTS sandbox_execution_policy_current (policy_id TEXT PRIMARY KEY, version BIGINT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS sandbox_execution_policy_environment (environment_id TEXT PRIMARY KEY, policy_id TEXT NOT NULL, version BIGINT NOT NULL)",
+        ] {
+            sqlx::query(statement)
+                .execute(&pool)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(Self { pool })
+    }
+}
+
+#[async_trait]
+impl SandboxExecutionPolicyStore for PostgresSandboxExecutionPolicyStore {
+    async fn create(
+        &self,
+        policy: SandboxExecutionPolicy,
+    ) -> Result<(), SandboxExecutionPolicyError> {
+        validate(&policy)?;
+        if policy.version != SandboxExecutionPolicyVersion::INITIAL {
+            return Err(SandboxExecutionPolicyError::VersionConflict);
+        }
+        let mut tx = self.pool.begin().await.map_err(store_failed)?;
+        let json = serde_json::to_string(&policy).map_err(store_failed)?;
+        sqlx::query("INSERT INTO sandbox_execution_policy_version(policy_id,version,policy_json) VALUES($1,$2,$3)")
+            .bind(&policy.id.0)
+            .bind(as_i64(policy.version.0)?)
+            .bind(json)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| SandboxExecutionPolicyError::VersionConflict)?;
+        sqlx::query(
+            "INSERT INTO sandbox_execution_policy_current(policy_id,version) VALUES($1,$2)",
+        )
+        .bind(&policy.id.0)
+        .bind(as_i64(policy.version.0)?)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| SandboxExecutionPolicyError::VersionConflict)?;
+        tx.commit().await.map_err(store_failed)
+    }
+
+    async fn publish(
+        &self,
+        expected_current: SandboxExecutionPolicyVersion,
+        policy: SandboxExecutionPolicy,
+    ) -> Result<(), SandboxExecutionPolicyError> {
+        validate(&policy)?;
+        if policy.version.0 != expected_current.0.checked_add(1).unwrap_or(u64::MAX) {
+            return Err(SandboxExecutionPolicyError::VersionConflict);
+        }
+        let mut tx = self.pool.begin().await.map_err(store_failed)?;
+        let changed = sqlx::query("UPDATE sandbox_execution_policy_current SET version=$1 WHERE policy_id=$2 AND version=$3")
+            .bind(as_i64(policy.version.0)?)
+            .bind(&policy.id.0)
+            .bind(as_i64(expected_current.0)?)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_failed)?
+            .rows_affected();
+        if changed != 1 {
+            return Err(SandboxExecutionPolicyError::VersionConflict);
+        }
+        let json = serde_json::to_string(&policy).map_err(store_failed)?;
+        sqlx::query("INSERT INTO sandbox_execution_policy_version(policy_id,version,policy_json) VALUES($1,$2,$3)")
+            .bind(&policy.id.0)
+            .bind(as_i64(policy.version.0)?)
+            .bind(json)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| SandboxExecutionPolicyError::VersionConflict)?;
+        tx.commit().await.map_err(store_failed)
+    }
+
+    async fn get_exact(
+        &self,
+        reference: &SandboxExecutionPolicyRef,
+    ) -> Result<SandboxExecutionPolicy, SandboxExecutionPolicyError> {
+        let row = sqlx::query("SELECT policy_json FROM sandbox_execution_policy_version WHERE policy_id=$1 AND version=$2")
+            .bind(&reference.id.0)
+            .bind(as_i64(reference.version.0)?)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(store_failed)?
+            .ok_or(SandboxExecutionPolicyError::NotFound)?;
+        serde_json::from_str(row.get::<String, _>(0).as_str()).map_err(store_failed)
+    }
+
+    async fn bind_environment(
+        &self,
+        environment_id: &str,
+        reference: SandboxExecutionPolicyRef,
+    ) -> Result<(), SandboxExecutionPolicyError> {
+        if self.get_exact(&reference).await?.disabled {
+            return Err(SandboxExecutionPolicyError::Disabled);
+        }
+        sqlx::query("INSERT INTO sandbox_execution_policy_environment(environment_id,policy_id,version) VALUES($1,$2,$3) ON CONFLICT(environment_id) DO UPDATE SET policy_id=EXCLUDED.policy_id, version=EXCLUDED.version")
+            .bind(environment_id)
+            .bind(&reference.id.0)
+            .bind(as_i64(reference.version.0)?)
+            .execute(&self.pool)
+            .await
+            .map_err(store_failed)?;
+        Ok(())
+    }
+
+    async fn environment_binding(
+        &self,
+        environment_id: &str,
+    ) -> Result<Option<SandboxExecutionPolicyRef>, SandboxExecutionPolicyError> {
+        let row = sqlx::query("SELECT policy_id,version FROM sandbox_execution_policy_environment WHERE environment_id=$1")
+            .bind(environment_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(store_failed)?;
+        row.map(|row| {
+            Ok(SandboxExecutionPolicyRef {
+                id: awaken_provisioning_contract::SandboxExecutionPolicyId(row.get(0)),
+                version: SandboxExecutionPolicyVersion(as_u64(row.get(1))?),
+            })
+        })
+        .transpose()
+    }
+}
+
+fn store_failed(error: impl std::fmt::Display) -> SandboxExecutionPolicyError {
+    SandboxExecutionPolicyError::StoreFailed(error.to_string())
+}
+
+fn as_i64(value: u64) -> Result<i64, SandboxExecutionPolicyError> {
+    i64::try_from(value).map_err(store_failed)
+}
+
+fn as_u64(value: i64) -> Result<u64, SandboxExecutionPolicyError> {
+    u64::try_from(value).map_err(store_failed)
+}
+
+impl SqliteSandboxExecutionPolicyStore {
+    pub fn open(path: &str) -> Result<Self, String> {
+        let conn = Connection::open(path).map_err(|error| error.to_string())?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS sandbox_execution_policy_version (\
+                policy_id TEXT NOT NULL, version INTEGER NOT NULL, policy_json TEXT NOT NULL, \
+                PRIMARY KEY(policy_id, version));\
+             CREATE TABLE IF NOT EXISTS sandbox_execution_policy_current (\
+                policy_id TEXT PRIMARY KEY, version INTEGER NOT NULL);\
+             CREATE TABLE IF NOT EXISTS sandbox_execution_policy_environment (\
+                environment_id TEXT PRIMARY KEY, policy_id TEXT NOT NULL, version INTEGER NOT NULL);",
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+        })
+    }
+
+    fn exact(
+        conn: &Connection,
+        reference: &SandboxExecutionPolicyRef,
+    ) -> Result<SandboxExecutionPolicy, SandboxExecutionPolicyError> {
+        let json: Option<String> = conn
+            .query_row(
+                "SELECT policy_json FROM sandbox_execution_policy_version WHERE policy_id=?1 AND version=?2",
+                params![reference.id.0, reference.version.0],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| SandboxExecutionPolicyError::StoreFailed(error.to_string()))?;
+        serde_json::from_str(&json.ok_or(SandboxExecutionPolicyError::NotFound)?)
+            .map_err(|error| SandboxExecutionPolicyError::StoreFailed(error.to_string()))
+    }
+}
+
+#[async_trait]
+impl SandboxExecutionPolicyStore for SqliteSandboxExecutionPolicyStore {
+    async fn create(
+        &self,
+        policy: SandboxExecutionPolicy,
+    ) -> Result<(), SandboxExecutionPolicyError> {
+        validate(&policy)?;
+        if policy.version != SandboxExecutionPolicyVersion::INITIAL {
+            return Err(SandboxExecutionPolicyError::VersionConflict);
+        }
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| SandboxExecutionPolicyError::StoreFailed(error.to_string()))?;
+        let json = serde_json::to_string(&policy)
+            .map_err(|error| SandboxExecutionPolicyError::StoreFailed(error.to_string()))?;
+        tx.execute(
+            "INSERT INTO sandbox_execution_policy_version(policy_id,version,policy_json) VALUES(?1,?2,?3)",
+            params![policy.id.0, policy.version.0, json],
+        )
+        .and_then(|_| tx.execute("INSERT INTO sandbox_execution_policy_current(policy_id,version) VALUES(?1,?2)", params![policy.id.0, policy.version.0]))
+        .map_err(|_| SandboxExecutionPolicyError::VersionConflict)?;
+        tx.commit()
+            .map_err(|error| SandboxExecutionPolicyError::StoreFailed(error.to_string()))
+    }
+
+    async fn publish(
+        &self,
+        expected_current: SandboxExecutionPolicyVersion,
+        policy: SandboxExecutionPolicy,
+    ) -> Result<(), SandboxExecutionPolicyError> {
+        validate(&policy)?;
+        if policy.version.0 != expected_current.0.checked_add(1).unwrap_or(u64::MAX) {
+            return Err(SandboxExecutionPolicyError::VersionConflict);
+        }
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| SandboxExecutionPolicyError::StoreFailed(error.to_string()))?;
+        let changed = tx
+            .execute(
+                "UPDATE sandbox_execution_policy_current SET version=?1 WHERE policy_id=?2 AND version=?3",
+                params![policy.version.0, policy.id.0, expected_current.0],
+            )
+            .map_err(|error| SandboxExecutionPolicyError::StoreFailed(error.to_string()))?;
+        if changed != 1 {
+            return Err(SandboxExecutionPolicyError::VersionConflict);
+        }
+        let json = serde_json::to_string(&policy)
+            .map_err(|error| SandboxExecutionPolicyError::StoreFailed(error.to_string()))?;
+        tx.execute(
+            "INSERT INTO sandbox_execution_policy_version(policy_id,version,policy_json) VALUES(?1,?2,?3)",
+            params![policy.id.0, policy.version.0, json],
+        )
+        .map_err(|_| SandboxExecutionPolicyError::VersionConflict)?;
+        tx.commit()
+            .map_err(|error| SandboxExecutionPolicyError::StoreFailed(error.to_string()))
+    }
+
+    async fn get_exact(
+        &self,
+        reference: &SandboxExecutionPolicyRef,
+    ) -> Result<SandboxExecutionPolicy, SandboxExecutionPolicyError> {
+        Self::exact(&self.conn.lock().unwrap(), reference)
+    }
+
+    async fn bind_environment(
+        &self,
+        environment_id: &str,
+        reference: SandboxExecutionPolicyRef,
+    ) -> Result<(), SandboxExecutionPolicyError> {
+        let conn = self.conn.lock().unwrap();
+        let policy = Self::exact(&conn, &reference)?;
+        if policy.disabled {
+            return Err(SandboxExecutionPolicyError::Disabled);
+        }
+        conn.execute(
+            "INSERT INTO sandbox_execution_policy_environment(environment_id,policy_id,version) VALUES(?1,?2,?3) \
+             ON CONFLICT(environment_id) DO UPDATE SET policy_id=excluded.policy_id, version=excluded.version",
+            params![environment_id, reference.id.0, reference.version.0],
+        )
+        .map_err(|error| SandboxExecutionPolicyError::StoreFailed(error.to_string()))?;
+        Ok(())
+    }
+
+    async fn environment_binding(
+        &self,
+        environment_id: &str,
+    ) -> Result<Option<SandboxExecutionPolicyRef>, SandboxExecutionPolicyError> {
+        self.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT policy_id,version FROM sandbox_execution_policy_environment WHERE environment_id=?1",
+                [environment_id],
+                |row| {
+                    Ok(SandboxExecutionPolicyRef {
+                        id: awaken_provisioning_contract::SandboxExecutionPolicyId(row.get(0)?),
+                        version: SandboxExecutionPolicyVersion(row.get(1)?),
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| SandboxExecutionPolicyError::StoreFailed(error.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_provisioning_contract::{IsolationClass, SandboxExecutionPolicyId, SandboxOverride};
+
+    fn policy(id: &str, version: u64, isolation: IsolationClass) -> SandboxExecutionPolicy {
+        SandboxExecutionPolicy {
+            id: SandboxExecutionPolicyId(id.to_string()),
+            version: SandboxExecutionPolicyVersion(version),
+            config: SandboxOverride {
+                isolation: Some(isolation),
+                ..Default::default()
+            },
+            disabled: false,
+        }
+    }
+
+    async fn exact_binding_decision_table(store: &dyn SandboxExecutionPolicyStore) {
+        // Causal graph:
+        // create v1 -> current v1; publish with current fence -> immutable v2
+        // bind exact v1 -> Environment keeps v1 after v2 exists
+        // stale publish | missing binding target -> fail closed
+        //
+        // | Rule | target exists | expected current | exact binding | effect |
+        // | P1   | v1            | -                | -             | create |
+        // | P2   | v2            | v1               | -             | publish |
+        // | P3   | v1            | -                | v1            | bind v1 |
+        // | P4   | v3            | stale v1         | -             | conflict |
+        // | P5   | missing       | -                | missing       | reject |
+        let v1 = policy("strict", 1, IsolationClass::Namespace);
+        store.create(v1.clone()).await.expect("P1");
+        let v2 = policy("strict", 2, IsolationClass::Container);
+        store
+            .publish(SandboxExecutionPolicyVersion(1), v2.clone())
+            .await
+            .expect("P2");
+        let v1_ref = SandboxExecutionPolicyRef {
+            id: v1.id.clone(),
+            version: v1.version,
+        };
+        store
+            .bind_environment("env-a", v1_ref.clone())
+            .await
+            .expect("P3");
+        assert_eq!(
+            store.environment_binding("env-a").await.unwrap(),
+            Some(v1_ref.clone())
+        );
+        assert_eq!(store.get_exact(&v1_ref).await.unwrap(), v1);
+        assert!(matches!(
+            store
+                .publish(
+                    SandboxExecutionPolicyVersion(1),
+                    policy("strict", 3, IsolationClass::Container)
+                )
+                .await,
+            Err(SandboxExecutionPolicyError::VersionConflict)
+        ));
+        assert!(matches!(
+            store
+                .bind_environment(
+                    "env-b",
+                    SandboxExecutionPolicyRef {
+                        id: SandboxExecutionPolicyId("missing".into()),
+                        version: SandboxExecutionPolicyVersion(1),
+                    }
+                )
+                .await,
+            Err(SandboxExecutionPolicyError::NotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn in_memory_exact_binding_rules() {
+        exact_binding_decision_table(&InMemorySandboxExecutionPolicyStore::default()).await;
+    }
+
+    #[tokio::test]
+    async fn sqlite_exact_binding_rules_and_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("policy.db");
+        let path = path.to_str().unwrap();
+        let first = SqliteSandboxExecutionPolicyStore::open(path).unwrap();
+        exact_binding_decision_table(&first).await;
+        drop(first);
+        let restarted = SqliteSandboxExecutionPolicyStore::open(path).unwrap();
+        let binding = restarted
+            .environment_binding("env-a")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(binding.version, SandboxExecutionPolicyVersion(1));
+        assert_eq!(
+            restarted
+                .get_exact(&binding)
+                .await
+                .unwrap()
+                .config
+                .isolation,
+            Some(IsolationClass::Namespace)
+        );
+    }
+}
