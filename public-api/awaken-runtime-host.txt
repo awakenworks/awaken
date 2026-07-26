@@ -100,6 +100,9 @@ impl awaken_runtime_host::AcpWorkerProfile
 pub fn awaken_runtime_host::AcpWorkerProfile::cli_ids(&self) -> impl core::iter::traits::iterator::Iterator<Item = &str>
 pub fn awaken_runtime_host::AcpWorkerProfile::default_cli(&self) -> core::option::Option<&str>
 pub fn awaken_runtime_host::AcpWorkerProfile::new(impl core::iter::traits::collect::IntoIterator<Item = alloc::string::String>, core::option::Option<alloc::string::String>) -> core::result::Result<Self, alloc::string::String>
+pub struct awaken_runtime_host::ApplicationSessionControlReceipt
+pub awaken_runtime_host::ApplicationSessionControlReceipt::contribution: awaken_session_contract::application_contribution::ApplicationSessionContributionReceipt
+pub awaken_runtime_host::ApplicationSessionControlReceipt::realization: awaken_session_contract::session_realization::SessionRealizationDirective
 pub struct awaken_runtime_host::ApplicationSessionError(_)
 impl awaken_runtime_host::ApplicationSessionError
 pub fn awaken_runtime_host::ApplicationSessionError::new(impl core::convert::Into<alloc::string::String>) -> Self
@@ -107,10 +110,11 @@ impl core::error::Error for awaken_runtime_host::ApplicationSessionError
 impl core::fmt::Display for awaken_runtime_host::ApplicationSessionError
 pub fn awaken_runtime_host::ApplicationSessionError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct awaken_runtime_host::ApplicationSessionPlan
-pub awaken_runtime_host::ApplicationSessionPlan::deny_egress: bool
 pub awaken_runtime_host::ApplicationSessionPlan::env: alloc::vec::Vec<awaken_provisioning_contract::vocab::EnvVar>
 pub awaken_runtime_host::ApplicationSessionPlan::fingerprint: alloc::string::String
+pub awaken_runtime_host::ApplicationSessionPlan::mcp_inputs: alloc::vec::Vec<serde_json::value::Value>
 pub awaken_runtime_host::ApplicationSessionPlan::mounts: alloc::vec::Vec<awaken_provisioning_contract::vocab::MountRequirement>
+pub awaken_runtime_host::ApplicationSessionPlan::network_restriction: core::option::Option<awaken_session_contract::baseline::SessionNetworkPolicy>
 pub awaken_runtime_host::ApplicationSessionPlan::prompts: alloc::vec::Vec<alloc::string::String>
 impl awaken_runtime_host::ApplicationSessionPlan
 pub fn awaken_runtime_host::ApplicationSessionPlan::empty(impl core::convert::Into<alloc::string::String>) -> Self
@@ -331,6 +335,7 @@ pub fn awaken_runtime_host::SharedHost::thread_sandbox(&self) -> awaken_runtime_
 pub fn awaken_runtime_host::SharedHost::with_admin_tools(self, alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_agent_publications(self, alloc::sync::Arc<dyn awaken_runtime_contract::resolver::PublishedAgentSnapshotSource>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_application_attempt_decorator(self, awaken_runtime_host::AttemptExecutorDecorator) -> Self
+pub fn awaken_runtime_host::SharedHost::with_application_session_control(self, alloc::sync::Arc<dyn awaken_runtime_host::ApplicationSessionControlClient>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_application_session_provisioner(self, alloc::sync::Arc<dyn awaken_runtime_host::ApplicationSessionProvisioner>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_capture_sink(self, alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_client_tools(self, std::collections::hash::set::HashSet<alloc::string::String>) -> Self
@@ -436,10 +441,22 @@ pub fn awaken_runtime_host::VerifiedWorkerContext::authenticated(impl core::conv
 pub fn awaken_runtime_host::VerifiedWorkerContext::credential_id(&self) -> core::option::Option<&str>
 pub fn awaken_runtime_host::VerifiedWorkerContext::identity(&self) -> core::option::Option<&awaken_worker_contract::WorkerIdentity>
 pub fn awaken_runtime_host::VerifiedWorkerContext::worker_id(&self) -> &str
+pub struct awaken_runtime_host::WorkerControlApplicationSessionClient
+impl awaken_runtime_host::WorkerControlApplicationSessionClient
+pub fn awaken_runtime_host::WorkerControlApplicationSessionClient::new(awaken_runtime_host::WorkerControlClient, awaken_worker_contract::WorkerIdentity) -> Self
+impl awaken_runtime_host::ApplicationSessionControlClient for awaken_runtime_host::WorkerControlApplicationSessionClient
+pub fn awaken_runtime_host::WorkerControlApplicationSessionClient::acknowledge<'life0, 'async_trait>(&'life0 self, awaken_session_contract::session_realization::AcknowledgeSessionRealization) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::session_realization::SessionRealizationDirective, awaken_runtime_host::ApplicationSessionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_host::WorkerControlApplicationSessionClient::activate<'life0, 'async_trait>(&'life0 self, awaken_session_contract::session_realization::ActivateSessionRealization) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::session_realization::SessionRealizationDirective, awaken_runtime_host::ApplicationSessionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_host::WorkerControlApplicationSessionClient::contribute<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_run_ingress_contract::dispatch::RunClaim, awaken_runtime_host::ApplicationSessionPlan) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_host::ApplicationSessionControlReceipt, awaken_runtime_host::ApplicationSessionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_runtime_host::WorkerControlApplicationSessionClient::fail<'life0, 'async_trait>(&'life0 self, awaken_session_contract::session_realization::FailSessionRealization) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_host::ApplicationSessionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_runtime_host::WorkerControlClient
 impl awaken_runtime_host::WorkerControlClient
+pub async fn awaken_runtime_host::WorkerControlClient::acknowledge_session_realization(&self, &awaken_worker_contract::WorkerIdentity, awaken_session_contract::session_realization::AcknowledgeSessionRealization) -> core::result::Result<awaken_session_contract::session_realization::SessionRealizationDirective, alloc::string::String>
+pub async fn awaken_runtime_host::WorkerControlClient::activate_session_realization(&self, &awaken_worker_contract::WorkerIdentity, awaken_session_contract::session_realization::ActivateSessionRealization) -> core::result::Result<awaken_session_contract::session_realization::SessionRealizationDirective, alloc::string::String>
 pub async fn awaken_runtime_host::WorkerControlClient::begin_drain(&self, &awaken_worker_contract::WorkerIdentity, core::option::Option<u64>) -> core::result::Result<awaken_worker_contract::RegistryMutation, alloc::string::String>
+pub async fn awaken_runtime_host::WorkerControlClient::contribute_application(&self, &awaken_worker_contract::WorkerIdentity, &awaken_run_ingress_contract::dispatch::RunClaim, awaken_session_contract::application_contribution::ApplicationSessionContribution) -> core::result::Result<awaken_runtime_host::ApplicationSessionControlReceipt, alloc::string::String>
 pub async fn awaken_runtime_host::WorkerControlClient::deregister(&self, &awaken_worker_contract::WorkerIdentity) -> core::result::Result<awaken_worker_contract::RegistryMutation, alloc::string::String>
+pub async fn awaken_runtime_host::WorkerControlClient::fail_session_realization(&self, &awaken_worker_contract::WorkerIdentity, awaken_session_contract::session_realization::FailSessionRealization) -> core::result::Result<(), alloc::string::String>
 pub async fn awaken_runtime_host::WorkerControlClient::heartbeat(&self, &awaken_worker_contract::WorkerIdentity, awaken_worker_contract::WorkerHeartbeat) -> core::result::Result<awaken_worker_contract::RegistryMutation, alloc::string::String>
 pub async fn awaken_runtime_host::WorkerControlClient::mark_quiesced(&self, &awaken_worker_contract::WorkerIdentity) -> core::result::Result<awaken_worker_contract::RegistryMutation, alloc::string::String>
 pub fn awaken_runtime_host::WorkerControlClient::new(awaken_runtime_host::WorkerUpstream) -> Self
@@ -448,6 +465,7 @@ pub struct awaken_runtime_host::WorkerDispatchService
 impl awaken_runtime_host::WorkerDispatchService
 pub fn awaken_runtime_host::WorkerDispatchService::local(alloc::sync::Arc<dyn awaken_run_ingress_contract::dispatch::DispatchQueue>) -> Self
 pub fn awaken_runtime_host::WorkerDispatchService::new(alloc::sync::Arc<dyn awaken_run_ingress_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_runtime_host::WorkerRequestAuthenticator>, alloc::sync::Arc<dyn awaken_runtime_host::WorkerClock>, alloc::sync::Arc<dyn awaken_runtime_host::WorkerLeasePolicy>) -> Self
+pub fn awaken_runtime_host::WorkerDispatchService::with_application_session_control(self, alloc::sync::Arc<dyn awaken_session_contract::session_realization::ApplicationSessionControl>) -> Self
 pub fn awaken_runtime_host::WorkerDispatchService::with_checkpoint_store(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>) -> Self
 pub fn awaken_runtime_host::WorkerDispatchService::with_placement_policy(self, alloc::sync::Arc<dyn awaken_worker_contract::PlacementPolicy>) -> Self
 pub fn awaken_runtime_host::WorkerDispatchService::with_recovery_source(self, alloc::sync::Arc<dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>) -> Self
@@ -472,6 +490,16 @@ pub fn awaken_runtime_host::WorkerUpstream::with_worker_id(self, impl core::conv
 pub fn awaken_runtime_host::WorkerUpstream::with_worker_identity(self, awaken_worker_contract::WorkerIdentity) -> Self
 pub const awaken_runtime_host::SIGNED_WORKER_SCHEME: &str
 pub const awaken_runtime_host::WORKER_ID_HEADER: &str
+pub trait awaken_runtime_host::ApplicationSessionControlClient: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_host::ApplicationSessionControlClient::acknowledge<'life0, 'async_trait>(&'life0 self, awaken_session_contract::session_realization::AcknowledgeSessionRealization) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::session_realization::SessionRealizationDirective, awaken_runtime_host::ApplicationSessionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_host::ApplicationSessionControlClient::activate<'life0, 'async_trait>(&'life0 self, awaken_session_contract::session_realization::ActivateSessionRealization) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::session_realization::SessionRealizationDirective, awaken_runtime_host::ApplicationSessionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_host::ApplicationSessionControlClient::contribute<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_run_ingress_contract::dispatch::RunClaim, awaken_runtime_host::ApplicationSessionPlan) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_host::ApplicationSessionControlReceipt, awaken_runtime_host::ApplicationSessionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_runtime_host::ApplicationSessionControlClient::fail<'life0, 'async_trait>(&'life0 self, awaken_session_contract::session_realization::FailSessionRealization) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_host::ApplicationSessionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl awaken_runtime_host::ApplicationSessionControlClient for awaken_runtime_host::WorkerControlApplicationSessionClient
+pub fn awaken_runtime_host::WorkerControlApplicationSessionClient::acknowledge<'life0, 'async_trait>(&'life0 self, awaken_session_contract::session_realization::AcknowledgeSessionRealization) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::session_realization::SessionRealizationDirective, awaken_runtime_host::ApplicationSessionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_host::WorkerControlApplicationSessionClient::activate<'life0, 'async_trait>(&'life0 self, awaken_session_contract::session_realization::ActivateSessionRealization) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::session_realization::SessionRealizationDirective, awaken_runtime_host::ApplicationSessionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_host::WorkerControlApplicationSessionClient::contribute<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_run_ingress_contract::dispatch::RunClaim, awaken_runtime_host::ApplicationSessionPlan) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_host::ApplicationSessionControlReceipt, awaken_runtime_host::ApplicationSessionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_runtime_host::WorkerControlApplicationSessionClient::fail<'life0, 'async_trait>(&'life0 self, awaken_session_contract::session_realization::FailSessionRealization) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_host::ApplicationSessionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_runtime_host::ApplicationSessionProvisioner: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_host::ApplicationSessionProvisioner::prepare<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::activation::RunActivation, alloc::sync::Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_host::ApplicationSessionPlan, awaken_runtime_host::ApplicationSessionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_runtime_host::HandExecutorFactory: core::marker::Send + core::marker::Sync
@@ -516,7 +544,7 @@ pub fn awaken_runtime_host::install_capture_sink(alloc::sync::Arc<dyn awaken_run
 pub fn awaken_runtime_host::local_managed_session_repository(core::option::Option<&std::path::Path>) -> alloc::sync::Arc<dyn awaken_session_contract::session_repo::ManagedSessionRepository>
 pub fn awaken_runtime_host::memory_stores_router_with_catalog(alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>, alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceCatalog>, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeScheduler>) -> axum::routing::Router
 pub fn awaken_runtime_host::platform_plugin_capabilities() -> alloc::vec::Vec<awaken_runtime_contract::capability::PluginCapability>
-pub fn awaken_runtime_host::registered_worker_transport_router(alloc::sync::Arc<awaken_runtime_host::SharedHost>, alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>, alloc::sync::Arc<dyn awaken_worker_contract::PlacementPolicy>) -> axum::routing::Router
+pub fn awaken_runtime_host::registered_worker_transport_router(alloc::sync::Arc<awaken_runtime_host::SharedHost>, alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>, alloc::sync::Arc<dyn awaken_worker_contract::PlacementPolicy>, alloc::sync::Arc<dyn awaken_session_contract::session_realization::ApplicationSessionControl>) -> axum::routing::Router
 pub fn awaken_runtime_host::registered_worker_transport_router_with_services(axum::routing::Router, alloc::sync::Arc<awaken_runtime_host::ClaimedCommitService>) -> axum::routing::Router
 pub async fn awaken_runtime_host::resolve_sandbox_tier(awaken_runtime_host::SandboxTier, bool, &std::path::Path) -> core::result::Result<awaken_runtime_host::SandboxTier, alloc::string::String>
 pub fn awaken_runtime_host::skills_router(core::option::Option<alloc::sync::Arc<dyn awaken_resource_contract::SkillStore>>, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeScheduler>) -> axum::routing::Router

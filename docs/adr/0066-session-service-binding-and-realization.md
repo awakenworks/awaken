@@ -91,7 +91,6 @@ struct SessionBaseline {
     mcp_authoring: SessionMcpAuthoringContext,
     agent_id: AgentId,
     runtime: RuntimeSelection,
-    skills: Vec<ResolvedSkillBinding>,
     env: Vec<EnvVar>,
     prompts: Vec<String>,
 }
@@ -142,6 +141,13 @@ external realization. It contains only facts whose lifecycle is frozen for that
 Session. `SessionResourceState` remains the existing versioned authority for live Resource add/update/delete.
 `SessionMcpAttachmentSet` becomes the one versioned authority for initial and
 later MCP attachments.
+
+Skill pins are not copied into `SessionBaseline`. ADR-0063's
+`ResolvedSessionResources.skills` remains their only durable authority and is
+carried by `SessionResourceState`; the baseline fingerprint therefore cannot
+become a second Skill-version truth. Application-contributed mounts, environment
+values, and prompts remain baseline facts because they are not Resource
+attachments and have no independent dynamic lifecycle in this slice.
 
 The compiler may return one transient creation value:
 

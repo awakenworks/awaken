@@ -280,17 +280,18 @@ fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_json::Error>
         network,
         credential_realization,
     };
-    let baseline = SessionBaseline::compile(
+    let baseline = SessionBaseline::compile(awaken_session_contract::SessionBaselineInputs {
         environment,
-        SessionMcpAuthoringContext::default(),
-        row.agent_id,
-        row.model,
-        runtime.runtime,
-        runtime.delegate_ids,
-        resources.active.skills.clone().unwrap_or_default(),
-        Vec::new(),
-        Vec::new(),
-    );
+        mcp_authoring: SessionMcpAuthoringContext::default(),
+        agent_id: row.agent_id,
+        model: row.model,
+        runtime: runtime.runtime,
+        application: None,
+        delegate_ids: runtime.delegate_ids,
+        mounts: Vec::new(),
+        env: Vec::new(),
+        prompts: Vec::new(),
+    });
     let mut drafts = Vec::with_capacity(runtime.mcp_servers.len());
     for server in runtime.mcp_servers {
         let credential = match (server.credential_source_id, server.credential_revision) {
@@ -306,7 +307,9 @@ fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_json::Error>
         };
         drafts.push(McpAttachmentDraft {
             name: server.name,
-            target: McpTarget::new(server.url),
+            target: McpTarget::parse_http(server.url).map_err(|error| {
+                <serde_json::Error as serde::de::Error>::custom(error.to_string())
+            })?,
             credential,
             origin: McpAttachmentOrigin::Session,
         });
@@ -1235,31 +1238,34 @@ mod tests {
             session_id: id.to_string(),
             revision: Default::default(),
             baseline: SessionBaselineState::Frozen(SessionBaseline::compile(
-                EnvironmentSnapshot {
-                    environment_id: "env_local".into(),
-                    revision: awaken_session_contract::env_registry::EnvironmentRevision(1),
-                    config_fingerprint: EnvironmentFingerprint("env-fingerprint".into()),
-                    sandbox: serde_json::json!({}),
-                    network: SessionNetworkPolicy::Unrestricted,
-                    credential_realization: CredentialRealizationProfile {
-                        inference_holder: PlaintextHolder::new(
-                            PlaintextBoundary::Worker,
-                            "awaken.worker",
-                        ),
-                        mcp_holder: PlaintextHolder::new(
-                            PlaintextBoundary::Worker,
-                            "awaken.worker",
-                        ),
+                awaken_session_contract::SessionBaselineInputs {
+                    environment: EnvironmentSnapshot {
+                        environment_id: "env_local".into(),
+                        revision: awaken_session_contract::env_registry::EnvironmentRevision(1),
+                        config_fingerprint: EnvironmentFingerprint("env-fingerprint".into()),
+                        sandbox: serde_json::json!({}),
+                        network: SessionNetworkPolicy::Unrestricted,
+                        credential_realization: CredentialRealizationProfile {
+                            inference_holder: PlaintextHolder::new(
+                                PlaintextBoundary::Worker,
+                                "awaken.worker",
+                            ),
+                            mcp_holder: PlaintextHolder::new(
+                                PlaintextBoundary::Worker,
+                                "awaken.worker",
+                            ),
+                        },
                     },
+                    mcp_authoring: SessionMcpAuthoringContext::default(),
+                    agent_id: "coder".into(),
+                    model: "kimi-k2".into(),
+                    runtime: None,
+                    application: None,
+                    delegate_ids: Vec::new(),
+                    mounts: Vec::new(),
+                    env: Vec::new(),
+                    prompts: Vec::new(),
                 },
-                SessionMcpAuthoringContext::default(),
-                "coder".into(),
-                "kimi-k2".into(),
-                None,
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
             )),
             title: Some("My session".to_string()),
             metadata,
@@ -1268,7 +1274,7 @@ mod tests {
             mcp: SessionMcpAttachmentSet::from_initial(
                 vec![McpAttachmentDraft {
                     name: "calc".into(),
-                    target: McpTarget::new("https://x"),
+                    target: McpTarget::parse_http("https://x").unwrap(),
                     credential: None,
                     origin: McpAttachmentOrigin::Session,
                 }],

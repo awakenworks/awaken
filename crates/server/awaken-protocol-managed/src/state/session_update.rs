@@ -1,8 +1,20 @@
 //! Managed Session metadata, tool, and generation-fenced MCP replacement.
 
-use super::sessions::ManagedMcpCandidate;
+use super::application::ManagedMcpCandidate;
 use super::*;
 use crate::types::McpServer;
+
+/// One application-layer Session update command compiled from the Managed wire.
+/// Keeping its fields together prevents the public endpoint and CAS retry path
+/// from growing parallel positional parameter lists.
+pub(crate) struct SessionUpdateCommand {
+    pub(crate) title: Option<Option<String>>,
+    pub(crate) metadata: Option<std::collections::BTreeMap<String, Option<String>>>,
+    pub(crate) tools: Option<Vec<serde_json::Value>>,
+    pub(crate) mcp_servers: Option<Vec<serde_json::Value>>,
+    pub(crate) idempotency_key: Option<String>,
+    pub(crate) if_match: Option<awaken_session_contract::SessionRevision>,
+}
 
 impl ManagedState {
     #[must_use]
@@ -21,10 +33,7 @@ impl ManagedState {
                 continue;
             }
             let session_id = record.session.session_id.clone();
-            match self
-                .recover_mcp_projections(&record.workspace_id, record.session)
-                .await
-            {
+            match self.recover_mcp_projections(&session_id).await {
                 Ok(_) => settled += 1,
                 Err(error) => tracing::warn!(
                     session = %session_id,
@@ -39,28 +48,26 @@ impl ManagedState {
     /// Apply mutable Managed Session fields. MCP arrays are canonical full
     /// replacements; wire projection is derived only after durable activation
     /// and exact Runtime publication/drain complete.
-    pub async fn update_session(
+    pub(crate) async fn update_session(
         &self,
         id: &str,
-        title: Option<Option<String>>,
-        metadata: Option<std::collections::BTreeMap<String, Option<String>>>,
-        tools: Option<Vec<serde_json::Value>>,
-        mcp_servers: Option<Vec<serde_json::Value>>,
-        idempotency_key: Option<String>,
-        if_match: Option<awaken_session_contract::SessionRevision>,
+        command: SessionUpdateCommand,
     ) -> Result<Session, StateError> {
-        let request_hash =
-            awaken_session_contract::stable_fingerprint(&(&title, &metadata, &tools, &mcp_servers));
-        let command_record =
-            idempotency_key
-                .as_ref()
-                .map(|key| awaken_session_contract::IdempotencyRecord {
-                    key: format!(
-                        "managed:update-command:{id}:{}",
-                        Self::update_operation_id(id, key)
-                    ),
-                    payload_hash: request_hash.clone(),
-                });
+        let request_hash = awaken_session_contract::stable_fingerprint(&(
+            &command.title,
+            &command.metadata,
+            &command.tools,
+            &command.mcp_servers,
+        ));
+        let command_record = command.idempotency_key.as_ref().map(|key| {
+            awaken_session_contract::IdempotencyRecord {
+                key: format!(
+                    "managed:update-command:{id}:{}",
+                    Self::update_operation_id(id, key)
+                ),
+                payload_hash: request_hash.clone(),
+            }
+        });
         if let Some(record) = &command_record
             && let Some(receipt) = self
                 .sessions_repo
@@ -75,19 +82,11 @@ impl ManagedState {
 
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             match self
-                .update_session_once(
-                    id,
-                    title.clone(),
-                    metadata.clone(),
-                    tools.clone(),
-                    mcp_servers.clone(),
-                    command_record.clone(),
-                    if_match,
-                )
+                .update_session_once(id, &command, command_record.clone())
                 .await
             {
                 Err(StateError::Conflict)
-                    if if_match.is_none() && attempt + 1 < Self::ROOT_CAS_ATTEMPTS =>
+                    if command.if_match.is_none() && attempt + 1 < Self::ROOT_CAS_ATTEMPTS =>
                 {
                     continue;
                 }
@@ -100,12 +99,8 @@ impl ManagedState {
     async fn update_session_once(
         &self,
         id: &str,
-        title: Option<Option<String>>,
-        metadata: Option<std::collections::BTreeMap<String, Option<String>>>,
-        tools: Option<Vec<serde_json::Value>>,
-        mcp_servers: Option<Vec<serde_json::Value>>,
+        command: &SessionUpdateCommand,
         command_record: Option<awaken_session_contract::IdempotencyRecord>,
-        if_match: Option<awaken_session_contract::SessionRevision>,
     ) -> Result<Session, StateError> {
         {
             let sessions = self.sessions.lock().unwrap();
@@ -126,15 +121,18 @@ impl ManagedState {
             .get(id)
             .await
             .ok_or(StateError::NotFound)?;
-        if if_match.is_some_and(|expected| expected != persisted.revision) {
+        if command
+            .if_match
+            .is_some_and(|expected| expected != persisted.revision)
+        {
             return Err(StateError::Conflict);
         }
         let initial_title = persisted.title.clone();
         let initial_metadata = persisted.metadata.clone();
         let initial_tools = persisted.agent_tools.clone();
         let mut mcp_changed = false;
-        let mcp_in_request = mcp_servers.is_some();
-        if let Some(wire_servers) = mcp_servers {
+        let mcp_in_request = command.mcp_servers.is_some();
+        if let Some(wire_servers) = command.mcp_servers.clone() {
             let baseline = persisted
                 .frozen_baseline()
                 .ok_or_else(|| {
@@ -185,6 +183,7 @@ impl ManagedState {
                         attachment.state,
                         awaken_session_contract::McpAttachmentState::Requested
                             | awaken_session_contract::McpAttachmentState::Realizing
+                            | awaken_session_contract::McpAttachmentState::Draining
                     ) || (attachment.state == awaken_session_contract::McpAttachmentState::Active
                         && !attachment.publication_acknowledged)
                 });
@@ -193,9 +192,7 @@ impl ManagedState {
                     attachment.state == awaken_session_contract::McpAttachmentState::Active
                 });
             if projection_requires_completion || active_requires_new_owner {
-                persisted = self
-                    .recover_mcp_projections(&owner_scope, persisted)
-                    .await?;
+                persisted = self.recover_mcp_projections(id).await?;
                 mcp_changed = true;
             }
 
@@ -208,163 +205,21 @@ impl ManagedState {
                 .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
             if plan.changed {
                 mcp_changed = true;
-                persisted = self
-                    .commit_session_snapshot(
-                        &owner_scope,
-                        persisted,
-                        "mcp-replacement-intent",
-                        Vec::new(),
-                    )
-                    .await?;
-            }
-
-            if !plan.requested.is_empty() {
-                let now_unix_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-                    .unwrap_or_default();
-                let lease_epoch = persisted.realization.as_ref().map_or(1, |lease| {
-                    if lease.runtime_incarnation == self.runtime_incarnation
-                        && lease.expires_at_unix_ms > now_unix_ms
-                    {
-                        lease.epoch
-                    } else {
-                        lease.epoch.saturating_add(1)
-                    }
-                });
-                let lease_expires_at_unix_ms = now_unix_ms.saturating_add(300_000);
-                persisted.realization = Some(awaken_session_contract::SessionRealizationLease {
-                    owner: "managed-runtime".into(),
-                    runtime_incarnation: self.runtime_incarnation.clone(),
-                    epoch: lease_epoch,
-                    expires_at_unix_ms: lease_expires_at_unix_ms,
-                });
-                let mut realization_ids = Vec::with_capacity(plan.requested.len());
-                for (attachment_id, generation) in &plan.requested {
-                    let realization_id = awaken_session_contract::stable_fingerprint(&(
-                        id,
-                        attachment_id,
-                        generation,
-                        &self.runtime_incarnation,
-                        lease_epoch,
-                    ));
-                    persisted
-                        .mcp
-                        .claim_realization(
-                            attachment_id,
-                            *generation,
-                            awaken_session_contract::McpRealizationClaim {
-                                realization_id: realization_id.clone(),
-                                runtime_incarnation: self.runtime_incarnation.clone(),
-                                lease_epoch,
-                                lease_expires_at_unix_ms,
-                                stage_idempotency_key: format!(
-                                    "stage:{id}:{}:{}",
-                                    attachment_id.0, generation.0
-                                ),
-                            },
-                        )
-                        .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
-                    realization_ids.push((attachment_id.clone(), *generation, realization_id));
-                }
-                persisted = self
-                    .commit_session_snapshot(
-                        &owner_scope,
-                        persisted,
-                        "mcp-replacement-claim",
-                        Vec::new(),
-                    )
-                    .await?;
-                let staged = match self
-                    .stage_claimed_mcp_generations(&owner_scope, &persisted, &plan.requested)
-                    .await
-                {
-                    Ok(staged) => staged,
-                    Err(error) => {
-                        for (attachment_id, generation, realization_id) in realization_ids {
-                            persisted
-                                .mcp
-                                .fail_realization(
-                                    &attachment_id,
-                                    generation,
-                                    &realization_id,
-                                    error.to_string(),
-                                )
-                                .map_err(|state_error| {
-                                    StateError::Run(RunError::internal(state_error.to_string()))
-                                })?;
-                        }
-                        self.commit_session_snapshot(
-                            &owner_scope,
-                            persisted,
-                            "mcp-replacement-failed",
-                            Vec::new(),
-                        )
-                        .await?;
-                        return Err(StateError::Run(error));
-                    }
-                };
-                for (attachment_id, generation, realization_id) in &realization_ids {
-                    persisted
-                        .mcp
-                        .activate(attachment_id, *generation, realization_id)
-                        .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
-                }
-                persisted
-                    .mcp
-                    .begin_obsolete_drains()
-                    .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
-                persisted = match self
-                    .commit_session_snapshot(
-                        &owner_scope,
-                        persisted,
-                        "mcp-replacement-activate",
-                        Vec::new(),
-                    )
-                    .await
-                {
-                    Ok(persisted) => persisted,
-                    Err(error) => {
-                        for generation in staged {
-                            let _ = self.runtime.drain_mcp_generation(generation).await;
-                        }
-                        return Err(error);
-                    }
-                };
-                for generation in &staged {
-                    self.runtime
-                        .publish_mcp_generation(generation.clone())
-                        .await
-                        .map_err(StateError::Run)?;
-                }
-                for (attachment_id, generation, realization_id) in &realization_ids {
-                    persisted
-                        .mcp
-                        .acknowledge_publication(attachment_id, *generation, realization_id)
-                        .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
-                }
-                persisted = self
-                    .commit_session_snapshot(
-                        &owner_scope,
-                        persisted,
-                        "mcp-replacement-publication",
-                        Vec::new(),
-                    )
-                    .await?;
-            }
-
-            mcp_changed |= persisted.mcp.attachments.iter().any(|attachment| {
-                attachment.state == awaken_session_contract::McpAttachmentState::Draining
-            });
-            persisted = self
-                .drain_persisted_mcp_generations(&owner_scope, persisted)
+                self.commit_session_snapshot(
+                    &owner_scope,
+                    persisted,
+                    "mcp-replacement-intent",
+                    Vec::new(),
+                )
                 .await?;
+                persisted = self.realize_session_locally(id).await?;
+            }
         }
-        let title_in_request = title.is_some();
-        if let Some(title) = title {
+        let title_in_request = command.title.is_some();
+        if let Some(title) = command.title.clone() {
             persisted.title = title;
         }
-        if let Some(patch) = metadata {
+        if let Some(patch) = command.metadata.clone() {
             for (key, value) in patch {
                 match value {
                     Some(v) => {
@@ -376,7 +231,7 @@ impl ManagedState {
                 }
             }
         }
-        if let Some(tools) = &tools {
+        if let Some(tools) = &command.tools {
             persisted.agent_tools = Some(tools.clone());
         }
         let title_changed = persisted.title != initial_title;
@@ -413,7 +268,7 @@ impl ManagedState {
         record.session.title = persisted.title;
         record.session.metadata = persisted.metadata;
         let agent_changed = tools_changed || mcp_changed;
-        if let Some(tools) = tools {
+        if let Some(tools) = command.tools.clone() {
             record.session.agent.tools = tools;
         }
         if let Some(visible_mcp_servers) = visible_mcp_servers {

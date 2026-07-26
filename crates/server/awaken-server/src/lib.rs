@@ -377,7 +377,7 @@ fn mount_with_managed_over(
     if host.runs_local_dispatch_pool() {
         host.ensure_dispatch_pool();
     }
-    let managed = router(managed_state);
+    let managed = router(managed_state.clone());
     // One neutral port impl behind the three wire adapters (each `router` takes
     // `Arc<dyn ProtocolRuntime>`), so they share the host with no per-protocol twin.
     let port: Arc<dyn ProtocolRuntime> = Arc::new(ProtocolHost::new(host.clone()));
@@ -403,6 +403,7 @@ fn mount_with_managed_over(
         host.clone(),
         worker_registry::shared(),
         dynamic_placement::shared_worker_placement_policy(),
+        managed_state,
     );
     // The Files API (`/v1/files`) over the host's blob store — file resources + artifacts.
     let files = files_router(host.clone());

@@ -1381,23 +1381,52 @@ fn local_org_id() -> String {
 mod runtime_session_store_tests {
     use super::*;
     use awaken_protocol_managed::{
-        ApplicationContributionState, IdempotencyRecord, PersistedSession, SessionBaselineState,
-        SessionCreationIntent, stable_fingerprint,
+        ApplicationContributionState, ControlSessionCreationInputs, EnvironmentFingerprint,
+        EnvironmentRevision, EnvironmentSnapshot, IdempotencyRecord, PersistedSession,
+        SessionBaselineState, SessionCreationIntent, SessionNetworkPolicy, stable_fingerprint,
     };
     use awaken_runtime_host::ModelPublicationResolver;
+
+    fn creation_intent() -> SessionCreationIntent {
+        SessionCreationIntent {
+            control: ControlSessionCreationInputs {
+                environment: EnvironmentSnapshot {
+                    environment_id: "env_local".into(),
+                    revision: EnvironmentRevision(1),
+                    config_fingerprint: EnvironmentFingerprint("env-local".into()),
+                    sandbox: serde_json::json!({}),
+                    network: SessionNetworkPolicy::Unrestricted,
+                    credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
+                        inference_holder: awaken_runtime_contract::PlaintextHolder::new(
+                            awaken_runtime_contract::PlaintextBoundary::Workload,
+                            "awaken.workload.acp",
+                        ),
+                        mcp_holder: awaken_runtime_contract::PlaintextHolder::new(
+                            awaken_runtime_contract::PlaintextBoundary::Worker,
+                            "awaken.worker",
+                        ),
+                    },
+                },
+                agent_id: "assistant".into(),
+                model: "test-model".into(),
+                runtime: None,
+                mcp_authoring: Default::default(),
+                delegate_ids: Vec::new(),
+                mounts: Vec::new(),
+                env: Vec::new(),
+                prompts: Vec::new(),
+                resources: Default::default(),
+                initial_mcp: Vec::new(),
+            },
+            application: ApplicationContributionState::Absent,
+        }
+    }
 
     fn session(id: &str) -> PersistedSession {
         PersistedSession {
             session_id: id.to_string(),
             revision: Default::default(),
-            baseline: SessionBaselineState::Preparing(SessionCreationIntent {
-                environment_id: "env_local".into(),
-                agent_id: "assistant".into(),
-                model: "test-model".into(),
-                runtime: None,
-                mcp_authoring: Default::default(),
-                application: ApplicationContributionState::Absent,
-            }),
+            baseline: SessionBaselineState::Preparing(creation_intent()),
             title: None,
             metadata: Default::default(),
             agent_tools: None,
@@ -1444,14 +1473,7 @@ mod runtime_session_store_tests {
                 .await
                 .expect("session survives restart")
                 .baseline,
-            SessionBaselineState::Preparing(SessionCreationIntent {
-                environment_id: "env_local".into(),
-                agent_id: "assistant".into(),
-                model: "test-model".into(),
-                runtime: None,
-                mcp_authoring: Default::default(),
-                application: ApplicationContributionState::Absent,
-            })
+            SessionBaselineState::Preparing(creation_intent())
         );
     }
 

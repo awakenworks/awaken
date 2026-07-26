@@ -2,7 +2,7 @@
 //! dispatch and commits. It carries no store and trusts no client-side clock.
 
 use awaken_run_ingress::{
-    RegisteredWorker, RegistryMutation, WorkerHeartbeat, WorkerIdentity, WorkerManifest,
+    RegisteredWorker, RegistryMutation, RunClaim, WorkerHeartbeat, WorkerIdentity, WorkerManifest,
     WorkerRegistration,
 };
 use serde_json::{Value, json};
@@ -103,6 +103,82 @@ impl WorkerControlClient {
     pub async fn deregister(&self, identity: &WorkerIdentity) -> Result<RegistryMutation, String> {
         self.mutation("/v1/worker/deregister", json!({ "identity": identity }))
             .await
+    }
+
+    pub async fn contribute_application(
+        &self,
+        identity: &WorkerIdentity,
+        claim: &RunClaim,
+        contribution: awaken_protocol_managed::ApplicationSessionContribution,
+    ) -> Result<crate::ApplicationSessionControlReceipt, String> {
+        let body = self
+            .post(
+                "/v1/worker/session/application-contribution",
+                json!({
+                    "identity": identity,
+                    "claim": claim,
+                    "contribution": contribution,
+                }),
+            )
+            .await?;
+        let contribution =
+            serde_json::from_value(body.get("receipt").cloned().unwrap_or(Value::Null))
+                .map_err(|error| format!("application contribution receipt decode: {error}"))?;
+        let realization =
+            serde_json::from_value(body.get("realization").cloned().unwrap_or(Value::Null))
+                .map_err(|error| format!("Session realization directive decode: {error}"))?;
+        Ok(crate::ApplicationSessionControlReceipt {
+            contribution,
+            realization,
+        })
+    }
+
+    pub async fn activate_session_realization(
+        &self,
+        identity: &WorkerIdentity,
+        command: awaken_protocol_managed::ActivateSessionRealization,
+    ) -> Result<awaken_protocol_managed::SessionRealizationDirective, String> {
+        self.realization_phase("/v1/worker/session/realization/activate", identity, command)
+            .await
+    }
+
+    pub async fn acknowledge_session_realization(
+        &self,
+        identity: &WorkerIdentity,
+        command: awaken_protocol_managed::AcknowledgeSessionRealization,
+    ) -> Result<awaken_protocol_managed::SessionRealizationDirective, String> {
+        self.realization_phase(
+            "/v1/worker/session/realization/acknowledge",
+            identity,
+            command,
+        )
+        .await
+    }
+
+    pub async fn fail_session_realization(
+        &self,
+        identity: &WorkerIdentity,
+        command: awaken_protocol_managed::FailSessionRealization,
+    ) -> Result<(), String> {
+        self.post(
+            "/v1/worker/session/realization/fail",
+            json!({ "identity": identity, "command": command }),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn realization_phase<T: serde::Serialize>(
+        &self,
+        path: &str,
+        identity: &WorkerIdentity,
+        command: T,
+    ) -> Result<awaken_protocol_managed::SessionRealizationDirective, String> {
+        let body = self
+            .post(path, json!({ "identity": identity, "command": command }))
+            .await?;
+        serde_json::from_value(body.get("realization").cloned().unwrap_or(Value::Null))
+            .map_err(|error| format!("Session realization directive decode: {error}"))
     }
 
     async fn mutation(&self, path: &str, body: Value) -> Result<RegistryMutation, String> {

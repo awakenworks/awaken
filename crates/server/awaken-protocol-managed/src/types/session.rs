@@ -487,6 +487,10 @@ fn code_message_server_name(code: &str, message: &str) -> Option<String> {
 /// The payload of an outbound event (its `type` plus kind-specific fields).
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the enum mirrors the fixed Managed Agents event wire; boxing one variant would add an internal ownership shape without changing the serialized protocol"
+)]
 pub enum OutboundKind {
     #[serde(rename = "agent.message")]
     AgentMessage { content: Vec<ContentBlock> },
@@ -787,6 +791,10 @@ pub enum PreviewContent {
 /// carries both; each SSE connection forwards previews only if it opted in via
 /// `event_deltas[]`.
 #[derive(Debug, Clone)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "committed and preview frames intentionally share one broadcast wire; the size difference is bounded and boxing would only add allocation"
+)]
 pub enum StreamFrame {
     Committed(Event),
     Preview(PreviewFrame),

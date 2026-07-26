@@ -821,7 +821,14 @@ impl WorkerNode {
             host = host.with_application_attempt_decorator(decorator);
         }
         if let Some(provisioner) = application_provisioner {
-            host = host.with_application_session_provisioner(provisioner);
+            host = host
+                .with_application_session_provisioner(provisioner)
+                .with_application_session_control(Arc::new(
+                    awaken_runtime_host::WorkerControlApplicationSessionClient::new(
+                        control.clone(),
+                        registration.snapshot.identity.clone(),
+                    ),
+                ));
         }
         if let Some(gate) = self.application_gate {
             host = host.with_gate_override(gate);

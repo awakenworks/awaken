@@ -104,7 +104,9 @@ impl PersistedSession {
     #[must_use]
     pub fn environment_id(&self) -> &str {
         match &self.baseline {
-            crate::SessionBaselineState::Preparing(intent) => &intent.environment_id,
+            crate::SessionBaselineState::Preparing(intent) => {
+                &intent.control.environment.environment_id
+            }
             crate::SessionBaselineState::Frozen(baseline) => &baseline.environment.environment_id,
         }
     }
@@ -365,15 +367,43 @@ mod mutation_tests {
     }
 
     fn session(id: &str, revision: SessionRevision) -> PersistedSession {
+        use awaken_credential_contract::{
+            CredentialRealizationProfile, PlaintextBoundary, PlaintextHolder,
+        };
+
         PersistedSession {
             session_id: id.into(),
             revision,
             baseline: crate::SessionBaselineState::Preparing(crate::SessionCreationIntent {
-                environment_id: "environment".into(),
-                agent_id: "assistant".into(),
-                model: "model".into(),
-                runtime: None,
-                mcp_authoring: Default::default(),
+                control: crate::ControlSessionCreationInputs {
+                    environment: crate::EnvironmentSnapshot {
+                        environment_id: "environment".into(),
+                        revision: crate::env_registry::EnvironmentRevision(1),
+                        config_fingerprint: crate::EnvironmentFingerprint("config".into()),
+                        sandbox: serde_json::json!({}),
+                        network: crate::SessionNetworkPolicy::Unrestricted,
+                        credential_realization: CredentialRealizationProfile {
+                            inference_holder: PlaintextHolder::new(
+                                PlaintextBoundary::Workload,
+                                "awaken.workload.acp",
+                            ),
+                            mcp_holder: PlaintextHolder::new(
+                                PlaintextBoundary::Worker,
+                                "awaken.worker",
+                            ),
+                        },
+                    },
+                    agent_id: "assistant".into(),
+                    model: "model".into(),
+                    runtime: None,
+                    mcp_authoring: Default::default(),
+                    delegate_ids: Vec::new(),
+                    mounts: Vec::new(),
+                    env: Vec::new(),
+                    prompts: Vec::new(),
+                    resources: Default::default(),
+                    initial_mcp: Vec::new(),
+                },
                 application: crate::ApplicationContributionState::Absent,
             }),
             title: None,

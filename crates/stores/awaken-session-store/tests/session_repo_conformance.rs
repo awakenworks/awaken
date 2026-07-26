@@ -55,15 +55,18 @@ fn session(id: &str, title: &str) -> PersistedSession {
         revision: Default::default(),
         baseline: awaken_session_contract::SessionBaselineState::Frozen(
             awaken_session_contract::SessionBaseline::compile(
-                environment,
-                Default::default(),
-                "assistant".into(),
-                "kimi".into(),
-                Some("acp:custom".into()),
-                vec!["researcher".into()],
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
+                awaken_session_contract::SessionBaselineInputs {
+                    environment,
+                    mcp_authoring: Default::default(),
+                    agent_id: "assistant".into(),
+                    model: "kimi".into(),
+                    runtime: Some("acp:custom".into()),
+                    application: None,
+                    delegate_ids: vec!["researcher".into()],
+                    mounts: Vec::new(),
+                    env: Vec::new(),
+                    prompts: Vec::new(),
+                },
             ),
         ),
         title: Some(title.to_string()),
@@ -73,7 +76,7 @@ fn session(id: &str, title: &str) -> PersistedSession {
         mcp: awaken_session_contract::SessionMcpAttachmentSet::from_initial(
             vec![McpAttachmentDraft {
                 name: "github".into(),
-                target: McpTarget::new("https://mcp.example"),
+                target: McpTarget::parse_http("https://mcp.example").unwrap(),
                 credential: Some(access),
                 origin: McpAttachmentOrigin::Agent,
             }],

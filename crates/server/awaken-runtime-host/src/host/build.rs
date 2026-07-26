@@ -207,6 +207,7 @@ impl SharedHost {
             remote_attempt_executor: None,
             application_attempt_decorator: None,
             application_session_provisioner: None,
+            application_session_control: None,
             provider: LocalProvider::new(sandbox_root.clone()),
             session_provider: crate::session_environment::SessionEnvironmentProvider::workdir(
                 sandbox_root.clone(),
@@ -235,7 +236,7 @@ impl SharedHost {
             config_service: None,
             agent_publications: None,
             mcp_relay: tokio::sync::OnceCell::new(),
-            dispatch_resource_preparer: std::sync::RwLock::new(None),
+            dispatch_session_runtime: std::sync::RwLock::new(None),
             thread_egress: crate::sandbox_source::ThreadEgress::from_slots(session_slots.clone()),
             thread_sandbox: crate::sandbox_source::ThreadSandbox::from_slots(session_slots),
             file_store,
@@ -285,6 +286,18 @@ impl SharedHost {
         provisioner: Arc<dyn crate::ApplicationSessionProvisioner>,
     ) -> Self {
         self.application_session_provisioner = Some(provisioner);
+        self
+    }
+
+    /// Install the sole outbound claim-fenced contribution client. It is paired
+    /// with `ApplicationSessionProvisioner`; neither is useful as a local
+    /// Session-authoring path.
+    #[must_use]
+    pub fn with_application_session_control(
+        mut self,
+        control: Arc<dyn crate::ApplicationSessionControlClient>,
+    ) -> Self {
+        self.application_session_control = Some(control);
         self
     }
 

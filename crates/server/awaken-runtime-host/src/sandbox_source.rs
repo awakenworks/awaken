@@ -177,9 +177,9 @@ impl ThreadEgress {
             .read(thread, |slot| {
                 slot.deny_egress
                     || slot
-                        .application
+                        .baseline
                         .as_ref()
-                        .is_some_and(|application| application.deny_egress)
+                        .is_some_and(|baseline| baseline.network.is_restricted())
             })
             .unwrap_or(false)
     }
@@ -251,8 +251,8 @@ impl ThreadResources {
         self.0
             .read(thread, |slot| {
                 let mut mounts = slot.resources.mounts.clone();
-                if let Some(application) = &slot.application {
-                    mounts.extend(application.mounts.clone());
+                if let Some(baseline) = &slot.baseline {
+                    mounts.extend(baseline.mounts.clone());
                 }
                 mounts
             })
@@ -262,9 +262,9 @@ impl ThreadResources {
     fn env_for(&self, thread: &str) -> Vec<pc::EnvVar> {
         self.0
             .read(thread, |slot| {
-                slot.application
+                slot.baseline
                     .as_ref()
-                    .map(|application| application.env.clone())
+                    .map(|baseline| baseline.env.clone())
                     .unwrap_or_default()
             })
             .unwrap_or_default()

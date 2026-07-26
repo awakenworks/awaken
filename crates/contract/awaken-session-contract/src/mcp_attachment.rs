@@ -27,14 +27,73 @@ pub struct McpTarget {
     pub fingerprint: String,
 }
 
+/// Canonical HTTP(S) target identity shared by authoring, Vault matching,
+/// persistence migration, duplicate rejection, and generation diffing.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct McpTargetIdentity {
+    pub scheme: String,
+    pub host: String,
+    pub port: Option<u16>,
+    pub path: String,
+    pub query: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum McpTargetError {
+    #[error("MCP target must be an absolute HTTP(S) URL without userinfo or fragment")]
+    Invalid,
+}
+
 impl McpTarget {
-    #[must_use]
-    pub fn new(url: impl Into<String>) -> Self {
-        let url = url.into();
-        Self {
-            fingerprint: crate::stable_fingerprint(&url),
+    /// Parse and fingerprint the sole canonical MCP HTTP(S) identity.
+    pub fn parse_http(raw: impl Into<String>) -> Result<Self, McpTargetError> {
+        let url = raw.into();
+        let identity = Self::identity(&url)?;
+        Ok(Self {
+            fingerprint: crate::stable_fingerprint(&(
+                &identity.scheme,
+                &identity.host,
+                identity.port,
+                &identity.path,
+                &identity.query,
+            )),
             url,
+        })
+    }
+
+    /// Parse the same canonical identity used by [`Self::parse_http`] without
+    /// constructing desired Session state. Vault matching reuses this value.
+    pub fn identity(raw: &str) -> Result<McpTargetIdentity, McpTargetError> {
+        if raw.contains('#') {
+            return Err(McpTargetError::Invalid);
         }
+        let parsed = raw
+            .parse::<http::Uri>()
+            .map_err(|_| McpTargetError::Invalid)?;
+        let scheme = parsed
+            .scheme_str()
+            .map(str::to_ascii_lowercase)
+            .ok_or(McpTargetError::Invalid)?;
+        let authority = parsed.authority().ok_or(McpTargetError::Invalid)?;
+        if !matches!(scheme.as_str(), "http" | "https") || authority.as_str().contains('@') {
+            return Err(McpTargetError::Invalid);
+        }
+        let host = authority.host().to_ascii_lowercase();
+        if host.is_empty() {
+            return Err(McpTargetError::Invalid);
+        }
+        let port = match (scheme.as_str(), authority.port_u16()) {
+            ("http", Some(80)) | ("https", Some(443)) => None,
+            (_, port) => port,
+        };
+        let path_and_query = parsed.path_and_query().ok_or(McpTargetError::Invalid)?;
+        Ok(McpTargetIdentity {
+            scheme,
+            host,
+            port,
+            path: path_and_query.path().trim_end_matches('/').to_string(),
+            query: path_and_query.query().map(str::to_string),
+        })
     }
 }
 
@@ -149,6 +208,16 @@ pub struct StageMcpAttachment {
     pub selected_plaintext_holder: Option<PlaintextHolder>,
 }
 
+impl StageMcpAttachment {
+    /// Stable identity of the complete secret-free realization command. Runtime
+    /// receipts echo this value so Control can reject a receipt produced for a
+    /// different target, credential pin, holder, lease, or generation.
+    #[must_use]
+    pub fn fingerprint(&self) -> String {
+        crate::stable_fingerprint(self)
+    }
+}
+
 /// Secret-free evidence returned by the Runtime projection boundary. It records
 /// the exact effect that was staged, never credential material or a live handle.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,6 +227,29 @@ pub struct McpRealizationReceipt {
     pub selected_plaintext_holder: Option<PlaintextHolder>,
     pub actual_realization_kind: Option<CredentialRealizationKind>,
     pub receipt_fingerprint: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum McpRealizationReceiptError {
+    #[error("MCP realization receipt does not match its exact stage request")]
+    Mismatch,
+}
+
+impl McpRealizationReceipt {
+    /// Verify all command/receipt fences together. Callers must not select a
+    /// subset: doing so would let a receipt for another target or credential
+    /// authorize this generation merely because its route id happened to match.
+    pub fn verify(&self, request: &StageMcpAttachment) -> Result<(), McpRealizationReceiptError> {
+        if self.generation == request.generation
+            && self.realization_id == request.realization_id
+            && self.selected_plaintext_holder == request.selected_plaintext_holder
+            && self.receipt_fingerprint == request.fingerprint()
+        {
+            Ok(())
+        } else {
+            Err(McpRealizationReceiptError::Mismatch)
+        }
+    }
 }
 
 impl Default for SessionMcpAttachmentSet {
@@ -190,6 +282,51 @@ pub enum McpAttachmentError {
     InvalidTransition,
     #[error("MCP attachment counter is exhausted")]
     CounterExhausted,
+}
+
+/// Resolve all create-time MCP sources through the one documented precedence
+/// rule. The returned order is canonical by logical name.
+pub(crate) fn resolve_mcp_draft_precedence(
+    drafts: Vec<McpAttachmentDraft>,
+) -> Result<Vec<McpAttachmentDraft>, McpAttachmentError> {
+    fn rank(origin: McpAttachmentOrigin) -> u8 {
+        match origin {
+            McpAttachmentOrigin::Session => 3,
+            McpAttachmentOrigin::Application => 2,
+            McpAttachmentOrigin::Agent => 1,
+        }
+    }
+
+    let mut selected = BTreeMap::<String, McpAttachmentDraft>::new();
+    for draft in drafts {
+        if draft.name.trim().is_empty() {
+            return Err(McpAttachmentError::EmptyName);
+        }
+        if draft.target.url.trim().is_empty() {
+            return Err(McpAttachmentError::EmptyTarget);
+        }
+        match selected.get(&draft.name) {
+            None => {
+                selected.insert(draft.name.clone(), draft);
+            }
+            Some(current) if rank(current.origin) == rank(draft.origin) => {
+                return Err(McpAttachmentError::DuplicateName(draft.name));
+            }
+            Some(current) if rank(current.origin) > rank(draft.origin) => {}
+            Some(_) => {
+                selected.insert(draft.name.clone(), draft);
+            }
+        }
+    }
+    let mut targets = BTreeSet::new();
+    for draft in selected.values() {
+        if !targets.insert(draft.target.fingerprint.clone()) {
+            return Err(McpAttachmentError::DuplicateTarget(
+                draft.target.url.clone(),
+            ));
+        }
+    }
+    Ok(selected.into_values().collect())
 }
 
 impl SessionMcpAttachmentSet {
@@ -545,7 +682,9 @@ impl SessionMcpAttachmentSet {
             return Err(McpAttachmentError::InvalidTransition);
         }
         attachment.state = McpAttachmentState::Removed;
-        attachment.realization = None;
+        // Keep the secret-free claim as terminal acknowledgement evidence. It
+        // cannot restore visibility or a live handle, but it lets an at-least-once
+        // drain acknowledgement be verified after response loss.
         self.bump_revision()
     }
 
@@ -650,6 +789,95 @@ mod tests {
         ModelExposurePolicy, PlaintextBoundary,
     };
 
+    #[test]
+    fn target_identity_cases_follow_the_decision_table() {
+        // Cause graph: absolute HTTP(S) + no userinfo/fragment -> canonical
+        // identity; scheme/host case, default port and trailing slash disappear;
+        // path/query/non-default-port changes remain; every invalid cause rejects.
+        //
+        // | Rule | HTTP(S) | userinfo/fragment | cosmetic-only delta | Effect |
+        // |---|---|---|---|---|
+        // | U1 | T | F | T | equal identity/fingerprint |
+        // | U2 | T | F | F | different identity/fingerprint |
+        // | U3 | F | - | - | reject |
+        // | U4 | T | T | - | reject |
+        let canonical = McpTarget::parse_http("https://mcp.example.test/sse").unwrap();
+        let cosmetic = McpTarget::parse_http("HTTPS://MCP.EXAMPLE.TEST:443/sse/").unwrap();
+        assert_eq!(
+            McpTarget::identity(&canonical.url).unwrap(),
+            McpTarget::identity(&cosmetic.url).unwrap(),
+            "U1"
+        );
+        assert_eq!(canonical.fingerprint, cosmetic.fingerprint, "U1");
+        let different = McpTarget::parse_http("https://mcp.example.test:8443/sse").unwrap();
+        assert_ne!(canonical.fingerprint, different.fingerprint, "U2");
+        assert!(McpTarget::parse_http("file:///tmp/mcp").is_err(), "U3");
+        for invalid in [
+            "https://user:secret@mcp.example.test/sse",
+            "https://mcp.example.test/sse#fragment",
+        ] {
+            assert!(McpTarget::parse_http(invalid).is_err(), "U4: {invalid}");
+        }
+    }
+
+    #[test]
+    fn realization_receipt_cases_are_generated_from_the_decision_table() {
+        // Cause graph: exact generation AND realization id AND selected holder
+        // AND complete stage-request fingerprint -> accept. A false value on any
+        // edge rejects the receipt; no partial identity subset is authoritative.
+        //
+        // | Rule | generation | realization | holder | request fingerprint | Effect |
+        // |---|---|---|---|---|---|
+        // | P1 | exact | exact | exact | exact | accept |
+        // | P2 | other | exact | exact | exact | reject |
+        // | P3 | exact | other | exact | exact | reject |
+        // | P4 | exact | exact | other | exact | reject |
+        // | P5 | exact | exact | exact | other | reject |
+        let selected = holder("worker-a");
+        let request = StageMcpAttachment {
+            workspace_id: "workspace-a".into(),
+            generation: McpGenerationRef {
+                session_id: "session-a".into(),
+                attachment_id: McpAttachmentId("mcp-docs".into()),
+                generation: McpGeneration(3),
+                runtime_incarnation: "runtime-a".into(),
+                lease_epoch: 7,
+                lease_expires_at_unix_ms: u64::MAX,
+            },
+            realization_id: "realization-a".into(),
+            stage_idempotency_key: "stage-a".into(),
+            name: "docs".into(),
+            target: McpTarget::parse_http("https://mcp.example.test").unwrap(),
+            credential: None,
+            selected_plaintext_holder: Some(selected.clone()),
+        };
+        let exact = McpRealizationReceipt {
+            generation: request.generation.clone(),
+            realization_id: request.realization_id.clone(),
+            selected_plaintext_holder: request.selected_plaintext_holder.clone(),
+            actual_realization_kind: None,
+            receipt_fingerprint: request.fingerprint(),
+        };
+        for (rule, mutation, accepted) in [
+            ("P1", 0_u8, true),
+            ("P2", 1, false),
+            ("P3", 2, false),
+            ("P4", 3, false),
+            ("P5", 4, false),
+        ] {
+            let mut receipt = exact.clone();
+            match mutation {
+                0 => {}
+                1 => receipt.generation.generation = McpGeneration(4),
+                2 => receipt.realization_id = "realization-b".into(),
+                3 => receipt.selected_plaintext_holder = Some(holder("worker-b")),
+                4 => receipt.receipt_fingerprint = "another-request".into(),
+                _ => unreachable!(),
+            }
+            assert_eq!(receipt.verify(&request).is_ok(), accepted, "{rule}");
+        }
+    }
+
     fn holder(domain: &str) -> PlaintextHolder {
         PlaintextHolder::new(PlaintextBoundary::Worker, domain)
     }
@@ -672,10 +900,93 @@ mod tests {
     fn draft(name: &str, url: &str, credential: Option<CredentialAccess>) -> McpAttachmentDraft {
         McpAttachmentDraft {
             name: name.into(),
-            target: McpTarget::new(url),
+            target: McpTarget::parse_http(url).unwrap(),
             credential,
             origin: McpAttachmentOrigin::Session,
         }
+    }
+
+    fn origin_draft(name: &str, url: &str, origin: McpAttachmentOrigin) -> McpAttachmentDraft {
+        McpAttachmentDraft {
+            name: name.into(),
+            target: McpTarget::parse_http(url).unwrap(),
+            credential: None,
+            origin,
+        }
+    }
+
+    #[test]
+    fn create_time_mcp_precedence_cases_follow_the_decision_table() {
+        // Cause graph: candidates first compete by exact logical name using
+        // Session > Application > Agent; the selected set then requires unique
+        // canonical targets. Equal-rank duplicate names never use order as a
+        // hidden tie-breaker.
+        //
+        // | Rule | Same name sources | Selected | Target collision | Effect |
+        // |---|---|---|---|---|
+        // | P1 | Session+Application+Agent | Session | no | success |
+        // | P2 | Application+Agent | Application | no | success |
+        // | P3 | same rank twice | - | no | DuplicateName |
+        // | P4 | different names | both | yes | DuplicateTarget |
+        // | P5 | distinct names/targets | both | no | canonical name order |
+        let p1 = resolve_mcp_draft_precedence(vec![
+            origin_draft("calc", "https://agent", McpAttachmentOrigin::Agent),
+            origin_draft(
+                "calc",
+                "https://application",
+                McpAttachmentOrigin::Application,
+            ),
+            origin_draft("calc", "https://session", McpAttachmentOrigin::Session),
+        ])
+        .unwrap();
+        assert_eq!(p1.len(), 1, "P1");
+        assert_eq!(p1[0].target.url, "https://session", "P1");
+
+        let p2 = resolve_mcp_draft_precedence(vec![
+            origin_draft("calc", "https://agent", McpAttachmentOrigin::Agent),
+            origin_draft(
+                "calc",
+                "https://application",
+                McpAttachmentOrigin::Application,
+            ),
+        ])
+        .unwrap();
+        assert_eq!(p2[0].target.url, "https://application", "P2");
+
+        assert!(
+            matches!(
+                resolve_mcp_draft_precedence(vec![
+                    origin_draft("calc", "https://a", McpAttachmentOrigin::Agent),
+                    origin_draft("calc", "https://b", McpAttachmentOrigin::Agent),
+                ]),
+                Err(McpAttachmentError::DuplicateName(name)) if name == "calc"
+            ),
+            "P3"
+        );
+
+        assert!(
+            matches!(
+                resolve_mcp_draft_precedence(vec![
+                    origin_draft("a", "https://same", McpAttachmentOrigin::Session),
+                    origin_draft("b", "https://same", McpAttachmentOrigin::Application),
+                ]),
+                Err(McpAttachmentError::DuplicateTarget(_))
+            ),
+            "P4"
+        );
+
+        let p5 = resolve_mcp_draft_precedence(vec![
+            origin_draft("z", "https://z", McpAttachmentOrigin::Agent),
+            origin_draft("a", "https://a", McpAttachmentOrigin::Application),
+        ])
+        .unwrap();
+        assert_eq!(
+            p5.iter()
+                .map(|draft| draft.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "z"],
+            "P5"
+        );
     }
 
     #[test]

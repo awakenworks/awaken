@@ -148,6 +148,9 @@ pub struct SharedHost {
     /// Optional claim-time projection into the authoritative Session environment.
     pub(crate) application_session_provisioner:
         Option<Arc<dyn crate::ApplicationSessionProvisioner>>,
+    /// Outbound Control command paired with the provisioner. A Worker must
+    /// never fall back to installing its locally produced plan.
+    pub(crate) application_session_control: Option<Arc<dyn crate::ApplicationSessionControlClient>>,
     pub(crate) provider: LocalProvider,
     /// Provider for the Session-owned environment shared by Native/ACP/children.
     /// Kept separate from deliberately-fresh housekeeping sandboxes.
@@ -217,11 +220,10 @@ pub struct SharedHost {
     /// bearers host-side and injects them when forwarding the sandbox's MCP calls, so the
     /// raw token never enters the sandbox. See [`crate::mcp_relay`].
     pub(crate) mcp_relay: tokio::sync::OnceCell<crate::mcp_relay::McpRelay>,
-    /// Cold-worker installer for the frozen dispatch manifest. It owns only weak
-    /// host wiring plus resource/credential ports, so installing it cannot create
-    /// an `Arc<SharedHost>` cycle.
-    pub(crate) dispatch_resource_preparer:
-        std::sync::RwLock<Option<crate::DispatchResourcePreparer>>,
+    /// Cold-Worker adapter over the configured Session Runtime. It owns only weak
+    /// host wiring plus Resource/credential ports, so installing it cannot create
+    /// an `Arc<SharedHost>` cycle or a second Vault/materialization path.
+    pub(crate) dispatch_session_runtime: std::sync::RwLock<Option<crate::DispatchSessionRuntime>>,
     /// Per-thread network-egress denial, set by a session's `prepare_session` from its
     /// environment's networking policy. A thread with no entry (or `false`) shares the
     /// host network; `true` runs its `bash` under a `bwrap --unshare-net` namespace

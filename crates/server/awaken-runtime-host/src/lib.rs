@@ -93,7 +93,8 @@ mod worker_control_client;
 
 // The neutral session substrate and its resume vocabulary.
 pub use crate::application::{
-    ApplicationSessionError, ApplicationSessionPlan, ApplicationSessionProvisioner,
+    ApplicationSessionControlClient, ApplicationSessionControlReceipt, ApplicationSessionError,
+    ApplicationSessionPlan, ApplicationSessionProvisioner, WorkerControlApplicationSessionClient,
 };
 pub use crate::commit_backend::init_shared_postgres_commit;
 pub use crate::credential_materializer::PinnedCredentialMaterializer;
@@ -280,40 +281,44 @@ pub struct ManagedHost {
     resource_validator: Option<Arc<dyn awaken_resource_contract::ResourceBindingValidator>>,
 }
 
-/// Runtime credential injection. This is independent of MCP and is also consumed
-/// by Repository realization; persisted inputs carry references only.
+/// Shared Runtime credential injection for MCP and Repository realization;
+/// persisted Session inputs carry references only.
 #[derive(Clone)]
 struct CredentialInjector {
     credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
     secrets: Arc<dyn awaken_credential_vault::SecretStore>,
 }
 
-/// Weak, cloneable worker-side projection of the Managed Session resource
-/// preparer. Durable dispatch carries only a secret-free manifest; this object
-/// injects the already-configured Resource Catalog validator and credential ports
-/// when a cold worker realizes that manifest.
+/// Weak, cloneable Worker-side adapter over the same configured Managed
+/// `SessionRuntime`. Durable dispatch carries only secret-free projections; this
+/// object reuses the installed Resource validator and credential ports for
+/// Resource and MCP realization without constructing a parallel vault path.
 #[derive(Clone)]
-pub(crate) struct DispatchResourcePreparer {
+pub(crate) struct DispatchSessionRuntime {
     host: std::sync::Weak<SharedHost>,
     credentials: Option<CredentialInjector>,
     resource_validator: Option<Arc<dyn awaken_resource_contract::ResourceBindingValidator>>,
 }
 
-impl DispatchResourcePreparer {
+impl DispatchSessionRuntime {
+    fn managed(&self) -> Result<ManagedHost, RunError> {
+        let host = self
+            .host
+            .upgrade()
+            .ok_or_else(|| RunError::internal("dispatch Session Runtime host was dropped"))?;
+        Ok(ManagedHost {
+            host,
+            credentials: self.credentials.clone(),
+            resource_validator: self.resource_validator.clone(),
+        })
+    }
+
     async fn install(
         &self,
         thread: &str,
         manifest: &awaken_protocol_managed::SessionResourceManifest,
     ) -> Result<(), RunError> {
-        let host = self
-            .host
-            .upgrade()
-            .ok_or_else(|| RunError::internal("resource preparer host was dropped"))?;
-        let managed = ManagedHost {
-            host,
-            credentials: self.credentials.clone(),
-            resource_validator: self.resource_validator.clone(),
-        };
+        let managed = self.managed()?;
         let previous = managed.host.thread_resource_manifest(thread);
         if previous
             .as_ref()
@@ -336,6 +341,27 @@ impl DispatchResourcePreparer {
         }
         Ok(())
     }
+
+    async fn stage_mcp(
+        &self,
+        request: awaken_protocol_managed::StageMcpAttachment,
+    ) -> Result<awaken_protocol_managed::McpRealizationReceipt, RunError> {
+        SessionRuntime::stage_mcp_attachment(&self.managed()?, request).await
+    }
+
+    async fn publish_mcp(
+        &self,
+        generation: awaken_protocol_managed::McpGenerationRef,
+    ) -> Result<(), RunError> {
+        SessionRuntime::publish_mcp_generation(&self.managed()?, generation).await
+    }
+
+    async fn drain_mcp(
+        &self,
+        generation: awaken_protocol_managed::McpGenerationRef,
+    ) -> Result<(), RunError> {
+        SessionRuntime::drain_mcp_generation(&self.managed()?, generation).await
+    }
 }
 
 impl SharedHost {
@@ -345,14 +371,45 @@ impl SharedHost {
         manifest: &awaken_protocol_managed::SessionResourceManifest,
     ) -> Result<(), RunError> {
         let preparer = self
-            .dispatch_resource_preparer
+            .dispatch_session_runtime
             .read()
-            .expect("dispatch resource preparer lock poisoned")
+            .expect("dispatch Session Runtime lock poisoned")
             .clone()
             .ok_or_else(|| {
-                RunError::internal("durable resource dispatch has no resource preparer")
+                RunError::internal("durable resource dispatch has no Session Runtime")
             })?;
         preparer.install(thread, manifest).await
+    }
+
+    fn dispatch_session_runtime(&self) -> Result<DispatchSessionRuntime, RunError> {
+        self.dispatch_session_runtime
+            .read()
+            .expect("dispatch Session Runtime lock poisoned")
+            .clone()
+            .ok_or_else(|| RunError::internal("dispatch Session Runtime is not configured"))
+    }
+
+    pub(crate) async fn stage_dispatched_mcp(
+        &self,
+        request: awaken_protocol_managed::StageMcpAttachment,
+    ) -> Result<awaken_protocol_managed::McpRealizationReceipt, RunError> {
+        self.dispatch_session_runtime()?.stage_mcp(request).await
+    }
+
+    pub(crate) async fn publish_dispatched_mcp(
+        &self,
+        generation: awaken_protocol_managed::McpGenerationRef,
+    ) -> Result<(), RunError> {
+        self.dispatch_session_runtime()?
+            .publish_mcp(generation)
+            .await
+    }
+
+    pub(crate) async fn drain_dispatched_mcp(
+        &self,
+        generation: awaken_protocol_managed::McpGenerationRef,
+    ) -> Result<(), RunError> {
+        self.dispatch_session_runtime()?.drain_mcp(generation).await
     }
 }
 
@@ -390,16 +447,16 @@ impl ManagedHost {
             credentials: None,
             resource_validator: None,
         };
-        managed.refresh_dispatch_resource_preparer();
+        managed.refresh_dispatch_session_runtime();
         managed
     }
 
-    fn refresh_dispatch_resource_preparer(&self) {
+    fn refresh_dispatch_session_runtime(&self) {
         *self
             .host
-            .dispatch_resource_preparer
+            .dispatch_session_runtime
             .write()
-            .expect("dispatch resource preparer lock poisoned") = Some(DispatchResourcePreparer {
+            .expect("dispatch Session Runtime lock poisoned") = Some(DispatchSessionRuntime {
             host: Arc::downgrade(&self.host),
             credentials: self.credentials.clone(),
             resource_validator: self.resource_validator.clone(),
@@ -416,7 +473,7 @@ impl ManagedHost {
         validator: Arc<dyn awaken_resource_contract::ResourceBindingValidator>,
     ) -> Self {
         self.resource_validator = Some(validator);
-        self.refresh_dispatch_resource_preparer();
+        self.refresh_dispatch_session_runtime();
         self
     }
 
@@ -772,7 +829,7 @@ impl ManagedHost {
             credentials,
             secrets,
         });
-        self.refresh_dispatch_resource_preparer();
+        self.refresh_dispatch_session_runtime();
         self
     }
 }
@@ -1197,7 +1254,7 @@ impl SessionRuntime for ManagedHost {
                 "MCP realization lease has expired",
             ));
         }
-        let request_fingerprint = awaken_protocol_managed::stable_fingerprint(&request);
+        let request_fingerprint = request.fingerprint();
         if let Some(existing) = self.host.mcp_projection(&request.generation) {
             if existing.realization_id == request.realization_id
                 && existing.stage_idempotency_key == request.stage_idempotency_key

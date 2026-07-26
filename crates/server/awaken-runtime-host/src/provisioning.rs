@@ -140,12 +140,21 @@ impl SharedHost {
             .thread_egress
             .denies(thread)
             .then(|| serde_json::json!({ "deny_egress": true }));
+        let network = self
+            .session_slots
+            .read(thread, |slot| {
+                slot.baseline
+                    .as_ref()
+                    .map(|baseline| baseline.network.clone())
+            })
+            .flatten()
+            .unwrap_or(pc::NetworkPolicy::Unrestricted);
         let base = pc::SandboxSpec {
             scope: thread.to_string(),
             isolation: pc::IsolationClass::Workdir,
             mounts,
             env: self.thread_session_env(thread),
-            network: pc::NetworkPolicy::Unrestricted,
+            network,
             outputs_path: OUTPUTS_PATH.to_string(),
             limits: pc::ResourceLimits::default(),
             lease_ttl_secs: None,

@@ -105,7 +105,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # dev-only: serde_json drives the ScopeId wire (scope_id column) round-trip test.
     "awaken-tenancy": {"serde", "serde_json"},
     # The neutral session-runtime ports + signature vocabulary (session runtime, work
-    # queue, MCP probe, agent-config source, session repo), extracted from the Managed
+    # queue, MCP probe/target identity, agent-config source, session repo), extracted from the Managed
     # wire adapter so the host + other implementors depend on a contract/ leaf, not on
     # a protocol adapter. Dependencies point inward — agent-domain vocab + async-trait
     # only; names no wire, store, or plane. Ports move here incrementally.
@@ -120,6 +120,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde",
         "serde_json",
         "thiserror",
+        "http",
         "tokio",
         # dev-only: property-based verification of the WorkState wire bijection (ADR-0059).
         "proptest",

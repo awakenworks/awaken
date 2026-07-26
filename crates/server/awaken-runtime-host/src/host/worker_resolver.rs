@@ -41,6 +41,97 @@ impl HostWorkerResolver {
             .ok_or_else(|| Self::execution_error("host dropped; pool idling"))
     }
 
+    async fn realize_application_session(
+        host: &SharedHost,
+        control: &Arc<dyn crate::ApplicationSessionControlClient>,
+        session_id: &str,
+        mut directive: awaken_protocol_managed::SessionRealizationDirective,
+    ) -> Result<(), awaken_run_ingress::Error> {
+        for _ in 0..4 {
+            host.install_frozen_session_projection(session_id, directive.projection.clone())
+                .await
+                .map_err(|error| Self::execution_error(error.to_string()))?;
+            match directive.action.clone() {
+                awaken_protocol_managed::SessionRealizationAction::Stage {
+                    prepare_session: _,
+                    mcp_stages,
+                } => {
+                    let mut receipts = Vec::with_capacity(mcp_stages.len());
+                    for request in mcp_stages {
+                        match host.stage_dispatched_mcp(request).await {
+                            Ok(receipt) => receipts.push(receipt),
+                            Err(error) => {
+                                for receipt in &receipts {
+                                    let _ =
+                                        host.drain_dispatched_mcp(receipt.generation.clone()).await;
+                                }
+                                let _ = control
+                                    .fail(awaken_protocol_managed::FailSessionRealization {
+                                        session_id: session_id.to_string(),
+                                        lease: directive.lease,
+                                        reason: error.to_string(),
+                                    })
+                                    .await;
+                                return Err(Self::execution_error(error.to_string()));
+                            }
+                        }
+                    }
+                    directive = match control
+                        .activate(awaken_protocol_managed::ActivateSessionRealization {
+                            session_id: session_id.to_string(),
+                            lease: directive.lease,
+                            mcp_receipts: receipts.clone(),
+                        })
+                        .await
+                    {
+                        Ok(next) => next,
+                        Err(error) => {
+                            for receipt in receipts {
+                                let _ = host.drain_dispatched_mcp(receipt.generation).await;
+                            }
+                            return Err(Self::execution_error(error.to_string()));
+                        }
+                    };
+                }
+                awaken_protocol_managed::SessionRealizationAction::Publish { publish, drain } => {
+                    let external_result = async {
+                        for generation in &publish {
+                            host.publish_dispatched_mcp(generation.clone()).await?;
+                        }
+                        for generation in &drain {
+                            host.drain_dispatched_mcp(generation.clone()).await?;
+                        }
+                        Ok::<(), awaken_protocol_managed::RunError>(())
+                    }
+                    .await;
+                    if let Err(error) = external_result {
+                        let _ = control
+                            .fail(awaken_protocol_managed::FailSessionRealization {
+                                session_id: session_id.to_string(),
+                                lease: directive.lease,
+                                reason: error.to_string(),
+                            })
+                            .await;
+                        return Err(Self::execution_error(error.to_string()));
+                    }
+                    directive = control
+                        .acknowledge(awaken_protocol_managed::AcknowledgeSessionRealization {
+                            session_id: session_id.to_string(),
+                            lease: directive.lease,
+                            published: publish,
+                            drained: drain,
+                        })
+                        .await
+                        .map_err(|error| Self::execution_error(error.to_string()))?;
+                }
+                awaken_protocol_managed::SessionRealizationAction::Complete => return Ok(()),
+            }
+        }
+        Err(Self::execution_error(
+            "Session realization protocol did not converge",
+        ))
+    }
+
     async fn resolve(
         &self,
         host: &SharedHost,
@@ -160,7 +251,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         let agent_id = claimed.request.activation.snapshot.root_agent_id.0.as_str();
         let agent_id = (!agent_id.is_empty()).then_some(agent_id);
 
-        if let Some(envelope) = &claimed.request.session_resources {
+        let dispatched_resources = if let Some(envelope) = &claimed.request.session_resources {
             let dispatched_scope = claimed
                 .request
                 .execution_scope
@@ -181,10 +272,10 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                         claimed.lease.run_id.0
                     ))
                 })?;
-            host.install_dispatched_resources(&thread_id.0, &manifest)
-                .await
-                .map_err(|error| Self::execution_error(error.to_string()))?;
-        }
+            Some(manifest)
+        } else {
+            None
+        };
 
         if let Some(provisioner) = &host.application_session_provisioner {
             let dispatch: Arc<dyn awaken_run_ingress::DispatchQueue> = host
@@ -216,7 +307,40 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                     claimed.lease.run_id.0
                 ))
             })?;
-            host.install_application_session_plan(&thread_id.0, plan)
+            let control = host.application_session_control.as_ref().ok_or_else(|| {
+                Self::execution_error(
+                    "application Session provisioner has no Control contribution client",
+                )
+            })?;
+            let claim = awaken_run_ingress::RunClaim::from(&claimed.lease);
+            let receipt = control
+                .contribute(&thread_id.0, &claim, plan)
+                .await
+                .map_err(|error| {
+                    Self::execution_error(format!(
+                        "run {} application contribution failed: {error}",
+                        claimed.lease.run_id.0
+                    ))
+                })?;
+            ownership.verify_current().await.map_err(|error| {
+                Self::execution_error(format!(
+                    "run {} lost ownership during application contribution: {error}",
+                    claimed.lease.run_id.0
+                ))
+            })?;
+            if let Some(dispatched) = &dispatched_resources
+                && (dispatched.workspace_id != receipt.contribution.projection.workspace_id
+                    || dispatched.resources != receipt.contribution.projection.resources)
+            {
+                return Err(Self::execution_error(
+                    "Control contribution projection conflicts with the claimed resource snapshot",
+                ));
+            }
+            Self::realize_application_session(&host, control, &thread_id.0, receipt.realization)
+                .await?;
+        } else if let Some(manifest) = &dispatched_resources {
+            host.install_dispatched_resources(&thread_id.0, manifest)
+                .await
                 .map_err(|error| Self::execution_error(error.to_string()))?;
         }
 
@@ -327,6 +451,148 @@ mod tests {
         calls: Arc<AtomicUsize>,
     }
 
+    struct RecordingContributor {
+        calls: Arc<AtomicUsize>,
+        phases: Arc<std::sync::Mutex<Vec<&'static str>>>,
+        projection: Arc<std::sync::Mutex<Option<awaken_protocol_managed::FrozenSessionProjection>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::ApplicationSessionControlClient for RecordingContributor {
+        async fn contribute(
+            &self,
+            _session_id: &str,
+            _claim: &awaken_run_ingress::RunClaim,
+            plan: crate::ApplicationSessionPlan,
+        ) -> Result<crate::ApplicationSessionControlReceipt, crate::ApplicationSessionError>
+        {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.phases.lock().unwrap().push("contribute");
+            let holder = awaken_runtime_contract::PlaintextHolder::new(
+                awaken_runtime_contract::PlaintextBoundary::Worker,
+                "test.worker",
+            );
+            let input = awaken_protocol_managed::ApplicationSessionInput {
+                mounts: Vec::new(),
+                env: Vec::new(),
+                prompts: plan.prompts,
+                mcp_inputs: plan.mcp_inputs,
+                network_restriction: plan.network_restriction,
+            };
+            let baseline = awaken_protocol_managed::SessionBaseline::compile(
+                awaken_protocol_managed::SessionBaselineInputs {
+                    environment: awaken_protocol_managed::EnvironmentSnapshot {
+                        environment_id: "env".into(),
+                        revision: awaken_protocol_managed::EnvironmentRevision(1),
+                        config_fingerprint: awaken_protocol_managed::EnvironmentFingerprint(
+                            "env-fingerprint".into(),
+                        ),
+                        sandbox: serde_json::json!({}),
+                        network: awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+                        credential_realization:
+                            awaken_runtime_contract::CredentialRealizationProfile {
+                                inference_holder: holder.clone(),
+                                mcp_holder: holder,
+                            },
+                    },
+                    mcp_authoring: Default::default(),
+                    agent_id: "agent".into(),
+                    model: "model".into(),
+                    runtime: None,
+                    application: Some(
+                        awaken_protocol_managed::ApplicationContributionReceipt::from_input(
+                            plan.fingerprint,
+                            &input,
+                        ),
+                    ),
+                    delegate_ids: Vec::new(),
+                    mounts: input.mounts,
+                    env: input.env,
+                    prompts: input.prompts,
+                },
+            );
+            let projection = awaken_protocol_managed::FrozenSessionProjection {
+                workspace_id: "workspace".into(),
+                revision: awaken_protocol_managed::SessionRevision(2),
+                baseline,
+                resources: Default::default(),
+                mcp: Vec::new(),
+            };
+            *self.projection.lock().unwrap() = Some(projection.clone());
+            let lease = awaken_protocol_managed::SessionRealizationLease {
+                owner: "worker-a".into(),
+                runtime_incarnation: "worker-a".into(),
+                epoch: 1,
+                expires_at_unix_ms: u64::MAX,
+            };
+            Ok(crate::ApplicationSessionControlReceipt {
+                contribution: awaken_protocol_managed::ApplicationSessionContributionReceipt {
+                    outcome: awaken_protocol_managed::ApplicationContributionOutcome::Committed,
+                    projection: projection.clone(),
+                },
+                realization: awaken_protocol_managed::SessionRealizationDirective {
+                    projection,
+                    lease,
+                    action: awaken_protocol_managed::SessionRealizationAction::Stage {
+                        prepare_session: true,
+                        mcp_stages: Vec::new(),
+                    },
+                },
+            })
+        }
+
+        async fn activate(
+            &self,
+            command: awaken_protocol_managed::ActivateSessionRealization,
+        ) -> Result<
+            awaken_protocol_managed::SessionRealizationDirective,
+            crate::ApplicationSessionError,
+        > {
+            self.phases.lock().unwrap().push("activate");
+            Ok(awaken_protocol_managed::SessionRealizationDirective {
+                projection: self
+                    .projection
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .expect("contribution projection"),
+                lease: command.lease,
+                action: awaken_protocol_managed::SessionRealizationAction::Publish {
+                    publish: Vec::new(),
+                    drain: Vec::new(),
+                },
+            })
+        }
+
+        async fn acknowledge(
+            &self,
+            command: awaken_protocol_managed::AcknowledgeSessionRealization,
+        ) -> Result<
+            awaken_protocol_managed::SessionRealizationDirective,
+            crate::ApplicationSessionError,
+        > {
+            self.phases.lock().unwrap().push("acknowledge");
+            Ok(awaken_protocol_managed::SessionRealizationDirective {
+                projection: self
+                    .projection
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .expect("contribution projection"),
+                lease: command.lease,
+                action: awaken_protocol_managed::SessionRealizationAction::Complete,
+            })
+        }
+
+        async fn fail(
+            &self,
+            _command: awaken_protocol_managed::FailSessionRealization,
+        ) -> Result<(), crate::ApplicationSessionError> {
+            self.phases.lock().unwrap().push("fail");
+            Ok(())
+        }
+    }
+
     #[async_trait::async_trait]
     impl crate::ApplicationSessionProvisioner for CountingProvisioner {
         async fn prepare(
@@ -347,51 +613,83 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claimed_application_plan_is_installed_before_session_realization() {
+    async fn claimed_application_contribution_is_acknowledged_before_session_realization() {
         use awaken_run_ingress::{Clock, DispatchQueue};
 
-        let storage = tempfile::tempdir().expect("storage");
-        let dispatch = Arc::new(
-            awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory()
-                .expect("in-memory dispatch"),
-        );
-        let calls = Arc::new(AtomicUsize::new(0));
-        let host = Arc::new(
-            SharedHost::new(Arc::new(AdoptionModel), "stub")
+        // Cause graph: live exact claim -> provisioner succeeds -> Control client
+        // exists -> contribution receipt carries a frozen projection -> install it
+        // before Session environment realization. A missing client must fail closed;
+        // the stale-claim table row is generated by the adjacent test.
+        //
+        // | Rule | Claim live | Provisioner | Contributor | Effect |
+        // |---|---|---|---|---|
+        // | W1 | T | success | installed | receipt then environment |
+        // | W2 | T | success | missing | reject before environment |
+        // | W3 | F | - | any | reject before provisioner |
+        for (rule, install_contributor) in [("W1", true), ("W2", false)] {
+            let storage = tempfile::tempdir().expect("storage");
+            let dispatch = Arc::new(
+                awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory()
+                    .expect("in-memory dispatch"),
+            );
+            let calls = Arc::new(AtomicUsize::new(0));
+            let contribution_calls = Arc::new(AtomicUsize::new(0));
+            let phases = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let projection = Arc::new(std::sync::Mutex::new(None));
+            let host = SharedHost::new(Arc::new(AdoptionModel), "stub")
                 .with_store_dir(storage.path())
                 .with_dispatch_store(dispatch.clone())
                 .with_application_session_provisioner(Arc::new(CountingProvisioner {
                     calls: calls.clone(),
-                })),
-        );
-        dispatch
-            .enqueue(awaken_run_ingress::RunDispatch::new(test_activation(
-                "thread-application-plan",
-                "run-application-plan",
-            )))
-            .await
-            .expect("enqueue");
-        let now = awaken_run_ingress::SystemClock.now_ms();
-        let claimed = dispatch
-            .claim("worker-a", 30_000, now)
-            .await
-            .expect("claim")
-            .expect("claimed run");
-        let resolver = HostWorkerResolver {
-            host: Arc::downgrade(&host),
-        };
-
-        resolver
-            .worker_for_claimed(&claimed)
-            .await
-            .expect("application plan precedes Session realization");
-
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert!(
-            host.session_environment("thread-application-plan")
+                }));
+            let host = if install_contributor {
+                host.with_application_session_control(Arc::new(RecordingContributor {
+                    calls: contribution_calls.clone(),
+                    phases: phases.clone(),
+                    projection,
+                }))
+            } else {
+                host
+            };
+            let host = Arc::new(host);
+            let thread = format!("thread-application-{rule}");
+            let run = format!("run-application-{rule}");
+            dispatch
+                .enqueue(awaken_run_ingress::RunDispatch::new(test_activation(
+                    &thread, &run,
+                )))
                 .await
-                .is_some()
-        );
+                .expect("enqueue");
+            let now = awaken_run_ingress::SystemClock.now_ms();
+            let claimed = dispatch
+                .claim("worker-a", 30_000, now)
+                .await
+                .expect("claim")
+                .expect("claimed run");
+            let resolver = HostWorkerResolver {
+                host: Arc::downgrade(&host),
+            };
+            let result = resolver.worker_for_claimed(&claimed).await;
+
+            assert_eq!(calls.load(Ordering::SeqCst), 1, "{rule}");
+            assert_eq!(
+                contribution_calls.load(Ordering::SeqCst),
+                usize::from(install_contributor),
+                "{rule}"
+            );
+            assert_eq!(result.is_ok(), install_contributor, "{rule}");
+            let expected_phases: &[&str] = if install_contributor {
+                &["contribute", "activate", "acknowledge"]
+            } else {
+                &[]
+            };
+            assert_eq!(phases.lock().unwrap().as_slice(), expected_phases, "{rule}");
+            assert_eq!(
+                host.session_environment(&thread).await.is_some(),
+                install_contributor,
+                "{rule}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -334,14 +334,11 @@ async fn update_session(
 ) -> Result<(HeaderMap, Json<Session>), WireErr> {
     let agent = body.get("agent").cloned();
     let (tools, mcp_servers) = if let Some(agent) = agent {
-        let object = agent
-            .as_object()
-            .ok_or_else(|| {
-                error_response(StateError::Run(RunError::bad_request(
-                    "agent update must be an object",
-                )))
-            })
-            .map_err(|e| e)?;
+        let object = agent.as_object().ok_or_else(|| {
+            error_response(StateError::Run(RunError::bad_request(
+                "agent update must be an object",
+            )))
+        })?;
         for immutable in ["model", "system", "skills"] {
             if object.contains_key(immutable) {
                 return Err(error_response(StateError::Run(RunError::bad_request(
@@ -360,8 +357,7 @@ async fn update_session(
                     )))
                 })
             })
-            .transpose()
-            .map_err(|e| e)?;
+            .transpose()?;
         let mcp_servers = object
             .get("mcp_servers")
             .map(|value| {
@@ -371,8 +367,7 @@ async fn update_session(
                     )))
                 })
             })
-            .transpose()
-            .map_err(|e| e)?;
+            .transpose()?;
         (tools, mcp_servers)
     } else {
         (None, None)
@@ -431,12 +426,14 @@ async fn update_session(
     let session = state
         .update_session(
             &id,
-            title,
-            metadata,
-            tools,
-            mcp_servers,
-            idempotency_key,
-            if_match,
+            crate::state::SessionUpdateCommand {
+                title,
+                metadata,
+                tools,
+                mcp_servers,
+                idempotency_key,
+                if_match,
+            },
         )
         .await
         .map_err(error_response)?;

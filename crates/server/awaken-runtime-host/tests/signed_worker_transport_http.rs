@@ -24,6 +24,159 @@ use awaken_runtime_host::{
 };
 
 #[derive(Default)]
+struct RecordingApplicationContributions {
+    contributions: Mutex<Vec<awaken_protocol_managed::ApplicationSessionContribution>>,
+    projection: Mutex<Option<awaken_protocol_managed::FrozenSessionProjection>>,
+    activations: Mutex<usize>,
+    acknowledgements: Mutex<usize>,
+    failures: Mutex<usize>,
+}
+
+#[async_trait::async_trait]
+impl awaken_protocol_managed::ApplicationSessionContributionPort
+    for RecordingApplicationContributions
+{
+    async fn contribute_application(
+        &self,
+        contribution: awaken_protocol_managed::ApplicationSessionContribution,
+    ) -> Result<
+        awaken_protocol_managed::ApplicationSessionContributionReceipt,
+        awaken_protocol_managed::ApplicationSessionContributionFailure,
+    > {
+        self.contributions
+            .lock()
+            .unwrap()
+            .push(contribution.clone());
+        let holder = awaken_runtime_contract::PlaintextHolder::new(
+            awaken_runtime_contract::PlaintextBoundary::Worker,
+            "test.worker",
+        );
+        let input_receipt = awaken_protocol_managed::ApplicationContributionReceipt::from_input(
+            contribution.application_fingerprint,
+            &contribution.input,
+        );
+        let baseline = awaken_protocol_managed::SessionBaseline::compile(
+            awaken_protocol_managed::SessionBaselineInputs {
+                environment: awaken_protocol_managed::EnvironmentSnapshot {
+                    environment_id: "env".into(),
+                    revision: awaken_protocol_managed::EnvironmentRevision(1),
+                    config_fingerprint: awaken_protocol_managed::EnvironmentFingerprint(
+                        "env-fingerprint".into(),
+                    ),
+                    sandbox: serde_json::json!({}),
+                    network: awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+                    credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
+                        inference_holder: holder.clone(),
+                        mcp_holder: holder,
+                    },
+                },
+                mcp_authoring: Default::default(),
+                agent_id: "agent".into(),
+                model: "model".into(),
+                runtime: None,
+                application: Some(input_receipt),
+                delegate_ids: Vec::new(),
+                mounts: contribution.input.mounts,
+                env: contribution.input.env,
+                prompts: contribution.input.prompts,
+            },
+        );
+        let projection = awaken_protocol_managed::FrozenSessionProjection {
+            workspace_id: "workspace".into(),
+            revision: awaken_protocol_managed::SessionRevision(2),
+            baseline,
+            resources: Default::default(),
+            mcp: Vec::new(),
+        };
+        *self.projection.lock().unwrap() = Some(projection.clone());
+        Ok(
+            awaken_protocol_managed::ApplicationSessionContributionReceipt {
+                outcome: awaken_protocol_managed::ApplicationContributionOutcome::Committed,
+                projection,
+            },
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_protocol_managed::SessionRealizationControl for RecordingApplicationContributions {
+    async fn begin_session_realization(
+        &self,
+        command: awaken_protocol_managed::BeginSessionRealization,
+    ) -> Result<
+        awaken_protocol_managed::SessionRealizationDirective,
+        awaken_protocol_managed::SessionRealizationControlFailure,
+    > {
+        let projection = self
+            .projection
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or(awaken_protocol_managed::SessionRealizationControlFailure::NotReady)?;
+        Ok(awaken_protocol_managed::SessionRealizationDirective {
+            projection,
+            lease: awaken_protocol_managed::SessionRealizationLease {
+                owner: command.target.owner,
+                runtime_incarnation: command.target.runtime_incarnation,
+                epoch: 1,
+                expires_at_unix_ms: command.target.lease_expires_at_unix_ms,
+            },
+            action: awaken_protocol_managed::SessionRealizationAction::Complete,
+        })
+    }
+
+    async fn activate_session_realization(
+        &self,
+        command: awaken_protocol_managed::ActivateSessionRealization,
+    ) -> Result<
+        awaken_protocol_managed::SessionRealizationDirective,
+        awaken_protocol_managed::SessionRealizationControlFailure,
+    > {
+        *self.activations.lock().unwrap() += 1;
+        let projection = self
+            .projection
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or(awaken_protocol_managed::SessionRealizationControlFailure::NotReady)?;
+        Ok(awaken_protocol_managed::SessionRealizationDirective {
+            projection,
+            lease: command.lease,
+            action: awaken_protocol_managed::SessionRealizationAction::Complete,
+        })
+    }
+
+    async fn acknowledge_session_realization(
+        &self,
+        command: awaken_protocol_managed::AcknowledgeSessionRealization,
+    ) -> Result<
+        awaken_protocol_managed::SessionRealizationDirective,
+        awaken_protocol_managed::SessionRealizationControlFailure,
+    > {
+        *self.acknowledgements.lock().unwrap() += 1;
+        let projection = self
+            .projection
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or(awaken_protocol_managed::SessionRealizationControlFailure::NotReady)?;
+        Ok(awaken_protocol_managed::SessionRealizationDirective {
+            projection,
+            lease: command.lease,
+            action: awaken_protocol_managed::SessionRealizationAction::Complete,
+        })
+    }
+
+    async fn fail_session_realization(
+        &self,
+        _command: awaken_protocol_managed::FailSessionRealization,
+    ) -> Result<(), awaken_protocol_managed::SessionRealizationControlFailure> {
+        *self.failures.lock().unwrap() += 1;
+        Ok(())
+    }
+}
+
+#[derive(Default)]
 struct TestWorkerDirectory(Mutex<Option<RegisteredWorker>>);
 
 #[async_trait::async_trait]
@@ -172,13 +325,15 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .with_time_policy(60_000, 0);
     let directory = Arc::new(TestWorkerDirectory::default());
     let dispatch = Arc::new(MemoryDispatchStore::new());
+    let contributions = Arc::new(RecordingApplicationContributions::default());
     let service = WorkerDispatchService::new(
         dispatch.clone(),
         Arc::new(authenticator),
         clock.clone(),
         Arc::new(FixedWorkerLeasePolicy::new(30_000)),
     )
-    .with_worker_directory(directory, 30_000);
+    .with_worker_directory(directory, 30_000)
+    .with_application_session_control(contributions.clone());
     let router = dispatch_transport_router_with_service(Arc::new(service));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -253,8 +408,143 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .await
             .expect("signed exact-claim verification")
     );
+
+    // Cause graph: signed exact incarnation -> live registry lease -> identity
+    // owns exact Run claim -> guarded Run thread equals Session -> invoke the one
+    // Control contribution port while the epoch guard is held. Every failed cause
+    // rejects before the port and therefore before any Session mutation.
+    //
+    // | Rule | Identity | Claim owner/epoch | Session=thread | Effect |
+    // |---|---|---|---|---|
+    // | T1 | exact/live | exact/live | T | one contribution + receipt |
+    // | T2 | exact/live | wrong owner | T | reject, no contribution |
+    // | T3 | exact/live | exact/live | F | reject, no contribution |
+    // | T4 | exact/live | stale/expired | T | reject, no contribution |
+    // | T5 | exact/live | Session lease exact | - | activate reaches same control |
+    // | T6 | wrong incarnation | Session lease exact | - | reject before control |
+    // | T7 | exact/live | Session lease expired | - | reject before control |
+    // | T8 | exact/live | Session lease exact | - | acknowledge reaches same control |
+    // | T9 | exact/live | Session lease exact | - | failure reaches same control |
+    let client = WorkerControlClient::new(upstream.clone());
+    let contribution = awaken_protocol_managed::ApplicationSessionContribution {
+        session_id: "signed-thread".into(),
+        application_fingerprint: "plan-a".into(),
+        input: awaken_protocol_managed::ApplicationSessionInput::default(),
+    };
+    let receipt = client
+        .contribute_application(&registered.snapshot.identity, &claim, contribution.clone())
+        .await
+        .expect("T1 exact signed claim contributes");
+    assert_eq!(
+        receipt.contribution.outcome,
+        awaken_protocol_managed::ApplicationContributionOutcome::Committed
+    );
+    assert_eq!(contributions.contributions.lock().unwrap().len(), 1, "T1");
+    let mut wrong_owner = claim.clone();
+    wrong_owner.owner = "another-owner".into();
+    assert!(
+        client
+            .contribute_application(
+                &registered.snapshot.identity,
+                &wrong_owner,
+                contribution.clone(),
+            )
+            .await
+            .is_err(),
+        "T2"
+    );
+    let mut wrong_session = contribution.clone();
+    wrong_session.session_id = "another-session".into();
+    assert!(
+        client
+            .contribute_application(&registered.snapshot.identity, &claim, wrong_session)
+            .await
+            .is_err(),
+        "T3"
+    );
+    assert_eq!(
+        contributions.contributions.lock().unwrap().len(),
+        1,
+        "T2/T3"
+    );
+    let realization_lease = receipt.realization.lease.clone();
+    client
+        .activate_session_realization(
+            &registered.snapshot.identity,
+            awaken_protocol_managed::ActivateSessionRealization {
+                session_id: "signed-thread".into(),
+                lease: realization_lease.clone(),
+                mcp_receipts: Vec::new(),
+            },
+        )
+        .await
+        .expect("T5");
+    assert_eq!(*contributions.activations.lock().unwrap(), 1, "T5");
+
+    let wrong_identity = WorkerIdentity::new("signed-http-worker", "another-boot", 999);
+    assert!(
+        client
+            .activate_session_realization(
+                &wrong_identity,
+                awaken_protocol_managed::ActivateSessionRealization {
+                    session_id: "signed-thread".into(),
+                    lease: realization_lease.clone(),
+                    mcp_receipts: Vec::new(),
+                },
+            )
+            .await
+            .is_err(),
+        "T6"
+    );
+    assert_eq!(*contributions.activations.lock().unwrap(), 1, "T6");
+
+    let mut expired_lease = realization_lease.clone();
+    expired_lease.expires_at_unix_ms = 0;
+    assert!(
+        client
+            .activate_session_realization(
+                &registered.snapshot.identity,
+                awaken_protocol_managed::ActivateSessionRealization {
+                    session_id: "signed-thread".into(),
+                    lease: expired_lease,
+                    mcp_receipts: Vec::new(),
+                },
+            )
+            .await
+            .is_err(),
+        "T7"
+    );
+    assert_eq!(*contributions.activations.lock().unwrap(), 1, "T7");
+
+    client
+        .acknowledge_session_realization(
+            &registered.snapshot.identity,
+            awaken_protocol_managed::AcknowledgeSessionRealization {
+                session_id: "signed-thread".into(),
+                lease: realization_lease.clone(),
+                published: Vec::new(),
+                drained: Vec::new(),
+            },
+        )
+        .await
+        .expect("T8");
+    assert_eq!(*contributions.acknowledgements.lock().unwrap(), 1, "T8");
+
+    client
+        .fail_session_realization(
+            &registered.snapshot.identity,
+            awaken_protocol_managed::FailSessionRealization {
+                session_id: "signed-thread".into(),
+                lease: realization_lease,
+                reason: "test failure".into(),
+            },
+        )
+        .await
+        .expect("T9");
+    assert_eq!(*contributions.failures.lock().unwrap(), 1, "T9");
+
     clock.set(20_000);
-    WorkerControlClient::new(upstream)
+    WorkerControlClient::new(upstream.clone())
         .heartbeat(
             &registered.snapshot.identity,
             WorkerHeartbeat {
@@ -273,4 +563,12 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .await
             .expect("signed expired-claim verification")
     );
+    assert!(
+        WorkerControlClient::new(upstream)
+            .contribute_application(&registered.snapshot.identity, &claim, contribution)
+            .await
+            .is_err(),
+        "T4"
+    );
+    assert_eq!(contributions.contributions.lock().unwrap().len(), 1, "T4");
 }

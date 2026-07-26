@@ -12,6 +12,7 @@
 //! until they are flipped to depend on this crate directly.
 
 mod agent_config;
+mod application_contribution;
 mod baseline;
 pub mod env_registry;
 mod fingerprint;
@@ -22,6 +23,7 @@ mod mcp_probe;
 mod resource;
 mod resource_activation;
 mod session;
+mod session_realization;
 mod session_repo;
 pub mod work_queue;
 
@@ -33,18 +35,27 @@ pub mod resource_plane {
 }
 
 pub use agent_config::{AgentConfigSource, AgentConfigView, AgentMcpServerView};
+pub use application_contribution::{
+    ApplicationSessionContribution, ApplicationSessionContributionFailure,
+    ApplicationSessionContributionPort, ApplicationSessionContributionReceipt,
+    FrozenSessionProjection,
+};
 pub use baseline::{
-    ApplicationContributionState, ApplicationSessionInput, EnvironmentFingerprint,
-    EnvironmentSnapshot, SessionBaseline, SessionBaselineFingerprint, SessionBaselineState,
-    SessionCreationIntent, SessionMcpAuthoringContext, SessionNetworkPolicy,
+    ApplicationContributionError, ApplicationContributionOutcome, ApplicationContributionReceipt,
+    ApplicationContributionState, ApplicationSessionInput, CompiledSessionCreation,
+    ControlSessionCreationInputs, EnvironmentFingerprint, EnvironmentSnapshot, SessionBaseline,
+    SessionBaselineFingerprint, SessionBaselineInputs, SessionBaselineState,
+    SessionCreationFinalizeError, SessionCreationIntent, SessionMcpAuthoringContext,
+    SessionNetworkPolicy,
 };
 pub use fingerprint::stable_fingerprint;
 pub use lifecycle::{SessionLifecycleFact, SessionLifecycleSink};
 pub use mcp_attachment::{
     McpAttachmentDraft, McpAttachmentError, McpAttachmentId, McpAttachmentOrigin,
     McpAttachmentState, McpDesiredSetFingerprint, McpGeneration, McpGenerationRef,
-    McpRealizationClaim, McpRealizationReceipt, McpReplacementPlan, McpSetRevision, McpTarget,
-    SessionMcpAttachment, SessionMcpAttachmentSet, StageMcpAttachment,
+    McpRealizationClaim, McpRealizationReceipt, McpRealizationReceiptError, McpReplacementPlan,
+    McpSetRevision, McpTarget, McpTargetError, McpTargetIdentity, SessionMcpAttachment,
+    SessionMcpAttachmentSet, StageMcpAttachment,
 };
 pub use mcp_binding::{McpRefreshBinding, TokenEndpointAuthBinding};
 pub use mcp_probe::{McpProbe, McpProbeStatus};
@@ -59,6 +70,12 @@ pub use session::{
     AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot, OutcomeIteration, OutcomeReport, Pending, RunError, RunErrorKind,
     SessionInit, SessionRuntime, SessionUsage, StepOutcome, ToolPermissionDecision,
+};
+pub use session_realization::{
+    AcknowledgeSessionRealization, ActivateSessionRealization, ApplicationSessionControl,
+    BeginSessionRealization, FailSessionRealization, SessionRealizationAction,
+    SessionRealizationControl, SessionRealizationControlFailure, SessionRealizationDirective,
+    SessionRealizationTarget,
 };
 pub use session_repo::{
     IdempotencyRecord, ManagedSessionRepository, PersistedSession, ScopedPersistedSession,

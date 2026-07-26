@@ -32,6 +32,17 @@ pub(crate) struct McpGenerationProjection {
     pub state: McpProjectionState,
 }
 
+/// Process-local projection of the Control-frozen baseline. This is realization
+/// input only; the durable Session aggregate remains the authority.
+#[derive(Clone)]
+pub(crate) struct FrozenBaselineRuntimeProjection {
+    pub fingerprint: awaken_protocol_managed::SessionBaselineFingerprint,
+    pub mounts: Vec<awaken_provisioning_contract::MountRequirement>,
+    pub env: Vec<awaken_provisioning_contract::EnvVar>,
+    pub prompts: Vec<String>,
+    pub network: awaken_provisioning_contract::NetworkPolicy,
+}
+
 #[derive(Default)]
 pub(crate) struct SessionRuntimeSlot {
     /// Serializes first materialization/rebuild for this Session without a
@@ -44,9 +55,9 @@ pub(crate) struct SessionRuntimeSlot {
     pub runtime_adapter: Option<String>,
     pub memory: Option<Arc<BoundMemory>>,
     pub mcp: Vec<McpGenerationProjection>,
-    /// Claim-bound additions supplied by the embedding application. The host
-    /// realizes these through the same Session environment as built-in resources.
-    pub application: Option<crate::ApplicationSessionPlan>,
+    /// Exact Control-frozen baseline projected for realization. It is never
+    /// authored or mutated locally.
+    pub baseline: Option<FrozenBaselineRuntimeProjection>,
     /// Exact published delegation targets projected by a managed Session.
     pub delegates: Vec<String>,
     /// `Some([])` means the frozen manifest delivers no Skills; `None` means this

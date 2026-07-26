@@ -123,13 +123,7 @@ impl EnvironmentState {
             .get("sandbox")
             .and_then(awaken_provisioning_contract::SandboxOverride::from_config_value)
             .unwrap_or_default();
-        let network = sandbox
-            .network
-            .take()
-            .map_or(authored_network.clone(), |sandbox_network| {
-                authored_network.safe_intersection(&sandbox_network)
-            });
-        let network = match network {
+        let sandbox_network = sandbox.network.take().map(|network| match network {
             awaken_provisioning_contract::NetworkPolicy::Unrestricted => {
                 awaken_session_contract::SessionNetworkPolicy::Unrestricted
             }
@@ -139,7 +133,10 @@ impl EnvironmentState {
             awaken_provisioning_contract::NetworkPolicy::None => {
                 awaken_session_contract::SessionNetworkPolicy::None
             }
-        };
+        });
+        let network = sandbox_network.map_or(authored_network.clone(), |sandbox_network| {
+            authored_network.safe_intersection(&sandbox_network)
+        });
         let acp = runtime.is_some_and(|value| value.starts_with("acp:"));
         let holder = if acp {
             awaken_credential_contract::PlaintextHolder::new(

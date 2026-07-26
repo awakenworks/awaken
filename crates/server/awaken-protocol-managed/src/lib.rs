@@ -40,7 +40,6 @@ pub mod types;
 /// with an in-memory default; durable (sqlite/postgres) backends fold in behind it.
 pub mod cron;
 pub mod env_registry;
-mod mcp_normalizer;
 mod preview;
 mod state;
 /// The self-hosted environment work queue as a port ([`work_queue::WorkQueue`]),
@@ -70,12 +69,22 @@ pub use awaken_ext_memory::{
     MemoryExtractorSnapshot, MemoryMutationReceipt, PutMemoryExtractionOutcome,
 };
 pub use awaken_resource_contract::ResourceCatalog;
+pub use awaken_session_contract::env_registry::EnvironmentRevision;
 pub use awaken_session_contract::{
-    ApplicationContributionState, IdempotencyRecord, ManagedSessionRepository, McpAttachmentId,
-    McpGeneration, McpGenerationRef, McpRealizationReceipt, McpTarget, PersistedSession,
-    ResolvedInput, ResolvedInputSource, ResolvedSessionResources, ResolvedSkillBinding,
-    SessionBaselineState, SessionCreationIntent, SessionResourceManifest, StageMcpAttachment,
-    resource_plane, stable_fingerprint,
+    AcknowledgeSessionRealization, ActivateSessionRealization, ApplicationContributionOutcome,
+    ApplicationContributionReceipt, ApplicationContributionState, ApplicationSessionContribution,
+    ApplicationSessionContributionFailure, ApplicationSessionContributionPort,
+    ApplicationSessionContributionReceipt, ApplicationSessionControl, ApplicationSessionInput,
+    BeginSessionRealization, CompiledSessionCreation, ControlSessionCreationInputs,
+    EnvironmentFingerprint, EnvironmentSnapshot, FailSessionRealization, FrozenSessionProjection,
+    IdempotencyRecord, ManagedSessionRepository, McpAttachmentId, McpGeneration, McpGenerationRef,
+    McpRealizationReceipt, McpTarget, PersistedSession, ResolvedInput, ResolvedInputSource,
+    ResolvedSessionResources, ResolvedSkillBinding, SessionBaseline, SessionBaselineFingerprint,
+    SessionBaselineInputs, SessionBaselineState, SessionCreationFinalizeError,
+    SessionCreationIntent, SessionNetworkPolicy, SessionRealizationAction,
+    SessionRealizationControl, SessionRealizationControlFailure, SessionRealizationDirective,
+    SessionRealizationLease, SessionRealizationTarget, SessionResourceManifest, SessionRevision,
+    StageMcpAttachment, resource_plane, stable_fingerprint,
 };
 pub use awaken_session_store::SqliteManagedSessionRepository;
 pub use state::{
