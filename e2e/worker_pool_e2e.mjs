@@ -69,6 +69,7 @@ async function main() {
     worker = spawnServer('echo', 0, {
       AWAKEN_INGRESS: 'durable',
       AWAKEN_UPSTREAM_URL: SERVER,
+      AWAKEN_SCENARIO_ROLE: 'worker',
       AWAKEN_HTTP_ADDR: '127.0.0.1:0',
     }).server;
     // Give the worker a moment to start its draining pool.

@@ -1743,7 +1743,11 @@ pub async fn build_config_router() -> Router {
     // pointed at the fake upstream when `AWAKEN_MODEL_SOURCE=http`); the fake upstream
     // is what drives the seeded assistant through its admin tools in the run e2e.
     let (model, model_ref) = scenario_model(Arc::new(InstructionEchoModel), "config");
-    let platform_workspace = SharedHost::provision_local_workspace();
+    let deployment = scenario_deployment();
+    let platform_workspace = deployment.storage_dir.as_deref().map_or_else(
+        SharedHost::provision_local_workspace,
+        SharedHost::provision_local_workspace_at,
+    );
     let store = Arc::new(
         awaken_config_store::SqliteConfigStore::open_in_memory().expect("open config store"),
     );
@@ -1837,7 +1841,7 @@ pub async fn build_config_router() -> Router {
         ))),
         Arc::new(awaken_admin_assistant::TracingAuditSink),
     );
-    let host = SharedHost::new(model, model_ref)
+    let host = resource_host_with_deployment(model, model_ref, deployment)
         .with_local_workspace(platform_workspace.clone())
         .with_config_service(service.clone())
         .with_admin_tools(admin_execs)
