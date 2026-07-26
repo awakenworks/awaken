@@ -281,3 +281,22 @@ Scenario behavior is a decorator, never an alternative constructor. The helper
 is the only owner of the ephemeral-versus-durable ResourcePlane decision, so a
 special protocol cannot silently discard storage, pool, Environment, or Resource
 ownership selected by the test deployment.
+
+## Phase 12: Workspace ownership and legacy Resource import
+
+```text
+production config data root -> persisted platform Workspace
+scenario-only explicit Workspace -> AWAKEN_SCENARIO_WORKSPACE -> canonical Host
+legacy resource-api.db -> canonical Memory/Skill import -> receipt -> old DB removable
+```
+
+| Rule | Process type | Workspace input | Legacy source | Expected |
+|---|---|---|---|---|
+| W1 | production | persisted data-root identity | none | exact persisted Workspace |
+| W2 | scenario | explicit scenario metadata | Memory + Skill | import into that exact scope |
+| W3 | scenario restart | same explicit metadata | source removed | canonical aggregates remain |
+| W4 | production | `AWAKEN_LOCAL_WORKSPACE_ID` | any | ignored; no configuration effect |
+
+The test-only name prevents fixture metadata from becoming a second production
+deployment boundary. Legacy migration reuses the server's one migration function
+and writes only canonical Resource stores; it never installs a dual-read adapter.
