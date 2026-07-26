@@ -37,6 +37,7 @@ fn router(probe: Option<Arc<dyn CredentialProbe>>) -> Router {
         resources: Arc::new(awaken_admin_config_api::InMemoryAgentInputBindingRepository::new()),
         probe,
         model_discovery: None,
+        brokered_catalog: None,
         availability: Arc::new(AvailabilityLedger::new()),
     })
 }
@@ -144,10 +145,15 @@ async fn model_attributes_publish_and_surface_in_the_catalog() {
     assert_eq!(echoed["context_window"], 1_000_000);
     assert_eq!(echoed["max_output_tokens"], 8192);
     assert_eq!(echoed["provenance"]["context_window"]["source"], "manual");
-    assert_eq!(echoed["provenance"]["max_output_tokens"]["source"], "manual");
-    assert!(echoed["provenance"]["context_window"]["observed_at_unix_ms"]
-        .as_u64()
-        .is_some_and(|timestamp| timestamp > 0));
+    assert_eq!(
+        echoed["provenance"]["max_output_tokens"]["source"],
+        "manual"
+    );
+    assert!(
+        echoed["provenance"]["context_window"]["observed_at_unix_ms"]
+            .as_u64()
+            .is_some_and(|timestamp| timestamp > 0)
+    );
 
     // They publish independently of any offering and land in the catalog snapshot.
     let (s, _, catalog) = call(&app, "GET", "/v1/config/catalog", None).await;
@@ -174,9 +180,11 @@ async fn model_attributes_upsert_replaces_the_prior_value() {
     let (_, _, catalog) = call(&app, "GET", "/v1/config/catalog", None).await;
     assert_eq!(catalog["model_attributes"]["m"]["context_window"], 262_144);
     assert!(catalog["model_attributes"]["m"]["max_output_tokens"].is_null());
-    assert!(catalog["model_attributes"]["m"]["provenance"]
-        .get("max_output_tokens")
-        .is_none());
+    assert!(
+        catalog["model_attributes"]["m"]["provenance"]
+            .get("max_output_tokens")
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -205,13 +213,8 @@ async fn model_attribute_token_limits_fail_closed_when_impossible() {
         json!({"max_output_tokens": 0}),
         json!({"context_window": 8_192, "max_output_tokens": 16_384}),
     ] {
-        let (status, _, problem) = call(
-            &app,
-            "PUT",
-            "/v1/config/model-attributes/m",
-            Some(body),
-        )
-        .await;
+        let (status, _, problem) =
+            call(&app, "PUT", "/v1/config/model-attributes/m", Some(body)).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{problem}");
     }
     let (_, _, catalog) = call(&app, "GET", "/v1/config/catalog", None).await;

@@ -40,6 +40,7 @@ fn harness() -> Harness {
         resources: Arc::new(awaken_admin_config_api::InMemoryAgentInputBindingRepository::new()),
         probe: None,
         model_discovery: None,
+        brokered_catalog: None,
         availability: Default::default(),
     });
     Harness {

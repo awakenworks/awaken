@@ -266,6 +266,74 @@ impl ManagementIdentityMode {
     }
 }
 
+impl RemoteManagementAuthz {
+    /// Connect to the authoritative IAM service and fetch its JWKS. Startup is
+    /// fail-closed when no cloud credential or trust anchor is available.
+    pub fn connect(
+        base_url: String,
+        audience: String,
+        issuer: String,
+        user_token: String,
+        service_token: Option<String>,
+    ) -> Result<Arc<Self>, String> {
+        let mut config = HostConfig::remote(base_url)
+            .with_audience(audience)
+            .with_issuer(issuer);
+        config.service_token = Some(service_token.unwrap_or_else(|| user_token.clone()));
+        // `connect_remote` performs the one-time JWKS fetch through reqwest's
+        // blocking client. This constructor is called by an async composition
+        // root, where creating/dropping that client's private runtime would panic.
+        // Isolate trust-anchor establishment on an ordinary OS thread; request-time
+        // PDP calls are already dispatched through `spawn_blocking` by the PEPs.
+        let handle = std::thread::spawn(move || connect_remote(&config))
+            .join()
+            .map_err(|_| "cloud IAM connection worker panicked".to_string())?
+            .map_err(|error| error.to_string())?;
+        Ok(Arc::new(Self {
+            gate: handle.gate,
+            user_token,
+        }))
+    }
+
+    /// Clone the signed-in user's bearer only for another authenticated Awaken
+    /// Cloud client assembled in the same trusted process. HTTP handlers and
+    /// domain services never receive this value.
+    pub fn cloud_user_token(&self) -> awaken_agent_contract::RedactedString {
+        awaken_agent_contract::RedactedString::new(self.user_token.clone())
+    }
+
+    fn authenticate(&self, presented: Option<String>) -> Result<PrincipalRef, AuthReject> {
+        let token = presented.as_deref().unwrap_or(&self.user_token);
+        self.gate
+            .authenticate_detailed(token, &Timestamp(now_rfc3339()), now_unix())
+            .map(|(principal, _)| principal)
+    }
+
+    fn authorize(
+        &self,
+        principal: PrincipalRef,
+        action: &str,
+        scope: ScopeRef,
+    ) -> AuthorizationDecision {
+        IamClient::authorize(
+            &self.gate,
+            AuthorizationRequest::direct(principal, qualify_action(action), scope),
+        )
+    }
+
+    fn authorize_resource(
+        &self,
+        principal: PrincipalRef,
+        action: &str,
+        scope: ScopeRef,
+    ) -> AuthorizationDecision {
+        IamClient::authorize(
+            &self.gate,
+            AuthorizationRequest::direct(principal, qualify_resource_action(action), scope),
+        )
+    }
+}
+
 /// A mint request for a workspace-scoped service token (operator embeddings
 /// and tests; P1 exposes no HTTP mint surface).
 pub struct TokenSpec {
@@ -1056,6 +1124,13 @@ const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
     },
     RoutePolicyDescriptor {
         prefix: "/v1/config/catalog",
+        policy: RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/config/brokered-models",
         policy: RouteFamilyPolicy::Scoped {
             read: WORKSPACE_READ,
             write: WORKSPACE_WRITE,

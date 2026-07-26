@@ -7,8 +7,9 @@
 use std::sync::Mutex;
 
 use crate::{
-    CatalogError, CatalogSyncResult, DiscoveredModel, ModelAttributes, Offering, ProtocolEndpoint,
-    ProtocolEndpointId, Provider, ProviderCatalog, ProviderId, ValidCatalog,
+    BrokeredCatalogProjection, CatalogError, CatalogSyncResult, DiscoveredModel, ModelAttributes,
+    Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderCatalog, ProviderId,
+    ValidCatalog,
 };
 
 /// A catalog write/read failure.
@@ -46,6 +47,12 @@ pub trait CatalogRepo: Send + Sync {
         endpoint_id: &ProtocolEndpointId,
         models: Vec<DiscoveredModel>,
         observed_at_unix_ms: u64,
+    ) -> Result<CatalogSyncResult, RepoError>;
+    /// Atomically replace one authenticated broker's rebuildable public model
+    /// projection. Commercial authorization facts never enter this store.
+    async fn reconcile_brokered_projection(
+        &self,
+        projection: BrokeredCatalogProjection,
     ) -> Result<CatalogSyncResult, RepoError>;
     /// Publish the intrinsic attributes of a `model_id` (upsert on the model id).
     /// Model attributes publish independently of offerings — they carry no
@@ -189,6 +196,17 @@ impl CatalogRepo for InMemoryCatalogRepo {
         }
         let mut next = guard.get().clone();
         let result = next.reconcile_discovered_models(endpoint_id, models, observed_at_unix_ms)?;
+        *guard = ValidCatalog::parse(next)?;
+        Ok(result)
+    }
+
+    async fn reconcile_brokered_projection(
+        &self,
+        projection: BrokeredCatalogProjection,
+    ) -> Result<CatalogSyncResult, RepoError> {
+        let mut guard = self.inner.lock().expect("catalog mutex");
+        let mut next = guard.get().clone();
+        let result = next.reconcile_brokered_projection(projection)?;
         *guard = ValidCatalog::parse(next)?;
         Ok(result)
     }

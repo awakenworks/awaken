@@ -146,6 +146,10 @@ pub struct CredentialSource {
 pub enum CredentialBinding {
     /// No credential is needed.
     None,
+    /// Obtain short-lived, exact-model access from the platform broker at
+    /// execution time. No Provider credential or Cloud capability is persisted
+    /// in the local profile or publication.
+    Brokered,
     /// Use exactly one source.
     Exact {
         credential_source_id: CredentialSourceId,
@@ -874,6 +878,7 @@ mod tests {
     fn credential_binding_round_trips_with_its_tagged_wire_shape() {
         let cases = [
             (CredentialBinding::None, r#"{"type":"none"}"#),
+            (CredentialBinding::Brokered, r#"{"type":"brokered"}"#),
             (
                 CredentialBinding::Exact {
                     credential_source_id: CredentialSourceId("cred:1".into()),

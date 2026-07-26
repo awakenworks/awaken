@@ -23,6 +23,7 @@ export type {
 
 export type CredentialBinding =
   | { type: "none" }
+  | { type: "brokered" }
   | { type: "exact"; credential_source_id: string }
   | { type: "one_of_credential_pool"; credential_pool_id: string };
 

@@ -178,6 +178,7 @@ struct AssemblyOverrides {
     org_id: Option<String>,
     mcp_bearer_token: Option<String>,
     management_only: bool,
+    cloud_api_base_url: Option<String>,
 }
 
 type IdentityWiring = (
@@ -781,6 +782,7 @@ pub async fn build_management_router_with_deployment(
             org_id: Some(deployment.org_id.clone()),
             mcp_bearer_token: deployment.mcp_bearer_token.clone(),
             management_only: false,
+            cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url.clone()),
         },
         None,
     )
@@ -822,6 +824,7 @@ pub async fn build_control_router_with_deployment(
             org_id: Some(deployment.org_id.clone()),
             mcp_bearer_token: deployment.mcp_bearer_token.clone(),
             management_only: true,
+            cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url.clone()),
         },
         None,
     )
@@ -909,6 +912,7 @@ async fn build_management_router_with_composition(
             org_id: Some(deployment.org_id),
             mcp_bearer_token: deployment.mcp_bearer_token,
             management_only: false,
+            cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url),
         },
         None,
     )
@@ -1111,6 +1115,7 @@ async fn management_router_over(
 ) -> Router {
     let management_only = assembly.management_only;
     let deployment = assembly.deployment;
+    let cloud_api_base_url = assembly.cloud_api_base_url;
     let org_id = assembly.org_id.unwrap_or_else(local_org_id);
     let mcp_bearer_token = assembly.mcp_bearer_token;
     let ManagementStores {
@@ -1141,6 +1146,19 @@ async fn management_router_over(
         SharedHost::provision_local_workspace,
         SharedHost::provision_local_workspace_at,
     );
+    let brokered_client = remote_iam.as_ref().map(|authz| {
+        let base_url = cloud_api_base_url
+            .clone()
+            .expect("Awaken Cloud identity requires a Cloud inference API URL");
+        Arc::new(
+            awaken_server::brokered_inference::HttpBrokeredInferenceClient::new(
+                base_url,
+                authz.cloud_user_token(),
+                platform_workspace.clone(),
+            )
+            .unwrap_or_else(|error| panic!("Cloud inference configuration: {error}")),
+        )
+    });
     if let Some(root) = workspace_root.as_deref() {
         let migrated = awaken_server::migrate_legacy_skill_registry(root, skill_store.as_ref())
             .await
@@ -1204,11 +1222,15 @@ async fn management_router_over(
                 )
                 .with_profiles(profiles.clone()),
             ),
-            materializer: Some(Arc::new(
-                awaken_server::inference_materializer::CredentialInferenceMaterializer::from_pinned(
+            materializer: Some(Arc::new({
+                let materializer = awaken_server::inference_materializer::CredentialInferenceMaterializer::from_pinned(
                     credential_materializer.clone(),
-                ),
-            )),
+                );
+                match &brokered_client {
+                    Some(client) => materializer.with_brokered_client(client.clone()),
+                    None => materializer,
+                }
+            })),
         },
         ManagementModelComposition::Host { executor, binding } => ManagementModelWiring {
             executor,
@@ -1346,6 +1368,9 @@ async fn management_router_over(
         model_discovery: Arc::new(GenaiModelDiscovery {
             secrets: secrets.clone(),
         }),
+        brokered_catalog: brokered_client
+            .clone()
+            .map(|client| client as Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>),
         vault_state: vault_state.clone(),
         env_state: env_state.clone(),
         deployment_state: deployment_state.clone(),
@@ -1550,7 +1575,8 @@ fn finish_management_surface(
                     || path.contains("/config/providers")
                     || path.contains("/config/endpoints")
                     || path.contains("/config/model-attributes")
-                    || path.contains("/config/inference-profiles/");
+                    || path.contains("/config/inference-profiles/")
+                    || path.contains("/config/brokered-models/refresh");
                 let should_reconcile = is_write && is_model_resolution_input;
                 let resp = next.run(req).await;
                 if should_reconcile && resp.status().is_success() {

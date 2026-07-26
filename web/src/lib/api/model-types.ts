@@ -78,7 +78,7 @@ export interface Offering {
   protocol_endpoint_id: string;
   dialect: ApiDialect;
   upstream_model?: string | null;
-  source?: "manual" | "provider_api";
+  source?: "manual" | "provider_api" | "brokered";
   status?: "active" | "unavailable";
   last_seen_at_unix_ms?: number | null;
 }
@@ -102,7 +102,7 @@ export interface ModelAttributes {
   max_output_tokens?: number | null;
   provenance?: Record<
     string,
-    { source: "manual" | "provider_api" | "curated"; observed_at_unix_ms: number }
+    { source: "manual" | "provider_api" | "curated" | "brokered"; observed_at_unix_ms: number }
   >;
 }
 

@@ -82,8 +82,10 @@ awaken-webhook = { workspace = true }
 awaken-webhook-managed = { workspace = true }
 awaken-runtime = { workspace = true }
 async-trait.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
 axum = { version = "0.8", features = ["multipart"] }
 # oneshot-forwarding for the /projects/{id} prefix-stripping ingress proxy
