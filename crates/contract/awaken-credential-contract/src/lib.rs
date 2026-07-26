@@ -682,6 +682,19 @@ pub struct CredentialRealizationCapabilities {
 pub const CREDENTIAL_REALIZATION_CAPABILITY_PREFIX: &str = "credential-realization.awaken.dev/v1:";
 
 impl CredentialRealizationCapabilities {
+    /// Merge evidence from independently installed adapters on the same Worker.
+    /// This describes the Worker's complete claim surface; the selected backend
+    /// must still perform its own exact route and binding validation before it
+    /// opens material.
+    pub fn merge(&mut self, other: &Self) {
+        self.holders.extend(other.holders.iter().cloned());
+        self.material_sources
+            .extend(other.material_sources.iter().copied());
+        self.realization_kinds
+            .extend(other.realization_kinds.iter().copied());
+        self.recipient_bound_envelopes |= other.recipient_bound_envelopes;
+    }
+
     /// Whether this adapter/provider advertises no credential realization at all.
     #[must_use]
     pub fn is_empty(&self) -> bool {

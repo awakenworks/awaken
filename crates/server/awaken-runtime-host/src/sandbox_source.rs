@@ -110,6 +110,16 @@ impl AcpLaunchRegistry {
             .resolver
             .credential_realization_capabilities())
     }
+
+    fn combined_credential_realization_capabilities(
+        &self,
+    ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
+        let mut combined = awaken_runtime_contract::CredentialRealizationCapabilities::default();
+        for route in self.routes.values() {
+            combined.merge(&route.resolver.credential_realization_capabilities());
+        }
+        combined
+    }
 }
 
 /// How a sandboxed/containerized ACP source obtains a run's CLI launch: a fixed
@@ -133,6 +143,15 @@ struct ResolvedLaunch {
 }
 
 impl LaunchSource {
+    pub(crate) fn combined_credential_realization_capabilities(
+        &self,
+    ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
+        match self {
+            Self::Fixed(_) => Default::default(),
+            Self::Projected(registry) => registry.combined_credential_realization_capabilities(),
+        }
+    }
+
     pub(crate) fn credential_realization_capabilities(
         &self,
         backend: &awaken_runtime_contract::resolved::Backend,
@@ -1172,6 +1191,123 @@ mod tests {
         ) -> Result<(), pc::SandboxError> {
             Err(pc::SandboxError::new("per-run artifact is not durable"))
         }
+    }
+
+    struct CapabilityResolver(awaken_runtime_contract::CredentialRealizationCapabilities);
+
+    impl LaunchResolver for CapabilityResolver {
+        fn model(
+            &self,
+            _activation: &RunActivation,
+            _context: &awaken_runtime_contract::RuntimeRunContext,
+        ) -> Result<awaken_run_executor_acp::ResolvedModel, OpenError> {
+            Ok(awaken_run_executor_acp::ResolvedModel {
+                base_url: "http://model.invalid".into(),
+                model: "model".into(),
+                process_secret: None,
+                credential_artifact: None,
+            })
+        }
+
+        fn credential_realization_capabilities(
+            &self,
+        ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
+            self.0.clone()
+        }
+    }
+
+    /// Local-pool claim evidence cause graph:
+    /// C1 Native/ACP adapter installed -> its evidence enters the Worker claim
+    /// surface; C2 one ACP route selected -> execution still reads only that
+    /// route's evidence. Combining C1 must not replace C2's exact lookup.
+    ///
+    /// | Rule | Route A | Route B | Claim surface | Exact A lookup |
+    /// |---|---|---|---|---|
+    /// | C1 | process env | absent | process env | process env |
+    /// | C2 | process env | worker relay | both | process env only |
+    #[test]
+    fn registry_combines_claim_evidence_but_preserves_exact_route_evidence() {
+        use awaken_runtime_contract::{
+            CredentialMaterialSource, CredentialRealizationCapabilities, CredentialRealizationKind,
+            PlaintextBoundary, PlaintextHolder,
+        };
+
+        let process = CredentialRealizationCapabilities {
+            holders: [PlaintextHolder::new(
+                PlaintextBoundary::Workload,
+                awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
+            )]
+            .into_iter()
+            .collect(),
+            material_sources: [CredentialMaterialSource::ControlPlaneReference]
+                .into_iter()
+                .collect(),
+            realization_kinds: [CredentialRealizationKind::ProcessSecretEnvironment]
+                .into_iter()
+                .collect(),
+            recipient_bound_envelopes: false,
+        };
+        let relay = CredentialRealizationCapabilities {
+            holders: [PlaintextHolder::new(
+                PlaintextBoundary::Worker,
+                "relay.example",
+            )]
+            .into_iter()
+            .collect(),
+            material_sources: [CredentialMaterialSource::WorkerReference]
+                .into_iter()
+                .collect(),
+            realization_kinds: [CredentialRealizationKind::WorkerRelay]
+                .into_iter()
+                .collect(),
+            recipient_bound_envelopes: true,
+        };
+        let registry = AcpLaunchRegistry::new(
+            vec![
+                (
+                    *awaken_run_executor_acp::acp_cli("claude").unwrap(),
+                    Arc::new(CapabilityResolver(process.clone())),
+                ),
+                (
+                    *awaken_run_executor_acp::acp_cli("codex").unwrap(),
+                    Arc::new(CapabilityResolver(relay.clone())),
+                ),
+            ],
+            None,
+        )
+        .unwrap();
+
+        let combined = registry.combined_credential_realization_capabilities();
+        assert!(combined.holders.is_superset(&process.holders));
+        assert!(combined.holders.is_superset(&relay.holders));
+        assert!(
+            combined
+                .material_sources
+                .is_superset(&process.material_sources)
+        );
+        assert!(
+            combined
+                .material_sources
+                .is_superset(&relay.material_sources)
+        );
+        assert!(
+            combined
+                .realization_kinds
+                .is_superset(&process.realization_kinds)
+        );
+        assert!(
+            combined
+                .realization_kinds
+                .is_superset(&relay.realization_kinds)
+        );
+        assert!(combined.recipient_bound_envelopes);
+
+        let exact = registry
+            .credential_realization_capabilities(&awaken_runtime_contract::resolved::Backend::Acp {
+                cli: "claude".to_string(),
+            })
+            .unwrap();
+        assert_eq!(exact, process);
     }
 
     #[test]
