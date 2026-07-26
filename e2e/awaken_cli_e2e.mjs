@@ -31,7 +31,7 @@ const BETAS = ['managed-agents-2026-04-01'];
 const FAKE_KEY = 'sk-awaken-cli-fake-key'; // awaken-allow: secret
 // The composition root receives the platform-owned coordinate explicitly; no test
 // or resource adapter relies on a compiled Workspace id.
-const WORKSPACE = `workspace_e2e_${process.pid}`;
+let WORKSPACE;
 const AGENT = 'db-model-agent';
 const MODEL = 'fake-haiku';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -73,9 +73,9 @@ function waitForPort(port, timeoutMs = 60_000) {
   });
 }
 
-function startAwaken(bin, port, extraEnv = {}) {
-  const server = spawn(bin, {
-    env: { ...process.env, AWAKEN_HTTP_ADDR: `127.0.0.1:${port}`, ...extraEnv },
+function startAwaken(bin, port, configPath, extraEnv = {}) {
+  const server = spawn(bin, ['serve', '--config', configPath, '--port', String(port)], {
+    env: { ...process.env, ...extraEnv },
     stdio: ['ignore', 'inherit', 'pipe'],
   });
   readline.createInterface({ input: server.stderr }).on('line', (line) => {
@@ -138,15 +138,17 @@ async function main() {
   const upstream = await startFakeAnthropic(FAKE_KEY);
   const bin = awakenBin();
   const mgmtDir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-cli-e2e-'));
-  const serverEnv = {
-    AWAKEN_LOCAL_WORKSPACE_ID: WORKSPACE,
-    AWAKEN_MGMT_DIR: mgmtDir,
-    AWAKEN_MGMT_SEAL_KEY: '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
-  };
-  let h = startAwaken(bin, PORT, serverEnv);
+  const configPath = path.join(mgmtDir, 'config.toml');
+  fs.writeFileSync(configPath, [
+    `data_dir = ${JSON.stringify(mgmtDir)}`,
+    'control_seal_key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"',
+  ].join('\n'));
+  const serverEnv = {};
+  let h = startAwaken(bin, PORT, configPath, serverEnv);
   try {
     await waitForPort(PORT);
     await ready(h.baseUrl);
+    WORKSPACE = fs.readFileSync(path.join(mgmtDir, 'platform-workspace-id'), 'utf8').trim();
     console.log('ok: aggregated `awaken` command booted in the default Serve role (management plane)');
 
     // ---- author the model in the database-backed console ---------------------
@@ -357,7 +359,7 @@ async function main() {
     // A fresh composition warm-installs the durable publication. It must retain
     // the original snapshot pin rather than resolving the mutated catalog again.
     await h.stop();
-    h = startAwaken(bin, PORT, serverEnv);
+    h = startAwaken(bin, PORT, configPath, serverEnv);
     await waitForPort(PORT);
     base = h.baseUrl;
     await ready(base);
@@ -386,7 +388,7 @@ async function main() {
       (error) => error.status === 400 && String(error.message).includes('agent_archived'),
     );
     await h.stop();
-    h = startAwaken(bin, PORT, serverEnv);
+    h = startAwaken(bin, PORT, configPath, serverEnv);
     await waitForPort(PORT);
     base = h.baseUrl;
     await ready(base);
@@ -605,7 +607,6 @@ async function main() {
     const updatedRepository = await client.beta.sessions.resources.update(repositoryResource.id, {
       session_id: warm.id,
       mount_path: '/workspace/repository-updated',
-      authorization_token: 'sqlite-repository-rotated-token', // awaken-allow: secret
       betas: BETAS,
     });
     assert.equal(updatedRepository.mount_path, '/workspace/repository-updated');
