@@ -67,7 +67,7 @@ pub use awaken_ext_memory::{
     MemoryExtractorSnapshot, MemoryMutationReceipt, PutMemoryExtractionOutcome,
 };
 pub use awaken_resource_contract::ResourceCatalog;
-pub use awaken_session_contract::env_registry::EnvironmentRevision;
+pub use awaken_session_contract::env_registry::{EnvironmentPackages, EnvironmentRevision};
 pub use awaken_session_contract::{
     AcknowledgeSessionRealization, ActivateSessionRealization, ApplicationContributionOutcome,
     ApplicationContributionReceipt, ApplicationContributionState, ApplicationSessionContribution,

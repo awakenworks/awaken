@@ -54,6 +54,7 @@ fn spec(scope: &str) -> pc::SandboxSpec {
                 visibility: pc::EnvVisibility::Process,
             },
         ],
+        packages: Default::default(),
         network: pc::NetworkPolicy::Unrestricted,
         outputs_path: "/mnt/session/outputs".into(),
         limits: pc::ResourceLimits {
@@ -72,7 +73,7 @@ fn spec(scope: &str) -> pc::SandboxSpec {
 
 #[test]
 fn container_capabilities_are_the_strongest_tier() {
-    let c = container_capabilities(true);
+    let c = container_capabilities(true, false);
     assert_eq!(c.isolation, pc::IsolationClass::Container);
     assert!(c.tool_transparent && c.enforced_readonly && c.network_isolation);
     assert!(c.resource_limits && c.custom_rootfs);
@@ -94,7 +95,7 @@ fn current_container_provider_rejects_egress_only_secret_injection() {
     let mut requested = spec("egress-only");
     requested.env[1].visibility = pc::EnvVisibility::EgressOnly;
     assert_eq!(
-        pc::prepare_environment(&requested, &container_capabilities(true)),
+        pc::prepare_environment(&requested, &container_capabilities(true, false)),
         Err(pc::PrepareError::EgressSecretUnsupported("API_KEY".into())),
         "an unsupported provider must fail before materializing or launching the sandbox"
     );
@@ -1070,6 +1071,7 @@ async fn durable_writable_secret_is_materialized_and_written_back_after_process_
             required: true,
         }],
         env: Vec::new(),
+        packages: Default::default(),
         network: pc::NetworkPolicy::Unrestricted,
         outputs_path: "/mnt/session/outputs".into(),
         limits: Default::default(),
@@ -1176,6 +1178,7 @@ fn file_mount_spec(scope: &str, source: pc::MountSource, required: bool) -> pc::
             required,
         }],
         env: Vec::new(),
+        packages: Default::default(),
         network: pc::NetworkPolicy::Unrestricted,
         outputs_path: "/out".into(),
         limits: Default::default(),

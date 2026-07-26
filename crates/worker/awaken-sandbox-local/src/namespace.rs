@@ -424,6 +424,7 @@ impl NamespaceProvider {
             secret_egress_substitution: false,
             resource_limits: false,
             custom_rootfs: false,
+            package_provisioning: false,
         }
     }
 
@@ -1163,6 +1164,7 @@ mod tests {
             isolation: pc::IsolationClass::Namespace,
             mounts,
             env: Vec::new(),
+            packages: Default::default(),
             network: pc::NetworkPolicy::Unrestricted,
             outputs_path: "/mnt/session/outputs".into(),
             limits: Default::default(),

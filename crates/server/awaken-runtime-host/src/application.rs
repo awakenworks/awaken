@@ -675,6 +675,21 @@ fn decode_environment_projection(
             awaken_provisioning_contract::NetworkPolicy::None
         }
     };
+    let package_config = &environment.packages;
+    let packages = awaken_provisioning_contract::PackageRequirements {
+        managers: [
+            ("apt", &package_config.apt),
+            ("cargo", &package_config.cargo),
+            ("gem", &package_config.gem),
+            ("go", &package_config.go),
+            ("npm", &package_config.npm),
+            ("pip", &package_config.pip),
+        ]
+        .into_iter()
+        .filter(|(_, packages)| !packages.is_empty())
+        .map(|(manager, packages)| (manager.to_string(), packages.clone()))
+        .collect(),
+    };
     let sandbox =
         awaken_provisioning_contract::SandboxOverride::from_config_value(&environment.sandbox)
             .and_then(|mut sandbox| {
@@ -687,6 +702,7 @@ fn decode_environment_projection(
     crate::session_slot::FrozenEnvironmentRuntimeProjection {
         fingerprint: environment.config_fingerprint.clone(),
         network,
+        packages,
         sandbox,
         credential_realization: environment.credential_realization.clone(),
     }
@@ -768,5 +784,37 @@ mod network_policy_tests {
                 Some(expected),
             );
         }
+    }
+
+    /// Package projection cause graph: the exact frozen Environment package
+    /// vectors become one neutral manager map; empty managers disappear, values
+    /// and ordering remain exact, and no protocol DTO reaches provisioning.
+    #[test]
+    fn environment_packages_project_losslessly_to_the_provisioning_contract() {
+        let environment = awaken_protocol_managed::EnvironmentSnapshot {
+            environment_id: "env_packages".into(),
+            revision: awaken_protocol_managed::EnvironmentRevision(3),
+            config_fingerprint: awaken_protocol_managed::EnvironmentFingerprint("fp".into()),
+            sandbox: serde_json::json!({}),
+            packages: awaken_protocol_managed::EnvironmentPackages {
+                npm: vec!["tsx@4".into()],
+                pip: vec!["httpx==0.28".into()],
+                ..Default::default()
+            },
+            network: awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+            credential_realization:
+                awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
+        };
+        let projected = decode_environment_projection(&environment);
+        assert_eq!(
+            projected.packages.managers,
+            [
+                ("npm".into(), vec!["tsx@4".into()]),
+                ("pip".into(), vec!["httpx==0.28".into()]),
+            ]
+            .into_iter()
+            .collect()
+        );
+        assert!(!projected.packages.managers.contains_key("apt"));
     }
 }

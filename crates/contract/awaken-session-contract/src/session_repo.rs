@@ -398,6 +398,7 @@ mod mutation_tests {
                         revision: crate::env_registry::EnvironmentRevision(1),
                         config_fingerprint: crate::EnvironmentFingerprint("config".into()),
                         sandbox: serde_json::json!({}),
+                        packages: Default::default(),
                         network: crate::SessionNetworkPolicy::Unrestricted,
                         credential_realization: CredentialRealizationProfile {
                             inference_holder: PlaintextHolder::new(

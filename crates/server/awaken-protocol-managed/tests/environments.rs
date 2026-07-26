@@ -177,6 +177,14 @@ async fn environment_config_admission_follows_the_official_union_decision_table(
             "A5-host-wildcard",
             json!({"type":"cloud", "networking":{"type":"limited", "allowed_hosts":["*api.test"]}}),
         ),
+        (
+            "A5-empty-package",
+            json!({"type":"cloud", "packages":{"pip":[""]}}),
+        ),
+        (
+            "A5-package-option",
+            json!({"type":"cloud", "packages":{"npm":["--registry"]}}),
+        ),
     ];
     for (rule, config) in cases {
         let (status, _) = call(

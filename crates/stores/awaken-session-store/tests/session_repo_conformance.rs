@@ -32,6 +32,7 @@ fn session(id: &str, title: &str) -> PersistedSession {
         revision: awaken_session_contract::env_registry::EnvironmentRevision(4),
         config_fingerprint: awaken_session_contract::EnvironmentFingerprint("env-4".into()),
         sandbox: json!({"isolation": "namespace"}),
+        packages: Default::default(),
         network: awaken_session_contract::SessionNetworkPolicy::None,
         credential_realization: awaken_credential_contract::CredentialRealizationProfile {
             inference_holder: holder.clone(),

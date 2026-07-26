@@ -86,6 +86,7 @@ async fn a_hand_in_a_network_denied_container_is_reached_over_a_unix_rendezvous(
         env: Vec::new(),
         // Network DENIED — no published port is possible; the unix rendezvous is the
         // only path across the boundary. This is the exact case that had no transport.
+        packages: Default::default(),
         network: pc::NetworkPolicy::None,
         outputs_path: "/mnt/session/outputs".into(),
         limits: Default::default(),

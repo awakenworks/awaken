@@ -30,6 +30,7 @@ impl awaken_runtime_host::ContainerEnvironmentProvider for ExternalSessionProvid
             secret_egress_substitution: true,
             resource_limits: true,
             custom_rootfs: true,
+            package_provisioning: false,
         }
     }
 

@@ -264,6 +264,7 @@ async fn build(
         isolation,
         mounts,
         env: Vec::new(),
+        packages: Default::default(),
         network,
         outputs_path: "/mnt/session/outputs".into(),
         limits: Default::default(),

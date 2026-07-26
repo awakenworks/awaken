@@ -319,6 +319,7 @@ mod tests {
                 secret_egress_substitution: false,
                 resource_limits: false,
                 custom_rootfs: false,
+                package_provisioning: false,
             }
         }
         async fn create(&self, spec: &SandboxSpec) -> Result<Box<dyn Sandbox>, SandboxError> {
@@ -341,6 +342,7 @@ mod tests {
             isolation: IsolationClass::Workdir,
             mounts: Vec::new(),
             env: Vec::new(),
+            packages: Default::default(),
             network: NetworkPolicy::Unrestricted,
             outputs_path: "/mnt/session/outputs".into(),
             limits: Default::default(),

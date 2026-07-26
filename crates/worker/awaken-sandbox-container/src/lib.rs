@@ -24,11 +24,13 @@ use environment_owned::EnvironmentOwnedProcess;
 mod cgroup;
 mod egress;
 mod files;
+mod packages;
 mod podman_plan;
 mod recovery;
 mod secret;
 pub use cgroup::CgroupCaps;
 pub use egress::{EgressError, EgressRealization, ForwardProxy, NetworkMode, egress_plan};
+pub use packages::package_containerfile;
 pub use podman_plan::{RootfsError, RootfsPlan, podman_run_argv, rootfs_plan};
 pub use secret::SecretBytes;
 
@@ -36,7 +38,10 @@ pub use secret::SecretBytes;
 /// runtime evidence rather than an isolation-class assumption: Docker/Podman
 /// implement `network none`; the current Kubernetes adapter does not install or
 /// verify a NetworkPolicy and therefore reports false.
-fn container_capabilities(network_isolation: bool) -> pc::SandboxCapabilities {
+fn container_capabilities(
+    network_isolation: bool,
+    package_provisioning: bool,
+) -> pc::SandboxCapabilities {
     pc::SandboxCapabilities {
         isolation: pc::IsolationClass::Container,
         tool_transparent: true,
@@ -47,6 +52,7 @@ fn container_capabilities(network_isolation: bool) -> pc::SandboxCapabilities {
         secret_egress_substitution: false,
         resource_limits: true,
         custom_rootfs: true,
+        package_provisioning,
     }
 }
 
@@ -98,6 +104,7 @@ pub struct ContainerPlan {
     /// [`ContainerRuntime::spawn`] / [`ContainerRuntime::spawn_agent`].
     pub command: Vec<String>,
     pub env: Vec<(String, String)>,
+    pub packages: pc::PackageRequirements,
     pub binds: Vec<BindPlan>,
     /// Out-of-band outputs volume mount path (artifacts leave via the volume).
     pub outputs_volume: String,
@@ -174,6 +181,7 @@ mod planner_tests {
             image: "ghcr.io/awaken/sandbox:1".into(),
             command: vec!["claude".into(), "--acp".into()],
             env: vec![("TZ".into(), "UTC".into())],
+            packages: Default::default(),
             binds: vec![BindPlan {
                 source_ref: "/host/data".into(),
                 mount_path: "/data".into(),
@@ -400,7 +408,7 @@ pub fn writable_dirs(plan: &ContainerPlan) -> Vec<String> {
 /// blob-store resolve on this tier; the ACP resource path rides `Other{content}` so it
 /// works today.
 #[derive(Debug)]
-struct StagingGuard(std::path::PathBuf);
+pub(crate) struct StagingGuard(std::path::PathBuf);
 
 impl StagingGuard {
     fn path(&self) -> &std::path::Path {
@@ -517,7 +525,7 @@ fn make_memory_tree_accessible(
 }
 
 /// The per-run host staging dir (created once, lazily), kept alive by the returned guard.
-fn staging_dir(
+pub(crate) fn staging_dir(
     guard: &mut Option<StagingGuard>,
     scope: &str,
 ) -> Result<std::path::PathBuf, pc::SandboxError> {
@@ -924,6 +932,7 @@ pub fn container_plan(
         image: image_of(spec, default_image),
         command: command.to_vec(),
         env,
+        packages: spec.packages.clone(),
         binds: binds_of(spec),
         outputs_volume: spec.outputs_path.clone(),
         network: egress.network,
@@ -1028,6 +1037,26 @@ pub trait ContainerRuntime: Send + Sync {
     /// arbitrary workload. Labels, annotations, and proxy env are not evidence.
     fn enforces_network_none(&self) -> bool {
         false
+    }
+
+    /// Whether this runtime can build an immutable derived image containing the
+    /// exact package requirements before the untrusted workload starts.
+    fn supports_package_provisioning(&self) -> bool {
+        false
+    }
+
+    async fn prepare_package_image(
+        &self,
+        base_image: &str,
+        packages: &pc::PackageRequirements,
+    ) -> Result<String, RuntimeError> {
+        if packages.is_empty() {
+            Ok(base_image.to_string())
+        } else {
+            Err(RuntimeError::Backend(
+                "container runtime cannot provision package requirements".into(),
+            ))
+        }
     }
 
     /// Kubernetes realizes MemoryStore mounts with its native sidecar/volume
@@ -1267,7 +1296,10 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         // Fail closed against our capabilities before touching the runtime.
         pc::prepare_environment(
             spec,
-            &container_capabilities(self.runtime.enforces_network_none()),
+            &container_capabilities(
+                self.runtime.enforces_network_none(),
+                self.runtime.supports_package_provisioning(),
+            ),
         )
         .map_err(|e| err(RuntimeError::Backend(e.to_string())))?;
         if spec
@@ -1293,6 +1325,23 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             self.forward_proxy.as_ref(),
         )
         .map_err(|e| err(RuntimeError::Backend(e.to_string())))?;
+        if !plan.packages.is_empty() {
+            let base_image = match &plan.rootfs {
+                RootfsPlan::Image(reference) => reference.clone(),
+                RootfsPlan::HostUserland => plan.image.clone(),
+                _ => {
+                    return Err(err(RuntimeError::Backend(
+                        "package provisioning requires an OCI image rootfs".into(),
+                    )));
+                }
+            };
+            plan.image = self
+                .runtime
+                .prepare_package_image(&base_image, &plan.packages)
+                .await
+                .map_err(err)?;
+            plan.rootfs = RootfsPlan::Image(plan.image.clone());
+        }
         // Resolve + materialize each mount's bytes: self-contained content (codex config,
         // ADR-0038 resources) ships in the plan; File/Resource/Secret resolve by id through
         // the seed then the injected BlobSource, hash-verified. Bytes are staged to a host
@@ -1456,7 +1505,10 @@ impl<R: ContainerRuntime + 'static> AgentContainerProvider for ContainerProvider
 #[async_trait]
 impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerProvider<R> {
     fn sandbox_capabilities(&self) -> pc::SandboxCapabilities {
-        container_capabilities(self.runtime.enforces_network_none())
+        container_capabilities(
+            self.runtime.enforces_network_none(),
+            self.runtime.supports_package_provisioning(),
+        )
     }
 
     fn install_memory_mounter(&self, mounter: Arc<dyn pc::MemoryMounter>) {
@@ -1485,7 +1537,10 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
 #[async_trait]
 impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R> {
     fn capabilities(&self) -> pc::SandboxCapabilities {
-        container_capabilities(self.runtime.enforces_network_none())
+        container_capabilities(
+            self.runtime.enforces_network_none(),
+            self.runtime.supports_package_provisioning(),
+        )
     }
 
     async fn create(
@@ -1621,6 +1676,7 @@ pub trait ContainerEnvironmentProvider: Send + Sync {
             secret_egress_substitution: false,
             resource_limits: false,
             custom_rootfs: false,
+            package_provisioning: false,
         }
     }
 

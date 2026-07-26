@@ -58,6 +58,14 @@ impl EnvironmentConfig {
         matches!(self, Self::SelfHosted)
     }
 
+    #[must_use]
+    pub fn packages(&self) -> EnvironmentPackages {
+        match self {
+            Self::Cloud { packages, .. } => packages.clone(),
+            Self::SelfHosted => EnvironmentPackages::default(),
+        }
+    }
+
     /// Compile the effective, frozen Session egress policy. Environment remains
     /// the sole network authority; MCP declarations only supply the exact hosts
     /// selected by an Environment that opted into them.

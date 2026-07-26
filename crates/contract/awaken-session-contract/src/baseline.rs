@@ -92,6 +92,10 @@ pub struct EnvironmentSnapshot {
     /// Canonicalized, network-free sandbox requirement. `network` is the only
     /// reachability authority in this snapshot.
     pub sandbox: serde_json::Value,
+    /// Exact package inputs frozen with this Environment revision. Providers
+    /// provision them before workload launch or reject the spec fail-closed.
+    #[serde(default)]
+    pub packages: crate::env_registry::EnvironmentPackages,
     pub network: SessionNetworkPolicy,
     pub credential_realization: CredentialRealizationProfile,
 }
@@ -456,6 +460,7 @@ mod tests {
             revision: EnvironmentRevision(revision),
             config_fingerprint: EnvironmentFingerprint(format!("config-{revision}")),
             sandbox: serde_json::json!({}),
+            packages: Default::default(),
             network,
             credential_realization: CredentialRealizationProfile {
                 inference_holder: PlaintextHolder::new(

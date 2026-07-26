@@ -556,6 +556,7 @@ mod actuator_tests {
                 secret_egress_substitution: false,
                 resource_limits: true,
                 custom_rootfs: true,
+                package_provisioning: false,
             }
         }
         async fn create(&self, _s: &SandboxSpec) -> Result<Box<dyn Sandbox>, SandboxError> {
@@ -655,6 +656,7 @@ mod actuator_tests {
             isolation: IsolationClass::Container,
             mounts: Vec::new(),
             env: Vec::new(),
+            packages: Default::default(),
             network: crate::vocab::NetworkPolicy::Unrestricted,
             outputs_path: "/mnt/session/outputs".into(),
             limits: Default::default(),

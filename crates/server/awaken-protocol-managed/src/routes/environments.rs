@@ -56,6 +56,7 @@ pub(crate) fn default_environment_snapshot(
         )
     };
     let sandbox = serde_json::json!({});
+    let packages = awaken_session_contract::env_registry::EnvironmentPackages::default();
     let network = awaken_session_contract::SessionNetworkPolicy::Unrestricted;
     let credential_realization = awaken_credential_contract::CredentialRealizationProfile {
         inference_holder,
@@ -74,11 +75,13 @@ pub(crate) fn default_environment_snapshot(
         config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
             awaken_session_contract::stable_fingerprint(&(
                 &sandbox,
+                &packages,
                 &network,
                 &credential_realization,
             )),
         ),
         sandbox,
+        packages,
         network,
         credential_realization,
     }
@@ -154,6 +157,7 @@ impl EnvironmentState {
         if item.archived_at.is_some() {
             return None;
         }
+        let packages = item.config.packages();
         let network = item
             .config
             .network_policy_for_session(mcp_targets)
@@ -200,6 +204,7 @@ impl EnvironmentState {
         let config_fingerprint = awaken_session_contract::EnvironmentFingerprint(
             awaken_session_contract::stable_fingerprint(&(
                 &sandbox,
+                &packages,
                 &network,
                 &credential_realization,
             )),
@@ -209,6 +214,7 @@ impl EnvironmentState {
             revision: item.revision,
             config_fingerprint,
             sandbox,
+            packages,
             network,
             credential_realization,
         })
@@ -601,16 +607,29 @@ fn environment_config_mutation(config: EnvironmentConfigUpdateParams) -> Environ
                     kind: _,
                 }) => EnvironmentPackagesMutation {
                     reset: false,
-                    apt,
-                    cargo,
-                    gem,
-                    go,
-                    npm,
-                    pip,
+                    apt: package_patch(apt),
+                    cargo: package_patch(cargo),
+                    gem: package_patch(gem),
+                    go: package_patch(go),
+                    npm: package_patch(npm),
+                    pip: package_patch(pip),
                 },
             }),
         },
     }
+}
+
+fn package_values(values: Vec<crate::types::environment::PackageSpec>) -> Vec<String> {
+    values
+        .into_iter()
+        .map(crate::types::environment::PackageSpec::into_inner)
+        .collect()
+}
+
+fn package_patch(
+    value: Option<Option<Vec<crate::types::environment::PackageSpec>>>,
+) -> Option<Option<Vec<String>>> {
+    value.map(|value| value.map(package_values))
 }
 
 fn canonical_environment_config(
@@ -648,12 +667,12 @@ fn canonical_environment_config(
                 networking,
                 packages: EnvironmentPackages {
                     kind: EnvironmentPackagesKind::Packages,
-                    apt: packages.apt.unwrap_or_default(),
-                    cargo: packages.cargo.unwrap_or_default(),
-                    gem: packages.gem.unwrap_or_default(),
-                    go: packages.go.unwrap_or_default(),
-                    npm: packages.npm.unwrap_or_default(),
-                    pip: packages.pip.unwrap_or_default(),
+                    apt: package_values(packages.apt.unwrap_or_default()),
+                    cargo: package_values(packages.cargo.unwrap_or_default()),
+                    gem: package_values(packages.gem.unwrap_or_default()),
+                    go: package_values(packages.go.unwrap_or_default()),
+                    npm: package_values(packages.npm.unwrap_or_default()),
+                    pip: package_values(packages.pip.unwrap_or_default()),
                 },
             }
         }

@@ -7,8 +7,8 @@
 use crate::sandbox::SandboxCapabilities;
 use crate::spec::SandboxSpec;
 use crate::vocab::{
-    EnvVar, EnvVisibility, MountAccess, MountRequirement, NetworkPolicy, RESERVED_ENV_KEYS,
-    ResourceLimits,
+    EnvVar, EnvVisibility, MountAccess, MountRequirement, NetworkPolicy, PackageRequirements,
+    RESERVED_ENV_KEYS, ResourceLimits,
 };
 
 /// A validated, normalized plan ready to hand to [`crate::SandboxProvider::create`].
@@ -17,6 +17,7 @@ pub struct EnvironmentPlan {
     pub scope: String,
     pub mounts: Vec<MountRequirement>,
     pub env: Vec<EnvVar>,
+    pub packages: PackageRequirements,
     pub network: NetworkPolicy,
     pub outputs_path: String,
     /// The resource caps to enforce — carried forward so a provider realizes exactly
@@ -37,6 +38,8 @@ pub enum PrepareError {
     NetworkIsolationUnsupported,
     #[error("network allowlist requested but backend has no no-bypass allowlist enforcement")]
     NetworkAllowlistUnsupported,
+    #[error("package requirements requested but backend cannot provision packages")]
+    PackageProvisioningUnsupported,
     #[error("resource limits requested but backend cannot enforce them")]
     ResourceLimitsUnsupported,
     #[error("env key {0:?} is reserved by the runtime")]
@@ -89,6 +92,10 @@ pub fn prepare_environment(
         return Err(PrepareError::NetworkAllowlistUnsupported);
     }
 
+    if !spec.packages.is_empty() && !caps.package_provisioning {
+        return Err(PrepareError::PackageProvisioningUnsupported);
+    }
+
     // Resource caps must be enforceable — never silently ignored on a tier that
     // can't cgroup them (bwrap reports `resource_limits = false`).
     if spec.limits.is_set() && !caps.resource_limits {
@@ -99,6 +106,7 @@ pub fn prepare_environment(
         scope: spec.scope.clone(),
         mounts: spec.mounts.clone(),
         env: spec.env.clone(),
+        packages: spec.packages.clone(),
         network: spec.network.clone(),
         outputs_path: spec.outputs_path.clone(),
         limits: spec.limits.clone(),
@@ -122,6 +130,7 @@ mod tests {
             secret_egress_substitution: isolation == IsolationClass::Container,
             resource_limits: isolation >= IsolationClass::Namespace,
             custom_rootfs: isolation == IsolationClass::Container,
+            package_provisioning: false,
         }
     }
 
@@ -147,6 +156,7 @@ mod tests {
                 },
                 visibility: EnvVisibility::Process,
             }],
+            packages: Default::default(),
             network: NetworkPolicy::Allowlist {
                 hosts: vec!["api.anthropic.com".into()],
             },
@@ -160,6 +170,40 @@ mod tests {
     #[test]
     fn prepares_against_a_capable_backend() {
         assert!(prepare_environment(&spec(), &caps(IsolationClass::Namespace)).is_ok());
+    }
+
+    /// Package admission cause graph / decision table:
+    /// | Requirements | Provider capability | Result |
+    /// |---|---|---|
+    /// | empty | false | admit |
+    /// | non-empty | false | reject before provider I/O |
+    /// | non-empty | true | exact requirements in plan |
+    #[test]
+    fn package_requirements_are_capability_gated_and_lossless() {
+        let empty = spec();
+        assert!(
+            prepare_environment(&empty, &caps(IsolationClass::Namespace)).is_ok(),
+            "empty requirements need no capability"
+        );
+        let mut requested = spec();
+        requested
+            .packages
+            .managers
+            .insert("pip".into(), vec!["httpx==0.28.0".into()]);
+        assert_eq!(
+            prepare_environment(&requested, &caps(IsolationClass::Container)),
+            Err(PrepareError::PackageProvisioningUnsupported),
+            "unsupported provider fails before I/O"
+        );
+        let mut capable = caps(IsolationClass::Container);
+        capable.package_provisioning = true;
+        assert_eq!(
+            prepare_environment(&requested, &capable)
+                .expect("capable provider")
+                .packages,
+            requested.packages,
+            "exact requirements cross the seam"
+        );
     }
 
     #[test]

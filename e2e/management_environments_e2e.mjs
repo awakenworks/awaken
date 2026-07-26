@@ -72,6 +72,8 @@ async function main() {
         ['host with scheme', { type: 'cloud', networking: { type: 'limited', allowed_hosts: ['https://api.test'] } }],
         ['host with port', { type: 'cloud', networking: { type: 'limited', allowed_hosts: ['api.test:443'] } }],
         ['malformed wildcard', { type: 'cloud', networking: { type: 'limited', allowed_hosts: ['*api.test'] } }],
+        ['empty package', { type: 'cloud', packages: { pip: [''] } }],
+        ['package option injection', { type: 'cloud', packages: { npm: ['--registry'] } }],
       ];
       for (const [rule, config] of rejectedConfigs) {
         const response = await fetch(`${baseUrl}/v1/environments`, {

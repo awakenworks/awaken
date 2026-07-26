@@ -65,6 +65,7 @@ impl awaken_protocol_managed::ApplicationSessionContributionPort
                         "env-fingerprint".into(),
                     ),
                     sandbox: serde_json::json!({}),
+                    packages: Default::default(),
                     network: awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
                     credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
                         inference_holder: holder.clone(),

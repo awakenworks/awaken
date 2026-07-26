@@ -61,6 +61,7 @@ fn session_init(network: SessionNetworkPolicy) -> SessionInit {
             revision: EnvironmentRevision(1),
             config_fingerprint,
             sandbox: serde_json::json!({}),
+            packages: Default::default(),
             network,
             credential_realization:
                 awaken_runtime_contract::CredentialRealizationProfile::self_hosted_acp(),

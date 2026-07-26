@@ -29,8 +29,9 @@ const MARKER = 'CONTAINER-AGENT-OK';
 const ENGINE = process.env.AWAKEN_E2E_CONTAINER_ENGINE ?? 'docker';
 assert.ok(['docker', 'podman'].includes(ENGINE), `unsupported container engine ${ENGINE}`);
 const IMAGE = process.env.AWAKEN_TEST_SESSION_IMAGE ?? 'awaken-sandbox:session-e2e';
+const PACKAGE_BASE_IMAGE = `${IMAGE}-package-base`;
 const TMP = `/tmp/awaken-container-agent-${ENGINE}-e2e-${process.pid}`;
-const ACP_FIXTURE = `process.stdin.once('data',()=>{console.log(JSON.stringify({type:'message',text:'${MARKER}'}));console.log(JSON.stringify({type:'turn_end',reason:'natural_end'}))})`;
+const ACP_FIXTURE = `process.stdin.once('data',()=>{fs=require('fs');p='/usr/local/share/awaken-package-proof';pkg=fs.existsSync(p)?'-'+fs.readFileSync(p,'utf8'):'';console.log(JSON.stringify({type:'message',text:'${MARKER}'+pkg}));console.log(JSON.stringify({type:'turn_end',reason:'natural_end'}))})`;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function afterPendingActivation(operation) {
@@ -47,7 +48,10 @@ async function afterPendingActivation(operation) {
   throw last;
 }
 
-async function exercisePodmanEnvironment(client, name, sandbox, expectSuccess) {
+async function exerciseContainerEnvironment(
+  client, name, sandbox, expectSuccess,
+  { packages, expectedMarker = MARKER, expectedError } = {},
+) {
   const network = sandbox.network;
   const environment = await client.beta.environments.create({
     name: `podman-${name}`,
@@ -56,6 +60,7 @@ async function exercisePodmanEnvironment(client, name, sandbox, expectSuccess) {
       networking: !network || network.mode === 'unrestricted'
         ? { type: 'unrestricted' }
         : { type: 'limited', allowed_hosts: network.hosts ?? [] },
+      ...(packages ? { packages: { type: 'packages', ...packages } } : {}),
     },
     betas: BETAS,
   });
@@ -100,7 +105,7 @@ async function exercisePodmanEnvironment(client, name, sandbox, expectSuccess) {
     assert.ok(
       events.some(
         (event) => event.type === 'agent.message'
-          && (event.content ?? []).some((content) => String(content.text ?? '').includes(MARKER)),
+          && (event.content ?? []).some((content) => String(content.text ?? '').includes(expectedMarker)),
       ),
       `${name} must run the containerized agent: ${JSON.stringify(events)}`,
     );
@@ -109,6 +114,13 @@ async function exercisePodmanEnvironment(client, name, sandbox, expectSuccess) {
       sendFailure || events.some((event) => event.type === 'session.error'),
       `${name} must fail closed instead of falling back to the default image: ${JSON.stringify(events)}`,
     );
+    if (expectedError) {
+      assert.match(
+        `${sendFailure ?? ''} ${JSON.stringify(events)}`,
+        expectedError,
+        `${name} must expose the stable capability failure`,
+      );
+    }
   }
   await client.beta.sessions.delete(session.id, { betas: BETAS });
   await client.beta.environments.delete(environment.id, { betas: BETAS });
@@ -122,36 +134,52 @@ async function exercisePodmanRootfsMatrix(client) {
   // | Rule | network request | provider proof | result              |
   // | N1   | allowlist       | absent         | reject, no fallback |
   // | N2   | none/default    | n/a            | realize rootfs      |
-  await exercisePodmanEnvironment(client, 'host-userland', {
+  await exerciseContainerEnvironment(client, 'host-userland', {
     environment: { kind: 'sandbox' },
     network: { mode: 'allowlist', hosts: ['example.invalid'] },
     limits: { cpu_millis: 1000, memory_bytes: 536870912, pids: 128 },
   }, false);
-  await exercisePodmanEnvironment(client, 'explicit-image', {
+  await exerciseContainerEnvironment(client, 'explicit-image', {
     environment: { kind: 'image', reference: IMAGE },
     network: { mode: 'none' },
   }, true);
-  await exercisePodmanEnvironment(client, 'scope-fallback', {
+  // Package provisioning cause graph:
+  // exact Environment packages + exact image root -> content-addressed derived
+  // image -> package build completes -> workload observes the installed effect.
+  // No package adapter/capability means fail closed before workload creation
+  // (covered by the Rust provider decision table).
+  //
+  // | Rule | provider capability | requirements | observable behavior |
+  // | P1   | Podman: present      | exact pip pin | ACP workload reads installed marker |
+  // | P2   | Docker: absent       | exact pip pin | stable error; no default-image fallback |
+  // | P3   | either               | absent        | ordinary selected-image execution |
+  await exerciseContainerEnvironment(client, 'package-image', {
+    environment: { kind: 'image', reference: PACKAGE_BASE_IMAGE },
+  }, true, {
+    packages: { pip: ['awaken-proof==1'] },
+    expectedMarker: 'PACKAGE-PROVISIONED',
+  });
+  await exerciseContainerEnvironment(client, 'scope-fallback', {
     environment: { kind: 'scope' },
   }, true);
-  await exercisePodmanEnvironment(client, 'local-dir-fallback', {
+  await exerciseContainerEnvironment(client, 'local-dir-fallback', {
     environment: { kind: 'local_dir', path_template: '/tmp/not-a-container-root' },
   }, true);
-  await exercisePodmanEnvironment(client, 'readonly-root', {
+  await exerciseContainerEnvironment(client, 'readonly-root', {
     environment: {
       kind: 'isolated_root',
       base: { source: 'dir', path_template: `${TMP}/missing-readonly-root` },
       writable_base: false,
     },
   }, false);
-  await exercisePodmanEnvironment(client, 'writable-root', {
+  await exerciseContainerEnvironment(client, 'writable-root', {
     environment: {
       kind: 'isolated_root',
       base: { source: 'dir', path_template: `${TMP}/missing-writable-root` },
       writable_base: true,
     },
   }, false);
-  await exercisePodmanEnvironment(client, 'tarball-root', {
+  await exerciseContainerEnvironment(client, 'tarball-root', {
     environment: {
       kind: 'isolated_root',
       base: { source: 'tarball', reference: `${TMP}/missing-root.tar` },
@@ -222,6 +250,31 @@ function ensureSessionImage() {
   });
 }
 
+function ensurePackageFixtureImage() {
+  if (ENGINE !== 'podman') return;
+  if (spawnSync(ENGINE, ['image', 'inspect', PACKAGE_BASE_IMAGE], { stdio: 'ignore' }).status === 0) return;
+  const installer = [
+    '#!/bin/sh',
+    'mkdir -p /usr/local/share',
+    'printf %s PACKAGE-PROVISIONED > /usr/local/share/awaken-package-proof',
+  ].join('\\n');
+  const containerfile = [
+    `FROM ${IMAGE}`,
+    'USER root',
+    `RUN ["sh","-c",${JSON.stringify(`printf '%b\\n' ${JSON.stringify(installer)} > /usr/local/bin/pip && chmod 0755 /usr/local/bin/pip`)}]`,
+    '',
+  ].join('\n');
+  const context = `${TMP}/package-base`;
+  fs.mkdirSync(context, { recursive: true });
+  const containerfilePath = `${context}/Containerfile`;
+  fs.writeFileSync(containerfilePath, containerfile);
+  const result = spawnSync(ENGINE, ['build', '--tag', PACKAGE_BASE_IMAGE, '--file', containerfilePath, context], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, `package fixture image build failed: ${result.stderr}`);
+}
+
 // Build the brain with the selected container feature (the shared harness builds
 // default features only), and resolve the binary path from cargo's JSON output.
 function buildBrain() {
@@ -269,10 +322,11 @@ async function main() {
     console.log(`E2E SKIP: no reachable ${ENGINE} runtime.`);
     return;
   }
-  ensureSessionImage();
   cleanupTestContainers();
   fs.rmSync(TMP, { recursive: true, force: true });
   fs.mkdirSync(TMP, { recursive: true });
+  ensureSessionImage();
+  ensurePackageFixtureImage();
   const skillRepository = seedSkillRepository();
   const bin = buildBrain();
   const addr = `127.0.0.1:${PORT}`;
@@ -503,7 +557,17 @@ async function main() {
 
     if (ENGINE === 'podman') {
       await exercisePodmanRootfsMatrix(client);
-      console.log('  ok: Managed environment declarations drive Podman image/private-root/network/limit planning');
+      console.log('  ok: Managed environments drive Podman package/image/private-root/network/limit behavior');
+    } else {
+      // Same TS/Managed input, orthogonal provider verdict: Docker currently has
+      // no immutable package-image builder and must reject before workload launch.
+      await exerciseContainerEnvironment(client, 'docker-package-unsupported', {
+        environment: { kind: 'image', reference: IMAGE },
+      }, false, {
+        packages: { pip: ['awaken-proof==1'] },
+        expectedError: /package requirements requested but backend cannot provision packages/,
+      });
+      console.log('  ok: Docker package requirements fail closed without a capability fallback');
     }
 
     console.log(

@@ -80,12 +80,22 @@ adapters**. The neutral seam is realized as the crate
    `renew_lease` primitives. Monitoring likewise is a consumer (or a sidecar / an
    entrypoint baked into the custom environment), not a contract method.
 
-5. **Deliberately excluded from the neutral contract** (simple design / YAGNI):
+5. **Package requirements are neutral provisioning data, not an Environment
+   adapter.** The exact Environment snapshot carries manager → package specs;
+   the host maps it once into `SandboxSpec.packages`. Admission requires the
+   provider's `package_provisioning` capability. Podman realizes the requirement
+   as a content-addressed derived OCI image built from the exact inspected base
+   image ID. Providers that cannot prove this capability reject before workload
+   creation; they never run a host package manager or silently ignore the request.
+   Manager names remain open in the neutral contract; a concrete provider owns
+   the manager vocabulary it can safely realize.
+
+6. **Deliberately excluded from the neutral contract** (simple design / YAGNI):
    seccomp/cgroup/rootfs/sidecar/mountPropagation (→ `SandboxSpec.extra` +
    provider, declared via `capabilities()`); monitoring methods; ACP piped-stdio
    (provider-specific until a cross-backend consumer proves the need);
-   `EnvironmentBuild`/usage-readback. Toolchain stays an open string list, not a
-   closed enum. Test for inclusion: *must every backend understand it uniformly?*
+   `EnvironmentBuild`/usage-readback. Test for inclusion: *must every backend
+   understand it uniformly?*
 
 ## Role Catalog
 
@@ -98,6 +108,7 @@ adapters**. The neutral seam is realized as the crate
 | `EnvironmentSoundness` (admission) | Policy | reject a malformed declared environment at publish time | `EnvironmentDecl` | realize-time concerns | broken config reaches provision | `admission::tests` |
 | `SandboxHandle` | Value object | a durable, serializable reference to reconnect across restart/host | — | live connection state | orphaned remote sandbox | lifecycle test (serialize → `adopt`) |
 | `EnvironmentKind` | Value object (declared) | the declared userland shape (Scope/Sandbox/IsolatedRoot/Image/LocalDir) | `RootfsSource` | the realized live env; host paths (G3) | unreproducible environment | admission (digest rule) |
+| `PackageRequirements` | Value object (provisioning) | exact manager → package requirements crossing the one Sandbox seam | `SandboxSpec`, provider capability | package-manager execution or host mutation | requirement accepted but absent from workload | capability decision table; Podman cache/build tests; real workload-marker E2E |
 | Provider tiers (Lexical/Bwrap/Container/K8s) | Adapters | realize the seam at one `IsolationClass` | `SandboxProvider` | the neutral contract's shape | untrusted/opaque code on a non-transparent tier | `SandboxCapabilities.tool_transparent` + `prepare_environment` gate |
 | `AgentChannel` | Boundary port (capability) | hand a consumer one duplex to a spawned agent process; only `tool_transparent` tiers implement it | `awaken-connection` Channel, `ProcessId` | raw stdio on the neutral data contract; protocol semantics (G3) | a non-transparent tier forced to expose a stream it cannot back | ISP: a segregated port, never `ProcessHandle::streams`; `tool_transparent` + object-safety test |
 | `RunEventSink` (binding seam) | Boundary port | the sole crate permitted to depend on runtime-core; commit projected neutral events (seq + lease nonce) | `StepOutcome`, event sequence | ACP vocabulary; provider mechanism; commit truth beyond append (G13) | agents-plane tangled directly into runtime-core | `check_crate_boundaries.py` (only this crate → runtime); monotonic-seq test |

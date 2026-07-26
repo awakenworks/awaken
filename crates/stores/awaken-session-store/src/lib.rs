@@ -1105,6 +1105,7 @@ mod tests {
                         revision: awaken_session_contract::env_registry::EnvironmentRevision(1),
                         config_fingerprint: EnvironmentFingerprint("env-fingerprint".into()),
                         sandbox: serde_json::json!({}),
+                        packages: Default::default(),
                         network: SessionNetworkPolicy::Unrestricted,
                         credential_realization: CredentialRealizationProfile {
                             inference_holder: PlaintextHolder::new(

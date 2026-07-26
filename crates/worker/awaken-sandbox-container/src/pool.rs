@@ -311,6 +311,7 @@ mod tests {
             isolation: pc::IsolationClass::Container,
             mounts: Vec::new(),
             env: Vec::new(),
+            packages: Default::default(),
             network: pc::NetworkPolicy::None,
             outputs_path: "/mnt/session/outputs".into(),
             limits: Default::default(),

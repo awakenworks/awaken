@@ -23,6 +23,7 @@ fn session_environment(
         revision: awaken_protocol_managed::EnvironmentRevision(1),
         config_fingerprint,
         sandbox,
+        packages: Default::default(),
         network,
         credential_realization: native_credential_profile(),
     }
@@ -701,6 +702,7 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
                         "env-fingerprint".into(),
                     ),
                     sandbox: serde_json::json!({}),
+                    packages: Default::default(),
                     network: if with_environment_inputs {
                         awaken_protocol_managed::SessionNetworkPolicy::None
                     } else {

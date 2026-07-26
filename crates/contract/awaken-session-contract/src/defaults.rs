@@ -53,6 +53,7 @@ mod tests {
             revision: crate::env_registry::EnvironmentRevision(3),
             config_fingerprint: crate::EnvironmentFingerprint("env-fp".into()),
             sandbox: serde_json::json!({}),
+            packages: Default::default(),
             network: crate::SessionNetworkPolicy::None,
             credential_realization:
                 awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),

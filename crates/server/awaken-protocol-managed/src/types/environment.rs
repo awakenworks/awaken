@@ -48,6 +48,35 @@ impl<'de> Deserialize<'de> for AllowedHost {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(transparent)]
+pub struct PackageSpec(String);
+
+impl PackageSpec {
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for PackageSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        if value.is_empty()
+            || value.trim() != value
+            || value.starts_with('-')
+            || value.chars().any(char::is_control)
+        {
+            return Err(serde::de::Error::custom(
+                "package requirements must be non-empty values and cannot be command options",
+            ));
+        }
+        Ok(Self(value))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EnvironmentConfigParams {
@@ -84,17 +113,17 @@ pub enum CloudNetworkingParams {
 #[serde(deny_unknown_fields)]
 pub struct PackagesParams {
     #[serde(default)]
-    pub apt: Option<Vec<String>>,
+    pub apt: Option<Vec<PackageSpec>>,
     #[serde(default)]
-    pub cargo: Option<Vec<String>>,
+    pub cargo: Option<Vec<PackageSpec>>,
     #[serde(default)]
-    pub gem: Option<Vec<String>>,
+    pub gem: Option<Vec<PackageSpec>>,
     #[serde(default)]
-    pub go: Option<Vec<String>>,
+    pub go: Option<Vec<PackageSpec>>,
     #[serde(default)]
-    pub npm: Option<Vec<String>>,
+    pub npm: Option<Vec<PackageSpec>>,
     #[serde(default)]
-    pub pip: Option<Vec<String>>,
+    pub pip: Option<Vec<PackageSpec>>,
     #[serde(rename = "type", default)]
     pub kind: Option<PackagesKind>,
 }
@@ -170,17 +199,17 @@ pub enum CloudNetworkingUpdateParams {
 #[serde(deny_unknown_fields)]
 pub struct PackagesUpdateParams {
     #[serde(default, deserialize_with = "super::presence::double_option")]
-    pub apt: Option<Option<Vec<String>>>,
+    pub apt: Option<Option<Vec<PackageSpec>>>,
     #[serde(default, deserialize_with = "super::presence::double_option")]
-    pub cargo: Option<Option<Vec<String>>>,
+    pub cargo: Option<Option<Vec<PackageSpec>>>,
     #[serde(default, deserialize_with = "super::presence::double_option")]
-    pub gem: Option<Option<Vec<String>>>,
+    pub gem: Option<Option<Vec<PackageSpec>>>,
     #[serde(default, deserialize_with = "super::presence::double_option")]
-    pub go: Option<Option<Vec<String>>>,
+    pub go: Option<Option<Vec<PackageSpec>>>,
     #[serde(default, deserialize_with = "super::presence::double_option")]
-    pub npm: Option<Option<Vec<String>>>,
+    pub npm: Option<Option<Vec<PackageSpec>>>,
     #[serde(default, deserialize_with = "super::presence::double_option")]
-    pub pip: Option<Option<Vec<String>>>,
+    pub pip: Option<Option<Vec<PackageSpec>>>,
     #[serde(rename = "type", default)]
     pub kind: Option<PackagesKind>,
 }

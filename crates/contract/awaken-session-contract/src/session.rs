@@ -799,6 +799,7 @@ mod tests {
                 revision: crate::env_registry::EnvironmentRevision(1),
                 config_fingerprint: crate::EnvironmentFingerprint("env-1".into()),
                 sandbox: serde_json::json!({}),
+                packages: Default::default(),
                 network: crate::SessionNetworkPolicy::Unrestricted,
                 credential_realization:
                     awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),

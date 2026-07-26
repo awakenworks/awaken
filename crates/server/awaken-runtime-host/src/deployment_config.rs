@@ -228,6 +228,7 @@ impl DeploymentConfig {
                     secret_egress_substitution: false,
                     resource_limits: false,
                     custom_rootfs: false,
+                    package_provisioning: false,
                 },
                 "local",
             ),
@@ -245,6 +246,7 @@ impl DeploymentConfig {
                     secret_egress_substitution: false,
                     resource_limits: true,
                     custom_rootfs: true,
+                    package_provisioning: matches!(self.sandbox_tier, SandboxTier::Podman),
                 },
                 match self.sandbox_tier {
                     SandboxTier::Docker => "docker",
@@ -266,6 +268,7 @@ impl DeploymentConfig {
                     secret_egress_substitution: false,
                     resource_limits: false,
                     custom_rootfs: false,
+                    package_provisioning: false,
                 },
                 "namespace",
             ),
@@ -387,18 +390,22 @@ mod tests {
     /// | k8s (current adapter) | 0 | 0 | neither |
     #[test]
     fn sandbox_support_reports_adapter_evidence_not_isolation_class() {
-        for (tier, deny_all, backend) in [
-            (SandboxTier::Local, false, "local"),
-            (SandboxTier::Namespace, true, "namespace"),
-            (SandboxTier::Docker, true, "docker"),
-            (SandboxTier::Podman, true, "podman"),
-            (SandboxTier::K8s, false, "k8s"),
+        for (tier, deny_all, package_provisioning, backend) in [
+            (SandboxTier::Local, false, false, "local"),
+            (SandboxTier::Namespace, true, false, "namespace"),
+            (SandboxTier::Docker, true, false, "docker"),
+            (SandboxTier::Podman, true, true, "podman"),
+            (SandboxTier::K8s, false, false, "k8s"),
         ] {
             let mut deployment = base();
             deployment.sandbox_tier = tier;
             let (support, actual_backend) = deployment.sandbox_support();
             assert_eq!(actual_backend, backend);
             assert_eq!(support.network_isolation, deny_all, "{tier:?}");
+            assert_eq!(
+                support.package_provisioning, package_provisioning,
+                "{tier:?} package build evidence"
+            );
             assert!(
                 !support.enforced_network_allowlist,
                 "{tier:?} must not claim a no-bypass allowlist"

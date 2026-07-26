@@ -376,6 +376,23 @@ pub enum EnvVisibility {
 
 // ── Network ───────────────────────────────────────────────────────────────────
 
+/// Exact package-manager inputs provisioned before any workload process starts.
+/// Manager names remain open for provider extensibility; protocol adapters own
+/// their closed public enums and providers reject unsupported managers.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageRequirements {
+    #[serde(default)]
+    pub managers: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+impl PackageRequirements {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.managers.values().all(Vec::is_empty)
+    }
+}
+
 /// Egress policy for the sandbox. Ranked so a provider admits a request only when
 /// it can enforce a policy at least as restrictive as the one asked for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

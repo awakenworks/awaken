@@ -53,6 +53,7 @@ pub(crate) struct FrozenBaselineRuntimeProjection {
 pub(crate) struct FrozenEnvironmentRuntimeProjection {
     pub fingerprint: awaken_protocol_managed::EnvironmentFingerprint,
     pub network: awaken_provisioning_contract::NetworkPolicy,
+    pub packages: awaken_provisioning_contract::PackageRequirements,
     pub sandbox: Option<awaken_provisioning_contract::SandboxOverride>,
     pub credential_realization: awaken_runtime_contract::CredentialRealizationProfile,
 }

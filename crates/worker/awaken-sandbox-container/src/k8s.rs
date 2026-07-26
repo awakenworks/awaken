@@ -1323,6 +1323,7 @@ mod tests {
             image: "agent:1".into(),
             command: vec!["claude".into(), "--acp".into()],
             env: vec![("TZ".into(), "UTC".into())],
+            packages: Default::default(),
             binds: Vec::new(),
             outputs_volume: "/mnt/session/outputs".into(),
             network: crate::NetworkMode::Open,

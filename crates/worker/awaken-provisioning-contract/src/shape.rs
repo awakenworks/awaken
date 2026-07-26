@@ -44,6 +44,7 @@ mod tests {
             isolation: IsolationClass::Workdir,
             mounts: Vec::new(),
             env: Vec::new(),
+            packages: Default::default(),
             network: NetworkPolicy::Unrestricted,
             outputs_path: "/mnt/session/outputs".into(),
             limits: Default::default(),
