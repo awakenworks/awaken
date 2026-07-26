@@ -380,3 +380,29 @@ The test-only fixed ACP launch selects `SESSION_ENVIRONMENT_TIER`; production
 selects the equivalent tier only from typed deployment configuration. Removed
 production `AWAKEN_SANDBOX_TIER` input cannot silently select or downgrade a
 provider.
+
+## Phase 17: exact Environment projection through pooled containers
+
+```text
+official Environment config (network)
+  + exact SandboxExecutionPolicy version (root/isolation/limits)
+  -> frozen Session baseline
+  -> first runtime assignment synchronizes projection
+  -> WarmContainerPool delegates inner capability evidence
+  -> provider admission -> one Session-owned container
+```
+
+| Rule | Network | Sandbox root | Pool capability | Expected |
+|---|---|---|---|---|
+| P1 | allowlist | host/default | no no-bypass | reject before container creation |
+| P2 | none | explicit image | exact inner evidence | Podman execution succeeds |
+| P3 | unrestricted | scope/local-dir fallback | exact inner evidence | configured image executes |
+| P4 | any | missing private root/tarball | exact inner evidence | fail closed, no default fallback |
+| P5 | unrestricted | resource-bearing Session | Docker/Podman | one container survives brain restart and is adopted |
+| P6 | allowlist | any | wrapper default Workdir evidence | forbidden capability-loss path |
+
+Runtime assignment synchronizes the baseline even when Resources and MCP are
+empty. Provider wrappers are capability-transparent: the warm pool cannot replace
+the concrete Docker/Podman evidence with the trait's conservative default. This
+keeps Environment networking, sandbox policy, and the physical container on one
+causal path.

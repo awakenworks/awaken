@@ -48,11 +48,34 @@ async function afterPendingActivation(operation) {
 }
 
 async function exercisePodmanEnvironment(client, name, sandbox, expectSuccess) {
+  const network = sandbox.network;
   const environment = await client.beta.environments.create({
     name: `podman-${name}`,
-    config: { type: 'local', sandbox },
+    config: {
+      type: 'cloud',
+      networking: !network || network.mode === 'unrestricted'
+        ? { type: 'unrestricted' }
+        : { type: 'limited', allowed_hosts: network.hosts ?? [] },
+    },
     betas: BETAS,
   });
+  const policyId = `podman-${name}-${process.pid}`;
+  const { network: _ownedByEnvironment, ...policyConfig } = sandbox;
+  let response = await fetch(`http://127.0.0.1:${PORT}/v1/awaken/sandbox-execution-policies`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id: policyId, config: policyConfig }),
+  });
+  assert.equal(response.status, 201, await response.text());
+  response = await fetch(
+    `http://127.0.0.1:${PORT}/v1/awaken/environments/${environment.id}/sandbox-execution-policy`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ policy_id: policyId, version: 1 }),
+    },
+  );
+  assert.equal(response.status, 200, await response.text());
   const session = await client.beta.sessions.create({
     agent: 'assistant',
     metadata: { 'awaken.runtime': 'acp:custom' },

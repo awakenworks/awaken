@@ -165,9 +165,14 @@ impl ManagedState {
     fn next_action(
         owner_scope: String,
         session: &PersistedSession,
+        prepare_projection: bool,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
         let stages = Self::realization_stage_requests(&owner_scope, session)?;
-        let prepare_session = session.resources.pending.is_some();
+        // A new runtime incarnation has no process-local baseline even when the
+        // Session has zero Resources/MCP. Synchronize the complete frozen
+        // projection on assignment; pending Resources independently require the
+        // same idempotent synchronization before their external effects.
+        let prepare_session = prepare_projection || session.resources.pending.is_some();
         if prepare_session || !stages.is_empty() {
             return Self::realization_directive(
                 owner_scope,
@@ -254,7 +259,7 @@ impl SessionRealizationControl for ManagedState {
                     command.target.lease_expires_at_unix_ms > lease.expires_at_unix_ms
                 });
             if !needs_assignment && !renews_assignment && requested.is_empty() {
-                return Self::next_action(owner_scope, &session);
+                return Self::next_action(owner_scope, &session, false);
             }
 
             let lease = if needs_assignment {
@@ -352,7 +357,9 @@ impl SessionRealizationControl for ManagedState {
                 )
                 .await
             {
-                Ok(session) => return Self::next_action(owner_scope, &session),
+                Ok(session) => {
+                    return Self::next_action(owner_scope, &session, needs_assignment);
+                }
                 Err(StateError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => continue,
                 Err(StateError::Conflict) => {
                     return Err(SessionRealizationControlFailure::Conflict);
@@ -1390,19 +1397,39 @@ mod tests {
         //
         // | Rule | Pending resources | MCP | Command | Effect |
         // |---|---|---|---|---|
+        // | F0 | F | empty | first assignment | Stage(prepare=true) |
         // | F1 | T | empty | begin | Stage(prepare=true) |
         // | F2 | T | empty | activate+ack | idle, one commit per phase |
         // | F3 | T | Realizing | fail | Failed + activation_failed |
         // | F4 | T | Failed | same fail | replay/no revision |
-        let mut empty = persisted_session("session-empty");
-        empty.mcp = SessionMcpAttachmentSet::default();
-        let (empty_state, empty_repo) = harness_for(empty).await;
+        let mut baseline_only = persisted_session("session-baseline-only");
+        baseline_only.resources = Default::default();
+        baseline_only.mcp = SessionMcpAttachmentSet::default();
+        let (baseline_state, _) = harness_for(baseline_only).await;
         let target = awaken_session_contract::SessionRealizationTarget {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/incarnation-1".into(),
             lease_expires_at_unix_ms: u64::MAX,
             renew_existing_lease: false,
         };
+        let baseline_stage = baseline_state
+            .begin_session_realization(BeginSessionRealization {
+                session_id: "session-baseline-only".into(),
+                target: target.clone(),
+            })
+            .await
+            .expect("F0");
+        assert!(matches!(
+            baseline_stage.action,
+            SessionRealizationAction::Stage {
+                prepare_session: true,
+                ref mcp_stages,
+            } if mcp_stages.is_empty()
+        ));
+
+        let mut empty = persisted_session("session-empty");
+        empty.mcp = SessionMcpAttachmentSet::default();
+        let (empty_state, empty_repo) = harness_for(empty).await;
         let staged = empty_state
             .begin_session_realization(BeginSessionRealization {
                 session_id: "session-empty".into(),
