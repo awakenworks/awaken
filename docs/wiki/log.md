@@ -1,5 +1,23 @@
 # Wiki Update Log
 
+## 2026-07-25
+
+- **Correction**: ADR-0066/0067 remain accepted target directions, but their
+  feature slices are now gated by a contract-closure Slice 0. The correction
+  freezes the ADR-0051 scope envelope, consumed preparation intent,
+  claim-fenced Worker-to-Control application contribution, canonical Managed
+  MCP full replacement, Session realization lease, replace/tombstone root CAS,
+  sealed payload resolver, dispatch claim-epoch credential binding, exact OAuth
+  refresh/reseal access, and planned-versus-actual realization split. Previous
+  entries describing the targets as immediately development-ready are
+  superseded.
+
+## 2026-07-24
+
+- **Update**: Accepted ADR-0067 as development-ready for Workload/Worker realization: CredentialAccess separates material source from recipient-bound envelope, Environment/attempt profile requests one exact allowed holder, MCP generation or RunAttempt pins it, and failure never changes holders. Automatic LLM Vault and Platform realization remain separately gated.
+
+- **Update**: Accepted ADR-0066 as development-ready: one root mutation atomically owns immutable baseline, existing Resource state, MCP-only generations, idempotency, and outbox; Agent/Session/application MCP share one normalizer; exact generations stage invisibly, CAS Active, publish, drain, and recover. Generic Service/public realizer work remains deferred until old MCP authorities are deleted.
+
 - **Update**: Amended ADR-0062 with the hosted configured-upstream composition,
   same-model complete-binding fallback semantics, and canonical Worker realization
   capability vocabulary.

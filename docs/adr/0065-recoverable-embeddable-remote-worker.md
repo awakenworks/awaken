@@ -120,20 +120,23 @@ default, and sandbox selection cannot drift through a second assembly path.
 Special deployments retain `with_manifest(explicit_manifest)`, but the two
 manifest sources are mutually exclusive and share contract validation.
 
-The provisioner returns only a frozen `ApplicationSessionPlan` of neutral
-mounts, environment values, prompt context, MCP servers, and egress policy. The
-Host stages it in the existing Session slot before environment realization;
-Native and ACP consume the same resulting `SessionEnvironment`. It cannot
-create another sandbox, executor registry, or MCP registry. Re-delivery of the
-same plan fingerprint is idempotent, while a different plan cannot mutate an
-already-bound Session.
+The provisioner returns only a frozen, secret-free `ApplicationSessionPlan` of
+neutral mounts, environment values, prompt context, MCP inputs, and a network
+restriction. Because it is produced after claim, the Worker submits the complete
+plan as one claim-fenced `ApplicationSessionContribution` to the Control-owned
+Session application service while the Session is `Preparing`. The Control edge
+verifies the claim/epoch and fingerprint; the one Session creation compiler then
+consumes Control and application inputs, freezes the baseline, and creates
+generation 1 Resource/MCP state in one root CAS before environment realization.
+Native and ACP consume the same resulting `SessionEnvironment` and attachment
+projection.
 
-For Native execution, each prepared MCP server becomes the canonical
-`McpPlugin` and enters the runtime through the Session plugin field on
-`RuntimeRunContext`; it is not flattened into a parallel tool/descriptor
-registry and does not rewrite the published Agent snapshot. ACP receives the
-same typed prepared server through its own protocol projection and the Host does
-not open a competing second MCP connection.
+The application cannot create another sandbox, executor registry, MCP registry,
+or Worker-local Session overlay. Re-delivery of the same plan fingerprint is
+idempotent, while a different plan fails closed. Runtime MCP enters Native/ACP
+only through the exact-generation `SessionRuntime` stage/publish/drain path in
+ADR-0066; the application neither constructs `PreparedMcpServer` nor opens a
+competing connection.
 
 Run ingress captures the exact claim behind the neutral
 `AttemptOwnershipVerifier` installed in `RuntimeRunContext`. Application code can
@@ -209,3 +212,22 @@ ephemeral PostgreSQL instance so the case cannot silently self-skip.
   loses Awaiting, historical context, delegation state, and cold-node recovery.
 - **Put Flow envelopes and ACLs into Awaken.** Those are product semantics above
   the neutral Worker boundary.
+
+## Amendment: application input is a claim-fenced Session contribution (2026-07-25)
+
+[ADR-0066](0066-session-service-binding-and-realization.md) replaces the
+`ApplicationSessionPlan.mcp_servers: Vec<PreparedMcpServer>` shape described
+above. The registered application retains the ability to contribute initial
+mounts, env, prompts, network restriction, and MCP, but now returns secret-free
+`mcp_inputs: Vec<McpAttachmentInput>` with the other neutral values. After claim,
+the Worker submits the whole plan to Control as one `ApplicationSessionContribution`.
+It does not mutate a Worker-local slot. The Control-owned creation compiler
+consumes the temporary preparation intent, freezes the baseline, safely
+intersects networking, and sends MCP values through the one Managed
+`McpAttachmentNormalizer`; they become generation 1 of the durable
+`SessionMcpAttachmentSet`.
+
+The application never materializes a bearer, constructs a relay/connection, or
+owns MCP desired state. Re-delivery of the complete application plan remains
+fingerprint-idempotent. Later add/replace/remove operations are independent
+Session commands and never mutate or resubmit `ApplicationSessionPlan`.

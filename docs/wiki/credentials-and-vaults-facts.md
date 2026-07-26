@@ -41,3 +41,19 @@ Owner: [credentials-and-vaults.md](../design/credentials-and-vaults.md).
 - Fact: the first implementation slice resolves a named credential ref, verifies policy separately, materializes opaque runtime input, and proves secret-free replay.
 - Links: guardrails G8, G9, and G14
 - Verification: docs review checklist and replay/serialization tests.
+
+## FACT-CRED-005: Session MCP convergence is an accepted target
+
+- Status: accepted target; Slice 0 contract closure required, not a current invariant
+- Owner: [ADR-0066](../adr/0066-session-service-binding-and-realization.md)
+- Fact: the target scoped Session persistence row carries one consumed preparation intent, one immutable finalized baseline, the existing versioned Resource state, and one MCP-only attachment set under replace/tombstone root mutation. Claim-time application input returns to Control through a fenced contribution; Agent/Session/application MCP share one normalizer; the existing Managed full-replacement API diffs into the same generations. A Session realization lease fences local/remote stage, CAS Active, publish, drain, and recovery. Generic Service and a public realizer are deferred.
+- Links: [architecture invariants](../INVARIANTS.md); [remote Worker protocol](../design/remote-worker-protocol.md)
+- Verification: planned root-CAS/store conformance, old-path deletion, Environment pin/network-intersection, MCP create/call/add/replace/remove/recovery, Native/ACP parity, stale-ownership, and out-of-policy target tests.
+
+## FACT-CRED-006: Custody and model exposure are separate
+
+- Status: accepted target; Slice 0 contract closure required and partial mechanisms do not establish the target policy
+- Owner: [ADR-0067](../adr/0067-credential-custody-model-exposure-and-secret-delivery.md)
+- Fact: Vault is storage at rest. Published access separates material source from a recipient-bound sealed payload reference, exact resolver and optional OAuth refresh/reseal access, and lists allowed plaintext-holder trust domains independently from `Forbidden`/`VirtualOnly` model exposure. MCP generation or the atomic dispatch claim epoch pins the exact Environment-requested holder and planned mechanism; actual mechanism appears only in a secret-free receipt. There is no custody order, inference Service attachment, runtime holder fallback, or URL/current-Vault refresh rediscovery. Automatic LLM Vault authoring is a separate, not-yet-designed application workflow.
+- Links: [credentials and vaults](../design/credentials-and-vaults.md); [ADR-0066](../adr/0066-session-service-binding-and-realization.md)
+- Verification: planned access source/envelope migration, explicit trust-domain selection and attempt/generation pinning, workload/Worker network conformance, model-exposure, Native/ACP parity, secret-leak, and no-downgrade tests.

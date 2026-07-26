@@ -2,7 +2,11 @@
 
 - Status: Accepted
 - Date: 2026-07-20
-- Depends on: ADR-0031, ADR-0032, ADR-0043, ADR-0057, ADR-0061
+- Builds on: ADR-0031, ADR-0032, ADR-0057, ADR-0061
+- Supersedes ADR-0043 sections 1-3 for inference wherever they describe a
+  materialized credential inside `ExecutableAgentSnapshot`; the authoritative
+  snapshot value is the secret-free `ResolvedModelCandidate` and exact
+  `CredentialAccess`
 
 ## Context
 
@@ -240,3 +244,39 @@ After that boundary, only the complete `ModelBinding` and
 `ResolvedModelCandidate` exist. They are the shared identity for publication
 deduplication, override filtering, fallback order, fingerprinting and runtime
 materialization. Runtime never repeats the model-only lookup.
+
+## Amendment: credential execution policy preserves Model authority (2026-07-24)
+
+[ADR-0067](0067-credential-custody-model-exposure-and-secret-delivery.md)
+extends the existing exact `CredentialAccess` with an explicit set of
+allowed plaintext-holder trust domains and an independent
+`Forbidden`/`VirtualOnly` model-exposure policy. It does not introduce a second
+credential-delivery authority.
+
+Session `vault_ids` never select or override a model credential. The exact
+`ResolvedModelCandidate` remains the only persisted inference authority and is
+not projected into a Session Service or MCP attachment. A Native, ACP, Worker,
+or downstream adapter may produce a transient realization request from that
+candidate and the frozen Environment, but it cannot repeat catalog/model/route
+or credential selection.
+
+The dispatch claim transaction owns the selected plaintext-holder execution pin
+in `AttemptCredentialBinding`. It atomically records the candidate fingerprint,
+exact credential revision, selected holder, planned realization, Worker
+incarnation, lease, and monotonic claim epoch before materialization. A
+secret-free receipt records the actual mechanism afterward. Retry and
+response-loss recovery under that epoch reuse the pin; a materialization failure
+cannot select another holder. Reclaim advances the epoch and may use a different
+holder only when its newly frozen execution profile requests that exact holder
+and it belongs to the candidate's published allowed set. This attempt-epoch fact
+is not a second Model or credential-selection authority.
+
+The current `ResolvedModel.api_key: String` and ACP inline-secret environment
+path is migration work, not the final contract. It must be replaced by a typed,
+exact secret requirement realized at the last supported boundary. A Worker or
+platform gateway failure never falls back to plaintext in the ACP workload.
+
+Automatic LLM Vault authoring is not decided here. It requires a separate
+application-workflow proposal naming its service owner, transaction or durable
+saga, idempotency, compensation, repositories, outbox, and orphan-material
+reclamation before implementation.
