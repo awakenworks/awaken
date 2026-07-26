@@ -110,6 +110,35 @@ pub(super) async fn run_tool_calls(
         // bypasses the gate and never reaches an executor.
         let mut entered_executor = false;
         let mut delegation_started = false;
+        if resolved.spec.tool_descriptors.iter().any(|descriptor| {
+            descriptor.id == call.tool_id && descriptor.kind == ToolKind::ClientExecuted
+        }) {
+            let ticket = resume_ticket(
+                resolved,
+                run_id,
+                delegation_origin,
+                &call.call_id,
+                &call,
+                AwaitReason::ExternalEvent,
+            );
+            emit(
+                context,
+                run_id,
+                AgentEvent::Fact(Fact::Awaiting {
+                    pending_tool_use_id: ticket.call_id.clone(),
+                }),
+            )
+            .await;
+            batch
+                .mark_awaiting(
+                    &call.call_id,
+                    ToolWaitKind::ExternalResult,
+                    ticket.correlation_id.clone(),
+                )
+                .map_err(|error| Error::Execution(error.to_string()))?;
+            stage_batch(&batch, ledger, store);
+            return Ok(Some(RunDisposition::awaiting(ticket)));
+        }
         let output = if call.tool_id == awaken_runtime_contract::resolved::TOOL_OPEN_ID {
             open_deferred_tool(&resolved.spec.tool_presentation, &call, opened)
         } else {

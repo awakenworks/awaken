@@ -126,6 +126,26 @@ fn compile_with_models(
         descriptors.push(descriptor.clone());
         seen.insert(id.clone());
     }
+    // Client-executed tools are exact inline capabilities, never aliases for a
+    // host executor. Reject identity overlap instead of choosing one execution
+    // owner based on insertion order.
+    for descriptor in &config.client_tools {
+        if descriptor.kind != ToolKind::ClientExecuted {
+            return Err(CompileError::InvalidBinding {
+                agent: config.id.clone(),
+                axis: "client_tools",
+                reason: format!("tool {:?} is not client_executed", descriptor.id),
+            });
+        }
+        if !seen.insert(descriptor.id.clone()) {
+            return Err(CompileError::InvalidBinding {
+                agent: config.id.clone(),
+                axis: "client_tools",
+                reason: format!("duplicate tool identity {:?}", descriptor.id),
+            });
+        }
+        descriptors.push(descriptor.clone());
+    }
     // Glob patterns: permissively add catalog tools whose id matches, in catalog
     // order, skipping any already selected. A pattern that matches nothing is not
     // an error — it is a filter over the catalog, not a reference to a tool.
@@ -528,6 +548,51 @@ mod tests {
 
     fn tool(id: &str) -> ToolDescriptor {
         ToolDescriptor::pinned("test", id, "a tool", serde_json::json!({"type": "object"}))
+    }
+
+    #[test]
+    fn client_tools_compile_as_exact_non_host_capabilities() {
+        // Causal graph: inline client descriptor -> compile -> immutable snapshot;
+        // catalog lookup and host ownership are deliberately bypassed.
+        //
+        // Decision table:
+        // | inline kind | catalog collision | result |
+        // | client_executed | no  | exact descriptor in snapshot |
+        // | regular         | no  | reject wrong execution owner |
+        // | client_executed | yes | reject ambiguous identity |
+        let mut config = config(&[]);
+        config.client_tools = vec![
+            ToolDescriptor::pinned(
+                "managed-client",
+                "lookup",
+                "client lookup",
+                serde_json::json!({"type":"object","required":["query"]}),
+            )
+            .with_kind(ToolKind::ClientExecuted),
+        ];
+
+        let snapshot = compile(&config, &[]).expect("exact client tool compiles");
+        assert_eq!(snapshot.resolved_spec.tool_descriptors, config.client_tools);
+
+        let mut wrong_owner = config.clone();
+        wrong_owner.client_tools[0].kind = ToolKind::Regular;
+        assert!(matches!(
+            compile(&wrong_owner, &[]),
+            Err(CompileError::InvalidBinding {
+                axis: "client_tools",
+                ..
+            })
+        ));
+
+        let mut collision = config.clone();
+        collision.tool_ids = vec!["lookup".into()];
+        assert!(matches!(
+            compile(&collision, &[tool("lookup")]),
+            Err(CompileError::InvalidBinding {
+                axis: "client_tools",
+                ..
+            })
+        ));
     }
 
     fn mcp(

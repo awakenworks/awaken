@@ -866,7 +866,7 @@ async fn failing_prepare_session_fails_the_create_with_the_mapped_envelope() {
             "/v1/sessions",
             Some(json!({
                 "agent": "calc-agent",
-                "mcp_servers": [{"name": "calc", "url": MCP_URL}]
+                "mcp_servers": [{"type": "url", "name": "calc", "url": MCP_URL}]
             })),
         )
         .await;
@@ -1054,7 +1054,7 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
         "/v1/sessions",
         Some(json!({
             "agent": "hot-agent",
-            "mcp_servers": [{"name": "calc", "url": "https://old.example/mcp"}]
+            "mcp_servers": [{"type": "url", "name": "calc", "url": "https://old.example/mcp"}]
         })),
     )
     .await;
@@ -1127,7 +1127,7 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
         "POST",
         &format!("/v1/sessions/{mismatch_id}"),
         Some(
-            json!({"agent": {"mcp_servers": [{"name": "bad", "url": "https://bad.example/mcp"}]}}),
+            json!({"agent": {"mcp_servers": [{"type": "url", "name": "bad", "url": "https://bad.example/mcp"}]}}),
         ),
     )
     .await;
@@ -1152,7 +1152,7 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
         &mismatch.app,
         "POST",
         &format!("/v1/sessions/{mismatch_id}"),
-        Some(json!({"agent": {"mcp_servers": [{"name": "missing-url"}]}})),
+        Some(json!({"agent": {"mcp_servers": [{"type": "url", "name": "missing-url"}]}})),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "H8");
@@ -1335,6 +1335,7 @@ async fn mcp_recovery_tests_are_generated_from_decision_table() {
         "POST",
         &format!("/v1/sessions/{retry_id}"),
         Some(json!({"agent": {"mcp_servers": [{
+            "type": "url",
             "name": "retry",
             "url": "https://retry.example/mcp"
         }]}})),
@@ -1590,7 +1591,12 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
     assert_eq!(status, StatusCode::BAD_REQUEST, "I5");
 
     let current_etag = later_headers["etag"].to_str().unwrap();
-    let tools = json!([{"name": "client_tool", "description": "durable"}]);
+    let tools = json!([{
+        "type": "custom",
+        "name": "client_tool",
+        "description": "durable",
+        "input_schema": { "type": "object" }
+    }]);
     let (status, _, updated) = call_with_headers(
         &h.app,
         "POST",
@@ -1707,7 +1713,7 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
         &h.app,
         "POST",
         &format!("/v1/sessions/{id}"),
-        Some(json!({"agent": {"mcp_servers": [{"name": "cas", "url": "https://cas-3.example/mcp"}]}})),
+        Some(json!({"agent": {"mcp_servers": [{"type": "url", "name": "cas", "url": "https://cas-3.example/mcp"}]}})),
         &[("if-match", etag)],
     )
     .await;

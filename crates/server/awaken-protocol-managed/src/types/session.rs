@@ -15,6 +15,9 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::agent::{AgentSkill, AgentTool, UrlMcpServer};
+use super::resource::ResourceInput;
+
 /// The Anthropic error envelope: `{ "type": "error", "error": { "type", "message" } }`.
 /// The SDK parses this shape to populate `err.error.type` / `err.error.message`;
 /// `error.type` is the status-keyed discriminator (`not_found_error`,
@@ -91,11 +94,11 @@ pub struct AgentRefObject {
     #[serde(default, deserialize_with = "deserialize_double_option")]
     pub system: Option<Option<String>>,
     #[serde(default, deserialize_with = "deserialize_double_option")]
-    pub tools: Option<Option<Vec<Value>>>,
+    pub tools: Option<Option<Vec<AgentTool>>>,
     #[serde(default, deserialize_with = "deserialize_double_option")]
-    pub mcp_servers: Option<Option<Vec<Value>>>,
+    pub mcp_servers: Option<Option<Vec<UrlMcpServer>>>,
     #[serde(default, deserialize_with = "deserialize_double_option")]
-    pub skills: Option<Option<Vec<Value>>>,
+    pub skills: Option<Option<Vec<AgentSkill>>>,
     /// Outer `None` = `model` omitted; `Some(None)` = `model: null`; `Some(Some(_))` =
     /// a value. Only meaningful when `kind` is `agent_with_overrides`.
     #[serde(default, deserialize_with = "deserialize_double_option")]
@@ -186,11 +189,34 @@ pub struct SessionCreateParams {
     /// by exact `mcp_server_url`).
     #[serde(default)]
     pub vault_ids: Vec<String>,
-    /// Mounted resources (ADR-0038): file / memory_store / github_repository entries
-    /// the SDK sends on `sessions.create`. Kept as opaque `Value`s (the wire shapes
-    /// differ per kind); the state layer lowers each into a typed input binding.
+    /// Mounted resources (ADR-0038), decoded as the SDK's tagged union before the
+    /// state layer lowers them into neutral input bindings.
     #[serde(default)]
-    pub resources: Vec<Value>,
+    pub resources: Vec<ResourceInput>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionAgentUpdate {
+    #[serde(default)]
+    pub tools: Option<Vec<AgentTool>>,
+    #[serde(default)]
+    pub mcp_servers: Option<Vec<UrlMcpServer>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionUpdateParams {
+    #[serde(default)]
+    pub agent: Option<SessionAgentUpdate>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub title: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub metadata: Option<Option<std::collections::BTreeMap<String, Option<String>>>>,
+    /// Reserved by the SDK but not supported by the product yet. The route rejects
+    /// a present value before any state mutation.
+    #[serde(default)]
+    pub vault_ids: Option<Vec<String>>,
 }
 
 /// One MCP server on the wire (`BetaManagedAgentsMCPServerURLDefinition` /
@@ -247,14 +273,12 @@ pub struct SessionAgent {
     /// SDK-required (nullable) fields; emitted as `null` when the host has none.
     pub description: Option<String>,
     pub system: Option<String>,
-    // Opaque SDK unions passed through verbatim (the tool / MCP-server / skill
-    // unions) — same treatment as [`Agent`](super::agent::Agent)'s.
-    pub tools: Vec<Value>,
-    pub mcp_servers: Vec<Value>,
-    pub skills: Vec<Value>,
+    pub tools: Vec<AgentTool>,
+    pub mcp_servers: Vec<UrlMcpServer>,
+    pub skills: Vec<AgentSkill>,
     /// The multiagent coordinator roster, omitted when the agent delegates to no one.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub multiagent: Option<Value>,
+    pub multiagent: Option<super::agent::MultiagentConfig>,
 }
 
 /// `BetaManagedAgentsSessionStats` — coarse per-session timing/counters. Empty on
@@ -318,6 +342,13 @@ pub enum ConfirmResult {
     Deny,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum OutcomeRubric {
+    Text { content: String },
+    File { file_id: String },
+}
+
 /// Inbound events a client posts to `POST /v1/sessions/{id}/events`. M1 acts on
 /// `user.message`; the rest deserialize (so the batch is accepted) and are
 /// wired in later milestones.
@@ -366,7 +397,7 @@ pub enum InboundEvent {
     #[serde(rename = "user.define_outcome")]
     UserDefineOutcome {
         description: String,
-        rubric: Value,
+        rubric: OutcomeRubric,
         #[serde(default)]
         max_iterations: Option<u32>,
     },
@@ -899,6 +930,51 @@ mod tests {
             serde_json::from_str(r#"{"id":"a","type":"agent_with_overrides","model":null}"#)
                 .unwrap();
         assert!(matches!(cleared.model_override(), ModelOverride::Cleared));
+    }
+
+    #[test]
+    fn agent_overrides_reuse_the_typed_agent_composite_contract() {
+        // Causal graph:
+        // known SDK discriminator + exact fields -> typed override -> normalization
+        // unknown discriminator / misspelled field -> admission error -> no Session
+        //
+        // Decision table:
+        // | tool/skill/MCP shape                    | admission |
+        // | all known tags and exact fields         | accept    |
+        // | unknown tag                             | reject    |
+        // | known tag with misspelled required key  | reject    |
+        let valid = serde_json::json!({
+            "id": "assistant",
+            "type": "agent_with_overrides",
+            "mcp_servers": [{"type":"url", "name":"docs", "url":"https://mcp.test"}],
+            "tools": [{"type":"mcp_toolset", "mcp_server_name":"docs"}],
+            "skills": [{"type":"custom", "skill_id":"skill_1", "version":"2"}]
+        });
+        let parsed: AgentRef = serde_json::from_value(valid).expect("typed composites parse");
+        let AgentRef::Object(object) = parsed else {
+            panic!("object form retained")
+        };
+        assert!(matches!(
+            object.tools.as_ref(),
+            Some(Some(tools)) if matches!(tools[0], AgentTool::McpToolset { .. })
+        ));
+
+        for invalid in [
+            serde_json::json!({
+                "id":"a", "type":"agent_with_overrides",
+                "skills":[{"type":"unknown", "skill_id":"s"}]
+            }),
+            serde_json::json!({
+                "id":"a", "type":"agent_with_overrides",
+                "mcp_servers":[{"type":"url", "name":"s", "uri":"https://mcp.test"}]
+            }),
+            serde_json::json!({
+                "id":"a", "type":"agent_with_overrides",
+                "tools":[{"type":"mcp_toolset", "mcp_server":"s"}]
+            }),
+        ] {
+            assert!(serde_json::from_value::<AgentRef>(invalid).is_err());
+        }
     }
 
     #[test]

@@ -2,20 +2,94 @@
 //! (`beta.deployments.*` / `beta.deploymentRuns.*`): `BetaManagedAgentsDeployment`
 //! and `BetaManagedAgentsDeploymentRun`.
 //!
-//! Pure serde shapes. Genuinely polymorphic sub-fields the SDK models as rich
-//! unions (the agent reference, the schedule, the paused-reason union, the trigger
-//! context, initial events, resources) stay opaque `Value`s — exactly as the
-//! session shapes keep `resources`/`stats`/`usage` — because reproducing every
-//! union buys nothing this single-machine surface exercises. The store and the
-//! record→wire projection live in `routes::deployments`.
+//! Pure serde shapes. Every statically-known SDK union is decoded here; only
+//! content blocks and rubric bodies reuse their existing neutral/typed owners.
 
 use std::collections::BTreeMap;
 
+use awaken_agent_contract::agent::content::ContentBlock;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::types::agent::AgentReference;
-use crate::types::session::AgentRef;
+use crate::types::resource::ResourceInput;
+use crate::types::session::{AgentRef, InboundEvent, OutcomeRubric};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", deny_unknown_fields)]
+pub enum DeploymentInitialEvent {
+    #[serde(rename = "user.message")]
+    UserMessage { content: Vec<ContentBlock> },
+    #[serde(rename = "system.message")]
+    SystemMessage { content: Vec<ContentBlock> },
+    #[serde(rename = "user.define_outcome")]
+    UserDefineOutcome {
+        description: String,
+        rubric: OutcomeRubric,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_iterations: Option<u32>,
+    },
+}
+
+impl From<DeploymentInitialEvent> for InboundEvent {
+    fn from(value: DeploymentInitialEvent) -> Self {
+        match value {
+            DeploymentInitialEvent::UserMessage { content } => InboundEvent::UserMessage {
+                content,
+                session_thread_id: None,
+                model: None,
+            },
+            DeploymentInitialEvent::SystemMessage { content } => {
+                InboundEvent::SystemMessage { content }
+            }
+            DeploymentInitialEvent::UserDefineOutcome {
+                description,
+                rubric,
+                max_iterations,
+            } => InboundEvent::UserDefineOutcome {
+                description,
+                rubric,
+                max_iterations,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Schedule {
+    Cron {
+        expression: String,
+        timezone: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_run_at: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        upcoming_runs_at: Vec<String>,
+    },
+}
+
+impl Schedule {
+    pub fn expression(&self) -> &str {
+        match self {
+            Schedule::Cron { expression, .. } => expression,
+        }
+    }
+
+    pub fn with_last_run_at(&self, last: Option<String>) -> Self {
+        match self {
+            Schedule::Cron {
+                expression,
+                timezone,
+                upcoming_runs_at,
+                ..
+            } => Schedule::Cron {
+                expression: expression.clone(),
+                timezone: timezone.clone(),
+                last_run_at: last,
+                upcoming_runs_at: upcoming_runs_at.clone(),
+            },
+        }
+    }
+}
 
 /// `DeploymentCreateParams` — the `POST /v1/deployments` body. `agent` is the
 /// client input reference (id string or `{id, version?}`); the composite fields
@@ -30,12 +104,11 @@ pub struct DeploymentCreateParams {
     pub description: Option<String>,
     #[serde(default)]
     pub metadata: BTreeMap<String, String>,
+    pub initial_events: Vec<DeploymentInitialEvent>,
     #[serde(default)]
-    pub initial_events: Vec<Value>,
+    pub resources: Vec<ResourceInput>,
     #[serde(default)]
-    pub resources: Vec<Value>,
-    #[serde(default)]
-    pub schedule: Option<Value>,
+    pub schedule: Option<Schedule>,
     #[serde(default)]
     pub vault_ids: Vec<String>,
 }
@@ -49,18 +122,26 @@ pub struct DeploymentUpdateParams {
     pub environment_id: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub description: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub metadata: Option<Option<BTreeMap<String, Option<String>>>>,
     #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub metadata: Option<BTreeMap<String, String>>,
-    #[serde(default)]
-    pub initial_events: Option<Vec<Value>>,
-    #[serde(default)]
-    pub resources: Option<Vec<Value>>,
-    #[serde(default)]
-    pub schedule: Option<Value>,
-    #[serde(default)]
-    pub vault_ids: Option<Vec<String>>,
+    pub initial_events: Option<Vec<DeploymentInitialEvent>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub resources: Option<Option<Vec<ResourceInput>>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub schedule: Option<Option<Schedule>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub vault_ids: Option<Option<Vec<String>>>,
+}
+
+fn deserialize_double_option<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Deserialize::deserialize(deserializer).map(Some)
 }
 
 /// `BetaManagedAgentsTriggerContext` — why a deployment run started. This surface
@@ -104,13 +185,12 @@ pub struct Deployment {
     pub updated_at: String,
     pub description: Option<String>,
     pub environment_id: String,
-    pub initial_events: Vec<Value>,
+    pub initial_events: Vec<DeploymentInitialEvent>,
     pub metadata: BTreeMap<String, String>,
     pub name: String,
     pub paused_reason: Option<PausedReason>,
-    pub resources: Vec<Value>,
-    /// `BetaManagedAgentsSchedule`, or `null`.
-    pub schedule: Option<Value>,
+    pub resources: Vec<ResourceInput>,
+    pub schedule: Option<Schedule>,
     /// `"active"` | `"paused"`.
     pub status: &'static str,
     pub vault_ids: Vec<String>,

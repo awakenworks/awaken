@@ -3,6 +3,72 @@
 
 use super::application::{ManagedMcpCandidate, initial_mcp_candidates};
 use super::*;
+
+fn typed_tools(
+    values: Vec<serde_json::Value>,
+) -> Result<Vec<crate::types::agent::AgentTool>, StateError> {
+    values
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| match serde_json::from_value(value.clone()) {
+            Ok(tool) => Ok(tool),
+            Err(typed_error) => {
+                let Some(name) = value
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+                else {
+                    return Err(StateError::Run(RunError::internal(format!(
+                        "persisted_session_projection_invalid: agent.tools[{index}]: {typed_error}"
+                    ))));
+                };
+                let input_schema = crate::types::agent::CustomToolInputSchema::from_value(
+                    value
+                        .get("input_schema")
+                        .cloned()
+                        .unwrap_or_else(|| json!({"type":"object"})),
+                )
+                .map_err(|error| {
+                    StateError::Run(RunError::internal(format!(
+                        "persisted_session_projection_invalid: agent.tools[{index}]: {error}"
+                    )))
+                })?;
+                Ok(crate::types::agent::AgentTool::Custom {
+                    description: value
+                        .get("description")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("Client-executed tool")
+                        .to_string(),
+                    name,
+                    input_schema,
+                })
+            }
+        })
+        .collect()
+}
+
+fn stored_tools(values: &[crate::types::agent::AgentTool]) -> Vec<serde_json::Value> {
+    values
+        .iter()
+        .map(|tool| serde_json::to_value(tool).expect("typed AgentTool serializes"))
+        .collect()
+}
+
+pub(super) fn typed_mcp_servers(
+    values: Vec<serde_json::Value>,
+) -> Result<Vec<crate::types::agent::UrlMcpServer>, StateError> {
+    values
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| {
+            serde_json::from_value(value).map_err(|error| {
+                StateError::Run(RunError::internal(format!(
+                    "persisted_session_projection_invalid: agent.mcp_servers[{index}]: {error}"
+                )))
+            })
+        })
+        .collect()
+}
 use crate::types::AgentRef;
 use serde_json::json;
 
@@ -98,18 +164,20 @@ impl ManagedState {
     /// Refresh the disposable HTTP projection after the one durable root CAS.
     /// Every mutation crosses this seam, so realization, update, archive, and
     /// recovery cannot each invent a second cache-synchronization path.
-    fn refresh_cached_projection(&self, persisted: &PersistedSession) {
+    fn refresh_cached_projection(&self, persisted: &PersistedSession) -> Result<(), StateError> {
+        let mcp_servers = typed_mcp_servers(persisted.visible_mcp_servers())?;
         let mut sessions = self.sessions.lock().unwrap();
         let Some(record) = sessions.get_mut(&persisted.session_id) else {
-            return;
+            return Ok(());
         };
         record.session.status = Self::wire_session_status(&persisted.status);
         record.session.title = persisted.title.clone();
         record.session.metadata = persisted.metadata.clone();
         record.session.deployment_id = persisted.metadata.get("awaken.deployment_id").cloned();
         record.session.archived_at = persisted.archived_at.clone();
-        record.session.agent.mcp_servers = persisted.visible_mcp_servers();
+        record.session.agent.mcp_servers = mcp_servers;
         record.resource_state = persisted.resources.clone();
+        Ok(())
     }
 
     /// Sole Managed anti-corruption compiler for create-time and hot MCP input.
@@ -256,7 +324,7 @@ impl ManagedState {
         {
             awaken_session_contract::SessionMutationResult::Applied { new_revision } => {
                 session.revision = new_revision;
-                self.refresh_cached_projection(&session);
+                self.refresh_cached_projection(&session)?;
                 Ok((session, true))
             }
             awaken_session_contract::SessionMutationResult::Replayed { .. } => {
@@ -265,7 +333,7 @@ impl ManagedState {
                     .get(&session.session_id)
                     .await
                     .ok_or(StateError::NotFound)?;
-                self.refresh_cached_projection(&session);
+                self.refresh_cached_projection(&session)?;
                 Ok((session, false))
             }
             awaken_session_contract::SessionMutationResult::Conflict { .. } => {
@@ -493,12 +561,16 @@ impl ManagedState {
         {
             let declared = mcp_servers
                 .iter()
-                .filter_map(|v| v.get("name").and_then(|n| n.as_str()))
+                .map(|server| server.name.as_str())
                 .collect::<std::collections::BTreeSet<_>>();
             let toolset_names = tools
                 .iter()
-                .filter(|v| v.get("type").and_then(|t| t.as_str()) == Some("mcp_toolset"))
-                .filter_map(|v| v.get("mcp_server_name").and_then(|n| n.as_str()))
+                .filter_map(|tool| match tool {
+                    crate::types::agent::AgentTool::McpToolset {
+                        mcp_server_name, ..
+                    } => Some(mcp_server_name.as_str()),
+                    _ => None,
+                })
                 .collect::<std::collections::BTreeSet<_>>();
             if declared != toolset_names {
                 return Err(StateError::Run(RunError::bad_request(
@@ -507,27 +579,17 @@ impl ManagedState {
             }
         }
         let agent_mcp_override = match &req.agent {
-            AgentRef::Object(override_ref) => override_ref
-                .mcp_servers
-                .as_ref()
-                .map(|servers| {
-                    servers
-                        .as_deref()
-                        .unwrap_or_default()
-                        .iter()
-                        .cloned()
-                        .map(|server| {
-                            serde_json::from_value::<crate::types::McpServer>(server).map_err(
-                                |error| {
-                                    StateError::Run(RunError::bad_request(format!(
-                                        "invalid agent MCP server override: {error}"
-                                    )))
-                                },
-                            )
-                        })
-                        .collect::<Result<Vec<_>, _>>()
-                })
-                .transpose()?,
+            AgentRef::Object(override_ref) => override_ref.mcp_servers.as_ref().map(|servers| {
+                servers
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|server| crate::types::McpServer {
+                        name: server.name.clone(),
+                        url: server.url.clone(),
+                    })
+                    .collect::<Vec<_>>()
+            }),
             AgentRef::Id(_) => None,
         };
         let mcp_drafts = self
@@ -546,14 +608,8 @@ impl ManagedState {
         let resources = req
             .resources
             .iter()
-            .map(|resource| {
-                parse_session_input(resource).ok_or_else(|| {
-                    StateError::Run(RunError::bad_request(
-                        "invalid resource: unsupported type or malformed fields",
-                    ))
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(crate::types::resource::ResourceInput::to_parsed_input)
+            .collect::<Vec<_>>();
         // Lower compatibility Repository URLs/tokens before the neutral resolver:
         // the catalog receives a Session-scoped definition and a Vault reference,
         // never the token. File/Memory already carry platform identities on wire.
@@ -766,6 +822,21 @@ impl ManagedState {
             };
         }
         let deployment_id = req.metadata.get("awaken.deployment_id").cloned();
+        let session_tools = if let Some(view) = &config_view {
+            let mut tools = project::agent_tools(&caps);
+            let client_tools = project::agent_client_tools(&view.client_tools)
+                .map_err(|error| StateError::Run(RunError::bad_request(error)))?;
+            tools.retain(|candidate| match candidate {
+                crate::types::agent::AgentTool::Custom { name, .. } => !client_tools.iter().any(
+                    |tool| matches!(tool, crate::types::agent::AgentTool::Custom { name: client_name, .. } if client_name == name),
+                ),
+                _ => true,
+            });
+            tools.extend(client_tools);
+            tools
+        } else {
+            project::agent_tools(&caps)
+        };
         let mut session = Session {
             id: id.clone(),
             kind: "session",
@@ -780,15 +851,18 @@ impl ManagedState {
                 name: agent_id.clone(),
                 description: None,
                 system: config_view.as_ref().and_then(|view| view.system.clone()),
-                tools: project::agent_tools(&caps),
+                tools: session_tools,
                 // Echo the accepted servers in the SDK's `{name, type:"url", url}` shape.
-                mcp_servers: persisted.visible_mcp_servers(),
+                mcp_servers: typed_mcp_servers(persisted.visible_mcp_servers())?,
                 skills: config_view.as_ref().map_or_else(
                     || project::agent_skills(&caps),
                     |view| {
                         view.skill_ids
                             .iter()
-                            .map(|id| json!({ "id": id }))
+                            .map(|id| crate::types::agent::AgentSkill::Custom {
+                                skill_id: id.clone(),
+                                version: Some("latest".into()),
+                            })
                             .collect()
                     },
                 ),
@@ -836,7 +910,7 @@ impl ManagedState {
                 session.agent.skills = skills.clone().unwrap_or_default();
             }
         }
-        persisted.agent_tools = Some(session.agent.tools.clone());
+        persisted.agent_tools = Some(stored_tools(&session.agent.tools));
         // Persist the session's config (secret-free) so a restart or a peer process
         // rehydrates its real agent/model/title/metadata/MCP, not a placeholder.
         // The core session record is tenancy-agnostic (authz is an edge aspect) —
@@ -1191,7 +1265,7 @@ impl ManagedState {
         &self,
         id: &str,
         persisted: Option<PersistedSession>,
-    ) -> Session {
+    ) -> Result<Session, StateError> {
         let caps = self.runtime.capabilities_for(id);
         let default_tools = project::agent_tools(&caps);
         let (
@@ -1222,14 +1296,17 @@ impl ManagedState {
                             p.environment_id().to_string(),
                         )
                     });
-                let mcp_servers = p.visible_mcp_servers();
+                let mcp_servers = typed_mcp_servers(p.visible_mcp_servers())?;
                 (
                     agent_id,
                     model,
                     environment_id,
                     p.title,
                     p.metadata,
-                    p.agent_tools.unwrap_or_else(|| default_tools.clone()),
+                    match p.agent_tools {
+                        Some(tools) => typed_tools(tools)?,
+                        None => default_tools.clone(),
+                    },
                     mcp_servers,
                     Self::wire_session_status(&p.status),
                     p.archived_at,
@@ -1248,7 +1325,7 @@ impl ManagedState {
             ),
         };
         let deployment_id = metadata.get("awaken.deployment_id").cloned();
-        Session {
+        Ok(Session {
             id: id.to_string(),
             kind: "session",
             agent: SessionAgent {
@@ -1277,7 +1354,7 @@ impl ManagedState {
             usage: Usage::default(),
             vault_ids: Vec::new(),
             deployment_id,
-        }
+        })
     }
 
     /// Recover a session whose in-memory record was lost from durable truth (a
@@ -1373,7 +1450,7 @@ impl ManagedState {
             .unwrap_or_default();
         let record = SessionRecord {
             agent_id,
-            session: self.rehydrated_session(id, persisted),
+            session: self.rehydrated_session(id, persisted)?,
             resource_state,
             events,
             child_threads: Vec::new(),

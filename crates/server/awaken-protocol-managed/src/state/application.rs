@@ -652,6 +652,7 @@ mod tests {
             model: None,
             system: None,
             tool_ids: Vec::new(),
+            client_tools: Vec::new(),
             mcp_servers: vec![
                 agent_server("secured", "https://secured.example", Some(("cred", 7))),
                 agent_server("public", "https://public.example", None),

@@ -22,16 +22,11 @@ pub(crate) fn lifecycle_fact(
     }
 }
 
-/// Normalize a Managed rubric (a bare string or `{type:"text",content}`) to text.
-pub(crate) fn rubric_text(rubric: &serde_json::Value) -> String {
+/// Normalize the typed Managed rubric to the evaluator's text/file reference.
+pub(crate) fn rubric_text(rubric: &crate::types::OutcomeRubric) -> String {
     match rubric {
-        serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Object(map) => map
-            .get("content")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-        _ => String::new(),
+        crate::types::OutcomeRubric::Text { content } => content.clone(),
+        crate::types::OutcomeRubric::File { file_id } => file_id.clone(),
     }
 }
 

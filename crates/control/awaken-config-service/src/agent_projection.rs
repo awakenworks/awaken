@@ -76,7 +76,26 @@ impl ConfigServiceAgentSource {
         Some(awaken_session_contract::AgentConfigView {
             model: Some(spec.model_binding.model_ref.clone()),
             system: (!spec.instructions.is_empty()).then(|| spec.instructions.clone()),
-            tool_ids: spec.tool_descriptors.iter().map(|d| d.id.clone()).collect(),
+            tool_ids: spec
+                .tool_descriptors
+                .iter()
+                .filter(|descriptor| {
+                    descriptor.kind != awaken_runtime_contract::resolved::ToolKind::ClientExecuted
+                })
+                .map(|descriptor| descriptor.id.clone())
+                .collect(),
+            client_tools: spec
+                .tool_descriptors
+                .iter()
+                .filter(|descriptor| {
+                    descriptor.kind == awaken_runtime_contract::resolved::ToolKind::ClientExecuted
+                })
+                .map(|descriptor| awaken_session_contract::AgentClientToolView {
+                    name: descriptor.id.clone(),
+                    description: descriptor.description.clone(),
+                    input_schema: descriptor.parameters.clone(),
+                })
+                .collect(),
             mcp_servers: bindings
                 .mcp_servers
                 .into_iter()
