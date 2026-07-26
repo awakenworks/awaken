@@ -82,6 +82,7 @@ async fn send(method: &str, uri: &str, body: Value) -> (StatusCode, Value) {
 fn message(context: &str) -> Value {
     json!({
         "message": {
+            "kind": "message",
             "messageId": "m1",
             "contextId": context,
             "role": "user",

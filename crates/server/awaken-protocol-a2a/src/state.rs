@@ -164,17 +164,14 @@ impl A2aState {
 
     pub async fn record_task(&self, task: Task, agent_id: Option<String>) {
         let task_id = task.id.clone();
-        let response = StreamResponse {
-            status_update: Some(TaskStatusUpdateEvent {
-                kind: "status-update".into(),
-                task_id: task.id.clone(),
-                context_id: task.context_id.clone(),
-                status: task.status.clone(),
-                final_: task.status.state.is_terminal(),
-                metadata: None,
-            }),
-            ..Default::default()
-        };
+        let response = StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+            kind: crate::types::TaskStatusUpdateKind::StatusUpdate,
+            task_id: task.id.clone(),
+            context_id: task.context_id.clone(),
+            status: task.status.clone(),
+            final_: task.status.state.is_terminal(),
+            metadata: None,
+        });
         {
             let mut inner = self.inner.write().await;
             inner.tasks.insert(
@@ -377,19 +374,6 @@ impl A2aState {
     }
 }
 
-trait TerminalState {
-    fn is_terminal(&self) -> bool;
-}
-
-impl TerminalState for crate::types::TaskState {
-    fn is_terminal(&self) -> bool {
-        matches!(
-            self,
-            Self::Completed | Self::Failed | Self::Canceled | Self::Rejected
-        )
-    }
-}
-
 fn owner_matches(owner: Option<&str>, requested: Option<&str>) -> bool {
     owner == requested
 }
@@ -536,7 +520,7 @@ mod tests {
         ));
         let state = A2aState::with_persistence_path(Arc::new(Runtime), Some(path.clone()));
         let task = Task {
-            kind: Some("task".into()),
+            kind: crate::types::TaskKind::Task,
             id: "task-persisted".into(),
             context_id: "context-persisted".into(),
             status: crate::types::TaskStatus {
@@ -546,6 +530,7 @@ mod tests {
             },
             history: Vec::new(),
             artifacts: Vec::new(),
+            metadata: None,
         };
         state.record_task(task, Some("tenant-a".into())).await;
         state

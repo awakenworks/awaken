@@ -112,7 +112,7 @@ async fn seed(app: Router) -> String {
         app,
         json!({
             "jsonrpc": "2.0", "id": 0, "method": "message/send",
-            "params": { "message": { "messageId": "seed", "contextId": "ctx", "role": "user", "parts": [{ "kind": "text", "text": "start" }] } }
+            "params": { "message": { "kind": "message", "messageId": "seed", "contextId": "ctx", "role": "user", "parts": [{ "kind": "text", "text": "start" }] } }
         }),
     ).await;
     response["result"]["id"].as_str().unwrap().to_string()
@@ -143,7 +143,7 @@ async fn message_send_on_an_awaiting_context_resumes_it_rather_than_starting_a_f
             "jsonrpc": "2.0",
             "id": 3,
             "method": "message/send",
-            "params": { "message": { "messageId": "m1", "contextId": "ctx", "role": "user", "parts": [{ "kind": "text", "text": "the answer" }] } }
+            "params": { "message": { "kind": "message", "messageId": "m1", "contextId": "ctx", "role": "user", "parts": [{ "kind": "text", "text": "the answer" }] } }
         }),
     )
     .await;
@@ -222,7 +222,7 @@ async fn message_send_delivers_the_text_as_the_client_tool_result_on_resume() {
                         "jsonrpc": "2.0",
                         "id": 4,
                         "method": "message/send",
-                        "params": { "message": { "messageId": "m1", "contextId": "ctx", "role": "user", "parts": [{ "kind": "text", "text": "42" }] } }
+                        "params": { "message": { "kind": "message", "messageId": "m1", "contextId": "ctx", "role": "user", "parts": [{ "kind": "text", "text": "42" }] } }
                     })
                     .to_string(),
                 ))

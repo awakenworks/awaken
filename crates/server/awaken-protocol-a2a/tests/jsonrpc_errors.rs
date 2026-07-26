@@ -115,6 +115,7 @@ async fn a_well_formed_message_send_returns_a_task_result() {
         "method": "message/send",
         "params": {
             "message": {
+                "kind": "message",
                 "messageId": "m1",
                 "contextId": "c1",
                 "role": "user",
@@ -233,7 +234,7 @@ fn send_body(id: i64) -> Value {
         "jsonrpc": "2.0",
         "id": id,
         "method": "message/send",
-        "params": { "message": { "messageId": "m1", "contextId": "c", "role": "user", "parts": [{ "kind": "text", "text": "hi" }] } }
+        "params": { "message": { "kind": "message", "messageId": "m1", "contextId": "c", "role": "user", "parts": [{ "kind": "text", "text": "hi" }] } }
     })
 }
 

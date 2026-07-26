@@ -51,11 +51,7 @@ pub fn process(req: SendMessageRequest, path_agent: Option<String>) -> Processed
         .unwrap_or_else(|| next("thread"));
 
     let text = req.message.text();
-    let message_id = req
-        .message
-        .message_id
-        .clone()
-        .unwrap_or_else(|| next("msg"));
+    let message_id = req.message.message_id.clone();
     let blocks: Vec<ContentBlock> = req.message.parts.iter().filter_map(part_to_block).collect();
     let message = Message::new(MessageId(message_id), Role::User, blocks);
 
@@ -74,40 +70,49 @@ pub fn process(req: SendMessageRequest, path_agent: Option<String>) -> Processed
 /// `file` part with an image mime becomes an image block (inline base64 `bytes`
 /// preferred, else a remote `uri`). Other parts are dropped.
 fn part_to_block(part: &Part) -> Option<ContentBlock> {
-    if let Some(text) = &part.text {
-        return (!text.is_empty()).then(|| ContentBlock::text(text));
-    }
-    let file = part.file.as_ref()?;
-    let mime = file
-        .mime_type
-        .as_deref()
-        .unwrap_or("application/octet-stream");
-    if !mime.starts_with("image/") {
-        return None;
-    }
-    if let Some(bytes) = &file.bytes {
-        Some(ContentBlock::image_base64(mime, bytes))
-    } else {
-        file.uri.as_ref().map(ContentBlock::image_url)
+    match part {
+        Part::Text { text, .. } => (!text.is_empty()).then(|| ContentBlock::text(text)),
+        Part::Data { .. } => None,
+        Part::File { file, .. } => match file {
+            crate::types::FilePart::Bytes(file) => file
+                .mime_type
+                .as_deref()
+                .filter(|mime| mime.starts_with("image/"))
+                .map(|mime| ContentBlock::image_base64(mime, &file.bytes)),
+            crate::types::FilePart::Uri(file) => file
+                .mime_type
+                .as_deref()
+                .filter(|mime| mime.starts_with("image/"))
+                .map(|_| ContentBlock::image_url(&file.uri)),
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{MessageRole, Part, SendMessage};
+    use crate::types::{MessageKind, MessageRole, Part};
+
+    fn wire_message(context: Option<&str>, parts: Vec<Part>) -> crate::types::Message {
+        crate::types::Message {
+            kind: MessageKind::Message,
+            message_id: "m1".into(),
+            context_id: context.map(Into::into),
+            task_id: None,
+            role: MessageRole::User,
+            parts,
+            extensions: Vec::new(),
+            metadata: None,
+            reference_task_ids: Vec::new(),
+        }
+    }
 
     fn req(context: Option<&str>, text: &str) -> SendMessageRequest {
         SendMessageRequest {
             agent_id: None,
             configuration: None,
-            message: SendMessage {
-                message_id: Some("m1".into()),
-                context_id: context.map(Into::into),
-                task_id: None,
-                role: MessageRole::User,
-                parts: vec![Part::text(text)],
-            },
+            metadata: None,
+            message: wire_message(context, vec![Part::text(text)]),
         }
     }
 
@@ -127,23 +132,17 @@ mod tests {
 
     #[test]
     fn image_file_part_becomes_an_image_block() {
-        use crate::types::FilePart;
+        use crate::types::{FilePart, FileWithBytes};
         let r = SendMessageRequest {
             agent_id: None,
             configuration: None,
-            message: SendMessage {
-                message_id: Some("m1".into()),
-                context_id: Some("c".into()),
-                task_id: None,
-                role: MessageRole::User,
-                parts: vec![
-                    Part {
-                        kind: Some("file".into()),
-                        text: None,
-                        data: None,
-                        file: Some(FilePart {
-                            bytes: Some("AAAA".into()),
-                            uri: None,
+            metadata: None,
+            message: wire_message(
+                Some("c"),
+                vec![
+                    Part::File {
+                        file: FilePart::Bytes(FileWithBytes {
+                            bytes: "AAAA".into(),
                             mime_type: Some("image/png".into()),
                             name: None,
                         }),
@@ -151,7 +150,7 @@ mod tests {
                     },
                     Part::text("what is this"),
                 ],
-            },
+            ),
         };
         let p = process(r, None);
         assert_eq!(p.message.content.len(), 2);
@@ -171,19 +170,14 @@ mod tests {
         SendMessageRequest {
             agent_id: None,
             configuration: None,
-            message: SendMessage {
-                message_id: Some("m1".into()),
-                context_id: Some("c".into()),
-                task_id: None,
-                role: MessageRole::User,
-                parts: vec![Part {
-                    kind: Some("file".into()),
-                    text: None,
-                    data: None,
-                    file: Some(file),
+            metadata: None,
+            message: wire_message(
+                Some("c"),
+                vec![Part::File {
+                    file,
                     metadata: None,
                 }],
-            },
+            ),
         }
     }
 
@@ -203,15 +197,14 @@ mod tests {
 
     #[test]
     fn uri_image_file_part_becomes_an_image_url_block() {
-        use crate::types::FilePart;
+        use crate::types::{FilePart, FileWithUri};
         use awaken_agent_contract::agent::content::ImageSource;
         let p = process(
-            file_req(FilePart {
-                bytes: None,
-                uri: Some("https://x/y.png".into()),
+            file_req(FilePart::Uri(FileWithUri {
+                uri: "https://x/y.png".into(),
                 mime_type: Some("image/png".into()),
                 name: None,
-            }),
+            })),
             None,
         );
         assert!(matches!(
@@ -222,40 +215,16 @@ mod tests {
 
     #[test]
     fn non_image_file_part_is_dropped() {
-        use crate::types::FilePart;
+        use crate::types::{FilePart, FileWithBytes};
         let p = process(
-            file_req(FilePart {
-                bytes: Some("AAAA".into()),
-                uri: None,
+            file_req(FilePart::Bytes(FileWithBytes {
+                bytes: "AAAA".into(),
                 mime_type: Some("application/pdf".into()),
                 name: None,
-            }),
+            })),
             None,
         );
         assert!(p.message.content.is_empty());
-    }
-
-    #[test]
-    fn image_file_part_without_bytes_or_uri_is_dropped() {
-        use crate::types::FilePart;
-        let p = process(
-            file_req(FilePart {
-                bytes: None,
-                uri: None,
-                mime_type: Some("image/png".into()),
-                name: None,
-            }),
-            None,
-        );
-        assert!(p.message.content.is_empty());
-    }
-
-    #[test]
-    fn absent_message_id_is_minted() {
-        let mut r = req(Some("c"), "hi");
-        r.message.message_id = None;
-        let p = process(r, None);
-        assert!(p.message.id.0.starts_with("msg-"));
     }
 
     #[test]
@@ -269,22 +238,20 @@ mod tests {
         let r = SendMessageRequest {
             agent_id: None,
             configuration: None,
-            message: SendMessage {
-                message_id: Some("m1".into()),
-                context_id: Some("c".into()),
-                task_id: None,
-                role: MessageRole::User,
-                parts: vec![
-                    Part {
-                        kind: Some("data".into()),
-                        text: None,
-                        data: Some(serde_json::json!({ "ignored": true })),
-                        file: None,
+            metadata: None,
+            message: wire_message(
+                Some("c"),
+                vec![
+                    Part::Data {
+                        data: std::collections::BTreeMap::from([(
+                            "ignored".into(),
+                            serde_json::json!(true),
+                        )]),
                         metadata: None,
                     },
                     Part::text("keep me"),
                 ],
-            },
+            ),
         };
         let p = process(r, None);
         // The unsupported `data` part is dropped; only the text survives.

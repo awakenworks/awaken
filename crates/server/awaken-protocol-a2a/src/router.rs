@@ -28,14 +28,15 @@ use awaken_protocol_transport::{
     ChannelStreamSink, DriverError, Pending, ProtocolRuntime, Resume, StepOutcome, Terminal,
 };
 
-use crate::encoder::encode_task;
+use crate::card::agent_card;
+use crate::encoder::{encode_task, working_task};
 use crate::request::process;
 use crate::state::{A2aState, PushProtocolVersion};
 use crate::types::{
-    AgentCapabilities, AgentCard, AgentInterface, AgentSkill, Artifact, ErrorResponse,
-    ListPushNotificationConfigsResponse, Part, SendMessageRequest, SendMessageResponse,
-    StreamResponse, Task, TaskArtifactUpdateEvent, TaskPushNotificationConfig, TaskState,
-    TaskStatus,
+    Artifact, DeleteTaskPushNotificationConfigParams, ErrorResponse,
+    GetTaskPushNotificationConfigParams, ListPushNotificationConfigsResponse, Part,
+    SendMessageRequest, SendMessageResponse, StreamResponse, Task, TaskArtifactUpdateEvent,
+    TaskIdParams, TaskPushNotificationConfig, TaskQueryParams, TaskState,
 };
 use crate::v1::{
     agent_card_value as v1_agent_card_value, parse_push_config as parse_v1_push_config,
@@ -44,10 +45,10 @@ use crate::v1::{
 
 type Runtime = A2aState;
 
-const A2A_VERSION_HEADER: &str = "A2A-Version";
+pub(crate) const A2A_VERSION_HEADER: &str = "A2A-Version";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ProtocolVersion {
+pub(crate) enum ProtocolVersion {
     V03,
     V1,
 }
@@ -61,7 +62,7 @@ impl ProtocolVersion {
     }
 }
 
-fn negotiate_version(headers: &HeaderMap) -> Result<ProtocolVersion, String> {
+pub(crate) fn negotiate_version(headers: &HeaderMap) -> Result<ProtocolVersion, String> {
     match headers
         .get(A2A_VERSION_HEADER)
         .and_then(|value| value.to_str().ok())
@@ -114,10 +115,10 @@ pub fn router(runtime: Arc<dyn ProtocolRuntime>) -> Router {
         .route("/message:stream", post(message_stream_rest))
         .route("/{tenant}/message:send", post(message_send_tenant_rest))
         .route("/{tenant}/message:stream", post(message_stream_tenant_rest))
-        .route("/extendedAgentCard", get(extended_card_rest))
+        .route("/extendedAgentCard", get(crate::card::extended_card_rest))
         .route(
             "/{tenant}/extendedAgentCard",
-            get(extended_card_tenant_rest),
+            get(crate::card::extended_card_tenant_rest),
         )
         .route(
             "/v1/a2a/agents/{agent_id}/message:send",
@@ -183,9 +184,9 @@ pub fn router(runtime: Arc<dyn ProtocolRuntime>) -> Router {
             "/{tenant}/tasks/{task_id}/pushNotificationConfigs/{config_id}",
             get(get_push_config_tenant_v1).delete(delete_push_config_tenant_v1),
         )
-        .route(crate::client::AGENT_CARD_PATH, get(card))
-        .route("/.well-known/agent-card.json", get(card))
-        .route("/v1/card", get(card))
+        .route(crate::client::AGENT_CARD_PATH, get(crate::card::card))
+        .route("/.well-known/agent-card.json", get(crate::card::card))
+        .route("/v1/card", get(crate::card::card))
         .with_state(state)
 }
 
@@ -225,11 +226,15 @@ async fn message_stream_scoped(
 async fn message_stream_rest(
     State(rt): State<Runtime>,
     headers: HeaderMap,
-    A2aJson(req): A2aJson<SendMessageRequest>,
+    A2aJson(params): A2aJson<Value>,
 ) -> Response {
     let version = match negotiate_version(&headers) {
         Ok(version) => version,
         Err(message) => return a2a_fault(StatusCode::BAD_REQUEST, -32009, message),
+    };
+    let req = match decode_send_params(params, version) {
+        Ok(req) => req,
+        Err(error) => return rest_driver_error_version(error, version),
     };
     stream_send(rt, req, None, None, true, version).await
 }
@@ -238,11 +243,15 @@ async fn message_stream_tenant_rest(
     State(rt): State<Runtime>,
     Path(tenant): Path<String>,
     headers: HeaderMap,
-    A2aJson(mut req): A2aJson<SendMessageRequest>,
+    A2aJson(params): A2aJson<Value>,
 ) -> Response {
     let version = match negotiate_version(&headers) {
         Ok(version) => version,
         Err(message) => return a2a_fault(StatusCode::BAD_REQUEST, -32009, message),
+    };
+    let mut req = match decode_send_params(params, version) {
+        Ok(req) => req,
+        Err(error) => return rest_driver_error_version(error, version),
     };
     req.agent_id = Some(tenant.clone());
     stream_send(rt, req, Some(tenant), None, true, version).await
@@ -299,10 +308,7 @@ async fn stream_send(
     }
 
     let (out_tx, out_rx) = mpsc::unbounded_channel::<String>();
-    let initial = StreamResponse {
-        task: Some(working),
-        ..Default::default()
-    };
+    let initial = StreamResponse::Task(working);
     let _ = out_tx.send(sse_event(&initial, rpc_id.as_ref(), version));
 
     tokio::spawn(async move {
@@ -321,22 +327,22 @@ async fn stream_send(
             let AgentEvent::Delta(Delta::TextDelta { delta }) = event else {
                 continue;
             };
-            let response = StreamResponse {
-                artifact_update: Some(TaskArtifactUpdateEvent {
-                    kind: "artifact-update".into(),
-                    task_id: task_id.clone(),
-                    context_id: thread.clone(),
-                    artifact: Artifact {
-                        artifact_id: "response".into(),
-                        name: Some("response".into()),
-                        parts: vec![Part::text(delta)],
-                    },
-                    append: Some(true),
-                    last_chunk: Some(false),
+            let response = StreamResponse::ArtifactUpdate(TaskArtifactUpdateEvent {
+                kind: crate::types::TaskArtifactUpdateKind::ArtifactUpdate,
+                task_id: task_id.clone(),
+                context_id: thread.clone(),
+                artifact: Artifact {
+                    artifact_id: "response".into(),
+                    name: Some("response".into()),
+                    description: None,
+                    extensions: Vec::new(),
                     metadata: None,
-                }),
-                ..Default::default()
-            };
+                    parts: vec![Part::text(delta)],
+                },
+                append: Some(true),
+                last_chunk: Some(false),
+                metadata: None,
+            });
             rt.publish(&task_id, agent_id.as_deref(), response.clone())
                 .await;
             if out_tx
@@ -370,17 +376,14 @@ async fn stream_send(
         task.id = task_id.clone();
         truncate_history(&mut task, history_length);
         rt.record_task(task.clone(), agent_id.clone()).await;
-        let terminal = StreamResponse {
-            status_update: Some(crate::types::TaskStatusUpdateEvent {
-                kind: "status-update".into(),
-                task_id,
-                context_id: thread,
-                status: task.status,
-                final_: true,
-                metadata: None,
-            }),
-            ..Default::default()
-        };
+        let terminal = StreamResponse::StatusUpdate(crate::types::TaskStatusUpdateEvent {
+            kind: crate::types::TaskStatusUpdateKind::StatusUpdate,
+            task_id,
+            context_id: thread,
+            status: task.status,
+            final_: true,
+            metadata: None,
+        });
         let _ = out_tx.send(sse_event(&terminal, rpc_id.as_ref(), version));
     });
 
@@ -759,7 +762,7 @@ async fn subscribe_response(
     let Some((task, mut receiver)) = rt.subscribe(&task_id, agent_id.as_deref()).await else {
         return version_fault(version, StatusCode::NOT_FOUND, -32001, "task not found");
     };
-    if is_terminal(task.status.state) {
+    if task.status.state.is_terminal() {
         return version_fault(
             version,
             StatusCode::BAD_REQUEST,
@@ -768,17 +771,11 @@ async fn subscribe_response(
         );
     }
     let (tx, rx) = mpsc::unbounded_channel();
-    let initial = StreamResponse {
-        task: Some(task),
-        ..Default::default()
-    };
+    let initial = StreamResponse::Task(task);
     let _ = tx.send(sse_event(&initial, rpc_id.as_ref(), version));
     tokio::spawn(async move {
         while let Ok(response) = receiver.recv().await {
-            let terminal = response
-                .status_update
-                .as_ref()
-                .is_some_and(|update| update.final_ || is_terminal(update.status.state));
+            let terminal = response.is_terminal();
             if tx
                 .send(sse_event(&response, rpc_id.as_ref(), version))
                 .is_err()
@@ -838,10 +835,7 @@ async fn run_send(
         rt.publish(
             &task_id,
             processed.agent_id.as_deref(),
-            StreamResponse {
-                task: Some(working.clone()),
-                ..Default::default()
-            },
+            StreamResponse::Task(working.clone()),
         )
         .await;
     }
@@ -950,7 +944,7 @@ async fn resolve_task_context(
             "task not found: {task_id}"
         )));
     };
-    if is_terminal(task.status.state) {
+    if task.status.state.is_terminal() {
         return Err(DriverError::BadRequest(format!(
             "task is terminal and cannot accept another message: {task_id}"
         )));
@@ -975,14 +969,31 @@ async fn send(rt: Runtime, req: SendMessageRequest, path_agent: Option<String>) 
     }
 }
 
+fn decode_send_params(
+    params: Value,
+    version: ProtocolVersion,
+) -> Result<SendMessageRequest, DriverError> {
+    let params = if version == ProtocolVersion::V1 {
+        crate::v1::normalize_send_params(params).map_err(DriverError::BadRequest)?
+    } else {
+        params
+    };
+    serde_json::from_value(params)
+        .map_err(|error| DriverError::BadRequest(format!("invalid params: {error}")))
+}
+
 async fn message_send_rest(
     State(rt): State<Runtime>,
     headers: HeaderMap,
-    A2aJson(req): A2aJson<SendMessageRequest>,
+    A2aJson(params): A2aJson<Value>,
 ) -> Response {
     let version = match negotiate_version(&headers) {
         Ok(version) => version,
         Err(message) => return a2a_fault(StatusCode::BAD_REQUEST, -32009, message),
+    };
+    let req = match decode_send_params(params, version) {
+        Ok(req) => req,
+        Err(error) => return rest_driver_error_version(error, version),
     };
     match run_send(&rt, req, None, version).await {
         Ok(task) if version == ProtocolVersion::V1 => {
@@ -997,11 +1008,15 @@ async fn message_send_tenant_rest(
     State(rt): State<Runtime>,
     Path(tenant): Path<String>,
     headers: HeaderMap,
-    A2aJson(mut req): A2aJson<SendMessageRequest>,
+    A2aJson(params): A2aJson<Value>,
 ) -> Response {
     let version = match negotiate_version(&headers) {
         Ok(version) => version,
         Err(message) => return a2a_fault(StatusCode::BAD_REQUEST, -32009, message),
+    };
+    let mut req = match decode_send_params(params, version) {
+        Ok(req) => req,
+        Err(error) => return rest_driver_error_version(error, version),
     };
     req.agent_id = Some(tenant.clone());
     match run_send(&rt, req, Some(tenant), version).await {
@@ -1116,7 +1131,7 @@ async fn cancel_task(
     let Some(mut task) = rt.task(id, owner).await else {
         return Err((StatusCode::NOT_FOUND, -32001, "task not found".into()));
     };
-    if is_terminal(task.status.state) {
+    if task.status.state.is_terminal() {
         return Err((
             StatusCode::BAD_REQUEST,
             -32002,
@@ -1147,13 +1162,31 @@ async fn cancel_task(
 
 /// A minimal JSON-RPC 2.0 request envelope (the fields the A2A binding uses).
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct JsonRpcRequest {
     jsonrpc: String,
-    #[serde(default)]
-    id: Value,
+    id: JsonRpcRequestId,
     method: String,
     #[serde(default)]
     params: Value,
+}
+
+/// A2A requests require the JSON-RPC identifier and permit only the two JSON-RPC
+/// scalar identifier forms. `null`, objects and arrays cannot leak into replies.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum JsonRpcRequestId {
+    String(String),
+    Number(serde_json::Number),
+}
+
+impl From<JsonRpcRequestId> for Value {
+    fn from(id: JsonRpcRequestId) -> Self {
+        match id {
+            JsonRpcRequestId::String(value) => Self::String(value),
+            JsonRpcRequestId::Number(value) => Self::Number(value),
+        }
+    }
 }
 
 /// The JSON-RPC endpoint: dispatch by `method`. `message/send` drives a turn;
@@ -1164,7 +1197,7 @@ async fn jsonrpc(
     headers: HeaderMap,
     A2aJson(req): A2aJson<JsonRpcRequest>,
 ) -> Response {
-    let id = req.id;
+    let id = Value::from(req.id);
     if req.jsonrpc != "2.0" {
         return rpc_error(id, -32600, "invalid JSON-RPC version; expected 2.0");
     }
@@ -1176,7 +1209,7 @@ async fn jsonrpc(
         return rpc_error(id, -32601, format!("method not found: {}", req.method));
     };
     match method {
-        "message/send" => match serde_json::from_value::<SendMessageRequest>(req.params) {
+        "message/send" => match decode_send_params(req.params, version) {
             Ok(send_req) => match run_send(&rt, send_req, None, version).await {
                 // A2A `message/send` returns the Task (or Message) directly as
                 // the JSON-RPC `result`.
@@ -1189,12 +1222,27 @@ async fn jsonrpc(
                     rpc_error(id, code, message)
                 }
             },
-            Err(err) => rpc_error(id, -32602, format!("invalid params: {err}")),
+            Err(err) => rpc_error(id, -32602, err.to_string()),
         },
-        "message/stream" => match serde_json::from_value::<SendMessageRequest>(req.params) {
+        "message/stream" => match decode_send_params(req.params, version) {
             Ok(send_req) => stream_send(rt, send_req, None, Some(id), false, version).await,
-            Err(err) => rpc_error(id, -32602, format!("invalid params: {err}")),
+            Err(err) => rpc_error(id, -32602, err.to_string()),
         },
+        "tasks/get" if version == ProtocolVersion::V03 => {
+            match serde_json::from_value::<TaskQueryParams>(req.params) {
+                Ok(params) => match get_task(&rt, &params.id, None).await {
+                    Some(mut task) => {
+                        truncate_history(
+                            &mut task,
+                            params.history_length.map(|value| value as usize),
+                        );
+                        rpc_ok(id, task)
+                    }
+                    None => rpc_error(id, -32001, "task not found"),
+                },
+                Err(error) => rpc_error(id, -32602, format!("invalid params: {error}")),
+            }
+        }
         "tasks/get" => match req.params.get("id").and_then(|v| v.as_str()) {
             Some(task_id) => match get_task(
                 &rt,
@@ -1221,6 +1269,15 @@ async fn jsonrpc(
             None => rpc_error(id, -32602, "invalid params: missing task `id`".to_string()),
         },
         "tasks/list" => list_tasks_rpc(&rt, id, &req.params).await,
+        "tasks/cancel" if version == ProtocolVersion::V03 => {
+            match serde_json::from_value::<TaskIdParams>(req.params) {
+                Ok(params) => match cancel_task(&rt, &params.id, None).await {
+                    Ok(task) => rpc_ok(id, task),
+                    Err((_, code, message)) => rpc_error(id, code, message),
+                },
+                Err(error) => rpc_error(id, -32602, format!("invalid params: {error}")),
+            }
+        }
         "tasks/cancel" => match req.params.get("id").and_then(|v| v.as_str()) {
             Some(task_id) => match cancel_task(
                 &rt,
@@ -1238,6 +1295,12 @@ async fn jsonrpc(
             },
             None => rpc_error(id, -32602, "invalid params: missing task `id`".to_string()),
         },
+        "tasks/resubscribe" if version == ProtocolVersion::V03 => {
+            match serde_json::from_value::<TaskIdParams>(req.params) {
+                Ok(params) => subscribe_response(rt, params.id, None, Some(id), version).await,
+                Err(error) => rpc_error(id, -32602, format!("invalid params: {error}")),
+            }
+        }
         "tasks/resubscribe" => match req.params.get("id").and_then(|v| v.as_str()) {
             Some(task_id) => {
                 subscribe_response(
@@ -1291,6 +1354,38 @@ async fn jsonrpc(
                         Err(error) => rpc_error(id, -32602, error),
                     }
                 }
+                Err(error) => rpc_error(id, -32602, format!("invalid params: {error}")),
+            }
+        }
+        "tasks/pushNotificationConfig/get" if version == ProtocolVersion::V03 => {
+            match serde_json::from_value::<GetTaskPushNotificationConfigParams>(req.params) {
+                Ok(params) => match params.push_notification_config_id {
+                    Some(config_id) => match rt.config(&params.id, &config_id, None).await {
+                        Some(config) => rpc_ok(
+                            id,
+                            TaskPushNotificationConfig {
+                                task_id: params.id,
+                                push_notification_config: config,
+                            },
+                        ),
+                        None => rpc_error(id, -32001, "push notification config not found"),
+                    },
+                    None => match rt.configs(&params.id, None).await {
+                        Some(configs) if configs.len() == 1 => rpc_ok(
+                            id,
+                            TaskPushNotificationConfig {
+                                task_id: params.id,
+                                push_notification_config: configs.into_iter().next().unwrap(),
+                            },
+                        ),
+                        Some(_) => rpc_error(
+                            id,
+                            -32602,
+                            "pushNotificationConfigId is required when a task has multiple configs",
+                        ),
+                        None => rpc_error(id, -32001, "task not found"),
+                    },
+                },
                 Err(error) => rpc_error(id, -32602, format!("invalid params: {error}")),
             }
         }
@@ -1350,6 +1445,24 @@ async fn jsonrpc(
                 _ => rpc_error(id, -32602, "invalid params: missing task `id`"),
             }
         }
+        "tasks/pushNotificationConfig/list" if version == ProtocolVersion::V03 => {
+            match serde_json::from_value::<TaskIdParams>(req.params) {
+                Ok(params) => match rt.configs(&params.id, None).await {
+                    Some(configs) => rpc_ok(
+                        id,
+                        configs
+                            .into_iter()
+                            .map(|push_notification_config| TaskPushNotificationConfig {
+                                task_id: params.id.clone(),
+                                push_notification_config,
+                            })
+                            .collect::<Vec<_>>(),
+                    ),
+                    None => rpc_error(id, -32001, "task not found"),
+                },
+                Err(error) => rpc_error(id, -32602, format!("invalid params: {error}")),
+            }
+        }
         "tasks/pushNotificationConfig/list" => match req
             .params
             .get(if version == ProtocolVersion::V1 {
@@ -1388,6 +1501,21 @@ async fn jsonrpc(
             }
             None => rpc_error(id, -32602, "invalid params: missing task `id`"),
         },
+        "tasks/pushNotificationConfig/delete" if version == ProtocolVersion::V03 => {
+            match serde_json::from_value::<DeleteTaskPushNotificationConfigParams>(req.params) {
+                Ok(params) => {
+                    if rt
+                        .delete_config(&params.id, &params.push_notification_config_id, None)
+                        .await
+                    {
+                        rpc_ok(id, Value::Null)
+                    } else {
+                        rpc_error(id, -32001, "push notification config not found")
+                    }
+                }
+                Err(error) => rpc_error(id, -32602, format!("invalid params: {error}")),
+            }
+        }
         "tasks/pushNotificationConfig/delete" => {
             let task_id = req
                 .params
@@ -1724,28 +1852,6 @@ fn rest_driver_error_version(error: DriverError, version: ProtocolVersion) -> Re
     v1_fault(status, code, message)
 }
 
-fn working_task(task_id: &str, thread: &str) -> Task {
-    Task {
-        kind: Some("task".into()),
-        id: task_id.to_string(),
-        context_id: thread.to_string(),
-        status: TaskStatus {
-            state: TaskState::Working,
-            message: None,
-            timestamp: Some(crate::time::now_rfc3339()),
-        },
-        history: Vec::new(),
-        artifacts: Vec::new(),
-    }
-}
-
-fn is_terminal(state: TaskState) -> bool {
-    matches!(
-        state,
-        TaskState::Completed | TaskState::Failed | TaskState::Canceled | TaskState::Rejected
-    )
-}
-
 fn sse_event(
     response: &StreamResponse,
     rpc_id: Option<&Value>,
@@ -1759,7 +1865,7 @@ fn sse_event(
         // JSON-RPC's result is the raw discriminated union member.
         (Some(id), _) => json!({ "jsonrpc": "2.0", "id": id, "result": event }),
         // HTTP+JSON uses the protobuf oneof JSON projection wrapper.
-        (None, ProtocolVersion::V03) => serde_json::to_value(response).unwrap_or(Value::Null),
+        (None, ProtocolVersion::V03) => response.oneof_value(),
         (None, ProtocolVersion::V1) => event,
     };
     format!("data: {payload}\n\n")
@@ -1775,12 +1881,12 @@ fn stream_response(rx: mpsc::UnboundedReceiver<String>) -> Response {
         .expect("valid A2A SSE response")
 }
 
-fn a2a_fault(status: StatusCode, code: i32, message: impl Into<String>) -> Response {
+pub(crate) fn a2a_fault(status: StatusCode, code: i32, message: impl Into<String>) -> Response {
     let message = message.into();
     (status, Json(json!({ "code": code, "message": message }))).into_response()
 }
 
-fn v1_json_response(status: StatusCode, value: Value) -> Response {
+pub(crate) fn v1_json_response(status: StatusCode, value: Value) -> Response {
     let mut response = (status, Json(value)).into_response();
     response.headers_mut().insert(
         header::CONTENT_TYPE,
@@ -1837,107 +1943,6 @@ fn version_fault(
     }
 }
 
-async fn card(State(rt): State<Runtime>, headers: HeaderMap) -> Response {
-    // The card must advertise an absolute service endpoint. Derive it from the
-    // request's Host so an SDK client fetching the card learns where to post.
-    let host = headers
-        .get(header::HOST)
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("localhost");
-    let version = match negotiate_version(&headers) {
-        Ok(version) => version,
-        Err(message) => return a2a_fault(StatusCode::BAD_REQUEST, -32009, message),
-    };
-    let origin = format!("http://{host}");
-    let value = match version {
-        ProtocolVersion::V03 => {
-            let mut card = agent_card(&rt.runtime.model());
-            card.url = Some(format!("{origin}{JSONRPC_PATH}"));
-            card.additional_interfaces = vec![AgentInterface {
-                url: origin.clone(),
-                transport: "HTTP+JSON".into(),
-            }];
-            serde_json::to_value(card).expect("agent card serializes")
-        }
-        ProtocolVersion::V1 => v1_agent_card_value(&rt.runtime.model(), &origin),
-    };
-    let mut response = Json(value).into_response();
-    response.headers_mut().insert(
-        header::VARY,
-        axum::http::HeaderValue::from_static(A2A_VERSION_HEADER),
-    );
-    response
-}
-
-async fn extended_card_rest(State(rt): State<Runtime>, headers: HeaderMap) -> Response {
-    extended_card_response(&rt, &headers)
-}
-
-async fn extended_card_tenant_rest(
-    State(rt): State<Runtime>,
-    Path(_tenant): Path<String>,
-    headers: HeaderMap,
-) -> Response {
-    extended_card_response(&rt, &headers)
-}
-
-fn extended_card_response(rt: &Runtime, headers: &HeaderMap) -> Response {
-    let version = match negotiate_version(headers) {
-        Ok(version) => version,
-        Err(message) => return a2a_fault(StatusCode::BAD_REQUEST, -32009, message),
-    };
-    let host = headers
-        .get(header::HOST)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("localhost");
-    let origin = format!("http://{host}");
-    match version {
-        ProtocolVersion::V1 => v1_json_response(
-            StatusCode::OK,
-            v1_agent_card_value(&rt.runtime.model(), &origin),
-        ),
-        ProtocolVersion::V03 => {
-            let mut card = agent_card(&rt.runtime.model());
-            card.url = Some(format!("{origin}{JSONRPC_PATH}"));
-            card.additional_interfaces = vec![AgentInterface {
-                url: origin,
-                transport: "HTTP+JSON".into(),
-            }];
-            Json(card).into_response()
-        }
-    }
-}
-
-/// The public agent discovery card. `url` is filled in by the handler from the
-/// request Host; the JSON-RPC transport is advertised as the canonical binding.
-pub fn agent_card(model: &str) -> AgentCard {
-    AgentCard {
-        name: "assistant".to_string(),
-        description: format!("Awaken agent over model `{model}`"),
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        protocol_version: "0.3.0".to_string(),
-        url: None,
-        preferred_transport: Some("JSONRPC".to_string()),
-        additional_interfaces: Vec::new(),
-        capabilities: AgentCapabilities {
-            streaming: true,
-            push_notifications: true,
-        },
-        default_input_modes: vec!["text/plain".to_string()],
-        default_output_modes: vec!["text/plain".to_string()],
-        skills: vec![AgentSkill {
-            id: "chat".to_string(),
-            name: "Chat".to_string(),
-            tags: vec!["chat".to_string()],
-        }],
-        // No schemes by default: auth is the composition root's choice. A host
-        // that puts auth in front of the router declares it here on the card.
-        security_schemes: Default::default(),
-        security: Vec::new(),
-        supports_authenticated_extended_card: Some(true),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1954,15 +1959,6 @@ mod tests {
             error_response(DriverError::Internal("boom".into())).status(),
             StatusCode::INTERNAL_SERVER_ERROR
         );
-    }
-
-    #[test]
-    fn agent_card_names_the_model_and_pins_the_protocol() {
-        let card = agent_card("echo-model");
-        assert_eq!(card.protocol_version, "0.3.0");
-        assert!(card.capabilities.streaming);
-        assert!(card.capabilities.push_notifications);
-        assert!(card.description.contains("echo-model"));
     }
 
     fn pending(client_executed: bool) -> Pending {

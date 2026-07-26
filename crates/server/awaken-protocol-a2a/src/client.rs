@@ -159,10 +159,11 @@ pub async fn send_message(
     let request = json!({
         "agentId": agent_id,
         "message": {
+            "kind": "message",
             "messageId": message_id,
             "contextId": context_id,
-            "role": "ROLE_USER",
-            "parts": [{ "text": text }],
+            "role": "user",
+            "parts": [{ "kind": "text", "text": text }],
         }
     });
     let body = serde_json::to_vec(&request).map_err(|e| ClientError::Decode(e.to_string()))?;
@@ -396,7 +397,7 @@ mod tests {
     async fn send_message_posts_and_parses_the_task() {
         let transport = MockTransport {
             seen: Mutex::new(Vec::new()),
-            reply: r#"{"task":{"id":"t-1","contextId":"c","status":{"state":"TASK_STATE_COMPLETED","message":{"messageId":"a","role":"ROLE_AGENT","parts":[{"text":"hi"}]}}}}"#
+            reply: r#"{"task":{"kind":"task","id":"t-1","contextId":"c","status":{"state":"completed","message":{"kind":"message","messageId":"a","role":"agent","parts":[{"kind":"text","text":"hi"}]}}}}"#
                 .into(),
         };
         let task = send_message(&transport, Some("agent"), "c", "m-1", "go")
@@ -411,7 +412,8 @@ mod tests {
     async fn get_task_uses_the_task_route() {
         let transport = MockTransport {
             seen: Mutex::new(Vec::new()),
-            reply: r#"{"id":"t-9","contextId":"c","status":{"state":"TASK_STATE_WORKING"}}"#.into(),
+            reply: r#"{"kind":"task","id":"t-9","contextId":"c","status":{"state":"working"}}"#
+                .into(),
         };
         let task = get_task(&transport, "t-9").await.unwrap();
         assert_eq!(task.status.state, TaskState::Working);
@@ -649,7 +651,7 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     const COMPLETED_TASK: &str =
-        r#"{"task":{"id":"t","contextId":"c","status":{"state":"completed"}}}"#;
+        r#"{"task":{"kind":"task","id":"t","contextId":"c","status":{"state":"completed"}}}"#;
 
     fn ok_response(body: &str) -> String {
         format!(

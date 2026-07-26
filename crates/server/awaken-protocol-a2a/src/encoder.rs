@@ -13,6 +13,22 @@ use awaken_protocol_transport::{StepOutcome, Terminal};
 
 use crate::types::{Message, MessageRole, Part, Task, TaskState, TaskStatus};
 
+pub(crate) fn working_task(task_id: &str, thread: &str) -> Task {
+    Task {
+        kind: crate::types::TaskKind::Task,
+        id: task_id.to_string(),
+        context_id: thread.to_string(),
+        status: TaskStatus {
+            state: TaskState::Working,
+            message: None,
+            timestamp: Some(crate::time::now_rfc3339()),
+        },
+        history: Vec::new(),
+        artifacts: Vec::new(),
+        metadata: None,
+    }
+}
+
 /// Build the `Task` returned for a step on `thread`. `history` is the thread's full
 /// committed transcript (post-step); `outcome` classifies the terminal state.
 pub fn encode_task(thread: &str, history: &[AgentMessage], outcome: &StepOutcome) -> Task {
@@ -50,7 +66,7 @@ pub fn encode_task(thread: &str, history: &[AgentMessage], outcome: &StepOutcome
     };
 
     Task {
-        kind: Some("task".to_string()),
+        kind: crate::types::TaskKind::Task,
         id: format!("task-{thread}"),
         context_id: thread.to_string(),
         status: TaskStatus {
@@ -60,6 +76,7 @@ pub fn encode_task(thread: &str, history: &[AgentMessage], outcome: &StepOutcome
         },
         history: messages,
         artifacts: Vec::new(),
+        metadata: None,
     }
 }
 
@@ -76,12 +93,15 @@ fn to_a2a_message(thread: &str, message: &AgentMessage) -> Option<Message> {
         return None;
     }
     Some(Message {
-        kind: Some("message".to_string()),
+        kind: crate::types::MessageKind::Message,
         task_id: Some(format!("task-{thread}")),
         context_id: Some(thread.to_string()),
         message_id: message.id.0.clone(),
         role,
         parts: vec![Part::text(text)],
+        extensions: Vec::new(),
+        metadata: None,
+        reference_task_ids: Vec::new(),
     })
 }
 
@@ -124,7 +144,7 @@ mod tests {
             .map(|m| {
                 m.parts
                     .iter()
-                    .filter_map(|p| p.text.as_deref())
+                    .filter_map(crate::types::Part::text_value)
                     .collect::<String>()
             })
             .unwrap_or_default();

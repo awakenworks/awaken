@@ -13,6 +13,7 @@
 //! shares the same neutral host as every other adapter, so callers through A2A
 //! and the managed protocols interact with the same runtime state.
 
+mod card;
 pub mod client;
 pub mod encoder;
 pub mod request;
@@ -24,8 +25,9 @@ mod v1;
 
 pub use awaken_credential::{AuthChallenge, Credential, CredentialRefresher};
 pub use awaken_protocol_transport::{DriverError, Pending, ProtocolRuntime, Resume, StepOutcome};
+pub use card::agent_card;
 pub use client::{ClientError, HttpTransport, Response, Transport};
-pub use router::{agent_card, router};
+pub use router::router;
 pub use types::{
     AgentCard, AgentInterface, ApiKeyLocation, Artifact, AuthenticationInfo, AuthorizationCodeFlow,
     ClientCredentialsFlow, ImplicitFlow, ListPushNotificationConfigsResponse, OAuthFlows,

@@ -11,114 +11,82 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// A2A message role. The wire tokens are the A2A JSON spellings (`user`/`agent`);
-/// the gRPC/proto tokens (`ROLE_USER`/`ROLE_AGENT`) are accepted on input for
-/// back-compat with earlier clients.
+/// A2A v0.3 message role. ProtoJSON spellings are normalized only at the v1 ACL.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum MessageRole {
-    #[serde(rename = "user", alias = "ROLE_USER")]
+    #[serde(rename = "user")]
     User,
-    #[serde(rename = "agent", alias = "ROLE_AGENT")]
+    #[serde(rename = "agent")]
     Agent,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum MessageKind {
+    #[serde(rename = "message")]
+    Message,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TaskKind {
+    #[serde(rename = "task")]
+    Task,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TaskStatusUpdateKind {
+    #[serde(rename = "status-update")]
+    StatusUpdate,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TaskArtifactUpdateKind {
+    #[serde(rename = "artifact-update")]
+    ArtifactUpdate,
 }
 
 /// One message part. A2A parts carry a `kind` discriminator (`text`/`file`/`data`)
 /// alongside the payload field. A part holds text, a `file` (inline base64 or a
 /// remote URI), or an opaque JSON `data` payload owned by the A2A boundary.
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct Part {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kind: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub data: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub file: Option<FilePart>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<Value>,
-}
-
-impl<'de> Deserialize<'de> for Part {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = Value::deserialize(deserializer)?;
-        let kind = value
-            .get("kind")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned);
-        let metadata = value.get("metadata").cloned();
-        if let Some(text) = value.get("text").and_then(Value::as_str) {
-            return Ok(Self {
-                kind: kind.or_else(|| Some("text".into())),
-                text: Some(text.to_string()),
-                data: None,
-                file: None,
-                metadata,
-            });
-        }
-        if let Some(data) = value.get("data") {
-            return Ok(Self {
-                kind: kind.or_else(|| Some("data".into())),
-                text: None,
-                data: Some(data.clone()),
-                file: None,
-                metadata,
-            });
-        }
-        if let Some(file) = value.get("file") {
-            return Ok(Self {
-                kind: kind.or_else(|| Some("file".into())),
-                text: None,
-                data: None,
-                file: Some(serde_json::from_value(file.clone()).map_err(serde::de::Error::custom)?),
-                metadata,
-            });
-        }
-        let bytes = value
-            .get("raw")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned);
-        let uri = value
-            .get("url")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned);
-        if bytes.is_some() || uri.is_some() {
-            return Ok(Self {
-                kind: Some("file".into()),
-                text: None,
-                data: None,
-                file: Some(FilePart {
-                    bytes,
-                    uri,
-                    mime_type: value
-                        .get("mediaType")
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned),
-                    name: value
-                        .get("filename")
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned),
-                }),
-                metadata,
-            });
-        }
-        Err(serde::de::Error::custom(
-            "part has no supported content member",
-        ))
-    }
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
+pub enum Part {
+    Text {
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        metadata: Option<BTreeMap<String, Value>>,
+    },
+    File {
+        file: FilePart,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        metadata: Option<BTreeMap<String, Value>>,
+    },
+    Data {
+        data: BTreeMap<String, Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        metadata: Option<BTreeMap<String, Value>>,
+    },
 }
 
 impl Part {
     pub fn text(text: impl Into<String>) -> Self {
-        Self {
-            kind: Some("text".to_string()),
-            text: Some(text.into()),
-            data: None,
-            file: None,
+        Self::Text {
+            text: text.into(),
             metadata: None,
+        }
+    }
+
+    pub fn text_value(&self) -> Option<&str> {
+        match self {
+            Self::Text { text, .. } => Some(text),
+            Self::File { .. } | Self::Data { .. } => None,
+        }
+    }
+
+    pub fn metadata(&self) -> Option<&BTreeMap<String, Value>> {
+        match self {
+            Self::Text { metadata, .. }
+            | Self::File { metadata, .. }
+            | Self::Data { metadata, .. } => metadata.as_ref(),
         }
     }
 }
@@ -126,12 +94,26 @@ impl Part {
 /// A file/image payload inside a `Part` (A2A `FilePart`): inline base64 `bytes` or
 /// a remote `uri`, tagged with a `mimeType`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct FilePart {
+#[serde(untagged)]
+pub enum FilePart {
+    Bytes(FileWithBytes),
+    Uri(FileWithUri),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FileWithBytes {
+    pub bytes: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bytes: Option<String>,
+    pub mime_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub uri: Option<String>,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FileWithUri {
+    pub uri: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -140,11 +122,10 @@ pub struct FilePart {
 
 /// A conversation message.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Message {
     /// The A2A object discriminator (`"message"`), required by the JSON clients.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kind: Option<String>,
+    pub kind: MessageKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -152,18 +133,27 @@ pub struct Message {
     pub message_id: String,
     pub role: MessageRole,
     pub parts: Vec<Part>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extensions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<BTreeMap<String, Value>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reference_task_ids: Vec<String>,
 }
 
 impl Message {
     /// Construct a text-only agent message.
     pub fn agent_text(message_id: impl Into<String>, text: impl Into<String>) -> Self {
         Self {
-            kind: Some("message".to_string()),
+            kind: MessageKind::Message,
             task_id: None,
             context_id: None,
             message_id: message_id.into(),
             role: MessageRole::Agent,
             parts: vec![Part::text(text)],
+            extensions: Vec::new(),
+            metadata: None,
+            reference_task_ids: Vec::new(),
         }
     }
 
@@ -171,39 +161,47 @@ impl Message {
     pub fn text(&self) -> String {
         self.parts
             .iter()
-            .filter_map(|p| p.text.as_deref())
+            .filter_map(Part::text_value)
             .collect::<Vec<_>>()
             .join("")
     }
 }
 
-/// Task lifecycle state. The wire tokens are the A2A JSON spellings; the gRPC/proto
-/// tokens (`TASK_STATE_*`) are accepted on input for back-compat.
+/// A2A v0.3 task lifecycle state. ProtoJSON spellings stay in the v1 projection.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum TaskState {
-    #[serde(rename = "submitted", alias = "TASK_STATE_SUBMITTED")]
+    #[serde(rename = "submitted")]
     Submitted,
-    #[serde(rename = "working", alias = "TASK_STATE_WORKING")]
+    #[serde(rename = "working")]
     Working,
-    #[serde(rename = "input-required", alias = "TASK_STATE_INPUT_REQUIRED")]
+    #[serde(rename = "input-required")]
     InputRequired,
-    #[serde(rename = "auth-required", alias = "TASK_STATE_AUTH_REQUIRED")]
+    #[serde(rename = "auth-required")]
     AuthRequired,
-    #[serde(rename = "completed", alias = "TASK_STATE_COMPLETED")]
+    #[serde(rename = "completed")]
     Completed,
-    #[serde(rename = "failed", alias = "TASK_STATE_FAILED")]
+    #[serde(rename = "failed")]
     Failed,
-    #[serde(rename = "canceled", alias = "TASK_STATE_CANCELED")]
+    #[serde(rename = "canceled")]
     Canceled,
-    #[serde(rename = "rejected", alias = "TASK_STATE_REJECTED")]
+    #[serde(rename = "rejected")]
     Rejected,
-    #[serde(rename = "unknown", alias = "TASK_STATE_UNKNOWN")]
+    #[serde(rename = "unknown")]
     Unknown,
+}
+
+impl TaskState {
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Completed | Self::Failed | Self::Canceled | Self::Rejected
+        )
+    }
 }
 
 /// A task status snapshot: the lifecycle state plus the agent's latest message.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskStatus {
     pub state: TaskState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -214,11 +212,10 @@ pub struct TaskStatus {
 
 /// A task resource — the unit of work `message:send` returns.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Task {
     /// The A2A object discriminator (`"task"`), required by the JSON clients.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kind: Option<String>,
+    pub kind: TaskKind,
     pub id: String,
     pub context_id: String,
     pub status: TaskStatus,
@@ -228,16 +225,23 @@ pub struct Task {
     /// carries their text parts; richer artifact kinds are omitted until needed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<Artifact>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<BTreeMap<String, Value>>,
 }
 
 /// A task artifact: a named, durable output made of parts (text only here).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Artifact {
     pub artifact_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extensions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<BTreeMap<String, Value>>,
     pub parts: Vec<Part>,
 }
 
@@ -246,7 +250,7 @@ impl Artifact {
     pub fn text(&self) -> String {
         self.parts
             .iter()
-            .filter_map(|part| part.text.as_deref())
+            .filter_map(Part::text_value)
             .collect::<Vec<_>>()
             .join("")
     }
@@ -254,22 +258,24 @@ impl Artifact {
 
 /// The `message:send` request body.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SendMessageRequest {
     /// Optional agent selector — equivalent to the path agent in
     /// `/v1/a2a/agents/{agent}/message:send`. Accepts the legacy `tenant` and the
     /// snake_case `agent_id` spellings.
     #[serde(default, alias = "agent_id", alias = "tenant")]
     pub agent_id: Option<String>,
-    pub message: SendMessage,
+    pub message: Message,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub configuration: Option<SendMessageConfiguration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<BTreeMap<String, Value>>,
 }
 
 /// Optional execution and delivery controls carried by `message:send` and
 /// `message:stream`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SendMessageConfiguration {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub accepted_output_modes: Vec<String>,
@@ -289,50 +295,21 @@ pub struct SendMessageConfiguration {
     pub history_length: Option<u32>,
 }
 
-/// The inbound message: role, text parts, and the optional context it continues.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SendMessage {
-    #[serde(default)]
-    pub message_id: Option<String>,
-    #[serde(default)]
-    pub context_id: Option<String>,
-    #[serde(default)]
-    pub task_id: Option<String>,
-    pub role: MessageRole,
-    #[serde(default)]
-    pub parts: Vec<Part>,
-}
-
-impl SendMessage {
-    /// The concatenated text of the inbound parts.
-    pub fn text(&self) -> String {
-        self.parts
-            .iter()
-            .filter_map(|p| p.text.as_deref())
-            .collect::<Vec<_>>()
-            .join("")
-    }
-}
-
 /// The `message:send` response wrapper.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SendMessageResponse {
     pub task: Task,
 }
 
-/// One server-sent A2A update. Exactly one member is normally populated.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct StreamResponse {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task: Option<Task>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub message: Option<Message>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub status_update: Option<TaskStatusUpdateEvent>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub artifact_update: Option<TaskArtifactUpdateEvent>,
+/// One server-sent A2A update. This is the same closed union exposed by the
+/// official SDK; an event cannot carry two competing payloads.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum StreamResponse {
+    Task(Task),
+    Message(Message),
+    StatusUpdate(TaskStatusUpdateEvent),
+    ArtifactUpdate(TaskArtifactUpdateEvent),
 }
 
 impl StreamResponse {
@@ -340,66 +317,40 @@ impl StreamResponse {
     /// JSON-RPC `result` (and REST SSE data) to be a raw Task/Message/update,
     /// not an extra `{task: ...}` wrapper.
     pub fn event_value(&self) -> Value {
-        if let Some(task) = &self.task {
-            serde_json::to_value(task).unwrap_or(Value::Null)
-        } else if let Some(message) = &self.message {
-            serde_json::to_value(message).unwrap_or(Value::Null)
-        } else if let Some(update) = &self.status_update {
-            serde_json::to_value(update).unwrap_or(Value::Null)
-        } else if let Some(update) = &self.artifact_update {
-            serde_json::to_value(update).unwrap_or(Value::Null)
-        } else {
-            Value::Null
+        serde_json::to_value(self).expect("A2A stream events serialize")
+    }
+
+    /// HTTP+JSON protobuf oneof projection used by the v0.3 REST binding.
+    pub fn oneof_value(&self) -> Value {
+        match self {
+            Self::Task(task) => serde_json::json!({ "task": task }),
+            Self::Message(message) => serde_json::json!({ "message": message }),
+            Self::StatusUpdate(update) => serde_json::json!({ "statusUpdate": update }),
+            Self::ArtifactUpdate(update) => serde_json::json!({ "artifactUpdate": update }),
         }
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::StatusUpdate(update) if update.final_ || update.status.state.is_terminal()
+        )
     }
 }
 
 /// Push transport authentication. `credentials` is secret input and is never
 /// returned from list/get endpoints.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AuthenticationInfo {
     pub schemes: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credentials: Option<String>,
 }
 
-impl<'de> Deserialize<'de> for AuthenticationInfo {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = Value::deserialize(deserializer)?;
-        let credentials = value
-            .get("credentials")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned);
-        let schemes = if let Some(schemes) = value.get("schemes").and_then(Value::as_array) {
-            schemes
-                .iter()
-                .map(|scheme| {
-                    scheme.as_str().map(ToOwned::to_owned).ok_or_else(|| {
-                        serde::de::Error::custom("authentication scheme must be a string")
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?
-        } else if let Some(scheme) = value.get("scheme").and_then(Value::as_str) {
-            vec![scheme.to_string()]
-        } else {
-            return Err(serde::de::Error::custom(
-                "authentication requires scheme or schemes",
-            ));
-        };
-        Ok(Self {
-            schemes,
-            credentials,
-        })
-    }
-}
-
 /// A webhook subscription attached to one A2A task.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PushNotificationConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -431,22 +382,22 @@ pub struct ListPushNotificationConfigsResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskStatusUpdateEvent {
-    pub kind: String,
+    pub kind: TaskStatusUpdateKind,
     pub task_id: String,
     pub context_id: String,
     pub status: TaskStatus,
     #[serde(rename = "final")]
     pub final_: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<Value>,
+    pub metadata: Option<BTreeMap<String, Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskArtifactUpdateEvent {
-    pub kind: String,
+    pub kind: TaskArtifactUpdateKind,
     pub task_id: String,
     pub context_id: String,
     pub artifact: Artifact,
@@ -455,15 +406,53 @@ pub struct TaskArtifactUpdateEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_chunk: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<Value>,
+    pub metadata: Option<BTreeMap<String, Value>>,
 }
 
 /// SDK wire wrapper used by `tasks/pushNotificationConfig/set|get|list`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskPushNotificationConfig {
     pub task_id: String,
     pub push_notification_config: PushNotificationConfig,
+}
+
+/// Canonical v0.3 parameters shared by get, cancel and resubscribe.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskIdParams {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<BTreeMap<String, Value>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskQueryParams {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_length: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<BTreeMap<String, Value>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetTaskPushNotificationConfigParams {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push_notification_config_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<BTreeMap<String, Value>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeleteTaskPushNotificationConfigParams {
+    pub id: String,
+    pub push_notification_config_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<BTreeMap<String, Value>>,
 }
 
 /// A JSON error envelope (A2A HTTP+JSON binding): `{ "error": { code, message } }`.
@@ -694,9 +683,29 @@ mod tests {
     }
 
     #[test]
-    fn part_accepts_legacy_kindless_wrapper() {
-        let p: Part = serde_json::from_value(json!({ "text": "hi" })).unwrap();
-        assert_eq!(p.text.as_deref(), Some("hi"));
+    fn part_rejects_kindless_or_conflicting_payloads() {
+        // Causal graph: untrusted JSON -> tagged-union admission -> no Runtime
+        // message unless exactly one discriminator-owned payload is present.
+        //
+        // Decision table:
+        // | kind | payload members | result |
+        // | text | text only | typed Text |
+        // | absent | text | reject |
+        // | text | text + data | reject |
+        // | file | bytes + uri | reject |
+        assert!(serde_json::from_value::<Part>(json!({"text":"hi"})).is_err());
+        assert!(
+            serde_json::from_value::<Part>(json!({
+                "kind":"text", "text":"hi", "data":{}
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<Part>(json!({
+                "kind":"file", "file":{"bytes":"AAAA", "uri":"https://x"}
+            }))
+            .is_err()
+        );
     }
 
     #[test]
@@ -706,27 +715,26 @@ mod tests {
         // Decision table:
         // | payload                   | data retained | text populated | output exact |
         // | nested object/array       | yes           | no             | yes          |
-        // | JSON null                 | yes           | no             | yes          |
-        // | metadata beside payload  | yes           | no             | yes          |
+        // | metadata beside payload   | yes           | no             | yes          |
         // These assertions forbid the former JSON -> String -> JSON compatibility
         // path, including its ambiguity between JSON strings and encoded objects.
         for input in [
             json!({"kind":"data","data":{"nested":[1,true,{"s":"x"}]}}),
-            json!({"kind":"data","data":null}),
-            json!({"kind":"data","data":"literal","metadata":{"trace":7}}),
+            json!({"kind":"data","data":{"literal":"value"},"metadata":{"trace":7}}),
         ] {
             let part: Part = serde_json::from_value(input.clone()).unwrap();
-            assert!(part.text.is_none());
-            assert_eq!(part.data.as_ref(), input.get("data"));
+            assert!(part.text_value().is_none());
             assert_eq!(serde_json::to_value(part).unwrap(), input);
         }
+        assert!(serde_json::from_value::<Part>(json!({"kind":"data","data":null})).is_err());
+        assert!(serde_json::from_value::<Part>(json!({"kind":"data","data":"literal"})).is_err());
     }
 
     #[test]
     fn send_message_accepts_legacy_tenant_and_snake_case_agent() {
         let a: SendMessageRequest = serde_json::from_value(json!({
             "tenant": "agent-legacy",
-            "message": { "role": "ROLE_USER", "parts": [{ "text": "hi" }] }
+            "message": { "kind":"message", "messageId":"m1", "role": "user", "parts": [{ "kind": "text", "text": "hi" }] }
         }))
         .unwrap();
         assert_eq!(a.agent_id.as_deref(), Some("agent-legacy"));
@@ -734,7 +742,7 @@ mod tests {
 
         let b: SendMessageRequest = serde_json::from_value(json!({
             "agent_id": "agent-snake",
-            "message": { "role": "ROLE_USER", "parts": [{ "text": "yo" }] }
+            "message": { "kind":"message", "messageId":"m2", "role": "user", "parts": [{ "kind": "text", "text": "yo" }] }
         }))
         .unwrap();
         assert_eq!(b.agent_id.as_deref(), Some("agent-snake"));
@@ -742,7 +750,7 @@ mod tests {
 
     #[test]
     fn task_state_tokens_match_protocol() {
-        // The A2A JSON spellings on the wire; the proto tokens are input aliases.
+        // The authoritative v0.3 DTO accepts only its JSON spellings.
         assert_eq!(
             serde_json::to_value(TaskState::InputRequired).unwrap(),
             json!("input-required")
@@ -751,17 +759,12 @@ mod tests {
             serde_json::to_value(TaskState::Completed).unwrap(),
             json!("completed")
         );
-        assert_eq!(
-            serde_json::from_value::<TaskState>(json!("TASK_STATE_COMPLETED")).unwrap(),
-            TaskState::Completed
-        );
+        assert!(serde_json::from_value::<TaskState>(json!("TASK_STATE_COMPLETED")).is_err());
     }
 
     /// `TaskState::AuthRequired` had ZERO coverage: no test pinned its wire token.
     /// The A2A JSON spelling is `"auth-required"` (hyphenated), with the proto token
-    /// `TASK_STATE_AUTH_REQUIRED` accepted on input for back-compat. A rename would
-    /// silently break a remote agent that awaits a task awaiting auth, so pin the full
-    /// round-trip plus the input alias.
+    /// ProtoJSON is rejected here and normalized only at the v1 ACL.
     #[test]
     fn task_state_auth_required_round_trips_on_the_a2a_wire_token() {
         assert_eq!(
@@ -770,8 +773,7 @@ mod tests {
         );
         let back: TaskState = serde_json::from_value(json!("auth-required")).unwrap();
         assert_eq!(back, TaskState::AuthRequired);
-        let alias: TaskState = serde_json::from_value(json!("TASK_STATE_AUTH_REQUIRED")).unwrap();
-        assert_eq!(alias, TaskState::AuthRequired);
+        assert!(serde_json::from_value::<TaskState>(json!("TASK_STATE_AUTH_REQUIRED")).is_err());
     }
 
     /// `InputRequired` had only a serialize assertion (in `task_state_tokens_...`),
@@ -779,15 +781,14 @@ mod tests {
     /// `AuthRequired`: `"input-required"` round-trips and `TASK_STATE_INPUT_REQUIRED`
     /// is accepted.
     #[test]
-    fn task_state_input_required_round_trips_and_accepts_the_proto_alias() {
+    fn task_state_input_required_round_trips_and_rejects_the_proto_alias() {
         let back: TaskState = serde_json::from_value(json!("input-required")).unwrap();
         assert_eq!(back, TaskState::InputRequired);
         assert_eq!(
             serde_json::to_value(TaskState::InputRequired).unwrap(),
             json!("input-required")
         );
-        let alias: TaskState = serde_json::from_value(json!("TASK_STATE_INPUT_REQUIRED")).unwrap();
-        assert_eq!(alias, TaskState::InputRequired);
+        assert!(serde_json::from_value::<TaskState>(json!("TASK_STATE_INPUT_REQUIRED")).is_err());
     }
 
     /// The outbound agent role: our replies are stamped `MessageRole::Agent`, which
@@ -804,22 +805,21 @@ mod tests {
             serde_json::to_value(MessageRole::User).unwrap(),
             json!("user")
         );
-        // The proto tokens are accepted on input for back-compat.
-        assert_eq!(
-            serde_json::from_value::<MessageRole>(json!("ROLE_AGENT")).unwrap(),
-            MessageRole::Agent
-        );
+        assert!(serde_json::from_value::<MessageRole>(json!("ROLE_AGENT")).is_err());
     }
 
     #[test]
     fn message_text_concatenates_parts() {
         let m = Message {
-            kind: Some("message".into()),
+            kind: MessageKind::Message,
             task_id: Some("task-t".into()),
             context_id: Some("t".into()),
             message_id: "m1".into(),
             role: MessageRole::User,
             parts: vec![Part::text("hello "), Part::text("world")],
+            extensions: Vec::new(),
+            metadata: None,
+            reference_task_ids: Vec::new(),
         };
         assert_eq!(m.text(), "hello world");
     }
@@ -827,7 +827,7 @@ mod tests {
     #[test]
     fn task_roundtrips_with_camel_case_fields() {
         let task = Task {
-            kind: Some("task".into()),
+            kind: TaskKind::Task,
             id: "task-t".into(),
             context_id: "t".into(),
             status: TaskStatus {
@@ -839,8 +839,12 @@ mod tests {
             artifacts: vec![Artifact {
                 artifact_id: "out".into(),
                 name: Some("out".into()),
+                description: None,
+                extensions: Vec::new(),
+                metadata: None,
                 parts: vec![Part::text("artifact body")],
             }],
+            metadata: None,
         };
         let value = serde_json::to_value(&task).unwrap();
         // A2A uses camelCase on the wire; the state carries its JSON token.
@@ -860,10 +864,9 @@ mod tests {
         );
         let back: TaskState = serde_json::from_value(serde_json::json!("canceled")).unwrap();
         assert_eq!(back, TaskState::Canceled);
-        // The back-compat `TASK_STATE_*` alias is accepted on input.
-        let alias: TaskState =
-            serde_json::from_value(serde_json::json!("TASK_STATE_CANCELED")).unwrap();
-        assert_eq!(alias, TaskState::Canceled);
+        assert!(
+            serde_json::from_value::<TaskState>(serde_json::json!("TASK_STATE_CANCELED")).is_err()
+        );
     }
 
     #[test]
@@ -874,13 +877,9 @@ mod tests {
             serde_json::json!({ "kind": "text", "text": "hi" })
         );
         // A file part carries bytes + mimeType and round-trips.
-        let file = Part {
-            kind: Some("file".into()),
-            text: None,
-            data: None,
-            file: Some(FilePart {
-                bytes: Some("AAAA".into()),
-                uri: None,
+        let file = Part::File {
+            file: FilePart::Bytes(FileWithBytes {
+                bytes: "AAAA".into(),
                 mime_type: Some("image/png".into()),
                 name: None,
             }),

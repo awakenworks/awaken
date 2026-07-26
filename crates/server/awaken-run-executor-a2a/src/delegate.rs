@@ -403,7 +403,7 @@ mod tests {
     async fn resume_uses_the_committed_context_and_a_wait_specific_message_id() {
         let transport = Arc::new(BodyTransport {
             body: Mutex::new(None),
-            reply: r#"{"task":{"id":"remote-done","contextId":"ctx-7","status":{"state":"completed","message":{"messageId":"m","role":"agent","parts":[{"text":"done"}]}}}}"#.into(),
+            reply: r#"{"task":{"kind":"task","id":"remote-done","contextId":"ctx-7","status":{"state":"completed","message":{"kind":"message","messageId":"m","role":"agent","parts":[{"kind":"text","text":"done"}]}}}}"#.into(),
         });
         let delegate = A2aRemoteAgent::new(transport.clone());
 
@@ -466,7 +466,7 @@ mod tests {
     async fn run_uses_stable_delegation_correlation_ids() {
         let transport = Arc::new(BodyTransport {
             body: Mutex::new(None),
-            reply: r#"{"task":{"id":"remote-done","contextId":"deleg-child-9","status":{"state":"completed"}}}"#.into(),
+            reply: r#"{"task":{"kind":"task","id":"remote-done","contextId":"deleg-child-9","status":{"state":"completed"}}}"#.into(),
         });
         let delegate = A2aRemoteAgent::new(transport.clone());
 
@@ -486,7 +486,7 @@ mod tests {
             seen: Mutex::new(Vec::new()),
             status: 200,
             reply:
-                r#"{"task":{"id":"remote-working","contextId":"ctx","status":{"state":"working"}}}"#
+                r#"{"task":{"kind":"task","id":"remote-working","contextId":"ctx","status":{"state":"working"}}}"#
                     .into(),
         });
         let delegate = A2aRemoteAgent::new(transport.clone());
