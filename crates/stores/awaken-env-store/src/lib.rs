@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
-use awaken_session_contract::env_registry::{EnvItem, EnvRegistry, EnvUpdate};
+use awaken_session_contract::env_registry::{EnvItem, EnvRegistry, EnvUpdate, EnvironmentRevision};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::Value;
 use sqlx::Row;
@@ -27,10 +27,11 @@ const NS: &str = "env_registry";
 fn env_bundle() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(
         "awaken.env_registry",
-        vec![Migration::new(
-            1,
-            "self-hosted environment registry: one row per environment",
-            "CREATE TABLE {prefix}_env (\
+        vec![
+            Migration::new(
+                1,
+                "self-hosted environment registry: one row per environment",
+                "CREATE TABLE {prefix}_env (\
              env_id        TEXT PRIMARY KEY, \
              seq           BIGINT NOT NULL, \
              name          TEXT NOT NULL, \
@@ -38,12 +39,18 @@ fn env_bundle() -> Result<MigrationBundle, MigrationError> {
              metadata_json TEXT NOT NULL, \
              config_json   TEXT NOT NULL, \
              archived_at   TEXT)",
-        )?],
+            )?,
+            Migration::new(
+                2,
+                "monotonic environment revision",
+                "ALTER TABLE {prefix}_env ADD COLUMN revision BIGINT NOT NULL DEFAULT 1",
+            )?,
+        ],
     )
 }
 
 /// The columns an env row projects to an [`EnvItem`], in `SELECT` order.
-const COLS: &str = "env_id, name, description, metadata_json, config_json, archived_at";
+const COLS: &str = "env_id, name, description, metadata_json, config_json, archived_at, revision";
 
 fn metadata_str(m: &BTreeMap<String, String>) -> String {
     serde_json::to_string(m).expect("env metadata serializes")
@@ -60,9 +67,11 @@ fn decode(
     metadata_json: &str,
     config_json: &str,
     archived_at: Option<String>,
+    revision: i64,
 ) -> EnvItem {
     EnvItem {
         id,
+        revision: EnvironmentRevision(u64::try_from(revision).expect("valid Environment revision")),
         name,
         description,
         metadata: serde_json::from_str(metadata_json).unwrap_or_default(),
@@ -81,6 +90,7 @@ fn sqlite_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EnvItem> {
         &metadata_json,
         &config_json,
         row.get(5)?,
+        row.get(6)?,
     ))
 }
 
@@ -94,6 +104,7 @@ fn pg_row(row: &PgRow) -> EnvItem {
         &metadata_json,
         &config_json,
         row.get("archived_at"),
+        row.get("revision"),
     )
 }
 
@@ -171,6 +182,7 @@ impl EnvRegistry for SqliteEnvRegistry {
         tx.commit().expect("commit create");
         EnvItem {
             id,
+            revision: EnvironmentRevision(1),
             name,
             description,
             metadata,
@@ -209,12 +221,13 @@ impl EnvRegistry for SqliteEnvRegistry {
         item.apply(patch);
         tx.execute(
             "UPDATE env_registry_env SET name = ?1, description = ?2, metadata_json = ?3, \
-             config_json = ?4 WHERE env_id = ?5",
+             config_json = ?4, revision = ?5 WHERE env_id = ?6",
             params![
                 item.name,
                 item.description,
                 metadata_str(&item.metadata),
                 config_str(&item.config),
+                item.revision.0,
                 id
             ],
         )
@@ -239,10 +252,14 @@ impl EnvRegistry for SqliteEnvRegistry {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .expect("begin immediate");
         let mut item = Self::read(&tx, id)?;
+        if item.archived_at.is_some() {
+            return Some(item);
+        }
         item.archived_at = Some(OBJECT_AT.to_string());
+        item.revision = EnvironmentRevision(item.revision.0.checked_add(1).expect("revision"));
         tx.execute(
-            "UPDATE env_registry_env SET archived_at = ?1 WHERE env_id = ?2",
-            params![OBJECT_AT, id],
+            "UPDATE env_registry_env SET archived_at = ?1, revision = ?2 WHERE env_id = ?3",
+            params![OBJECT_AT, item.revision.0, id],
         )
         .expect("archive env");
         tx.commit().expect("commit archive");
@@ -316,6 +333,7 @@ impl EnvRegistry for PostgresEnvRegistry {
         tx.commit().await.expect("commit create");
         EnvItem {
             id,
+            revision: EnvironmentRevision(1),
             name,
             description,
             metadata,
@@ -345,20 +363,30 @@ impl EnvRegistry for PostgresEnvRegistry {
     }
 
     async fn update(&self, id: &str, patch: EnvUpdate) -> Option<EnvItem> {
-        let mut item = self.read(id).await?;
+        let mut tx = self.pool.begin().await.expect("begin Environment update");
+        let row = sqlx::query(&format!(
+            "SELECT {COLS} FROM env_registry_env WHERE env_id = $1 FOR UPDATE"
+        ))
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .expect("lock env row")?;
+        let mut item = pg_row(&row);
         item.apply(patch);
         sqlx::query(
             "UPDATE env_registry_env SET name = $1, description = $2, metadata_json = $3, \
-             config_json = $4 WHERE env_id = $5",
+             config_json = $4, revision = $5 WHERE env_id = $6",
         )
         .bind(&item.name)
         .bind(&item.description)
         .bind(metadata_str(&item.metadata))
         .bind(config_str(&item.config))
+        .bind(i64::try_from(item.revision.0).expect("Environment revision fits i64"))
         .bind(id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .expect("update env");
+        tx.commit().await.expect("commit Environment update");
         Some(item)
     }
 
@@ -373,14 +401,33 @@ impl EnvRegistry for PostgresEnvRegistry {
     }
 
     async fn archive(&self, id: &str) -> Option<EnvItem> {
-        let mut item = self.read(id).await?;
+        let mut tx = self.pool.begin().await.expect("begin Environment archive");
+        let row = sqlx::query(&format!(
+            "SELECT {COLS} FROM env_registry_env WHERE env_id = $1 FOR UPDATE"
+        ))
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .expect("lock env row")?;
+        let mut item = pg_row(&row);
+        if item.archived_at.is_some() {
+            tx.commit()
+                .await
+                .expect("commit idempotent Environment archive");
+            return Some(item);
+        }
         item.archived_at = Some(OBJECT_AT.to_string());
-        sqlx::query("UPDATE env_registry_env SET archived_at = $1 WHERE env_id = $2")
-            .bind(OBJECT_AT)
-            .bind(id)
-            .execute(&self.pool)
-            .await
-            .expect("archive env");
+        item.revision = EnvironmentRevision(item.revision.0.checked_add(1).expect("revision"));
+        sqlx::query(
+            "UPDATE env_registry_env SET archived_at = $1, revision = $2 WHERE env_id = $3",
+        )
+        .bind(OBJECT_AT)
+        .bind(i64::try_from(item.revision.0).expect("Environment revision fits i64"))
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .expect("archive env");
+        tx.commit().await.expect("commit Environment archive");
         Some(item)
     }
 }

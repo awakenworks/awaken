@@ -14,12 +14,30 @@ use serde_json::Value;
 /// The Managed wire adapter reuses it in its `BetaEnvironment` projection.
 pub const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 
+/// Monotonic authored Environment revision. A Session freezes this value with
+/// the normalized snapshot so later registry edits cannot change its meaning.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(transparent)]
+pub struct EnvironmentRevision(pub u64);
+
 /// One environment record (the neutral domain shape). The Managed wire adapter
 /// renders the `BetaEnvironment` object and derives the sandbox `NetworkPolicy` from
 /// `config` — this crate names neither the wire nor the provisioning vocabulary.
 #[derive(Clone, Debug)]
 pub struct EnvItem {
     pub id: String,
+    pub revision: EnvironmentRevision,
     pub name: String,
     pub description: String,
     pub metadata: BTreeMap<String, String>,
@@ -60,6 +78,12 @@ impl EnvItem {
                 }
             }
         }
+        self.revision = EnvironmentRevision(
+            self.revision
+                .0
+                .checked_add(1)
+                .expect("Environment revision exhausted"),
+        );
     }
 }
 

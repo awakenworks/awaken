@@ -6,7 +6,7 @@
 
 /// A secret-free lifecycle fact committed beside the session aggregate. Its
 /// stable id is both the durable outbox key and the receiver idempotency key.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SessionLifecycleFact {
     pub id: String,
     pub session_id: String,

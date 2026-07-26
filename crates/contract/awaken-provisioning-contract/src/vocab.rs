@@ -393,6 +393,32 @@ impl NetworkPolicy {
     pub fn is_restricted(&self) -> bool {
         !matches!(self, NetworkPolicy::Unrestricted)
     }
+
+    /// Safe meet for independently authored restrictions. The result can only
+    /// preserve or reduce reachability; it never widens either input.
+    #[must_use]
+    pub fn safe_intersection(&self, other: &Self) -> Self {
+        match (self, other) {
+            (Self::None, _) | (_, Self::None) => Self::None,
+            (Self::Unrestricted, policy) | (policy, Self::Unrestricted) => policy.clone(),
+            (Self::Allowlist { hosts: left }, Self::Allowlist { hosts: right }) => {
+                let right: std::collections::BTreeSet<String> =
+                    right.iter().map(|host| host.to_ascii_lowercase()).collect();
+                let hosts: Vec<String> = left
+                    .iter()
+                    .map(|host| host.to_ascii_lowercase())
+                    .filter(|host| right.contains(host))
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                if hosts.is_empty() {
+                    Self::None
+                } else {
+                    Self::Allowlist { hosts }
+                }
+            }
+        }
+    }
 }
 
 // ── Resource limits ───────────────────────────────────────────────────────────
@@ -450,6 +476,45 @@ mod tests {
             .is_restricted()
         );
         assert!(NetworkPolicy::None.is_restricted());
+    }
+
+    #[test]
+    fn network_safe_intersection_decision_table() {
+        // Cause graph: either deny -> deny; one unrestricted -> the other policy;
+        // two allowlists -> their canonical host intersection (empty -> deny).
+        //
+        // | Rule | Left        | Right       | Result             |
+        // |------|-------------|-------------|--------------------|
+        // | N1   | none        | any         | none               |
+        // | N2   | unrestricted| allowlist A | allowlist A        |
+        // | N3   | allowlist A | allowlist B | intersection A∩B   |
+        // | N4   | allowlist A | disjoint B  | none               |
+        let a = NetworkPolicy::Allowlist {
+            hosts: vec!["API.example.com".into(), "shared.example.com".into()],
+        };
+        let b = NetworkPolicy::Allowlist {
+            hosts: vec!["shared.example.com".into(), "other.example.com".into()],
+        };
+        assert_eq!(
+            NetworkPolicy::None.safe_intersection(&a),
+            NetworkPolicy::None,
+            "N1"
+        );
+        assert_eq!(NetworkPolicy::Unrestricted.safe_intersection(&a), a, "N2");
+        assert_eq!(
+            a.safe_intersection(&b),
+            NetworkPolicy::Allowlist {
+                hosts: vec!["shared.example.com".into()]
+            },
+            "N3"
+        );
+        assert_eq!(
+            a.safe_intersection(&NetworkPolicy::Allowlist {
+                hosts: vec!["disjoint.example.com".into()]
+            }),
+            NetworkPolicy::None,
+            "N4"
+        );
     }
 
     fn req(source: MountSource, access: MountAccess, lifetime: MountLifetime) -> MountRequirement {

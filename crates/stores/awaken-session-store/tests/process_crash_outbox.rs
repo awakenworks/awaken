@@ -12,6 +12,7 @@ const MARKER_PATH: &str = "AWAKEN_SESSION_CRASH_MARKER";
 fn session() -> PersistedSession {
     PersistedSession {
         session_id: "sesn_process_crash".into(),
+        revision: Default::default(),
         agent_id: "assistant".into(),
         model: "model".into(),
         title: None,
@@ -76,7 +77,9 @@ async fn session_commit_survives_process_kill_before_notification() {
     assert!(!status.success());
 
     let repo = SqliteManagedSessionRepository::open(db.to_str().unwrap()).unwrap();
-    assert_eq!(repo.get("sesn_process_crash").await, Some(session()));
+    let mut expected = session();
+    expected.revision = awaken_session_contract::SessionRevision(1);
+    assert_eq!(repo.get("sesn_process_crash").await, Some(expected));
     assert_eq!(repo.pending_lifecycle().await, vec![fact()]);
     repo.complete_lifecycle(&fact().id).await;
     repo.complete_lifecycle(&fact().id).await;
