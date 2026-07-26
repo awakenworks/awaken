@@ -332,7 +332,10 @@ fn scenario_resource_catalog() -> Arc<dyn awaken_protocol_managed::ResourceCatal
 /// summary being injected on a later turn. `AWAKEN_MODEL_MODE=compaction`.
 pub fn build_compaction_router() -> Router {
     let (model, model_ref) = scenario_model(Arc::new(crate::models::CompactionModel), "compaction");
-    let host = SharedHost::new(model, model_ref);
+    // Compaction changes run behavior, not deployment ownership. Reuse the
+    // canonical scenario composition so durable Session/resource identity is
+    // reconstructed from the same storage root after restart.
+    let host = resource_host(model, model_ref);
     // Token-aware when the model's context window is configured
     // (`AWAKEN_COMPACT_MAX_TOKENS`): fold at `AWAKEN_COMPACT_TRIGGER_RATIO` of it
     // (default 0.8), keeping `AWAKEN_COMPACT_KEEP_LAST` (default 2) messages. This
