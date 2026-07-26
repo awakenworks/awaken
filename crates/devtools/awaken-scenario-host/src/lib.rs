@@ -67,7 +67,11 @@ fn resource_host(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Sha
 /// credential plane, and Session repository used by [`mount`].
 fn mount_with_environments(host: Arc<SharedHost>) -> Router {
     let catalog = scenario_resource_catalog();
-    let environments = Arc::new(awaken_protocol_managed::EnvironmentState::new());
+    let environments = Arc::new(
+        awaken_protocol_managed::EnvironmentState::new().with_sandbox_policies(Arc::new(
+            awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default(),
+        )),
+    );
     let managed = awaken_server::local_managed_state_with_environments(
         host.clone(),
         catalog.clone(),

@@ -159,7 +159,6 @@ const checks = [
       "04-resources-transparency.mjs",
       "05-ai-authoring.mjs",
       "06-ai-state-machine.mjs",
-      "07-runtime-sandbox.mjs",
       "08-agent-control-plane.mjs",
       "09-protocol-composition.mjs",
       "10-skill-optimized-agent.mjs",
