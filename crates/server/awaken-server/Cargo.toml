@@ -48,16 +48,16 @@ awaken-config-resolver = { workspace = true }
 awaken-provider-genai = { workspace = true }
 # The management-plane HTTP surfaces this binary mounts: admin config CRUD and the
 # Managed vault/credential front door, over shared stores — in-memory by default,
-# SQLite-backed when AWAKEN_MGMT_DIR selects durable persistence (`sqlite` features).
+# SQLite-backed when typed data_dir selects durable persistence (`sqlite` features).
 awaken-admin-config-api = { workspace = true, features = ["sqlite", "postgres"] }
 awaken-model-catalog = { workspace = true, features = ["sqlite", "postgres"] }
 # `oauth-command`: refresh a Google OAuth2 token (gcloud) for the `real-gemini` mode.
 # `sqlite` + `sealed-aead`: the durable management plane persists secret-free rows in
-# SQLite and secrets only as AEAD-sealed blobs under AWAKEN_MGMT_SEAL_KEY.
+# SQLite and secrets only as AEAD-sealed blobs under typed control_seal_key.
 awaken-credential-vault = { workspace = true, features = ["oauth-command", "sqlite", "sealed-aead", "postgres"] }
 # Data-subject consent/erasure store (ADR-0050): backs the /v1/user_profiles/:id/erasure endpoint.
 awaken-data-subject = { workspace = true }
-# Embedded IAM (ADR-0042/0043 P1): AWAKEN_MGMT_IAM=embedded gates the management
+# Embedded IAM (ADR-0042/0043 P1): typed self-managed identity gates management
 # plane behind bearer ApiTokens. contract = ids/scopes/requests, core = token
 # directory + minter + the default-deny PolicySet evaluator, preset = the seeded
 # Anthropic role catalog + the iam-server store (rusqlite range is links-safe
@@ -69,7 +69,7 @@ awaken-iam-preset = { workspace = true }
 # The IAM assembly layer (ADR-0048): IamGate (single authn/authz PDP) built over
 # our own LocalIamState, driving the management guard.
 awaken-iam-host = { workspace = true }
-# The embedded IAM token/binding rows persist under AWAKEN_MGMT_DIR/iam.sqlite;
+# The embedded IAM token/binding rows persist under typed data_dir/iam.sqlite;
 # same rusqlite generation as every other sqlite store in the workspace.
 rusqlite = { workspace = true }
 awaken-agent-contract.workspace = true

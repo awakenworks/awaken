@@ -3,16 +3,16 @@
 //! The management plane owns several independent stores — the model catalog, the
 //! credential vault (+ sealed secrets), the config authoring registry, the admin
 //! aggregate (inference profiles / MCP defs / webhook subscriptions), and the
-//! managed-session repository. Historically they were all SQLite files bundled under
-//! one `AWAKEN_MGMT_DIR`. This module lets each one be pointed at its **own** database
+//! managed-session repository. They default to SQLite files under one typed
+//! deployment `data_dir`; this module lets each one use its **own** database
 //! independently, so an operator can isolate (e.g.) credentials on a hardened Postgres
 //! while config stays on another — the precondition for splitting control / server
 //! into separate services that share per-component databases (ADR: shared-DB, Option A).
 //!
-//! Each component reads an `AWAKEN_<COMPONENT>_DB` override:
+//! Each component receives one typed deployment store value:
 //!   - a `postgres://` / `postgresql://` URL  → the Postgres backend,
 //!   - any other value                        → a SQLite file at that path,
-//!   - unset                                  → `<AWAKEN_MGMT_DIR>/<name>.db` (SQLite).
+//!   - absent                                 → `<data_dir>/<name>.db` (SQLite).
 //!
 //! The bundle default preserves today's behavior exactly when no override is set.
 

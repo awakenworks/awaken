@@ -2,10 +2,10 @@
 // wire config — its agent, title, and metadata — is durable across a real process
 // restart, not just its transcript. Before this, a rehydrated session reported a
 // placeholder (agent "assistant", no title/metadata); the durable
-// ManagedSessionRepository (sessions.db under AWAKEN_MGMT_DIR) now restores the
+// ManagedSessionRepository (sessions.db under typed data_dir) now restores the
 // real values.
 //
-// Flow: management mode with BOTH AWAKEN_MGMT_DIR (session config) and
+// Flow: management mode with BOTH typed data_dir (session config) and
 // SESSION_DEPLOYMENT_STORAGE_DIR (transcript, the rehydration precondition). Create a session
 // with a title + metadata, commit a turn, KILL the process, respawn over the same
 // dirs, drive one event to trigger lazy rehydration, then retrieve the session and
@@ -18,7 +18,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import { deploymentEnv, spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT ?? 38215);
@@ -36,8 +36,7 @@ async function main() {
   const mgmtDir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-sess-mgmt-'));
   const storeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-sess-store-'));
   const env = {
-    AWAKEN_MGMT_DIR: mgmtDir,
-    AWAKEN_MGMT_SEAL_KEY: SEAL_KEY,
+    ...deploymentEnv(mgmtDir, { controlSealKey: SEAL_KEY }),
     SESSION_DEPLOYMENT_STORAGE_DIR: storeDir,
   };
   const upstream = await startUpstream('mcp');
