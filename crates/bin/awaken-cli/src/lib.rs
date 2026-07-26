@@ -777,6 +777,14 @@ fn identity_wiring(
 fn awaken_cloud_authz(
     config: &config::CloudIamConfig,
 ) -> Result<Arc<RemoteManagementAuthz>, String> {
+    if let Some(path) = &config.service_token_file {
+        return RemoteManagementAuthz::connect_with_projected_service_token(
+            config.base_url.clone(),
+            config.audience.clone(),
+            config.issuer.clone(),
+            path.clone(),
+        );
+    }
     let user_token = config
         .access_token
         .clone()
@@ -805,6 +813,9 @@ fn legacy_cloud_iam_config() -> config::CloudIamConfig {
             .unwrap_or_else(|_| "https://accounts.awakenworks.com".to_owned()),
         access_token: std::env::var("AWAKEN_CLOUD_ACCESS_TOKEN").ok(),
         service_token: std::env::var("AWAKEN_CLOUD_IAM_SERVICE_TOKEN").ok(),
+        service_token_file: std::env::var("AWAKEN_CLOUD_IAM_SERVICE_TOKEN_FILE")
+            .ok()
+            .map(std::path::PathBuf::from),
     }
 }
 

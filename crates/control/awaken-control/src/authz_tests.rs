@@ -116,7 +116,7 @@ fn cloud_guard_uses_cached_login_and_explicit_bearer_override() {
             .unwrap()
     });
     let authz = RemoteManagementAuthz::connect(
-        base_url,
+        base_url.clone(),
         AUDIENCE.into(),
         ISSUER.into(),
         token.clone(),
@@ -161,6 +161,50 @@ fn cloud_guard_uses_cached_login_and_explicit_bearer_override() {
                 .unwrap()
                 .status(),
             StatusCode::UNAUTHORIZED
+        );
+    });
+
+    let projected_dir = tempfile::tempdir().unwrap();
+    let projected_token = projected_dir.path().join("management-token");
+    std::fs::write(&projected_token, "service-test\n").unwrap();
+    let hosted = RemoteManagementAuthz::connect_with_projected_service_token(
+        base_url,
+        AUDIENCE.into(),
+        ISSUER.into(),
+        projected_token,
+    )
+    .unwrap();
+    let hosted_app = Router::new().route("/v1/config/catalog", get(ok)).layer(
+        axum::middleware::from_fn_with_state(hosted, cloud_management_guard),
+    );
+    runtime.block_on(async {
+        let request = |bearer: Option<&str>| {
+            let mut builder = Request::builder().uri("/v1/config/catalog");
+            if let Some(bearer) = bearer {
+                builder = builder.header("authorization", format!("Bearer {bearer}"));
+            }
+            let mut request = builder.body(Body::empty()).unwrap();
+            request
+                .extensions_mut()
+                .insert(awaken_tenancy::WorkspaceScope("ws_cloud".into()));
+            request
+        };
+        assert_eq!(
+            hosted_app
+                .clone()
+                .oneshot(request(None))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            hosted_app
+                .oneshot(request(Some(&token)))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
         );
     });
 }
