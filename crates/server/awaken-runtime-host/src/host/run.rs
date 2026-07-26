@@ -169,7 +169,7 @@ impl SharedHost {
         }
         if supersede && ctx.durable_ingress.is_none() {
             return Err(HostError::bad_request(
-                "supersede requires durable ingress (set AWAKEN_INGRESS=durable)",
+                "supersede requires durable ingress (set typed durable ingress)",
             ));
         }
         // Recall is injected by the memory plugin's BeforeInference hook (request-only,
@@ -252,7 +252,7 @@ impl SharedHost {
     }
 
     /// The durable ingress for `thread`, building the session if needed. Errors
-    /// unless the server runs in durable mode (`AWAKEN_INGRESS=durable`). This is
+    /// unless the server runs in durable mode (`typed durable ingress`). This is
     /// the operational entry for the ADR-0009 follow-on verbs (slice E): recover
     /// (ADR-0011), reap / dead-letter GC (ADR-0015), and superseding submit
     /// (ADR-0022).
@@ -262,7 +262,7 @@ impl SharedHost {
     ) -> Result<Arc<DurableRunIngress<AnyDispatchStore>>, HostError> {
         let ctx = self.ctx_for(thread, None).await?;
         ctx.durable_ingress.clone().ok_or_else(|| {
-            HostError::bad_request("durable ingress not enabled (set AWAKEN_INGRESS=durable)")
+            HostError::bad_request("durable ingress not enabled (set typed durable ingress)")
         })
     }
 
@@ -351,7 +351,7 @@ impl SharedHost {
     /// `DispatchPool::submit` (durable enqueue + wake), returning immediately with
     /// the run id. The pool drains it out of band — no foreground request drives it
     /// — so the caller observes completion by polling committed truth. Requires
-    /// durable ingress (`AWAKEN_INGRESS=durable`), which spawns the pool.
+    /// durable ingress (`typed durable ingress`), which spawns the pool.
     pub(crate) async fn submit_background_async(
         &self,
         agent: Option<&str>,

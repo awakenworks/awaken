@@ -4,15 +4,12 @@ use std::sync::Arc;
 
 use axum::Router;
 
-use super::{EchoModel, FAKE_ACP_CLI, SharedHost, mount, scenario_model};
+use super::{EchoModel, FAKE_ACP_CLI, SharedHost, mount, scenario_model, scenario_storage_dir};
 
 /// Drive the fake CLI through the projecting launch path with an explicit
 /// scenario-only resolver. `AWAKEN_MODEL_MODE=acp-gateway` selects this router.
 pub fn build_acp_gateway_router() -> Router {
-    let store_dir = std::env::var("AWAKEN_STORAGE_DIR")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .map(std::path::PathBuf::from);
+    let store_dir = scenario_storage_dir();
     let (model, model_ref) = scenario_model(Arc::new(EchoModel), "awaken");
     mount(Arc::new(
         SharedHost::new(model, model_ref).with_projected_acp(

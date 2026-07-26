@@ -9,7 +9,7 @@
 // by durable_child_sandbox_recovery_e2e.ts, while fenced commit emission remains an
 // explicitly reported E2E gap in stage_change_coverage_e2e.ts.
 //
-// This test boots a DURABLE server (AWAKEN_INGRESS=durable) pointed at a fake
+// This test boots a DURABLE server (SESSION_DEPLOYMENT_INGRESS=durable) pointed at a fake
 // OTLP/HTTP collector, drives several real runs through the enqueue→claim→worker→
 // commit path, and asserts the exported OTLP payload carries all seven metric names
 // (verbatim from the Rust source) — proving the dispatch instruments recorded data
@@ -61,8 +61,8 @@ async function main() {
   // so the worker's `awaken.dispatch.*` instruments actually fire. echo is a
   // deterministic in-process stub — CI-safe, no upstream/API key needed.
   const { server } = spawnServer('echo', PORT, {
-    AWAKEN_INGRESS: 'durable',
-    AWAKEN_STORAGE_DIR: STORE,
+    SESSION_DEPLOYMENT_INGRESS: 'durable',
+    SESSION_DEPLOYMENT_STORAGE_DIR: STORE,
     OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${rport}`,
     OTEL_EXPORTER_OTLP_PROTOCOL: 'http/protobuf',
     OTEL_METRIC_EXPORT_INTERVAL: '500',

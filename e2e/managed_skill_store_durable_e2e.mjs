@@ -9,7 +9,7 @@
 //
 // Flow: POST a distinctive `greet` skill to server A, drive discover→activate→use
 // and assert the model used its body, then KILL the server and start a fresh one
-// over the SAME AWAKEN_STORAGE_DIR. `GET /v1/skills` must still list it and a new
+// over the SAME SESSION_DEPLOYMENT_STORAGE_DIR. `GET /v1/skills` must still list it and a new
 // session must still activate it. `awaken-ext-skills` never sees the store — it only
 // reads the catalog the host scanned out of it — so this also exercises the
 // store-unaware seam end to end.
@@ -78,7 +78,7 @@ async function main() {
   const upstream = await startUpstream('skills');
   try {
     // ---- server A: upload a durable skill, then use it ----
-    const a = spawnServer('skills-durable', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR, ...realServerEnv('skills', upstream, { mode: 'skills-durable' }) });
+    const a = spawnServer('skills-durable', PORT, { SESSION_DEPLOYMENT_STORAGE_DIR: STORE_DIR, ...realServerEnv('skills', upstream, { mode: 'skills-durable' }) });
     servers.push(a.server);
     await waitForPort(PORT);
 
@@ -99,7 +99,7 @@ async function main() {
     // ---- restart: kill A, start B over the SAME storage dir ----
     await stopServer(a.server);
     servers.pop();
-    const b = spawnServer('skills-durable', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR, ...realServerEnv('skills', upstream, { mode: 'skills-durable' }) });
+    const b = spawnServer('skills-durable', PORT, { SESSION_DEPLOYMENT_STORAGE_DIR: STORE_DIR, ...realServerEnv('skills', upstream, { mode: 'skills-durable' }) });
     servers.push(b.server);
     await waitForPort(PORT);
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });

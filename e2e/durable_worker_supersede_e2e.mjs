@@ -40,8 +40,8 @@ async function main() {
   fs.mkdirSync(STORE, { recursive: true });
   const upstream = await startUpstream('probe');
   const srv = spawnServer('real', PORT, {
-    AWAKEN_INGRESS: 'durable',
-    AWAKEN_STORAGE_DIR: STORE,
+    SESSION_DEPLOYMENT_INGRESS: 'durable',
+    SESSION_DEPLOYMENT_STORAGE_DIR: STORE,
     ...realServerEnv('probe', upstream),
   });
   await waitForPort(PORT);

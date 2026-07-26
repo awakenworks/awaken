@@ -66,7 +66,7 @@ async function main() {
   const upstream = await startUpstream('memory', { delayMs: 2_000 });
   try {
     const env = {
-      AWAKEN_STORAGE_DIR: STORE_DIR,
+      SESSION_DEPLOYMENT_STORAGE_DIR: STORE_DIR,
       ...realServerEnv('memory', upstream, { mode: 'memory' }),
     };
     const a = spawnServer('memory', PORT, env);

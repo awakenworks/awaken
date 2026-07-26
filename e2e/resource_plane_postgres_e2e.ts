@@ -5,13 +5,12 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync, execSync, spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
-import { deploymentEnv } from './harness.mjs';
+import { spawnProduction, stopServer, waitForPort } from './harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38436);
@@ -19,9 +18,6 @@ const WORKSPACE = `resource-pg-${process.pid}`;
 const OTHER_WORKSPACE = `resource-pg-other-${process.pid}`;
 const AGENT = `resource-pg-agent-${process.pid}`;
 const MODEL = `resource-pg-model-${process.pid}`;
-const OWN_BUILD_TARGET = process.env.CARGO_TARGET_DIR === undefined;
-const BUILD_TARGET = process.env.CARGO_TARGET_DIR ??
-  path.join(os.tmpdir(), `awaken-resource-plane-e2e-target-${process.pid}`);
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 function docker(...args: string[]): string {
@@ -29,7 +25,7 @@ function docker(...args: string[]): string {
 }
 
 async function postgres(): Promise<{ container: string; url: string; owned: boolean }> {
-  const inheritedUrl = process.env.AWAKEN_DATABASE_URL;
+  const inheritedUrl = process.env.SESSION_DEPLOYMENT_DATABASE_URL;
   const inheritedContainer = process.env.AWAKEN_E2E_POSTGRES_CONTAINER;
   if (inheritedUrl && inheritedContainer) {
     return { container: inheritedContainer, url: inheritedUrl, owned: false };
@@ -61,57 +57,24 @@ async function postgres(): Promise<{ container: string; url: string; owned: bool
   throw new Error('timed out waiting for disposable Postgres');
 }
 
-function binary(): string {
-  const output = execSync('cargo build --quiet --message-format=json -p awaken-cli --bin awaken', {
-    cwd: ROOT,
-    env: { ...process.env, CARGO_TARGET_DIR: BUILD_TARGET },
-    maxBuffer: 64 * 1024 * 1024,
-  }).toString();
-  for (const line of output.split('\n')) {
-    try {
-      const message = JSON.parse(line);
-      if (message.executable && message.target?.name === 'awaken') return message.executable;
-    } catch { /* cargo diagnostic */ }
-  }
-  throw new Error('awaken binary was not produced');
-}
-
-function start(bin: string, directory: string, databaseUrl: string): ChildProcess {
-  return spawn(bin, ['serve', '--port', String(PORT)], {
-    env: {
-      ...process.env,
-      ...deploymentEnv(directory, {
-        controlSealKey: '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
-        databases: {
-          resource_database_url: databaseUrl,
-          sessions_db: databaseUrl,
-          admin_db: databaseUrl,
-        },
-      }),
-      AWAKEN_SCENARIO_WORKSPACE: WORKSPACE,
+function start(directory: string, databaseUrl: string): ChildProcess {
+  return spawnProduction(directory, PORT, {
+    workspace: WORKSPACE,
+    controlSealKey: '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
+    databases: {
+      resource_database_url: databaseUrl,
+      sessions_db: databaseUrl,
+      admin_db: databaseUrl,
     },
-    stdio: ['ignore', 'ignore', 'inherit'],
   });
 }
 
 async function ready(): Promise<void> {
-  const deadline = Date.now() + 60_000;
-  while (Date.now() < deadline) {
-    const connected = await new Promise<boolean>((resolve) => {
-      const socket = net.createConnection({ host: '127.0.0.1', port: PORT });
-      socket.once('connect', () => { socket.destroy(); resolve(true); });
-      socket.once('error', () => { socket.destroy(); resolve(false); });
-    });
-    if (connected) return;
-    await sleep(100);
-  }
-  throw new Error('awaken did not become ready');
+  await waitForPort(PORT, 60_000);
 }
 
 async function stop(child: ChildProcess): Promise<void> {
-  if (child.exitCode !== null) return;
-  child.kill('SIGINT');
-  await new Promise((resolve) => child.once('exit', resolve));
+  await stopServer(child);
 }
 
 const scoped = (workspace: string, suffix: string) =>
@@ -446,8 +409,7 @@ async function main(): Promise<void> {
   const upstream = await startFakeAnthropic('resource-e2e-model-key', { behavior: 'memory' });
   const firstDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-resource-pg-a-'));
   const secondDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-resource-pg-b-'));
-  const bin = binary();
-  let server = start(bin, firstDirectory, pg.url);
+  let server = start(firstDirectory, pg.url);
   try {
     await ready();
     const fileId = await upload('shared postgres file bytes');
@@ -578,7 +540,7 @@ async function main(): Promise<void> {
     // duplicate cannot replace the already-published canonical config history.
     seedLegacyMemoryIdentities(pg.container, memoryId);
 
-    server = start(bin, secondDirectory, pg.url);
+    server = start(secondDirectory, pg.url);
     await ready();
     const fileResponse = await fetch(scoped(WORKSPACE, `files/${fileId}/content`));
     assert.equal(fileResponse.status, 200);
@@ -1004,7 +966,6 @@ async function main(): Promise<void> {
     upstream.close();
     fs.rmSync(firstDirectory, { recursive: true, force: true });
     fs.rmSync(secondDirectory, { recursive: true, force: true });
-    if (OWN_BUILD_TARGET) fs.rmSync(BUILD_TARGET, { recursive: true, force: true });
     if (pg.owned) {
       try { docker('rm', '-f', pg.container); } catch { /* best effort */ }
     }

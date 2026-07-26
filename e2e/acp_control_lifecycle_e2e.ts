@@ -87,8 +87,8 @@ async function waitForPause(sessionId: string): Promise<{ status: number; body: 
 async function main(): Promise<void> {
   const storage = mkdtempSync(path.join(tmpdir(), 'awaken-acp-control-'));
   let server = spawnServer('acp-control', PORT, {
-    AWAKEN_STORAGE_DIR: storage,
-    AWAKEN_INGRESS: 'durable',
+    SESSION_DEPLOYMENT_STORAGE_DIR: storage,
+    SESSION_DEPLOYMENT_INGRESS: 'durable',
     AWAKEN_DISPATCH_DAEMON: '1',
   }).server;
   try {

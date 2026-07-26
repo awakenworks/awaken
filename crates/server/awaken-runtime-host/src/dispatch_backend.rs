@@ -145,14 +145,14 @@ pub(crate) fn shared_dispatch_wake() -> Option<Arc<dyn WakeSignal>> {
 }
 
 /// Open the ONE process-shared durable-dispatch store, selected by
-/// `AWAKEN_DISPATCH_BACKEND` (default `sqlite`). Every session's worker and the
+/// `DeploymentConfig::dispatch_backend` (default `sqlite`). Every session's worker and the
 /// process-level [`DispatchPool`](awaken_run_ingress::DispatchPool) share this one
 /// queue: the pool is its sole claimer and routes each claimed run to its owning
 /// session, so a single shared queue is both safe and required (a pool cannot
 /// claim across per-thread files).
 ///
 /// `postgres` shares one queue across processes too: `FOR UPDATE SKIP LOCKED`
-/// gives distinct-claim, so N hosts against one `AWAKEN_DATABASE_URL` drain the
+/// gives distinct-claim, so N hosts against one `DeploymentConfig::database_url` drain the
 /// same queue (ADR-0019) — the pool is the one connected at startup. `sqlite` is a
 /// single queue file `store_dir/dispatch.db` (survives a restart), or a private
 /// in-memory queue when no store dir is set. Either way the concrete type is
@@ -165,8 +165,8 @@ pub(crate) fn shared_durable_store_for(
         crate::deployment_config::DispatchBackend::Postgres => {
             SHARED_POSTGRES_DISPATCH.get().cloned().ok_or_else(|| {
                 HostError::internal(
-                    "AWAKEN_DISPATCH_BACKEND=postgres requires init_shared_postgres_dispatch() \
-                     at process startup (with AWAKEN_DATABASE_URL)",
+                    "DeploymentConfig::dispatch_backend=Postgres requires init_shared_postgres_dispatch() \
+                     at process startup (with DeploymentConfig::database_url)",
                 )
             })
         }

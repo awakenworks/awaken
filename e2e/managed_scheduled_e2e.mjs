@@ -3,7 +3,7 @@
 //
 // The `schedule` server's tool gate defers every tool call as a committed
 // `ScheduledAction` instead of running it inline or awaiting for a human. Under
-// AWAKEN_INGRESS=durable the dispatch worker's scheduled-action loop performs each
+// SESSION_DEPLOYMENT_INGRESS=durable the dispatch worker's scheduled-action loop performs each
 // deferred call out of band, so a run that would otherwise require a confirmation
 // (see managed_hitl / managed_restart, which AWAIT on the same probe tools) here
 // completes autonomously: write → read → done, no `requires_action`.
@@ -45,7 +45,7 @@ async function main() {
   fs.rmSync(STORE_DIR, { recursive: true, force: true });
   fs.mkdirSync(STORE_DIR, { recursive: true });
   const upstream = await startUpstream('probe');
-  const srv = spawnServer('schedule', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR, AWAKEN_INGRESS: 'durable', ...realServerEnv('probe', upstream, { mode: 'schedule' }) });
+  const srv = spawnServer('schedule', PORT, { SESSION_DEPLOYMENT_STORAGE_DIR: STORE_DIR, SESSION_DEPLOYMENT_INGRESS: 'durable', ...realServerEnv('probe', upstream, { mode: 'schedule' }) });
   await waitForPort(PORT);
   try {
     const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });

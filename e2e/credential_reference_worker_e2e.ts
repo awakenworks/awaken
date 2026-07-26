@@ -122,9 +122,9 @@ async function waitForGatewayReply(timeoutMs = 30_000): Promise<any[]> {
 async function main(): Promise<void> {
   const storage = mkdtempSync(path.join(tmpdir(), 'awaken-secretless-worker-'));
   const cell = spawnServer('echo', PORT, {
-    AWAKEN_INGRESS: 'durable',
-    AWAKEN_STORAGE_DIR: storage,
-    AWAKEN_DISABLE_LOCAL_POOL: '1',
+    SESSION_DEPLOYMENT_INGRESS: 'durable',
+    SESSION_DEPLOYMENT_STORAGE_DIR: storage,
+    SESSION_DEPLOYMENT_DISABLE_LOCAL_POOL: '1',
   }).server;
   let worker: ChildProcessWithoutNullStreams | undefined;
   let workerOutput = '';
@@ -193,7 +193,7 @@ async function main(): Promise<void> {
     delete env.OPENAI_API_KEY;
     Object.assign(env, {
       AWAKEN_UPSTREAM_URL: BASE,
-      AWAKEN_INGRESS: 'durable',
+      SESSION_DEPLOYMENT_INGRESS: 'durable',
       AWAKEN_WORKER_GATEWAY_ONLY: '1',
       AWAKEN_TEST_CREDENTIAL_ID: GRANT,
       AWAKEN_TEST_CREDENTIAL_REVISION: String(GRANT_REVISION),

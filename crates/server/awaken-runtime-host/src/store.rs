@@ -272,8 +272,8 @@ fn commit_or_err(
 ) -> Result<HostCommit, crate::host::HostError> {
     let coord = coord.ok_or_else(|| {
         crate::host::HostError::internal(
-            "AWAKEN_STORE=postgres requires init_shared_postgres_commit() at process \
-             startup (with AWAKEN_DATABASE_URL)",
+            "DeploymentConfig::store=Postgres requires init_shared_postgres_commit() at process \
+             startup (with DeploymentConfig::database_url)",
         )
     })?;
     Ok(HostCommit::Local(coord))
@@ -281,7 +281,7 @@ fn commit_or_err(
 
 /// Whether the shared Postgres commit coordinator holds a committed run for `thread`.
 /// Extracted so the postgres branch of `durable_thread_exists` is unit-testable
-/// without mutating the process `AWAKEN_STORE` env.
+/// without mutating the process `DeploymentConfig::store` env.
 pub(crate) fn durable_thread_exists_postgres(thread: &ThreadId) -> bool {
     crate::commit_backend::shared_postgres_commit()
         .and_then(|c| CheckpointReader::latest_run(c.as_ref(), thread))
@@ -334,7 +334,7 @@ pub(crate) enum CommitPlan {
     /// In-memory ephemeral coordinator: the intended mode when no store dir is set and
     /// the backend is the default/sqlite (tests, ephemeral sessions).
     Memory,
-    /// Fail closed: `AWAKEN_STORE=fs` was selected but there is no storage dir. The
+    /// Fail closed: `DeploymentConfig::store=Fs` was selected but there is no storage dir. The
     /// filesystem append-log has no in-memory form, so silently using an ephemeral
     /// memory store would drop committed history on restart (data loss).
     FsNeedsStorageDir,
@@ -406,7 +406,7 @@ mod tests {
 
     #[test]
     fn commit_or_err_fails_closed_without_the_shared_coordinator() {
-        // AWAKEN_STORE=postgres but init_shared_postgres_commit was never called →
+        // DeploymentConfig::store=Postgres but init_shared_postgres_commit was never called →
         // build_commit fails closed rather than silently using an ephemeral store.
         assert!(commit_or_err(None).is_err());
     }

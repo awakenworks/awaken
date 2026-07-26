@@ -10,7 +10,7 @@
 //       submitted first / on the busiest thread.
 //
 // Model exactly on durable_pool_e2e.mjs / managed_daemon_e2e.mjs: a single durable
-// server (AWAKEN_INGRESS=durable + AWAKEN_DISPATCH_DAEMON=1) draining a shared
+// server (SESSION_DEPLOYMENT_INGRESS=durable + AWAKEN_DISPATCH_DAEMON=1) draining a shared
 // SQLite dispatch queue with the deterministic `echo` model. Every run flows
 // through submit_background → the shared queue → the worker; the caller observes
 // committed truth by polling, it never drives a run.
@@ -51,9 +51,9 @@ const DRAIN_TIMEOUT_MS = Number(process.env.SOAK_DRAIN_TIMEOUT_MS ?? 90_000);
 // Durable ingress (shared queue + standing dispatch daemon) over a fresh SQLite
 // storage dir, with the deterministic echo model — mirrors durable_pool_e2e.mjs.
 const ENV = {
-  AWAKEN_INGRESS: 'durable',
+  SESSION_DEPLOYMENT_INGRESS: 'durable',
   AWAKEN_DISPATCH_DAEMON: '1',
-  AWAKEN_STORAGE_DIR: mkdtempSync(path.join(tmpdir(), 'awaken-durable-soak-')),
+  SESSION_DEPLOYMENT_STORAGE_DIR: mkdtempSync(path.join(tmpdir(), 'awaken-durable-soak-')),
 };
 
 const threadId = (i) => `soak-thread-${i}`;

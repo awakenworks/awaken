@@ -66,7 +66,7 @@ async function main() {
   const upstream = await startUpstream('memoryResource');
   try {
     // ---- server A: write into a mounted memory store; release reconciles it ----
-    const a = spawnServer('memory-resource', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR, ...realServerEnv('memoryResource', upstream, { mode: 'memory-resource' }) });
+    const a = spawnServer('memory-resource', PORT, { SESSION_DEPLOYMENT_STORAGE_DIR: STORE_DIR, ...realServerEnv('memoryResource', upstream, { mode: 'memory-resource' }) });
     servers.push(a.server);
     await waitForPort(PORT);
 
@@ -111,7 +111,7 @@ async function main() {
     // ---- restart: kill A, start B over the SAME storage dir ----
     await stopServer(a.server);
     servers.pop();
-    const b = spawnServer('memory-resource', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR, ...realServerEnv('memoryResource', upstream, { mode: 'memory-resource' }) });
+    const b = spawnServer('memory-resource', PORT, { SESSION_DEPLOYMENT_STORAGE_DIR: STORE_DIR, ...realServerEnv('memoryResource', upstream, { mode: 'memory-resource' }) });
     servers.push(b.server);
     await waitForPort(PORT);
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });

@@ -294,7 +294,7 @@ export async function withRealServer(behavior, port, fn, opts = {}) {
 
 // Spawn the server without a fixed lifetime, so a test can stop and restart it
 // (e.g. to verify durable state survives a process restart). `extraEnv` layers on
-// top of the inherited environment — pass `AWAKEN_STORAGE_DIR` for durability.
+// top of the inherited environment — pass `SESSION_DEPLOYMENT_STORAGE_DIR` for durability.
 export function spawnServer(mode, port, extraEnv = {}) {
   const bin = ensureBuilt();
   const addr = `127.0.0.1:${port}`;

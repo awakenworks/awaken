@@ -1,7 +1,7 @@
 // Durable cross-restart recovery across a real process restart, via the official
 // Anthropic TS SDK. A mutating tool awaits for approval; its waiting ticket +
-// transcript commit to a per-thread durable store under AWAKEN_STORAGE_DIR (SQLite
-// by default, the filesystem append-log with AWAKEN_STORE=fs). We KILL the server
+// transcript commit to a per-thread durable store under SESSION_DEPLOYMENT_STORAGE_DIR (SQLite
+// by default, the filesystem append-log with SESSION_DEPLOYMENT_STORE=fs). We KILL the server
 // process and start a fresh one over the same storage directory, then approve on
 // the SAME session with a freshly connected client. The rebuilt process has no
 // in-memory session state, so the managed adapter rehydrates the session from
@@ -9,7 +9,7 @@
 // awaiting run from the store — the run resumes and completes end-to-end. This
 // exercises the durable commit + hydrate + fact-authority read path through HTTP.
 //
-// Run: (from e2e/)  node managed_restart_e2e.mjs   (add AWAKEN_STORE=fs for fs)
+// Run: (from e2e/)  node managed_restart_e2e.mjs   (add SESSION_DEPLOYMENT_STORE=fs for fs)
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -48,7 +48,7 @@ async function main() {
 
   // ---- server A: start a run that awaits on a tool confirmation ----
   const upstream = await startUpstream('probe');
-  const a = spawnServer('real', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR, ...realServerEnv('probe', upstream) });
+  const a = spawnServer('real', PORT, { SESSION_DEPLOYMENT_STORAGE_DIR: STORE_DIR, ...realServerEnv('probe', upstream) });
   await waitForPort(PORT);
 
   const session = await client.beta.sessions.create({
@@ -75,7 +75,7 @@ async function main() {
 
   // ---- kill A, start a fresh server B over the SAME storage directory ----
   await stopServer(a.server);
-  const b = spawnServer('real', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR, ...realServerEnv('probe', upstream) });
+  const b = spawnServer('real', PORT, { SESSION_DEPLOYMENT_STORAGE_DIR: STORE_DIR, ...realServerEnv('probe', upstream) });
   await waitForPort(PORT);
   // The old keep-alive socket died with server A; connect a fresh client to B.
   client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });

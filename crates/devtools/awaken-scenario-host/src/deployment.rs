@@ -3,23 +3,29 @@
 /// environment variables; their sole boundary is `ResolvedDeployment`.
 pub fn scenario_deployment() -> awaken_runtime_host::DeploymentConfig {
     let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
-    deployment.storage_dir = std::env::var("AWAKEN_STORAGE_DIR")
+    deployment.storage_dir = std::env::var("SESSION_DEPLOYMENT_STORAGE_DIR")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .map(std::path::PathBuf::from);
-    deployment.durable = std::env::var("AWAKEN_INGRESS").as_deref() == Ok("durable");
+    deployment.durable = std::env::var("SESSION_DEPLOYMENT_INGRESS").as_deref() == Ok("durable");
     deployment.disable_local_pool =
-        std::env::var("AWAKEN_DISABLE_LOCAL_POOL").as_deref() == Ok("1");
-    deployment.database_url = std::env::var("AWAKEN_DATABASE_URL")
+        std::env::var("SESSION_DEPLOYMENT_DISABLE_LOCAL_POOL").as_deref() == Ok("1");
+    deployment.database_url = std::env::var("SESSION_DEPLOYMENT_DATABASE_URL")
         .ok()
         .filter(|value| !value.trim().is_empty());
-    if std::env::var("AWAKEN_DISPATCH_BACKEND").as_deref() == Ok("postgres") {
+    if std::env::var("SESSION_DEPLOYMENT_DISPATCH_BACKEND").as_deref() == Ok("postgres") {
         deployment.dispatch_backend = awaken_runtime_host::DispatchBackend::Postgres;
     }
-    if std::env::var("AWAKEN_STORE").as_deref() == Ok("postgres") {
+    if std::env::var("SESSION_DEPLOYMENT_STORE").as_deref() == Ok("postgres") {
         deployment.store = awaken_runtime_host::StoreKind::Postgres;
     }
     deployment
+}
+
+/// The one scenario-only storage input. Scenario compositions must consume this
+/// helper or the complete typed deployment instead of rediscovering process state.
+pub(crate) fn scenario_storage_dir() -> Option<std::path::PathBuf> {
+    scenario_deployment().storage_dir
 }
 
 pub(crate) fn resource_host(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> SharedHost {

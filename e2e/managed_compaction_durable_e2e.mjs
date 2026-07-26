@@ -1,6 +1,6 @@
 // Durable-ingress token-aware compaction e2e. Proves the token-aware fold RUNS
 // when turns are delivered through the durable dispatch worker
-// (AWAKEN_INGRESS=durable), not just inline: after a couple of large turns cross
+// (SESSION_DEPLOYMENT_INGRESS=durable), not just inline: after a couple of large turns cross
 // the token budget, the compactor sub-agent folds the older slice and its summary
 // is injected on later turns — observed here through the deterministic
 // `CompactionModel`, which echoes the injected system context. Also proves the
@@ -23,8 +23,8 @@ const PORT = Number(process.env.E2E_PORT ?? 38235);
 const BETAS = ['managed-agents-2026-04-01'];
 const STORE_DIR = `/tmp/awaken-compact-durable-e2e-${process.pid}`;
 const ENV = {
-  AWAKEN_STORAGE_DIR: STORE_DIR,
-  AWAKEN_INGRESS: 'durable',
+  SESSION_DEPLOYMENT_STORAGE_DIR: STORE_DIR,
+  SESSION_DEPLOYMENT_INGRESS: 'durable',
   AWAKEN_COMPACT_MAX_TOKENS: '200', // budget = 0.5 * 200 = 100 est. tokens
   AWAKEN_COMPACT_TRIGGER_RATIO: '0.5',
   AWAKEN_COMPACT_KEEP_LAST: '1',

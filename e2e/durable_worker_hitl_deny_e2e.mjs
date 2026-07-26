@@ -1,6 +1,6 @@
 // Durable HITL — the DENY path through the dispatch worker, plus exactly-once on
 // resume. The sibling `managed_durable_hitl_e2e.mjs` proves only APPROVE durably;
-// this proves the other half: under AWAKEN_INGRESS=durable a run awaits on a tool
+// this proves the other half: under SESSION_DEPLOYMENT_INGRESS=durable a run awaits on a tool
 // needing approval, the client DENIES it, and the DISPATCH WORKER resumes the
 // awaiting run — the tool effect is refused (probe.txt is never written, so the
 // read-back does not contain the text) yet the run still drives to a terminal
@@ -38,8 +38,8 @@ async function main() {
   fs.rmSync(STORE, { recursive: true, force: true });
   const upstream = await startUpstream('probe');
   const srv = spawnServer('real', PORT, {
-    AWAKEN_INGRESS: 'durable',
-    AWAKEN_STORAGE_DIR: STORE,
+    SESSION_DEPLOYMENT_INGRESS: 'durable',
+    SESSION_DEPLOYMENT_STORAGE_DIR: STORE,
     ...realServerEnv('probe', upstream),
   });
   await waitForPort(PORT);

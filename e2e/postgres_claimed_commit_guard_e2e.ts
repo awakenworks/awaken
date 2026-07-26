@@ -13,10 +13,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnServer, stopServer, waitForPort } from './harness.mjs';
 
-const DATABASE_URL = process.env.AWAKEN_DATABASE_URL;
+const DATABASE_URL = process.env.SESSION_DEPLOYMENT_DATABASE_URL;
 const POSTGRES_CONTAINER = process.env.AWAKEN_E2E_POSTGRES_CONTAINER;
 if (!DATABASE_URL) {
-  console.error('SKIP: postgres_claimed_commit_guard_e2e requires AWAKEN_DATABASE_URL');
+  console.error('SKIP: postgres_claimed_commit_guard_e2e requires SESSION_DEPLOYMENT_DATABASE_URL');
   process.exit(0);
 }
 
@@ -182,12 +182,12 @@ async function claimEventually(owner: string, timeoutMs = 5_000): Promise<any> {
 async function main(): Promise<void> {
   const storage = mkdtempSync(path.join(tmpdir(), 'awaken-pg-claimed-guard-'));
   const server = spawnServer('echo', PORT, {
-    AWAKEN_INGRESS: 'durable',
-    AWAKEN_DISPATCH_BACKEND: 'postgres',
-    AWAKEN_STORE: 'postgres',
-    AWAKEN_DATABASE_URL: DATABASE_URL!,
-    AWAKEN_STORAGE_DIR: storage,
-    AWAKEN_DISABLE_LOCAL_POOL: '1',
+    SESSION_DEPLOYMENT_INGRESS: 'durable',
+    SESSION_DEPLOYMENT_DISPATCH_BACKEND: 'postgres',
+    SESSION_DEPLOYMENT_STORE: 'postgres',
+    SESSION_DEPLOYMENT_DATABASE_URL: DATABASE_URL!,
+    SESSION_DEPLOYMENT_STORAGE_DIR: storage,
+    SESSION_DEPLOYMENT_DISABLE_LOCAL_POOL: '1',
   }).server;
   try {
     await waitForPort(PORT);

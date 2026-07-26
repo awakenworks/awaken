@@ -56,8 +56,8 @@ BIN="${TARGET_DIR}/debug/awaken-scenario-host"
 start_server() {
   AWAKEN_HTTP_ADDR="127.0.0.1:${PORT}" \
   AWAKEN_MODEL_MODE=echo \
-  AWAKEN_INGRESS=durable \
-  AWAKEN_STORAGE_DIR="$STORE_DIR" \
+  SESSION_DEPLOYMENT_INGRESS=durable \
+  SESSION_DEPLOYMENT_STORAGE_DIR="$STORE_DIR" \
     "$BIN" >"$STORE_DIR/server.log" 2>&1 &
   SERVER_PID=$!
 }

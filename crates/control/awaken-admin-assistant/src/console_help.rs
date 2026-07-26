@@ -136,7 +136,7 @@ const TOPICS: &[Topic] = &[
         why: "Transparency: see exactly what the agent did and why, step by step.",
         location: "A session's detail page ▸ Trace view.",
         how: "Open a session → Trace → expand spans (each carries its JSON).",
-        gotcha: "Durable-op detail requires AWAKEN_INGRESS=durable; the base trace is always available.",
+        gotcha: "Durable-op detail requires typed durable ingress; the base trace is always available.",
     },
     Topic {
         key: "assistant",

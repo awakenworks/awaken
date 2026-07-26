@@ -38,8 +38,8 @@ async function main() {
   fs.mkdirSync(STORE_DIR, { recursive: true });
   const upstream = await startUpstream('probe');
   const srv = spawnServer('real', PORT, {
-    AWAKEN_STORAGE_DIR: STORE_DIR,
-    AWAKEN_INGRESS: 'durable',
+    SESSION_DEPLOYMENT_STORAGE_DIR: STORE_DIR,
+    SESSION_DEPLOYMENT_INGRESS: 'durable',
     AWAKEN_DISPATCH_DAEMON: '1',
     ...realServerEnv('probe', upstream),
   });

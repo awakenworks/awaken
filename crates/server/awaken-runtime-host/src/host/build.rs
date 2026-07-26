@@ -99,8 +99,8 @@ impl SharedHost {
     ///
     /// An explicitly assembled queue is already the authority for ingress, so it
     /// also enables this host's dispatch pool. Embedders do not need to mutate the
-    /// process-global `AWAKEN_INGRESS` environment variable to activate a transport
-    /// they supplied directly.
+    /// another process-global configuration source to activate a transport they
+    /// supplied directly.
     #[must_use]
     pub fn with_dispatch_store(mut self, store: Arc<awaken_run_ingress::AnyDispatchStore>) -> Self {
         self.dispatch_store_override = Some(store);
@@ -157,7 +157,7 @@ impl SharedHost {
         deployment: crate::DeploymentConfig,
     ) -> Self {
         // Composition root: the deployment axes are parsed once from the environment
-        // into one typed config. `AWAKEN_STORAGE_DIR` set → durable SQLite commit
+        // into one typed config. `DeploymentConfig::storage_dir` set → durable SQLite commit
         // and resource adapters (all survive a restart); unset → ephemeral adapters.
         let store_dir = deployment.storage_dir.clone();
         let local_workspace = resolve_local_workspace(store_dir.as_deref());

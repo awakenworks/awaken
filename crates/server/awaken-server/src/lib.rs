@@ -254,7 +254,7 @@ fn local_managed_state_over(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     /// Serve the HTTP surface: single-machine all-in-one, or a coordinator when
-    /// `AWAKEN_DISABLE_LOCAL_POOL=1`. The default.
+    /// `DeploymentConfig::disable_local_pool=1`. The default.
     Serve,
     /// A database-less worker of a cell server (claims/commits over HTTP).
     Worker,
@@ -361,7 +361,7 @@ fn mount_with_managed_over(
     // runs. This is the single seam that owns an `Arc<SharedHost>`, which the pool's
     // session resolver needs.
     //
-    // A coordinator-only cell server (`AWAKEN_DISABLE_LOCAL_POOL=1`) skips its
+    // A coordinator-only cell server (`DeploymentConfig::disable_local_pool=1`) skips its
     // co-located pool so remote database-less workers are the sole drainers, claiming
     // and settling over the dispatch transport.
     if host.runs_local_dispatch_pool() {
@@ -436,7 +436,7 @@ fn mount_with_managed_over(
     // ADR-0050: install the process-global captured-content sink and expose the
     // erasure + consent routes over the SAME store, so content a run captures is
     // erasable within this one server (the run→capture→store→erase loop). Durable
-    // (sqlite under AWAKEN_STORAGE_DIR) so captured content + consent survive a
+    // (sqlite under DeploymentConfig::storage_dir) so captured content + consent survive a
     // restart; in-memory otherwise.
     let (sink, eraser, ds_repo) = data_subject_plane();
     awaken_runtime_host::install_capture_sink(sink);
@@ -485,7 +485,7 @@ fn mount_with_managed_over(
 /// both the capture sink a run writes to and the eraser the endpoint fans out to)
 /// and the subject/consent repo. One captured-content instance backs both the sink
 /// and the eraser, so a run's content is erasable. Durable (sqlite under
-/// `AWAKEN_STORAGE_DIR`) or in-memory. Built once at composition (build_router).
+/// `DeploymentConfig::storage_dir`) or in-memory. Built once at composition (build_router).
 pub fn data_subject_plane() -> (
     Arc<dyn awaken_runtime_contract::CaptureSink>,
     Arc<dyn awaken_runtime_contract::ContentEraser>,

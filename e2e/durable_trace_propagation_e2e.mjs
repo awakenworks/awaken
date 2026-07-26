@@ -93,9 +93,9 @@ async function main() {
   const upstream = await startUpstream('echo');
   const { server } = spawnServer('real', PORT, {
     AWAKEN_TRACE_FILE: FILE,
-    AWAKEN_INGRESS: 'durable',
+    SESSION_DEPLOYMENT_INGRESS: 'durable',
     AWAKEN_DISPATCH_DAEMON: '1',
-    AWAKEN_STORAGE_DIR: storeDir,
+    SESSION_DEPLOYMENT_STORAGE_DIR: storeDir,
     ...realServerEnv('echo', upstream),
   });
   try {

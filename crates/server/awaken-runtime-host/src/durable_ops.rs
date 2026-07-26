@@ -9,7 +9,7 @@
 //!   crashed dispatch that has exhausted its crash-retry budget, list the
 //!   dead-lettered runs, and GC them.
 //!
-//! Every route needs durable ingress (`AWAKEN_INGRESS=durable`) and fails closed
+//! Every route needs durable ingress (`typed durable ingress`) and fails closed
 //! with 400 otherwise. The deep dead-letter/recovery state machine is proven
 //! deterministically at the store level (`awaken-run-ingress`'s `sqlite_dispatch`
 //! tests) on this same SQLite stack; this surface makes the verbs operable and

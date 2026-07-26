@@ -24,7 +24,7 @@
 //!    payload), identically to an unauthenticated `/v1/sessions` create.
 //!
 //! The durable pool is engaged process-wide for this test binary via
-//! `AWAKEN_INGRESS=durable` + an on-disk `AWAKEN_STORAGE_DIR` (the sqlite dispatch
+//! `SESSION_DEPLOYMENT_INGRESS=durable` + an on-disk `SESSION_DEPLOYMENT_STORAGE_DIR` (the sqlite dispatch
 //! queue), mirroring how the durable e2e drivers configure the server. Env is set
 //! exactly once, race-free, through a `LazyLock` every test touches before it
 //! builds a router (the `LazyLock` `Once` synchronizes the single write

@@ -25,7 +25,7 @@ for l in sys.stdin:
 [ -n "$BIN" ] || { echo 'could not resolve server binary'; exit 1; }
 
 echo "== start the durable server (shared queue) on :$PORT =="
-AWAKEN_INGRESS=durable AWAKEN_STORAGE_DIR="$STORE_DIR" \
+SESSION_DEPLOYMENT_INGRESS=durable SESSION_DEPLOYMENT_STORAGE_DIR="$STORE_DIR" \
   AWAKEN_HTTP_ADDR="127.0.0.1:$PORT" AWAKEN_MODEL_MODE=echo \
   "$BIN" &
 SERVER=$!

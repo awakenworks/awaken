@@ -39,7 +39,7 @@ async function main() {
   fs.rmSync(STORE_DIR, { recursive: true, force: true });
   fs.mkdirSync(STORE_DIR, { recursive: true });
   const upstream = await startUpstream('probe');
-  const srv = spawnServer('real', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR, AWAKEN_INGRESS: 'durable', ...realServerEnv('probe', upstream) });
+  const srv = spawnServer('real', PORT, { SESSION_DEPLOYMENT_STORAGE_DIR: STORE_DIR, SESSION_DEPLOYMENT_INGRESS: 'durable', ...realServerEnv('probe', upstream) });
   await waitForPort(PORT);
   try {
     // A first turn awaits on a tool confirmation — its dispatch is `awaiting`.

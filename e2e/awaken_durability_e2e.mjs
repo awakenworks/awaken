@@ -158,7 +158,7 @@ async function main() {
 
   // ── Boot 2 over the SAME dirs: a fresh process continues the SAME session ──────
   // The session (sessions.db) and its transcript (commit store under
-  // AWAKEN_STORAGE_DIR) rehydrate, and a new turn appends another reply — session
+  // SESSION_DEPLOYMENT_STORAGE_DIR) rehydrate, and a new turn appends another reply — session
   // reachability after a full process death is the durability guarantee.
   //
   // Crucially, the post-restart turn resolves the DB-CONFIGURED model (`FAKE:`), not

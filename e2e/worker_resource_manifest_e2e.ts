@@ -35,10 +35,10 @@ function docker(...args: string[]): string {
 }
 
 async function postgres(): Promise<{ container?: string; url: string }> {
-  if (process.env.AWAKEN_DATABASE_URL) {
+  if (process.env.SESSION_DEPLOYMENT_DATABASE_URL) {
     return {
       container: process.env.AWAKEN_E2E_POSTGRES_CONTAINER,
-      url: process.env.AWAKEN_DATABASE_URL,
+      url: process.env.SESSION_DEPLOYMENT_DATABASE_URL,
     };
   }
   const container = `awaken-worker-resource-pg-${process.pid}`;
@@ -390,10 +390,10 @@ async function main(): Promise<void> {
     AWAKEN_SESSIONS_DB: database.url,
     AWAKEN_SCENARIO_WORKSPACE: WORKSPACE,
     // Keep the legacy general DSN from selecting an unrelated runtime store.
-    AWAKEN_DATABASE_URL: '',
+    SESSION_DEPLOYMENT_DATABASE_URL: '',
     AWAKEN_RUNTIME_DISPATCH_DATABASE_URL: '',
-    AWAKEN_STORE: '',
-    AWAKEN_DISPATCH_BACKEND: '',
+    SESSION_DEPLOYMENT_STORE: '',
+    SESSION_DEPLOYMENT_DISPATCH_BACKEND: '',
   };
   const management = spawn(buildAwaken(), ['serve', '--port', String(CONFIG_PORT)], {
     cwd: ROOT,
@@ -414,9 +414,9 @@ async function main(): Promise<void> {
   });
   const cell = spawnServer('echo', PORT, {
     ...shared,
-    AWAKEN_INGRESS: 'durable',
-    AWAKEN_STORAGE_DIR: serverStorage,
-    AWAKEN_DISABLE_LOCAL_POOL: '1',
+    SESSION_DEPLOYMENT_INGRESS: 'durable',
+    SESSION_DEPLOYMENT_STORAGE_DIR: serverStorage,
+    SESSION_DEPLOYMENT_DISABLE_LOCAL_POOL: '1',
   }).server;
   let worker: ChildProcessWithoutNullStreams | undefined;
   let workerOutput = '';
@@ -468,8 +468,8 @@ async function main(): Promise<void> {
     delete env.OPENAI_API_KEY;
     Object.assign(env, {
       AWAKEN_UPSTREAM_URL: BASE,
-      AWAKEN_INGRESS: 'durable',
-      AWAKEN_STORAGE_DIR: workerStorage,
+      SESSION_DEPLOYMENT_INGRESS: 'durable',
+      SESSION_DEPLOYMENT_STORAGE_DIR: workerStorage,
       AWAKEN_WORKER_GATEWAY_ONLY: '1',
       AWAKEN_TEST_CREDENTIAL_ID: GRANT,
       AWAKEN_TEST_CREDENTIAL_REVISION: String(GRANT_REVISION),

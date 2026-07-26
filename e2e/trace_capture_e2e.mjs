@@ -131,9 +131,9 @@ async function captureDurable(port, file, storeDir) {
   fs.mkdirSync(storeDir, { recursive: true });
   const { server } = spawnServer('real', port, {
     AWAKEN_TRACE_FILE: file,
-    AWAKEN_INGRESS: 'durable',
+    SESSION_DEPLOYMENT_INGRESS: 'durable',
     AWAKEN_DISPATCH_DAEMON: '1',
-    AWAKEN_STORAGE_DIR: storeDir,
+    SESSION_DEPLOYMENT_STORAGE_DIR: storeDir,
     ...realServerEnv('echo', upstream),
   });
   const base = `http://127.0.0.1:${port}`;

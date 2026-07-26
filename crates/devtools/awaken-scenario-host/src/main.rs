@@ -34,9 +34,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         awaken_server::Role::Serve => {}
     }
     let addr = std::env::var("AWAKEN_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:38080".to_string());
-    // Durability guard: refuse to boot a `AWAKEN_INGRESS=durable` ingress that would
+    // Durability guard: refuse to boot a `typed durable ingress` ingress that would
     // resolve to a volatile in-memory queue (durable + default sqlite backend + no
-    // AWAKEN_STORAGE_DIR) — such a queue silently drops every queued/crashed/scheduled
+    // DeploymentConfig::storage_dir) — such a queue silently drops every queued/crashed/scheduled
     // run on restart, defeating the whole point of durable ingress (no-data-loss).
     let deployment = awaken_scenario_host::scenario_deployment();
     if let Some(error) = deployment.durable_needs_persistence_error(false) {
@@ -46,10 +46,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         && deployment.dispatch_backend == awaken_runtime_host::DispatchBackend::Postgres)
         || deployment.store == awaken_runtime_host::StoreKind::Postgres;
     let migration_lock = if postgres_startup {
-        let url = deployment
-            .database_url
-            .as_deref()
-            .ok_or("a Postgres dispatch or commit backend requires AWAKEN_DATABASE_URL")?;
+        let url = deployment.database_url.as_deref().ok_or(
+            "a Postgres dispatch or commit backend requires DeploymentConfig::database_url",
+        )?;
         Some(awaken_runtime_host::PostgresMigrationLock::acquire(url).await?)
     } else {
         None
@@ -73,10 +72,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Shared Postgres commit backend (ADR-0022 D6): thread history on one DB so any
     // node warm-reloads any thread. Connected once here (non-Send sqlx out of the run
     // loop), independent of the dispatch backend.
-    if std::env::var("AWAKEN_STORE").as_deref() == Ok("postgres") {
-        let url = std::env::var("AWAKEN_DATABASE_URL")
-            .map_err(|_| "AWAKEN_STORE=postgres requires AWAKEN_DATABASE_URL")?;
-        awaken_runtime_host::init_shared_postgres_commit(&url).await?;
+    if deployment.store == awaken_runtime_host::StoreKind::Postgres {
+        let url = deployment
+            .database_url
+            .as_deref()
+            .ok_or("scenario Postgres commit store requires a database URL")?;
+        awaken_runtime_host::init_shared_postgres_commit(url).await?;
     }
     let app = match std::env::var("AWAKEN_MODEL_MODE").as_deref() {
         Ok("probe") => {

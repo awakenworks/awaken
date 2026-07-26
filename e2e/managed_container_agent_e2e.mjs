@@ -282,7 +282,7 @@ async function main() {
     AWAKEN_MODEL_MODE: 'acp-container',
     AWAKEN_CONTAINER_IMAGE: IMAGE,
     SESSION_ENVIRONMENT_TIER: ENGINE,
-    AWAKEN_STORAGE_DIR: `${TMP}/storage`,
+    SESSION_DEPLOYMENT_STORAGE_DIR: `${TMP}/storage`,
     AWAKEN_ACP_ARGV: `node -e ${ACP_FIXTURE}`,
     // Exercise the production pool wrapper. Resource-bearing environments are
     // deliberately non-poolable, so this changes composition without creating a

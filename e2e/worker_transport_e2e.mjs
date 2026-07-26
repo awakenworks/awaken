@@ -22,11 +22,11 @@ const PORT = Number(process.env.E2E_PORT ?? 38812);
 const BASE = `http://127.0.0.1:${PORT}`;
 const THREAD = 'worker-transport-1';
 const ENV = {
-  AWAKEN_INGRESS: 'durable',
-  AWAKEN_STORAGE_DIR: mkdtempSync(path.join(tmpdir(), 'awaken-worker-transport-')),
+  SESSION_DEPLOYMENT_INGRESS: 'durable',
+  SESSION_DEPLOYMENT_STORAGE_DIR: mkdtempSync(path.join(tmpdir(), 'awaken-worker-transport-')),
   // Keep queued work available for this external worker instead of racing the
   // scenario host's in-process drain pool.
-  AWAKEN_DISABLE_LOCAL_POOL: '1',
+  SESSION_DEPLOYMENT_DISABLE_LOCAL_POOL: '1',
 };
 const WORKER = 'ts-worker-1';
 let workerIdentity;

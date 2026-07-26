@@ -117,9 +117,9 @@ async function main() {
     deploymentEnv(storage, { controlSealKey: SEAL_KEY }),
   ).server;
   const cell = spawnServer('echo', PORT, {
-    AWAKEN_INGRESS: 'durable',
-    AWAKEN_STORAGE_DIR: storage,
-    AWAKEN_DISABLE_LOCAL_POOL: '1',
+    SESSION_DEPLOYMENT_INGRESS: 'durable',
+    SESSION_DEPLOYMENT_STORAGE_DIR: storage,
+    SESSION_DEPLOYMENT_DISABLE_LOCAL_POOL: '1',
   }).server;
   let worker: ChildProcessWithoutNullStreams | undefined;
   let output = '';
@@ -265,7 +265,7 @@ async function main() {
     assert.equal(settled.json.settled, true, settled.text);
 
     const workerConfig = path.join(storage, 'worker.toml');
-    const sharedResourceDatabase = process.env.AWAKEN_DATABASE_URL;
+    const sharedResourceDatabase = process.env.SESSION_DEPLOYMENT_DATABASE_URL;
     assert.ok(sharedResourceDatabase, 'production Worker E2E requires the stage PostgreSQL resource plane');
     fs.writeFileSync(workerConfig, [
       `data_dir = ${JSON.stringify(path.join(storage, 'worker'))}`,

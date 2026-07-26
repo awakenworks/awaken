@@ -12,8 +12,8 @@
 // this e2e proves the served pool constructs and drives through PgNotifyWake over a
 // real Postgres queue via the HTTP surface.
 //
-// Requires AWAKEN_DATABASE_URL (a reachable Postgres). Run:
-//   AWAKEN_DATABASE_URL=postgres://postgres:test@127.0.0.1:5432/awaken \
+// Requires SESSION_DEPLOYMENT_DATABASE_URL (a reachable Postgres). Run:
+//   SESSION_DEPLOYMENT_DATABASE_URL=postgres://postgres:test@127.0.0.1:5432/awaken \
 //     node e2e/durable_pg_wake_e2e.mjs
 
 import { mkdtempSync } from 'node:fs';
@@ -25,22 +25,22 @@ const PORT = Number(process.env.E2E_PORT ?? 38795);
 const THREAD = 'durable-pg-wake-1';
 const BASE = `http://127.0.0.1:${PORT}`;
 
-const DB_URL = process.env.AWAKEN_DATABASE_URL;
+const DB_URL = process.env.SESSION_DEPLOYMENT_DATABASE_URL;
 if (!DB_URL) {
-  console.error('SKIP: durable_pg_wake_e2e requires AWAKEN_DATABASE_URL');
+  console.error('SKIP: durable_pg_wake_e2e requires SESSION_DEPLOYMENT_DATABASE_URL');
   process.exit(0);
 }
 
 // Durable ingress with the dispatch QUEUE on Postgres (+ cross-node pg_notify wake).
-// The run commit history uses AWAKEN_STORAGE_DIR (the commit store), kept on a
+// The run commit history uses SESSION_DEPLOYMENT_STORAGE_DIR (the commit store), kept on a
 // persistent dir so it — like the Postgres queue — survives a process restart.
 const ENV = {
-  AWAKEN_INGRESS: 'durable',
-  AWAKEN_DISPATCH_BACKEND: 'postgres',
-  AWAKEN_DATABASE_URL: DB_URL,
+  SESSION_DEPLOYMENT_INGRESS: 'durable',
+  SESSION_DEPLOYMENT_DISPATCH_BACKEND: 'postgres',
+  SESSION_DEPLOYMENT_DATABASE_URL: DB_URL,
   AWAKEN_DISPATCH_WAKE: 'pg-notify',
   AWAKEN_DISPATCH_WAKE_CHANNEL: 'awaken_dispatch_wake',
-  AWAKEN_STORAGE_DIR: mkdtempSync(path.join(tmpdir(), 'awaken-pg-wake-')),
+  SESSION_DEPLOYMENT_STORAGE_DIR: mkdtempSync(path.join(tmpdir(), 'awaken-pg-wake-')),
 };
 
 async function submitBackground(text) {
