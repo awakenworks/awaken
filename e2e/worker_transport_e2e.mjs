@@ -150,6 +150,102 @@ async function main() {
     pass('worker transport rejects a request with no authenticated identity');
     await registerReadyWorker();
 
+    // Session-realization authority cause graph:
+    // C1 authenticated identity is current
+    //   -> C2 command is renewal-only
+    //   -> C3 owner + Runtime incarnation are exact
+    //   -> C4 requested expiry is live and bounded by the registry lease
+    //   -> E1 invoke the one SessionRealizationControl port.
+    // Any failed cause stops before Session-domain lookup or effects.
+    //
+    // | Rule | renew | owner/incarnation | expiry | Result |
+    // | S1 | false | exact | bounded | reject at C2 |
+    // | S2 | true | wrong owner | bounded | reject at C3 |
+    // | S3 | true | wrong incarnation | bounded | reject at C3 |
+    // | S4 | true | exact | expired | reject at C4 |
+    // | S5 | true | exact | beyond registry | reject at C4 |
+    // | S6 | true | exact | bounded | reaches control; unknown Session |
+    // | S7 | true | exact | bounded | preparing Session remains NotReady |
+    const incarnation = `${workerIdentity.worker_id}:${workerIdentity.generation}:${workerIdentity.incarnation_id}`;
+    const boundedExpiry = Date.now() + 5_000;
+    const beginCommand = (overrides = {}) => ({
+      session_id: 'sesn_worker_authority_probe',
+      target: {
+        owner: workerIdentity.worker_id,
+        runtime_incarnation: incarnation,
+        lease_expires_at_unix_ms: boundedExpiry,
+        renew_existing_lease: true,
+        ...overrides,
+      },
+    });
+    const authorityCases = [
+      ['S1', { renew_existing_lease: false }],
+      ['S2', { owner: 'another-worker' }],
+      ['S3', { runtime_incarnation: 'another-incarnation' }],
+      ['S4', { lease_expires_at_unix_ms: 1 }],
+      ['S5', { lease_expires_at_unix_ms: Date.now() + 86_400_000 }],
+    ];
+    for (const [rule, override] of authorityCases) {
+      const response = await postJson('/v1/worker/session/realization/begin', {
+        command: beginCommand(override),
+      });
+      assert.equal(response.status, 400, `${rule}: ${response.text}`);
+      assert.match(response.text, /renewal exceeds authenticated Worker authority/u, rule);
+    }
+    const admitted = await postJson('/v1/worker/session/realization/begin', {
+      command: beginCommand(),
+    });
+    assert.equal(admitted.status, 400, `S6: ${admitted.text}`);
+    assert.doesNotMatch(
+      admitted.text,
+      /renewal exceeds authenticated Worker authority/u,
+      'S6 passed the transport fence and reached the sole Session control port',
+    );
+
+    const preparingResponse = await fetch(`${BASE}/v1/sessions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'anthropic-beta': 'managed-agents-2026-04-01',
+      },
+      body: JSON.stringify({
+        agent: 'assistant',
+        application_contribution_required: true,
+      }),
+    });
+    const preparingText = await preparingResponse.text();
+    assert.equal(preparingResponse.status, 200, `S7 preparing Session created: ${preparingText}`);
+    const preparing = JSON.parse(preparingText);
+    assert.equal(preparing.status, 'preparing', 'S7 has no frozen baseline yet');
+    const beforeContribution = await postJson('/v1/worker/session/realization/begin', {
+      command: { ...beginCommand(), session_id: preparing.id },
+    });
+    assert.equal(beforeContribution.status, 400, `S7: ${beforeContribution.text}`);
+    assert.doesNotMatch(
+      beforeContribution.text,
+      /renewal exceeds authenticated Worker authority/u,
+      'S7 reaches the Session aggregate after the transport fence',
+    );
+    assert.match(beforeContribution.text, /not ready|not frozen|preparing/ui, 'S7 fails closed as NotReady');
+
+    const wrongLease = {
+      owner: 'another-worker',
+      runtime_incarnation: incarnation,
+      epoch: 1,
+      expires_at_unix_ms: boundedExpiry,
+    };
+    for (const route of ['activate', 'acknowledge', 'fail']) {
+      const command = route === 'activate'
+        ? { session_id: 'sesn_worker_authority_probe', lease: wrongLease, mcp_receipts: [] }
+        : route === 'acknowledge'
+          ? { session_id: 'sesn_worker_authority_probe', lease: wrongLease, published: [], drained: [] }
+          : { session_id: 'sesn_worker_authority_probe', lease: wrongLease, reason: 'probe' };
+      const response = await postJson(`/v1/worker/session/realization/${route}`, { command });
+      assert.equal(response.status, 400, `${route}: ${response.text}`);
+      assert.match(response.text, /lease is not owned by the authenticated Worker incarnation/u);
+    }
+    pass('Session realization transport enforces renewal, owner, incarnation, and registry expiry');
+
     // --- dispatch transport: the claim endpoint is live and wired to the store ---
     // Queue a real run, then claim it over the authenticated transport. Legacy
     // owner/time/lease fields in the body are deliberately malicious: the server

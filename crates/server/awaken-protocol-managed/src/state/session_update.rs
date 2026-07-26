@@ -29,7 +29,10 @@ impl ManagedState {
         let pending = self.sessions_repo.reconcilable_sessions().await;
         let mut settled = 0;
         for record in pending {
-            if !record.session.mcp.needs_reconciliation() {
+            // Root lifecycle is the outer fence. A terminal Session may retain
+            // nonterminal attachment facts solely as cleanup evidence; startup
+            // must not resolve credentials or recreate routes for them.
+            if record.session.is_terminal() || !record.session.mcp.needs_reconciliation() {
                 continue;
             }
             let session_id = record.session.session_id.clone();
