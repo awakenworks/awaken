@@ -374,6 +374,7 @@ async fn reclaim_preserves_the_dispatch_pinned_model_candidate_set() {
         .into_iter()
         .collect(),
         recipient_bound_envelopes: false,
+        alternatives: Vec::new(),
     };
     let primary = candidate("primary", "cred-a", "provider-a@1", "route-a@2");
     let fallback = candidate("fallback", "cred-b", "provider-b@3", "route-b@4");

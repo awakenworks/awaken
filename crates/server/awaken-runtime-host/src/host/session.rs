@@ -145,12 +145,10 @@ impl SharedHost {
         // (R1). `None` when no provider is installed — the worker stays on the host
         // default.
         let inference_materializer = self.worker_inference_materializer();
-        let local_credential_capabilities = self.upstream.is_none().then(|| {
-            self.inference_routing
-                .materializer()
-                .map(|materializer| materializer.credential_realization_capabilities())
-                .unwrap_or_default()
-        });
+        let local_credential_capabilities = self
+            .upstream
+            .is_none()
+            .then(|| self.local_credential_realization_capabilities());
         let recovery_projection = commit.recovery_projection();
         // The recovered dispatch a crash left mid-flight is re-executed by this
         // worker; giving it the same checkpoint store lets that re-execution resume
