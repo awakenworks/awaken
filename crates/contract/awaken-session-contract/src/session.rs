@@ -159,6 +159,7 @@ pub struct CustomTool {
 pub struct OutcomeIteration {
     pub messages: Vec<Message>,
     pub outcome_id: String,
+    pub description: String,
     pub iteration: u32,
     pub result: String,
     pub explanation: String,

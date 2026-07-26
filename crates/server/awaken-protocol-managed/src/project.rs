@@ -199,11 +199,20 @@ pub fn agent_multiagent_ids(
 /// The public wire object for one recorded outcome evaluation on the session: the
 /// outcome id and the verdict. This is the durable `outcome_evaluations` entry on the
 /// session object, distinct from the transient `span.outcome_evaluation_*` events.
-pub fn outcome_evaluation(round: &OutcomeIteration) -> serde_json::Value {
-    serde_json::json!({
-        "outcome_id": round.outcome_id,
-        "result": round.result,
-    })
+pub fn outcome_evaluation(round: &OutcomeIteration) -> crate::types::OutcomeEvaluation {
+    let terminal = matches!(
+        round.result.as_str(),
+        "satisfied" | "max_iterations_reached" | "failed" | "interrupted"
+    );
+    crate::types::OutcomeEvaluation {
+        completed_at: terminal.then(|| crate::state::PROCESSED_AT.to_string()),
+        description: round.description.clone(),
+        explanation: Some(round.explanation.clone()),
+        iteration: round.iteration,
+        outcome_id: round.outcome_id.clone(),
+        result: round.result.clone(),
+        kind: "outcome_evaluation",
+    }
 }
 
 /// One projected event, with an optional stable id. A tool-use event carries the

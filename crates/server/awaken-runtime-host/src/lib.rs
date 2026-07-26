@@ -1115,6 +1115,7 @@ impl SessionRuntime for ManagedHost {
                 .map(|it| OutcomeIteration {
                     messages: it.messages,
                     outcome_id: it.outcome_id,
+                    description: description.to_string(),
                     iteration: it.iteration,
                     result: it.result,
                     explanation: it.explanation,

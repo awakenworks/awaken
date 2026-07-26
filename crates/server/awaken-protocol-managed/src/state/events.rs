@@ -215,7 +215,7 @@ impl ManagedState {
         let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
         // Each round's durable evaluation record, collected as we project its events
         // and folded into the session object after the event-pushing borrow releases.
-        let mut evaluations: Vec<serde_json::Value> = Vec::new();
+        let mut evaluations = Vec::new();
         let start = record.events.len();
         {
             let mut push = |id: Option<String>, kind: OutboundKind| {
@@ -266,7 +266,18 @@ impl ManagedState {
         }
         // The session object carries the running list of evaluations that have graded
         // it, so a `GET /v1/sessions/{id}` reflects the outcomes that ran, not [].
-        record.session.outcome_evaluations.extend(evaluations);
+        for evaluation in evaluations {
+            if let Some(existing) = record
+                .session
+                .outcome_evaluations
+                .iter_mut()
+                .find(|existing| existing.outcome_id == evaluation.outcome_id)
+            {
+                *existing = evaluation;
+            } else {
+                record.session.outcome_evaluations.push(evaluation);
+            }
+        }
         self.broadcast_committed_from(session_id, record, start);
         Ok(())
     }

@@ -34,7 +34,7 @@ pub(crate) const DEFAULT_SCOPE: &str = "default";
 
 /// A fixed projection timestamp (M1). Real per-event timestamps arrive with a
 /// clock port; the wire only needs a valid RFC 3339 value here.
-const PROCESSED_AT: &str = "2026-01-01T00:00:00Z";
+pub(crate) const PROCESSED_AT: &str = "2026-01-01T00:00:00Z";
 
 /// The Managed Agents contract error for a `memory_store` add/remove on a running
 /// session — memory stores bind at session creation only.

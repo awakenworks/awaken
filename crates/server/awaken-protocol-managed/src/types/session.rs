@@ -315,7 +315,7 @@ pub struct Session {
     pub title: Option<String>,
     pub metadata: std::collections::BTreeMap<String, String>,
     pub resources: Vec<Value>,
-    pub outcome_evaluations: Vec<Value>,
+    pub outcome_evaluations: Vec<OutcomeEvaluation>,
     pub status: &'static str,
     pub stats: SessionStats,
     pub usage: Usage,
@@ -324,6 +324,18 @@ pub struct Session {
     /// Set when the session was launched by a deployment run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deployment_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct OutcomeEvaluation {
+    pub completed_at: Option<String>,
+    pub description: String,
+    pub explanation: Option<String>,
+    pub iteration: u32,
+    pub outcome_id: String,
+    pub result: String,
+    #[serde(rename = "type")]
+    pub kind: &'static str,
 }
 
 /// A client's `user.tool_confirmation` decision.
