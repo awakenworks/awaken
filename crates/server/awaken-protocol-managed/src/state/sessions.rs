@@ -1319,26 +1319,30 @@ impl ManagedState {
                     "cannot realize a Session whose baseline is still preparing",
                 ))
             })?;
-            // Rebuild every process-local projection from the Session's durable,
-            // secret-free pin before adopting its physical environment. This is
-            // the same preparation port used at creation: no parallel ACP/MCP or
-            // resource restoration path exists.
-            self.runtime
-                .prepare_session(
-                    id,
-                    SessionInit {
-                        workspace_id: owner_scope.clone(),
-                        agent_id: baseline.agent_id.clone(),
-                        delegate_ids: baseline.delegate_ids.clone(),
-                        resources: session.resources.active.clone(),
-                        model: Some(baseline.model.clone()),
-                        runtime: baseline.runtime.clone(),
-                        environment: baseline.environment.clone(),
-                    },
-                )
-                .await
-                .map_err(StateError::Run)?;
-            let recovered = self.recover_mcp_projections(id).await?;
+            // Reconciliation already crosses the canonical projection synchronizer,
+            // which calls `prepare_session`. Calling it here as well used to stage
+            // resources/runtime twice after cache loss. A settled Session has no
+            // reconciliation phase, so it prepares directly through the same port.
+            let recovered = if session.mcp.needs_reconciliation() {
+                self.recover_mcp_projections(id).await?
+            } else {
+                self.runtime
+                    .prepare_session(
+                        id,
+                        SessionInit {
+                            workspace_id: owner_scope.clone(),
+                            agent_id: baseline.agent_id.clone(),
+                            delegate_ids: baseline.delegate_ids.clone(),
+                            resources: session.resources.active.clone(),
+                            model: Some(baseline.model.clone()),
+                            runtime: baseline.runtime.clone(),
+                            environment: baseline.environment.clone(),
+                        },
+                    )
+                    .await
+                    .map_err(StateError::Run)?;
+                session
+            };
             persisted = Some(recovered.clone());
             if let Some(binding) = recovered.environment_binding.as_deref() {
                 self.runtime

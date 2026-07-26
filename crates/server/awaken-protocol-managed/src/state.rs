@@ -1051,6 +1051,16 @@ mod tests {
 
     #[tokio::test]
     async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
+        // Causal graph:
+        // durable Session -> one canonical projection preparation -> environment
+        // adoption -> committed history -> readable in-memory Session.
+        //
+        // Decision table:
+        // | MCP state            | preparation owner          | calls |
+        // | needs reconciliation | realization synchronizer  | one   |
+        // | already settled      | ensure_session             | one   |
+        // Both branches must converge before environment/history; duplicate
+        // preparation can repeat mounts, runtime registration, and secret staging.
         // A session created in one process is gone from a fresh process's cache,
         // but the shared repo + committed transcript restore it faithfully.
         let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
