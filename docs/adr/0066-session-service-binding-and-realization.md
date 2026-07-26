@@ -166,6 +166,7 @@ The first target model is intentionally MCP-specific:
 struct SessionMcpAttachmentSet {
     revision: McpSetRevision,
     desired_fingerprint: McpDesiredSetFingerprint,
+    desired_names: Option<Set<McpName>>,
     attachments: Vec<SessionMcpAttachment>,
 }
 
@@ -177,6 +178,7 @@ struct SessionMcpAttachment {
     credential: Option<CredentialAccess>,
     selected_plaintext_holder: Option<PlaintextHolder>,
     state: McpAttachmentState,
+    publication_acknowledged: bool,
     realization: Option<McpRealizationClaim>,
     attempts: u32,
     last_error: Option<String>,
@@ -211,6 +213,9 @@ The identity and visibility invariants are:
 - `Failed` and `Removed` are terminal;
 - wire `mcp_servers` is derived from visible attachment generations and is not a
   separately persisted authority.
+- `publication_acknowledged` is true only after Runtime acknowledges the exact
+  active claim; an `Active` generation with a false acknowledgement is durable
+  recovery work, not evidence that the process-local projection exists.
 
 Names and generations fence tool discovery and calls. A call is valid only for
 the exact active attachment id and generation that produced it. Exhausted root,
@@ -321,8 +326,10 @@ commands. It never mutates the wire projection directly. The response and
 `session.updated` event derive `agent.mcp_servers` from durably visible active
 generations. No second public MCP CRUD surface is introduced in this slice.
 
-The edge maps an optional standard idempotency header to `IdempotencyKey` and
-returns the operation id in the command receipt. A compatibility client that
+The edge maps the optional standard `Idempotency-Key` header to the same
+repository idempotency table used by root mutations, returns the stable operation
+id in `X-Awaken-Operation-Id`, and returns the committed root revision as `ETag`.
+A compatibility client that
 supplies no key does not gain transport-level response-loss deduplication;
 instead the full-replacement command is convergent. Its canonical desired-set
 fingerprint is persisted in `SessionMcpAttachmentSet`, and replaying the same
@@ -332,6 +339,13 @@ understand the internal root revision. The application service performs bounded
 CAS retry by reapplying the same full-replacement command to the latest
 aggregate; an explicit `If-Match` extension, when present, disables retry and
 maps a mismatch to conflict.
+
+The final successful command mutation stores the request hash under the derived
+operation key. A replay with the same key and hash returns without another
+generation, Runtime effect, root revision, or `session.updated` event; reuse with
+another hash is a conflict. Failed commands do not forge a success receipt. A
+retry reuses or replaces durable nonterminal work, while a terminal `Failed`
+generation is never resurrected and causes allocation of generation N+1.
 
 URL matching and Vault order remain only Managed compatibility rules. No Host,
 relay, Native, ACP, or recovery path may repeat credential selection or look up a
@@ -585,15 +599,17 @@ The durable transition table is authoritative:
 |---|---|---|---|
 | absent | authorized add/create CAS | `Requested` | invisible; no network I/O |
 | `Requested` | realization claim CAS | `Realizing` | invisible; stage exact generation |
-| `Realizing` | successful receipt + activation CAS | `Active` | publish only after CAS |
+| `Realizing` | successful receipt + activation CAS | `Active`, unacknowledged | publish only after CAS |
+| `Active`, unacknowledged | exact publish acknowledgement CAS | `Active`, acknowledged | response/event may project success |
 | `Realizing` | stage failure or stale activation CAS | `Failed` | dispose staged result; invisible |
 | `Active` | remove/replacement switch CAS | `Draining` | hide and reject new calls first |
 | `Draining` | drain/cleanup acknowledged + CAS | `Removed` | release route, credential, stream, lease |
 
 No other transition is valid. `Failed` and `Removed` are terminal; retrying a
-failed logical command requires a new idempotency key and generation. External
-I/O begins only after `Realizing` is durable, and tool visibility begins only
-after `Active` is durable.
+failed logical command allocates a new generation and never resurrects the
+failed one. External I/O begins only after `Realizing` is durable, and tool
+visibility begins only after `Active` is durable. A successful Managed response
+requires the exact publication acknowledgement to be durable as well.
 
 ### Initial Session creation
 

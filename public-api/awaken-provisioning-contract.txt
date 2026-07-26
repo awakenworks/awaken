@@ -87,6 +87,7 @@ pub awaken_provisioning_contract::NetworkPolicy::Unrestricted
 impl awaken_provisioning_contract::NetworkPolicy
 pub fn awaken_provisioning_contract::NetworkPolicy::is_restricted(&self) -> bool
 pub fn awaken_provisioning_contract::NetworkPolicy::rank(&self) -> u8
+pub fn awaken_provisioning_contract::NetworkPolicy::safe_intersection(&self, &Self) -> Self
 pub enum awaken_provisioning_contract::OnUnmet
 pub awaken_provisioning_contract::OnUnmet::DegradeWithConsent
 pub awaken_provisioning_contract::OnUnmet::FailClosed

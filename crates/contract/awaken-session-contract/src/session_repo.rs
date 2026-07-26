@@ -13,7 +13,6 @@
 //! the vault at prepare time (G3).
 
 use async_trait::async_trait;
-use serde_json::Value;
 use std::collections::BTreeMap;
 
 use crate::SessionLifecycleFact;
@@ -34,17 +33,14 @@ use crate::SessionLifecycleFact;
 #[serde(transparent)]
 pub struct SessionRevision(pub u64);
 
-/// Secret-free execution pin needed to rebuild process-local runtime wiring
-/// around an adopted Session environment. Credential fields are durable row or
-/// sealed-secret references; raw material never crosses this value object.
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct PersistedSessionRuntime {
-    pub mcp_servers: Vec<crate::McpServerBinding>,
-    #[serde(default)]
-    pub delegate_ids: Vec<String>,
-    pub runtime: Option<String>,
-    pub deny_egress: bool,
-    pub sandbox: Option<Value>,
+/// Durable owner fence for all process-local Session projections. Runtime and
+/// Worker identities are opaque to the Session domain.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SessionRealizationLease {
+    pub owner: String,
+    pub runtime_incarnation: String,
+    pub epoch: u64,
+    pub expires_at_unix_ms: u64,
 }
 
 /// The durable, adapter-side configuration of one Managed session, keyed by its
@@ -57,30 +53,77 @@ pub struct PersistedSession {
     /// environment and lifecycle mutations. New, not-yet-inserted values use 0.
     #[serde(default)]
     pub revision: SessionRevision,
-    pub agent_id: String,
-    /// The resolved model the session runs (the request override, else the host
-    /// default at create time).
-    pub model: String,
+    /// The only immutable configuration authority. A preparation intent is
+    /// consumed exactly once and replaced by its frozen baseline.
+    pub baseline: crate::SessionBaselineState,
     pub title: Option<String>,
     pub metadata: BTreeMap<String, String>,
-    pub environment_id: String,
+    /// Durable Managed mutable tool projection. `None` makes a legacy row use
+    /// Runtime defaults; `Some(empty)` records an explicit clear.
+    #[serde(default)]
+    pub agent_tools: Option<Vec<serde_json::Value>>,
     /// Opaque, secret-free binding to the runtime-owned Session environment.
     /// The Session context persists the bytes but never interprets them; only the
     /// runtime that produced the binding may validate and adopt it after restart.
     pub environment_binding: Option<String>,
-    /// The create-time runtime selection and external-resource references needed
-    /// to restore process-local wiring around the durable environment.
-    pub runtime: PersistedSessionRuntime,
-    /// The accepted MCP servers in the SDK wire shape (`{name, type, url}`) — the
-    /// echo the agent object reports; never a credential.
-    pub mcp_servers: Vec<Value>,
+    /// The only initial and hot MCP desired-state authority.
+    pub mcp: crate::SessionMcpAttachmentSet,
     /// Durable resource activation state. Its `active` manifest is the exact,
     /// secret-free Session pin; `pending` and activation records make external
     /// realization/release recoverable without importing authorization concepts.
     pub resources: crate::SessionResourceState,
+    /// Continuing Session projection ownership; no process-local slot is an
+    /// authority for this lease.
+    pub realization: Option<SessionRealizationLease>,
     /// Durable lifecycle projection used when a process rehydrates the session.
     pub status: String,
     pub archived_at: Option<String>,
+}
+
+impl PersistedSession {
+    #[must_use]
+    pub fn frozen_baseline(&self) -> Option<&crate::SessionBaseline> {
+        match &self.baseline {
+            crate::SessionBaselineState::Frozen(baseline) => Some(baseline),
+            crate::SessionBaselineState::Preparing(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn agent_id(&self) -> Option<&str> {
+        self.frozen_baseline()
+            .map(|baseline| baseline.agent_id.as_str())
+    }
+
+    #[must_use]
+    pub fn model(&self) -> Option<&str> {
+        self.frozen_baseline()
+            .map(|baseline| baseline.model.as_str())
+    }
+
+    #[must_use]
+    pub fn environment_id(&self) -> &str {
+        match &self.baseline {
+            crate::SessionBaselineState::Preparing(intent) => &intent.environment_id,
+            crate::SessionBaselineState::Frozen(baseline) => &baseline.environment.environment_id,
+        }
+    }
+
+    /// Managed wire projection derived from durably active generations only.
+    #[must_use]
+    pub fn visible_mcp_servers(&self) -> Vec<serde_json::Value> {
+        self.mcp
+            .visible()
+            .into_iter()
+            .map(|attachment| {
+                serde_json::json!({
+                    "name": attachment.name,
+                    "type": "url",
+                    "url": attachment.target.url,
+                })
+            })
+            .collect()
+    }
 }
 
 /// One durable Session together with its intrinsic Workspace partition.
@@ -105,6 +148,12 @@ pub struct SessionTombstone {
 pub struct IdempotencyRecord {
     pub key: String,
     pub payload_hash: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SessionIdempotencyReceipt {
+    pub payload_hash: String,
+    pub committed_revision: SessionRevision,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -530,11 +579,23 @@ pub trait ManagedSessionRepository: Send + Sync {
         }
     }
 
-    /// Sessions with a Prepared/Releasing resource transition. Implementations
-    /// must preserve their ordinary tenancy fence; the coordinator obtains the
-    /// already-trusted owner separately through [`Self::owner`].
-    async fn pending_resource_sessions(&self) -> Vec<ScopedPersistedSession> {
+    /// Sessions carrying any durable Resource or MCP reconciliation work.
+    /// Implementations preserve the intrinsic Workspace partition in the same
+    /// row scan; application coordinators filter by their owned state machine.
+    /// One index avoids parallel per-feature recovery registries and scans.
+    async fn reconcilable_sessions(&self) -> Vec<ScopedPersistedSession> {
         Vec::new()
+    }
+
+    /// Durable application-command receipt. This is a read of the same
+    /// idempotency table written atomically by `create`/`commit_mutation`, not a
+    /// second command registry.
+    async fn idempotency_receipt(
+        &self,
+        _session_id: &str,
+        _key: &str,
+    ) -> Option<SessionIdempotencyReceipt> {
+        None
     }
 
     /// The atomically persisted owner scope of `session_id`, if the row exists.
@@ -575,15 +636,21 @@ mod mutation_tests {
         PersistedSession {
             session_id: id.into(),
             revision,
-            agent_id: "assistant".into(),
-            model: "model".into(),
+            baseline: crate::SessionBaselineState::Preparing(crate::SessionCreationIntent {
+                environment_id: "environment".into(),
+                agent_id: "assistant".into(),
+                model: "model".into(),
+                runtime: None,
+                mcp_authoring: Default::default(),
+                application: crate::ApplicationContributionState::Absent,
+            }),
             title: None,
             metadata: Default::default(),
-            environment_id: "environment".into(),
+            agent_tools: None,
             environment_binding: None,
-            runtime: Default::default(),
-            mcp_servers: Vec::new(),
+            mcp: Default::default(),
             resources: Default::default(),
+            realization: None,
             status: "idle".into(),
             archived_at: None,
         }

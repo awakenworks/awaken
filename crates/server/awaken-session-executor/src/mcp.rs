@@ -25,81 +25,42 @@ use base64::Engine as _;
 
 use crate::host::HostError;
 
-/// An MCP server prepared for one thread (ADR-0043 Phase 3): the connection
-/// target plus an already-materialized bearer token (`None` = connect
-/// unauthenticated and let the server decide). Registered before the thread's
-/// first turn via [`SharedHost::register_thread_mcp`](crate::SharedHost::register_thread_mcp)
-/// and consumed by the host's session build, which connects through
-/// `awaken-ext-mcp` and registers the discovered tools.
-/// Only the resolved `RedactedString` crosses in (D6/D9) — never a vault ref.
+/// Private Worker-side material for one exact MCP generation. It is never an
+/// authoring or desired-state value and cannot cross the Runtime Host boundary.
 #[derive(Clone)]
-pub struct PreparedMcpServer {
+pub(crate) struct McpTransportMaterial {
     pub name: String,
     pub url: String,
     pub bearer: Option<awaken_agent_contract::RedactedString>,
     /// The vault credential's refresh configuration, when it has one: the
     /// connect then registers a [`VaultRefresher`] so an expired access token
     /// is exchanged mid-request instead of failing the turn.
-    pub refresh: Option<PreparedMcpRefresh>,
+    pub refresh: Option<McpRefreshMaterial>,
 }
 
-impl PreparedMcpServer {
-    /// Build one claim-time MCP projection without OAuth refresh wiring.
-    #[must_use]
-    pub fn new(
-        name: impl Into<String>,
-        url: impl Into<String>,
-        bearer: Option<RedactedString>,
-    ) -> Self {
-        Self {
-            name: name.into(),
-            url: url.into(),
-            bearer,
-            refresh: None,
-        }
-    }
-}
-
-/// Project a staged MCP server to the neutral ACP config the ACP executor reads back
-/// from `plugin_config.acp.mcp_servers`, choosing the credential form by **trust**:
-/// - a **trusted** (non-sandboxed local) run may carry the raw bearer **inline** (β);
-/// - a **sandboxed** (untrusted) run gets a **secretless reference** (α) — the raw bearer
-///   never enters the sandbox; a broker/gateway resolves the reference out-of-band. A
-///   server with no bearer is `None`.
-///
-/// This is the α/β decision point: the host owns the raw secret and decides, per the
-/// run's isolation, whether the CLI may see it. (For an ACP run the servers are the
-/// CLI's own MCP client's; native runs still connect them in-process via `connect_staged`.)
+/// Project private Worker material to ACP configuration. A real bearer is never
+/// projected inline: ACP receives an exact-generation loopback route or an
+/// unresolved opaque reference and the Worker retains plaintext.
 #[must_use]
-pub fn project_staged_mcp(
-    prepared: &PreparedMcpServer,
-    trusted: bool,
+pub(crate) fn project_mcp_transport(
+    prepared: &McpTransportMaterial,
+    generation: &awaken_protocol_managed::McpGenerationRef,
     relay: Option<&crate::mcp_relay::McpRelay>,
-    thread: &str,
 ) -> awaken_run_executor_acp::McpServerConfig {
     use awaken_run_executor_acp::{McpCredential, McpServerConfig, McpTransport};
-    let (url, credential) = match (&prepared.bearer, trusted, relay) {
-        // β: a trusted local run may carry the raw bearer inline, dialing the server directly.
-        (Some(bearer), true, _) => (
-            prepared.url.clone(),
-            McpCredential::TrustedInline {
-                secret: bearer.expose_secret().to_string(),
-            },
-        ),
+    let (url, credential) = match (&prepared.bearer, relay) {
         // α RESOLVED: a sandboxed run dials the host's loopback relay, which injects the real
         // bearer out of the sandbox's address space — the sandbox itself holds no credential.
-        (Some(_), false, Some(relay)) => {
-            (relay.route_url(thread, &prepared.name), McpCredential::None)
-        }
+        (Some(_), Some(relay)) => (relay.route_url(generation), McpCredential::None),
         // α UNRESOLVED (no relay wired): a secretless reference a broker/gateway resolves
         // out-of-band — the raw bearer still never enters the sandbox.
-        (Some(_), false, None) => (
+        (Some(_), None) => (
             prepared.url.clone(),
             McpCredential::Reference {
                 reference: format!("session-mcp:{}", prepared.name),
             },
         ),
-        (None, _, _) => (prepared.url.clone(), McpCredential::None),
+        (None, _) => (prepared.url.clone(), McpCredential::None),
     };
     McpServerConfig {
         name: prepared.name.clone(),
@@ -114,7 +75,7 @@ pub fn project_staged_mcp(
 /// results. Carries [`SecretRef`]s plus the [`SecretStore`] handle — never
 /// secret material.
 #[derive(Clone)]
-pub struct PreparedMcpRefresh {
+pub struct McpRefreshMaterial {
     pub token_endpoint: String,
     pub client_id: String,
     /// How the grant authenticates at the token endpoint: `none` (public
@@ -152,7 +113,7 @@ pub struct PreparedMcpRefresh {
 /// JSON, a reseal error) returns `None`, so the transport surfaces the original
 /// challenge — fail closed, never a panic.
 pub struct VaultRefresher {
-    refresh: PreparedMcpRefresh,
+    refresh: McpRefreshMaterial,
     http: reqwest::Client,
 }
 
@@ -170,7 +131,7 @@ fn basic_client_auth(client_id: &str, client_secret: &str) -> String {
 
 impl VaultRefresher {
     #[must_use]
-    pub fn new(refresh: PreparedMcpRefresh) -> Self {
+    pub fn new(refresh: McpRefreshMaterial) -> Self {
         let http = http_client_for(&refresh.token_endpoint);
         Self { refresh, http }
     }
@@ -314,9 +275,129 @@ impl McpProbe for ExtMcpProbe {
 /// represented by the canonical live [`awaken_ext_mcp::McpPlugin`], so model
 /// descriptors and executable tools have one source of truth. The initial exact
 /// ids are also retained for the Session permission gate.
-pub struct McpWiring {
+#[derive(Clone)]
+pub(crate) struct McpWiring {
     pub plugins: Vec<Arc<dyn Plugin>>,
     pub tool_ids: Vec<String>,
+}
+
+impl crate::SharedHost {
+    pub(crate) fn active_mcp_projections(
+        &self,
+        thread: &str,
+    ) -> Vec<crate::session_slot::McpGenerationProjection> {
+        self.session_slots
+            .read(thread, |slot| {
+                slot.mcp
+                    .iter()
+                    .filter(|projection| {
+                        projection.state == crate::session_slot::McpProjectionState::Active
+                            && projection.server.is_some()
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn mcp_projection(
+        &self,
+        generation: &awaken_protocol_managed::McpGenerationRef,
+    ) -> Option<crate::session_slot::McpGenerationProjection> {
+        self.session_slots
+            .read(&generation.session_id, |slot| {
+                slot.mcp
+                    .iter()
+                    .find(|projection| projection.generation == *generation)
+                    .cloned()
+            })
+            .flatten()
+    }
+
+    pub(crate) fn insert_mcp_projection(
+        &self,
+        projection: crate::session_slot::McpGenerationProjection,
+    ) -> Result<(), HostError> {
+        let thread = projection.generation.session_id.clone();
+        self.session_slots.update(&thread, |slot| {
+            if slot
+                .mcp
+                .iter()
+                .any(|existing| existing.generation == projection.generation)
+            {
+                return Err(HostError::internal(
+                    "MCP generation projection already exists with another realization",
+                ));
+            }
+            slot.mcp.push(projection);
+            Ok(())
+        })
+    }
+
+    pub(crate) async fn publish_mcp_projection(
+        &self,
+        generation: &awaken_protocol_managed::McpGenerationRef,
+    ) -> Result<(), HostError> {
+        let changed = self.session_slots.modify(&generation.session_id, |slot| {
+            let Some(index) = slot
+                .mcp
+                .iter()
+                .position(|projection| projection.generation == *generation)
+            else {
+                return Err(HostError::internal("unknown MCP generation projection"));
+            };
+            match slot.mcp[index].state {
+                crate::session_slot::McpProjectionState::Staged => {
+                    for projection in &mut slot.mcp {
+                        if projection.generation.attachment_id == generation.attachment_id
+                            && projection.state == crate::session_slot::McpProjectionState::Active
+                        {
+                            projection.state = crate::session_slot::McpProjectionState::Draining;
+                        }
+                    }
+                    slot.mcp[index].state = crate::session_slot::McpProjectionState::Active;
+                    slot.runtime = None;
+                    Ok(true)
+                }
+                crate::session_slot::McpProjectionState::Active => Ok(false),
+                crate::session_slot::McpProjectionState::Draining
+                | crate::session_slot::McpProjectionState::Removed => Err(HostError::internal(
+                    "non-visible MCP generation cannot be published",
+                )),
+            }
+        });
+        match changed {
+            Some(result) => result.map(|_| ()),
+            None => Err(HostError::internal("unknown MCP Session projection")),
+        }
+    }
+
+    pub(crate) async fn drain_mcp_projection(
+        &self,
+        generation: &awaken_protocol_managed::McpGenerationRef,
+    ) -> Result<(), HostError> {
+        let result = self.session_slots.modify(&generation.session_id, |slot| {
+            let Some(projection) = slot
+                .mcp
+                .iter_mut()
+                .find(|projection| projection.generation == *generation)
+            else {
+                // Cleanup is an idempotent exact-generation command. A fresh
+                // Runtime incarnation legitimately has no process-local copy of
+                // an already fenced durable Draining generation.
+                return Ok(());
+            };
+            projection.state = crate::session_slot::McpProjectionState::Removed;
+            projection.server = None;
+            projection.native_wiring = None;
+            slot.runtime = None;
+            Ok(())
+        });
+        if let Some(relay) = self.mcp_relay.get() {
+            relay.remove_route(generation);
+        }
+        result.unwrap_or(Ok(()))
+    }
 }
 
 impl McpWiring {
@@ -334,7 +415,9 @@ impl McpWiring {
 /// build — never a silent skip — naming the server so the error is actionable.
 /// A server with refresh configuration gets a [`VaultRefresher`], so an expired
 /// access token is exchanged mid-connect (and mid-turn) instead of failing.
-pub async fn connect_staged(staged: &[PreparedMcpServer]) -> Result<McpWiring, HostError> {
+pub(crate) async fn connect_materialized(
+    staged: &[McpTransportMaterial],
+) -> Result<McpWiring, HostError> {
     let mut wiring = McpWiring::empty();
     for server in staged {
         let credential = match &server.bearer {
@@ -376,8 +459,8 @@ mod alpha_beta_tests {
     use awaken_agent_contract::RedactedString;
     use awaken_run_executor_acp::McpCredential;
 
-    fn prepared(bearer: Option<&str>) -> PreparedMcpServer {
-        PreparedMcpServer {
+    fn prepared(bearer: Option<&str>) -> McpTransportMaterial {
+        McpTransportMaterial {
             name: "gh".into(),
             url: "https://mcp.gh".into(),
             bearer: bearer.map(RedactedString::new),
@@ -385,20 +468,30 @@ mod alpha_beta_tests {
         }
     }
 
+    fn generation() -> awaken_protocol_managed::McpGenerationRef {
+        awaken_protocol_managed::McpGenerationRef {
+            session_id: "t1".into(),
+            attachment_id: awaken_protocol_managed::McpAttachmentId("mcp-gh".into()),
+            generation: awaken_protocol_managed::McpGeneration(3),
+            runtime_incarnation: "runtime-1".into(),
+            lease_epoch: 2,
+            lease_expires_at_unix_ms: u64::MAX,
+        }
+    }
+
     #[test]
-    fn trusted_gets_beta_inline_sandboxed_gets_alpha_reference() {
+    fn acp_projection_never_contains_the_real_bearer() {
         let p = prepared(Some("sk-RAW-SECRET"));
-        // β: trusted may carry the raw bearer inline (NOT sandbox-safe).
-        let t = project_staged_mcp(&p, true, None, "");
-        assert!(matches!(t.credential, McpCredential::TrustedInline { .. }));
-        assert!(!t.is_sandbox_safe());
-        // α (no relay): a sandboxed run gets a secretless reference (sandbox-safe).
-        let s = project_staged_mcp(&p, false, None, "");
+        let generation = generation();
+        // Without a live relay, fail closed to an opaque reference; there is no
+        // trusted-inline compatibility branch.
+        let s = project_mcp_transport(&p, &generation, None);
         assert!(matches!(s.credential, McpCredential::Reference { .. }));
         assert!(s.is_sandbox_safe());
+        assert!(!serde_json::to_string(&s).unwrap().contains("sk-RAW-SECRET"));
         // No bearer → None.
         assert!(matches!(
-            project_staged_mcp(&prepared(None), false, None, "").credential,
+            project_mcp_transport(&prepared(None), &generation, None).credential,
             McpCredential::None
         ));
     }
@@ -407,10 +500,11 @@ mod alpha_beta_tests {
     async fn a_relay_resolves_alpha_to_a_loopback_url_with_no_sandbox_credential() {
         let relay = crate::mcp_relay::McpRelay::start().await.unwrap();
         let p = prepared(Some("sk-RAW-SECRET"));
-        relay.set_routes("t1", std::slice::from_ref(&p));
+        let generation = generation();
+        relay.set_route(&generation, &p);
         // Sandboxed + relay: the projected server dials the relay (loopback), holds NO
         // credential (the relay injects the real bearer host-side), never the raw secret.
-        let s = project_staged_mcp(&p, false, Some(&relay), "t1");
+        let s = project_mcp_transport(&p, &generation, Some(&relay));
         assert!(matches!(s.credential, McpCredential::None));
         assert!(s.is_sandbox_safe());
         let url = match &s.transport {
@@ -421,7 +515,10 @@ mod alpha_beta_tests {
             url.starts_with("http://127.0.0.1:"),
             "dials the loopback relay: {url}"
         );
-        assert!(url.ends_with("/t1/gh"), "routed by thread+name: {url}");
+        assert!(
+            url.ends_with("/t1/mcp-gh/3"),
+            "routed by exact generation: {url}"
+        );
         assert!(!serde_json::to_string(&s).unwrap().contains("sk-RAW-SECRET"));
     }
 }

@@ -1543,12 +1543,14 @@ name = "awaken-session-store"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
+ "awaken-credential-contract",
  "awaken-ext-memory",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
  "awaken-session-contract",
  "proptest",
  "rusqlite",
+ "serde",
  "serde_json",
  "sqlx",
  "tempfile",

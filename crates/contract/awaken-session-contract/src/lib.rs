@@ -16,6 +16,7 @@ mod baseline;
 pub mod env_registry;
 mod fingerprint;
 mod lifecycle;
+mod mcp_attachment;
 mod mcp_binding;
 mod mcp_probe;
 mod resource;
@@ -39,6 +40,12 @@ pub use baseline::{
 };
 pub use fingerprint::stable_fingerprint;
 pub use lifecycle::{SessionLifecycleFact, SessionLifecycleSink};
+pub use mcp_attachment::{
+    McpAttachmentDraft, McpAttachmentError, McpAttachmentId, McpAttachmentOrigin,
+    McpAttachmentState, McpDesiredSetFingerprint, McpGeneration, McpGenerationRef,
+    McpRealizationClaim, McpRealizationReceipt, McpReplacementPlan, McpSetRevision, McpTarget,
+    SessionMcpAttachment, SessionMcpAttachmentSet, StageMcpAttachment,
+};
 pub use mcp_binding::{McpRefreshBinding, TokenEndpointAuthBinding};
 pub use mcp_probe::{McpProbe, McpProbeStatus};
 pub use resource::{
@@ -50,11 +57,12 @@ pub use resource_activation::{
 };
 pub use session::{
     AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
-    LiveInboxSnapshot, McpServerBinding, OutcomeIteration, OutcomeReport, Pending, RunError,
-    RunErrorKind, SessionInit, SessionRuntime, SessionUsage, StepOutcome, ToolPermissionDecision,
+    LiveInboxSnapshot, OutcomeIteration, OutcomeReport, Pending, RunError, RunErrorKind,
+    SessionInit, SessionRuntime, SessionUsage, StepOutcome, ToolPermissionDecision,
 };
 pub use session_repo::{
-    IdempotencyRecord, ManagedSessionRepository, PersistedSession, PersistedSessionRuntime,
-    ScopedPersistedSession, SessionMutation, SessionMutationPayload, SessionMutationResult,
-    SessionMutationValidationError, SessionRepositoryError, SessionRevision, SessionTombstone,
+    IdempotencyRecord, ManagedSessionRepository, PersistedSession, ScopedPersistedSession,
+    SessionIdempotencyReceipt, SessionMutation, SessionMutationPayload, SessionMutationResult,
+    SessionMutationValidationError, SessionRealizationLease, SessionRepositoryError,
+    SessionRevision, SessionTombstone,
 };

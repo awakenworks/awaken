@@ -7,8 +7,8 @@
 //! remains in the backend-specific suite.
 
 use awaken_session_contract::{
-    IdempotencyRecord, ManagedSessionRepository, McpServerBinding, PersistedSession,
-    PersistedSessionRuntime, ScopedPersistedSession, SessionLifecycleFact, SessionMutation,
+    IdempotencyRecord, ManagedSessionRepository, McpAttachmentDraft, McpAttachmentOrigin,
+    McpTarget, PersistedSession, ScopedPersistedSession, SessionLifecycleFact, SessionMutation,
     SessionMutationPayload, SessionMutationResult, SessionRepositoryError, SessionRevision,
     SessionTombstone,
 };
@@ -23,29 +23,63 @@ fn block<F: std::future::Future>(f: F) -> F::Output {
 }
 
 fn session(id: &str, title: &str) -> PersistedSession {
+    let holder = awaken_credential_contract::PlaintextHolder::new(
+        awaken_credential_contract::PlaintextBoundary::Workload,
+        "awaken.workload.acp",
+    );
+    let environment = awaken_session_contract::EnvironmentSnapshot {
+        environment_id: "env".into(),
+        revision: awaken_session_contract::env_registry::EnvironmentRevision(4),
+        config_fingerprint: awaken_session_contract::EnvironmentFingerprint("env-4".into()),
+        sandbox: json!({"isolation": "namespace"}),
+        network: awaken_session_contract::SessionNetworkPolicy::None,
+        credential_realization: awaken_credential_contract::CredentialRealizationProfile {
+            inference_holder: holder.clone(),
+            mcp_holder: holder.clone(),
+        },
+    };
+    let access = awaken_credential_contract::CredentialAccess::new(
+        awaken_credential_contract::CredentialRef {
+            id: "cred-1".into(),
+            revision: 3,
+        },
+        awaken_credential_contract::CredentialMaterialSource::ControlPlaneReference,
+        awaken_credential_contract::CredentialUsage::HttpHeader {
+            name: "authorization".into(),
+            scheme: Some("Bearer".into()),
+        },
+        awaken_credential_contract::CredentialExecutionPolicy::self_hosted_provider(),
+    );
     PersistedSession {
         session_id: id.to_string(),
         revision: Default::default(),
-        agent_id: "assistant".into(),
-        model: "kimi".into(),
+        baseline: awaken_session_contract::SessionBaselineState::Frozen(
+            awaken_session_contract::SessionBaseline::compile(
+                environment,
+                Default::default(),
+                "assistant".into(),
+                "kimi".into(),
+                Some("acp:custom".into()),
+                vec!["researcher".into()],
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ),
+        ),
         title: Some(title.to_string()),
         metadata: std::collections::BTreeMap::from([("k".into(), "v".into())]),
-        environment_id: "env".into(),
+        agent_tools: None,
         environment_binding: None,
-        runtime: PersistedSessionRuntime {
-            mcp_servers: vec![McpServerBinding {
+        mcp: awaken_session_contract::SessionMcpAttachmentSet::from_initial(
+            vec![McpAttachmentDraft {
                 name: "github".into(),
-                url: "https://mcp.example".into(),
-                credential_source_id: Some("cred-1".into()),
-                credential_revision: Some(3),
-                refresh: None,
+                target: McpTarget::new("https://mcp.example"),
+                credential: Some(access),
+                origin: McpAttachmentOrigin::Agent,
             }],
-            delegate_ids: vec!["researcher".into()],
-            runtime: Some("acp:custom".into()),
-            deny_egress: true,
-            sandbox: Some(json!({"isolation": "namespace"})),
-        },
-        mcp_servers: vec![json!({ "name": "fs", "type": "stdio", "url": "x" })],
+            Some(holder),
+        )
+        .unwrap(),
         resources: awaken_session_contract::SessionResourceState::from_legacy(
             serde_json::from_value(json!({
                 "inputs": [{
@@ -57,6 +91,7 @@ fn session(id: &str, title: &str) -> PersistedSession {
             }))
             .unwrap(),
         ),
+        realization: None,
         status: "idle".into(),
         archived_at: None,
     }
@@ -187,7 +222,7 @@ async fn pending_resource_activation_index_is_durable<R: ManagedSessionRepositor
     pending.revision = awaken_session_contract::SessionRevision(1);
 
     assert_eq!(
-        r.pending_resource_sessions().await,
+        r.reconcilable_sessions().await,
         vec![ScopedPersistedSession {
             workspace_id: "ws_a".into(),
             session: pending.clone(),
@@ -196,8 +231,14 @@ async fn pending_resource_activation_index_is_durable<R: ManagedSessionRepositor
 
     pending.resources.start_attempt().unwrap();
     pending.resources.commit().unwrap();
+    r.save_owned("ws_a", pending.clone()).await;
+    let indexed = r.reconcilable_sessions().await;
+    assert_eq!(indexed.len(), 1, "active MCP remains restart work");
+    assert!(indexed[0].session.mcp.needs_reconciliation());
+
+    pending.mcp.attachments[0].state = awaken_session_contract::McpAttachmentState::Failed;
     r.save_owned("ws_a", pending).await;
-    assert!(r.pending_resource_sessions().await.is_empty());
+    assert!(r.reconcilable_sessions().await.is_empty());
 }
 
 #[derive(Clone, Copy)]
@@ -262,6 +303,14 @@ async fn root_cas_decision_table<R: ManagedSessionRepository>(repo: &R) {
             .await
             .expect("initial CAS create");
         assert_eq!(created, SessionRevision(1));
+        assert_eq!(
+            repo.idempotency_receipt(&id, "create").await,
+            Some(awaken_session_contract::SessionIdempotencyReceipt {
+                payload_hash: create_record.payload_hash.clone(),
+                committed_revision: SessionRevision(1),
+            }),
+            "the decision table reads the same atomic receipt it writes"
+        );
 
         match rule {
             CasRule::Create => {}
