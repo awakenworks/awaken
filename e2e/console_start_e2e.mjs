@@ -65,17 +65,23 @@ async function main() {
   assert.equal(startHelp.status, 0, startHelp.stderr);
   assert.match(startHelp.stdout, /USAGE/);
 
-  const badArgs = spawnSync(bin, ['serve'], { encoding: 'utf8' });
+  const badArgs = spawnSync(bin, ['serve', '--unknown-option'], { encoding: 'utf8' });
   assert.notEqual(badArgs.status, 0);
-  assert.match(badArgs.stderr, /unknown arguments/);
+  assert.match(badArgs.stderr, /unexpected argument/);
 
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-console-e2e-'));
+  const home = path.join(temp, 'home');
+  const configDir = path.join(home, '.awaken');
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(path.join(configDir, 'config.toml'), [
+    `data_dir = ${JSON.stringify(path.join(temp, 'data'))}`,
+    `bind = ${JSON.stringify(`127.0.0.1:${PORT}`)}`,
+  ].join('\n'));
   let server = spawn(bin, ['start'], {
     cwd: temp,
     env: {
       ...process.env,
-      AWAKEN_HTTP_ADDR: `127.0.0.1:${PORT}`,
-      AWAKEN_LOCAL_WORKSPACE_ID: `workspace_console_${process.pid}`,
+      HOME: home,
       // A legacy override must not revive the removed runtime-discovery path.
       AWAKEN_WEB_DIST: path.join(temp, 'does-not-exist'),
     },

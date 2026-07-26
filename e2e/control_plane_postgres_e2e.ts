@@ -95,7 +95,7 @@ function start(bin: string, directory: string, databaseUrl: string): ChildProces
     env: {
       ...inherited,
       AWAKEN_HTTP_ADDR: `127.0.0.1:${PORT}`,
-      AWAKEN_LOCAL_WORKSPACE_ID: WORKSPACE,
+      AWAKEN_SCENARIO_WORKSPACE: WORKSPACE,
       AWAKEN_DEPLOYMENT_DATA_DIR: directory,
       AWAKEN_CONTROL_SEAL_KEY: SEAL_KEY,
       AWAKEN_CATALOG_DB: databaseUrl,

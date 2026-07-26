@@ -27,16 +27,18 @@ account and require `GEMINI_PROJECT` (optionally `GEMINI_LOCATION` and
 `GEMINI_MODEL`):
 
 ```sh
-AWAKEN_LOCAL_WORKSPACE_ID=wrkspc_default \
-  CLOUDSDK_CORE_ACCOUNT=you@example.com \
-  AWAKEN_HTTP_ADDR=127.0.0.1:38080 cargo run -p awaken-cli --bin awaken
+mkdir -p .recording-awaken
+printf 'data_dir = ".recording-awaken/data"\nbind = "127.0.0.1:38080"\n' \
+  > .recording-awaken/config.toml
+CLOUDSDK_CORE_ACCOUNT=you@example.com cargo run -p awaken-cli --bin awaken \
+  -- serve --config .recording-awaken/config.toml
 pnpm dev
 GEMINI_PROJECT=my-project pnpm -C web record 01-connect-model
 pnpm record 06-ai-state-machine
 ```
 
-The explicit local workspace id keeps the ephemeral recording backend aligned
-with the console's default workspace. Durable installations persist their own id.
+The explicit data root persists the recording Workspace id; the console and backend
+therefore use the same authoritative Workspace without an environment override.
 
 Recommended release order (see `VIDEO_STRATEGY.md` for the user-value map):
 

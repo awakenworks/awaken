@@ -67,17 +67,26 @@ fn resource_host_with_deployment(
     model_ref: impl Into<String>,
     deployment: awaken_runtime_host::DeploymentConfig,
 ) -> SharedHost {
-    let Some(storage_dir) = deployment.storage_dir.clone() else {
-        return SharedHost::new(llm, model_ref).with_resource_lifecycle(Arc::new(
+    let host = if let Some(storage_dir) = deployment.storage_dir.clone() {
+        let resources = awaken_server::embedded_resource_plane(&storage_dir);
+        let host = SharedHost::new_with_resource_plane_and_deployment(
+            llm, model_ref, resources, deployment,
+        );
+        awaken_server::install_platform_memory_data_plane(&host);
+        host
+    } else {
+        SharedHost::new(llm, model_ref).with_resource_lifecycle(Arc::new(
             awaken_resource_store::SqliteResourceStore::in_memory()
                 .expect("open scenario resource lifecycle sqlite"),
-        ));
+        ))
     };
-    let resources = awaken_server::embedded_resource_plane(&storage_dir);
-    let host =
-        SharedHost::new_with_resource_plane_and_deployment(llm, model_ref, resources, deployment);
-    awaken_server::install_platform_memory_data_plane(&host);
-    host
+    let scenario_workspace = std::env::var("AWAKEN_SCENARIO_WORKSPACE")
+        .ok()
+        .filter(|workspace| !workspace.trim().is_empty());
+    match scenario_workspace {
+        Some(workspace) => host.with_local_workspace(workspace),
+        None => host,
+    }
 }
 
 /// Scenario composition with the Environment API and the same Resource Catalog,
@@ -1717,11 +1726,18 @@ pub fn build_skills_router() -> Router {
 /// restart. `AWAKEN_MODEL_MODE=skills-durable`.
 pub async fn build_skills_durable_router() -> Router {
     let (model, model_ref) = scenario_model(Arc::new(SkillDrivingModel), "skills-durable");
-    mount(Arc::new(resource_host_with_deployment(
-        model,
-        model_ref,
-        scenario_deployment(),
-    )))
+    let deployment = scenario_deployment();
+    let storage_root = deployment.storage_dir.clone();
+    let host = resource_host_with_deployment(model, model_ref, deployment);
+    if let Some(storage_root) = storage_root {
+        let skills = host
+            .skill_store()
+            .expect("canonical scenario ResourcePlane installs SkillStore");
+        awaken_server::migrate_legacy_skill_registry(&storage_root, skills.as_ref())
+            .await
+            .expect("migrate legacy scenario Skill registry");
+    }
+    mount(Arc::new(host))
 }
 pub async fn build_config_router() -> Router {
     // The MODEL is chosen by `scenario_model` (in-process echo, or the real provider
