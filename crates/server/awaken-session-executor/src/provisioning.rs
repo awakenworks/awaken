@@ -145,7 +145,7 @@ impl SharedHost {
             })
             .unwrap_or(false)
             .then(|| serde_json::json!({ "deny_egress": true }));
-        let network = self
+        let projected_network = self
             .session_slots
             .read(thread, |slot| {
                 slot.environment_projection
@@ -154,6 +154,17 @@ impl SharedHost {
             })
             .flatten()
             .unwrap_or(pc::NetworkPolicy::Unrestricted);
+        // Workdir can enforce the same deny-all intent only for spawned tools via
+        // its `deny_egress` wrapper; it must not advertise an OS network-isolation
+        // requirement that its provider deliberately does not claim. Stronger
+        // providers retain the exact frozen policy for admission and enforcement.
+        let network = if projected_network.is_restricted()
+            && !self.session_provider.capabilities().network_isolation
+        {
+            pc::NetworkPolicy::Unrestricted
+        } else {
+            projected_network
+        };
         let base = pc::SandboxSpec {
             scope: thread.to_string(),
             isolation: pc::IsolationClass::Workdir,
@@ -651,6 +662,12 @@ mod provisioning_registry_tests {
 
     #[test]
     fn sandbox_spec_carries_deny_egress_and_the_staged_mounts() {
+        // Cause graph: a frozen restriction plus a provider without strict network
+        // isolation selects the existing Workdir wrapper, not an unsupported
+        // admission requirement.
+        // | Rule | restriction | strict provider | network | deny wrapper |
+        // | W1 | absent | no | unrestricted | no |
+        // | W2 | none | no | unrestricted | yes |
         let host = host();
         // No registration and no egress: shared network, no mounts.
         let bare = host.sandbox_spec("t");
@@ -681,6 +698,11 @@ mod provisioning_registry_tests {
         );
         let spec = host.sandbox_spec("t");
         assert!(denies(&spec), "the thread's deny-egress policy is carried");
+        assert_eq!(
+            spec.network,
+            pc::NetworkPolicy::Unrestricted,
+            "Workdir does not claim strict network isolation in admission"
+        );
         assert_eq!(spec.mounts.len(), 1);
         assert_eq!(logical_of(&spec.mounts[0]), "notes.md");
     }
