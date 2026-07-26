@@ -184,3 +184,24 @@ Skill wiring may decorate that base, and an explicit Host override is applied la
 The resulting decision table is `base only -> base`, `base + Skills -> decorated
 base`, and `any default chain + explicit override -> override`; no later plugin may
 silently replace the explicit scheduling policy.
+
+## Phase 8: one deployment input in process E2E
+
+```text
+OS HOME + standard ~/.awaken/config.toml
+    -> typed ResolvedDeployment
+    -> one data_dir owns control stores, IAM bootstrap and ResourcePlane
+removed AWAKEN_MGMT_* inputs
+    -> no deployment effect
+```
+
+| Standard config | Identity mode | Workspace catalog | Expected |
+|---|---|---|---|
+| isolated `data_dir` | no-login | empty | open local control plane, no bootstrap token |
+| isolated `data_dir` | self-managed | default | bootstrap token and workspace under that exact root |
+| isolated `data_dir` | self-managed | two exact ids | both scopes authorizable; ownership remains isolated |
+| absent | any removed env input | any | removed input cannot select stores, IAM, or credentials |
+
+The shared E2E harness authors this standard config once per isolated deployment.
+Individual scenarios supply typed values to that helper; they must not reproduce
+TOML serialization or revive environment-variable precedence.

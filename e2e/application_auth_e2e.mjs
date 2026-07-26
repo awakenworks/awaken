@@ -9,6 +9,7 @@ import path from 'node:path';
 import { Chat } from '@ai-sdk/react';
 import { DefaultChatTransport } from 'ai';
 import {
+  deploymentEnv,
   pass,
   realServerEnv,
   spawnServer,
@@ -80,9 +81,7 @@ async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-app-auth-e2e-'));
   const upstream = await startUpstream('default');
   const env = {
-    AWAKEN_MGMT_DIR: dir,
-    AWAKEN_MGMT_SEAL_KEY: SEAL_KEY,
-    AWAKEN_MGMT_IAM: 'embedded',
+    ...deploymentEnv(dir, { identityMode: 'self-managed', controlSealKey: SEAL_KEY }),
     ...realServerEnv('default', upstream, { mode: 'management' }),
   };
   const { server, baseUrl: base } = spawnServer('management', PORT, env);

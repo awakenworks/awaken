@@ -29,7 +29,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import { deploymentEnv, spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = 38197;
@@ -52,7 +52,7 @@ async function req(base, method, uri, body, token) {
 
 async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-mgmt-authz-e2e-'));
-  const env = { AWAKEN_MGMT_DIR: dir, AWAKEN_MGMT_SEAL_KEY: SEAL_KEY, AWAKEN_MGMT_IAM: 'embedded' };
+  const env = deploymentEnv(dir, { identityMode: 'self-managed', controlSealKey: SEAL_KEY });
   const upstream = await startUpstream('mcp');
   let server = null;
   try {
