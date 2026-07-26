@@ -85,14 +85,6 @@ async function startModelDirectory(apiKey) {
 }
 
 async function main() {
-  const testRoot = `/tmp/awaken-management-admin-e2e-${process.pid}`;
-  const home = `${testRoot}/home`;
-  fs.rmSync(testRoot, { recursive: true, force: true });
-  fs.mkdirSync(`${home}/.awaken`, { recursive: true });
-  fs.writeFileSync(
-    `${home}/.awaken/config.toml`,
-    `data_dir = ${JSON.stringify(`${testRoot}/data`)}\n`,
-  );
   // Provider environment is discovery input only. The spawned server may report
   // these coordinates as a secret-free proposal, but cannot execute them.
   process.env.ANTHROPIC_API_KEY = 'sk-proposal-only'; // awaken-allow: secret
@@ -442,7 +434,7 @@ async function main() {
       assert.equal(r.status, 404);
       assert.equal(r.json.code, 'model_unresolved');
       pass('resolve of an unknown model -> 404 model_unresolved');
-    }, { HOME: home });
+    });
 
     console.log('E2E PASS: admin config CRUD + resolve round-trip against the generated TS API contract.');
     process.exitCode = 0;
@@ -454,7 +446,6 @@ async function main() {
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.ANTHROPIC_BASE_URL;
     delete process.env.ANTHROPIC_MODEL;
-    fs.rmSync(testRoot, { recursive: true, force: true });
   }
 }
 
