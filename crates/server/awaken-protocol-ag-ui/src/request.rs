@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 
-use crate::types::{AgUiContent, AgUiMessage, InputContentPart, InputContentSource, RunAgentInput};
+use crate::types::{
+    AgUiContent, AgUiMessage, AgUiRole, InputContentPart, InputContentSource, RunAgentInput,
+};
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -80,9 +82,9 @@ fn convert_new_messages(messages: &[AgUiMessage], known_ids: &HashSet<String>) -
         {
             continue;
         }
-        let role = match message.role.as_str() {
-            "user" => Role::User,
-            "system" | "developer" => Role::System,
+        let role = match message.role {
+            AgUiRole::User => Role::User,
+            AgUiRole::System | AgUiRole::Developer => Role::System,
             _ => continue,
         };
         let blocks = message
@@ -113,12 +115,16 @@ fn content_blocks(content: &AgUiContent) -> Vec<ContentBlock> {
 fn part_to_block(part: &InputContentPart) -> Option<ContentBlock> {
     match part {
         InputContentPart::Text { text } => (!text.is_empty()).then(|| ContentBlock::text(text)),
-        InputContentPart::Image { source } => Some(match source {
+        InputContentPart::Image { source, .. } => Some(match source {
             InputContentSource::Data { value, mime_type } => {
                 ContentBlock::image_base64(mime_type, value)
             }
-            InputContentSource::Url { value } => ContentBlock::image_url(value),
+            InputContentSource::Url { value, .. } => ContentBlock::image_url(value),
         }),
+        InputContentPart::Audio { .. }
+        | InputContentPart::Video { .. }
+        | InputContentPart::Document { .. }
+        | InputContentPart::Binary { .. } => None,
     }
 }
 
@@ -142,7 +148,7 @@ fn content_text(content: &Option<AgUiContent>) -> String {
 fn extract_tool_results(messages: &[AgUiMessage]) -> Vec<ToolResultInput> {
     messages
         .iter()
-        .filter(|m| m.role == "tool")
+        .filter(|m| m.role == AgUiRole::Tool)
         .filter_map(|m| {
             let tool_call_id = m.tool_call_id.clone()?;
             Some(ToolResultInput {
@@ -179,6 +185,7 @@ mod tests {
                 msg("user", "u1", Some("hi"), None),
                 msg("assistant", "a1", Some("prior"), None),
             ],
+            ..Default::default()
         };
         let p = process(input, None, &HashSet::new());
         assert_eq!(p.thread_id, "t");
@@ -203,6 +210,7 @@ mod tests {
                 }))
                 .unwrap(),
             ],
+            ..Default::default()
         };
         let p = process(input, None, &HashSet::new());
         assert_eq!(p.messages.len(), 1);
@@ -223,6 +231,7 @@ mod tests {
                 msg("user", "u1", Some("old"), None),
                 msg("tool", "tr1", Some("42"), Some("c1")),
             ],
+            ..Default::default()
         };
         let known = HashSet::from(["u1".to_string()]);
         let p = process(input, None, &known);
@@ -254,6 +263,7 @@ mod tests {
                 }))
                 .unwrap(),
             ],
+            ..Default::default()
         };
         let p = process(input, None, &HashSet::new());
         assert!(matches!(
@@ -270,6 +280,7 @@ mod tests {
             thread_id: Some("t".into()),
             run_id: Some("r".into()),
             messages: vec![msg("system", "s1", Some("be terse"), None)],
+            ..Default::default()
         };
         let p = process(input, None, &HashSet::new());
         assert_eq!(p.messages.len(), 1);
@@ -284,6 +295,7 @@ mod tests {
             messages: vec![
                 serde_json::from_value(json!({ "role": "user", "content": "hi" })).unwrap(),
             ],
+            ..Default::default()
         };
         let p = process(input, None, &HashSet::new());
         assert_eq!(p.messages.len(), 1);
@@ -296,6 +308,7 @@ mod tests {
             thread_id: Some("t".into()),
             run_id: Some("r".into()),
             messages: vec![msg("developer", "d1", Some("guidance"), None)],
+            ..Default::default()
         };
         let p = process(input, None, &HashSet::new());
         assert_eq!(p.messages[0].role, Role::System);
@@ -311,6 +324,7 @@ mod tests {
                 msg("user", "dup", Some("one"), None),
                 msg("user", "dup", Some("two"), None),
             ],
+            ..Default::default()
         };
         let p = process(input, None, &HashSet::new());
         assert_eq!(p.messages.len(), 2);
@@ -325,6 +339,7 @@ mod tests {
                 msg("user", "e1", None, None),
                 msg("user", "u2", Some("hi"), None),
             ],
+            ..Default::default()
         };
         let p = process(input, None, &HashSet::new());
         assert_eq!(p.messages.len(), 1);
@@ -343,6 +358,7 @@ mod tests {
                 }))
                 .unwrap(),
             ],
+            ..Default::default()
         };
         let p = process(input, None, &HashSet::new());
         assert_eq!(p.tool_results[0].error.as_deref(), Some("it failed"));
@@ -354,6 +370,7 @@ mod tests {
             thread_id: Some("t".into()),
             run_id: None,
             messages: vec![msg("tool", "tr1", Some("ok"), Some("c1"))],
+            ..Default::default()
         };
         let p = process(input, None, &HashSet::new());
         assert!(p.tool_results[0].error.is_none());
@@ -374,6 +391,7 @@ mod tests {
                 }))
                 .unwrap(),
             ],
+            ..Default::default()
         };
         let p = process(input, None, &HashSet::new());
         assert_eq!(p.tool_results[0].content, "result");
@@ -385,6 +403,7 @@ mod tests {
             thread_id: Some("t".into()),
             run_id: Some("r".into()),
             messages: vec![msg("user", "u1", Some("hello"), None)],
+            ..Default::default()
         };
         let p = process(input, None, &HashSet::new());
         assert_eq!(p.messages[0].content.len(), 1);
@@ -400,6 +419,7 @@ mod tests {
                 msg("user", "e1", Some(""), None),
                 msg("user", "u2", Some("hi"), None),
             ],
+            ..Default::default()
         };
         let p = process(input, None, &HashSet::new());
         assert_eq!(p.messages.len(), 1);
