@@ -21,8 +21,8 @@ use tokio_stream::Stream;
 
 use crate::state::{LiveInboxError, ManagedState, RunError, RunErrorKind, StateError};
 use crate::types::{
-    ErrorResponse, ListEventsResponse, Page, PageQuery, SendEventsRequest, SendEventsResponse,
-    Session, SessionCreateParams, SessionThread, paginate,
+    DeletedSession, ErrorResponse, ListEventsResponse, Page, PageQuery, SendEventsRequest,
+    SendEventsResponse, Session, SessionCreateParams, SessionThread, paginate,
 };
 use crate::types::{Event, StreamFrame};
 
@@ -420,11 +420,12 @@ async fn update_session(
 async fn delete_session(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, WireErr> {
+) -> Result<Json<DeletedSession>, WireErr> {
     state.delete_session(&id).await.map_err(error_response)?;
-    Ok(Json(
-        serde_json::json!({ "id": id, "type": "session_deleted" }),
-    ))
+    Ok(Json(DeletedSession {
+        id,
+        kind: "session_deleted",
+    }))
 }
 
 /// `POST /v1/sessions/:id/archive`.

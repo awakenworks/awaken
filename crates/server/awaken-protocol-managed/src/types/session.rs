@@ -424,6 +424,14 @@ pub struct Session {
     pub deployment_id: Option<String>,
 }
 
+/// `BetaManagedAgentsDeletedSession`.
+#[derive(Debug, Clone, Serialize)]
+pub struct DeletedSession {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct OutcomeEvaluation {
     pub completed_at: Option<String>,
