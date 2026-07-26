@@ -12,7 +12,9 @@
 //! until they are flipped to depend on this crate directly.
 
 mod agent_config;
+mod baseline;
 pub mod env_registry;
+mod fingerprint;
 mod lifecycle;
 mod mcp_binding;
 mod mcp_probe;
@@ -30,6 +32,13 @@ pub mod resource_plane {
 }
 
 pub use agent_config::{AgentConfigSource, AgentConfigView, AgentMcpServerView};
+pub use baseline::{
+    ApplicationContributionState, ApplicationSessionInput, EnvironmentFingerprint,
+    EnvironmentSnapshot, SessionBaseline, SessionBaselineFingerprint, SessionBaselineState,
+    SessionCreationIntent, SessionCredentialRealizationProfile, SessionMcpAuthoringContext,
+    SessionNetworkPolicy, SessionPlaintextBoundary, SessionPlaintextHolder,
+};
+pub use fingerprint::stable_fingerprint;
 pub use lifecycle::{SessionLifecycleFact, SessionLifecycleSink};
 pub use mcp_binding::{McpRefreshBinding, TokenEndpointAuthBinding};
 pub use mcp_probe::{McpProbe, McpProbeStatus};

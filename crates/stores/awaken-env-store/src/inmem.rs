@@ -10,7 +10,9 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
-use awaken_session_contract::env_registry::{EnvItem, EnvRegistry, EnvUpdate, OBJECT_AT};
+use awaken_session_contract::env_registry::{
+    EnvItem, EnvRegistry, EnvUpdate, EnvironmentRevision, OBJECT_AT,
+};
 use serde_json::Value;
 
 pub struct InMemoryEnvRegistry {
@@ -47,6 +49,7 @@ impl EnvRegistry for InMemoryEnvRegistry {
         let id = format!("env_{n:016}");
         let item = EnvItem {
             id: id.clone(),
+            revision: EnvironmentRevision(1),
             name,
             description,
             metadata,
@@ -89,7 +92,16 @@ impl EnvRegistry for InMemoryEnvRegistry {
     async fn archive(&self, id: &str) -> Option<EnvItem> {
         let mut envs = self.envs.lock().unwrap();
         let item = envs.get_mut(id)?;
+        if item.archived_at.is_some() {
+            return Some(item.clone());
+        }
         item.archived_at = Some(OBJECT_AT.to_string());
+        item.revision = EnvironmentRevision(
+            item.revision
+                .0
+                .checked_add(1)
+                .expect("Environment revision exhausted"),
+        );
         Some(item.clone())
     }
 }

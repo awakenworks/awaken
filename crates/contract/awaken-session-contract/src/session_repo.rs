@@ -124,15 +124,7 @@ impl SessionMutationPayload {
 
     #[must_use]
     pub fn stable_hash(&self) -> String {
-        let encoded = serde_json::to_vec(self).expect("Session mutation payload serializes");
-        // Stable FNV-1a is sufficient for idempotency identity; this is not a
-        // cryptographic authorization primitive.
-        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-        for byte in encoded {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        format!("fnv1a64:{hash:016x}")
+        crate::stable_fingerprint(self)
     }
 }
 

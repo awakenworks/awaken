@@ -60,6 +60,74 @@ impl EnvironmentState {
         Self { envs, work }
     }
 
+    /// Compile the one immutable, normalized Environment snapshot consumed by a
+    /// Session. The Host never re-reads the mutable registry after this boundary.
+    pub async fn snapshot(
+        &self,
+        env_id: &str,
+        runtime: Option<&str>,
+    ) -> Option<awaken_session_contract::EnvironmentSnapshot> {
+        let item = self.envs.get(env_id).await?;
+        if item.archived_at.is_some() {
+            return None;
+        }
+        let authored_network = crate::env_registry::env_network_policy(&item.config);
+        let mut sandbox = item
+            .config
+            .get("sandbox")
+            .and_then(awaken_provisioning_contract::SandboxOverride::from_config_value)
+            .unwrap_or_default();
+        let network = sandbox
+            .network
+            .take()
+            .map_or(authored_network.clone(), |sandbox_network| {
+                authored_network.safe_intersection(&sandbox_network)
+            });
+        let network = match network {
+            awaken_provisioning_contract::NetworkPolicy::Unrestricted => {
+                awaken_session_contract::SessionNetworkPolicy::Unrestricted
+            }
+            awaken_provisioning_contract::NetworkPolicy::Allowlist { hosts } => {
+                awaken_session_contract::SessionNetworkPolicy::Allowlist { hosts }
+            }
+            awaken_provisioning_contract::NetworkPolicy::None => {
+                awaken_session_contract::SessionNetworkPolicy::None
+            }
+        };
+        let acp = runtime.is_some_and(|value| value.starts_with("acp:"));
+        let holder = if acp {
+            awaken_session_contract::SessionPlaintextHolder {
+                boundary: awaken_session_contract::SessionPlaintextBoundary::Workload,
+                trust_domain: "awaken.workload.acp".into(),
+            }
+        } else {
+            awaken_session_contract::SessionPlaintextHolder {
+                boundary: awaken_session_contract::SessionPlaintextBoundary::Worker,
+                trust_domain: "awaken.worker".into(),
+            }
+        };
+        let credential_realization = awaken_session_contract::SessionCredentialRealizationProfile {
+            inference_holder: holder.clone(),
+            mcp_holder: holder,
+        };
+        let sandbox = serde_json::to_value(sandbox).expect("Sandbox requirement serializes");
+        let config_fingerprint = awaken_session_contract::EnvironmentFingerprint(
+            awaken_session_contract::stable_fingerprint(&(
+                &sandbox,
+                &network,
+                &credential_realization,
+            )),
+        );
+        Some(awaken_session_contract::EnvironmentSnapshot {
+            environment_id: item.id,
+            revision: item.revision,
+            config_fingerprint,
+            sandbox,
+            network,
+            credential_realization,
+        })
+    }
+
     /// Whether the local bwrap sandbox must deny egress for `env_id`. bwrap is a
     /// binary (on/off) enforcer, so any restricted policy collapses to full deny;
     /// `unrestricted`, absent networking (incl. `self_hosted`), or an unknown
@@ -495,6 +563,80 @@ mod tests {
         assert!(
             !state.is_self_hosted("missing").await,
             "unknown env is not self-hosted"
+        );
+    }
+
+    #[tokio::test]
+    async fn environment_snapshot_decision_table() {
+        // Cause graph: active exact record -> normalize networking and choose the
+        // runtime holder -> fingerprint. Missing/archived records fail closed;
+        // a later edit increments the registry revision but cannot mutate an old
+        // value snapshot.
+        //
+        // | Rule | Record | Runtime | Later edit | Effect |
+        // |------|--------|---------|------------|--------|
+        // | S1   | active | native  | F          | Worker snapshot |
+        // | S2   | active | ACP     | F          | Workload snapshot |
+        // | S3   | active | native  | T          | new rev/fingerprint; old frozen |
+        // | S4   | missing/archived | any | -    | None |
+        let state = EnvironmentState::new();
+        let item = state
+            .envs
+            .create(
+                "snapshot".into(),
+                String::new(),
+                BTreeMap::new(),
+                json!({
+                    "networking": {"type": "limited", "allowed_hosts": ["a.test", "shared.test"]},
+                    "sandbox": {"network": {"mode": "allowlist", "hosts": ["shared.test", "b.test"]}}
+                }),
+            )
+            .await;
+        let native = state.snapshot(&item.id, None).await.expect("S1");
+        assert_eq!(
+            native.network,
+            awaken_session_contract::SessionNetworkPolicy::Allowlist {
+                hosts: vec!["shared.test".into()]
+            }
+        );
+        assert_eq!(
+            native.credential_realization.mcp_holder.boundary,
+            awaken_session_contract::SessionPlaintextBoundary::Worker,
+            "S1"
+        );
+        let acp = state
+            .snapshot(&item.id, Some("acp:claude"))
+            .await
+            .expect("S2");
+        assert_eq!(
+            acp.credential_realization.mcp_holder.boundary,
+            awaken_session_contract::SessionPlaintextBoundary::Workload,
+            "S2"
+        );
+        state
+            .envs
+            .update(
+                &item.id,
+                EnvUpdate {
+                    name: Some("changed".into()),
+                    ..Default::default()
+                },
+            )
+            .await;
+        let changed = state.snapshot(&item.id, None).await.expect("S3");
+        assert_ne!(changed.revision, native.revision, "S3 revision");
+        assert_eq!(
+            changed.config_fingerprint, native.config_fingerprint,
+            "S3 irrelevant authoring metadata does not alter normalized config"
+        );
+        assert!(
+            state.snapshot("missing", None).await.is_none(),
+            "S4 missing"
+        );
+        state.envs.archive(&item.id).await;
+        assert!(
+            state.snapshot(&item.id, None).await.is_none(),
+            "S4 archived"
         );
     }
 }
