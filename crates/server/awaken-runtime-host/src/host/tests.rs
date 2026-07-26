@@ -4047,13 +4047,19 @@ fn cold_host_inference_holder_follows_the_candidate_backend_decision_table() {
         None,
         "R1"
     );
+    let native_activation = activation(candidate("native", "native"), Vec::new());
     assert_eq!(
-        host.inference_plaintext_holder(&activation(candidate("native", "native"), Vec::new()))
+        super::self_hosted_inference_holder(&native_activation)
             .unwrap()
             .unwrap()
             .boundary,
         awaken_runtime_contract::PlaintextBoundary::Worker,
         "R2"
+    );
+    assert_eq!(
+        host.inference_plaintext_holder(&native_activation).unwrap(),
+        super::self_hosted_inference_holder(&native_activation).unwrap(),
+        "the public cold-start decision and Host fallback must remain identical"
     );
     assert_eq!(
         host.inference_plaintext_holder(&activation(candidate("acp", "acp:codex"), Vec::new()))
