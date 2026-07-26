@@ -2,52 +2,432 @@
 //! update, delete, and archive.
 
 use super::*;
+use crate::mcp_normalizer::normalize_mcp_target;
 use crate::types::AgentRef;
 use crate::types::McpServer;
 use serde_json::json;
 
-fn lifecycle_fact(
-    id: String,
+pub(super) struct ManagedMcpCandidate {
+    pub(super) server: McpServer,
+    pub(super) published_credential: Option<(String, u64)>,
+    pub(super) origin: awaken_session_contract::McpAttachmentOrigin,
+}
+
+pub(super) fn mcp_generation_ref(
     session_id: &str,
-    workspace_id: Option<String>,
-    event_type: &str,
-) -> SessionLifecycleFact {
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or(0);
-    SessionLifecycleFact {
-        id,
+    attachment: &awaken_session_contract::SessionMcpAttachment,
+) -> Result<awaken_session_contract::McpGenerationRef, RunError> {
+    let claim = attachment
+        .realization
+        .as_ref()
+        .ok_or_else(|| RunError::internal("MCP generation has no durable realization claim"))?;
+    Ok(awaken_session_contract::McpGenerationRef {
         session_id: session_id.to_string(),
-        workspace_id,
-        event_type: event_type.to_string(),
-        timestamp,
-    }
+        attachment_id: attachment.attachment_id.clone(),
+        generation: attachment.generation,
+        runtime_incarnation: claim.runtime_incarnation.clone(),
+        lease_epoch: claim.lease_epoch,
+        lease_expires_at_unix_ms: claim.lease_expires_at_unix_ms,
+    })
+}
+
+fn stage_mcp_request(
+    workspace_id: &str,
+    session_id: &str,
+    attachment: &awaken_session_contract::SessionMcpAttachment,
+) -> Result<awaken_session_contract::StageMcpAttachment, RunError> {
+    let claim = attachment
+        .realization
+        .as_ref()
+        .ok_or_else(|| RunError::internal("MCP generation has no durable realization claim"))?;
+    Ok(awaken_session_contract::StageMcpAttachment {
+        workspace_id: workspace_id.to_string(),
+        generation: mcp_generation_ref(session_id, attachment)?,
+        realization_id: claim.realization_id.clone(),
+        stage_idempotency_key: claim.stage_idempotency_key.clone(),
+        name: attachment.name.clone(),
+        target: attachment.target.clone(),
+        credential: attachment.credential.clone(),
+        selected_plaintext_holder: attachment.selected_plaintext_holder.clone(),
+    })
 }
 
 impl ManagedState {
+    /// Sole Managed anti-corruption compiler for create-time and hot MCP input.
+    /// URL identity, Vault ordering and exact credential pinning cannot be
+    /// repeated by either caller after this function returns.
+    pub(super) async fn normalize_mcp_drafts(
+        &self,
+        candidates: Vec<ManagedMcpCandidate>,
+        ordered_vault_ids: &[String],
+    ) -> Result<Vec<awaken_session_contract::McpAttachmentDraft>, StateError> {
+        let mut drafts = Vec::with_capacity(candidates.len());
+        for candidate in candidates {
+            let server = candidate.server;
+            let credential = match candidate.published_credential {
+                Some((id, revision)) => {
+                    let source_id = awaken_credential_vault::CredentialSourceId(id.clone());
+                    let access = if let Some(vaults) = &self.vaults {
+                        let access =
+                            vaults
+                                .mcp_access_for_source(&source_id)
+                                .await
+                                .map_err(|error| {
+                                    StateError::Run(RunError::bad_request(format!(
+                                        "MCP credential could not be pinned exactly: {error}"
+                                    )))
+                                })?;
+                        if access.credential.revision != revision {
+                            return Err(StateError::Run(RunError::bad_request(
+                                "published MCP credential revision no longer matches",
+                            )));
+                        }
+                        access
+                    } else {
+                        awaken_credential_contract::CredentialAccess::new(
+                            awaken_credential_contract::CredentialRef { id, revision },
+                            awaken_credential_contract::CredentialMaterialSource::ControlPlaneReference,
+                            awaken_credential_contract::CredentialUsage::HttpHeader {
+                                name: "authorization".into(),
+                                scheme: Some("Bearer".into()),
+                            },
+                            awaken_credential_contract::CredentialExecutionPolicy::self_hosted_provider(),
+                        )
+                    };
+                    Some(access)
+                }
+                None => match &self.vaults {
+                    Some(vaults) => {
+                        match vaults.mcp_credential_source_for_url(ordered_vault_ids, &server.url) {
+                            Some(source_id) => {
+                                Some(vaults.mcp_access_for_source(&source_id).await.map_err(
+                                    |error| {
+                                        StateError::Run(RunError::bad_request(format!(
+                                            "MCP credential could not be pinned exactly: {error}"
+                                        )))
+                                    },
+                                )?)
+                            }
+                            None => None,
+                        }
+                    }
+                    None => None,
+                },
+            };
+            let target = normalize_mcp_target(&server.url).ok_or_else(|| {
+                StateError::Run(RunError::bad_request(format!(
+                    "invalid MCP server URL for `{}`",
+                    server.name
+                )))
+            })?;
+            drafts.push(awaken_session_contract::McpAttachmentDraft {
+                name: server.name,
+                target,
+                credential,
+                origin: candidate.origin,
+            });
+        }
+        Ok(drafts)
+    }
+
+    /// Sole Runtime staging path for Managed MCP generations. All callers use
+    /// the same exact-generation request, receipt fence, and compensating drain;
+    /// create, recovery, and hot replacement cannot diverge on credential or
+    /// ownership validation.
+    pub(super) async fn stage_claimed_mcp_generations(
+        &self,
+        workspace_id: &str,
+        session: &PersistedSession,
+        generations: &[(
+            awaken_session_contract::McpAttachmentId,
+            awaken_session_contract::McpGeneration,
+        )],
+    ) -> Result<Vec<awaken_session_contract::McpGenerationRef>, RunError> {
+        let mut staged = Vec::with_capacity(generations.len());
+        for (attachment_id, generation) in generations {
+            let attachment = session
+                .mcp
+                .attachments
+                .iter()
+                .find(|attachment| {
+                    attachment.attachment_id == *attachment_id
+                        && attachment.generation == *generation
+                })
+                .ok_or_else(|| RunError::internal("claimed MCP generation disappeared"))?;
+            let request = stage_mcp_request(workspace_id, &session.session_id, attachment)?;
+            let expected_generation = request.generation.clone();
+            let expected_realization = request.realization_id.clone();
+            match self.runtime.stage_mcp_attachment(request).await {
+                Ok(receipt)
+                    if receipt.generation == expected_generation
+                        && receipt.realization_id == expected_realization
+                        && receipt.selected_plaintext_holder
+                            == attachment.selected_plaintext_holder =>
+                {
+                    staged.push(expected_generation);
+                }
+                Ok(_) => {
+                    for generation in staged {
+                        let _ = self.runtime.drain_mcp_generation(generation).await;
+                    }
+                    return Err(RunError::classified(
+                        "mcp_receipt_mismatch",
+                        "Runtime returned a receipt for another MCP realization",
+                    ));
+                }
+                Err(error) => {
+                    for generation in staged {
+                        let _ = self.runtime.drain_mcp_generation(generation).await;
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        Ok(staged)
+    }
+
+    /// Sole cleanup path for durably Draining generations. Runtime cleanup is
+    /// exact and idempotent; only after every acknowledgement does one root CAS
+    /// clear claims and record Removed.
+    pub(super) async fn drain_persisted_mcp_generations(
+        &self,
+        owner_scope: &str,
+        mut session: PersistedSession,
+    ) -> Result<PersistedSession, StateError> {
+        let draining = session
+            .mcp
+            .attachments
+            .iter()
+            .filter(|attachment| {
+                attachment.state == awaken_session_contract::McpAttachmentState::Draining
+            })
+            .map(|attachment| {
+                Ok((
+                    attachment.attachment_id.clone(),
+                    attachment.generation,
+                    mcp_generation_ref(&session.session_id, attachment)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, RunError>>()?;
+        for (_, _, generation) in &draining {
+            self.runtime
+                .drain_mcp_generation(generation.clone())
+                .await
+                .map_err(StateError::Run)?;
+        }
+        if draining.is_empty() {
+            return Ok(session);
+        }
+        for (attachment_id, generation, _) in draining {
+            session
+                .mcp
+                .finish_drain(&attachment_id, generation)
+                .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
+        }
+        self.commit_session_snapshot(owner_scope, session, "mcp-drained", Vec::new())
+            .await
+    }
+
+    /// Rebuild the process-local MCP projection only from durable generations.
+    /// A new Runtime incarnation first fences every recoverable generation in
+    /// one root CAS; no Host stage/publish effect precedes that commit.
+    pub(super) async fn recover_mcp_projections(
+        &self,
+        owner_scope: &str,
+        mut session: PersistedSession,
+    ) -> Result<PersistedSession, StateError> {
+        let recoverable = session
+            .mcp
+            .attachments
+            .iter()
+            .filter(|attachment| {
+                matches!(
+                    attachment.state,
+                    awaken_session_contract::McpAttachmentState::Requested
+                        | awaken_session_contract::McpAttachmentState::Realizing
+                        | awaken_session_contract::McpAttachmentState::Active
+                )
+            })
+            .map(|attachment| {
+                (
+                    attachment.attachment_id.clone(),
+                    attachment.generation,
+                    attachment.state,
+                )
+            })
+            .collect::<Vec<_>>();
+        if !recoverable.is_empty() {
+            let now_unix_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+                .unwrap_or_default();
+            let lease_epoch = session
+                .realization
+                .as_ref()
+                .map_or(1, |lease| lease.epoch.saturating_add(1));
+            let lease_expires_at_unix_ms = now_unix_ms.saturating_add(300_000);
+            session.realization = Some(awaken_session_contract::SessionRealizationLease {
+                owner: "managed-runtime".into(),
+                runtime_incarnation: self.runtime_incarnation.clone(),
+                epoch: lease_epoch,
+                expires_at_unix_ms: lease_expires_at_unix_ms,
+            });
+            for (attachment_id, generation, _) in &recoverable {
+                let realization_id = awaken_session_contract::stable_fingerprint(&(
+                    &session.session_id,
+                    attachment_id,
+                    generation,
+                    &self.runtime_incarnation,
+                    lease_epoch,
+                ));
+                session
+                    .mcp
+                    .claim_recovery(
+                        attachment_id,
+                        *generation,
+                        awaken_session_contract::McpRealizationClaim {
+                            realization_id,
+                            runtime_incarnation: self.runtime_incarnation.clone(),
+                            lease_epoch,
+                            lease_expires_at_unix_ms,
+                            stage_idempotency_key: format!(
+                                "recover:{}:{}:{}:{lease_epoch}",
+                                session.session_id, attachment_id.0, generation.0
+                            ),
+                        },
+                    )
+                    .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
+            }
+            session = self
+                .commit_session_snapshot(owner_scope, session, "recover-mcp-claim", Vec::new())
+                .await?;
+
+            let generations = recoverable
+                .iter()
+                .map(|(attachment_id, generation, _)| (attachment_id.clone(), *generation))
+                .collect::<Vec<_>>();
+            let staged = self
+                .stage_claimed_mcp_generations(owner_scope, &session, &generations)
+                .await
+                .map_err(StateError::Run)?;
+
+            let mut activated = false;
+            for (attachment_id, generation, prior_state) in &recoverable {
+                if *prior_state == awaken_session_contract::McpAttachmentState::Active {
+                    continue;
+                }
+                let attachment = session
+                    .mcp
+                    .attachments
+                    .iter()
+                    .find(|attachment| {
+                        attachment.attachment_id == *attachment_id
+                            && attachment.generation == *generation
+                    })
+                    .expect("recovery generation persisted");
+                let realization_id = attachment
+                    .realization
+                    .as_ref()
+                    .expect("recovery claim persisted")
+                    .realization_id
+                    .clone();
+                session
+                    .mcp
+                    .activate(attachment_id, *generation, &realization_id)
+                    .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
+                activated = true;
+            }
+            session
+                .mcp
+                .begin_obsolete_drains()
+                .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
+            if activated
+                || session.mcp.attachments.iter().any(|attachment| {
+                    attachment.state == awaken_session_contract::McpAttachmentState::Draining
+                })
+            {
+                session = self
+                    .commit_session_snapshot(
+                        owner_scope,
+                        session,
+                        "recover-mcp-activate",
+                        Vec::new(),
+                    )
+                    .await?;
+            }
+            for generation in staged {
+                self.runtime
+                    .publish_mcp_generation(generation)
+                    .await
+                    .map_err(StateError::Run)?;
+            }
+            for (attachment_id, generation, _) in &recoverable {
+                let realization_id = session
+                    .mcp
+                    .attachments
+                    .iter()
+                    .find(|attachment| {
+                        attachment.attachment_id == *attachment_id
+                            && attachment.generation == *generation
+                    })
+                    .and_then(|attachment| attachment.realization.as_ref())
+                    .map(|claim| claim.realization_id.clone())
+                    .expect("published recovery generation retains its claim");
+                session
+                    .mcp
+                    .acknowledge_publication(attachment_id, *generation, &realization_id)
+                    .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
+            }
+            session = self
+                .commit_session_snapshot(
+                    owner_scope,
+                    session,
+                    "recover-mcp-publication",
+                    Vec::new(),
+                )
+                .await?;
+        }
+        self.drain_persisted_mcp_generations(owner_scope, session)
+            .await
+    }
+
     /// The sole application-layer compiler for an existing Session write. Every
     /// specialized command builds a complete replacement, then crosses this root
     /// CAS seam; no caller retries by writing a stale aggregate snapshot.
     pub(crate) async fn commit_session_snapshot(
         &self,
         owner_scope: &str,
-        mut session: PersistedSession,
+        session: PersistedSession,
         operation: &str,
         lifecycle_facts: Vec<SessionLifecycleFact>,
     ) -> Result<PersistedSession, StateError> {
         let expected_revision = session.revision;
         let payload = awaken_session_contract::SessionMutationPayload::Replace(session.clone());
         let payload_hash = payload.stable_hash();
+        let idempotency = awaken_session_contract::IdempotencyRecord {
+            key: format!(
+                "managed:{operation}:{}:{}:{payload_hash}",
+                session.session_id, expected_revision.0
+            ),
+            payload_hash,
+        };
+        self.commit_session_snapshot_with_record(owner_scope, session, idempotency, lifecycle_facts)
+            .await
+            .map(|(session, _)| session)
+    }
+
+    pub(super) async fn commit_session_snapshot_with_record(
+        &self,
+        owner_scope: &str,
+        mut session: PersistedSession,
+        idempotency: awaken_session_contract::IdempotencyRecord,
+        lifecycle_facts: Vec<SessionLifecycleFact>,
+    ) -> Result<(PersistedSession, bool), StateError> {
+        let expected_revision = session.revision;
+        let payload = awaken_session_contract::SessionMutationPayload::Replace(session.clone());
         let mutation = awaken_session_contract::SessionMutation {
             expected_revision,
-            idempotency: awaken_session_contract::IdempotencyRecord {
-                key: format!(
-                    "managed:{operation}:{}:{}:{payload_hash}",
-                    session.session_id, expected_revision.0
-                ),
-                payload_hash,
-            },
+            idempotency,
             payload,
             lifecycle_facts,
         };
@@ -57,17 +437,22 @@ impl ManagedState {
             .await
             .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?
         {
-            awaken_session_contract::SessionMutationResult::Applied { new_revision }
-            | awaken_session_contract::SessionMutationResult::Replayed { new_revision } => {
+            awaken_session_contract::SessionMutationResult::Applied { new_revision } => {
                 session.revision = new_revision;
-                Ok(session)
+                Ok((session, true))
             }
+            awaken_session_contract::SessionMutationResult::Replayed { .. } => self
+                .sessions_repo
+                .get(&session.session_id)
+                .await
+                .map(|session| (session, false))
+                .ok_or(StateError::NotFound),
             awaken_session_contract::SessionMutationResult::Conflict { .. } => {
                 Err(StateError::Conflict)
             }
-            awaken_session_contract::SessionMutationResult::IdempotencyMismatch => Err(
-                StateError::Run(RunError::internal("Session idempotency mismatch")),
-            ),
+            awaken_session_contract::SessionMutationResult::IdempotencyMismatch => {
+                Err(StateError::IdempotencyMismatch)
+            }
         }
     }
 
@@ -284,37 +669,24 @@ impl ManagedState {
                 )));
             }
         }
-        let bindings: Vec<McpServerBinding> = effective_mcp_servers
-            .iter()
-            .map(|(server, published_credential)| {
-                let credential_source_id = published_credential
-                    .as_ref()
-                    .map(|(id, _)| awaken_credential_vault::CredentialSourceId(id.clone()))
-                    .or_else(|| {
-                        self.vaults.as_ref().and_then(|vaults| {
-                            vaults.mcp_credential_source_for_url(&req.vault_ids, &server.url)
-                        })
-                    });
-                // The matched credential's stored refresh configuration rides
-                // along, so the host can keep the connection alive past the
-                // access token's expiry.
-                let refresh = match (&self.vaults, &credential_source_id) {
-                    (Some(v), Some(source_id)) => v.mcp_refresh_for_source(source_id),
-                    _ => None,
-                };
-                McpServerBinding {
-                    name: server.name.clone(),
-                    url: server.url.clone(),
-                    // Store the neutral row id string on the binding; the typed lookup
-                    // above stays local to this vault-aware assembly.
-                    credential_source_id: credential_source_id.map(|id| id.0),
-                    credential_revision: published_credential
-                        .as_ref()
-                        .map(|(_, revision)| *revision),
-                    refresh,
-                }
-            })
-            .collect();
+        let mcp_drafts = self
+            .normalize_mcp_drafts(
+                effective_mcp_servers
+                    .iter()
+                    .cloned()
+                    .map(|(server, published_credential)| ManagedMcpCandidate {
+                        server,
+                        origin: if published_credential.is_some() {
+                            awaken_session_contract::McpAttachmentOrigin::Agent
+                        } else {
+                            awaken_session_contract::McpAttachmentOrigin::Session
+                        },
+                        published_credential,
+                    })
+                    .collect(),
+                &req.vault_ids,
+            )
+            .await?;
         // Parse the wire `resources[]` (ADR-0038) into staged mounts, and project each
         // into a DTO entry so the created session echoes its create-time resources —
         // list/get/delete then address these and any later-attached ones uniformly.
@@ -440,13 +812,22 @@ impl ManagedState {
             .environment_id
             .clone()
             .unwrap_or_else(|| "env_local".to_string());
-        let (deny_egress, sandbox) = match self.environments.as_ref() {
-            Some(e) => (
-                e.deny_egress(&environment_id).await,
-                e.sandbox_config(&environment_id).await,
-            ),
-            None => (false, None),
+        let environment = match self.environments.as_ref() {
+            Some(environments) => environments
+                .snapshot(&environment_id, req.awaken_runtime())
+                .await
+                .ok_or_else(|| {
+                    StateError::Run(RunError::bad_request(format!(
+                        "environment `{environment_id}` is unavailable"
+                    )))
+                })?,
+            None => default_environment_snapshot(environment_id.clone(), req.awaken_runtime()),
         };
+        let deny_egress = !matches!(
+            environment.network,
+            awaken_session_contract::SessionNetworkPolicy::Unrestricted
+        );
+        let sandbox = Some(environment.sandbox.clone());
         // Validate the advertised tool surface before persisting an activation or
         // touching a Host. A definition error cannot strand Prepared resources.
         let caps = self.runtime.capabilities_for(&id);
@@ -464,29 +845,35 @@ impl ManagedState {
         durable_resources
             .start_attempt()
             .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
+        let baseline = awaken_session_contract::SessionBaseline::compile(
+            environment.clone(),
+            awaken_session_contract::SessionMcpAuthoringContext {
+                ordered_vault_ids: req.vault_ids.clone(),
+            },
+            agent_id.clone(),
+            resolved_model.id.clone(),
+            req.awaken_runtime().map(str::to_string),
+            delegate_ids.clone(),
+            resolved_resources.skills.clone().unwrap_or_default(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let mcp = awaken_session_contract::SessionMcpAttachmentSet::from_initial(
+            mcp_drafts,
+            Some(environment.credential_realization.mcp_holder.clone()),
+        )
+        .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
         let mut persisted = PersistedSession {
             session_id: id.clone(),
             revision: Default::default(),
-            agent_id: agent_id.clone(),
-            model: resolved_model.id.clone(),
+            baseline: awaken_session_contract::SessionBaselineState::Frozen(baseline),
             title: req.title.clone(),
             metadata: req.metadata.clone(),
-            environment_id: environment_id.clone(),
+            agent_tools: None,
             environment_binding: None,
-            runtime: awaken_session_contract::PersistedSessionRuntime {
-                mcp_servers: bindings.clone(),
-                delegate_ids: delegate_ids.clone(),
-                runtime: req.awaken_runtime().map(str::to_string),
-                deny_egress,
-                sandbox: sandbox.clone(),
-            },
-            mcp_servers: effective_mcp_servers
-                .iter()
-                .map(|(server, _)| {
-                    serde_json::to_value(server).expect("mcp server wire serializes")
-                })
-                .collect(),
+            mcp,
             resources: durable_resources,
+            realization: None,
             status: "preparing".to_string(),
             archived_at: None,
         };
@@ -494,14 +881,68 @@ impl ManagedState {
         persisted = self
             .create_session_snapshot(&owner_scope, persisted)
             .await?;
-        if let Err(error) = self
+        // Cause graph: durable frozen baseline + Requested generation -> acquire
+        // one Session lease -> persist exact realization claims -> external I/O.
+        // No Host effect is allowed before this root CAS commits.
+        let now_unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or_default();
+        let lease_epoch = persisted
+            .realization
+            .as_ref()
+            .map_or(1, |lease| lease.epoch.saturating_add(1));
+        let lease_expires_at_unix_ms = now_unix_ms.saturating_add(300_000);
+        persisted.realization = Some(awaken_session_contract::SessionRealizationLease {
+            owner: "managed-runtime".into(),
+            runtime_incarnation: self.runtime_incarnation.clone(),
+            epoch: lease_epoch,
+            expires_at_unix_ms: lease_expires_at_unix_ms,
+        });
+        let requested_generations = persisted
+            .mcp
+            .attachments
+            .iter()
+            .map(|attachment| (attachment.attachment_id.clone(), attachment.generation))
+            .collect::<Vec<_>>();
+        let mut realization_ids = Vec::with_capacity(requested_generations.len());
+        for (attachment_id, generation) in &requested_generations {
+            let realization_id = awaken_session_contract::stable_fingerprint(&(
+                &id,
+                attachment_id,
+                generation,
+                &self.runtime_incarnation,
+                lease_epoch,
+            ));
+            persisted
+                .mcp
+                .claim_realization(
+                    attachment_id,
+                    *generation,
+                    awaken_session_contract::McpRealizationClaim {
+                        realization_id: realization_id.clone(),
+                        runtime_incarnation: self.runtime_incarnation.clone(),
+                        lease_epoch,
+                        lease_expires_at_unix_ms,
+                        stage_idempotency_key: format!(
+                            "stage:{id}:{}:{}",
+                            attachment_id.0, generation.0
+                        ),
+                    },
+                )
+                .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
+            realization_ids.push((attachment_id.clone(), *generation, realization_id));
+        }
+        persisted = self
+            .commit_session_snapshot(&owner_scope, persisted, "claim-realization", Vec::new())
+            .await?;
+        let prepare_result = self
             .runtime
             .prepare_session(
                 &id,
                 SessionInit {
                     workspace_id: owner_scope.clone(),
                     agent_id: agent_id.clone(),
-                    mcp_servers: bindings,
                     delegate_ids,
                     resources: resolved_resources.clone(),
                     model: selected_model.as_ref().map(|m| m.id.clone()),
@@ -510,9 +951,40 @@ impl ManagedState {
                     sandbox,
                 },
             )
-            .await
-        {
+            .await;
+        let mut staged_generations = Vec::new();
+        let mut activation_error = prepare_result.err();
+        if activation_error.is_none() {
+            let generations = realization_ids
+                .iter()
+                .map(|(attachment_id, generation, _)| (attachment_id.clone(), *generation))
+                .collect::<Vec<_>>();
+            match self
+                .stage_claimed_mcp_generations(&owner_scope, &persisted, &generations)
+                .await
+            {
+                Ok(staged) => staged_generations = staged,
+                Err(error) => activation_error = Some(error),
+            }
+        }
+        if let Some(error) = activation_error {
+            for generation in &staged_generations {
+                let _ = self.runtime.drain_mcp_generation(generation.clone()).await;
+            }
             persisted.status = "activation_failed".to_string();
+            for (attachment_id, generation, realization_id) in &realization_ids {
+                persisted
+                    .mcp
+                    .fail_realization(
+                        attachment_id,
+                        *generation,
+                        realization_id,
+                        error.to_string(),
+                    )
+                    .map_err(|state_error| {
+                        StateError::Run(RunError::internal(state_error.to_string()))
+                    })?;
+            }
             persisted
                 .resources
                 .note_retryable_failure(error.to_string())
@@ -530,6 +1002,12 @@ impl ManagedState {
             .resources
             .commit()
             .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
+        for (attachment_id, generation, realization_id) in &realization_ids {
+            persisted
+                .mcp
+                .activate(attachment_id, *generation, realization_id)
+                .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
+        }
         persisted.status = "idle".to_string();
         let deployment_id = req.metadata.get("awaken.deployment_id").cloned();
         let mut session = Session {
@@ -548,12 +1026,7 @@ impl ManagedState {
                 system: config_view.as_ref().and_then(|view| view.system.clone()),
                 tools: project::agent_tools(&caps),
                 // Echo the accepted servers in the SDK's `{name, type:"url", url}` shape.
-                mcp_servers: effective_mcp_servers
-                    .iter()
-                    .map(|(server, _)| {
-                        serde_json::to_value(server).expect("mcp server wire serializes")
-                    })
-                    .collect(),
+                mcp_servers: persisted.visible_mcp_servers(),
                 skills: config_view.as_ref().map_or_else(
                     || project::agent_skills(&caps),
                     |view| {
@@ -599,13 +1072,11 @@ impl ManagedState {
                 }
                 session.agent.tools = tools.clone().unwrap_or_default();
             }
-            if let Some(mcp_servers) = &override_ref.mcp_servers {
-                session.agent.mcp_servers = mcp_servers.clone().unwrap_or_default();
-            }
             if let Some(skills) = &override_ref.skills {
                 session.agent.skills = skills.clone().unwrap_or_default();
             }
         }
+        persisted.agent_tools = Some(session.agent.tools.clone());
         // Persist the session's config (secret-free) so a restart or a peer process
         // rehydrates its real agent/model/title/metadata/MCP, not a placeholder.
         // The core session record is tenancy-agnostic (authz is an edge aspect) —
@@ -616,14 +1087,48 @@ impl ManagedState {
             workspace_id.clone(),
             lifecycle_event::SESSION_IDLED,
         );
-        persisted = self
+        persisted = match self
             .commit_session_snapshot(
                 &owner_scope,
                 persisted,
                 "activate",
                 vec![created_fact.clone()],
             )
-            .await?;
+            .await
+        {
+            Ok(persisted) => persisted,
+            Err(error) => {
+                for generation in staged_generations {
+                    let _ = self.runtime.drain_mcp_generation(generation).await;
+                }
+                return Err(error);
+            }
+        };
+        for generation in &staged_generations {
+            if let Err(error) = self
+                .runtime
+                .publish_mcp_generation(generation.clone())
+                .await
+            {
+                return Err(StateError::Run(error));
+            }
+        }
+        if !realization_ids.is_empty() {
+            for (attachment_id, generation, realization_id) in &realization_ids {
+                persisted
+                    .mcp
+                    .acknowledge_publication(attachment_id, *generation, realization_id)
+                    .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
+            }
+            persisted = self
+                .commit_session_snapshot(
+                    &owner_scope,
+                    persisted,
+                    "publication-acknowledged",
+                    Vec::new(),
+                )
+                .await?;
+        }
         self.owners.lock().unwrap().insert(id.clone(), owner_scope);
         let record = SessionRecord {
             agent_id,
@@ -921,11 +1426,17 @@ impl ManagedState {
     /// stores and the Runtime Host are wired. It scans only Session application
     /// state; authorization principals and policy objects never cross this seam.
     pub async fn reconcile_resource_activations(&self) -> usize {
-        let pending = self.sessions_repo.pending_resource_sessions().await;
+        let pending = self.sessions_repo.reconcilable_sessions().await;
         let mut settled = 0;
         for record in pending {
             let owner_scope = record.workspace_id;
             let session = record.session;
+            if session.status != "deleted"
+                && !session.resources.needs_reconciliation()
+                && (session.status == "idle" || !session.resources.has_active())
+            {
+                continue;
+            }
             match self
                 .reconcile_persisted_resources(&owner_scope, session.clone())
                 .await
@@ -952,32 +1463,63 @@ impl ManagedState {
         persisted: Option<PersistedSession>,
     ) -> Session {
         let caps = self.runtime.capabilities_for(id);
-        let (agent_id, model, environment_id, title, metadata, mcp_servers, status, archived_at) =
-            match persisted {
-                Some(p) => (
-                    p.agent_id,
-                    p.model,
-                    p.environment_id,
+        let default_tools = project::agent_tools(&caps);
+        let (
+            agent_id,
+            model,
+            environment_id,
+            title,
+            metadata,
+            agent_tools,
+            mcp_servers,
+            status,
+            archived_at,
+        ) = match persisted {
+            Some(p) => {
+                let (agent_id, model, environment_id) = p
+                    .frozen_baseline()
+                    .map(|baseline| {
+                        (
+                            baseline.agent_id.clone(),
+                            baseline.model.clone(),
+                            baseline.environment.environment_id.clone(),
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        (
+                            "assistant".into(),
+                            self.runtime.model(),
+                            p.environment_id().to_string(),
+                        )
+                    });
+                let mcp_servers = p.visible_mcp_servers();
+                (
+                    agent_id,
+                    model,
+                    environment_id,
                     p.title,
                     p.metadata,
-                    p.mcp_servers,
+                    p.agent_tools.unwrap_or_else(|| default_tools.clone()),
+                    mcp_servers,
                     match p.status.as_str() {
                         "terminated" => "terminated",
                         _ => "idle",
                     },
                     p.archived_at,
-                ),
-                None => (
-                    "assistant".to_string(),
-                    self.runtime.model(),
-                    "env_local".to_string(),
-                    None,
-                    Default::default(),
-                    Vec::new(),
-                    "idle",
-                    None,
-                ),
-            };
+                )
+            }
+            None => (
+                "assistant".to_string(),
+                self.runtime.model(),
+                "env_local".to_string(),
+                None,
+                Default::default(),
+                default_tools,
+                Vec::new(),
+                "idle",
+                None,
+            ),
+        };
         let deployment_id = metadata.get("awaken.deployment_id").cloned();
         Session {
             id: id.to_string(),
@@ -990,7 +1532,7 @@ impl ManagedState {
                 name: agent_id,
                 description: None,
                 system: None,
-                tools: project::agent_tools(&caps),
+                tools: agent_tools,
                 mcp_servers,
                 skills: project::agent_skills(&caps),
                 multiagent: project::agent_multiagent(&caps),
@@ -1030,7 +1572,7 @@ impl ManagedState {
             .owner(id)
             .await
             .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
-        let persisted = match persisted {
+        let mut persisted = match persisted {
             Some(session) => Some(
                 self.reconcile_persisted_resources(&owner_scope, session)
                     .await?,
@@ -1043,7 +1585,12 @@ impl ManagedState {
         {
             return Err(StateError::NotFound);
         }
-        if let Some(session) = persisted.as_ref() {
+        if let Some(session) = persisted.clone() {
+            let baseline = session.frozen_baseline().cloned().ok_or_else(|| {
+                StateError::Run(RunError::internal(
+                    "cannot realize a Session whose baseline is still preparing",
+                ))
+            })?;
             // Rebuild every process-local projection from the Session's durable,
             // secret-free pin before adopting its physical environment. This is
             // the same preparation port used at creation: no parallel ACP/MCP or
@@ -1053,21 +1600,25 @@ impl ManagedState {
                     id,
                     SessionInit {
                         workspace_id: owner_scope.clone(),
-                        agent_id: session.agent_id.clone(),
-                        mcp_servers: session.runtime.mcp_servers.clone(),
-                        delegate_ids: session.runtime.delegate_ids.clone(),
+                        agent_id: baseline.agent_id.clone(),
+                        delegate_ids: baseline.delegate_ids.clone(),
                         resources: session.resources.active.clone(),
-                        model: Some(session.model.clone()),
-                        runtime: session.runtime.runtime.clone(),
-                        deny_egress: session.runtime.deny_egress,
-                        sandbox: session.runtime.sandbox.clone(),
+                        model: Some(baseline.model.clone()),
+                        runtime: baseline.runtime.clone(),
+                        deny_egress: !matches!(
+                            baseline.environment.network,
+                            awaken_session_contract::SessionNetworkPolicy::Unrestricted
+                        ),
+                        sandbox: Some(baseline.environment.sandbox.clone()),
                     },
                 )
                 .await
                 .map_err(StateError::Run)?;
-            if let Some(binding) = session.environment_binding.as_deref() {
+            let recovered = self.recover_mcp_projections(&owner_scope, session).await?;
+            persisted = Some(recovered.clone());
+            if let Some(binding) = recovered.environment_binding.as_deref() {
                 self.runtime
-                    .restore_session_environment(&session.agent_id, id, binding)
+                    .restore_session_environment(&baseline.agent_id, id, binding)
                     .await
                     .map_err(StateError::Run)?;
             }
@@ -1086,7 +1637,8 @@ impl ManagedState {
             .collect();
         let agent_id = persisted
             .as_ref()
-            .map_or_else(|| "assistant".to_string(), |p| p.agent_id.clone());
+            .and_then(PersistedSession::agent_id)
+            .map_or_else(|| "assistant".to_string(), str::to_string);
         let resource_state = persisted
             .as_ref()
             .map(|session| session.resources.clone())
@@ -1117,6 +1669,17 @@ impl ManagedState {
         sessions
             .get(id)
             .map(SessionRecord::session_projection)
+            .ok_or(StateError::NotFound)
+    }
+
+    pub async fn session_revision(
+        &self,
+        id: &str,
+    ) -> Result<awaken_session_contract::SessionRevision, StateError> {
+        self.sessions_repo
+            .get(id)
+            .await
+            .map(|session| session.revision)
             .ok_or(StateError::NotFound)
     }
 
@@ -1151,66 +1714,6 @@ impl ManagedState {
             .collect();
         out.sort_by(|a, b| a.id.cmp(&b.id));
         out
-    }
-
-    /// `POST /v1/sessions/{id}` — update `title` and/or PATCH `metadata`
-    /// (string upserts, null deletes, omitted preserves).
-    /// `POST /v1/sessions/{id}` — update only `title` / `metadata`. `environment_id`
-    /// is pinned at session creation and is not accepted here (Managed Agents
-    /// contract: the container's environment is fixed for the session's lifetime —
-    /// to change it, create a new session), so a caller sending it is ignored.
-    pub fn update_session(
-        &self,
-        id: &str,
-        title: Option<Option<String>>,
-        metadata: Option<std::collections::BTreeMap<String, Option<String>>>,
-        tools: Option<Vec<serde_json::Value>>,
-        mcp_servers: Option<Vec<serde_json::Value>>,
-    ) -> Result<Session, StateError> {
-        let mut sessions = self.sessions.lock().unwrap();
-        let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
-        if record.session.status != "idle" {
-            return Err(StateError::Run(RunError::bad_request(
-                "session agent updates require an idle session; interrupt the active run first",
-            )));
-        }
-        let title_in_request = title.is_some();
-        if let Some(title) = title {
-            record.session.title = title;
-        }
-        if let Some(patch) = metadata {
-            for (key, value) in patch {
-                match value {
-                    Some(v) => {
-                        record.session.metadata.insert(key, v);
-                    }
-                    None => {
-                        record.session.metadata.remove(&key);
-                    }
-                }
-            }
-        }
-        let agent_changed = tools.is_some() || mcp_servers.is_some();
-        if let Some(tools) = tools {
-            record.session.agent.tools = tools;
-        }
-        if let Some(mcp_servers) = mcp_servers {
-            record.session.agent.mcp_servers = mcp_servers;
-        }
-        // Announce the mutation on the event stream (`session.updated`): the new
-        // title when the update set one, plus the full metadata bag.
-        record.events.push(Event {
-            id: self.next_event_id(),
-            kind: OutboundKind::SessionUpdated {
-                title: title_in_request
-                    .then(|| record.session.title.clone())
-                    .flatten(),
-                metadata: record.session.metadata.clone(),
-                agent: agent_changed.then(|| record.session.agent.clone()),
-            },
-            processed_at: Some(PROCESSED_AT.to_string()),
-        });
-        Ok(record.session_projection())
     }
 
     /// `DELETE /v1/sessions/{id}` — commit a terminal `session.deleted` event,

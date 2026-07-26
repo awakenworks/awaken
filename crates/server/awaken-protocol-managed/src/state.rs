@@ -45,19 +45,22 @@ mod events;
 mod helpers;
 mod resource;
 mod resources;
+mod session_update;
 mod sessions;
 mod threads;
 mod types;
 
-pub(crate) use helpers::{content_text, rubric_text, session_usage_value};
+pub(crate) use helpers::{
+    content_text, default_environment_snapshot, lifecycle_fact, rubric_text, session_usage_value,
+};
 pub(crate) use resource::{
     ParsedInputTarget, ParsedSessionInput, input_binding, parse_session_input,
     resolved_resource_dto, resource_binding_id,
 };
 pub use types::{
     AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
-    LiveInboxSnapshot, McpServerBinding, OutcomeIteration, OutcomeReport, Pending, RunError,
-    RunErrorKind, SessionInit, SessionRuntime, SessionUsage, StepOutcome, ToolPermissionDecision,
+    LiveInboxSnapshot, OutcomeIteration, OutcomeReport, Pending, RunError, RunErrorKind,
+    SessionInit, SessionRuntime, SessionUsage, StepOutcome, ToolPermissionDecision,
 };
 
 struct SessionRecord {
@@ -136,6 +139,9 @@ pub struct ManagedState {
     /// default, byte-identical to before). The wire crate stays webhook-agnostic —
     /// it only knows this narrow port.
     lifecycle_sink: Option<Arc<dyn SessionLifecycleSink>>,
+    /// Unique process incarnation persisted in Session realization leases. A
+    /// restarted process must acquire a higher epoch before recreating effects.
+    runtime_incarnation: String,
     session_seq: AtomicU64,
     /// Shared with each turn's [`PreviewSink`] so a preview's minted `agent.message`
     /// id is drawn from the same `evt_N` sequence the committed event carries.
@@ -199,6 +205,8 @@ pub enum StateError {
     /// merged or written back.
     #[error("session changed concurrently; read the latest revision and retry")]
     Conflict,
+    #[error("session idempotency key was reused with another request")]
+    IdempotencyMismatch,
     /// A session create named a vault that does not exist (`vault_ids`); the
     /// router maps it to the standard 404 envelope naming the vault id.
     #[error("vault `{0}` not found")]
@@ -213,6 +221,10 @@ pub enum StateError {
 
 impl ManagedState {
     pub fn new(runtime: impl SessionRuntime + 'static) -> Self {
+        let started_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
         Self {
             runtime: Box::new(runtime),
             vaults: None,
@@ -228,6 +240,7 @@ impl ManagedState {
                     .expect("open ephemeral managed Session repository"),
             ),
             lifecycle_sink: None,
+            runtime_incarnation: format!("managed:{}:{started_at}", std::process::id()),
             session_seq: AtomicU64::new(0),
             event_seq: Arc::new(AtomicU64::new(0)),
             live: Mutex::new(HashMap::new()),
@@ -403,10 +416,46 @@ mod tests {
             self.restored_runtimes.lock().unwrap().push((
                 thread.to_string(),
                 init.runtime,
-                init.mcp_servers.len(),
+                0,
                 init.deny_egress,
                 init.sandbox,
             ));
+            Ok(())
+        }
+
+        async fn stage_mcp_attachment(
+            &self,
+            request: awaken_session_contract::StageMcpAttachment,
+        ) -> Result<awaken_session_contract::McpRealizationReceipt, RunError> {
+            if let Some(restored) = self
+                .restored_runtimes
+                .lock()
+                .unwrap()
+                .iter_mut()
+                .find(|restored| restored.0 == request.generation.session_id)
+            {
+                restored.2 += 1;
+            }
+            Ok(awaken_session_contract::McpRealizationReceipt {
+                generation: request.generation,
+                realization_id: request.realization_id,
+                selected_plaintext_holder: request.selected_plaintext_holder,
+                actual_realization_kind: None,
+                receipt_fingerprint: "rehydrated".into(),
+            })
+        }
+
+        async fn publish_mcp_generation(
+            &self,
+            _generation: awaken_session_contract::McpGenerationRef,
+        ) -> Result<(), RunError> {
+            Ok(())
+        }
+
+        async fn drain_mcp_generation(
+            &self,
+            _generation: awaken_session_contract::McpGenerationRef,
+        ) -> Result<(), RunError> {
             Ok(())
         }
 
@@ -641,7 +690,7 @@ mod tests {
             durable.resources.activations[0].state,
             awaken_session_contract::ActivationState::Released
         );
-        assert!(repo.pending_resource_sessions().await.is_empty());
+        assert!(repo.reconcilable_sessions().await.is_empty());
     }
 
     /// A runtime whose sandbox teardown always fails — to prove the terminal edges
@@ -733,7 +782,7 @@ mod tests {
             "cleanup failure stays durable for ResourceReclaimer"
         );
         assert_eq!(
-            repo.pending_resource_sessions().await,
+            repo.reconcilable_sessions().await,
             vec![awaken_session_contract::ScopedPersistedSession {
                 workspace_id: DEFAULT_SCOPE.to_string(),
                 session: durable,
@@ -744,20 +793,55 @@ mod tests {
     fn sample_persisted(id: &str) -> PersistedSession {
         let mut metadata = BTreeMap::new();
         metadata.insert("team".to_string(), "research".to_string());
+        let holder = awaken_credential_contract::PlaintextHolder::new(
+            awaken_credential_contract::PlaintextBoundary::Workload,
+            "awaken.workload.acp",
+        );
+        let environment = awaken_session_contract::EnvironmentSnapshot {
+            environment_id: "env_local".into(),
+            revision: awaken_session_contract::env_registry::EnvironmentRevision(1),
+            config_fingerprint: awaken_session_contract::EnvironmentFingerprint("env-1".into()),
+            sandbox: serde_json::json!({"isolation": "namespace"}),
+            network: awaken_session_contract::SessionNetworkPolicy::None,
+            credential_realization: awaken_credential_contract::CredentialRealizationProfile {
+                inference_holder: holder.clone(),
+                mcp_holder: holder,
+            },
+        };
+        let mut mcp = awaken_session_contract::SessionMcpAttachmentSet::from_initial(
+            vec![awaken_session_contract::McpAttachmentDraft {
+                name: "calc".into(),
+                target: awaken_session_contract::McpTarget::new("https://x"),
+                credential: None,
+                origin: awaken_session_contract::McpAttachmentOrigin::Session,
+            }],
+            None,
+        )
+        .unwrap();
+        mcp.attachments[0].state = awaken_session_contract::McpAttachmentState::Active;
         PersistedSession {
             session_id: id.to_string(),
             revision: Default::default(),
-            agent_id: "coder".to_string(),
-            model: "kimi-k2".to_string(),
+            baseline: awaken_session_contract::SessionBaselineState::Frozen(
+                awaken_session_contract::SessionBaseline::compile(
+                    environment,
+                    Default::default(),
+                    "coder".into(),
+                    "kimi-k2".into(),
+                    Some("acp:custom".into()),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                ),
+            ),
             title: Some("My session".to_string()),
             metadata,
-            environment_id: "env_local".to_string(),
+            agent_tools: None,
             environment_binding: None,
-            runtime: Default::default(),
-            mcp_servers: vec![
-                serde_json::json!({"name": "calc", "type": "url", "url": "https://x"}),
-            ],
+            mcp,
             resources: awaken_session_contract::SessionResourceState::from_legacy(sample_inputs()),
+            realization: None,
             status: "idle".into(),
             archived_at: None,
         }
@@ -861,8 +945,18 @@ mod tests {
 
     #[test]
     fn rehydrated_session_restores_persisted_config() {
+        // Cause graph: durable mutable tools present -> use exact replacement;
+        // absent legacy field -> derive Runtime defaults. This test is T1; the
+        // following fallback test is T2.
+        //
+        // | Rule | Persisted tools | Projection |
+        // |---|---|---|
+        // | T1 | Some(including empty) | exact durable value |
+        // | T2 | None | Runtime default |
         let state = ManagedState::new(RehydrateFake::default());
-        let session = state.rehydrated_session("sesn_1", Some(sample_persisted("sesn_1")));
+        let mut persisted = sample_persisted("sesn_1");
+        persisted.agent_tools = Some(vec![serde_json::json!({"name": "durable-tool"})]);
+        let session = state.rehydrated_session("sesn_1", Some(persisted));
         assert_eq!(session.agent.id, "coder");
         assert_eq!(session.agent.model.id, "kimi-k2");
         assert_eq!(session.title.as_deref(), Some("My session"));
@@ -874,6 +968,10 @@ mod tests {
             session.agent.mcp_servers.len(),
             1,
             "the accepted MCP server is restored"
+        );
+        assert_eq!(
+            session.agent.tools,
+            vec![serde_json::json!({"name": "durable-tool"})]
         );
         assert!(
             session.resources.is_empty(),
@@ -898,9 +996,6 @@ mod tests {
         let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
         let mut persisted = sample_persisted("sesn_1");
         persisted.environment_binding = Some("opaque-runtime-binding".to_string());
-        persisted.runtime.runtime = Some("acp:custom".to_string());
-        persisted.runtime.deny_egress = true;
-        persisted.runtime.sandbox = Some(serde_json::json!({"isolation": "namespace"}));
         repo.save(persisted).await;
 
         // Fresh state (empty cache) sharing the durable repo — simulates a restart.
@@ -941,7 +1036,7 @@ mod tests {
             &[(
                 "sesn_1".to_string(),
                 Some("acp:custom".to_string()),
-                0,
+                1,
                 true,
                 Some(serde_json::json!({"isolation": "namespace"})),
             )],
@@ -1013,7 +1108,7 @@ mod tests {
             repo.get("sesn_deleted").await.is_none(),
             "D3: a successful retry converges the hidden cleanup row to a tombstone"
         );
-        assert!(repo.pending_resource_sessions().await.is_empty());
+        assert!(repo.reconcilable_sessions().await.is_empty());
     }
 
     #[tokio::test]

@@ -10,18 +10,44 @@ const DB_PATH: &str = "AWAKEN_SESSION_CRASH_DB";
 const MARKER_PATH: &str = "AWAKEN_SESSION_CRASH_MARKER";
 
 fn session() -> PersistedSession {
+    let holder = awaken_credential_contract::PlaintextHolder::new(
+        awaken_credential_contract::PlaintextBoundary::Worker,
+        "awaken.worker",
+    );
+    let environment = awaken_session_contract::EnvironmentSnapshot {
+        environment_id: "env".into(),
+        revision: awaken_session_contract::env_registry::EnvironmentRevision(1),
+        config_fingerprint: awaken_session_contract::EnvironmentFingerprint("env-1".into()),
+        sandbox: serde_json::json!({}),
+        network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+        credential_realization: awaken_credential_contract::CredentialRealizationProfile {
+            inference_holder: holder.clone(),
+            mcp_holder: holder,
+        },
+    };
     PersistedSession {
         session_id: "sesn_process_crash".into(),
         revision: Default::default(),
-        agent_id: "assistant".into(),
-        model: "model".into(),
+        baseline: awaken_session_contract::SessionBaselineState::Frozen(
+            awaken_session_contract::SessionBaseline::compile(
+                environment,
+                Default::default(),
+                "assistant".into(),
+                "model".into(),
+                None,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ),
+        ),
         title: None,
         metadata: BTreeMap::new(),
-        environment_id: "env".into(),
+        agent_tools: None,
         environment_binding: None,
-        runtime: Default::default(),
-        mcp_servers: Vec::new(),
+        mcp: Default::default(),
         resources: Default::default(),
+        realization: None,
         status: "idle".into(),
         archived_at: None,
     }

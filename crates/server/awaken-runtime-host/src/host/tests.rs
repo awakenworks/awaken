@@ -628,12 +628,6 @@ fn application_session_plan_joins_the_authoritative_session_slot() {
         visibility: EnvVisibility::Process,
     });
     plan.prompts.push("Use the bound Flow project.".into());
-    plan.mcp_servers.push(PreparedMcpServer {
-        name: "flow".into(),
-        url: "https://example.invalid/mcp".into(),
-        bearer: None,
-        refresh: None,
-    });
     plan.deny_egress = true;
 
     host.install_application_session_plan("flow-thread", plan.clone())
@@ -649,8 +643,6 @@ fn application_session_plan_joins_the_authoritative_session_slot() {
         host.thread_resource_prompts("flow-thread"),
         vec!["Use the bound Flow project."]
     );
-    assert_eq!(host.thread_mcp("flow-thread").len(), 1);
-
     let replacement = crate::ApplicationSessionPlan::empty("flow-snapshot:sha256:two");
     assert!(
         host.install_application_session_plan("flow-thread", replacement)
@@ -1082,7 +1074,6 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
         let mut init = SessionInit {
             workspace_id: host.local_workspace().into(),
             agent_id: "agent".into(),
-            mcp_servers: Vec::new(),
             delegate_ids: Vec::new(),
             resources: effective_resources(
                 store
@@ -1631,7 +1622,6 @@ async fn prepare_session_stages_egress_into_the_sandbox_spec() {
     let init = |deny: bool| SessionInit {
         workspace_id: host.local_workspace().into(),
         agent_id: "a".into(),
-        mcp_servers: Vec::new(),
         delegate_ids: Vec::new(),
         resources: Default::default(),
         model: None,
@@ -1681,7 +1671,6 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
     let init = SessionInit {
         workspace_id: "ws".into(),
         agent_id: "a".into(),
-        mcp_servers: Vec::new(),
         delegate_ids: Vec::new(),
         resources: Default::default(),
         model: None,
@@ -1715,7 +1704,6 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
     let bare = SessionInit {
         workspace_id: "ws".into(),
         agent_id: "a".into(),
-        mcp_servers: Vec::new(),
         delegate_ids: Vec::new(),
         resources: Default::default(),
         model: None,
@@ -1751,7 +1739,6 @@ async fn prepare_session_mounts_an_effective_memory_resource() {
     let bare = |agent: &str| SessionInit {
         workspace_id: host.local_workspace().into(),
         agent_id: agent.into(),
-        mcp_servers: Vec::new(),
         delegate_ids: Vec::new(),
         resources: effective_resources(
             (agent == "a")
@@ -1937,7 +1924,6 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
             SessionInit {
                 workspace_id: host.local_workspace().into(),
                 agent_id: "a".into(),
-                mcp_servers: Vec::new(),
                 delegate_ids: Vec::new(),
                 resources: effective_resources(vec![
                     TestInput {
@@ -2085,9 +2071,19 @@ async fn file_activation_enforces_workspace_ownership_without_iam_policy_logic()
 
 #[tokio::test]
 async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_revision() {
-    use awaken_protocol_managed::{McpServerBinding, SessionRuntime};
+    use awaken_protocol_managed::SessionRuntime;
+    use awaken_runtime_contract::{
+        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
+        CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
+    };
 
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let launch = awaken_run_executor_acp::AcpLaunch::custom(vec!["true".into()], vec![]);
+    let source = Arc::new(awaken_run_executor_acp::SubprocessChannelSource::new(
+        launch,
+    ));
+    let executor = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
+    let host =
+        Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_acp_default(executor, "acp:test"));
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
     let credential = awaken_credential_vault::repo::enter_credential(
@@ -2108,49 +2104,164 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     .unwrap();
     let managed = crate::ManagedHost::new(host.clone())
         .with_credentials(credentials.clone(), secrets.clone());
-    let binding = |revision| McpServerBinding {
-        name: "docs".into(),
-        url: "https://mcp.example.test".into(),
-        credential_source_id: Some(credential.id.0.clone()),
-        credential_revision: Some(revision),
-        refresh: None,
+    let holder = PlaintextHolder::new(PlaintextBoundary::Worker, "awaken.worker");
+    let generation = |session: &str| awaken_protocol_managed::McpGenerationRef {
+        session_id: session.into(),
+        attachment_id: awaken_protocol_managed::McpAttachmentId("mcp-docs".into()),
+        generation: awaken_protocol_managed::McpGeneration(1),
+        runtime_incarnation: "runtime-1".into(),
+        lease_epoch: 1,
+        lease_expires_at_unix_ms: u64::MAX,
+    };
+    let request = |session: &str, workspace: &str, revision: u64| {
+        awaken_protocol_managed::StageMcpAttachment {
+            workspace_id: workspace.into(),
+            generation: generation(session),
+            realization_id: format!("realize-{session}"),
+            stage_idempotency_key: format!("stage-{session}"),
+            name: "docs".into(),
+            target: awaken_protocol_managed::McpTarget::new("https://mcp.example.test"),
+            credential: Some(CredentialAccess::new(
+                CredentialRef {
+                    id: credential.id.0.clone(),
+                    revision,
+                },
+                CredentialMaterialSource::ControlPlaneReference,
+                CredentialUsage::HttpHeader {
+                    name: "authorization".into(),
+                    scheme: Some("Bearer".into()),
+                },
+                CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
+            )),
+            selected_plaintext_holder: Some(holder.clone()),
+        }
     };
 
-    let mut exact = bare_session("agent", "workspace-a");
-    exact.mcp_servers = vec![binding(1)];
-    managed.prepare_session("mcp-exact", exact).await.unwrap();
+    // Cause graph: exact workspace + revision + allowed Worker holder -> material
+    // is staged but invisible; durable publication command -> visible. Any
+    // workspace/revision mismatch terminates before a projection is installed.
+    //
+    // | Rule | workspace | revision | stage | publish | Effect |
+    // |---|---|---|---|---|---|
+    // | H1 | exact | exact | success | no | staged/invisible |
+    // | H2 | exact | exact | replay | no | same receipt/no duplicate |
+    // | H3 | exact | exact | success | yes | active/visible |
+    // | H4 | exact | stale | fail | - | no projection |
+    // | H5 | foreign | exact | fail | - | no projection |
+    // | H6 | exact | exact | drain | - | hidden/material cleared |
+    // | H7 | exact | exact | drain replay | - | idempotent |
+    // | H8 | exact | exact | publish removed | - | reject |
+    // | H9 | exact | exact | expired stage | - | reject/no projection |
+    // | H10 | exact | exact | conflicting replay | - | reject/no duplicate |
+    // | H11 | exact | exact | drain unknown | - | idempotent no-op |
+    let exact_request = request("mcp-exact", "workspace-a", 1);
+    let receipt = managed
+        .stage_mcp_attachment(exact_request.clone())
+        .await
+        .expect("H1");
+    assert!(host.active_mcp_projections("mcp-exact").is_empty(), "H1");
     assert_eq!(
-        host.thread_mcp("mcp-exact")[0]
+        managed
+            .stage_mcp_attachment(exact_request)
+            .await
+            .expect("H2"),
+        receipt,
+        "H2"
+    );
+    assert_eq!(
+        host.mcp_projection(&generation("mcp-exact"))
+            .unwrap()
+            .server
+            .unwrap()
             .bearer
             .as_ref()
             .map(|secret| secret.expose_secret()),
         Some("published-mcp-token")
     );
+    managed
+        .publish_mcp_generation(generation("mcp-exact"))
+        .await
+        .expect("H3");
+    assert_eq!(host.active_mcp_projections("mcp-exact").len(), 1, "H3");
 
-    let mut stale = bare_session("agent", "workspace-a");
-    stale.mcp_servers = vec![binding(2)];
     let stale_error = managed
-        .prepare_session("mcp-stale", stale)
+        .stage_mcp_attachment(request("mcp-stale", "workspace-a", 2))
         .await
         .unwrap_err();
-    assert!(stale_error.message.contains("published revision"));
+    assert_eq!(stale_error.code, "mcp_credential_revision_mismatch", "H4");
 
-    let mut foreign = bare_session("agent", "workspace-b");
-    foreign.mcp_servers = vec![binding(1)];
     let foreign_error = managed
-        .prepare_session("mcp-foreign", foreign)
+        .stage_mcp_attachment(request("mcp-foreign", "workspace-b", 1))
         .await
         .unwrap_err();
-    assert!(foreign_error.message.contains("published revision"));
+    assert_eq!(foreign_error.code, "mcp_credential_revision_mismatch", "H5");
+    managed
+        .drain_mcp_generation(generation("mcp-exact"))
+        .await
+        .expect("H6");
+    assert!(host.active_mcp_projections("mcp-exact").is_empty(), "H6");
+    let drained = host.mcp_projection(&generation("mcp-exact")).unwrap();
+    assert!(
+        drained.server.is_none() && drained.native_wiring.is_none(),
+        "H6"
+    );
+    managed
+        .drain_mcp_generation(generation("mcp-exact"))
+        .await
+        .expect("H7");
+    assert!(
+        managed
+            .publish_mcp_generation(generation("mcp-exact"))
+            .await
+            .is_err(),
+        "H8"
+    );
+    let mut expired = request("mcp-expired", "workspace-a", 1);
+    expired.generation.lease_expires_at_unix_ms = 0;
+    assert_eq!(
+        managed
+            .stage_mcp_attachment(expired)
+            .await
+            .unwrap_err()
+            .code,
+        "mcp_stale_ownership",
+        "H9"
+    );
+    assert!(host.mcp_projection(&generation("mcp-expired")).is_none());
+    let first = request("mcp-conflict", "workspace-a", 1);
+    managed
+        .stage_mcp_attachment(first)
+        .await
+        .expect("H10 setup");
+    let mut conflict = request("mcp-conflict", "workspace-a", 1);
+    conflict.stage_idempotency_key = "another-key".into();
+    assert_eq!(
+        managed
+            .stage_mcp_attachment(conflict)
+            .await
+            .unwrap_err()
+            .code,
+        "mcp_stale_generation",
+        "H10"
+    );
+    assert_eq!(
+        host.session_slots
+            .read("mcp-conflict", |slot| slot.mcp.len()),
+        Some(1),
+        "H10"
+    );
+    managed
+        .drain_mcp_generation(generation("mcp-never-staged"))
+        .await
+        .expect("H11");
 }
 
-/// Managed-Agents model: a `github_repository` session resource clones host-side AND injects
-/// a scoped `github:<logical>` MCP server whose token is held host-side — so the agent drives
-/// branch/commit/push/PR through MCP tools while the credential never enters the sandbox.
+/// Repository credentials remain owned by Resource realization. They must not
+/// create a hidden MCP desired-state or credential path beside Session MCP
+/// generations.
 #[tokio::test]
-async fn a_github_repository_resource_injects_a_scoped_github_mcp_server() {
+async fn a_github_repository_resource_does_not_create_a_parallel_mcp_projection() {
     use awaken_protocol_managed::{SessionInit, SessionRuntime};
-    use awaken_run_executor_acp::McpCredential;
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
@@ -2178,7 +2289,6 @@ async fn a_github_repository_resource_injects_a_scoped_github_mcp_server() {
             SessionInit {
                 workspace_id: host.local_workspace().into(),
                 agent_id: "a".into(),
-                mcp_servers: Vec::new(),
                 delegate_ids: Vec::new(),
                 resources: effective_repository(
                     "repo-1",
@@ -2202,38 +2312,24 @@ async fn a_github_repository_resource_injects_a_scoped_github_mcp_server() {
         "repo staged for cloning"
     );
 
-    // ...AND a scoped GitHub MCP server is injected, holding the token host-side.
-    let mcp = host.thread_mcp("t-gh");
-    let gh = mcp
-        .iter()
-        .find(|s| s.name == "github:workspace/repo")
-        .expect("a github MCP server bridged from the repo resource");
-    assert_eq!(gh.url, "https://api.githubcopilot.com/mcp/");
     assert_eq!(
-        gh.bearer.as_ref().map(|b| b.expose_secret().to_string()),
+        host.thread_repository_activations("t-gh")[0]
+            .credential
+            .as_ref()
+            .map(|credential| credential.expose_secret().to_string()),
         Some("ghp_secret_token".to_string()),
-        "the token is held host-side on the prepared MCP server"
+        "the exact Resource realization still receives its credential"
     );
-
-    // A SANDBOXED (untrusted) ACP run gets only an α reference — the raw token never enters
-    // the sandbox (the whole point of the Managed-Agents server-side-token model).
-    match crate::mcp::project_staged_mcp(gh, false, None, "t-gh").credential {
-        McpCredential::Reference { reference } => {
-            assert_eq!(reference, "session-mcp:github:workspace/repo");
-        }
-        other => panic!("sandboxed projection must be a secretless reference, got {other:?}"),
-    }
-    // A trusted (non-sandboxed) run may carry the bearer inline (β) — the split is by isolation.
-    match crate::mcp::project_staged_mcp(gh, true, None, "t-gh").credential {
-        McpCredential::TrustedInline { secret } => assert_eq!(secret, "ghp_secret_token"),
-        other => panic!("trusted projection carries the inline bearer, got {other:?}"),
-    }
+    assert!(
+        host.active_mcp_projections("t-gh").is_empty(),
+        "Repository realization cannot manufacture Session MCP authority"
+    );
 }
 
-/// Applying a repository manifest with a new credential reference re-keys both
-/// the staged clone token and the injected GitHub MCP bearer, host-side.
+/// Applying a repository manifest with a new credential reference re-keys the
+/// Resource realization only; it still creates no MCP projection.
 #[tokio::test]
-async fn rotating_a_github_repository_token_re_keys_the_clone_and_mcp_bearer() {
+async fn rotating_a_github_repository_token_re_keys_only_the_clone() {
     use awaken_protocol_managed::{SessionInit, SessionRuntime};
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
@@ -2262,7 +2358,6 @@ async fn rotating_a_github_repository_token_re_keys_the_clone_and_mcp_bearer() {
             SessionInit {
                 workspace_id: host.local_workspace().into(),
                 agent_id: "a".into(),
-                mcp_servers: Vec::new(),
                 delegate_ids: Vec::new(),
                 resources: effective_repository(
                     "repo-1",
@@ -2279,19 +2374,12 @@ async fn rotating_a_github_repository_token_re_keys_the_clone_and_mcp_bearer() {
         .await
         .unwrap();
 
-    let mcp_bearer = |h: &SharedHost| {
-        h.thread_mcp("t-rot")
-            .into_iter()
-            .find(|s| s.name == "github:workspace/repo")
-            .and_then(|s| s.bearer.map(|b| b.expose_secret().to_string()))
-    };
     let clone_token = |h: &SharedHost| {
         h.thread_repository_activations("t-rot")[0]
             .credential
             .as_ref()
             .map(|t| t.expose_secret().to_string())
     };
-    assert_eq!(mcp_bearer(&host).as_deref(), Some("ghp_old"));
     assert_eq!(clone_token(&host).as_deref(), Some("ghp_old"));
 
     let next_credential = awaken_credential_vault::repo::enter_credential(
@@ -2324,17 +2412,12 @@ async fn rotating_a_github_repository_token_re_keys_the_clone_and_mcp_bearer() {
         .await
         .unwrap();
 
-    // Both the injected MCP bearer and the staged clone token are re-keyed to the new token.
-    assert_eq!(
-        mcp_bearer(&host).as_deref(),
-        Some("ghp_new"),
-        "MCP bearer rotated"
-    );
     assert_eq!(
         clone_token(&host).as_deref(),
         Some("ghp_new"),
         "clone token rotated"
     );
+    assert!(host.active_mcp_projections("t-rot").is_empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -2351,7 +2434,6 @@ fn bare_session(agent: &str, workspace: &str) -> awaken_protocol_managed::Sessio
     awaken_protocol_managed::SessionInit {
         workspace_id: workspace.into(),
         agent_id: agent.into(),
-        mcp_servers: Vec::new(),
         delegate_ids: Vec::new(),
         resources: Default::default(),
         model: None,
@@ -3278,19 +3360,10 @@ async fn end_session_disposes_the_threads_sandbox() {
 
     // Stage representative resource/config projections after the sandbox is live;
     // terminal cleanup must erase all of them so reusing the opaque thread id cannot
-    // inherit stale scope, capability, model, or credential-bearing MCP state.
+    // inherit stale scope, capability, or model state.
     host.register_thread_workspace("t-end", "workspace-a");
     host.register_thread_memory("t-end", None);
     host.register_thread_resources("t-end", crate::provisioning::StagedResources::default());
-    host.register_thread_mcp(
-        "t-end",
-        vec![PreparedMcpServer {
-            name: "private".into(),
-            url: "https://example.invalid/mcp".into(),
-            bearer: None,
-            refresh: None,
-        }],
-    );
     host.register_thread_model("t-end", "private-model");
     host.register_thread_egress("t-end", true);
 

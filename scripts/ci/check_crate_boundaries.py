@@ -726,6 +726,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "async-trait",
         "rusqlite",
         "sqlx",
+        "serde",
         "serde_json",
         "tokio",
         # dev-only: property-based (formal) verification of the store's invariants.
@@ -752,6 +753,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # from awaken-runtime-host so the host stays lean (Step 3b).
     "awaken-session-store": {
         "awaken-session-contract",
+        "awaken-credential-contract",
         # ADR-0064: Memory extraction aggregate/repository port belongs to the
         # Memory Runtime Extension; this store is one persistence adapter.
         "awaken-ext-memory",
@@ -763,6 +765,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "async-trait",
         "rusqlite",
         "sqlx",
+        "serde",
         "serde_json",
         "tokio",
         # dev-only: the sqlite backend tests open a temp on-disk database.

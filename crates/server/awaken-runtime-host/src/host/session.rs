@@ -339,11 +339,22 @@ impl SharedHost {
         // managed adapter's `prepare_session` before the first turn; the wire
         // composition (connect + discover, fail closed) lives in `crate::mcp`.
         // Read, not removed, so a retry re-attempts (and re-fails) the connect.
-        let staged_mcp = self.thread_session_mcp(thread);
+        let active_mcp = self.active_mcp_projections(thread);
         let mcp = if is_acp {
             crate::mcp::McpWiring::empty()
         } else {
-            crate::mcp::connect_staged(&staged_mcp).await?
+            let mut combined = crate::mcp::McpWiring::empty();
+            for projection in &active_mcp {
+                let wiring = projection.native_wiring.as_ref().ok_or_else(|| {
+                    HostError::internal(format!(
+                        "native MCP generation {}:{} has no staged connection",
+                        projection.generation.attachment_id.0, projection.generation.generation.0
+                    ))
+                })?;
+                combined.plugins.extend(wiring.plugins.clone());
+                combined.tool_ids.extend(wiring.tool_ids.clone());
+            }
+            combined
         };
         // An authored permission policy is the sole authority for MCP confirmation.
         // Without one, selecting the MCP server pre-authorizes its discovered tools;
@@ -584,22 +595,25 @@ impl SharedHost {
         // the host's runtime registration (`AcpBackend::is_acp`), not the config's
         // `backend_ref` — the managed `server_config` stamps a fixed backend_ref, so the
         // routing decision is the only reliable signal. The credential form is the host's
-        // isolation decision: a managed/sandboxed host keeps the α default (secretless
-        // reference; the raw bearer never reaches the CLI), while a trusted-local host may
-        // opt into β (`with_trusted_acp_mcp`) and hand the bearer inline. A native run is
-        // untouched (its MCP servers are already the in-process tools connected above).
+        // isolation decision: the raw bearer never reaches the CLI; every authenticated
+        // ACP server uses the Worker-held exact-generation relay. A native run is untouched
+        // (its MCP servers are already the in-process tools connected above).
         // For a sandboxed (α) ACP run with authenticated MCP servers, resolve the α reference
         // through the host's loopback relay: point each server at the relay and register its
         // real bearer there, so the sandbox reaches the MCP server via loopback and the token
         // is injected host-side (never in the sandbox). Started lazily, once per host.
-        let relay = if is_acp && !self.mcp_trusted_inline && !staged_mcp.is_empty() {
+        let relay = if is_acp && !active_mcp.is_empty() {
             match self
                 .mcp_relay
                 .get_or_try_init(crate::mcp_relay::McpRelay::start)
                 .await
             {
                 Ok(r) => {
-                    r.set_routes(thread, &staged_mcp);
+                    for projection in &active_mcp {
+                        if let Some(server) = &projection.server {
+                            r.set_route(&projection.generation, server);
+                        }
+                    }
                     Some(r)
                 }
                 // A relay that cannot bind falls back to the (unresolved) α reference rather
@@ -610,10 +624,16 @@ impl SharedHost {
             None
         };
         let acp_mcp_servers = if is_acp {
-            staged_mcp
+            active_mcp
                 .iter()
-                .map(|server| {
-                    crate::mcp::project_staged_mcp(server, self.mcp_trusted_inline, relay, thread)
+                .filter_map(|projection| {
+                    projection
+                        .server
+                        .as_ref()
+                        .map(|server| (projection, server))
+                })
+                .map(|(projection, server)| {
+                    crate::mcp::project_mcp_transport(server, &projection.generation, relay)
                 })
                 .collect()
         } else {

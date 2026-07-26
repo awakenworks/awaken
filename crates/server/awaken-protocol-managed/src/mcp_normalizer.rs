@@ -39,6 +39,23 @@ pub(crate) fn normalize_mcp_server_url(raw: &str) -> Option<NormalizedMcpUrl> {
     })
 }
 
+/// Compile the Session-domain target while preserving the caller's reachable
+/// URL. Identity uses only the canonical normalizer above, so Vault matching,
+/// duplicate rejection, desired-set hashing and generation diffs cannot drift.
+pub(crate) fn normalize_mcp_target(raw: &str) -> Option<awaken_session_contract::McpTarget> {
+    let normalized = normalize_mcp_server_url(raw)?;
+    Some(awaken_session_contract::McpTarget {
+        url: raw.to_string(),
+        fingerprint: awaken_session_contract::stable_fingerprint(&(
+            normalized.scheme,
+            normalized.host,
+            normalized.port,
+            normalized.path,
+            normalized.query,
+        )),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,5 +90,14 @@ mod tests {
         ] {
             assert!(normalize_mcp_server_url(invalid).is_none(), "U4: {invalid}");
         }
+        assert_eq!(
+            normalize_mcp_target("https://mcp.example.test/sse")
+                .unwrap()
+                .fingerprint,
+            normalize_mcp_target("HTTPS://MCP.EXAMPLE.TEST:443/sse/")
+                .unwrap()
+                .fingerprint,
+            "U1 domain target uses the same canonical identity"
+        );
     }
 }

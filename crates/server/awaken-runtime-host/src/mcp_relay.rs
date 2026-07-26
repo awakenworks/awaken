@@ -2,9 +2,9 @@
 //!
 //! A sandboxed ACP agent's MCP client must authenticate to a real HTTP MCP server (e.g. the
 //! GitHub MCP) without the raw token ever entering the sandbox. Instead of handing the CLI
-//! the real URL + the secret, [`project_staged_mcp`](crate::mcp::project_staged_mcp) points a
+//! the real URL + the secret, [`project_mcp_transport`](crate::mcp::project_mcp_transport) points a
 //! sandboxed server at `http://127.0.0.1:<port>/<thread>/<name>` on this relay. The relay
-//! holds the host-side bearer (from [`PreparedMcpServer`](crate::host::PreparedMcpServer)),
+//! holds the host-side bearer from private exact-generation transport material,
 //! looks it up by `(thread, name)`, strips the placeholder `Authorization` the sandbox sent,
 //! injects the real bearer, and forwards to the real server — so the credential is resolved
 //! **out of the sandbox's address space** (the sandbox only reaches loopback over shared-net).
@@ -23,7 +23,7 @@ use axum::extract::{Path, Request, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
-use crate::host::PreparedMcpServer;
+use crate::mcp::McpTransportMaterial;
 
 /// Where one relay route forwards to, with the host-held credential to inject.
 #[derive(Clone)]
@@ -32,7 +32,8 @@ struct Route {
     bearer: Option<awaken_agent_contract::RedactedString>,
 }
 
-type Routes = Arc<Mutex<HashMap<(String, String), Route>>>;
+type RouteKey = (String, String, u64);
+type Routes = Arc<Mutex<HashMap<RouteKey, Route>>>;
 
 /// A running loopback MCP relay: its routing table plus the address it serves on. Cloneable
 /// (shares the table); the served task lives for the process.
@@ -49,7 +50,10 @@ impl McpRelay {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
         let app = axum::Router::new()
-            .route("/{thread}/{name}", axum::routing::any(forward))
+            .route(
+                "/{session}/{attachment}/{generation}",
+                axum::routing::any(forward),
+            )
             .with_state(routes.clone());
         tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
@@ -57,21 +61,24 @@ impl McpRelay {
         Ok(Self { routes, addr })
     }
 
-    /// Register (replace) the routes for a thread's staged MCP servers — each `(thread, name)`
-    /// maps to that server's real url + host-held bearer. Called when the thread's MCP set is
-    /// registered or rotated.
-    pub(crate) fn set_routes(&self, thread: &str, servers: &[PreparedMcpServer]) {
-        let mut routes = self.routes.lock().unwrap();
-        routes.retain(|(route_thread, _), _| route_thread != thread);
-        for s in servers {
-            routes.insert(
-                (thread.to_string(), s.name.clone()),
-                Route {
-                    url: s.url.clone(),
-                    bearer: s.bearer.clone(),
-                },
-            );
-        }
+    /// Install one exact-generation route. Replaying the same generation
+    /// replaces only that route; it never changes another generation by name.
+    pub(crate) fn set_route(
+        &self,
+        generation: &awaken_protocol_managed::McpGenerationRef,
+        server: &McpTransportMaterial,
+    ) {
+        self.routes.lock().unwrap().insert(
+            route_key(generation),
+            Route {
+                url: server.url.clone(),
+                bearer: server.bearer.clone(),
+            },
+        );
+    }
+
+    pub(crate) fn remove_route(&self, generation: &awaken_protocol_managed::McpGenerationRef) {
+        self.routes.lock().unwrap().remove(&route_key(generation));
     }
 
     /// Remove every bearer-bearing route for a terminal Session.
@@ -79,14 +86,28 @@ impl McpRelay {
         self.routes
             .lock()
             .expect("MCP relay routes mutex poisoned")
-            .retain(|(route_thread, _), _| route_thread != thread);
+            .retain(|(route_session, _, _), _| route_session != thread);
     }
 
     /// The loopback URL a sandboxed CLI dials for `(thread, name)` — the value written into
     /// the sandboxed MCP config in place of the real url.
-    pub(crate) fn route_url(&self, thread: &str, name: &str) -> String {
-        format!("http://{}/{thread}/{name}", self.addr)
+    pub(crate) fn route_url(
+        &self,
+        generation: &awaken_protocol_managed::McpGenerationRef,
+    ) -> String {
+        format!(
+            "http://{}/{}/{}/{}",
+            self.addr, generation.session_id, generation.attachment_id.0, generation.generation.0
+        )
     }
+}
+
+fn route_key(generation: &awaken_protocol_managed::McpGenerationRef) -> RouteKey {
+    (
+        generation.session_id.clone(),
+        generation.attachment_id.0.clone(),
+        generation.generation.0,
+    )
 }
 
 /// Forward one MCP request to its real server with the host-held bearer injected. The
@@ -94,10 +115,15 @@ impl McpRelay {
 /// through. An unknown route or an upstream error fails closed (never opens unauthenticated).
 async fn forward(
     State(routes): State<Routes>,
-    Path((thread, name)): Path<(String, String)>,
+    Path((session, attachment, generation)): Path<(String, String, u64)>,
     req: Request,
 ) -> Response {
-    let Some(route) = routes.lock().unwrap().get(&(thread, name)).cloned() else {
+    let Some(route) = routes
+        .lock()
+        .unwrap()
+        .get(&(session, attachment, generation))
+        .cloned()
+    else {
         return (StatusCode::NOT_FOUND, "unknown relay route").into_response();
     };
     let (parts, body) = req.into_parts();
@@ -153,6 +179,21 @@ mod tests {
     use super::*;
     use awaken_ext_mcp::{Credential, HttpTransportBuilder, McpToolTransport};
 
+    fn generation(
+        session: &str,
+        attachment: &str,
+        generation: u64,
+    ) -> awaken_protocol_managed::McpGenerationRef {
+        awaken_protocol_managed::McpGenerationRef {
+            session_id: session.into(),
+            attachment_id: awaken_protocol_managed::McpAttachmentId(attachment.into()),
+            generation: awaken_protocol_managed::McpGeneration(generation),
+            runtime_incarnation: "runtime-1".into(),
+            lease_epoch: 4,
+            lease_expires_at_unix_ms: u64::MAX,
+        }
+    }
+
     /// A fake upstream MCP server that echoes back the `Authorization` header it received, so
     /// the test can prove the relay injected the real bearer (and dropped the placeholder).
     async fn fake_upstream() -> SocketAddr {
@@ -175,43 +216,47 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn replacing_thread_routes_revokes_names_absent_from_the_new_set() {
+    async fn exact_generation_routes_coexist_and_drain_independently() {
         let relay = McpRelay::start().await.unwrap();
-        let server = |name: &str| PreparedMcpServer {
+        let server = |name: &str| McpTransportMaterial {
             name: name.into(),
             url: "https://example.invalid/mcp".into(),
             bearer: None,
             refresh: None,
         };
-        relay.set_routes("thread", &[server("old"), server("kept")]);
-        relay.set_routes("other", &[server("unrelated")]);
-        relay.set_routes("thread", &[server("new")]);
+        let old = generation("thread", "mcp", 1);
+        let new = generation("thread", "mcp", 2);
+        let other = generation("other", "mcp", 1);
+        relay.set_route(&old, &server("old"));
+        relay.set_route(&new, &server("new"));
+        relay.set_route(&other, &server("unrelated"));
+        relay.remove_route(&old);
 
         let routes = relay.routes.lock().unwrap();
-        assert!(!routes.contains_key(&("thread".into(), "old".into())));
-        assert!(!routes.contains_key(&("thread".into(), "kept".into())));
-        assert!(routes.contains_key(&("thread".into(), "new".into())));
-        assert!(routes.contains_key(&("other".into(), "unrelated".into())));
+        assert!(!routes.contains_key(&route_key(&old)));
+        assert!(routes.contains_key(&route_key(&new)));
+        assert!(routes.contains_key(&route_key(&other)));
     }
 
     #[tokio::test]
     async fn relay_injects_the_real_bearer_and_drops_the_sandbox_placeholder() {
         let upstream = fake_upstream().await;
         let relay = McpRelay::start().await.unwrap();
-        relay.set_routes(
-            "t1",
-            &[PreparedMcpServer {
+        let generation = generation("t1", "mcp-github", 1);
+        relay.set_route(
+            &generation,
+            &McpTransportMaterial {
                 name: "github:repo".into(),
                 url: format!("http://{upstream}/"),
                 bearer: Some(awaken_agent_contract::RedactedString::from(
                     "ghp_real_secret".to_string(),
                 )),
                 refresh: None,
-            }],
+            },
         );
 
         // Dial the relay as the sandboxed CLI would: the placeholder α reference as the bearer.
-        let url = relay.route_url("t1", "github:repo");
+        let url = relay.route_url(&generation);
         let body = reqwest::Client::new()
             .post(&url)
             .bearer_auth("session-mcp:github:repo")
@@ -243,7 +288,7 @@ mod tests {
     async fn rotating_and_removing_a_route_updates_the_next_mcp_request() {
         let upstream = fake_upstream().await;
         let relay = McpRelay::start().await.unwrap();
-        let server = |secret: &str| PreparedMcpServer {
+        let server = |secret: &str| McpTransportMaterial {
             name: "github".into(),
             url: format!("http://{upstream}/"),
             bearer: Some(awaken_agent_contract::RedactedString::from(
@@ -252,11 +297,14 @@ mod tests {
             refresh: None,
         };
         let client = reqwest::Client::new();
-        let route = relay.route_url("session", "github");
+        let old_generation = generation("session", "mcp-github", 1);
+        let new_generation = generation("session", "mcp-github", 2);
+        let old_route = relay.route_url(&old_generation);
+        let new_route = relay.route_url(&new_generation);
 
-        relay.set_routes("session", &[server("old-secret")]);
+        relay.set_route(&old_generation, &server("old-secret"));
         let first = client
-            .post(&route)
+            .post(&old_route)
             .send()
             .await
             .unwrap()
@@ -265,9 +313,9 @@ mod tests {
             .unwrap();
         assert_eq!(first, "Bearer old-secret");
 
-        relay.set_routes("session", &[server("new-secret")]);
+        relay.set_route(&new_generation, &server("new-secret"));
         let second = client
-            .post(&route)
+            .post(&new_route)
             .send()
             .await
             .unwrap()
@@ -277,9 +325,18 @@ mod tests {
         assert_eq!(second, "Bearer new-secret");
         assert!(!second.contains("old-secret"));
 
-        relay.remove_routes("session");
-        let removed = client.post(&route).send().await.unwrap();
+        relay.remove_route(&old_generation);
+        let removed = client.post(&old_route).send().await.unwrap();
         assert_eq!(removed.status(), reqwest::StatusCode::NOT_FOUND);
+        let replacement_still_active = client
+            .post(&new_route)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert_eq!(replacement_still_active, "Bearer new-secret");
     }
 
     // Protocol-flow decision row: when R1 holds, initialize, tools/list and
@@ -369,21 +426,22 @@ mod tests {
         });
 
         let relay = McpRelay::start().await.unwrap();
-        relay.set_routes(
-            "session-1",
-            &[PreparedMcpServer {
+        let generation = generation("session-1", "mcp-functional", 1);
+        relay.set_route(
+            &generation,
+            &McpTransportMaterial {
                 name: "functional".into(),
                 url: format!("http://{upstream}/mcp"),
                 bearer: Some(awaken_agent_contract::RedactedString::from(
                     "relay-only-secret".to_string(),
                 )),
                 refresh: None,
-            }],
+            },
         );
 
         // This is the sandbox-side client: it receives the loopback route and no
         // credential at all. The relay alone owns and injects the real bearer.
-        let transport = HttpTransportBuilder::new(relay.route_url("session-1", "functional"))
+        let transport = HttpTransportBuilder::new(relay.route_url(&generation))
             .credential(Credential::None)
             .connect()
             .await
@@ -443,19 +501,20 @@ mod tests {
         });
 
         let relay = McpRelay::start().await.unwrap();
-        relay.set_routes(
-            "t1",
-            &[PreparedMcpServer {
+        let generation = generation("t1", "mcp-gh", 1);
+        relay.set_route(
+            &generation,
+            &McpTransportMaterial {
                 name: "gh".into(),
                 url: format!("http://{addr}/"),
                 bearer: Some(awaken_agent_contract::RedactedString::from(
                     "tok".to_string(),
                 )),
                 refresh: None,
-            }],
+            },
         );
         let resp = reqwest::Client::new()
-            .post(relay.route_url("t1", "gh"))
+            .post(relay.route_url(&generation))
             .send()
             .await
             .unwrap();
@@ -486,14 +545,15 @@ mod tests {
             return;
         };
         let relay = McpRelay::start().await.unwrap();
-        relay.set_routes(
-            "t1",
-            &[PreparedMcpServer {
+        let generation = generation("t1", "mcp-github", 1);
+        relay.set_route(
+            &generation,
+            &McpTransportMaterial {
                 name: "github".into(),
                 url: "https://api.githubcopilot.com/mcp/".into(),
                 bearer: Some(awaken_agent_contract::RedactedString::from(token)),
                 refresh: None,
-            }],
+            },
         );
         // An MCP `initialize` handshake through the relay, carrying only the α placeholder.
         let body = serde_json::json!({
@@ -505,7 +565,7 @@ mod tests {
             }
         });
         let resp = reqwest::Client::new()
-            .post(relay.route_url("t1", "github"))
+            .post(relay.route_url(&generation))
             .header("content-type", "application/json")
             .header("accept", "application/json, text/event-stream")
             .bearer_auth("session-mcp:github")
@@ -531,8 +591,9 @@ mod tests {
     #[tokio::test]
     async fn relay_fails_closed_on_an_unknown_route() {
         let relay = McpRelay::start().await.unwrap();
+        let generation = generation("t-unknown", "mcp-nope", 1);
         let status = reqwest::Client::new()
-            .post(relay.route_url("t-unknown", "nope"))
+            .post(relay.route_url(&generation))
             .send()
             .await
             .unwrap()

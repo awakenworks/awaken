@@ -46,7 +46,7 @@ use axum::Router;
 pub use awaken_managed_routers::{default_models, files_router, models_router};
 pub use awaken_runtime_host::{
     ConfigService, ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost,
-    PreparedMcpRefresh, ProtocolHost, SharedHost, SkillContext, SkillSpec, ThreadEvent,
+    McpRefreshMaterial, ProtocolHost, SharedHost, SkillContext, SkillSpec, ThreadEvent,
     ThreadEventHub, VaultRefresher, advertised_tools, capabilities_router, config_router,
     content_fingerprint, durable_ops_router, memory_stores_router_with_catalog, parse_skill_md,
     skills_router,

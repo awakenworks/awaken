@@ -1285,6 +1285,10 @@ async fn management_router_over(
             "reconciled {reconciled_resource_activations} durable Session resource activation(s)"
         );
     }
+    let reconciled_mcp_attachments = managed_state.reconcile_mcp_attachments().await;
+    if reconciled_mcp_attachments > 0 {
+        eprintln!("reconciled {reconciled_mcp_attachments} durable Session MCP projection(s)");
+    }
     deployment_state.bind_launcher(managed_state.clone());
     // Drive cron Deployments in production. The state mints due runs and launches
     // them through the exact same Session port as the manual `/run` action.
@@ -1376,22 +1380,30 @@ fn local_org_id() -> String {
 #[cfg(test)]
 mod runtime_session_store_tests {
     use super::*;
-    use awaken_protocol_managed::PersistedSession;
+    use awaken_protocol_managed::{
+        ApplicationContributionState, PersistedSession, SessionBaselineState, SessionCreationIntent,
+    };
     use awaken_runtime_host::ModelPublicationResolver;
 
     fn session(id: &str) -> PersistedSession {
         PersistedSession {
             session_id: id.to_string(),
             revision: Default::default(),
-            agent_id: "assistant".to_string(),
-            model: "test-model".to_string(),
+            baseline: SessionBaselineState::Preparing(SessionCreationIntent {
+                environment_id: "env_local".into(),
+                agent_id: "assistant".into(),
+                model: "test-model".into(),
+                runtime: None,
+                mcp_authoring: Default::default(),
+                application: ApplicationContributionState::Absent,
+            }),
             title: None,
             metadata: Default::default(),
-            environment_id: "env_local".to_string(),
+            agent_tools: None,
             environment_binding: None,
-            runtime: Default::default(),
-            mcp_servers: Vec::new(),
+            mcp: Default::default(),
             resources: Default::default(),
+            realization: None,
             status: "idle".to_string(),
             archived_at: None,
         }
@@ -1419,8 +1431,15 @@ mod runtime_session_store_tests {
                 .get("sesn-restart")
                 .await
                 .expect("session survives restart")
-                .model,
-            "test-model"
+                .baseline,
+            SessionBaselineState::Preparing(SessionCreationIntent {
+                environment_id: "env_local".into(),
+                agent_id: "assistant".into(),
+                model: "test-model".into(),
+                runtime: None,
+                mcp_authoring: Default::default(),
+                application: ApplicationContributionState::Absent,
+            })
         );
     }
 

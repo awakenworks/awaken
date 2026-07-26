@@ -11,8 +11,6 @@ use std::sync::Arc;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier;
 
-use crate::host::PreparedMcpServer;
-
 /// Frozen application additions for one claimed Session.
 ///
 /// `fingerprint` is the application's stable identity for the complete plan.
@@ -24,7 +22,6 @@ pub struct ApplicationSessionPlan {
     pub mounts: Vec<awaken_provisioning_contract::MountRequirement>,
     pub env: Vec<awaken_provisioning_contract::EnvVar>,
     pub prompts: Vec<String>,
-    pub mcp_servers: Vec<PreparedMcpServer>,
     pub deny_egress: bool,
 }
 
@@ -36,7 +33,6 @@ impl ApplicationSessionPlan {
             mounts: Vec::new(),
             env: Vec::new(),
             prompts: Vec::new(),
-            mcp_servers: Vec::new(),
             deny_egress: false,
         }
     }
@@ -105,18 +101,16 @@ impl crate::SharedHost {
             (
                 slot.runtime.is_some() || slot.environment.is_some(),
                 slot.resources.mounts.clone(),
-                slot.mcp.clone(),
             )
         });
-        let (is_realized, built_in_mounts, built_in_mcp) =
-            occupied.unwrap_or_else(|| (false, Vec::new(), Vec::new()));
+        let (is_realized, built_in_mounts) = occupied.unwrap_or_else(|| (false, Vec::new()));
         if is_realized {
             return Err(crate::HostError::internal(format!(
                 "thread {thread} was realized before its application Session plan"
             )));
         }
 
-        validate_plan(&plan, &built_in_mounts, &built_in_mcp)?;
+        validate_plan(&plan, &built_in_mounts)?;
         self.session_slots
             .update(thread, |slot| slot.application = Some(plan));
         Ok(())
@@ -151,18 +145,6 @@ impl crate::SharedHost {
             .unwrap_or_default()
     }
 
-    pub(crate) fn thread_session_mcp(&self, thread: &str) -> Vec<PreparedMcpServer> {
-        self.session_slots
-            .read(thread, |slot| {
-                let mut servers = slot.mcp.clone();
-                if let Some(application) = &slot.application {
-                    servers.extend(application.mcp_servers.clone());
-                }
-                servers
-            })
-            .unwrap_or_default()
-    }
-
     pub(crate) fn thread_session_prompts(&self, thread: &str) -> Vec<String> {
         self.session_slots
             .read(thread, |slot| {
@@ -179,7 +161,6 @@ impl crate::SharedHost {
 fn validate_plan(
     plan: &ApplicationSessionPlan,
     built_in_mounts: &[awaken_provisioning_contract::MountRequirement],
-    built_in_mcp: &[PreparedMcpServer],
 ) -> Result<(), crate::HostError> {
     let mut mount_ids: HashSet<&str> = built_in_mounts
         .iter()
@@ -210,19 +191,5 @@ fn validate_plan(
         }
     }
 
-    let mut mcp_names: HashSet<&str> = built_in_mcp
-        .iter()
-        .map(|server| server.name.as_str())
-        .collect();
-    for server in &plan.mcp_servers {
-        if server.name.trim().is_empty()
-            || server.url.trim().is_empty()
-            || !mcp_names.insert(&server.name)
-        {
-            return Err(crate::HostError::internal(
-                "application Session plan has an empty or conflicting MCP server",
-            ));
-        }
-    }
     Ok(())
 }

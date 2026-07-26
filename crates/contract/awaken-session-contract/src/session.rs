@@ -9,8 +9,6 @@ use awaken_agent_contract::agent::delegation::DelegationStatus;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
 
-use crate::mcp_binding::McpRefreshBinding;
-
 /// The tool a run awaits: its id, model-visible name/input, and whether it is
 /// client-executed (projected as `agent.custom_tool_use`) or a built-in awaiting
 /// confirmation (`agent.tool_use{ask}`).
@@ -172,17 +170,14 @@ pub struct OutcomeReport {
     pub iterations: Vec<OutcomeIteration>,
 }
 
-/// What a new session provisions on its thread before the first turn (ADR-0043
-/// Phase 3): the agent it runs and the MCP servers it connects to, each already
-/// bound to a vault credential's neutral domain id (or none). Consumed by the
-/// server's `ManagedHost` through [`SessionRuntime::prepare_session`].
+/// Immutable baseline and Resource inputs a new Session provisions before MCP
+/// generations are staged through the separate exact-generation port.
 #[derive(Debug, Clone)]
 pub struct SessionInit {
     /// Trusted owning workspace resolved by the platform edge before runtime
     /// preparation. Resource stores never infer or hard-code it.
     pub workspace_id: String,
     pub agent_id: String,
-    pub mcp_servers: Vec<McpServerBinding>,
     /// Exact roster frozen by the published Agent.
     pub delegate_ids: Vec<String>,
     /// The session's mounted resources (ADR-0038), parsed from the wire `resources[]`:
@@ -205,30 +200,6 @@ pub struct SessionInit {
     /// `None` = host default spec. Kept as a `Value` so this leaf stays free of the
     /// provisioning contract; `deny_egress` remains for the coarse bwrap on/off.
     pub sandbox: Option<serde_json::Value>,
-}
-
-/// One session MCP server, bound at creation: the wire name/url plus the vault
-/// credential the URL matched (`None` when no vault credential matches — the
-/// host then connects unauthenticated and the server decides). Consumed by
-/// `ManagedHost::prepare_session` in the server assembly.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct McpServerBinding {
-    pub name: String,
-    pub url: String,
-    /// The matched vault credential's neutral row id, as a plain string (the port
-    /// speaks no control-plane vocabulary — the host re-types it into the vault's
-    /// `CredentialSourceId` at the lookup). `None` = no vault credential matched.
-    pub credential_source_id: Option<String>,
-    /// Exact revision required by a published Agent binding. Session-inline
-    /// vault matches leave this `None` because their wire credential lifecycle
-    /// is already pinned by the Session's vault binding.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credential_revision: Option<u64>,
-    /// The matched credential's stored refresh configuration
-    /// ([`VaultState::mcp_refresh_for_source`]), so the host can register a
-    /// transport-level refresher next to the bearer. `None` when the credential
-    /// is not refreshable (entered without a refresh object).
-    pub refresh: Option<McpRefreshBinding>,
 }
 
 /// A queued live-inbox message on the session's in-flight turn. `id` is the
@@ -331,6 +302,42 @@ pub trait SessionRuntime: Send + Sync {
     /// wiring is unaffected.
     async fn prepare_session(&self, _thread: &str, _init: SessionInit) -> Result<(), RunError> {
         Ok(())
+    }
+
+    /// Stage one exact MCP generation without making it tool-visible. The
+    /// default fails closed: a Runtime that has not implemented generation
+    /// fencing must never acknowledge dynamic or initial MCP realization.
+    async fn stage_mcp_attachment(
+        &self,
+        _request: crate::StageMcpAttachment,
+    ) -> Result<crate::McpRealizationReceipt, RunError> {
+        Err(RunError::classified(
+            "mcp_runtime_unsupported",
+            "runtime does not support generation-fenced MCP realization",
+        ))
+    }
+
+    /// Publish a durably active exact generation at a Runtime safe boundary.
+    async fn publish_mcp_generation(
+        &self,
+        _generation: crate::McpGenerationRef,
+    ) -> Result<(), RunError> {
+        Err(RunError::classified(
+            "mcp_runtime_unsupported",
+            "runtime does not support generation-fenced MCP publication",
+        ))
+    }
+
+    /// Hide and dispose one exact generation idempotently. This also disposes a
+    /// staged generation whose activation CAS did not commit.
+    async fn drain_mcp_generation(
+        &self,
+        _generation: crate::McpGenerationRef,
+    ) -> Result<(), RunError> {
+        Err(RunError::classified(
+            "mcp_runtime_unsupported",
+            "runtime does not support generation-fenced MCP drain",
+        ))
     }
 
     /// Return the runtime-owned, secret-free binding for the Session's live
@@ -700,11 +707,65 @@ mod tests {
         assert!(caps.delegates.is_empty());
     }
 
+    /// Cause-effect graph for a Runtime without generation support:
+    ///
+    /// C1 exact generation command reaches the default SessionRuntime port
+    ///   -> C2 no concrete generation adapter is installed
+    ///   -> E1 reject before any stage/publish/drain effect.
+    ///
+    /// Decision table (the test cases below are generated one-for-one):
+    ///
+    /// | Rule | command | C1 | C2 | result |
+    /// |---|---|---|---|---|
+    /// | R1 | stage | T | T | `mcp_runtime_unsupported` |
+    /// | R2 | publish | T | T | `mcp_runtime_unsupported` |
+    /// | R3 | drain | T | T | `mcp_runtime_unsupported` |
+    #[tokio::test]
+    async fn default_mcp_generation_port_fails_closed_from_decision_table() {
+        use crate::{
+            McpAttachmentId, McpGeneration, McpGenerationRef, McpTarget, StageMcpAttachment,
+        };
+
+        let runtime = MinimalRuntime;
+        let generation = McpGenerationRef {
+            session_id: "session-1".into(),
+            attachment_id: McpAttachmentId("mcp-1".into()),
+            generation: McpGeneration(1),
+            runtime_incarnation: "runtime-1".into(),
+            lease_epoch: 7,
+            lease_expires_at_unix_ms: u64::MAX,
+        };
+        let stage = StageMcpAttachment {
+            workspace_id: "workspace-1".into(),
+            generation: generation.clone(),
+            realization_id: "realization-1".into(),
+            stage_idempotency_key: "stage-1".into(),
+            name: "calculator".into(),
+            target: McpTarget::new("https://mcp.example.test"),
+            credential: None,
+            selected_plaintext_holder: None,
+        };
+
+        let stage_error = runtime.stage_mcp_attachment(stage).await.unwrap_err();
+        let publish_error = runtime
+            .publish_mcp_generation(generation.clone())
+            .await
+            .unwrap_err();
+        let drain_error = runtime.drain_mcp_generation(generation).await.unwrap_err();
+        for (rule, error) in [
+            ("R1", stage_error),
+            ("R2", publish_error),
+            ("R3", drain_error),
+        ] {
+            assert_eq!(error.code, "mcp_runtime_unsupported", "{rule}");
+            assert_eq!(error.kind, RunErrorKind::Internal, "{rule}");
+        }
+    }
+
     fn init() -> SessionInit {
         SessionInit {
             workspace_id: "ws_test".into(),
             agent_id: "a".into(),
-            mcp_servers: Vec::new(),
             delegate_ids: Vec::new(),
             resources: crate::ResolvedSessionResources::default(),
             model: None,

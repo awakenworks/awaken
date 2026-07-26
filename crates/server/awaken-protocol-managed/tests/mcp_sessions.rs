@@ -3,14 +3,17 @@
 //! `SessionRuntime::prepare_session` BEFORE the record exists — a failed
 //! preparation fails the create with the mapped error envelope.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_credential_vault::InMemorySecretStore;
 use awaken_credential_vault::repo::InMemoryCredentialRepo;
 use awaken_protocol_managed::{
-    ManagedState, OutcomeReport, RunError, RunErrorKind, SessionInit, SessionLifecycleSink,
-    SessionRuntime, StepOutcome, ToolPermissionDecision, VaultState, router, vault_router,
+    ManagedSessionRepository, ManagedState, OutcomeReport, PersistedSession, RunError,
+    RunErrorKind, SessionInit, SessionLifecycleSink, SessionRuntime,
+    SqliteManagedSessionRepository, StepOutcome, ToolPermissionDecision, VaultState, router,
+    vault_router,
 };
 use axum::Router;
 use axum::body::Body;
@@ -23,18 +26,53 @@ use tower::ServiceExt;
 /// fails it), so a test can assert exactly what a session create provisions.
 struct PreparingFake {
     captured: Arc<Mutex<Vec<SessionInit>>>,
+    staged: Arc<Mutex<Vec<awaken_session_contract::StageMcpAttachment>>>,
+    observed_durable: Arc<Mutex<Vec<PersistedSession>>>,
+    repo: Option<Arc<dyn ManagedSessionRepository>>,
     fail_with: Option<RunErrorKind>,
 }
 
 #[async_trait::async_trait]
 impl SessionRuntime for PreparingFake {
-    async fn prepare_session(&self, _thread: &str, init: SessionInit) -> Result<(), RunError> {
+    async fn prepare_session(&self, thread: &str, init: SessionInit) -> Result<(), RunError> {
+        if let Some(repo) = &self.repo
+            && let Some(session) = repo.get(thread).await
+        {
+            self.observed_durable.lock().unwrap().push(session);
+        }
         self.captured.lock().unwrap().push(init);
         match self.fail_with {
             Some(RunErrorKind::BadRequest) => Err(RunError::bad_request("prepare refused")),
             Some(RunErrorKind::Internal) => Err(RunError::internal("prepare blew up")),
             None => Ok(()),
         }
+    }
+    async fn stage_mcp_attachment(
+        &self,
+        request: awaken_session_contract::StageMcpAttachment,
+    ) -> Result<awaken_session_contract::McpRealizationReceipt, RunError> {
+        self.staged.lock().unwrap().push(request.clone());
+        Ok(awaken_session_contract::McpRealizationReceipt {
+            generation: request.generation,
+            realization_id: request.realization_id,
+            selected_plaintext_holder: request.selected_plaintext_holder,
+            actual_realization_kind: Some(
+                awaken_credential_contract::CredentialRealizationKind::WorkerRelay,
+            ),
+            receipt_fingerprint: "test-receipt".into(),
+        })
+    }
+    async fn publish_mcp_generation(
+        &self,
+        _generation: awaken_session_contract::McpGenerationRef,
+    ) -> Result<(), RunError> {
+        Ok(())
+    }
+    async fn drain_mcp_generation(
+        &self,
+        _generation: awaken_session_contract::McpGenerationRef,
+    ) -> Result<(), RunError> {
+        Ok(())
     }
     async fn run(
         &self,
@@ -82,6 +120,236 @@ struct Harness {
     app: Router,
     vaults: Arc<VaultState>,
     captured: Arc<Mutex<Vec<SessionInit>>>,
+    staged: Arc<Mutex<Vec<awaken_session_contract::StageMcpAttachment>>>,
+    observed_durable: Arc<Mutex<Vec<PersistedSession>>>,
+    repo: Arc<dyn ManagedSessionRepository>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+enum HotStageMode {
+    #[default]
+    Success,
+    FailNext,
+    MismatchNext,
+}
+
+#[derive(Default)]
+struct HotRuntimeState {
+    staged: Vec<awaken_session_contract::StageMcpAttachment>,
+    published: Vec<awaken_session_contract::McpGenerationRef>,
+    drained: Vec<awaken_session_contract::McpGenerationRef>,
+    durable_at_stage: Vec<PersistedSession>,
+    mode: HotStageMode,
+    fail_publish_next: bool,
+    fail_drain_next: bool,
+}
+
+struct HotRuntime {
+    state: Arc<Mutex<HotRuntimeState>>,
+    repo: Arc<dyn ManagedSessionRepository>,
+}
+
+#[async_trait::async_trait]
+impl SessionRuntime for HotRuntime {
+    async fn prepare_session(&self, _thread: &str, _init: SessionInit) -> Result<(), RunError> {
+        Ok(())
+    }
+
+    async fn stage_mcp_attachment(
+        &self,
+        request: awaken_session_contract::StageMcpAttachment,
+    ) -> Result<awaken_session_contract::McpRealizationReceipt, RunError> {
+        let durable = self
+            .repo
+            .get(&request.generation.session_id)
+            .await
+            .expect("stage follows durable claim");
+        let mut state = self.state.lock().unwrap();
+        state.durable_at_stage.push(durable);
+        state.staged.push(request.clone());
+        let mode = std::mem::take(&mut state.mode);
+        if matches!(mode, HotStageMode::FailNext) {
+            return Err(RunError::internal("hot stage failed"));
+        }
+        let mut generation = request.generation;
+        if matches!(mode, HotStageMode::MismatchNext) {
+            generation.generation.0 += 1;
+        }
+        Ok(awaken_session_contract::McpRealizationReceipt {
+            generation,
+            realization_id: request.realization_id,
+            selected_plaintext_holder: request.selected_plaintext_holder,
+            actual_realization_kind: None,
+            receipt_fingerprint: "hot-receipt".into(),
+        })
+    }
+
+    async fn publish_mcp_generation(
+        &self,
+        generation: awaken_session_contract::McpGenerationRef,
+    ) -> Result<(), RunError> {
+        let mut state = self.state.lock().unwrap();
+        state.published.push(generation);
+        if std::mem::take(&mut state.fail_publish_next) {
+            return Err(RunError::internal("hot publish failed"));
+        }
+        Ok(())
+    }
+
+    async fn drain_mcp_generation(
+        &self,
+        generation: awaken_session_contract::McpGenerationRef,
+    ) -> Result<(), RunError> {
+        let mut state = self.state.lock().unwrap();
+        state.drained.push(generation);
+        if std::mem::take(&mut state.fail_drain_next) {
+            return Err(RunError::internal("hot drain failed"));
+        }
+        Ok(())
+    }
+
+    async fn run(
+        &self,
+        _agent: &str,
+        _thread: &str,
+        _content: Vec<ContentBlock>,
+    ) -> Result<StepOutcome, RunError> {
+        Err(RunError::internal("unused"))
+    }
+    async fn resume(
+        &self,
+        _thread: &str,
+        _tool_use_id: &str,
+        _decision: ToolPermissionDecision,
+    ) -> Result<StepOutcome, RunError> {
+        Err(RunError::internal("unused"))
+    }
+    async fn resume_custom(
+        &self,
+        _thread: &str,
+        _tool_use_id: &str,
+        _content: &str,
+        _is_error: bool,
+    ) -> Result<StepOutcome, RunError> {
+        Err(RunError::internal("unused"))
+    }
+    async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+        Ok(())
+    }
+    async fn define_outcome(
+        &self,
+        _thread: &str,
+        _description: &str,
+        _rubric: &str,
+        _max_iterations: u32,
+    ) -> Result<OutcomeReport, RunError> {
+        Err(RunError::internal("unused"))
+    }
+    fn model(&self) -> String {
+        "hot-model".into()
+    }
+}
+
+struct HotHarness {
+    app: Router,
+    managed: Arc<ManagedState>,
+    state: Arc<Mutex<HotRuntimeState>>,
+    repo: Arc<dyn ManagedSessionRepository>,
+}
+
+fn hot_harness() -> HotHarness {
+    let repo: Arc<dyn ManagedSessionRepository> = Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("open hot Session repository"),
+    );
+    hot_harness_with_repo(repo)
+}
+
+fn hot_harness_with_repo(repo: Arc<dyn ManagedSessionRepository>) -> HotHarness {
+    let runtime_state = Arc::new(Mutex::new(HotRuntimeState::default()));
+    let managed = Arc::new(
+        ManagedState::new(HotRuntime {
+            state: runtime_state.clone(),
+            repo: repo.clone(),
+        })
+        .with_session_repo(repo.clone()),
+    );
+    HotHarness {
+        app: router(managed.clone()),
+        managed,
+        state: runtime_state,
+        repo,
+    }
+}
+
+struct ConflictOnceRepository {
+    inner: Arc<SqliteManagedSessionRepository>,
+    commits_until_conflict: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl ManagedSessionRepository for ConflictOnceRepository {
+    async fn create(
+        &self,
+        owner_scope: &str,
+        session: PersistedSession,
+        idempotency: awaken_session_contract::IdempotencyRecord,
+        lifecycle_facts: Vec<awaken_session_contract::SessionLifecycleFact>,
+    ) -> Result<
+        awaken_session_contract::SessionRevision,
+        awaken_session_contract::SessionRepositoryError,
+    > {
+        self.inner
+            .create(owner_scope, session, idempotency, lifecycle_facts)
+            .await
+    }
+
+    async fn commit_mutation(
+        &self,
+        owner_scope: &str,
+        mutation: awaken_session_contract::SessionMutation,
+    ) -> Result<
+        awaken_session_contract::SessionMutationResult,
+        awaken_session_contract::SessionRepositoryError,
+    > {
+        let remaining = self.commits_until_conflict.load(Ordering::SeqCst);
+        if remaining > 0 && self.commits_until_conflict.fetch_sub(1, Ordering::SeqCst) == 1 {
+            let current_revision = self
+                .inner
+                .get(mutation.payload.session_id())
+                .await
+                .map_or(Default::default(), |session| session.revision);
+            return Ok(awaken_session_contract::SessionMutationResult::Conflict {
+                current_revision,
+            });
+        }
+        self.inner.commit_mutation(owner_scope, mutation).await
+    }
+
+    async fn append_lifecycle(&self, fact: awaken_session_contract::SessionLifecycleFact) {
+        self.inner.append_lifecycle(fact).await;
+    }
+    async fn pending_lifecycle(&self) -> Vec<awaken_session_contract::SessionLifecycleFact> {
+        self.inner.pending_lifecycle().await
+    }
+    async fn complete_lifecycle(&self, fact_id: &str) {
+        self.inner.complete_lifecycle(fact_id).await;
+    }
+    async fn get(&self, session_id: &str) -> Option<PersistedSession> {
+        self.inner.get(session_id).await
+    }
+    async fn reconcilable_sessions(&self) -> Vec<awaken_session_contract::ScopedPersistedSession> {
+        self.inner.reconcilable_sessions().await
+    }
+    async fn idempotency_receipt(
+        &self,
+        session_id: &str,
+        key: &str,
+    ) -> Option<awaken_session_contract::SessionIdempotencyReceipt> {
+        self.inner.idempotency_receipt(session_id, key).await
+    }
+    async fn owner(&self, session_id: &str) -> Option<String> {
+        self.inner.owner(session_id).await
+    }
 }
 
 /// Sessions + vaults over ONE shared `VaultState`, the way the server mounts
@@ -91,16 +359,28 @@ fn harness(fail_with: Option<RunErrorKind>) -> Harness {
     let credentials = Arc::new(InMemoryCredentialRepo::new());
     let vaults = Arc::new(VaultState::new(secrets, credentials));
     let captured = Arc::new(Mutex::new(Vec::new()));
+    let staged = Arc::new(Mutex::new(Vec::new()));
+    let observed_durable = Arc::new(Mutex::new(Vec::new()));
+    let repo: Arc<dyn ManagedSessionRepository> = Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("open Session repository"),
+    );
     let state = ManagedState::new(PreparingFake {
         captured: captured.clone(),
+        staged: staged.clone(),
+        observed_durable: observed_durable.clone(),
+        repo: Some(repo.clone()),
         fail_with,
     })
-    .with_vaults(vaults.clone());
+    .with_vaults(vaults.clone())
+    .with_session_repo(repo.clone());
     let app = router(Arc::new(state)).merge(vault_router(vaults.clone()));
     Harness {
         app,
         vaults,
         captured,
+        staged,
+        observed_durable,
+        repo,
     }
 }
 
@@ -113,6 +393,9 @@ fn check_bind_is_fail_closed_on_unknown_vault() {
     let vaults = Arc::new(VaultState::new(secrets, credentials));
     let state = ManagedState::new(PreparingFake {
         captured: Arc::new(Mutex::new(Vec::new())),
+        staged: Arc::new(Mutex::new(Vec::new())),
+        observed_durable: Arc::new(Mutex::new(Vec::new())),
+        repo: None,
         fail_with: None,
     })
     .with_vaults(vaults);
@@ -131,7 +414,21 @@ fn check_bind_is_fail_closed_on_unknown_vault() {
 }
 
 async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+    let (status, _, body) = call_with_headers(app, method, uri, body, &[]).await;
+    (status, body)
+}
+
+async fn call_with_headers(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+    headers: &[(&str, &str)],
+) -> (StatusCode, axum::http::HeaderMap, Value) {
     let mut b = Request::builder().method(method).uri(uri);
+    for (name, value) in headers {
+        b = b.header(*name, *value);
+    }
     let body = match body {
         Some(v) => {
             b = b.header("content-type", "application/json");
@@ -141,13 +438,14 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
     };
     let resp = app.clone().oneshot(b.body(body).unwrap()).await.unwrap();
     let status = resp.status();
+    let headers = resp.headers().clone();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let value = if bytes.is_empty() {
         Value::Null
     } else {
         serde_json::from_slice(&bytes).unwrap_or(Value::Null)
     };
-    (status, value)
+    (status, headers, value)
 }
 
 const MCP_URL: &str = "https://mcp.example.com/sse";
@@ -234,31 +532,80 @@ async fn create_binds_mcp_server_to_vault_credential_and_echoes_the_wire_shape()
         json!([{ "name": "calc", "type": "url", "url": MCP_URL }])
     );
 
-    // prepare_session saw the binding, carrying the credential's DOMAIN id (the
-    // resolver vocabulary), never the wire credential id.
+    // The exact-generation stage saw the secret-free credential access; the
+    // baseline-only prepare call carries no parallel MCP authority.
     let captured = h.captured.lock().unwrap();
     assert_eq!(captured.len(), 1);
     let init = &captured[0];
     assert_eq!(init.agent_id, "calc-agent");
-    assert_eq!(init.mcp_servers.len(), 1);
-    assert_eq!(init.mcp_servers[0].name, "calc");
-    assert_eq!(init.mcp_servers[0].url, MCP_URL);
+    drop(captured);
+    let staged = h.staged.lock().unwrap();
+    assert_eq!(staged.len(), 1);
+    assert_eq!(staged[0].name, "calc");
+    assert_eq!(staged[0].target.url, MCP_URL);
     let expected = h
         .vaults
         .credential_source_id(&vault_id, &cred_id)
         .expect("wire credential maps to a domain source");
     // The binding carries the neutral row-id string (the port speaks no vault vocab).
     assert_eq!(
-        init.mcp_servers[0].credential_source_id.as_ref(),
-        Some(&expected.0)
+        staged[0]
+            .credential
+            .as_ref()
+            .map(|access| access.credential.id.as_str()),
+        Some(expected.0.as_str())
     );
     assert_eq!(
-        init.mcp_servers[0].credential_revision, None,
-        "Session-inline vault bindings use the wire credential lifecycle"
+        staged[0]
+            .credential
+            .as_ref()
+            .map(|access| access.credential.revision),
+        Some(1),
+        "Session-inline Vault selection is compiled to one exact credential revision"
     );
     // The credential was entered without a refresh object, so the binding
     // carries no refresh configuration.
-    assert!(init.mcp_servers[0].refresh.is_none());
+    assert!(
+        staged[0]
+            .credential
+            .as_ref()
+            .and_then(|access| access.refresh.as_ref())
+            .is_none()
+    );
+    drop(staged);
+
+    // Cause graph: exact generation is Requested -> lease+claim root CAS ->
+    // Runtime stage -> success/failure -> terminal activation CAS.
+    //
+    // | Rule | generation requested | claim durable before I/O | stage result | Effect |
+    // |---|---|---|---|---|
+    // | A1 | T | T | success | Active + visible |
+    // | A2 | T | T | failure | Failed + hidden |
+    // | A3 | F | - | success | no attachment effect |
+    let observed = h.observed_durable.lock().unwrap();
+    assert_eq!(observed.len(), 1, "A1");
+    assert!(matches!(
+        observed[0].baseline,
+        awaken_session_contract::SessionBaselineState::Frozen(_)
+    ));
+    assert!(observed[0].realization.is_some(), "A1 lease is durable");
+    assert_eq!(
+        observed[0].mcp.attachments[0].state,
+        awaken_session_contract::McpAttachmentState::Realizing,
+        "A1 claim is durable before Runtime I/O"
+    );
+    drop(observed);
+    let active = h.repo.get("sesn_0").await.expect("active aggregate");
+    assert_eq!(
+        active.mcp.attachments[0].state,
+        awaken_session_contract::McpAttachmentState::Active,
+        "A1"
+    );
+    assert!(
+        active.mcp.attachments[0].publication_acknowledged,
+        "A1 publication acknowledgement is durable before success"
+    );
+    assert_eq!(active.visible_mcp_servers().len(), 1, "A1");
 }
 
 #[tokio::test]
@@ -298,9 +645,12 @@ async fn session_binding_supports_static_bearer_and_normalized_mcp_urls() {
         .vaults
         .credential_source_id(&vault_id, &credential_id)
         .unwrap();
-    let captured = h.captured.lock().unwrap();
+    let staged = h.staged.lock().unwrap();
     assert_eq!(
-        captured[0].mcp_servers[0].credential_source_id.as_deref(),
+        staged[0]
+            .credential
+            .as_ref()
+            .map(|access| access.credential.id.as_str()),
         Some(expected.0.as_str())
     );
 }
@@ -349,9 +699,10 @@ async fn session_binding_honors_vault_order_and_leaves_a_miss_unauthenticated() 
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
-        h.captured.lock().unwrap()[0].mcp_servers[0]
-            .credential_source_id
-            .as_deref(),
+        h.staged.lock().unwrap()[0]
+            .credential
+            .as_ref()
+            .map(|access| access.credential.id.as_str()),
         Some(sources[1].0.as_str())
     );
 
@@ -368,9 +719,7 @@ async fn session_binding_honors_vault_order_and_leaves_a_miss_unauthenticated() 
     .await;
     assert_eq!(status, StatusCode::OK);
     assert!(
-        h.captured.lock().unwrap()[1].mcp_servers[0]
-            .credential_source_id
-            .is_none(),
+        h.staged.lock().unwrap()[1].credential.is_none(),
         "Anthropic-compatible optional MCP auth leaves a non-match unauthenticated"
     );
 }
@@ -451,10 +800,11 @@ async fn create_carries_the_refresh_binding_of_a_refreshable_credential() {
 
     // The binding carries the stored refresh configuration next to the source
     // id — the sealed refresh token's ref, never the token itself.
-    let captured = h.captured.lock().unwrap();
-    let refresh = captured[0].mcp_servers[0]
-        .refresh
+    let staged = h.staged.lock().unwrap();
+    let refresh = staged[0]
+        .credential
         .as_ref()
+        .and_then(|access| access.refresh.as_ref())
         .expect("a refreshable credential's binding carries its refresh config");
     assert_eq!(refresh.token_endpoint, "https://auth.example.com/token");
     assert_eq!(refresh.client_id, "cli_pub");
@@ -482,7 +832,7 @@ async fn session_without_mcp_servers_echoes_empty_and_prepares_an_empty_init() {
     let captured = h.captured.lock().unwrap();
     assert_eq!(captured.len(), 1);
     assert_eq!(captured[0].agent_id, "coder");
-    assert!(captured[0].mcp_servers.is_empty());
+    assert!(h.staged.lock().unwrap().is_empty());
 }
 
 /// Fail closed at create: a `vault_ids` entry naming no vault 404s with the
@@ -564,7 +914,10 @@ async fn failing_prepare_session_fails_the_create_with_the_mapped_envelope() {
             &h.app,
             "POST",
             "/v1/sessions",
-            Some(json!({ "agent": "calc-agent" })),
+            Some(json!({
+                "agent": "calc-agent",
+                "mcp_servers": [{"name": "calc", "url": MCP_URL}]
+            })),
         )
         .await;
         assert_eq!(s, status, "{kind:?}");
@@ -573,7 +926,789 @@ async fn failing_prepare_session_fails_the_create_with_the_mapped_envelope() {
         // Fail closed: the failed create left no session behind.
         let (s, _) = call(&h.app, "GET", "/v1/sessions/sesn_0", None).await;
         assert_eq!(s, StatusCode::NOT_FOUND, "no half-provisioned session");
+        let failed = h
+            .repo
+            .get("sesn_0")
+            .await
+            .expect("recoverable failed intent");
+        assert_eq!(
+            failed.mcp.attachments[0].state,
+            awaken_session_contract::McpAttachmentState::Failed,
+            "A2: {kind:?}"
+        );
+        assert!(failed.visible_mcp_servers().is_empty(), "A2: {kind:?}");
     }
+}
+
+#[tokio::test]
+async fn create_without_mcp_has_no_attachment_effect() {
+    let h = harness(None);
+    let (status, body) = call(
+        &h.app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({"agent": "plain-agent"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "A3");
+    assert_eq!(body["agent"]["mcp_servers"], json!([]), "A3");
+    let durable = h.repo.get("sesn_0").await.expect("A3 aggregate");
+    assert!(durable.mcp.attachments.is_empty(), "A3");
+}
+
+/// Causal graph for the public full-replacement command:
+///
+/// ```text
+/// parse + normalize desired set
+///   -> same recoverable fingerprint? --yes--> no-op
+///   -> root-CAS Requested intent
+///   -> root-CAS exact lease claim
+///   -> stage + validate receipt
+///      -> failure/mismatch: Failed; keep previous Active
+///      -> success: activation CAS -> publish -> exact old drain -> Removed
+/// ```
+///
+/// The cases below are generated from this decision table, in rule order:
+///
+/// | Rule | desired | current | stage | receipt | Effect |
+/// |---|---|---|---|---|---|
+/// | H1 | same | Active | - | - | convergent no-op; no new generation/effect |
+/// | H2 | add | absent | success | exact | gen1 Active; publish |
+/// | H3 | replace | Active gen1 | success | exact | gen2 Active; gen1 drain+Removed |
+/// | H4 | remove | Active | - | - | exact drain+Removed; empty projection |
+/// | H5 | replace | Active gen1 | failure | - | gen2 Failed; gen1 remains Active |
+/// | H6 | retry same | Failed gen2 + Active gen1 | success | exact | gen3 Active |
+/// | H7 | add | absent | success | stale | Failed; hidden; compensating drain |
+/// | H8 | malformed | any | - | - | 400; no Runtime effect |
+#[tokio::test]
+async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
+    let h = hot_harness();
+    let (status, created) = call(
+        &h.app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({"agent": "hot-agent"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let id = created["id"].as_str().unwrap();
+
+    let server_a = json!({"name": "calc", "type": "url", "url": "https://a.example/mcp"});
+    let (status, added) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        Some(json!({"agent": {"mcp_servers": [server_a.clone()]}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "H2");
+    assert_eq!(
+        added["agent"]["mcp_servers"],
+        json!([server_a.clone()]),
+        "H2"
+    );
+    {
+        let state = h.state.lock().unwrap();
+        assert_eq!(state.staged.len(), 1, "H2");
+        assert_eq!(state.staged[0].generation.generation.0, 1, "H2");
+        assert_eq!(state.published.len(), 1, "H2");
+        assert_eq!(
+            state.durable_at_stage[0].mcp.attachments[0].state,
+            awaken_session_contract::McpAttachmentState::Realizing,
+            "H2 claim before I/O"
+        );
+    }
+
+    let before = {
+        let state = h.state.lock().unwrap();
+        (
+            state.staged.len(),
+            state.published.len(),
+            state.drained.len(),
+        )
+    };
+    let (status, replayed) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        Some(json!({"agent": {"mcp_servers": [server_a.clone()]}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "H1");
+    assert_eq!(replayed["agent"]["mcp_servers"], json!([server_a]), "H1");
+    {
+        let state = h.state.lock().unwrap();
+        assert_eq!(
+            (
+                state.staged.len(),
+                state.published.len(),
+                state.drained.len()
+            ),
+            before,
+            "H1"
+        );
+    }
+
+    let server_b = json!({"name": "calc", "type": "url", "url": "https://b.example/mcp"});
+    let (status, replaced) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        Some(json!({"agent": {"mcp_servers": [server_b.clone()]}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "H3");
+    assert_eq!(replaced["agent"]["mcp_servers"], json!([server_b]), "H3");
+    {
+        let state = h.state.lock().unwrap();
+        assert_eq!(
+            state.staged.last().unwrap().generation.generation.0,
+            2,
+            "H3"
+        );
+        assert_eq!(state.published.last().unwrap().generation.0, 2, "H3");
+        assert_eq!(state.drained.last().unwrap().generation.0, 1, "H3");
+    }
+    let durable = h.repo.get(id).await.expect("H3 durable");
+    assert_eq!(durable.visible_mcp_servers().len(), 1, "H3");
+    assert_eq!(
+        durable.mcp.attachments[0].state,
+        awaken_session_contract::McpAttachmentState::Removed,
+        "H3"
+    );
+    assert_eq!(
+        durable.mcp.attachments[1].state,
+        awaken_session_contract::McpAttachmentState::Active,
+        "H3"
+    );
+
+    let (status, removed) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        Some(json!({"agent": {"mcp_servers": []}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "H4");
+    assert_eq!(removed["agent"]["mcp_servers"], json!([]), "H4");
+    assert_eq!(
+        h.state.lock().unwrap().drained.last().unwrap().generation.0,
+        2,
+        "H4"
+    );
+
+    let failed = hot_harness();
+    let (status, created) = call(
+        &failed.app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({
+            "agent": "hot-agent",
+            "mcp_servers": [{"name": "calc", "url": "https://old.example/mcp"}]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let failed_id = created["id"].as_str().unwrap();
+    failed.state.lock().unwrap().mode = HotStageMode::FailNext;
+    let desired = json!({"name": "calc", "type": "url", "url": "https://new.example/mcp"});
+    let (status, _) = call(
+        &failed.app,
+        "POST",
+        &format!("/v1/sessions/{failed_id}"),
+        Some(json!({"agent": {"mcp_servers": [desired.clone()]}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "H5");
+    let durable = failed.repo.get(failed_id).await.expect("H5 durable");
+    assert_eq!(
+        durable.mcp.attachments[0].state,
+        awaken_session_contract::McpAttachmentState::Active,
+        "H5"
+    );
+    assert_eq!(
+        durable.mcp.attachments[1].state,
+        awaken_session_contract::McpAttachmentState::Failed,
+        "H5"
+    );
+    assert_eq!(
+        durable.visible_mcp_servers()[0]["url"],
+        "https://old.example/mcp",
+        "H5"
+    );
+
+    let (status, retried) = call(
+        &failed.app,
+        "POST",
+        &format!("/v1/sessions/{failed_id}"),
+        Some(json!({"agent": {"mcp_servers": [desired.clone()]}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "H6");
+    assert_eq!(retried["agent"]["mcp_servers"], json!([desired]), "H6");
+    assert_eq!(
+        failed
+            .state
+            .lock()
+            .unwrap()
+            .staged
+            .last()
+            .unwrap()
+            .generation
+            .generation
+            .0,
+        3,
+        "H6"
+    );
+
+    let mismatch = hot_harness();
+    let (status, created) = call(
+        &mismatch.app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({"agent": "hot-agent"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let mismatch_id = created["id"].as_str().unwrap();
+    mismatch.state.lock().unwrap().mode = HotStageMode::MismatchNext;
+    let (status, _) = call(
+        &mismatch.app,
+        "POST",
+        &format!("/v1/sessions/{mismatch_id}"),
+        Some(
+            json!({"agent": {"mcp_servers": [{"name": "bad", "url": "https://bad.example/mcp"}]}}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "H7");
+    let durable = mismatch.repo.get(mismatch_id).await.expect("H7 durable");
+    assert_eq!(
+        durable.mcp.attachments[0].state,
+        awaken_session_contract::McpAttachmentState::Failed,
+        "H7"
+    );
+    assert!(durable.visible_mcp_servers().is_empty(), "H7");
+
+    let effects = {
+        let state = mismatch.state.lock().unwrap();
+        (
+            state.staged.len(),
+            state.published.len(),
+            state.drained.len(),
+        )
+    };
+    let (status, _) = call(
+        &mismatch.app,
+        "POST",
+        &format!("/v1/sessions/{mismatch_id}"),
+        Some(json!({"agent": {"mcp_servers": [{"name": "missing-url"}]}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "H8");
+    let state = mismatch.state.lock().unwrap();
+    assert_eq!(
+        (
+            state.staged.len(),
+            state.published.len(),
+            state.drained.len()
+        ),
+        effects,
+        "H8"
+    );
+}
+
+/// Recovery uses the same stage/publish/drain coordinator as create and hot
+/// replacement. These cases are generated from the durable-state decision table:
+///
+/// ```text
+/// repository recovery index -> nonterminal state
+///   Requested/Realizing/Active -> new lease claim -> stage -> activate if needed -> publish
+///   Draining -> exact idempotent drain -> Removed
+///   Failed/Removed -> absent from index
+/// ```
+///
+/// | Rule | Durable state | Runtime result | Effect |
+/// |---|---|---|---|
+/// | R1 | Requested | success | Active + published under new lease |
+/// | R2 | Active | success | restaged + republished; remains Active |
+/// | R3 | Draining | success/unknown | Removed; no stage/publish |
+/// | R4 | Removed | - | not selected; no Runtime effect |
+/// | R5 | Requested | stage failure | remains recoverable Realizing; no publish |
+/// | R6 | prior R5 Realizing | retry success | new claim then Active + published |
+#[tokio::test]
+async fn mcp_recovery_tests_are_generated_from_decision_table() {
+    let h = hot_harness();
+    let (status, created) = call(
+        &h.app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({"agent": "recovery-agent"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let id = created["id"].as_str().unwrap();
+    let mut requested = h.repo.get(id).await.unwrap();
+    requested
+        .mcp
+        .request_full_replacement(
+            vec![awaken_session_contract::McpAttachmentDraft {
+                name: "docs".into(),
+                target: awaken_session_contract::McpTarget::new("https://docs.example/mcp"),
+                credential: None,
+                origin: awaken_session_contract::McpAttachmentOrigin::Session,
+            }],
+            None,
+        )
+        .unwrap();
+    h.repo.save_owned("default", requested).await;
+
+    assert_eq!(h.managed.reconcile_mcp_attachments().await, 1, "R1");
+    let active = h.repo.get(id).await.unwrap();
+    assert_eq!(
+        active.mcp.attachments[0].state,
+        awaken_session_contract::McpAttachmentState::Active,
+        "R1"
+    );
+    let first_epoch = active.realization.as_ref().unwrap().epoch;
+    assert_eq!(h.state.lock().unwrap().published.len(), 1, "R1");
+
+    assert_eq!(h.managed.reconcile_mcp_attachments().await, 1, "R2");
+    let active = h.repo.get(id).await.unwrap();
+    assert!(
+        active.realization.as_ref().unwrap().epoch > first_epoch,
+        "R2"
+    );
+    assert_eq!(
+        active.mcp.attachments[0].state,
+        awaken_session_contract::McpAttachmentState::Active,
+        "R2"
+    );
+    assert_eq!(h.state.lock().unwrap().published.len(), 2, "R2");
+
+    let mut draining = active;
+    let attachment_id = draining.mcp.attachments[0].attachment_id.clone();
+    draining
+        .mcp
+        .begin_drain(&attachment_id, awaken_session_contract::McpGeneration(1))
+        .unwrap();
+    h.repo.save_owned("default", draining).await;
+    let staged_before = h.state.lock().unwrap().staged.len();
+    assert_eq!(h.managed.reconcile_mcp_attachments().await, 1, "R3");
+    let removed = h.repo.get(id).await.unwrap();
+    assert_eq!(
+        removed.mcp.attachments[0].state,
+        awaken_session_contract::McpAttachmentState::Removed,
+        "R3"
+    );
+    assert_eq!(h.state.lock().unwrap().staged.len(), staged_before, "R3");
+
+    let effects = {
+        let state = h.state.lock().unwrap();
+        (
+            state.staged.len(),
+            state.published.len(),
+            state.drained.len(),
+        )
+    };
+    assert_eq!(h.managed.reconcile_mcp_attachments().await, 0, "R4");
+    let state = h.state.lock().unwrap();
+    assert_eq!(
+        (
+            state.staged.len(),
+            state.published.len(),
+            state.drained.len()
+        ),
+        effects,
+        "R4"
+    );
+    drop(state);
+
+    let (status, created) = call(
+        &h.app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({"agent": "retry-agent"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let retry_id = created["id"].as_str().unwrap();
+    let mut retry = h.repo.get(retry_id).await.unwrap();
+    retry
+        .mcp
+        .request_full_replacement(
+            vec![awaken_session_contract::McpAttachmentDraft {
+                name: "retry".into(),
+                target: awaken_session_contract::McpTarget::new("https://retry.example/mcp"),
+                credential: None,
+                origin: awaken_session_contract::McpAttachmentOrigin::Session,
+            }],
+            None,
+        )
+        .unwrap();
+    h.repo.save_owned("default", retry).await;
+    h.state.lock().unwrap().mode = HotStageMode::FailNext;
+    assert_eq!(h.managed.reconcile_mcp_attachments().await, 0, "R5");
+    assert_eq!(
+        h.repo.get(retry_id).await.unwrap().mcp.attachments[0].state,
+        awaken_session_contract::McpAttachmentState::Realizing,
+        "R5"
+    );
+
+    assert_eq!(h.managed.reconcile_mcp_attachments().await, 1, "R6");
+    assert_eq!(
+        h.repo.get(retry_id).await.unwrap().mcp.attachments[0].state,
+        awaken_session_contract::McpAttachmentState::Active,
+        "R6"
+    );
+}
+
+/// External acknowledgement gaps are derived from this cause graph:
+///
+/// ```text
+/// activation CAS -> publish
+///   fail -> Active + unacknowledged -> same desired retry restages/publishes
+/// drain command
+///   fail -> Draining -> same desired retry drains idempotently -> Removed
+/// ```
+///
+/// | Rule | Durable state | Failed effect | Retry | Effect |
+/// |---|---|---|---|---|
+/// | P1 | Active/unacknowledged | publish | none | error; no false success |
+/// | P2 | Active/unacknowledged | prior publish | same desired | same gen published+acknowledged |
+/// | P3 | Draining | drain | none | error; cleanup remains durable |
+/// | P4 | Draining | prior drain | same desired | exact drain replay + Removed |
+#[tokio::test]
+async fn publication_and_drain_gap_tests_are_generated_from_decision_table() {
+    let h = hot_harness();
+    let (status, created) = call(
+        &h.app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({"agent": "gap-agent"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let id = created["id"].as_str().unwrap();
+    let desired = json!({"name": "gap", "type": "url", "url": "https://gap.example/mcp"});
+
+    h.state.lock().unwrap().fail_publish_next = true;
+    let (status, _) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        Some(json!({"agent": {"mcp_servers": [desired.clone()]}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "P1");
+    let unacknowledged = h.repo.get(id).await.unwrap();
+    assert_eq!(
+        unacknowledged.mcp.attachments[0].state,
+        awaken_session_contract::McpAttachmentState::Active,
+        "P1"
+    );
+    assert!(
+        !unacknowledged.mcp.attachments[0].publication_acknowledged,
+        "P1"
+    );
+
+    let (status, recovered) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        Some(json!({"agent": {"mcp_servers": [desired.clone()]}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "P2");
+    assert_eq!(recovered["agent"]["mcp_servers"], json!([desired]), "P2");
+    let acknowledged = h.repo.get(id).await.unwrap();
+    assert_eq!(acknowledged.mcp.attachments.len(), 1, "P2 same generation");
+    assert!(
+        acknowledged.mcp.attachments[0].publication_acknowledged,
+        "P2"
+    );
+
+    h.state.lock().unwrap().fail_drain_next = true;
+    let (status, _) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        Some(json!({"agent": {"mcp_servers": []}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "P3");
+    assert_eq!(
+        h.repo.get(id).await.unwrap().mcp.attachments[0].state,
+        awaken_session_contract::McpAttachmentState::Draining,
+        "P3"
+    );
+
+    let (status, removed) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        Some(json!({"agent": {"mcp_servers": []}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "P4");
+    assert_eq!(removed["agent"]["mcp_servers"], json!([]), "P4");
+    assert_eq!(
+        h.repo.get(id).await.unwrap().mcp.attachments[0].state,
+        awaken_session_contract::McpAttachmentState::Removed,
+        "P4"
+    );
+}
+
+/// HTTP command reliability is generated from this graph:
+///
+/// ```text
+/// parse headers -> prior durable receipt?
+///   same key/hash -> replay; different hash -> conflict
+///   absent -> If-Match exact? -> bounded CAS command -> atomic final receipt
+/// ```
+///
+/// | Rule | Key | Hash | If-Match | Effect |
+/// |---|---|---|---|---|
+/// | I1 | new | same | exact | apply once + ETag + operation id |
+/// | I2 | same | same | omitted | replay; revision/effects unchanged |
+/// | I3 | same | different | omitted | 409; no effect |
+/// | I4 | absent | - | stale | 409 before Runtime effect |
+/// | I5 | absent | - | malformed | 400 before Runtime effect |
+/// | I6 | absent | - | exact | mutable tools persist in root aggregate |
+#[tokio::test]
+async fn update_precondition_and_idempotency_tests_are_generated_from_decision_table() {
+    let h = hot_harness();
+    let (status, create_headers, created) = call_with_headers(
+        &h.app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({"agent": "idempotent-agent"})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let id = created["id"].as_str().unwrap();
+    let etag = create_headers["etag"].to_str().unwrap().to_string();
+    let desired = json!({"name": "idem", "type": "url", "url": "https://idem.example/mcp"});
+
+    let before = h.state.lock().unwrap().staged.len();
+    let (status, _, _) = call_with_headers(
+        &h.app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        Some(json!({"agent": {"mcp_servers": [desired.clone()]}})),
+        &[("if-match", "\"0\"")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "I4");
+    assert_eq!(h.state.lock().unwrap().staged.len(), before, "I4");
+
+    let (status, applied_headers, applied) = call_with_headers(
+        &h.app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        Some(json!({"agent": {"mcp_servers": [desired.clone()]}})),
+        &[("idempotency-key", "command-1"), ("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "I1");
+    assert_eq!(
+        applied["agent"]["mcp_servers"],
+        json!([desired.clone()]),
+        "I1"
+    );
+    assert!(applied_headers.contains_key("etag"), "I1");
+    assert!(applied_headers.contains_key("x-awaken-operation-id"), "I1");
+    let applied_etag = applied_headers["etag"].clone();
+    let effects = {
+        let state = h.state.lock().unwrap();
+        (
+            state.staged.len(),
+            state.published.len(),
+            state.drained.len(),
+        )
+    };
+
+    let (status, replay_headers, replayed) = call_with_headers(
+        &h.app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        Some(json!({"agent": {"mcp_servers": [desired.clone()]}})),
+        &[("idempotency-key", "command-1")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "I2");
+    assert_eq!(replayed["agent"]["mcp_servers"], json!([desired]), "I2");
+    assert_eq!(replay_headers["etag"], applied_etag, "I2");
+    let state = h.state.lock().unwrap();
+    assert_eq!(
+        (
+            state.staged.len(),
+            state.published.len(),
+            state.drained.len()
+        ),
+        effects,
+        "I2"
+    );
+    drop(state);
+
+    let (status, _, _) = call_with_headers(
+        &h.app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        Some(json!({"agent": {"mcp_servers": []}})),
+        &[("idempotency-key", "command-1")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "I3");
+
+    let (status, _, _) = call_with_headers(
+        &h.app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        Some(json!({"title": "invalid precondition"})),
+        &[("if-match", "not-an-etag")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "I5");
+
+    let current_etag = replay_headers["etag"].to_str().unwrap();
+    let tools = json!([{"name": "client_tool", "description": "durable"}]);
+    let (status, _, updated) = call_with_headers(
+        &h.app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        Some(json!({"agent": {"tools": tools.clone()}})),
+        &[("if-match", current_etag)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "I6");
+    assert_eq!(updated["agent"]["tools"], tools, "I6");
+    assert_eq!(
+        h.repo.get(id).await.unwrap().agent_tools,
+        Some(tools.as_array().unwrap().clone()),
+        "I6"
+    );
+}
+
+/// CAS retry decisions are generated from `conflict × explicit precondition`:
+///
+/// | Rule | First root CAS | If-Match | Effect |
+/// |---|---|---|---|
+/// | C1 | conflict | absent | re-read, reapply same command, one generation/effect |
+/// | C2 | conflict | exact at request start | return 409; do not weaken caller fence |
+/// | C3 | publication-ack CAS conflict | absent | recover same generation; no duplicate |
+/// | C4 | activation CAS conflict | exact at request start | drain staged generation + 409 |
+#[tokio::test]
+async fn update_cas_retry_tests_are_generated_from_decision_table() {
+    let inner = Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("open conflict repository"),
+    );
+    let conflicts = Arc::new(ConflictOnceRepository {
+        inner,
+        commits_until_conflict: AtomicUsize::new(0),
+    });
+    let h = hot_harness_with_repo(conflicts.clone());
+    let (status, _, created) = call_with_headers(
+        &h.app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({"agent": "cas-agent"})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let id = created["id"].as_str().unwrap();
+
+    conflicts.commits_until_conflict.store(1, Ordering::SeqCst);
+    let desired = json!({"name": "cas", "type": "url", "url": "https://cas.example/mcp"});
+    let (status, _, updated) = call_with_headers(
+        &h.app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        Some(json!({"agent": {"mcp_servers": [desired.clone()]}})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "C1");
+    assert_eq!(updated["agent"]["mcp_servers"], json!([desired]), "C1");
+    assert_eq!(h.state.lock().unwrap().staged.len(), 1, "C1");
+    assert_eq!(h.repo.get(id).await.unwrap().mcp.attachments.len(), 1, "C1");
+
+    let (status, get_headers, _) =
+        call_with_headers(&h.app, "GET", &format!("/v1/sessions/{id}"), None, &[]).await;
+    assert_eq!(status, StatusCode::OK);
+    let etag = get_headers["etag"].to_str().unwrap();
+    let effects = h.state.lock().unwrap().staged.len();
+    conflicts.commits_until_conflict.store(1, Ordering::SeqCst);
+    let (status, _, _) = call_with_headers(
+        &h.app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        Some(json!({"title": "must-not-apply"})),
+        &[("if-match", etag)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "C2");
+    assert_eq!(h.state.lock().unwrap().staged.len(), effects, "C2");
+    assert_ne!(
+        h.repo.get(id).await.unwrap().title.as_deref(),
+        Some("must-not-apply"),
+        "C2"
+    );
+
+    let replacement = json!({"name": "cas", "type": "url", "url": "https://cas-2.example/mcp"});
+    conflicts.commits_until_conflict.store(4, Ordering::SeqCst);
+    let staged_before = h.state.lock().unwrap().staged.len();
+    let (status, _, updated) = call_with_headers(
+        &h.app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        Some(json!({"agent": {"mcp_servers": [replacement.clone()]}})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "C3");
+    assert_eq!(updated["agent"]["mcp_servers"], json!([replacement]), "C3");
+    let durable = h.repo.get(id).await.unwrap();
+    assert_eq!(
+        durable.mcp.attachments.len(),
+        2,
+        "C3 no duplicate generation"
+    );
+    assert!(durable.mcp.attachments[1].publication_acknowledged, "C3");
+    assert_eq!(
+        h.state.lock().unwrap().staged.len(),
+        staged_before + 2,
+        "C3 restages exact gen2"
+    );
+
+    let (status, get_headers, _) =
+        call_with_headers(&h.app, "GET", &format!("/v1/sessions/{id}"), None, &[]).await;
+    assert_eq!(status, StatusCode::OK);
+    let etag = get_headers["etag"].to_str().unwrap();
+    conflicts.commits_until_conflict.store(3, Ordering::SeqCst);
+    let drain_before = h.state.lock().unwrap().drained.len();
+    let (status, _, _) = call_with_headers(
+        &h.app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        Some(json!({"agent": {"mcp_servers": [{"name": "cas", "url": "https://cas-3.example/mcp"}]}})),
+        &[("if-match", etag)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "C4");
+    let durable = h.repo.get(id).await.unwrap();
+    assert_eq!(
+        durable.mcp.attachments.last().unwrap().state,
+        awaken_session_contract::McpAttachmentState::Realizing,
+        "C4"
+    );
+    assert_eq!(
+        h.state.lock().unwrap().drained.len(),
+        drain_before + 1,
+        "C4 compensation"
+    );
 }
 
 /// A fresh process restarts the session sequence at 0, but the store may hold
@@ -676,6 +1811,9 @@ async fn create_session_fires_the_lifecycle_sink_with_the_owner() {
     let sink = Arc::new(CapturingSink::default());
     let state = ManagedState::new(PreparingFake {
         captured: Arc::new(Mutex::new(Vec::new())),
+        staged: Arc::new(Mutex::new(Vec::new())),
+        observed_durable: Arc::new(Mutex::new(Vec::new())),
+        repo: None,
         fail_with: None,
     })
     .with_lifecycle_sink(sink.clone());
@@ -732,6 +1870,9 @@ async fn archive_session_fires_the_terminated_fact_once() {
     let sink = Arc::new(CapturingSink::default());
     let state = ManagedState::new(PreparingFake {
         captured: Arc::new(Mutex::new(Vec::new())),
+        staged: Arc::new(Mutex::new(Vec::new())),
+        observed_durable: Arc::new(Mutex::new(Vec::new())),
+        repo: None,
         fail_with: None,
     })
     .with_lifecycle_sink(sink.clone());
@@ -798,6 +1939,9 @@ async fn delete_session_fires_the_deleted_fact_with_the_owner() {
     let sink = Arc::new(CapturingSink::default());
     let state = ManagedState::new(PreparingFake {
         captured: Arc::new(Mutex::new(Vec::new())),
+        staged: Arc::new(Mutex::new(Vec::new())),
+        observed_durable: Arc::new(Mutex::new(Vec::new())),
+        repo: None,
         fail_with: None,
     })
     .with_lifecycle_sink(sink.clone());

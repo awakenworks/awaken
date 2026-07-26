@@ -38,7 +38,7 @@ use awaken_cli::build_management_router_with_model;
 use awaken_credential_vault::{InMemorySecretStore, SecretRef, SecretStore};
 use awaken_ext_mcp::{AuthChallenge, Credential, CredentialRefresher};
 use awaken_protocol_managed::{McpProbe, McpProbeStatus, TokenEndpointAuthBinding};
-use awaken_runtime_host::{ExtMcpProbe, PreparedMcpRefresh, VaultRefresher};
+use awaken_runtime_host::{ExtMcpProbe, McpRefreshMaterial, VaultRefresher};
 use awaken_scenario_host::McpToolModel;
 
 // This test drives the REAL management router but needs a deterministic model that
@@ -817,7 +817,7 @@ async fn vault_refresher_fails_closed_when_the_client_secret_is_missing() {
         .await
         .unwrap();
 
-    let refresher = VaultRefresher::new(PreparedMcpRefresh {
+    let refresher = VaultRefresher::new(McpRefreshMaterial {
         token_endpoint: format!("{url}token"),
         client_id: "cli-1".to_string(),
         token_endpoint_auth: TokenEndpointAuthBinding::ClientSecretBasic {
@@ -872,7 +872,7 @@ async fn vault_refresher_reseals_the_access_token_and_a_rotated_refresh_token() 
         .await
         .unwrap();
 
-    let refresher = VaultRefresher::new(PreparedMcpRefresh {
+    let refresher = VaultRefresher::new(McpRefreshMaterial {
         token_endpoint: format!("{url}token"),
         client_id: "cli-1".to_string(),
         token_endpoint_auth: TokenEndpointAuthBinding::None,
@@ -933,7 +933,7 @@ async fn vault_refresher_fails_closed_and_reseals_nothing_on_a_rejected_grant() 
         .await
         .unwrap();
 
-    let refresher = VaultRefresher::new(PreparedMcpRefresh {
+    let refresher = VaultRefresher::new(McpRefreshMaterial {
         token_endpoint: format!("{url}token"),
         client_id: "cli-1".to_string(),
         token_endpoint_auth: TokenEndpointAuthBinding::None,

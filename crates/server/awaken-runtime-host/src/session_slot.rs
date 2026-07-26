@@ -7,9 +7,30 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::host::PreparedMcpServer;
 use crate::memory::BoundMemory;
 use crate::provisioning::StagedResources;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum McpProjectionState {
+    Staged,
+    Active,
+    Draining,
+    Removed,
+}
+
+/// Process-local effect for one exact durable MCP generation. This is live
+/// material/connection state only; desired state remains in the Session
+/// aggregate and is never reconstructed from this slot.
+#[derive(Clone)]
+pub(crate) struct McpGenerationProjection {
+    pub generation: awaken_protocol_managed::McpGenerationRef,
+    pub realization_id: String,
+    pub stage_idempotency_key: String,
+    pub receipt: awaken_protocol_managed::McpRealizationReceipt,
+    pub server: Option<crate::mcp::McpTransportMaterial>,
+    pub native_wiring: Option<crate::mcp::McpWiring>,
+    pub state: McpProjectionState,
+}
 
 #[derive(Default)]
 pub(crate) struct SessionRuntimeSlot {
@@ -22,7 +43,7 @@ pub(crate) struct SessionRuntimeSlot {
     pub model_ref: Option<String>,
     pub runtime_adapter: Option<String>,
     pub memory: Option<Arc<BoundMemory>>,
-    pub mcp: Vec<PreparedMcpServer>,
+    pub mcp: Vec<McpGenerationProjection>,
     /// Claim-bound additions supplied by the embedding application. The host
     /// realizes these through the same Session environment as built-in resources.
     pub application: Option<crate::ApplicationSessionPlan>,

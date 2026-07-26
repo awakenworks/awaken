@@ -74,6 +74,7 @@ fn resource_catalog() -> std::sync::Arc<SqliteAdminStore> {
 #[derive(Clone, Default)]
 struct AcceptingFake {
     prepared: std::sync::Arc<std::sync::Mutex<Vec<SessionInit>>>,
+    staged: std::sync::Arc<std::sync::Mutex<Vec<awaken_session_contract::StageMcpAttachment>>>,
     applied:
         std::sync::Arc<std::sync::Mutex<Vec<awaken_session_contract::ResolvedSessionResources>>>,
     fail_next_apply: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -177,6 +178,33 @@ impl SessionRuntime for AcceptingFake {
         self.prepared.lock().unwrap().push(init);
         Ok(())
     }
+    async fn stage_mcp_attachment(
+        &self,
+        request: awaken_session_contract::StageMcpAttachment,
+    ) -> Result<awaken_session_contract::McpRealizationReceipt, RunError> {
+        self.staged.lock().unwrap().push(request.clone());
+        Ok(awaken_session_contract::McpRealizationReceipt {
+            generation: request.generation,
+            realization_id: request.realization_id,
+            selected_plaintext_holder: request.selected_plaintext_holder,
+            actual_realization_kind: Some(
+                awaken_credential_contract::CredentialRealizationKind::WorkerRelay,
+            ),
+            receipt_fingerprint: "test-receipt".into(),
+        })
+    }
+    async fn publish_mcp_generation(
+        &self,
+        _generation: awaken_session_contract::McpGenerationRef,
+    ) -> Result<(), RunError> {
+        Ok(())
+    }
+    async fn drain_mcp_generation(
+        &self,
+        _generation: awaken_session_contract::McpGenerationRef,
+    ) -> Result<(), RunError> {
+        Ok(())
+    }
     fn capabilities_for(&self, _thread: &str) -> awaken_protocol_managed::AgentCapabilities {
         awaken_protocol_managed::AgentCapabilities {
             delegates: self
@@ -270,6 +298,7 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
 async fn session_inherits_published_agent_integrations_and_echoes_the_effective_set() {
     let runtime = AcceptingFake::default();
     let prepared = runtime.prepared.clone();
+    let staged = runtime.staged.clone();
     let state =
         ManagedState::new(runtime).with_config_source(std::sync::Arc::new(AgentWithIntegrations));
     let app = router(std::sync::Arc::new(state));
@@ -288,12 +317,21 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
         prepared.lock().unwrap()[0].delegate_ids,
         vec!["researcher".to_string()]
     );
-    let prepared = prepared.lock().unwrap();
+    let staged = staged.lock().unwrap();
     assert_eq!(
-        prepared[0].mcp_servers[0].credential_source_id.as_deref(),
+        staged[0]
+            .credential
+            .as_ref()
+            .map(|access| access.credential.id.as_str()),
         Some("cred:workspace:docs")
     );
-    assert_eq!(prepared[0].mcp_servers[0].credential_revision, Some(7));
+    assert_eq!(
+        staged[0]
+            .credential
+            .as_ref()
+            .map(|access| access.credential.revision),
+        Some(7)
+    );
 }
 
 async fn app_with_session() -> (Router, String) {

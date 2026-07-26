@@ -9,27 +9,48 @@ pub use awaken_runtime_contract::CommitOperationId
 pub use awaken_runtime_contract::CommitPayloadHash
 pub use awaken_runtime_contract::CommitReceipt
 pub use awaken_runtime_contract::CommitRecord
+pub use awaken_runtime_contract::CredentialAccess
+pub use awaken_runtime_contract::CredentialAdmissionError
+pub use awaken_runtime_contract::CredentialEnvelope
+pub use awaken_runtime_contract::CredentialExecutionPolicy
+pub use awaken_runtime_contract::CredentialMaterialError
+pub use awaken_runtime_contract::CredentialMaterialResolver
+pub use awaken_runtime_contract::CredentialMaterialSource
+pub use awaken_runtime_contract::CredentialRealizationCapabilities
+pub use awaken_runtime_contract::CredentialRealizationKind
+pub use awaken_runtime_contract::CredentialRealizationPlan
+pub use awaken_runtime_contract::CredentialRealizationProfile
+pub use awaken_runtime_contract::CredentialRef
+pub use awaken_runtime_contract::CredentialRefreshAccess
+pub use awaken_runtime_contract::CredentialUsage
 pub use awaken_runtime_contract::DelegationLimits
 pub use awaken_runtime_contract::EndCause
 pub use awaken_runtime_contract::MergePolicy
 pub use awaken_runtime_contract::Message
 pub use awaken_runtime_contract::MessageId
+pub use awaken_runtime_contract::ModelExposurePolicy
+pub use awaken_runtime_contract::PlaintextBoundary
+pub use awaken_runtime_contract::PlaintextHolder
+pub use awaken_runtime_contract::ResolvedCredentialMaterial
 pub use awaken_runtime_contract::ResumeTicket
 pub use awaken_runtime_contract::Role
 pub use awaken_runtime_contract::RunDisposition
 pub use awaken_runtime_contract::RunId
 pub use awaken_runtime_contract::RunState
 pub use awaken_runtime_contract::Scope
+pub use awaken_runtime_contract::SealedCredentialEnvelopeRef
 pub use awaken_runtime_contract::StateCommand
 pub use awaken_runtime_contract::StateKey
 pub use awaken_runtime_contract::Store
 pub use awaken_runtime_contract::ThreadCommit
 pub use awaken_runtime_contract::ThreadId
 pub use awaken_runtime_contract::ThreadReader
+pub use awaken_runtime_contract::TokenEndpointAuth
 pub use awaken_runtime_contract::TranscriptRange
 pub use awaken_runtime_contract::TranscriptSliceSpec
 pub use awaken_runtime_contract::TranscriptSnapshotRef
 pub use awaken_runtime_contract::TranscriptView
+pub use awaken_runtime_contract::TrustDomainRef
 pub mod awaken_runtime_contract::activation
 pub struct awaken_runtime_contract::activation::RunActivation
 pub awaken_runtime_contract::activation::RunActivation::delegation_origin: core::option::Option<awaken_agent_contract::agent::delegation::DelegationOrigin>
@@ -52,7 +73,7 @@ pub awaken_runtime_contract::agent_bindings::AgentBindings::delegate_ids: alloc:
 pub awaken_runtime_contract::agent_bindings::AgentBindings::mcp_servers: alloc::vec::Vec<awaken_runtime_contract::agent_bindings::AgentMcpServerBinding>
 pub awaken_runtime_contract::agent_bindings::AgentBindings::skill_ids: alloc::vec::Vec<alloc::string::String>
 pub struct awaken_runtime_contract::agent_bindings::AgentMcpServerBinding
-pub awaken_runtime_contract::agent_bindings::AgentMcpServerBinding::credential: core::option::Option<awaken_runtime_contract::credential::CredentialRef>
+pub awaken_runtime_contract::agent_bindings::AgentMcpServerBinding::credential: core::option::Option<awaken_credential_contract::CredentialRef>
 pub awaken_runtime_contract::agent_bindings::AgentMcpServerBinding::name: alloc::string::String
 pub awaken_runtime_contract::agent_bindings::AgentMcpServerBinding::url: alloc::string::String
 pub struct awaken_runtime_contract::agent_bindings::ResolvedConfiguration
@@ -137,30 +158,7 @@ pub awaken_runtime_contract::control::LiveCommand::Wake::run_id: awaken_agent_co
 pub trait awaken_runtime_contract::control::LiveRunControl
 pub fn awaken_runtime_contract::control::LiveRunControl::deliver(&self, awaken_runtime_contract::control::LiveCommand) -> core::result::Result<(), awaken_runtime_contract::control::Error>
 pub mod awaken_runtime_contract::credential
-pub enum awaken_runtime_contract::credential::CredentialInjectionKind
-pub awaken_runtime_contract::credential::CredentialInjectionKind::Direct
-pub awaken_runtime_contract::credential::CredentialInjectionKind::Reference
-pub awaken_runtime_contract::credential::CredentialInjectionKind::SealedEnvelope
-pub awaken_runtime_contract::credential::CredentialInjectionKind::WorkerReference
-pub enum awaken_runtime_contract::credential::CredentialUsage
-pub awaken_runtime_contract::credential::CredentialUsage::ClientCertificate
-pub awaken_runtime_contract::credential::CredentialUsage::EnvironmentVariable
-pub awaken_runtime_contract::credential::CredentialUsage::EnvironmentVariable::name: alloc::string::String
-pub awaken_runtime_contract::credential::CredentialUsage::File
-pub awaken_runtime_contract::credential::CredentialUsage::File::path: alloc::string::String
-pub awaken_runtime_contract::credential::CredentialUsage::HttpHeader
-pub awaken_runtime_contract::credential::CredentialUsage::HttpHeader::name: alloc::string::String
-pub awaken_runtime_contract::credential::CredentialUsage::HttpHeader::scheme: core::option::Option<alloc::string::String>
-pub awaken_runtime_contract::credential::CredentialUsage::ProviderAdapter
-pub awaken_runtime_contract::credential::CredentialUsage::QueryParameter
-pub awaken_runtime_contract::credential::CredentialUsage::QueryParameter::name: alloc::string::String
-pub struct awaken_runtime_contract::credential::CredentialAccess
-pub awaken_runtime_contract::credential::CredentialAccess::credential: awaken_runtime_contract::credential::CredentialRef
-pub awaken_runtime_contract::credential::CredentialAccess::injection: awaken_runtime_contract::credential::CredentialInjectionKind
-pub awaken_runtime_contract::credential::CredentialAccess::usage: awaken_runtime_contract::credential::CredentialUsage
-pub struct awaken_runtime_contract::credential::CredentialRef
-pub awaken_runtime_contract::credential::CredentialRef::id: alloc::string::String
-pub awaken_runtime_contract::credential::CredentialRef::revision: u64
+pub use awaken_runtime_contract::credential::<<awaken_credential_contract::*>>
 pub mod awaken_runtime_contract::data_subject
 pub enum awaken_runtime_contract::data_subject::Purpose
 pub awaken_runtime_contract::data_subject::Purpose::EvalRecording
@@ -743,7 +741,7 @@ pub awaken_runtime_contract::resolved::ContextPolicy::KeepLast::keep_last: usize
 pub enum awaken_runtime_contract::resolved::ModelProvisioning
 pub awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor
 pub awaken_runtime_contract::resolved::ModelProvisioning::Provider
-pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::credential: core::option::Option<alloc::boxed::Box<awaken_runtime_contract::credential::CredentialAccess>>
+pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::credential: core::option::Option<alloc::boxed::Box<awaken_credential_contract::CredentialAccess>>
 pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::endpoint: alloc::boxed::Box<awaken_runtime_contract::resolved::InferenceEndpoint>
 pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::provider_ref: alloc::string::String
 pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::route_ref: alloc::string::String
@@ -772,7 +770,7 @@ pub awaken_runtime_contract::resolved::ResolvedModelCandidate::binding: awaken_r
 pub awaken_runtime_contract::resolved::ResolvedModelCandidate::provisioning: awaken_runtime_contract::resolved::ModelProvisioning
 impl awaken_runtime_contract::resolved::ResolvedModelCandidate
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::host(awaken_runtime_contract::resolved::ModelBinding) -> Self
-pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(awaken_runtime_contract::resolved::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, core::option::Option<awaken_runtime_contract::credential::CredentialAccess>, awaken_runtime_contract::resolved::InferenceEndpoint) -> Self
+pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(awaken_runtime_contract::resolved::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, core::option::Option<awaken_credential_contract::CredentialAccess>, awaken_runtime_contract::resolved::InferenceEndpoint) -> Self
 impl core::convert::AsRef<awaken_runtime_contract::resolved::ModelBinding> for awaken_runtime_contract::resolved::ResolvedModelCandidate
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::as_ref(&self) -> &awaken_runtime_contract::resolved::ModelBinding
 impl core::ops::deref::Deref for awaken_runtime_contract::resolved::ResolvedModelCandidate
@@ -1134,23 +1132,6 @@ pub awaken_runtime_contract::ContentKind::InputMessages
 pub awaken_runtime_contract::ContentKind::OutputMessages
 pub awaken_runtime_contract::ContentKind::ToolArguments
 pub awaken_runtime_contract::ContentKind::ToolResult
-pub enum awaken_runtime_contract::CredentialInjectionKind
-pub awaken_runtime_contract::CredentialInjectionKind::Direct
-pub awaken_runtime_contract::CredentialInjectionKind::Reference
-pub awaken_runtime_contract::CredentialInjectionKind::SealedEnvelope
-pub awaken_runtime_contract::CredentialInjectionKind::WorkerReference
-pub enum awaken_runtime_contract::CredentialUsage
-pub awaken_runtime_contract::CredentialUsage::ClientCertificate
-pub awaken_runtime_contract::CredentialUsage::EnvironmentVariable
-pub awaken_runtime_contract::CredentialUsage::EnvironmentVariable::name: alloc::string::String
-pub awaken_runtime_contract::CredentialUsage::File
-pub awaken_runtime_contract::CredentialUsage::File::path: alloc::string::String
-pub awaken_runtime_contract::CredentialUsage::HttpHeader
-pub awaken_runtime_contract::CredentialUsage::HttpHeader::name: alloc::string::String
-pub awaken_runtime_contract::CredentialUsage::HttpHeader::scheme: core::option::Option<alloc::string::String>
-pub awaken_runtime_contract::CredentialUsage::ProviderAdapter
-pub awaken_runtime_contract::CredentialUsage::QueryParameter
-pub awaken_runtime_contract::CredentialUsage::QueryParameter::name: alloc::string::String
 pub enum awaken_runtime_contract::DelegationFailureKind
 pub awaken_runtime_contract::DelegationFailureKind::Retryable
 pub awaken_runtime_contract::DelegationFailureKind::Terminal
@@ -1368,13 +1349,6 @@ pub fn awaken_runtime_contract::Contributions::register_dynamic_tool(&mut self, 
 pub fn awaken_runtime_contract::Contributions::register_gate(&mut self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>) -> &mut Self
 pub fn awaken_runtime_contract::Contributions::register_guard(&mut self, alloc::sync::Arc<dyn awaken_runtime_contract::RunEndGuard>) -> &mut Self
 pub fn awaken_runtime_contract::Contributions::register_hook(&mut self, alloc::sync::Arc<dyn awaken_runtime_contract::PhaseHook>) -> &mut Self
-pub struct awaken_runtime_contract::CredentialAccess
-pub awaken_runtime_contract::CredentialAccess::credential: awaken_runtime_contract::credential::CredentialRef
-pub awaken_runtime_contract::CredentialAccess::injection: awaken_runtime_contract::credential::CredentialInjectionKind
-pub awaken_runtime_contract::CredentialAccess::usage: awaken_runtime_contract::credential::CredentialUsage
-pub struct awaken_runtime_contract::CredentialRef
-pub awaken_runtime_contract::CredentialRef::id: alloc::string::String
-pub awaken_runtime_contract::CredentialRef::revision: u64
 pub struct awaken_runtime_contract::DataSubjectId(pub alloc::string::String)
 impl awaken_runtime_contract::data_subject::DataSubjectId
 pub fn awaken_runtime_contract::data_subject::DataSubjectId::as_str(&self) -> &str

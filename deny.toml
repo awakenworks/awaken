@@ -101,6 +101,7 @@ wrappers = [
     "awaken-runtime-contract",
     "awaken-session-contract",
     "awaken-protocol-managed",
+    "awaken-session-store",
 ]
 reason = "credential execution contract; only publishing/consuming contexts may depend on it"
 

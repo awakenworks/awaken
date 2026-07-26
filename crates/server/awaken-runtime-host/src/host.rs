@@ -100,8 +100,6 @@ pub(crate) fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-pub use crate::mcp::PreparedMcpServer;
-
 mod build;
 pub use build::ResourcePlanePorts;
 mod completion;
@@ -281,10 +279,4 @@ pub struct SharedHost {
     /// invoke them. Their ids are also pre-authorized on the gate (read-only tools).
     /// Empty by default.
     pub(crate) admin_tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
-    /// Whether this host launches its ACP CLI as a **trusted-local** (non-sandboxed)
-    /// process, so a staged MCP server's raw bearer may be handed to the CLI inline (β)
-    /// rather than as a secretless reference (α). Default `false` (α) — the fail-closed
-    /// choice a managed/multi-tenant host keeps; a single-machine trusted deployment
-    /// opts into β via [`SharedHost::with_trusted_acp_mcp`].
-    pub(crate) mcp_trusted_inline: bool,
 }

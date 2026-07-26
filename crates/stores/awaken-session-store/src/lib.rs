@@ -15,12 +15,18 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use awaken_credential_contract::{
+    CredentialRealizationProfile, PlaintextBoundary, PlaintextHolder,
+};
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use awaken_session_contract::{
-    IdempotencyRecord, ManagedSessionRepository, PersistedSession, PersistedSessionRuntime,
-    ResolvedSessionResources, ScopedPersistedSession, SessionLifecycleFact, SessionMutation,
-    SessionMutationPayload, SessionMutationResult, SessionRepositoryError, SessionResourceState,
-    SessionRevision,
+    EnvironmentFingerprint, EnvironmentSnapshot, IdempotencyRecord, ManagedSessionRepository,
+    McpAttachmentDraft, McpAttachmentOrigin, McpAttachmentState, McpRefreshBinding, McpTarget,
+    PersistedSession, ResolvedSessionResources, ScopedPersistedSession, SessionBaseline,
+    SessionBaselineState, SessionLifecycleFact, SessionMcpAttachmentSet,
+    SessionMcpAuthoringContext, SessionMutation, SessionMutationPayload, SessionMutationResult,
+    SessionNetworkPolicy, SessionRepositoryError, SessionResourceState, SessionRevision,
+    TokenEndpointAuthBinding,
 };
 
 mod extraction;
@@ -131,24 +137,17 @@ fn session_bundle() -> Result<MigrationBundle, MigrationError> {
                     deleted_revision BIGINT NOT NULL, \
                     deleted_at TEXT NOT NULL)",
             )?,
+            Migration::new(
+                13,
+                "one canonical serialized Session aggregate (ADR-0066)",
+                "ALTER TABLE {prefix}_session ADD COLUMN aggregate_json TEXT",
+            )?,
         ],
     )
 }
 
-fn metadata_str(session: &PersistedSession) -> String {
-    serde_json::to_string(&session.metadata).expect("session metadata serializes")
-}
-
-fn mcp_str(session: &PersistedSession) -> String {
-    serde_json::to_string(&session.mcp_servers).expect("session mcp servers serialize")
-}
-
-fn effective_inputs_str(session: &PersistedSession) -> String {
-    serde_json::to_string(&session.resources).expect("Session resource state serializes")
-}
-
-fn runtime_str(session: &PersistedSession) -> String {
-    serde_json::to_string(&session.runtime).expect("Session runtime pin serializes")
+fn aggregate_str(session: &PersistedSession) -> String {
+    serde_json::to_string(session).expect("Session aggregate serializes")
 }
 
 fn lifecycle_str(fact: &SessionLifecycleFact) -> String {
@@ -190,6 +189,7 @@ fn decode_lifecycle(data: &str) -> Result<SessionLifecycleFact, serde_json::Erro
 /// (the module's `.expect` convention for read failures), so a corrupt row fails
 /// loudly instead of returning a hollow session.
 struct EncodedSessionRow {
+    aggregate_json: Option<String>,
     session_id: String,
     agent_id: String,
     model: String,
@@ -198,11 +198,34 @@ struct EncodedSessionRow {
     environment_id: String,
     environment_binding: Option<String>,
     runtime_json: String,
-    mcp_json: String,
     effective_inputs_json: String,
     status: String,
     archived_at: Option<String>,
     revision: i64,
+}
+
+#[derive(serde::Deserialize)]
+struct LegacyPersistedSessionRuntime {
+    #[serde(default)]
+    mcp_servers: Vec<LegacyMcpServerBinding>,
+    #[serde(default)]
+    delegate_ids: Vec<String>,
+    runtime: Option<String>,
+    #[serde(default)]
+    deny_egress: bool,
+    sandbox: Option<serde_json::Value>,
+}
+
+/// Decode-only shape for rows written before MCP generations became the sole
+/// authority. It is deliberately private so no production caller can revive
+/// the removed SessionInit binding path.
+#[derive(serde::Deserialize)]
+struct LegacyMcpServerBinding {
+    name: String,
+    url: String,
+    credential_source_id: Option<String>,
+    credential_revision: Option<u64>,
+    refresh: Option<McpRefreshBinding>,
 }
 
 fn decode_resource_state(data: &str) -> Result<SessionResourceState, serde_json::Error> {
@@ -215,23 +238,147 @@ fn decode_resource_state(data: &str) -> Result<SessionResourceState, serde_json:
 }
 
 fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_json::Error> {
+    let revision = SessionRevision(
+        u64::try_from(row.revision).expect("managed Session revision is non-negative"),
+    );
+    if let Some(aggregate_json) = row.aggregate_json {
+        let mut aggregate: PersistedSession = serde_json::from_str(&aggregate_json)?;
+        aggregate.revision = revision;
+        return Ok(aggregate);
+    }
+    let runtime: LegacyPersistedSessionRuntime = serde_json::from_str(&row.runtime_json)?;
+    let resources = decode_resource_state(&row.effective_inputs_json)?;
+    let holder = if runtime
+        .runtime
+        .as_deref()
+        .is_some_and(|runtime| runtime.starts_with("acp:"))
+    {
+        PlaintextHolder::new(PlaintextBoundary::Workload, "awaken.workload.acp")
+    } else {
+        PlaintextHolder::new(PlaintextBoundary::Worker, "awaken.worker")
+    };
+    let mcp_holder = PlaintextHolder::new(PlaintextBoundary::Worker, "awaken.worker");
+    let credential_realization = CredentialRealizationProfile {
+        inference_holder: holder.clone(),
+        mcp_holder: mcp_holder.clone(),
+    };
+    let sandbox = runtime.sandbox.unwrap_or_else(|| serde_json::json!({}));
+    let network = if runtime.deny_egress {
+        SessionNetworkPolicy::None
+    } else {
+        SessionNetworkPolicy::Unrestricted
+    };
+    let environment = EnvironmentSnapshot {
+        environment_id: row.environment_id,
+        revision: awaken_session_contract::env_registry::EnvironmentRevision(0),
+        config_fingerprint: EnvironmentFingerprint(awaken_session_contract::stable_fingerprint(&(
+            &sandbox,
+            &network,
+            &credential_realization,
+        ))),
+        sandbox,
+        network,
+        credential_realization,
+    };
+    let baseline = SessionBaseline::compile(
+        environment,
+        SessionMcpAuthoringContext::default(),
+        row.agent_id,
+        row.model,
+        runtime.runtime,
+        runtime.delegate_ids,
+        resources.active.skills.clone().unwrap_or_default(),
+        Vec::new(),
+        Vec::new(),
+    );
+    let mut drafts = Vec::with_capacity(runtime.mcp_servers.len());
+    for server in runtime.mcp_servers {
+        let credential = match (server.credential_source_id, server.credential_revision) {
+            (None, None) => None,
+            (Some(id), Some(revision)) => {
+                Some(legacy_credential_access(id, revision, server.refresh))
+            }
+            _ => {
+                return Err(<serde_json::Error as serde::de::Error>::custom(
+                    "legacy protected MCP attachment has no exact credential revision",
+                ));
+            }
+        };
+        drafts.push(McpAttachmentDraft {
+            name: server.name,
+            target: McpTarget::new(server.url),
+            credential,
+            origin: McpAttachmentOrigin::Session,
+        });
+    }
+    let mut mcp = SessionMcpAttachmentSet::from_initial(drafts, Some(mcp_holder))
+        .map_err(<serde_json::Error as serde::de::Error>::custom)?;
+    for attachment in &mut mcp.attachments {
+        attachment.state = McpAttachmentState::Active;
+    }
     Ok(PersistedSession {
         session_id: row.session_id,
-        revision: SessionRevision(
-            u64::try_from(row.revision).expect("managed Session revision is non-negative"),
-        ),
-        agent_id: row.agent_id,
-        model: row.model,
+        revision,
+        baseline: SessionBaselineState::Frozen(baseline),
         title: row.title,
         metadata: serde_json::from_str(&row.metadata_json)?,
-        environment_id: row.environment_id,
+        agent_tools: None,
         environment_binding: row.environment_binding,
-        runtime: serde_json::from_str::<PersistedSessionRuntime>(&row.runtime_json)?,
-        mcp_servers: serde_json::from_str(&row.mcp_json)?,
-        resources: decode_resource_state(&row.effective_inputs_json)?,
+        mcp,
+        resources,
+        realization: None,
         status: row.status,
         archived_at: row.archived_at,
     })
+}
+
+fn legacy_credential_access(
+    id: String,
+    revision: u64,
+    refresh: Option<McpRefreshBinding>,
+) -> awaken_credential_contract::CredentialAccess {
+    use awaken_credential_contract::{
+        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
+        CredentialRefreshAccess, CredentialUsage, TokenEndpointAuth,
+    };
+
+    let mut access = CredentialAccess::new(
+        CredentialRef { id, revision },
+        CredentialMaterialSource::ControlPlaneReference,
+        CredentialUsage::HttpHeader {
+            name: "authorization".into(),
+            scheme: Some("Bearer".into()),
+        },
+        CredentialExecutionPolicy::self_hosted_provider(),
+    );
+    if let Some(refresh) = refresh {
+        let (token_endpoint_auth, client_secret_ref) = match refresh.token_endpoint_auth {
+            TokenEndpointAuthBinding::None => (TokenEndpointAuth::None, None),
+            TokenEndpointAuthBinding::ClientSecretBasic { secret_ref } => {
+                (TokenEndpointAuth::ClientSecretBasic, Some(secret_ref))
+            }
+            TokenEndpointAuthBinding::ClientSecretPost { secret_ref } => {
+                (TokenEndpointAuth::ClientSecretPost, Some(secret_ref))
+            }
+        };
+        access = access.with_refresh(CredentialRefreshAccess {
+            credential_revision: revision,
+            configuration_fingerprint: awaken_session_contract::stable_fingerprint(&(
+                &refresh.token_endpoint,
+                &refresh.client_id,
+                &refresh.refresh_token_ref,
+            )),
+            token_endpoint: refresh.token_endpoint,
+            client_id: refresh.client_id,
+            token_endpoint_auth,
+            client_secret_ref,
+            refresh_token_ref: refresh.refresh_token_ref,
+            access_token_ref: format!("credential:{revision}:access"),
+            scope: refresh.scope,
+            resource: refresh.resource,
+        });
+    }
+    access
 }
 
 /// SQLite persistence for [`PersistedSession`]. One row per session, keyed by id.
@@ -320,26 +467,19 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         session.revision = new_revision;
         let inserted = tx
             .execute(
-                "INSERT OR IGNORE INTO managed_session
+                r#"INSERT OR IGNORE INTO managed_session
                 (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json,
                  scope_id, status, archived_at, effective_inputs_json, environment_binding,
-                 runtime_json, revision)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                 runtime_json, revision, aggregate_json)
+             VALUES (?1, '', '', NULL, '{}', '', '[]', ?2, 'aggregate', NULL,
+                     '{"inputs":[]}', NULL,
+                     '{"mcp_servers":[],"runtime":null,"deny_egress":false,"sandbox":null}',
+                     ?3, ?4)"#,
                 params![
                     session.session_id,
-                    session.agent_id,
-                    session.model,
-                    session.title,
-                    metadata_str(&session),
-                    session.environment_id,
-                    mcp_str(&session),
                     owner_scope,
-                    session.status,
-                    session.archived_at,
-                    effective_inputs_str(&session),
-                    session.environment_binding,
-                    runtime_str(&session),
                     db_revision(new_revision)?,
+                    aggregate_str(&session),
                 ],
             )
             .map_err(storage)?;
@@ -439,24 +579,11 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 let affected = tx
                     .execute(
                         "UPDATE managed_session SET
-                        agent_id = ?2, model = ?3, title = ?4, metadata_json = ?5,
-                        environment_id = ?6, mcp_json = ?7, status = ?8, archived_at = ?9,
-                        effective_inputs_json = ?10, environment_binding = ?11,
-                        runtime_json = ?12, revision = ?13
-                     WHERE session_id = ?1 AND scope_id = ?14 AND revision = ?15",
+                        aggregate_json = ?2, revision = ?3
+                     WHERE session_id = ?1 AND scope_id = ?4 AND revision = ?5",
                         params![
                             replacement.session_id,
-                            replacement.agent_id,
-                            replacement.model,
-                            replacement.title,
-                            metadata_str(&replacement),
-                            replacement.environment_id,
-                            mcp_str(&replacement),
-                            replacement.status,
-                            replacement.archived_at,
-                            effective_inputs_str(&replacement),
-                            replacement.environment_binding,
-                            runtime_str(&replacement),
+                            aggregate_str(&replacement),
                             db_revision(next)?,
                             owner_scope,
                             db_revision(current_revision)?,
@@ -556,15 +683,15 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         let conn = self.conn.lock().expect("session store mutex poisoned");
         let raw = conn
             .query_row(
-                "SELECT agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at, effective_inputs_json, environment_binding, runtime_json, revision
+                "SELECT aggregate_json, agent_id, model, title, metadata_json, environment_id, status, archived_at, effective_inputs_json, environment_binding, runtime_json, revision
                  FROM managed_session WHERE session_id = ?1",
                 params![session_id],
                 |row| {
                     Ok((
-                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(0)?,
                         row.get::<_, String>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
                         row.get::<_, String>(4)?,
                         row.get::<_, String>(5)?,
                         row.get::<_, String>(6)?,
@@ -579,12 +706,12 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
             .optional()
             .expect("read managed session")?;
         let (
+            aggregate_json,
             agent_id,
             model,
             title,
             metadata_json,
             environment_id,
-            mcp_json,
             status,
             archived_at,
             effective_inputs_json,
@@ -594,13 +721,13 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         ) = raw;
         Some(
             decode(EncodedSessionRow {
+                aggregate_json,
                 session_id: session_id.to_string(),
                 agent_id,
                 model,
                 title,
                 metadata_json,
                 environment_id,
-                mcp_json,
                 effective_inputs_json,
                 environment_binding,
                 runtime_json,
@@ -612,11 +739,11 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         )
     }
 
-    async fn pending_resource_sessions(&self) -> Vec<ScopedPersistedSession> {
+    async fn reconcilable_sessions(&self) -> Vec<ScopedPersistedSession> {
         let conn = self.conn.lock().expect("session store mutex poisoned");
         let mut statement = conn
             .prepare(
-                "SELECT scope_id, session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at, effective_inputs_json, environment_binding, runtime_json, revision
+                "SELECT scope_id, session_id, aggregate_json, agent_id, model, title, metadata_json, environment_id, status, archived_at, effective_inputs_json, environment_binding, runtime_json, revision
                  FROM managed_session ORDER BY session_id",
             )
             .expect("prepare pending Session resource activations");
@@ -626,12 +753,12 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                     row.get::<_, String>(0)?,
                     EncodedSessionRow {
                         session_id: row.get(1)?,
-                        agent_id: row.get(2)?,
-                        model: row.get(3)?,
-                        title: row.get(4)?,
-                        metadata_json: row.get(5)?,
-                        environment_id: row.get(6)?,
-                        mcp_json: row.get(7)?,
+                        aggregate_json: row.get(2)?,
+                        agent_id: row.get(3)?,
+                        model: row.get(4)?,
+                        title: row.get(5)?,
+                        metadata_json: row.get(6)?,
+                        environment_id: row.get(7)?,
                         status: row.get(8)?,
                         archived_at: row.get(9)?,
                         effective_inputs_json: row.get(10)?,
@@ -654,8 +781,33 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 session.status == "deleted"
                     || session.resources.needs_reconciliation()
                     || (session.status != "idle" && session.resources.has_active())
+                    || session.mcp.needs_reconciliation()
             })
             .collect()
+    }
+
+    async fn idempotency_receipt(
+        &self,
+        session_id: &str,
+        key: &str,
+    ) -> Option<awaken_session_contract::SessionIdempotencyReceipt> {
+        let conn = self.conn.lock().expect("session store mutex poisoned");
+        conn.query_row(
+            "SELECT payload_hash, committed_revision FROM managed_session_idempotency
+             WHERE session_id = ?1 AND idempotency_key = ?2",
+            params![session_id, key],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()
+        .expect("read Session idempotency receipt")
+        .map(|(payload_hash, revision)| {
+            awaken_session_contract::SessionIdempotencyReceipt {
+                payload_hash,
+                committed_revision: SessionRevision(
+                    u64::try_from(revision).expect("nonnegative Session revision"),
+                ),
+            }
+        })
     }
 
     async fn owner(&self, session_id: &str) -> Option<String> {
@@ -749,27 +901,20 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         let new_revision = SessionRevision(1);
         session.revision = new_revision;
         let inserted = sqlx::query(
-            "INSERT INTO managed_session
+            r#"INSERT INTO managed_session
                 (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json,
                  scope_id, status, archived_at, effective_inputs_json, environment_binding,
-                 runtime_json, revision)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-             ON CONFLICT (session_id) DO NOTHING",
+                 runtime_json, revision, aggregate_json)
+             VALUES ($1, '', '', NULL, '{}', '', '[]', $2, 'aggregate', NULL,
+                     '{"inputs":[]}', NULL,
+                     '{"mcp_servers":[],"runtime":null,"deny_egress":false,"sandbox":null}',
+                     $3, $4)
+             ON CONFLICT (session_id) DO NOTHING"#,
         )
         .bind(&session.session_id)
-        .bind(&session.agent_id)
-        .bind(&session.model)
-        .bind(&session.title)
-        .bind(metadata_str(&session))
-        .bind(&session.environment_id)
-        .bind(mcp_str(&session))
         .bind(owner_scope)
-        .bind(&session.status)
-        .bind(&session.archived_at)
-        .bind(effective_inputs_str(&session))
-        .bind(&session.environment_binding)
-        .bind(runtime_str(&session))
         .bind(db_revision(new_revision)?)
+        .bind(aggregate_str(&session))
         .execute(&mut *tx)
         .await
         .map_err(storage)?
@@ -870,24 +1015,11 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
                 replacement.revision = next;
                 let affected = sqlx::query(
                     "UPDATE managed_session SET
-                        agent_id = $2, model = $3, title = $4, metadata_json = $5,
-                        environment_id = $6, mcp_json = $7, status = $8, archived_at = $9,
-                        effective_inputs_json = $10, environment_binding = $11,
-                        runtime_json = $12, revision = $13
-                     WHERE session_id = $1 AND scope_id = $14 AND revision = $15",
+                        aggregate_json = $2, revision = $3
+                     WHERE session_id = $1 AND scope_id = $4 AND revision = $5",
                 )
                 .bind(&replacement.session_id)
-                .bind(&replacement.agent_id)
-                .bind(&replacement.model)
-                .bind(&replacement.title)
-                .bind(metadata_str(&replacement))
-                .bind(&replacement.environment_id)
-                .bind(mcp_str(&replacement))
-                .bind(&replacement.status)
-                .bind(&replacement.archived_at)
-                .bind(effective_inputs_str(&replacement))
-                .bind(&replacement.environment_binding)
-                .bind(runtime_str(&replacement))
+                .bind(aggregate_str(&replacement))
                 .bind(db_revision(next)?)
                 .bind(owner_scope)
                 .bind(db_revision(current_revision)?)
@@ -990,7 +1122,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
 
     async fn get(&self, session_id: &str) -> Option<PersistedSession> {
         let row = sqlx::query(
-            "SELECT agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at, effective_inputs_json, environment_binding, runtime_json, revision \
+            "SELECT aggregate_json, agent_id, model, title, metadata_json, environment_id, status, archived_at, effective_inputs_json, environment_binding, runtime_json, revision \
              FROM managed_session WHERE session_id = $1",
         )
         .bind(session_id)
@@ -998,17 +1130,16 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         .await
         .expect("read managed session")?;
         let metadata_json: String = row.get("metadata_json");
-        let mcp_json: String = row.get("mcp_json");
         let effective_inputs_json: String = row.get("effective_inputs_json");
         Some(
             decode(EncodedSessionRow {
+                aggregate_json: row.get("aggregate_json"),
                 session_id: session_id.to_string(),
                 agent_id: row.get("agent_id"),
                 model: row.get("model"),
                 title: row.get("title"),
                 metadata_json,
                 environment_id: row.get("environment_id"),
-                mcp_json,
                 effective_inputs_json,
                 environment_binding: row.get("environment_binding"),
                 runtime_json: row.get("runtime_json"),
@@ -1020,9 +1151,9 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         )
     }
 
-    async fn pending_resource_sessions(&self) -> Vec<ScopedPersistedSession> {
+    async fn reconcilable_sessions(&self) -> Vec<ScopedPersistedSession> {
         sqlx::query(
-            "SELECT scope_id, session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at, effective_inputs_json, environment_binding, runtime_json, revision \
+            "SELECT scope_id, session_id, aggregate_json, agent_id, model, title, metadata_json, environment_id, status, archived_at, effective_inputs_json, environment_binding, runtime_json, revision \
              FROM managed_session ORDER BY session_id",
         )
         .fetch_all(&self.pool)
@@ -1032,13 +1163,13 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         .map(|row| ScopedPersistedSession {
             workspace_id: row.get("scope_id"),
             session: decode(EncodedSessionRow {
+                aggregate_json: row.get("aggregate_json"),
                 session_id: row.get("session_id"),
                 agent_id: row.get("agent_id"),
                 model: row.get("model"),
                 title: row.get("title"),
                 metadata_json: row.get("metadata_json"),
                 environment_id: row.get("environment_id"),
-                mcp_json: row.get("mcp_json"),
                 status: row.get("status"),
                 archived_at: row.get("archived_at"),
                 effective_inputs_json: row.get("effective_inputs_json"),
@@ -1053,8 +1184,32 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
             session.status == "deleted"
                 || session.resources.needs_reconciliation()
                 || (session.status != "idle" && session.resources.has_active())
+                || session.mcp.needs_reconciliation()
         })
         .collect()
+    }
+
+    async fn idempotency_receipt(
+        &self,
+        session_id: &str,
+        key: &str,
+    ) -> Option<awaken_session_contract::SessionIdempotencyReceipt> {
+        let row = sqlx::query(
+            "SELECT payload_hash, committed_revision FROM managed_session_idempotency
+             WHERE session_id = $1 AND idempotency_key = $2",
+        )
+        .bind(session_id)
+        .bind(key)
+        .fetch_optional(&self.pool)
+        .await
+        .expect("read Session idempotency receipt")?;
+        let revision: i64 = row.get("committed_revision");
+        Some(awaken_session_contract::SessionIdempotencyReceipt {
+            payload_hash: row.get("payload_hash"),
+            committed_revision: SessionRevision(
+                u64::try_from(revision).expect("nonnegative Session revision"),
+            ),
+        })
     }
 
     async fn owner(&self, session_id: &str) -> Option<String> {
@@ -1079,14 +1234,47 @@ mod tests {
         PersistedSession {
             session_id: id.to_string(),
             revision: Default::default(),
-            agent_id: "coder".to_string(),
-            model: "kimi-k2".to_string(),
+            baseline: SessionBaselineState::Frozen(SessionBaseline::compile(
+                EnvironmentSnapshot {
+                    environment_id: "env_local".into(),
+                    revision: awaken_session_contract::env_registry::EnvironmentRevision(1),
+                    config_fingerprint: EnvironmentFingerprint("env-fingerprint".into()),
+                    sandbox: serde_json::json!({}),
+                    network: SessionNetworkPolicy::Unrestricted,
+                    credential_realization: CredentialRealizationProfile {
+                        inference_holder: PlaintextHolder::new(
+                            PlaintextBoundary::Worker,
+                            "awaken.worker",
+                        ),
+                        mcp_holder: PlaintextHolder::new(
+                            PlaintextBoundary::Worker,
+                            "awaken.worker",
+                        ),
+                    },
+                },
+                SessionMcpAuthoringContext::default(),
+                "coder".into(),
+                "kimi-k2".into(),
+                None,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )),
             title: Some("My session".to_string()),
             metadata,
-            environment_id: "env_local".to_string(),
+            agent_tools: None,
             environment_binding: None,
-            runtime: Default::default(),
-            mcp_servers: vec![serde_json::json!({"name":"calc","type":"url","url":"https://x"})],
+            mcp: SessionMcpAttachmentSet::from_initial(
+                vec![McpAttachmentDraft {
+                    name: "calc".into(),
+                    target: McpTarget::new("https://x"),
+                    credential: None,
+                    origin: McpAttachmentOrigin::Session,
+                }],
+                None,
+            )
+            .unwrap(),
             resources: awaken_session_contract::SessionResourceState::from_legacy(
                 serde_json::from_value(serde_json::json!({
                     "inputs": [{
@@ -1098,6 +1286,7 @@ mod tests {
                 }))
                 .unwrap(),
             ),
+            realization: None,
             status: "idle".into(),
             archived_at: None,
         }
@@ -1357,30 +1546,68 @@ mod tests {
         assert_eq!(reopened.owner("sesn_missing").await, None);
     }
 
-    /// A row whose JSON payload columns are corrupt (truncated write, manual edit,
-    /// schema drift) must surface the decode error rather than silently folding to
-    /// an empty `metadata`/`mcp_servers` — the old fail-open masked data loss on
-    /// read. `decode` is now fallible and `get` propagates it via the module's
-    /// `.expect` read-failure convention (the trait's `Option`-returning `get`
-    /// cannot carry an error), so a corrupt row fails loudly like any unreadable row.
+    /// Persistence authority causal graph:
+    /// aggregate present -> decode aggregate only; aggregate absent -> migrate
+    /// legacy columns once. Corruption in the selected authority fails loudly.
+    ///
+    /// | Rule | aggregate present | selected payload valid | legacy valid | Effect |
+    /// |---|---|---|---|---|
+    /// | P1 | T | T | - | aggregate |
+    /// | P2 | T | F | - | fail closed |
+    /// | P3 | F | T | T | legacy migration |
+    /// | P4 | F | F | F | fail closed |
     #[tokio::test]
     #[should_panic(expected = "decode managed session")]
-    async fn corrupt_json_columns_error_instead_of_decoding_to_defaults() {
+    async fn corrupt_canonical_aggregate_fails_closed() {
         let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
         repo.save(sample("sesn_1")).await;
-        // Corrupt both JSON payload columns out-of-band (an on-disk corruption / drift).
         {
             let conn = repo.conn.lock().unwrap();
             conn.execute(
                 "UPDATE managed_session \
-                 SET metadata_json = ?2, mcp_json = ?3 WHERE session_id = ?1",
-                params!["sesn_1", "{not valid json", "also-not-json"],
+                 SET aggregate_json = ?2 WHERE session_id = ?1",
+                params!["sesn_1", "{not valid json"],
             )
             .unwrap();
         }
-        // Reading the corrupt row now fails loudly (decode error surfaced) instead of
-        // returning a hollow session with empty collections.
         let _ = repo.get("sesn_1").await;
+    }
+
+    #[tokio::test]
+    async fn legacy_columns_are_not_a_parallel_authority() {
+        let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
+        let mut expected = sample("sesn_1");
+        repo.save(expected.clone()).await;
+        expected.revision = SessionRevision(1);
+        repo.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE managed_session SET metadata_json = ?2, mcp_json = ?3,
+                 runtime_json = ?4 WHERE session_id = ?1",
+                params!["sesn_1", "{bad", "{bad", "{bad"],
+            )
+            .unwrap();
+        assert_eq!(repo.get("sesn_1").await, Some(expected), "P1");
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "decode managed session")]
+    async fn corrupt_selected_legacy_payload_fails_closed() {
+        let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
+        repo.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO managed_session
+                 (session_id, agent_id, model, metadata_json, environment_id, mcp_json,
+                  effective_inputs_json, runtime_json)
+                 VALUES (?1, 'agent', 'model', ?2, 'env', '[]', '{\"inputs\":[]}',
+                  '{\"mcp_servers\":[],\"runtime\":null,\"deny_egress\":false,\"sandbox\":null}')",
+                params!["legacy-corrupt", "{bad"],
+            )
+            .unwrap();
+        let _ = repo.get("legacy-corrupt").await;
     }
 
     /// Live Postgres round-trip, isolated in its own schema. Skips when no Postgres
