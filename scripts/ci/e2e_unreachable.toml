@@ -1,347 +1,65 @@
 version = 1
 
-# These ranges are not blanket source exclusions. The checker waives only lines
-# that are changed, executable, and still unhit; any E2E hit inside a range stays
-# in the numerator. Every range names the lower-level evidence that owns it.
+# Audited zero-hit changed executable lines only. The checker rejects an entry
+# as soon as its lines are covered or cease to be changed, so this is a review
+# queue rather than a permanent source exclusion.
 
 [[waiver]]
-path = "crates/worker/awaken-sandbox-local/src/namespace.rs"
-ranges = ["44-53", "203-212", "215-217", "219-222", "230-232", "234-237", "239-244", "246-251", "253", "260-269", "272-279", "382-385", "521", "527-530", "534", "587", "765", "783", "788-796", "798", "800-810", "813-814", "827", "844", "875", "902"]
-reason = "macOS Seatbelt rendering, unsupported mount kinds, and operating-system failure arms are platform adapter boundaries that the Linux API harness cannot select."
-evidence = "cargo test -p awaken-sandbox-local; e2e/sandbox_backend_e2e.ts"
-
-[[waiver]]
-path = "crates/server/awaken-runtime-host/src/mcp_relay.rs"
-ranges = ["57-59", "84-88", "90-104", "109-116", "118-125", "133", "138-146", "148-156", "160-166", "173", "176-180", "184-192", "194-195"]
-reason = "The private Worker-held MCP data-plane adapter is deliberately unreachable from this repository's production API until an installed Sandbox provider proves both secret egress substitution and an enforced no-bypass network allowlist; built-in providers honestly reject that custody selection before route creation."
-evidence = "cargo test -p awaken-runtime-host mcp_relay; e2e/acp_projected_local_e2e.mjs"
-
-[[waiver]]
-path = "crates/bin/awaken-worker/src/lib.rs"
-ranges = ["482-487", "543-565", "597-606", "629-633", "943-946", "969", "1170-1202", "1273", "1291"]
-reason = "These branches are WorkerNodeBuilder composition choices, build-time manifest derivation arms, and process-local heartbeat helper fallbacks. A served Worker or Control API cannot change builder inputs after the process exists, so HTTP TypeScript scenarios cannot deterministically select them without replacing the composition under test."
-evidence = "cargo test -p awaken-worker --test worker_node_lifecycle; cargo test -p awaken-worker standard_manifest; e2e/application_session_worker_e2e.ts; e2e/worker_transport_e2e.mjs"
-
-[[waiver]]
-path = "crates/contract/awaken-session-contract/src/session_repo.rs"
-ranges = ["247-286", "294-350"]
-reason = "Root-mutation validation rejects structurally invalid commands created inside the Session application/store boundary, and the trait defaults are inert missing-adapter fallbacks. Managed HTTP routes cannot construct those invalid internal mutations or replace repository implementations after startup."
-evidence = "cargo test -p awaken-session-contract mutation_tests; cargo test -p awaken-session-store root_mutation; e2e/management_sessions_family_e2e.mjs; e2e/managed_mcp_hot_swap_e2e.ts"
-
-[[waiver]]
-path = "crates/worker/awaken-provisioning-contract/src/vocab.rs"
-ranges = ["352-363"]
-reason = "The uncovered lines are the redacting Debug formatter for already-typed environment values. Production APIs never return Rust Debug output; serialization and secret-nonleak are exercised through their actual wire and log surfaces instead."
-evidence = "cargo test -p awaken-provisioning-contract; e2e/secret_nonleak_e2e.mjs; e2e/credential_materialization_worker_e2e.ts"
-
-[[waiver]]
-path = "crates/worker/awaken-provisioning-contract/src/spec.rs"
-ranges = ["83-90", "110-121", "127-174"]
-reason = "These uncovered branches are non-serializable launch-value Debug/convenience construction and last-mile broker failure arms below the served protocol. HTTP clients can author only secret-free requirements; concrete provider tests inject broker bytes and invalid UTF-8 deterministically."
-evidence = "cargo test -p awaken-provisioning-contract process_secret_tests; cargo test -p awaken-sandbox-local; e2e/credential_materialization_worker_e2e.ts"
-
-[[waiver]]
-path = "crates/server/awaken-runtime-host/src/deployment_config.rs"
-ranges = ["206-273"]
-reason = "Sandbox-tier capability projection is fixed by process DeploymentConfig before the server or Worker API starts. A served request cannot switch Local/Docker/Podman/Kubernetes/Namespace composition; configuration and provider suites own this deterministic mapping."
-evidence = "cargo test -p awaken-runtime-host deployment_config; e2e/deployment_config_e2e.mjs; e2e/container_provider_config_e2e.ts; e2e/stage_change_coverage_e2e.ts"
-
-[[waiver]]
-path = "crates/server/awaken-runtime-host/src/host/build.rs"
-ranges = ["636-673"]
-reason = "Installing a Session secret broker or container provider is a composition-root operation completed before a Host begins serving. No runtime HTTP route can replace that authoritative provider; provider lifecycle behavior is covered through real container Worker scenarios."
-evidence = "cargo test -p awaken-runtime-host; e2e/container_agent_e2e.mjs; e2e/worker_resource_manifest_e2e.ts"
+path = "crates/bin/awaken-cli/src/config.rs"
+ranges = ["141"]
+reason = "This line is the redacted Debug label for a typed inline seal key; no served API returns Rust Debug output or can select the deployment parser after startup."
+evidence = "cargo test -p awaken-cli config; e2e/management_seal_key_required_e2e.mjs"
 
 [[waiver]]
 path = "crates/contract/awaken-credential-contract/src/lib.rs"
-ranges = ["178-187", "235", "251", "254", "262", "340", "418", "421", "427-429", "432-434", "436", "439-440", "473-476", "496", "503", "508", "514", "517", "521", "529", "545", "552", "559", "626-628", "705", "742-744", "747-749"]
-reason = "These lines are canonical profile constructors, legacy decode rejection, invalid already-typed admission facts, empty/default adapter capabilities, and corrupt receipt/material guards. Served APIs normalize credentials before these values exist and cannot manufacture legacy or internally inconsistent domain objects; public successful and fail-closed credential flows remain in the E2E denominator."
-evidence = "cargo test -p awaken-credential-contract; cargo test -p awaken-runtime-contract credential; e2e/credential_materialization_worker_e2e.ts; e2e/sealed_credential_worker_e2e.ts; e2e/managed_mcp_refresh_e2e.mjs"
+ranges = ["579-583", "585-593", "595-599"]
+reason = "These branches distinguish impossible cross-profile credential capabilities after Worker composition. Served credential DTOs do not install or combine adapter profiles; they can only be admitted against the already installed exact profiles."
+evidence = "cargo test -p awaken-credential-contract independent_adapter_profiles_do_not_create_cartesian_authority; e2e/credential_materialization_worker_e2e.ts"
 
 [[waiver]]
-path = "crates/contract/awaken-session-contract/src/baseline.rs"
-ranges = ["19-21", "40", "56-69", "71", "196-205", "207", "209", "211", "246", "248", "253", "255-258", "260", "276", "280", "286", "292"]
-reason = "The uncovered branches validate or canonicalize in-memory Application contribution and frozen network values after the Managed anti-corruption boundary. HTTP callers cannot construct a mismatched normalized Application MCP vector, replay receipt, or noncanonical SessionNetworkPolicy directly; the sole compiler and aggregate tests own those impossible-input partitions."
-evidence = "cargo test -p awaken-session-contract baseline; cargo test -p awaken-runtime-host application_network_policy_mapping_is_total_and_lossless; e2e/application_session_worker_e2e.ts"
+path = "crates/control/awaken-config-service/src/agent_projection.rs"
+ranges = ["48", "68", "100-104"]
+reason = "These are missing-store, non-revision metadata, stale internal snapshot, and optional Environment projection arms below the published Agent snapshot. A served Session cannot replace the store or forge publication metadata."
+evidence = "cargo test -p awaken-config-service agent_projection; e2e/agent_environment_defaults_e2e.ts; e2e/multi_protocol_environment_resource_matrix_e2e.mjs"
 
 [[waiver]]
-path = "crates/contract/awaken-session-contract/src/mcp_attachment.rs"
-ranges = ["68", "79", "83", "272", "318", "325", "328", "335", "338-340", "346-348", "420", "450", "510-512", "526-527", "530", "537", "576-577", "590", "596-598", "602", "616", "623", "645", "652", "655", "689", "695", "714", "727", "734", "741-752", "761", "791", "805-807", "841-844", "846", "848-850"]
-reason = "These are invalid exact-generation transitions, overflow/corrupt-state guards, impossible normalized-draft conflicts, and stale internal receipt/claim identities. Managed commands create names, targets, holders, generations, and realization claims through one compiler and root CAS, so a served request cannot directly manufacture these inconsistent aggregate states; valid hot add/replace/remove/recovery remains E2E-covered."
-evidence = "cargo test -p awaken-session-contract mcp_attachment; cargo test -p awaken-protocol-managed mcp; e2e/managed_mcp_hot_swap_e2e.ts; e2e/managed_mcp_recovery_e2e.ts"
+path = "crates/control/awaken-control/src/admin_assistant.rs"
+ranges = ["451", "492-493"]
+reason = "These lines require the injected Agent-defaults repository to fail while the in-process admin assistant is committing an effect. HTTP callers cannot replace that repository adapter after composition."
+evidence = "cargo test -p awaken-control admin_assistant; e2e/admin_assistant_e2e.mjs; e2e/agent_environment_defaults_e2e.ts"
 
 [[waiver]]
-path = "crates/contract/awaken-session-contract/src/resource.rs"
-ranges = ["54-56", "59-61", "69-71", "76-78"]
-reason = "Repository credential pins are constructed only after Resource and Credential contexts have selected the same binding, HTTP usage, authorized holder, and forbidden model exposure. These uncovered arms reject internally forged or corrupt pins that no served Resource DTO can express."
-evidence = "cargo test -p awaken-session-contract resource; e2e/managed_resource_lifecycle_e2e.mjs; e2e/worker_resource_manifest_e2e.ts"
-
-[[waiver]]
-path = "crates/contract/awaken-session-contract/src/session_realization.rs"
-ranges = ["213", "217", "225", "245-247", "249", "265-272", "286"]
-reason = "These branches handle a Runtime returning a receipt for another exact request, best-effort cleanup failures, injected phase-port failures, and the bounded nonconvergence guard. Served clients persist desired state but cannot replace the realization/control adapters or forge their returned receipts."
-evidence = "cargo test -p awaken-session-contract session_realization; cargo test -p awaken-runtime-host session_realization; e2e/managed_mcp_recovery_e2e.ts; e2e/remote_worker_recovery_e2e.ts"
-
-[[waiver]]
-path = "crates/runtime/awaken-runtime-contract/src/credential.rs"
-ranges = ["50", "63", "75", "77-81", "88", "166", "169", "172", "245-247"]
-reason = "Claim epoch zero, mismatched backend/usage/receipt facts, duplicate selected candidates, and the read-only bindings accessor are attempt-internal values assembled after admission. Protocol clients cannot author claim epochs or realization receipts, while Worker and materializer E2E exercises the valid exact binding path."
-evidence = "cargo test -p awaken-runtime-contract credential; cargo test -p awaken-run-ingress credential; e2e/credential_reference_worker_e2e.ts; e2e/credential_materialization_worker_e2e.ts"
-
-[[waiver]]
-path = "crates/contract/awaken-session-contract/src/session.rs"
-ranges = ["250", "255", "261", "266", "272", "277"]
-reason = "These are the default fail-closed methods on an uninstalled McpAttachmentRealizer trait object. A running server always chooses its concrete adapter at composition time; no HTTP request can swap it for the default implementation."
-evidence = "cargo test -p awaken-session-contract; cargo test -p awaken-runtime-host mcp; e2e/managed_mcp_e2e.ts"
-
-[[waiver]]
-path = "crates/contract/awaken-session-contract/src/session_repo.rs"
-ranges = ["111-114", "117-120", "122", "124"]
-reason = "These lines reject empty internally constructed mutation identifiers and revisions. Public update routes derive nonempty operation ids and current root revisions before repository commit, so the malformed command forms are only selectable by repository/aggregate tests."
-evidence = "cargo test -p awaken-session-contract mutation_tests; cargo test -p awaken-session-store root_mutation; e2e/management_sessions_family_e2e.mjs"
-
-[[waiver]]
-path = "crates/server/awaken-runtime-host/src/application.rs"
-ranges = ["74-75", "78", "123-125", "246", "251", "288-292", "294", "331-333", "387", "390", "424-425", "429", "441", "445-447", "464-466", "483", "489-491", "493-495", "505", "522-523", "525-527", "586-587", "590-591", "599", "602", "665", "674"]
-reason = "These lines are pre-start Application builder variants, impossible serialization failures for typed mount/env values, unavailable injected Control ports, duplicate prompt suppression, and rejection of a forged/corrupt frozen projection. Once the Worker is serving, its public API cannot replace the factory/control adapter or manufacture a baseline that bypasses the sole Managed compiler."
-evidence = "cargo test -p awaken-runtime-host application; cargo test -p awaken-worker --test worker_node_lifecycle; e2e/application_session_worker_e2e.ts; e2e/managed_session_legacy_upgrade_e2e.ts"
-
-[[waiver]]
-path = "crates/server/awaken-runtime-host/src/lib.rs"
-ranges = ["350", "366", "377-382", "384-386", "388", "391", "406", "435-440", "635", "638", "642-644", "665", "671-673", "676-678", "893-898", "1497-1498", "1502", "1519-1521", "1531-1532", "1534", "1539", "1582-1583", "1585", "1587"]
-reason = "The uncovered Host lines are injected realization/materializer/completion adapter failures, private projection composition, builder replacement, and the OS failure to bind the private relay after custody admission. HTTP clients cannot replace these composition-root dependencies or forge their returned values; authenticated MCP admission and exact materialization success/failure remain E2E-covered."
-evidence = "cargo test -p awaken-runtime-host; e2e/credential_materialization_worker_e2e.ts; e2e/application_session_worker_e2e.ts; e2e/acp_managed_mcp_e2e.mjs"
-
-[[waiver]]
-path = "crates/server/awaken-runtime-host/src/mcp.rs"
-ranges = ["54-55", "59", "65-68", "339-341", "374-376", "402-404", "410-417", "419", "426", "443-445", "453", "470", "479"]
-reason = "These branches are the private transport projection's missing-relay guard, injected Vault refresh/store failures, malformed upstream refresh payloads, and connection rollback paths below the Managed protocol. Served clients can select credential configuration and upstream responses, but cannot directly replace SecretStore/relay adapters or fabricate their internal failures."
-evidence = "cargo test -p awaken-runtime-host mcp; cargo test -p awaken-runtime-host mcp_relay; e2e/management_mcp_e2e.mjs; e2e/managed_mcp_refresh_e2e.mjs"
-
-[[waiver]]
-path = "crates/server/awaken-runtime-host/src/sandbox_source.rs"
-ranges = ["211-212", "222", "224", "230-239", "241-250", "430", "456-460", "472-474", "496", "529", "644", "757", "792", "800"]
-reason = "These are internal projection/type mismatch guards and SandboxProvider effect failures after a validated Session plan. The served API cannot substitute provider implementations or forge provider receipts; real local/namespace/container provisioning and corruption denial are covered at their public lifecycle boundaries."
-evidence = "cargo test -p awaken-runtime-host sandbox_source; cargo test -p awaken-sandbox-local; e2e/sandbox_provisioning_e2e.mjs; e2e/session_environment_faults_e2e.ts"
-
-[[waiver]]
-path = "crates/server/awaken-runtime-host/src/credential_materializer.rs"
-ranges = ["90", "93", "104", "107-110", "128", "131", "165", "277", "294", "304", "309", "315", "326", "418", "424-426", "428-430", "435", "474-475", "478", "480-481", "484"]
-reason = "These lines reject resolver responses for another credential/holder, corrupt bindings, stale sealed envelopes, and unavailable injected stores. Such return values are below the served protocol and require a fake resolver or corrupt internal persistence; exact normal, expiry, recipient, payload, and revision decisions are exercised through Worker E2E."
-evidence = "cargo test -p awaken-runtime-host credential_materializer; e2e/credential_materialization_worker_e2e.ts; e2e/sealed_credential_worker_e2e.ts"
-
-[[waiver]]
-path = "crates/server/awaken-runtime-host/src/worker_control_client.rs"
-ranges = ["167-178"]
-reason = "These branches decode unavailable, non-success, or malformed responses from an injected Control endpoint. A served Worker API request cannot make its own control client return a forged response; the transport fault matrix is owned by the client tests and real two-process recovery E2E."
-evidence = "cargo test -p awaken-runtime-host worker_control_client; e2e/application_session_worker_e2e.ts; e2e/remote_worker_recovery_e2e.ts"
-
-[[waiver]]
-path = "crates/server/awaken-runtime-host/src/host/worker_resolver.rs"
-ranges = ["20", "49", "51", "294-295", "298", "303-304", "308-310", "314"]
-reason = "These are adapter-default errors and failure cleanup/reporting when injected Session realization ports fail. The Worker transport exposes only the resulting terminal failure; it cannot replace the adapter or independently choose these internal callback outcomes."
-evidence = "cargo test -p awaken-runtime-host worker_resolver; e2e/application_session_worker_e2e.ts; e2e/remote_worker_recovery_e2e.ts"
-
-[[waiver]]
-path = "crates/server/awaken-runtime-host/src/host/completion.rs"
-ranges = ["21", "39", "70", "78-80", "86-87", "249"]
-reason = "These branches require an injected completion sink to close, reject, or return an inconsistent terminal acknowledgement while an attempt is settling. No external API controls the in-process sink implementation; lower lifecycle tests inject those outcomes."
-evidence = "cargo test -p awaken-runtime-host completion; e2e/application_session_worker_e2e.ts; e2e/remote_worker_recovery_e2e.ts"
-
-[[waiver]]
-path = "crates/server/awaken-run-executor-acp/src/subprocess.rs"
-ranges = ["42-46", "54-62", "84-90", "163-166", "299-303", "422", "461-465"]
-reason = "These lines are OS pipe/process construction failures, invalid direct library arguments, and child teardown races. The Managed API can choose an ACP runtime but cannot deterministically force individual stdio syscalls or bypass the validated CLI builder; protocol behavior is covered by real-process ACP E2E."
-evidence = "cargo test -p awaken-run-executor-acp subprocess; e2e/acp_jsonrpc_e2e.mjs; e2e/acp_control_lifecycle_e2e.ts"
-
-[[waiver]]
-path = "crates/server/awaken-run-executor-acp/src/acp_cli.rs"
-ranges = ["141-143", "168", "173", "215", "219", "248"]
-reason = "These are internal ACP launch serialization/pipe failures and malformed executor-return values that cannot be selected by a valid Managed request independently of replacing or corrupting the child adapter."
-evidence = "cargo test -p awaken-run-executor-acp acp_cli; e2e/acp_e2e.mjs; e2e/acp_jsonrpc_e2e.mjs"
-
-[[waiver]]
-path = "crates/server/awaken-runtime-host/src/memory.rs"
-ranges = ["381", "406-408", "410-412", "421-423"]
-reason = "These branches handle malformed or conflicting responses from injected Memory extraction/store adapters after the Session request has completed. Served callers cannot replace those adapters or forge their internal stage receipts; durable extraction fault/recovery E2E covers public outcomes."
-evidence = "cargo test -p awaken-runtime-host memory; e2e/memory_extraction_stage_recovery_e2e.ts; e2e/managed_memory_extraction_crash_e2e.mjs"
-
-[[waiver]]
-path = "crates/server/awaken-runtime-host/src/run_exec.rs"
-ranges = ["64-66", "327-329"]
-reason = "These lines are internal attempt executor dispatch errors and an impossible unknown backend after the authoritative backend parser has accepted the run. Protocol callers cannot construct the post-parse enum mismatch."
-evidence = "cargo test -p awaken-runtime-host run_exec; e2e/model_route_e2e.mjs; e2e/acp_e2e.mjs"
-
-[[waiver]]
-path = "crates/server/awaken-runtime-host/src/inference_routing.rs"
-ranges = ["69", "71", "73", "83", "86", "88"]
-reason = "These are accessor/default-router branches over already-resolved inference candidates and missing injected executors. The served API authors model intent but cannot replace the Runtime's attempt router after startup."
-evidence = "cargo test -p awaken-runtime-host inference_routing; e2e/model_route_e2e.mjs; e2e/credential_reference_worker_e2e.ts"
-
-[[waiver]]
-path = "crates/server/awaken-runtime-host/src/agent_runner.rs"
-ranges = ["589", "595-599"]
-reason = "These lines require an internally malformed outcome definition or a closed injected progress channel after route validation. Public outcome DTO validation and live execution are covered separately; callers cannot forge the post-validation internal values."
-evidence = "cargo test -p awaken-runtime-host agent_runner; e2e/managed_outcome_runtime_matrix_e2e.ts; e2e/managed_outcome_recovery_e2e.ts"
-
-[[waiver]]
-path = "crates/server/awaken-runtime-host/src/acp_provision.rs"
-ranges = ["103-107"]
-reason = "This is the internal error projection from an injected SandboxProvider during ACP launch. A served request cannot replace the provider implementation; real provider success and network-denial behavior are covered by ACP sandbox E2E."
-evidence = "cargo test -p awaken-runtime-host acp_provision; e2e/acp_sandboxed_e2e.mjs"
-
-[[waiver]]
-path = "crates/server/awaken-runtime-host/src/provisioning.rs"
-ranges = ["184-187"]
-reason = "These lines map an injected broker/provider failure after a validated process launch specification. The failure requires adapter substitution below the served API and is owned by provisioning/provider tests."
-evidence = "cargo test -p awaken-runtime-host provisioning; cargo test -p awaken-provisioning-contract; e2e/credential_materialization_worker_e2e.ts"
-
-[[waiver]]
-path = "crates/stores/awaken-session-store/src/lib.rs"
-ranges = ["115", "125", "134", "139", "161-162", "165-167", "225", "238", "248", "254", "315", "324", "334", "353", "366", "662", "686", "755", "776", "795", "802", "992", "1009"]
-reason = "These branches are migration construction failures, poisoned/database adapter errors, invalid internal create/mutation facts, negative/corrupt stored revisions, and impossible missing rows during repository-owned transactions. A served Session command is normalized before this port and cannot inject SQLite/Postgres rows or replace the repository connection."
-evidence = "cargo test -p awaken-session-store; e2e/managed_session_legacy_upgrade_e2e.ts; e2e/control_plane_postgres_e2e.ts; e2e/management_sessions_family_e2e.mjs"
-
-[[waiver]]
-path = "crates/stores/awaken-session-store/src/row_codec.rs"
-ranges = ["137", "142-144", "150-151", "217"]
-reason = "These are corrupt retained-row and impossible legacy decode partitions below the Session repository. Protocol requests cannot author raw aggregate/legacy columns; dedicated corruption and upgrade tests own the migration boundary."
-evidence = "cargo test -p awaken-session-store row_codec; e2e/managed_session_legacy_upgrade_e2e.ts"
-
-[[waiver]]
-path = "crates/runtime/awaken-ext-memory/src/extraction.rs"
-ranges = ["407-409", "660", "669-671", "1116-1120"]
-reason = "These lines reject an internally forged credential receipt claim, conflicting receipt replay, or an extraction row disappearing between claim-fenced internal stages. The served Memory API cannot author extraction receipts or delete the in-flight intent; aggregate/fault tests inject these cases."
-evidence = "cargo test -p awaken-ext-memory extraction; e2e/memory_extraction_stage_recovery_e2e.ts; e2e/managed_memory_extraction_crash_e2e.mjs"
-
-[[waiver]]
-path = "crates/worker/awaken-sandbox-local/src/namespace.rs"
-ranges = ["897-900", "904-907"]
-reason = "These are the macOS-only path translation and environment projection arm of the namespace provider. The Linux TS harness cannot execute cfg-selected macOS process behavior."
-evidence = "cargo test -p awaken-sandbox-local; e2e/sandbox_backend_e2e.ts"
-
-[[waiver]]
-path = "crates/worker/awaken-sandbox-container/src/podman.rs"
-ranges = ["272-275", "289-290"]
-reason = "These lines place already-materialized secret environment values into the host-side Podman child environment while keeping them out of argv. No served request can observe or separately select command-builder statements; Podman provider and secret-nonleak tests own this boundary."
-evidence = "cargo test -p awaken-sandbox-container podman; e2e/container_podman_agent_e2e.ts; e2e/secret_nonleak_e2e.mjs"
-
-[[waiver]]
-path = "crates/server/awaken-run-executor-acp/src/lib.rs"
-ranges = ["705", "713", "850"]
-reason = "These are ACP driver's private retry/reapply statements around an injected source failure and recovered session. Managed requests cannot replace the AcpSessionSource or select an individual internal statement; complete handshake retry and control behavior are covered through process tests."
-evidence = "cargo test -p awaken-run-executor-acp; e2e/acp_jsonrpc_e2e.mjs; e2e/acp_control_lifecycle_e2e.ts"
-
-[[waiver]]
-path = "crates/stores/awaken-env-store/src/lib.rs"
-ranges = ["42", "47", "107"]
-reason = "These lines are migration/backend construction errors and an unavailable injected environment store. A running HTTP server has already fixed and opened this adapter, so requests cannot select its construction failure."
-evidence = "cargo test -p awaken-env-store; e2e/management_env_work_persistence_e2e.mjs"
-
-[[waiver]]
-path = "crates/worker/awaken-provisioning-contract/src/sandbox.rs"
-ranges = ["248-249"]
-reason = "These are default fail-closed methods for an unimplemented optional SandboxProvider capability. Composition selects the concrete provider before serving and no runtime API can invoke the trait default through a configured provider."
-evidence = "cargo test -p awaken-provisioning-contract sandbox; cargo test -p awaken-sandbox-local; e2e/sandbox_provisioning_e2e.mjs"
-
-[[waiver]]
-path = "crates/worker/awaken-sandbox-container/src/egress.rs"
-ranges = ["56"]
-reason = "This is an injected gateway command-construction failure below the container provider port; the served API cannot replace the gateway adapter after startup."
-evidence = "cargo test -p awaken-sandbox-container egress; e2e/acp_gateway_e2e.mjs"
-
-[[waiver]]
-path = "crates/server/awaken-runtime-host/src/session_environment/provider.rs"
-ranges = ["25"]
-reason = "This is the default fail-closed method of an uninstalled SessionEnvironmentProvider. A served Host always fixes its concrete provider at composition and requests cannot swap to the trait default."
-evidence = "cargo test -p awaken-runtime-host session_environment; e2e/session_environment_faults_e2e.ts"
-
-[[waiver]]
-path = "crates/server/awaken-server/src/model_resolver.rs"
-ranges = ["218"]
-reason = "This line maps an injected catalog repository failure below the already-authored model request. The running API cannot replace its resolver store; catalog fault tests own that adapter boundary."
-evidence = "cargo test -p awaken-server model_resolver; e2e/model_discovery_faults_e2e.ts"
-
-[[waiver]]
-path = "crates/server/awaken-protocol-managed/src/state/session_update.rs"
-ranges = ["41", "94", "99", "272-284"]
-reason = "These lines are background reconciliation logging, bounded root-CAS conflict exhaustion, and an impossible repository replay without the idempotency receipt that produced it. A served update can race and be retried, but cannot delete its repository-owned receipt between the atomic commit and lookup."
-evidence = "cargo test -p awaken-protocol-managed session_update; cargo test -p awaken-session-store root_mutation; e2e/management_sessions_family_e2e.mjs; e2e/managed_mcp_recovery_e2e.ts"
-
-[[waiver]]
-path = "crates/server/awaken-server/src/inference_materializer.rs"
-ranges = ["83", "142", "219-220", "247-248", "253-255", "257", "283"]
-reason = "These are post-resolution consistency guards for a requested binding outside its frozen publication, a missing attempt binding, or a materializer returning another credential mechanism. Public model requests cannot mutate the already-pinned candidate set or forge claim-local binding objects."
-evidence = "cargo test -p awaken-server inference_materializer; e2e/credential_reference_worker_e2e.ts; e2e/credential_materialization_worker_e2e.ts"
-
-[[waiver]]
-path = "crates/server/awaken-protocol-managed/src/routes/sessions.rs"
-ranges = ["399-402"]
-reason = "This handler branch covers a non-visible-ASCII Idempotency-Key after HeaderMap construction. The HTTP parser rejects such header bytes before routing, so no served TypeScript/HTTP request can reach the application-level UTF-8 conversion failure; valid, blank, oversized, replay, and conflict keys remain public test cases."
-evidence = "cargo test -p awaken-protocol-managed update_session; e2e/management_sessions_family_e2e.mjs"
-
-[[waiver]]
-path = "crates/server/awaken-runtime-host/src/dispatch_transport.rs"
-ranges = ["144-150", "1066", "1109", "1204"]
-reason = "These lines install local credential capabilities and execute the local-authenticator claim fallback. Authenticator/topology and its capabilities are fixed when WorkerDispatchService is constructed; a request to an already-running registered-Worker service cannot switch it into local composition."
-evidence = "cargo test -p awaken-runtime-host dispatch_transport; e2e/worker_transport_e2e.mjs; e2e/credential_reference_worker_e2e.ts"
-
-[[waiver]]
-path = "crates/server/awaken-run-ingress/src/pool.rs"
-ranges = ["54-58", "366"]
-reason = "These are the default capabilities of an uninstalled WorkerResolver and a process-local cancellation race where another drain worker already claimed the fenced run. The resolver is fixed before serving and individual scheduler interleavings are owned by lower concurrency tests."
-evidence = "cargo test -p awaken-run-ingress pool; e2e/durable_worker_cancel_e2e.mjs; e2e/remote_worker_recovery_e2e.ts"
-
-[[waiver]]
-path = "crates/server/awaken-protocol-managed/src/state/environment.rs"
-ranges = ["46", "50"]
-reason = "These lines reject a missing or corrupt frozen Environment snapshot after the Session compiler has committed. Served requests cannot forge post-compile Environment state; legacy/corruption tests own retained-row denial."
-evidence = "cargo test -p awaken-protocol-managed environment; e2e/managed_session_legacy_upgrade_e2e.ts; e2e/session_environment_faults_e2e.ts"
+path = "crates/server/awaken-runtime-host/src/deployment_config.rs"
+ranges = ["310-315"]
+reason = "The changed executable lines are one static fail-closed diagnostic selected before a server can bind. A served TypeScript request cannot change typed deployment durability composition after startup."
+evidence = "cargo test -p awaken-runtime-host deployment_config; e2e/deployment_config_e2e.mjs; e2e/durable_requires_storage_e2e.mjs"
 
 [[waiver]]
 path = "crates/server/awaken-runtime-host/src/host/session.rs"
-ranges = ["358", "362"]
-reason = "These lines reject an internally inconsistent process-local Session slot after durable projection installation. The served API cannot directly mutate Host slots; recovery and environment corruption tests exercise the public denial boundary."
-evidence = "cargo test -p awaken-runtime-host host::session; e2e/session_environment_faults_e2e.ts; e2e/managed_mcp_recovery_e2e.ts"
+ranges = ["58"]
+reason = "This is the pre-bind diagnostic for selecting the filesystem commit backend without typed storage. No served request can replace the commit backend selected at process composition."
+evidence = "cargo test -p awaken-runtime-host host::session; e2e/deployment_config_e2e.mjs"
 
 [[waiver]]
-path = "crates/server/awaken-runtime-host/src/acp_backend.rs"
-ranges = ["283", "373"]
-reason = "These are injected ACP backend/source failure mappings below the validated Runtime selection. A served request cannot replace the backend implementation after process composition."
-evidence = "cargo test -p awaken-runtime-host acp_backend; e2e/acp_e2e.mjs; e2e/acp_jsonrpc_e2e.mjs"
+path = "crates/server/awaken-runtime-host/src/host/worker_resolver.rs"
+ranges = ["211-214"]
+reason = "These lines require an installed ACP adapter to reject its own configured backend while Worker capabilities are composed. Protocol clients cannot install or replace ACP adapters after the Worker starts."
+evidence = "cargo test -p awaken-runtime-host worker_resolver; e2e/worker_resource_manifest_e2e.ts; e2e/credential_materialization_worker_e2e.ts"
 
 [[waiver]]
-path = "crates/server/awaken-run-ingress-contract/src/dispatch.rs"
-ranges = ["535", "539"]
-reason = "These lines are default fail-closed methods on an unimplemented optional dispatch capability. A running server has selected a concrete queue adapter and requests cannot swap to its trait defaults."
-evidence = "cargo test -p awaken-run-ingress-contract; cargo test -p awaken-run-ingress; e2e/stage_change_coverage_e2e.ts"
+path = "crates/server/awaken-runtime-host/src/lib.rs"
+ranges = ["1789"]
+reason = "This is the no-op arm for a Host built without the optional Session-defaults preparer. Production composition installs that adapter, and a served request cannot remove it."
+evidence = "cargo test -p awaken-runtime-host; e2e/agent_environment_defaults_e2e.ts"
 
 [[waiver]]
-path = "crates/server/awaken-run-ingress/src/worker_context.rs"
-ranges = ["89"]
-reason = "This line rejects an internally forged Worker assignment/claim context after authenticated transport admission; the public request cannot mutate the claim-local value."
-evidence = "cargo test -p awaken-run-ingress worker_context; e2e/worker_transport_e2e.mjs"
+path = "crates/server/awaken-sandbox-policy-store/src/lib.rs"
+ranges = ["60", "75"]
+reason = "These are statements in the in-memory reference adapter, while both production compositions install the SQLite or Postgres authority. No served deployment selects the reference adapter."
+evidence = "cargo test -p awaken-sandbox-policy-store; e2e/management_environments_e2e.mjs; e2e/resource_plane_postgres_e2e.ts"
 
 [[waiver]]
-path = "crates/server/awaken-run-ingress/src/dispatch.rs"
-ranges = ["11"]
-reason = "This is the default fail-closed dispatch adapter error used only when no concrete queue implementation was installed before serving."
-evidence = "cargo test -p awaken-run-ingress dispatch; e2e/deployment_config_e2e.mjs"
-
-[[waiver]]
-path = "crates/server/awaken-protocol-managed/src/state/sessions.rs"
-ranges = ["112-119", "238", "241", "279-280", "311", "313-315", "936-943", "1091", "1141-1146", "1404", "1442", "1494", "1503-1504", "1516-1518", "1540-1542", "1546", "1578-1579"]
-reason = "These branches are no-Vault composition fallback, generated root-mutation conflict/impossible idempotency mismatch, revision overflow, one-time legacy Resource adoption, background reconciliation filtering, retained pre-baseline projection, and teardown CAS/race failures. Served Session DTOs cannot replace repositories, overflow revisions, forge mutation hashes, or directly author legacy/internal lifecycle state."
-evidence = "cargo test -p awaken-protocol-managed sessions; cargo test -p awaken-session-store; e2e/managed_session_legacy_upgrade_e2e.ts; e2e/managed_session_dispose_e2e.mjs; e2e/resource_activation_recovery_e2e.ts"
-
-[[waiver]]
-path = "crates/server/awaken-protocol-managed/src/state/resources.rs"
-ranges = ["52-54", "59-67", "70-73", "137-138", "140-144", "148-154", "156", "159", "171", "186-191", "196", "216", "232", "249", "253"]
-reason = "These lines reject forged/corrupt Repository credential pins and impossible post-compiler Resource states, or handle injected root-CAS/repository conflicts during bounded migration and settlement. Public Resource DTOs carry references, not resolved pins, aggregate revisions, or settlement receipts, and cannot replace the Vault/repository adapters."
-evidence = "cargo test -p awaken-protocol-managed resources; cargo test -p awaken-session-contract resource; e2e/managed_resource_lifecycle_e2e.mjs; e2e/resource_activation_recovery_e2e.ts; e2e/worker_resource_manifest_e2e.ts"
-
-[[waiver]]
-path = "crates/server/awaken-protocol-managed/src/state/realization.rs"
-ranges = ["20-22", "262-266", "452-455", "490-491", "556-559", "622-625", "631-636", "638", "640", "690-691", "694", "713-714", "716-725", "727-743", "764"]
-reason = "These lines are internal error conversion, lease-epoch overflow, repository CAS/backend failures, current-generation projection checks, bounded-driver nonconvergence, and the process-local renewal supervisor's filtering/logging. Worker commands can exercise the phase protocol but cannot overflow durable epochs, replace the repository, or directly select supervisor loop interleavings."
-evidence = "cargo test -p awaken-protocol-managed realization; cargo test -p awaken-session-contract session_realization; e2e/managed_mcp_recovery_e2e.ts; e2e/application_session_worker_e2e.ts; e2e/remote_worker_recovery_e2e.ts"
+path = "crates/server/awaken-sandbox-policy-store/src/lib.rs"
+ranges = ["256-258", "316", "318", "326", "341", "347", "352", "359", "365", "367", "384", "406"]
+reason = "These SQLite/Postgres lines are serialization, transaction, corrupt-row, overflow, and injected database failure mappings below the store port. Valid API inputs cannot overflow persisted versions or corrupt/close the repository connection."
+evidence = "cargo test -p awaken-sandbox-policy-store; e2e/management_environments_e2e.mjs; e2e/resource_plane_postgres_e2e.ts"
