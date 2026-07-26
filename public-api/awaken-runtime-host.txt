@@ -122,6 +122,7 @@ pub awaken_runtime_host::ApplicationSessionPlan::prompts: alloc::vec::Vec<alloc:
 impl awaken_runtime_host::ApplicationSessionPlan
 pub fn awaken_runtime_host::ApplicationSessionPlan::empty(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_host::ApplicationSessionPlan::with_mcp_url(self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_host::ApplicationSessionPlan::with_mcp_url_credential(self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, awaken_credential_contract::CredentialRef) -> Self
 pub fn awaken_runtime_host::ApplicationSessionPlan::with_network_restriction(self, awaken_provisioning_contract::vocab::NetworkPolicy) -> Self
 pub struct awaken_runtime_host::BoundLocalChannelSource
 impl awaken_run_executor_acp::AgentChannelSource for awaken_runtime_host::BoundLocalChannelSource
@@ -547,6 +548,7 @@ pub fn awaken_runtime_host::platform_plugin_capabilities() -> alloc::vec::Vec<aw
 pub fn awaken_runtime_host::registered_worker_transport_router(alloc::sync::Arc<awaken_runtime_host::SharedHost>, alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>, alloc::sync::Arc<dyn awaken_worker_contract::PlacementPolicy>, alloc::sync::Arc<dyn awaken_session_contract::session_realization::ApplicationSessionControl>) -> axum::routing::Router
 pub fn awaken_runtime_host::registered_worker_transport_router_with_services(axum::routing::Router, alloc::sync::Arc<awaken_runtime_host::ClaimedCommitService>) -> axum::routing::Router
 pub async fn awaken_runtime_host::resolve_sandbox_tier(awaken_runtime_host::SandboxTier, bool, &std::path::Path) -> core::result::Result<awaken_runtime_host::SandboxTier, alloc::string::String>
+pub fn awaken_runtime_host::self_hosted_inference_holder(&awaken_runtime_contract::activation::RunActivation) -> core::result::Result<core::option::Option<awaken_credential_contract::PlaintextHolder>, awaken_runtime_host::host::types::HostError>
 pub fn awaken_runtime_host::skills_router(core::option::Option<alloc::sync::Arc<dyn awaken_resource_contract::SkillStore>>, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeScheduler>) -> axum::routing::Router
 pub fn awaken_runtime_host::worker_dispatch_store_with_upstream(&awaken_runtime_host::WorkerUpstream, awaken_worker_contract::WorkerIdentity) -> alloc::sync::Arc<awaken_run_ingress::any::AnyDispatchStore>
 pub type awaken_runtime_host::AttemptExecutorDecorator = alloc::sync::Arc<(dyn core::ops::function::Fn(alloc::sync::Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>) -> alloc::sync::Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> + core::marker::Send + core::marker::Sync)>

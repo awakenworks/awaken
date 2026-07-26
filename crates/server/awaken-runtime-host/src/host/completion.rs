@@ -47,7 +47,10 @@ fn worker_local_credentials(
         .collect()
 }
 
-fn self_hosted_inference_holder(
+/// Resolve the canonical cold-start inference holder from immutable candidate
+/// backends. Embedded applications that author their own `RunDispatch` use this
+/// same decision instead of duplicating the self-hosted boundary mapping.
+pub fn self_hosted_inference_holder(
     activation: &RunActivation,
 ) -> Result<Option<awaken_runtime_contract::PlaintextHolder>, HostError> {
     let mut boundary = None;

@@ -104,6 +104,7 @@ mod build;
 pub use build::ResourcePlanePorts;
 mod completion;
 pub(crate) use completion::remote_worker_placement;
+pub use completion::self_hosted_inference_holder;
 mod run;
 mod session;
 mod session_ctx;
