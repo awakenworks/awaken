@@ -19,6 +19,10 @@ must update this graph and its decision table before production code changes.
 
 `E1` and `E2` are mutually exclusive. `E3` and `E4` are forbidden regardless
 of placement. The Console must obey the same contract as an official SDK.
+For the cloud networking sub-axis, the official union is exhaustive:
+`unrestricted` permits egress, `limited` with an empty `allowed_hosts` denies
+all host egress, and `limited` with hosts is an allow-list. A private `none`
+variant or networking on `self_hosted` is rejected rather than normalized.
 
 ### Effects
 
