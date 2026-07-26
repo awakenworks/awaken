@@ -640,7 +640,7 @@ pub async fn build_management_router_with_deployment(
         key,
     )
     .await?;
-    Ok(management_router_over(
+    management_router_over(
         stores,
         iam,
         remote_iam,
@@ -653,7 +653,7 @@ pub async fn build_management_router_with_deployment(
         },
         None,
     )
-    .await)
+    .await
 }
 
 /// Build the real env-selected management surface with one explicit in-process
@@ -731,6 +731,7 @@ async fn build_management_router_with_composition(
                 None,
             )
             .await
+            .unwrap_or_else(|error| panic!("runtime host configuration: {error}"))
         }
         None => {
             let deployment = awaken_runtime_host::DeploymentConfig::from_env();
@@ -746,6 +747,7 @@ async fn build_management_router_with_composition(
                 None,
             )
             .await
+            .unwrap_or_else(|error| panic!("runtime host configuration: {error}"))
         }
     }
 }
@@ -832,6 +834,7 @@ pub async fn build_management_router_with_host_customizer(
         Some(Box::new(customize_host)),
     )
     .await
+    .unwrap_or_else(|error| panic!("runtime host configuration: {error}"))
 }
 
 /// Durable counterpart of [`build_management_router_with_host_customizer`].
@@ -863,6 +866,7 @@ pub async fn build_durable_management_router_with_host_customizer(
         Some(Box::new(customize_host)),
     )
     .await
+    .unwrap_or_else(|error| panic!("runtime host configuration: {error}"))
 }
 
 /// Build the management router over in-memory stores with an explicit host default
@@ -887,6 +891,7 @@ pub async fn build_management_router_with_model(
         None,
     )
     .await
+    .unwrap_or_else(|error| panic!("runtime host configuration: {error}"))
 }
 
 /// [`build_management_router`] with explicit persistence inputs (no environment
@@ -906,6 +911,7 @@ pub async fn build_durable_management_router(dir: &std::path::Path, key: &[u8; 3
         None,
     )
     .await
+    .unwrap_or_else(|error| panic!("runtime host configuration: {error}"))
 }
 
 /// [`build_durable_management_router`] with the embedded IAM guard enabled — the
@@ -927,7 +933,8 @@ pub async fn build_secured_management_router(
         AssemblyOverrides::default(),
         None,
     )
-    .await;
+    .await
+    .unwrap_or_else(|error| panic!("runtime host configuration: {error}"));
     (router, iam)
 }
 
@@ -948,7 +955,7 @@ async fn management_router_over(
     // module naming that backend's crate. `None` in production; `Some` in a scenario that
     // serves external-CLI sessions.
     customize_host: Option<Box<dyn FnOnce(SharedHost) -> SharedHost + Send>>,
-) -> Router {
+) -> Result<Router, String> {
     let resolved = assembly.resolved;
     let deployment = assembly.deployment;
     let org_id = assembly.org_id.unwrap_or_else(local_org_id);
@@ -1245,7 +1252,7 @@ async fn management_router_over(
             awaken_server::relay_hand_executor_factory(),
             Some(credential_materializer.clone()),
         )
-        .await;
+        .await?;
     // Last-mile backend wiring the management plane does not assemble itself, injected
     // by the composition root (a scenario that serves external-CLI sessions).
     let host_builder = match customize_host {
@@ -1394,7 +1401,7 @@ async fn management_router_over(
     );
     let flat = flat.layer(reconcile_on_catalog_write);
     let flat = awaken_server::workspace_path::with_platform_workspace(flat, platform_workspace);
-    awaken_server::workspace_path::with_workspace_path_addressing(flat)
+    Ok(awaken_server::workspace_path::with_workspace_path_addressing(flat))
 }
 
 /// Resolve the hidden local Org from one composition-root seam. Self-managed

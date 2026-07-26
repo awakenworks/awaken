@@ -776,7 +776,8 @@ pub async fn build_acp_sandboxed_router() -> Router {
             awaken_server::relay_hand_executor_factory(),
             awaken_runtime_host::LaunchSource::Fixed(launch),
         )
-        .await;
+        .await
+        .expect("configure sandboxed ACP scenario");
     let host = Arc::new(host);
     // Mount `/v1/environments` over the same complete Managed state/resource
     // catalog used by every other scenario.
@@ -814,7 +815,8 @@ pub async fn build_acp_container_router() -> Router {
                     awaken_run_executor_acp::AcpLaunch::custom(argv, vec![]),
                 ),
             )
-            .await;
+            .await
+            .expect("configure container ACP scenario");
     // Use the same shared Resource Catalog + Managed ACL assembly as every other
     // scenario, with the exact EnvironmentState mounted by the environment API.
     mount_with_environments(Arc::new(host))

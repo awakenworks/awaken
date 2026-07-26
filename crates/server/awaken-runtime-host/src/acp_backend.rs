@@ -224,24 +224,25 @@ impl crate::host::SharedHost {
     /// The typed deployment profile advertises every CLI installed on this worker;
     /// the run's published `acp:<cli>` binding remains authoritative and must match. Provider
     /// endpoint/model/credential data come only from `credentials` and the snapshot.
-    /// Neither capability set → no ACP backend served. Panics on an advertised ACP
-    /// capability without a credential materializer or on a misconfigured tier.
+    /// Neither capability set → no ACP backend served. An advertised ACP
+    /// capability without a credential materializer or a misconfigured tier fails
+    /// composition without starting the host.
     pub async fn with_acp_from_deployment(
         self,
         hand_factory: Arc<dyn crate::HandExecutorFactory>,
         credentials: Option<crate::PinnedCredentialMaterializer>,
-    ) -> Self {
+    ) -> Result<Self, String> {
         let deployment = self.deployment.clone();
         let Some(profile) = deployment.acp.as_ref() else {
-            return match credentials {
+            return Ok(match credentials {
                 Some(credentials) => self.with_session_secret_broker(Arc::new(credentials)),
                 None => self,
-            };
+            });
         };
         let base = acp_sandbox_base(&deployment);
-        let credentials = credentials.unwrap_or_else(|| {
-            panic!("configured ACP CLIs require persisted credential materialization stores")
-        });
+        let credentials = credentials.ok_or_else(|| {
+            "configured ACP CLIs require persisted credential materialization stores".to_string()
+        })?;
         let routes = profile
             .cli_ids()
             .map(|id| {
@@ -261,14 +262,15 @@ impl crate::host::SharedHost {
         let default = profile.default_cli().map(str::to_string);
         let source = crate::LaunchSource::Projected(
             crate::AcpLaunchRegistry::new(routes, default)
-                .unwrap_or_else(|error| panic!("configure ACP launch routes: {error}")),
+                .map_err(|error| format!("configure ACP launch routes: {error}"))?,
         );
         // The same exact, claim-fenced materializer owns both sides of the
         // last-mile seam: the resolver issues an opaque one-shot reference and
         // the selected sandbox asks it for bytes immediately before spawn.
-        self.with_acp_launch_source(hand_factory, source)
-            .await
-            .with_session_secret_broker(Arc::new(credentials))
+        Ok(self
+            .with_acp_launch_source(hand_factory, source)
+            .await?
+            .with_session_secret_broker(Arc::new(credentials)))
     }
 
     /// Realize an explicitly supplied ACP launch source in the deployment's sandbox
@@ -278,9 +280,9 @@ impl crate::host::SharedHost {
         self,
         hand_factory: Arc<dyn crate::HandExecutorFactory>,
         source: crate::LaunchSource,
-    ) -> Self {
+    ) -> Result<Self, String> {
         if self.session_provider_explicit {
-            return self.with_bound_acp(source, None);
+            return Ok(self.with_bound_acp(source, None));
         }
         let dep = self.deployment.clone();
         let base = acp_sandbox_base(&dep);
@@ -291,7 +293,7 @@ impl crate::host::SharedHost {
         // loses it. So a worker without bwrap works out of the box.
         let tier = crate::resolve_sandbox_tier(dep.sandbox_tier, dep.sandbox_tier_explicit, &base)
             .await
-            .unwrap_or_else(|e| panic!("configure the ACP sandbox tier: {e}"));
+            .map_err(|error| format!("configure the ACP sandbox tier: {error}"))?;
         let mut host = self;
         match tier {
             crate::SandboxTier::Local => {
@@ -300,7 +302,7 @@ impl crate::host::SharedHost {
                 if let Some(mounter) = host.memory_mounter() {
                     host.session_provider.install_memory_mounter(mounter);
                 }
-                return host.with_bound_acp(source, None);
+                return Ok(host.with_bound_acp(source, None));
             }
             crate::SandboxTier::Namespace => {
                 host.session_provider =
@@ -308,14 +310,14 @@ impl crate::host::SharedHost {
                 if let Some(mounter) = host.memory_mounter() {
                     host.session_provider.install_memory_mounter(mounter);
                 }
-                return host.with_bound_acp(source, None);
+                return Ok(host.with_bound_acp(source, None));
             }
             _ => {}
         }
         let (provider, extra_mounts) =
             crate::container_environment::build(tier, dep.container_image.as_deref())
                 .await
-                .unwrap_or_else(|e| panic!("configure the ACP sandbox tier: {e}"));
+                .map_err(|error| format!("configure the ACP sandbox tier: {error}"))?;
         host.session_provider = crate::session_environment::SessionEnvironmentProvider::container(
             provider,
             extra_mounts,
@@ -324,7 +326,7 @@ impl crate::host::SharedHost {
         if let Some(mounter) = host.memory_mounter() {
             host.session_provider.install_memory_mounter(mounter);
         }
-        host.with_bound_acp(source, None)
+        Ok(host.with_bound_acp(source, None))
     }
 
     /// The hub-backed launch observer for this host: republishes an ACP agent's
@@ -394,6 +396,18 @@ fn acp_sandbox_base(deployment: &crate::DeploymentConfig) -> std::path::PathBuf 
 mod tests {
     use super::*;
     use crate::host::SharedHost;
+
+    struct UnusedHandFactory;
+
+    impl crate::HandExecutorFactory for UnusedHandFactory {
+        fn bind(
+            &self,
+            _channel: Box<dyn awaken_run_executor_acp::AgentChannelType>,
+            _operation_scope: &str,
+        ) -> Arc<dyn awaken_runtime_contract::tool::ToolExecutor> {
+            panic!("the configuration refusal must happen before a hand is bound")
+        }
+    }
 
     struct NoLlm;
     #[async_trait::async_trait]
@@ -474,6 +488,46 @@ mod tests {
             .with_projected_acp(cli, Arc::new(FixedModel), None);
         host.register_thread_runtime("t", "acp:claude");
         assert!(host.acp.as_ref().expect("acp backend wired").is_acp("t"));
+    }
+
+    #[tokio::test]
+    async fn advertised_acp_without_credentials_fails_composition_without_panicking() {
+        let mut deployment = crate::DeploymentConfig::ephemeral();
+        deployment.acp =
+            Some(crate::AcpWorkerProfile::new(vec!["codex".into()], Some("codex".into())).unwrap());
+        let result = SharedHost::new_with_deployment(Arc::new(NoLlm), "test", deployment)
+            .with_acp_from_deployment(Arc::new(UnusedHandFactory), None)
+            .await;
+        let error = match result {
+            Ok(_) => panic!("missing credential materializer must fail"),
+            Err(error) => error,
+        };
+        assert!(error.contains("persisted credential materialization stores"));
+    }
+
+    #[cfg(not(any(
+        feature = "container-docker",
+        feature = "container-podman",
+        feature = "container-k8s"
+    )))]
+    #[tokio::test]
+    async fn unavailable_container_tier_fails_composition_without_panicking() {
+        let mut deployment = crate::DeploymentConfig::ephemeral();
+        deployment.sandbox_tier = crate::SandboxTier::Docker;
+        deployment.sandbox_tier_explicit = true;
+        deployment.container_image = Some("example.invalid/awaken:test".into());
+        let launch = awaken_run_executor_acp::AcpLaunch::custom(vec!["true".into()], vec![]);
+        let result = SharedHost::new_with_deployment(Arc::new(NoLlm), "test", deployment)
+            .with_acp_launch_source(
+                Arc::new(UnusedHandFactory),
+                crate::LaunchSource::Fixed(launch),
+            )
+            .await;
+        let error = match result {
+            Ok(_) => panic!("an unavailable container feature must fail"),
+            Err(error) => error,
+        };
+        assert!(error.contains("needs its matching container feature"));
     }
 
     #[tokio::test]

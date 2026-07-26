@@ -1019,12 +1019,19 @@ impl WorkerNode {
         }
         // Serve only the ACP CLI capability this worker advertises. The run's snapshot
         // selects the matching backend and supplies its published provider access.
-        host = host
+        host = match host
             .with_acp_from_deployment(
                 awaken_server::relay_hand_executor_factory(),
                 self.credential_materializer,
             )
-            .await;
+            .await
+        {
+            Ok(host) => host,
+            Err(error) => {
+                let _ = control.deregister(&registration.snapshot.identity).await;
+                return Err(std::io::Error::other(error).into());
+            }
+        };
 
         let host = Arc::new(host);
         // Install one dispatch-facing Session adapter even when no Resource

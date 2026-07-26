@@ -302,8 +302,8 @@ pub fn awaken_runtime_host::SharedHost::acp_launch_observer(&self) -> alloc::syn
 pub fn awaken_runtime_host::SharedHost::register_thread_runtime(&self, &str, &str)
 pub fn awaken_runtime_host::SharedHost::with_acp(self, alloc::sync::Arc<awaken_run_executor_acp::AcpRunExecutor>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_acp_default(self, alloc::sync::Arc<awaken_run_executor_acp::AcpRunExecutor>, impl core::convert::Into<alloc::string::String>) -> Self
-pub async fn awaken_runtime_host::SharedHost::with_acp_from_deployment(self, alloc::sync::Arc<dyn awaken_runtime_host::HandExecutorFactory>, core::option::Option<awaken_runtime_host::PinnedCredentialMaterializer>) -> Self
-pub async fn awaken_runtime_host::SharedHost::with_acp_launch_source(self, alloc::sync::Arc<dyn awaken_runtime_host::HandExecutorFactory>, awaken_runtime_host::LaunchSource) -> Self
+pub async fn awaken_runtime_host::SharedHost::with_acp_from_deployment(self, alloc::sync::Arc<dyn awaken_runtime_host::HandExecutorFactory>, core::option::Option<awaken_runtime_host::PinnedCredentialMaterializer>) -> core::result::Result<Self, alloc::string::String>
+pub async fn awaken_runtime_host::SharedHost::with_acp_launch_source(self, alloc::sync::Arc<dyn awaken_runtime_host::HandExecutorFactory>, awaken_runtime_host::LaunchSource) -> core::result::Result<Self, alloc::string::String>
 pub fn awaken_runtime_host::SharedHost::with_projected_acp(self, awaken_run_executor_acp::acp_cli::AcpCli, alloc::sync::Arc<dyn awaken_run_executor_acp::subprocess::LaunchResolver>, core::option::Option<std::path::PathBuf>) -> Self
 impl awaken_runtime_host::SharedHost
 pub async fn awaken_runtime_host::SharedHost::add_system(&self, &str, &str) -> core::result::Result<(), awaken_runtime_host::host::types::HostError>
