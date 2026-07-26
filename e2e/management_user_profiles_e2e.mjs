@@ -4,6 +4,14 @@
 // `BetaUserProfileEnrollmentURL` types surfaces as an SDK decode error.
 //
 // Run: (from e2e/)  node management_user_profiles_e2e.mjs
+//
+// Causal graph: profile create -> metadata patch -> enrollment request -> scoped
+// expiring URL; missing profiles fail before any enrollment side effect.
+// Decision table:
+// | profile | patch/enrollment | observable behavior |
+// | present | empty-string metadata | key removed |
+// | present | enrollment | URL contains profile id and expiry |
+// | missing | read/update/enrollment | 404, no profile created |
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';

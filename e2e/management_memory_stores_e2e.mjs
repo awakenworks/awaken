@@ -7,6 +7,15 @@
 // SDK decode error.
 //
 // Run: (from e2e/)  node management_memory_stores_e2e.mjs
+//
+// Causal graph: store create -> versioned memory writes -> conditional update /
+// redact / delete -> authoritative list and retrieval state.
+// Decision table:
+// | target | precondition | operation | observable behavior |
+// | store | n/a | update/archive | metadata patch or terminal archive |
+// | memory | matching hash | update/delete | new version or absence |
+// | memory | stale hash | update | reject without mutation |
+// | version | existing | redact | content becomes unavailable, history remains |
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
