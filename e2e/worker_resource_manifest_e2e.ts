@@ -9,7 +9,7 @@ import fs, { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnServer, stopServer, waitForPort } from './harness.mjs';
+import { deploymentEnv, spawnServer, stopServer, waitForPort } from './harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38817);
@@ -395,16 +395,20 @@ async function main(): Promise<void> {
     AWAKEN_STORE: '',
     AWAKEN_DISPATCH_BACKEND: '',
   };
-  const management = spawn(buildAwaken(), [], {
+  const management = spawn(buildAwaken(), ['serve', '--port', String(CONFIG_PORT)], {
     cwd: ROOT,
     env: {
       ...process.env,
-      ...shared,
-      AWAKEN_HTTP_ADDR: `127.0.0.1:${CONFIG_PORT}`,
-      AWAKEN_STORAGE_DIR: configStorage,
-      AWAKEN_DEPLOYMENT_DATA_DIR: configStorage,
-      AWAKEN_CONTROL_SEAL_KEY:
-        '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
+      ...deploymentEnv(configStorage, {
+        controlSealKey:
+          '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
+        databases: {
+          resource_database_url: database.url,
+          admin_db: database.url,
+          sessions_db: database.url,
+        },
+      }),
+      AWAKEN_SCENARIO_WORKSPACE: WORKSPACE,
     },
     stdio: ['ignore', 'inherit', 'inherit'],
   });
@@ -469,6 +473,9 @@ async function main(): Promise<void> {
       AWAKEN_WORKER_GATEWAY_ONLY: '1',
       AWAKEN_TEST_CREDENTIAL_ID: GRANT,
       AWAKEN_TEST_CREDENTIAL_REVISION: String(GRANT_REVISION),
+      AWAKEN_TEST_RESOURCE_DATABASE_URL: database.url,
+      AWAKEN_TEST_ADMIN_DATABASE_URL: database.url,
+      AWAKEN_TEST_WORKER_STORAGE_DIR: workerStorage,
       AWAKEN_WORKER_ID: `resource-worker-${process.pid}`,
     });
     worker = spawn(buildWorker(), [], { cwd: ROOT, env, stdio: ['pipe', 'pipe', 'pipe'] });
