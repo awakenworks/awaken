@@ -57,6 +57,8 @@ pub struct WorkerDispatchService {
     registry_ttl_ms: u64,
     checkpoint: Option<Arc<dyn StreamCheckpointStore>>,
     recovery: Option<Arc<dyn RunRecoverySource>>,
+    application_session_control:
+        Option<Arc<dyn awaken_protocol_managed::ApplicationSessionControl>>,
 }
 
 impl WorkerDispatchService {
@@ -77,6 +79,7 @@ impl WorkerDispatchService {
             registry_ttl_ms: 30_000,
             checkpoint: None,
             recovery: None,
+            application_session_control: None,
         }
     }
 
@@ -89,6 +92,17 @@ impl WorkerDispatchService {
     #[must_use]
     pub fn with_recovery_source(mut self, recovery: Arc<dyn RunRecoverySource>) -> Self {
         self.recovery = Some(recovery);
+        self
+    }
+
+    /// Install the Control-owned Session application service behind the same
+    /// authenticated Worker and exact-claim boundary as dispatch/recovery.
+    #[must_use]
+    pub fn with_application_session_control(
+        mut self,
+        control: Arc<dyn awaken_protocol_managed::ApplicationSessionControl>,
+    ) -> Self {
+        self.application_session_control = Some(control);
         self
     }
 
@@ -180,6 +194,7 @@ fn registered_dispatch_router(
     host: Arc<SharedHost>,
     directory: Arc<dyn WorkerDirectory>,
     policy: Arc<dyn PlacementPolicy>,
+    application_session_control: Arc<dyn awaken_protocol_managed::ApplicationSessionControl>,
 ) -> Router {
     let dispatch = host
         .dispatch_store()
@@ -198,7 +213,8 @@ fn registered_dispatch_router(
             .with_worker_directory(directory, 30_000)
             .with_placement_policy(policy)
             .with_checkpoint_store(checkpoint)
-            .with_recovery_source(recovery),
+            .with_recovery_source(recovery)
+            .with_application_session_control(application_session_control),
     ))
 }
 
@@ -210,11 +226,17 @@ pub fn registered_worker_transport_router(
     host: Arc<SharedHost>,
     directory: Arc<dyn WorkerDirectory>,
     policy: Arc<dyn PlacementPolicy>,
+    application_session_control: Arc<dyn awaken_protocol_managed::ApplicationSessionControl>,
 ) -> Router {
     let dispatch = host
         .dispatch_store()
         .expect("registered worker transport requires the durable backend at startup");
-    let dispatch_router = registered_dispatch_router(host.clone(), directory.clone(), policy);
+    let dispatch_router = registered_dispatch_router(
+        host.clone(),
+        directory.clone(),
+        policy,
+        application_session_control,
+    );
     let commit_service = Arc::new(crate::commit_ingest::ClaimedCommitService::for_host(
         dispatch as Arc<dyn DispatchQueue>,
         host,
@@ -265,6 +287,22 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
         .route("/v1/worker/checkpoint/put", post(put_checkpoint))
         .route("/v1/worker/checkpoint/delete", post(delete_checkpoint))
         .route("/v1/worker/recovery/snapshot", post(recovery_snapshot))
+        .route(
+            "/v1/worker/session/application-contribution",
+            post(application_contribution),
+        )
+        .route(
+            "/v1/worker/session/realization/activate",
+            post(activate_session_realization),
+        )
+        .route(
+            "/v1/worker/session/realization/acknowledge",
+            post(acknowledge_session_realization),
+        )
+        .route(
+            "/v1/worker/session/realization/fail",
+            post(fail_session_realization),
+        )
         .route_layer(axum::middleware::from_fn_with_state(
             service.clone(),
             authenticate_worker,
@@ -315,6 +353,194 @@ struct RecoveryReq {
     claim: RunClaim,
     #[serde(default)]
     identity: Option<WorkerIdentity>,
+}
+
+#[derive(Deserialize)]
+struct ApplicationContributionReq {
+    claim: RunClaim,
+    identity: WorkerIdentity,
+    contribution: awaken_protocol_managed::ApplicationSessionContribution,
+}
+
+async fn application_contribution(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<ApplicationContributionReq>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        let authority = claim_authority(&service, &worker, Some(&request.identity), false).await?;
+        if authority.owner != request.claim.owner {
+            return Err(HostError::bad_request(
+                "authenticated worker does not own the application contribution claim",
+            ));
+        }
+        let guard = service
+            .dispatch
+            .lock_commit_epoch(&request.claim)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?
+            .ok_or_else(|| HostError::bad_request("application contribution claim is stale"))?;
+        if !guard.is_live_at(authority.now_ms) {
+            return Err(HostError::bad_request(
+                "application contribution claim lease has expired",
+            ));
+        }
+        let dispatch = guard.request();
+        if dispatch.run_id() != &request.claim.run_id {
+            return Err(HostError::bad_request(
+                "guarded dispatch does not match the application contribution claim",
+            ));
+        }
+        if dispatch.thread_id().0 != request.contribution.session_id {
+            return Err(HostError::bad_request(
+                "application contribution Session does not match the claimed Run",
+            ));
+        }
+        let control = service
+            .application_session_control
+            .as_ref()
+            .ok_or_else(|| HostError::internal("application Session control is not configured"))?;
+        let receipt = control
+            .contribute_application(request.contribution)
+            .await
+            .map_err(|error| HostError::bad_request(error.to_string()))?;
+        if !guard.is_live_at(service.clock.now_ms()) {
+            return Err(HostError::bad_request(
+                "application contribution claim expired before realization assignment",
+            ));
+        }
+        let registry_expiry = authority
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.expires_at_ms)
+            .unwrap_or(u64::MAX);
+        let realization_expiry = authority
+            .now_ms
+            .saturating_add(authority.lease_ms)
+            .min(registry_expiry);
+        let realization = control
+            .begin_session_realization(awaken_protocol_managed::BeginSessionRealization {
+                session_id: dispatch.thread_id().0.clone(),
+                target: awaken_protocol_managed::SessionRealizationTarget {
+                    owner: request.identity.worker_id.clone(),
+                    runtime_incarnation: request.identity.lease_owner(),
+                    lease_expires_at_unix_ms: realization_expiry,
+                },
+            })
+            .await
+            .map_err(|error| HostError::bad_request(error.to_string()))?;
+        // `guard` remains live through the complete aggregate command. Dropping it
+        // only after the receipt prevents renew/reclaim from crossing the CAS.
+        drop(guard);
+        Ok(json!({ "receipt": receipt, "realization": realization }))
+    }
+    .await;
+    respond(result)
+}
+
+#[derive(Deserialize)]
+struct SessionRealizationReq<T> {
+    identity: WorkerIdentity,
+    command: T,
+}
+
+async fn verify_session_realization_authority(
+    service: &WorkerDispatchService,
+    worker: &VerifiedWorkerContext,
+    identity: &WorkerIdentity,
+    lease: &awaken_protocol_managed::SessionRealizationLease,
+) -> Result<(), HostError> {
+    verify_worker_identity(worker, identity)?;
+    let authority = claim_authority(service, worker, Some(identity), false).await?;
+    if lease.owner != identity.worker_id
+        || lease.runtime_incarnation != identity.lease_owner()
+        || lease.expires_at_unix_ms < authority.now_ms
+    {
+        return Err(HostError::bad_request(
+            "Session realization lease is not owned by the authenticated Worker incarnation",
+        ));
+    }
+    Ok(())
+}
+
+fn application_session_control(
+    service: &WorkerDispatchService,
+) -> Result<&Arc<dyn awaken_protocol_managed::ApplicationSessionControl>, HostError> {
+    service
+        .application_session_control
+        .as_ref()
+        .ok_or_else(|| HostError::internal("application Session control is not configured"))
+}
+
+async fn activate_session_realization(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<SessionRealizationReq<awaken_protocol_managed::ActivateSessionRealization>>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        verify_session_realization_authority(
+            &service,
+            &worker,
+            &request.identity,
+            &request.command.lease,
+        )
+        .await?;
+        let realization = application_session_control(&service)?
+            .activate_session_realization(request.command)
+            .await
+            .map_err(|error| HostError::bad_request(error.to_string()))?;
+        Ok(json!({ "realization": realization }))
+    }
+    .await;
+    respond(result)
+}
+
+async fn acknowledge_session_realization(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<
+        SessionRealizationReq<awaken_protocol_managed::AcknowledgeSessionRealization>,
+    >,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        verify_session_realization_authority(
+            &service,
+            &worker,
+            &request.identity,
+            &request.command.lease,
+        )
+        .await?;
+        let realization = application_session_control(&service)?
+            .acknowledge_session_realization(request.command)
+            .await
+            .map_err(|error| HostError::bad_request(error.to_string()))?;
+        Ok(json!({ "realization": realization }))
+    }
+    .await;
+    respond(result)
+}
+
+async fn fail_session_realization(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<SessionRealizationReq<awaken_protocol_managed::FailSessionRealization>>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        verify_session_realization_authority(
+            &service,
+            &worker,
+            &request.identity,
+            &request.command.lease,
+        )
+        .await?;
+        application_session_control(&service)?
+            .fail_session_realization(request.command)
+            .await
+            .map_err(|error| HostError::bad_request(error.to_string()))?;
+        Ok(json!({ "failed": true }))
+    }
+    .await;
+    respond(result)
 }
 
 async fn claim_is_current(

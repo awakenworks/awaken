@@ -41,12 +41,15 @@ const PROCESSED_AT: &str = "2026-01-01T00:00:00Z";
 const MEMORY_CREATE_ONLY: &str = "memory stores can only be attached at session creation time; \
      adding or removing one from a running session is not supported";
 
+mod application;
 mod environment;
 mod events;
 mod helpers;
+mod realization;
 mod resource;
 mod resources;
 mod session_update;
+pub(crate) use session_update::SessionUpdateCommand;
 mod sessions;
 mod threads;
 mod types;
@@ -451,12 +454,13 @@ mod tests {
             {
                 restored.2 += 1;
             }
+            let receipt_fingerprint = request.fingerprint();
             Ok(awaken_session_contract::McpRealizationReceipt {
                 generation: request.generation,
                 realization_id: request.realization_id,
                 selected_plaintext_holder: request.selected_plaintext_holder,
                 actual_realization_kind: None,
-                receipt_fingerprint: "rehydrated".into(),
+                receipt_fingerprint,
             })
         }
 
@@ -826,7 +830,7 @@ mod tests {
         let mut mcp = awaken_session_contract::SessionMcpAttachmentSet::from_initial(
             vec![awaken_session_contract::McpAttachmentDraft {
                 name: "calc".into(),
-                target: awaken_session_contract::McpTarget::new("https://x"),
+                target: awaken_session_contract::McpTarget::parse_http("https://x").unwrap(),
                 credential: None,
                 origin: awaken_session_contract::McpAttachmentOrigin::Session,
             }],
@@ -839,15 +843,18 @@ mod tests {
             revision: Default::default(),
             baseline: awaken_session_contract::SessionBaselineState::Frozen(
                 awaken_session_contract::SessionBaseline::compile(
-                    environment,
-                    Default::default(),
-                    "coder".into(),
-                    "kimi-k2".into(),
-                    Some("acp:custom".into()),
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
+                    awaken_session_contract::SessionBaselineInputs {
+                        environment,
+                        mcp_authoring: Default::default(),
+                        agent_id: "coder".into(),
+                        model: "kimi-k2".into(),
+                        runtime: Some("acp:custom".into()),
+                        application: None,
+                        delegate_ids: Vec::new(),
+                        mounts: Vec::new(),
+                        env: Vec::new(),
+                        prompts: Vec::new(),
+                    },
                 ),
             ),
             title: Some("My session".to_string()),

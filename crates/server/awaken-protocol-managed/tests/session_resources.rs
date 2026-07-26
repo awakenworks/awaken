@@ -112,12 +112,20 @@ impl AgentConfigSource for AgentWithIntegrations {
             model: None,
             system: None,
             tool_ids: Vec::new(),
-            mcp_servers: vec![awaken_protocol_managed::AgentMcpServerView {
-                name: "docs".into(),
-                url: "https://mcp.example.test".into(),
-                credential_source_id: Some("cred:workspace:docs".into()),
-                credential_revision: Some(7),
-            }],
+            mcp_servers: vec![
+                awaken_protocol_managed::AgentMcpServerView {
+                    name: "docs".into(),
+                    url: "https://mcp.example.test".into(),
+                    credential_source_id: Some("cred:workspace:docs".into()),
+                    credential_revision: Some(7),
+                },
+                awaken_protocol_managed::AgentMcpServerView {
+                    name: "public-docs".into(),
+                    url: "https://public.example.test".into(),
+                    credential_source_id: None,
+                    credential_revision: None,
+                },
+            ],
             skill_ids: vec!["skill_release".into()],
             delegate_ids: vec!["researcher".into()],
             resources: Vec::new(),
@@ -186,6 +194,7 @@ impl SessionRuntime for AcceptingFake {
         request: awaken_session_contract::StageMcpAttachment,
     ) -> Result<awaken_session_contract::McpRealizationReceipt, RunError> {
         self.staged.lock().unwrap().push(request.clone());
+        let receipt_fingerprint = request.fingerprint();
         Ok(awaken_session_contract::McpRealizationReceipt {
             generation: request.generation,
             realization_id: request.realization_id,
@@ -193,7 +202,7 @@ impl SessionRuntime for AcceptingFake {
             actual_realization_kind: Some(
                 awaken_credential_contract::CredentialRealizationKind::WorkerRelay,
             ),
-            receipt_fingerprint: "test-receipt".into(),
+            receipt_fingerprint,
         })
     }
     async fn publish_mcp_generation(
@@ -247,6 +256,20 @@ impl SessionRuntime for AcceptingFake {
     }
     async fn add_system(&self, _t: &str, _x: &str) -> Result<(), RunError> {
         Ok(())
+    }
+    async fn resolve_session_skills(
+        &self,
+        _workspace_id: &str,
+        skill_ids: &[String],
+    ) -> Result<Vec<awaken_session_contract::ResolvedSkillBinding>, RunError> {
+        Ok(skill_ids
+            .iter()
+            .map(|skill_id| awaken_session_contract::ResolvedSkillBinding {
+                skill_id: skill_id.clone(),
+                version: 1,
+                bundle_sha256: format!("sha256:{skill_id}"),
+            })
+            .collect())
     }
     async fn apply_session_inputs(
         &self,
@@ -302,39 +325,124 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
     let runtime = AcceptingFake::default();
     let prepared = runtime.prepared.clone();
     let staged = runtime.staged.clone();
-    let state =
-        ManagedState::new(runtime).with_config_source(std::sync::Arc::new(AgentWithIntegrations));
+    let repo = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("session repository"),
+    );
+    let state = ManagedState::new(runtime)
+        .with_config_source(std::sync::Arc::new(AgentWithIntegrations))
+        .with_session_repo(repo.clone());
     let app = router(std::sync::Arc::new(state));
     let (status, session) = call(
         &app,
         "POST",
         "/v1/sessions",
-        Some(json!({ "agent": "integrated" })),
+        Some(json!({
+            "agent": "integrated",
+            "mcp_servers": [{
+                "name": "public-docs",
+                "url": "https://session-public.example.test"
+            }]
+        })),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(session["agent"]["mcp_servers"][0]["name"], "docs");
+    assert_eq!(
+        session["agent"]["mcp_servers"][1],
+        json!({
+            "name": "public-docs",
+            "type": "url",
+            "url": "https://session-public.example.test"
+        }),
+        "Session origin wins over an uncredentialed Agent source with the same name"
+    );
     assert_eq!(session["agent"]["skills"][0]["id"], "skill_release");
     assert_eq!(session["agent"]["multiagent"]["agents"][0], "researcher");
     assert_eq!(
         prepared.lock().unwrap()[0].delegate_ids,
         vec!["researcher".to_string()]
     );
-    let staged = staged.lock().unwrap();
+    {
+        let staged = staged.lock().unwrap();
+        assert_eq!(
+            staged[0]
+                .credential
+                .as_ref()
+                .map(|access| access.credential.id.as_str()),
+            Some("cred:workspace:docs")
+        );
+        assert_eq!(
+            staged[0]
+                .credential
+                .as_ref()
+                .map(|access| access.credential.revision),
+            Some(7)
+        );
+    }
+    let durable = repo
+        .get(session["id"].as_str().unwrap())
+        .await
+        .expect("created Session is durable");
     assert_eq!(
-        staged[0]
-            .credential
-            .as_ref()
-            .map(|access| access.credential.id.as_str()),
-        Some("cred:workspace:docs")
+        durable.mcp.attachments[0].origin,
+        awaken_session_contract::McpAttachmentOrigin::Agent,
+        "credential presence does not define origin"
     );
     assert_eq!(
-        staged[0]
-            .credential
-            .as_ref()
-            .map(|access| access.credential.revision),
-        Some(7)
+        durable.mcp.attachments[1].origin,
+        awaken_session_contract::McpAttachmentOrigin::Session,
+        "Session precedence is decided after both sources are normalized"
     );
+    assert_eq!(
+        durable
+            .resources
+            .active
+            .skills
+            .as_ref()
+            .and_then(|skills| skills.first())
+            .map(|skill| skill.skill_id.as_str()),
+        Some("skill_release"),
+        "ADR-0063 Resource manifest is the durable Skill-pin authority"
+    );
+    assert!(
+        serde_json::to_value(durable.frozen_baseline().unwrap())
+            .unwrap()
+            .get("skills")
+            .is_none(),
+        "the baseline must not persist a second Skill-pin truth"
+    );
+}
+
+#[tokio::test]
+async fn create_rejects_different_names_for_one_canonical_mcp_target_before_insert() {
+    // Composed decision-table rule C5 + P4: source collection retains both
+    // candidates, canonical precedence cannot select between different names,
+    // and the create fails before a durable preparation row or Runtime effect.
+    let runtime = AcceptingFake::default();
+    let prepared = runtime.prepared.clone();
+    let repo = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("session repository"),
+    );
+    let state = ManagedState::new(runtime)
+        .with_config_source(std::sync::Arc::new(AgentWithIntegrations))
+        .with_session_repo(repo.clone());
+    let app = router(std::sync::Arc::new(state));
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({
+            "agent": "integrated",
+            "mcp_servers": [{
+                "name": "docs-alias",
+                "url": "HTTPS://MCP.EXAMPLE.TEST:443/"
+            }]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(prepared.lock().unwrap().is_empty());
+    assert!(repo.get("sesn_0").await.is_none());
 }
 
 async fn app_with_session() -> (Router, String) {
