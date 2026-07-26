@@ -6,10 +6,12 @@
 
 mod acp_gateway;
 mod attempt_credential;
+mod deployment;
 mod model_publication;
 mod models;
 pub use crate::models::*;
 pub use acp_gateway::build_acp_gateway_router;
+pub use deployment::scenario_deployment;
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -58,16 +60,6 @@ fn mount(host: Arc<SharedHost>) -> Router {
 
 fn resource_host(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> SharedHost {
     resource_host_with_deployment(llm, model_ref, scenario_deployment())
-}
-
-fn scenario_deployment() -> awaken_session_executor::DeploymentConfig {
-    let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
-    deployment.storage_dir = std::env::var("AWAKEN_STORAGE_DIR")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .map(std::path::PathBuf::from);
-    deployment.durable = std::env::var("AWAKEN_INGRESS").as_deref() == Ok("durable");
-    deployment
 }
 
 fn resource_host_with_deployment(
@@ -1741,7 +1733,11 @@ pub async fn build_config_router() -> Router {
     // pointed at the fake upstream when `AWAKEN_MODEL_SOURCE=http`); the fake upstream
     // is what drives the seeded assistant through its admin tools in the run e2e.
     let (model, model_ref) = scenario_model(Arc::new(InstructionEchoModel), "config");
-    let platform_workspace = SharedHost::provision_local_workspace();
+    let deployment = scenario_deployment();
+    let platform_workspace = deployment.storage_dir.as_deref().map_or_else(
+        SharedHost::provision_local_workspace,
+        SharedHost::provision_local_workspace_at,
+    );
     let store = Arc::new(
         awaken_config_store::SqliteConfigStore::open_in_memory().expect("open config store"),
     );
@@ -1835,7 +1831,7 @@ pub async fn build_config_router() -> Router {
         ))),
         Arc::new(awaken_admin_assistant::TracingAuditSink),
     );
-    let host = SharedHost::new(model, model_ref)
+    let host = resource_host_with_deployment(model, model_ref, deployment)
         .with_local_workspace(platform_workspace.clone())
         .with_config_service(service.clone())
         .with_admin_tools(admin_execs)

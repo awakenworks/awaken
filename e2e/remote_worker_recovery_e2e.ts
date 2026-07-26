@@ -16,8 +16,6 @@ import path from 'node:path';
 import { spawnServer, stopServer, waitForPort } from './harness.mjs';
 
 const CONTROL_PORT = Number(process.env.E2E_PORT ?? 38834);
-const WORKER_A_ADMIN_PORT = Number(process.env.E2E_WORKER_PORT ?? 39834);
-const WORKER_B_ADMIN_PORT = WORKER_A_ADMIN_PORT + 1;
 const CONTROL = `http://127.0.0.1:${CONTROL_PORT}`;
 const AGENT = 'recoverable-remote-worker';
 const THREAD_TEXT = 'recoverable remote worker input';
@@ -349,7 +347,7 @@ async function main(): Promise<void> {
   const control = spawnServer('config', CONTROL_PORT, {
     AWAKEN_INGRESS: 'durable',
     AWAKEN_STORAGE_DIR: storage,
-    AWAKEN_SERVER_RUN_LOCAL_POOL: 'false',
+    AWAKEN_DISABLE_LOCAL_POOL: '1',
   }).server;
   let workerA: ReturnType<typeof spawnServer>['server'] | undefined;
   let workerB: ReturnType<typeof spawnServer>['server'] | undefined;
@@ -372,11 +370,10 @@ async function main(): Promise<void> {
     workerA = spawnServer('echo', 0, {
       AWAKEN_INGRESS: 'durable',
       AWAKEN_UPSTREAM_URL: proxy.url,
+      AWAKEN_SCENARIO_ROLE: 'worker',
       AWAKEN_WORKER_ID: 'recovery-worker-a',
       AWAKEN_WORKER_CAPABILITIES: capability,
-      AWAKEN_WORKER_ADMIN_LISTEN: `127.0.0.1:${WORKER_A_ADMIN_PORT}`,
     }).server;
-    await waitForPort(WORKER_A_ADMIN_PORT, 180_000, workerA);
     await Promise.race([
       proxy.awaitingSettle,
       sleep(10_000).then(async () => {
@@ -422,11 +419,10 @@ async function main(): Promise<void> {
     workerB = spawnServer('echo', 0, {
       AWAKEN_INGRESS: 'durable',
       AWAKEN_UPSTREAM_URL: CONTROL,
+      AWAKEN_SCENARIO_ROLE: 'worker',
       AWAKEN_WORKER_ID: 'recovery-worker-b',
       AWAKEN_WORKER_CAPABILITIES: capability,
-      AWAKEN_WORKER_ADMIN_LISTEN: `127.0.0.1:${WORKER_B_ADMIN_PORT}`,
     }).server;
-    await waitForPort(WORKER_B_ADMIN_PORT, 180_000, workerB);
     await waitForDispatchStatus(thread, runId, 'Awaiting');
 
     const epochB = Math.max(
