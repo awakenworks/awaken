@@ -68,12 +68,23 @@ pub fn paginate_by_id<'a, T>(
     limit: Option<usize>,
     id_of: impl Fn(&T) -> &str,
 ) -> Result<HistoryPage<'a, T>, UnknownCursor> {
+    paginate_by_key(items, cursor, limit, |item| id_of(item).to_string())
+}
+
+/// The same canonical pagination kernel for collections whose stable cursor key
+/// is computed rather than borrowed (for example, a numeric aggregate revision).
+pub fn paginate_by_key<'a, T>(
+    items: &'a [T],
+    cursor: Option<&str>,
+    limit: Option<usize>,
+    key_of: impl Fn(&T) -> String,
+) -> Result<HistoryPage<'a, T>, UnknownCursor> {
     let total = items.len();
     let start = match cursor.map(str::trim).filter(|c| !c.is_empty()) {
         None => 0,
         Some(c) => items
             .iter()
-            .position(|item| id_of(item) == c)
+            .position(|item| key_of(item) == c)
             .map(|pos| pos + 1)
             .ok_or(UnknownCursor)?,
     };
@@ -84,7 +95,7 @@ pub fn paginate_by_id<'a, T>(
     let page = &items[start..end];
     let has_more = end < total;
     let next_page = if has_more {
-        page.last().map(|item| id_of(item).to_string())
+        page.last().map(key_of)
     } else {
         None
     };

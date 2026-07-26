@@ -20,6 +20,7 @@ fn spec(scope: &str) -> pc::SandboxSpec {
         isolation: pc::IsolationClass::Workdir,
         mounts: Vec::new(),
         env: Vec::new(),
+        packages: Default::default(),
         network: pc::NetworkPolicy::Unrestricted,
         outputs_path: "/outputs".into(),
         limits: pc::ResourceLimits::default(),

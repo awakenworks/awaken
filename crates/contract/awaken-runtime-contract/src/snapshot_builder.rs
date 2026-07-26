@@ -45,6 +45,7 @@ pub struct ExecutableAgentSnapshotBuilder {
     plugin_ids: Vec<String>,
     plugin_config: BTreeMap<String, serde_json::Value>,
     agent_bindings: crate::agent_bindings::AgentBindings,
+    inference: crate::agent_bindings::InferenceOptions,
     context_policy: ContextPolicy,
     tool_presentation: ToolPresentation,
     fingerprint: Option<String>,
@@ -64,6 +65,7 @@ impl ExecutableAgentSnapshotBuilder {
             plugin_ids: Vec::new(),
             plugin_config: BTreeMap::new(),
             agent_bindings: Default::default(),
+            inference: Default::default(),
             context_policy: ContextPolicy::default(),
             tool_presentation: ToolPresentation::default(),
             fingerprint: None,
@@ -171,6 +173,13 @@ impl ExecutableAgentSnapshotBuilder {
         self
     }
 
+    /// Freeze provider-neutral inference controls into the resolved snapshot.
+    #[must_use]
+    pub fn inference_options(mut self, inference: crate::agent_bindings::InferenceOptions) -> Self {
+        self.inference = inference;
+        self
+    }
+
     /// Bound the model-visible context window (default [`ContextPolicy::KeepAll`]).
     #[must_use]
     pub fn context_policy(mut self, policy: ContextPolicy) -> Self {
@@ -233,7 +242,8 @@ impl ExecutableAgentSnapshotBuilder {
                 plugin_config: crate::agent_bindings::ResolvedConfiguration::new(
                     self.agent_bindings,
                     self.plugin_config,
-                ),
+                )
+                .with_inference(self.inference),
                 context_policy: self.context_policy,
                 tool_presentation: self.tool_presentation,
             },

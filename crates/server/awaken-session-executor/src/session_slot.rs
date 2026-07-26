@@ -53,6 +53,7 @@ pub(crate) struct FrozenBaselineRuntimeProjection {
 pub(crate) struct FrozenEnvironmentRuntimeProjection {
     pub fingerprint: awaken_protocol_managed::EnvironmentFingerprint,
     pub network: awaken_provisioning_contract::NetworkPolicy,
+    pub packages: awaken_provisioning_contract::PackageRequirements,
     pub sandbox: Option<awaken_provisioning_contract::SandboxOverride>,
     pub credential_realization: awaken_runtime_contract::CredentialRealizationProfile,
 }
@@ -83,6 +84,8 @@ pub(crate) struct SessionRuntimeSlot {
     pub baseline: Option<FrozenBaselineRuntimeProjection>,
     /// Exact published delegation targets projected by a managed Session.
     pub delegates: Vec<String>,
+    /// Session-local exact toolset replacement; `None` inherits publication.
+    pub toolsets: Option<Vec<awaken_agent_contract::ToolsetPolicy>>,
     /// `Some([])` means the frozen manifest delivers no Skills; `None` means this
     /// embedded Session has no frozen Skill manifest.
     pub skills: Option<Vec<awaken_skill_store::SkillVersion>>,

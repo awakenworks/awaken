@@ -21,11 +21,15 @@ use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use serde_json::json;
 
-use crate::env_registry::{EnvRegistry, EnvUpdate, InMemoryEnvRegistry};
+use crate::env_registry::{
+    EnvItem, EnvRegistry, EnvUpdate, EnvironmentConfigMutation, EnvironmentNetworkingMutation,
+    EnvironmentPackagesMutation, InMemoryEnvRegistry,
+};
 use crate::routes::ManagedJson;
 use crate::types::environment::{
-    CloudNetworkingParams, DeletedEnvironment, Environment, EnvironmentConfigParams,
-    EnvironmentCreateParams, EnvironmentUpdateParams, Work, WorkHeartbeat, WorkQueueStats,
+    CloudNetworkingParams, CloudNetworkingUpdateParams, DeletedEnvironment, Environment,
+    EnvironmentConfigParams, EnvironmentConfigUpdateParams, EnvironmentCreateParams,
+    EnvironmentUpdateParams, PackagesUpdateParams, Work, WorkHeartbeat, WorkQueueStats,
     WorkUpdateParams,
 };
 use crate::types::{ErrorResponse, Page, PageQuery, paginate};
@@ -52,6 +56,7 @@ pub(crate) fn default_environment_snapshot(
         )
     };
     let sandbox = serde_json::json!({});
+    let packages = awaken_session_contract::env_registry::EnvironmentPackages::default();
     let network = awaken_session_contract::SessionNetworkPolicy::Unrestricted;
     let credential_realization = awaken_credential_contract::CredentialRealizationProfile {
         inference_holder,
@@ -70,11 +75,13 @@ pub(crate) fn default_environment_snapshot(
         config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
             awaken_session_contract::stable_fingerprint(&(
                 &sandbox,
+                &packages,
                 &network,
                 &credential_realization,
             )),
         ),
         sandbox,
+        packages,
         network,
         credential_realization,
     }
@@ -100,6 +107,14 @@ impl Default for EnvironmentState {
 }
 
 impl EnvironmentState {
+    /// Read the authoritative Environment row, including archived rows. Session
+    /// snapshot compilation intentionally hides archived rows; deployment launch
+    /// classification needs to distinguish archived from never-created without a
+    /// second Environment registry.
+    pub async fn get(&self, environment_id: &str) -> Option<EnvItem> {
+        self.envs.get(environment_id).await
+    }
+
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -132,6 +147,17 @@ impl EnvironmentState {
         env_id: &str,
         runtime: Option<&str>,
     ) -> Option<awaken_session_contract::EnvironmentSnapshot> {
+        self.snapshot_for_session(env_id, runtime, &[]).await
+    }
+
+    /// Compile a Session-specific snapshot from the exact MCP desired set that
+    /// was already normalized by the Managed application boundary.
+    pub async fn snapshot_for_session(
+        &self,
+        env_id: &str,
+        runtime: Option<&str>,
+        mcp_targets: &[awaken_session_contract::McpTarget],
+    ) -> Option<awaken_session_contract::EnvironmentSnapshot> {
         let Some(item) = self.envs.get(env_id).await else {
             return (env_id == "env_local")
                 .then(|| default_environment_snapshot(env_id.to_string(), runtime));
@@ -139,7 +165,11 @@ impl EnvironmentState {
         if item.archived_at.is_some() {
             return None;
         }
-        let network = item.config.network_policy().normalized();
+        let packages = item.config.packages();
+        let network = item
+            .config
+            .network_policy_for_session(mcp_targets)
+            .normalized();
         let acp = runtime.is_some_and(|value| value.starts_with("acp:"));
         let holder = if acp {
             awaken_credential_contract::PlaintextHolder::new(
@@ -182,6 +212,7 @@ impl EnvironmentState {
         let config_fingerprint = awaken_session_contract::EnvironmentFingerprint(
             awaken_session_contract::stable_fingerprint(&(
                 &sandbox,
+                &packages,
                 &network,
                 &credential_realization,
             )),
@@ -191,6 +222,7 @@ impl EnvironmentState {
             revision: item.revision,
             config_fingerprint,
             sandbox,
+            packages,
             network,
             credential_realization,
         })
@@ -204,7 +236,20 @@ impl EnvironmentState {
         revision: u64,
         runtime: Option<&str>,
     ) -> Option<awaken_session_contract::EnvironmentSnapshot> {
-        let snapshot = self.snapshot(env_id, runtime).await?;
+        self.snapshot_exact_for_session(env_id, revision, runtime, &[])
+            .await
+    }
+
+    pub async fn snapshot_exact_for_session(
+        &self,
+        env_id: &str,
+        revision: u64,
+        runtime: Option<&str>,
+        mcp_targets: &[awaken_session_contract::McpTarget],
+    ) -> Option<awaken_session_contract::EnvironmentSnapshot> {
+        let snapshot = self
+            .snapshot_for_session(env_id, runtime, mcp_targets)
+            .await?;
         (snapshot.revision.0 == revision).then_some(snapshot)
     }
 
@@ -503,7 +548,10 @@ async fn update_env(
     Path(id): Path<String>,
     ManagedJson(params): ManagedJson<EnvironmentUpdateParams>,
 ) -> Result<Json<Environment>, WireError> {
-    let config = params.config.map(canonical_environment_config);
+    let config = params.config.map(|config| match config {
+        None => EnvironmentConfigMutation::Replace(Default::default()),
+        Some(config) => environment_config_mutation(config),
+    });
     let patch = EnvUpdate {
         name: params.name,
         description: params.description,
@@ -517,6 +565,79 @@ async fn update_env(
         .await
         .ok_or_else(|| not_found("environment"))?;
     Ok(Json(crate::env_registry::project_env(&item)))
+}
+
+fn environment_config_mutation(config: EnvironmentConfigUpdateParams) -> EnvironmentConfigMutation {
+    match config {
+        EnvironmentConfigUpdateParams::SelfHosted {} => {
+            EnvironmentConfigMutation::Replace(Default::default())
+        }
+        EnvironmentConfigUpdateParams::Cloud {
+            networking,
+            packages,
+        } => EnvironmentConfigMutation::PatchCloud {
+            networking: networking.map(|value| match value {
+                None => EnvironmentNetworkingMutation::Reset,
+                Some(CloudNetworkingUpdateParams::Unrestricted) => {
+                    EnvironmentNetworkingMutation::Unrestricted
+                }
+                Some(CloudNetworkingUpdateParams::Limited {
+                    allowed_hosts,
+                    allow_mcp_servers,
+                    allow_package_managers,
+                }) => EnvironmentNetworkingMutation::Limited {
+                    allowed_hosts: allowed_hosts.map(|value| {
+                        value.map(|hosts| {
+                            hosts
+                                .into_iter()
+                                .map(crate::types::environment::AllowedHost::into_inner)
+                                .collect::<std::collections::BTreeSet<_>>()
+                                .into_iter()
+                                .collect()
+                        })
+                    }),
+                    allow_mcp_servers,
+                    allow_package_managers,
+                },
+            }),
+            packages: packages.map(|value| match value {
+                None => EnvironmentPackagesMutation {
+                    reset: true,
+                    ..Default::default()
+                },
+                Some(PackagesUpdateParams {
+                    apt,
+                    cargo,
+                    gem,
+                    go,
+                    npm,
+                    pip,
+                    kind: _,
+                }) => EnvironmentPackagesMutation {
+                    reset: false,
+                    apt: package_patch(apt),
+                    cargo: package_patch(cargo),
+                    gem: package_patch(gem),
+                    go: package_patch(go),
+                    npm: package_patch(npm),
+                    pip: package_patch(pip),
+                },
+            }),
+        },
+    }
+}
+
+fn package_values(values: Vec<crate::types::environment::PackageSpec>) -> Vec<String> {
+    values
+        .into_iter()
+        .map(crate::types::environment::PackageSpec::into_inner)
+        .collect()
+}
+
+fn package_patch(
+    value: Option<Option<Vec<crate::types::environment::PackageSpec>>>,
+) -> Option<Option<Vec<String>>> {
+    value.map(|value| value.map(package_values))
 }
 
 fn canonical_environment_config(
@@ -538,7 +659,13 @@ fn canonical_environment_config(
                     allow_mcp_servers,
                     allow_package_managers,
                 } => EnvironmentNetworking::Limited {
-                    allowed_hosts: allowed_hosts.unwrap_or_default(),
+                    allowed_hosts: allowed_hosts
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(crate::types::environment::AllowedHost::into_inner)
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .into_iter()
+                        .collect(),
                     allow_mcp_servers: allow_mcp_servers.unwrap_or(false),
                     allow_package_managers: allow_package_managers.unwrap_or(false),
                 },
@@ -548,12 +675,12 @@ fn canonical_environment_config(
                 networking,
                 packages: EnvironmentPackages {
                     kind: EnvironmentPackagesKind::Packages,
-                    apt: packages.apt.unwrap_or_default(),
-                    cargo: packages.cargo.unwrap_or_default(),
-                    gem: packages.gem.unwrap_or_default(),
-                    go: packages.go.unwrap_or_default(),
-                    npm: packages.npm.unwrap_or_default(),
-                    pip: packages.pip.unwrap_or_default(),
+                    apt: package_values(packages.apt.unwrap_or_default()),
+                    cargo: package_values(packages.cargo.unwrap_or_default()),
+                    gem: package_values(packages.gem.unwrap_or_default()),
+                    go: package_values(packages.go.unwrap_or_default()),
+                    npm: package_values(packages.npm.unwrap_or_default()),
+                    pip: package_values(packages.pip.unwrap_or_default()),
                 },
             }
         }

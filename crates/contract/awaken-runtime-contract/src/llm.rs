@@ -13,6 +13,7 @@ use awaken_agent_contract::agent::state::{MergePolicy, Scope, StateKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::agent_bindings::InferenceOptions;
 use crate::resolved::{ModelBinding, ToolDescriptor};
 
 /// One model invocation request. Pure data so it can be logged, replayed, and
@@ -22,6 +23,10 @@ pub struct ChatRequest {
     /// The binding selected before activation; the adapter routes on this and
     /// does not pick a different model (G22).
     pub model_binding: ModelBinding,
+    /// Immutable call controls compiled from the same Agent revision as the
+    /// binding. Provider adapters must apply or reject them, never ignore them.
+    #[serde(default)]
+    pub inference: InferenceOptions,
     pub messages: Vec<ChatMessage>,
     /// Model-visible tool descriptors resolved for this run — the same
     /// [`ToolDescriptor`] the resolved spec carries (its `content_hash` rides

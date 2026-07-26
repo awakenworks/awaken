@@ -216,6 +216,10 @@ pub struct SandboxCapabilities {
     pub resource_limits: bool,
     /// Provides its own userland/rootfs (vs. borrowing the host's binaries).
     pub custom_rootfs: bool,
+    /// Can materialize exact package requirements before workload launch and
+    /// preserve them across adoption of the same sandbox handle.
+    #[serde(default)]
+    pub package_provisioning: bool,
 }
 
 impl SandboxCapabilities {
@@ -709,6 +713,7 @@ mod tests {
                 secret_egress_substitution: false,
                 resource_limits: false,
                 custom_rootfs: false,
+                package_provisioning: false,
             }
         }
         async fn create(&self, spec: &SandboxSpec) -> Result<Box<dyn Sandbox>, SandboxError> {
@@ -731,6 +736,7 @@ mod tests {
             isolation: IsolationClass::Workdir,
             mounts: Vec::new(),
             env: Vec::new(),
+            packages: Default::default(),
             network: NetworkPolicy::Unrestricted,
             outputs_path: "/mnt/session/outputs".into(),
             limits: Default::default(),
@@ -750,6 +756,7 @@ mod tests {
             secret_egress_substitution: true,
             resource_limits: true,
             custom_rootfs: false,
+            package_provisioning: false,
         }
     }
 

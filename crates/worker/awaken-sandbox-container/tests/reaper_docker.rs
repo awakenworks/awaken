@@ -30,6 +30,7 @@ fn plan(cmd: Vec<String>) -> ContainerPlan {
         image: "busybox:latest".into(),
         command: cmd,
         env: Vec::new(),
+        packages: Default::default(),
         binds: Vec::new(),
         outputs_volume: "/mnt/session/outputs".into(),
         network: NetworkMode::None,

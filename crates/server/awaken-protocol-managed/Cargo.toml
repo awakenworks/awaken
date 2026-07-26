@@ -35,6 +35,8 @@ awaken-managed-bridge.workspace = true
 awaken-provisioning-contract.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["serde"] }
+chrono-tz = "0.10"
 async-trait.workspace = true
 thiserror.workspace = true
 # `sync` for the per-session live-SSE broadcast the preview sink and committed

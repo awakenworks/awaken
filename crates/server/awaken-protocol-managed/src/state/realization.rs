@@ -82,6 +82,7 @@ impl awaken_session_contract::SessionProjectionSynchronizer for LocalProjectionS
                     workspace_id: projection.workspace_id.clone(),
                     agent_id: baseline.agent_id.clone(),
                     delegate_ids: baseline.delegate_ids.clone(),
+                    toolsets: Some(projection.toolsets.clone()),
                     resources: projection.resources.clone(),
                     model: Some(baseline.model.clone()),
                     runtime: baseline.runtime.clone(),
@@ -886,6 +887,7 @@ mod tests {
                 revision: awaken_session_contract::env_registry::EnvironmentRevision(1),
                 config_fingerprint: EnvironmentFingerprint("env-fingerprint".into()),
                 sandbox: serde_json::json!({}),
+                packages: Default::default(),
                 network: SessionNetworkPolicy::Unrestricted,
                 credential_realization: CredentialRealizationProfile {
                     inference_holder: holder(),
@@ -902,6 +904,7 @@ mod tests {
                 &application_input,
             )),
             delegate_ids: Vec::new(),
+            toolsets: Vec::new(),
             mounts: Vec::new(),
             env: Vec::new(),
             prompts: Vec::new(),

@@ -8,6 +8,75 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(transparent)]
+pub struct AllowedHost(String);
+
+impl AllowedHost {
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for AllowedHost {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        let host = raw.trim().to_ascii_lowercase();
+        let dns = host.strip_prefix("*.").unwrap_or(&host);
+        let valid = !dns.is_empty()
+            && dns.len() <= 253
+            && !dns.contains("..")
+            && dns.split('.').all(|label| {
+                !label.is_empty()
+                    && label.len() <= 63
+                    && !label.starts_with('-')
+                    && !label.ends_with('-')
+                    && label
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            });
+        if !valid {
+            return Err(serde::de::Error::custom(
+                "allowed_hosts entries must be hostnames or `*.example.com` patterns without scheme, port, or path",
+            ));
+        }
+        Ok(Self(host))
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(transparent)]
+pub struct PackageSpec(String);
+
+impl PackageSpec {
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for PackageSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        if value.is_empty()
+            || value.trim() != value
+            || value.starts_with('-')
+            || value.chars().any(char::is_control)
+        {
+            return Err(serde::de::Error::custom(
+                "package requirements must be non-empty values and cannot be command options",
+            ));
+        }
+        Ok(Self(value))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EnvironmentConfigParams {
@@ -32,7 +101,7 @@ pub enum CloudNetworkingParams {
     Unrestricted,
     Limited {
         #[serde(default)]
-        allowed_hosts: Option<Vec<String>>,
+        allowed_hosts: Option<Vec<AllowedHost>>,
         #[serde(default)]
         allow_mcp_servers: Option<bool>,
         #[serde(default)]
@@ -44,17 +113,17 @@ pub enum CloudNetworkingParams {
 #[serde(deny_unknown_fields)]
 pub struct PackagesParams {
     #[serde(default)]
-    pub apt: Option<Vec<String>>,
+    pub apt: Option<Vec<PackageSpec>>,
     #[serde(default)]
-    pub cargo: Option<Vec<String>>,
+    pub cargo: Option<Vec<PackageSpec>>,
     #[serde(default)]
-    pub gem: Option<Vec<String>>,
+    pub gem: Option<Vec<PackageSpec>>,
     #[serde(default)]
-    pub go: Option<Vec<String>>,
+    pub go: Option<Vec<PackageSpec>>,
     #[serde(default)]
-    pub npm: Option<Vec<String>>,
+    pub npm: Option<Vec<PackageSpec>>,
     #[serde(default)]
-    pub pip: Option<Vec<String>>,
+    pub pip: Option<Vec<PackageSpec>>,
     #[serde(rename = "type", default)]
     pub kind: Option<PackagesKind>,
 }
@@ -92,12 +161,57 @@ pub struct EnvironmentUpdateParams {
     pub name: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
-    #[serde(default)]
-    pub config: Option<EnvironmentConfigParams>,
+    #[serde(default, deserialize_with = "super::presence::double_option")]
+    pub config: Option<Option<EnvironmentConfigUpdateParams>>,
     #[serde(default)]
     pub metadata: Option<BTreeMap<String, Option<String>>>,
     #[serde(default)]
     pub scope: Option<EnvironmentScope>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum EnvironmentConfigUpdateParams {
+    Cloud {
+        #[serde(default, deserialize_with = "super::presence::double_option")]
+        networking: Option<Option<CloudNetworkingUpdateParams>>,
+        #[serde(default, deserialize_with = "super::presence::double_option")]
+        packages: Option<Option<PackagesUpdateParams>>,
+    },
+    SelfHosted {},
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CloudNetworkingUpdateParams {
+    Unrestricted,
+    Limited {
+        #[serde(default, deserialize_with = "super::presence::double_option")]
+        allowed_hosts: Option<Option<Vec<AllowedHost>>>,
+        #[serde(default, deserialize_with = "super::presence::double_option")]
+        allow_mcp_servers: Option<Option<bool>>,
+        #[serde(default, deserialize_with = "super::presence::double_option")]
+        allow_package_managers: Option<Option<bool>>,
+    },
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackagesUpdateParams {
+    #[serde(default, deserialize_with = "super::presence::double_option")]
+    pub apt: Option<Option<Vec<PackageSpec>>>,
+    #[serde(default, deserialize_with = "super::presence::double_option")]
+    pub cargo: Option<Option<Vec<PackageSpec>>>,
+    #[serde(default, deserialize_with = "super::presence::double_option")]
+    pub gem: Option<Option<Vec<PackageSpec>>>,
+    #[serde(default, deserialize_with = "super::presence::double_option")]
+    pub go: Option<Option<Vec<PackageSpec>>>,
+    #[serde(default, deserialize_with = "super::presence::double_option")]
+    pub npm: Option<Option<Vec<PackageSpec>>>,
+    #[serde(default, deserialize_with = "super::presence::double_option")]
+    pub pip: Option<Option<Vec<PackageSpec>>>,
+    #[serde(rename = "type", default)]
+    pub kind: Option<PackagesKind>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

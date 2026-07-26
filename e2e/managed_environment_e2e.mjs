@@ -4,9 +4,10 @@
 // session's lifetime — a `POST /v1/sessions/{id}` carrying a different
 // `environment_id` updates only title/metadata and leaves the environment pinned.
 //
-// Deterministic (management mode, no key). Scope note: this locks the wire/record
-// association + immutability, NOT sandbox realization — `environment_id` does not
-// yet parameterize the local sandbox (networking/packages).
+// Deterministic (management mode, no key). This suite locks the wire/record
+// association + immutability. Network realization is covered by
+// `acp_sandboxed_e2e.mjs` and the Rust `session_egress` decision table; package
+// installation remains a separate provider-capability surface.
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';

@@ -52,6 +52,7 @@ fn session_init(network: SessionNetworkPolicy) -> SessionInit {
         workspace_id: "workspace".into(),
         agent_id: "agent".into(),
         delegate_ids: Vec::new(),
+        toolsets: None,
         resources: Default::default(),
         model: None,
         runtime: Some("acp:test".into()),
@@ -60,6 +61,7 @@ fn session_init(network: SessionNetworkPolicy) -> SessionInit {
             revision: EnvironmentRevision(1),
             config_fingerprint,
             sandbox: serde_json::json!({}),
+            packages: Default::default(),
             network,
             credential_realization:
                 awaken_runtime_contract::CredentialRealizationProfile::self_hosted_acp(),

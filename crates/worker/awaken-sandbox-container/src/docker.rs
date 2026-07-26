@@ -241,6 +241,7 @@ mod cgroup_host_config_tests {
             image: "img:1".into(),
             command: vec!["a".into()],
             env: Vec::new(),
+            packages: Default::default(),
             binds: Vec::new(),
             outputs_volume: "/mnt/session/outputs".into(),
             network: crate::NetworkMode::Open,

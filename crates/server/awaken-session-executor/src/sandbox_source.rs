@@ -255,6 +255,17 @@ impl SessionRuntimeProjectionSource {
             .unwrap_or(pc::NetworkPolicy::Unrestricted)
     }
 
+    fn packages_for(&self, thread: &str) -> pc::PackageRequirements {
+        self.0
+            .read(thread, |slot| {
+                slot.environment_projection
+                    .as_ref()
+                    .map(|environment| environment.packages.clone())
+            })
+            .flatten()
+            .unwrap_or_default()
+    }
+
     fn apply_sandbox(&self, thread: &str, spec: pc::SandboxSpec) -> pc::SandboxSpec {
         self.0
             .read(thread, |slot| {
@@ -486,6 +497,11 @@ impl SandboxChannelSource {
             isolation: self.provider.isolation(),
             mounts: self.resource_mounts(thread),
             env: self.resource_env(thread),
+            packages: self
+                .resources
+                .as_ref()
+                .map(|resources| resources.packages_for(thread))
+                .unwrap_or_default(),
             network,
             outputs_path: "/mnt/session/outputs".to_string(),
             limits: pc::ResourceLimits::default(),
@@ -1040,6 +1056,7 @@ mod tests {
                         "environment-{thread}"
                     )),
                     network,
+                    packages: Default::default(),
                     sandbox,
                     credential_realization:
                         awaken_runtime_contract::CredentialRealizationProfile::self_hosted_acp(),

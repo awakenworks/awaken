@@ -48,6 +48,7 @@ mod tests {
         // never an echo of the input (which would be a mock leaking into production).
         let request = ChatRequest {
             model_binding: ModelBinding::new("id", UNCONFIGURED_MODEL_REF, "default"),
+            inference: Default::default(),
             messages: vec![ChatMessage {
                 role: Role::User,
                 content: vec![ContentBlock::text("echo me")],

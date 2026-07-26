@@ -5,7 +5,7 @@
 //! the kernel's after-id cursor over each row's `id`, so a small collection still
 //! returns one page (`next_page: null`) exactly as before.
 
-use awaken_agent_contract::page::paginate_by_id;
+use awaken_agent_contract::page::{paginate_by_id, paginate_by_key};
 use serde::{Deserialize, Serialize};
 
 /// One cursor page of `T`.
@@ -48,6 +48,24 @@ pub struct PageQuery {
 #[must_use]
 pub fn paginate<T: Clone>(data: Vec<T>, query: &PageQuery, id_of: impl Fn(&T) -> &str) -> Page<T> {
     match paginate_by_id(&data, query.page.as_deref(), query.limit, id_of) {
+        Ok(page) => Page {
+            data: page.items.to_vec(),
+            has_more: page.has_more,
+            next_page: page.next_page,
+        },
+        Err(_) => Page::single(Vec::new()),
+    }
+}
+
+/// Cursor-paginate by an owned stable key such as an integer revision. This is
+/// the same kernel as [`paginate`], not a second pagination implementation.
+#[must_use]
+pub fn paginate_by<T: Clone>(
+    data: Vec<T>,
+    query: &PageQuery,
+    key_of: impl Fn(&T) -> String,
+) -> Page<T> {
+    match paginate_by_key(&data, query.page.as_deref(), query.limit, key_of) {
         Ok(page) => Page {
             data: page.items.to_vec(),
             has_more: page.has_more,

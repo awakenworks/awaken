@@ -107,15 +107,18 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
     } else {
         SessionNetworkPolicy::Unrestricted
     };
+    let packages = awaken_session_contract::env_registry::EnvironmentPackages::default();
     let environment = EnvironmentSnapshot {
         environment_id: row.environment_id,
         revision: awaken_session_contract::env_registry::EnvironmentRevision(0),
         config_fingerprint: EnvironmentFingerprint(awaken_session_contract::stable_fingerprint(&(
             &sandbox,
+            &packages,
             &network,
             &credential_realization,
         ))),
         sandbox,
+        packages,
         network,
         credential_realization,
     };
@@ -127,6 +130,7 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
         runtime: runtime.runtime,
         application: None,
         delegate_ids: runtime.delegate_ids,
+        toolsets: Vec::new(),
         mounts: Vec::new(),
         env: Vec::new(),
         prompts: Vec::new(),

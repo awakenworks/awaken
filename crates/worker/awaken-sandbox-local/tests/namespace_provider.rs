@@ -17,6 +17,7 @@ fn spec(scope: &str) -> pc::SandboxSpec {
         isolation: pc::IsolationClass::Namespace,
         mounts: Vec::new(),
         env: Vec::new(),
+        packages: Default::default(),
         network: pc::NetworkPolicy::Unrestricted,
         outputs_path: "/mnt/session/outputs".into(),
         limits: Default::default(),

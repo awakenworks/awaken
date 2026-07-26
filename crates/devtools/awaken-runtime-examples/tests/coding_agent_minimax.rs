@@ -32,6 +32,7 @@ async fn minimax_endpoint_authenticates_and_reaches_the_model() {
     let executor = build_executor().expect("build executor");
     let request = ChatRequest {
         model_binding: ModelBinding::new("default", model, "default"),
+        inference: Default::default(),
         messages: vec![ChatMessage {
             role: Role::User,
             content: vec![ContentBlock::text("Reply with the single word: ready")],

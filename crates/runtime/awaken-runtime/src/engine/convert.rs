@@ -46,6 +46,12 @@ pub(crate) fn build_chat_request(
         .tool_descriptors
         .iter()
         .chain(dynamic.iter())
+        .filter(|tool| {
+            spec.plugin_config
+                .agent
+                .tool_policy(&tool.id)
+                .is_none_or(|policy| policy.enabled)
+        })
         .cloned()
         .collect();
     // `model_tools` applies the alias/description overrides, withholds deferred tools the
@@ -55,6 +61,7 @@ pub(crate) fn build_chat_request(
     let tools = spec.tool_presentation.model_tools(&combined, opened);
     ChatRequest {
         model_binding: spec.model_binding.binding.clone(),
+        inference: spec.plugin_config.inference,
         messages,
         tools,
     }

@@ -9,6 +9,7 @@ pub mod page;
 pub mod secret;
 pub mod stream;
 pub mod thread;
+pub mod toolset;
 
 pub use agent::delegation::{DelegationId, DelegationOrigin};
 pub use agent::message::Message;
@@ -33,4 +34,8 @@ pub use thread::read::lifecycle::{
 pub use thread::read::transcript::{
     TranscriptError, TranscriptRange, TranscriptSlice, TranscriptSliceSpec, TranscriptSnapshot,
     TranscriptSnapshotRef, TranscriptView,
+};
+pub use toolset::{
+    ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+    ToolsetSource,
 };

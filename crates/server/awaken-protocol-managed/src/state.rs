@@ -222,6 +222,20 @@ pub enum StateError {
 }
 
 impl ManagedState {
+    pub(crate) async fn deployment_environment(
+        &self,
+        environment_id: &str,
+    ) -> Option<Option<crate::env_registry::EnvItem>> {
+        let environments = self.environments.as_ref()?;
+        Some(environments.get(environment_id).await)
+    }
+
+    pub(crate) fn deployment_agent_unavailable(&self, workspace_id: &str, agent_id: &str) -> bool {
+        self.config_source
+            .as_ref()
+            .is_some_and(|source| source.agent_unavailable_in(workspace_id, agent_id))
+    }
+
     pub fn new(runtime: impl SessionRuntime + 'static) -> Self {
         Self::from_ports(
             Arc::new(runtime),
@@ -949,6 +963,7 @@ mod tests {
             revision: awaken_session_contract::env_registry::EnvironmentRevision(1),
             config_fingerprint: awaken_session_contract::EnvironmentFingerprint("env-1".into()),
             sandbox: serde_json::json!({"isolation": "namespace"}),
+            packages: Default::default(),
             network: awaken_session_contract::SessionNetworkPolicy::None,
             credential_realization: awaken_credential_contract::CredentialRealizationProfile {
                 inference_holder: holder.clone(),
@@ -980,6 +995,7 @@ mod tests {
                         runtime: Some("acp:custom".into()),
                         application: None,
                         delegate_ids: Vec::new(),
+                        toolsets: Vec::new(),
                         mounts: Vec::new(),
                         env: Vec::new(),
                         prompts: Vec::new(),

@@ -401,6 +401,7 @@ impl LocalProvider {
             secret_egress_substitution: false,
             resource_limits: false,
             custom_rootfs: false,
+            package_provisioning: false,
         }
     }
 
@@ -976,6 +977,7 @@ mod shred_tests {
                 required: true,
             }],
             env: Vec::new(),
+            packages: Default::default(),
             network: NetworkPolicy::Unrestricted,
             outputs_path: "/mnt/session/outputs".into(),
             limits: ResourceLimits::default(),
@@ -1313,6 +1315,7 @@ mod workdir_helper_tests {
             env: Vec::new(),
             // The Workdir tier admits only unrestricted network (it cannot enforce
             // isolation); egress denial for the rooted bash tool rides `extra`.
+            packages: Default::default(),
             network: NetworkPolicy::Unrestricted,
             outputs_path: "/mnt/session/outputs".into(),
             limits: ResourceLimits::default(),

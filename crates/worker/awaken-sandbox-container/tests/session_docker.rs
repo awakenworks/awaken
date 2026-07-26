@@ -35,6 +35,7 @@ async fn native_acp_and_hand_share_one_production_container() {
             required: true,
         }],
         env: Vec::new(),
+        packages: Default::default(),
         network: pc::NetworkPolicy::Unrestricted,
         outputs_path: "/mnt/session/outputs".into(),
         limits: pc::ResourceLimits::default(),
