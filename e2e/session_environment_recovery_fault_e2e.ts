@@ -59,7 +59,7 @@ function spawnBrain(binary: string, storage: string) {
       AWAKEN_HTTP_ADDR: `127.0.0.1:${PORT}`,
       AWAKEN_MODEL_MODE: 'acp-container',
       AWAKEN_CONTAINER_IMAGE: IMAGE,
-      AWAKEN_SANDBOX_TIER: 'docker',
+      SESSION_ENVIRONMENT_TIER: 'docker',
       AWAKEN_STORAGE_DIR: storage,
       AWAKEN_ACP_ARGV: `node -e ${ACP_FIXTURE}`,
       AWAKEN_SANDBOX_REAP_INTERVAL: '3600',

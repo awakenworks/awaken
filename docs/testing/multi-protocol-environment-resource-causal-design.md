@@ -366,3 +366,57 @@ scenario DeploymentConfig::ephemeral
 The fixture decorates the canonical ephemeral Host with the existing workspace
 path adapter. It neither launches production with an implicit missing config nor
 adds a volatile Skill store, preserving one owner per Resource kind.
+
+## Phase 16: container provider feature admission
+
+| Rule | Session tier | Compiled provider | Expected |
+|---|---|---|---|
+| C1 | Docker | none | boot fails before listen |
+| C2 | Podman | none | boot fails before listen |
+| C3 | Kubernetes | none | boot fails before listen |
+| C4 | Podman/Kubernetes | Docker only | exact missing feature error |
+
+The test-only fixed ACP launch selects `SESSION_ENVIRONMENT_TIER`; production
+selects the equivalent tier only from typed deployment configuration. Removed
+production `AWAKEN_SANDBOX_TIER` input cannot silently select or downgrade a
+provider.
+
+## Phase 17: exact Environment projection through pooled containers
+
+```text
+official Environment config (network)
+  + exact SandboxExecutionPolicy version (root/isolation/limits)
+  -> frozen Session baseline
+  -> first runtime assignment synchronizes projection
+  -> WarmContainerPool delegates inner capability evidence
+  -> provider admission -> one Session-owned container
+```
+
+| Rule | Network | Sandbox root | Pool capability | Expected |
+|---|---|---|---|---|
+| P1 | allowlist | host/default | no no-bypass | reject before container creation |
+| P2 | none | explicit image | exact inner evidence | Podman execution succeeds |
+| P3 | unrestricted | scope/local-dir fallback | exact inner evidence | configured image executes |
+| P4 | any | missing private root/tarball | exact inner evidence | fail closed, no default fallback |
+| P5 | unrestricted | resource-bearing Session | Docker/Podman | one container survives brain restart and is adopted |
+| P6 | allowlist | any | wrapper default Workdir evidence | forbidden capability-loss path |
+
+Runtime assignment synchronizes the baseline even when Resources and MCP are
+empty. Provider wrappers are capability-transparent: the warm pool cannot replace
+the concrete Docker/Podman evidence with the trait's conservative default. This
+keeps Environment networking, sandbox policy, and the physical container on one
+causal path.
+
+## Phase 18: opaque Session environment recovery binding
+
+| Rule | Binding damage | Physical environment | Expected |
+|---|---|---|---|
+| B1 | invalid encoding | live | fail closed |
+| B2 | wrong Session id | live | fail closed |
+| B3 | wrong provider kind | live | fail closed |
+| B4 | missing provider locator | live | fail closed |
+| B5 | exact binding | stopped/deleted | fail closed; no replacement |
+
+The scenario explicitly selects Docker through its test-only Session tier. The
+Session aggregate remains the sole owner of the opaque binding; retained columns
+and a default local/namespace provider cannot participate in recovery.
