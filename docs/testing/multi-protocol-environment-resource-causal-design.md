@@ -238,3 +238,25 @@ exact Run backend + holder + source + realization
 The process dispatch pool and per-Session durable ingress both read the same Host
 composition. Flattening profiles into independent holder/source/kind sets is
 forbidden because their Cartesian product creates authority no adapter owns.
+
+## Phase 10: production container deployment input
+
+```text
+explicit config.toml
+  -> bind + data root + ACP profile + Docker image
+  -> one ResolvedDeployment
+  -> persisted platform Workspace
+  -> Environment networking + File/MCP Session resources
+  -> one Docker ACP realization
+```
+
+| Rule | Typed config | Persisted Workspace | Environment network | File/MCP | Expected |
+|---|---:|---:|---|---:|---|
+| P1 | exact Docker profile | exact | unrestricted | anonymous + File | launch and materialize |
+| P2 | exact Docker profile | exact | unrestricted | authenticated MCP | reject missing no-bypass proof |
+| P3 | removed deployment env only | any | any | any | cannot select port/root/image/CLI |
+| P4 | inherited operator home | absent | any | any | cannot supply catalog or Workspace |
+
+The public Environment contract owns network policy only. Container image and
+realization tier remain deployment/Worker facts; a private Environment `sandbox`
+field would duplicate the versioned SandboxExecutionPolicy boundary.
