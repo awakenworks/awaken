@@ -305,7 +305,7 @@ impl ManagedState {
         }
         if let Some(visible_mcp_servers) = visible_mcp_servers {
             record.session.agent.mcp_servers =
-                super::sessions::typed_mcp_servers(visible_mcp_servers);
+                super::sessions::typed_mcp_servers(visible_mcp_servers)?;
         }
         record.events.push(Event {
             id: self.next_event_id(),

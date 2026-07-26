@@ -4,28 +4,45 @@
 use super::application::{ManagedMcpCandidate, initial_mcp_candidates};
 use super::*;
 
-fn typed_tools(values: Vec<serde_json::Value>) -> Vec<crate::types::agent::AgentTool> {
+fn typed_tools(
+    values: Vec<serde_json::Value>,
+) -> Result<Vec<crate::types::agent::AgentTool>, StateError> {
     values
         .into_iter()
-        .filter_map(|value| {
-            serde_json::from_value(value.clone()).ok().or_else(|| {
-                let name = value.get("name")?.as_str()?.to_string();
-                Some(crate::types::agent::AgentTool::Custom {
+        .enumerate()
+        .map(|(index, value)| match serde_json::from_value(value.clone()) {
+            Ok(tool) => Ok(tool),
+            Err(typed_error) => {
+                let Some(name) = value
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+                else {
+                    return Err(StateError::Run(RunError::internal(format!(
+                        "persisted_session_projection_invalid: agent.tools[{index}]: {typed_error}"
+                    ))));
+                };
+                let input_schema = crate::types::agent::CustomToolInputSchema::from_value(
+                    value
+                        .get("input_schema")
+                        .cloned()
+                        .unwrap_or_else(|| json!({"type":"object"})),
+                )
+                .map_err(|error| {
+                    StateError::Run(RunError::internal(format!(
+                        "persisted_session_projection_invalid: agent.tools[{index}]: {error}"
+                    )))
+                })?;
+                Ok(crate::types::agent::AgentTool::Custom {
                     description: value
                         .get("description")
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or("Client-executed tool")
                         .to_string(),
                     name,
-                    input_schema: crate::types::agent::CustomToolInputSchema::from_value(
-                        value
-                            .get("input_schema")
-                            .cloned()
-                            .unwrap_or_else(|| json!({"type":"object"})),
-                    )
-                    .ok()?,
+                    input_schema,
                 })
-            })
+            }
         })
         .collect()
 }
@@ -39,10 +56,17 @@ fn stored_tools(values: &[crate::types::agent::AgentTool]) -> Vec<serde_json::Va
 
 pub(super) fn typed_mcp_servers(
     values: Vec<serde_json::Value>,
-) -> Vec<crate::types::agent::UrlMcpServer> {
+) -> Result<Vec<crate::types::agent::UrlMcpServer>, StateError> {
     values
         .into_iter()
-        .filter_map(|value| serde_json::from_value(value).ok())
+        .enumerate()
+        .map(|(index, value)| {
+            serde_json::from_value(value).map_err(|error| {
+                StateError::Run(RunError::internal(format!(
+                    "persisted_session_projection_invalid: agent.mcp_servers[{index}]: {error}"
+                )))
+            })
+        })
         .collect()
 }
 use crate::types::AgentRef;
@@ -140,18 +164,20 @@ impl ManagedState {
     /// Refresh the disposable HTTP projection after the one durable root CAS.
     /// Every mutation crosses this seam, so realization, update, archive, and
     /// recovery cannot each invent a second cache-synchronization path.
-    fn refresh_cached_projection(&self, persisted: &PersistedSession) {
+    fn refresh_cached_projection(&self, persisted: &PersistedSession) -> Result<(), StateError> {
+        let mcp_servers = typed_mcp_servers(persisted.visible_mcp_servers())?;
         let mut sessions = self.sessions.lock().unwrap();
         let Some(record) = sessions.get_mut(&persisted.session_id) else {
-            return;
+            return Ok(());
         };
         record.session.status = Self::wire_session_status(&persisted.status);
         record.session.title = persisted.title.clone();
         record.session.metadata = persisted.metadata.clone();
         record.session.deployment_id = persisted.metadata.get("awaken.deployment_id").cloned();
         record.session.archived_at = persisted.archived_at.clone();
-        record.session.agent.mcp_servers = typed_mcp_servers(persisted.visible_mcp_servers());
+        record.session.agent.mcp_servers = mcp_servers;
         record.resource_state = persisted.resources.clone();
+        Ok(())
     }
 
     /// Sole Managed anti-corruption compiler for create-time and hot MCP input.
@@ -298,7 +324,7 @@ impl ManagedState {
         {
             awaken_session_contract::SessionMutationResult::Applied { new_revision } => {
                 session.revision = new_revision;
-                self.refresh_cached_projection(&session);
+                self.refresh_cached_projection(&session)?;
                 Ok((session, true))
             }
             awaken_session_contract::SessionMutationResult::Replayed { .. } => {
@@ -307,7 +333,7 @@ impl ManagedState {
                     .get(&session.session_id)
                     .await
                     .ok_or(StateError::NotFound)?;
-                self.refresh_cached_projection(&session);
+                self.refresh_cached_projection(&session)?;
                 Ok((session, false))
             }
             awaken_session_contract::SessionMutationResult::Conflict { .. } => {
@@ -812,7 +838,7 @@ impl ManagedState {
                 system: config_view.as_ref().and_then(|view| view.system.clone()),
                 tools: project::agent_tools(&caps),
                 // Echo the accepted servers in the SDK's `{name, type:"url", url}` shape.
-                mcp_servers: typed_mcp_servers(persisted.visible_mcp_servers()),
+                mcp_servers: typed_mcp_servers(persisted.visible_mcp_servers())?,
                 skills: config_view.as_ref().map_or_else(
                     || project::agent_skills(&caps),
                     |view| {
@@ -1224,7 +1250,7 @@ impl ManagedState {
         &self,
         id: &str,
         persisted: Option<PersistedSession>,
-    ) -> Session {
+    ) -> Result<Session, StateError> {
         let caps = self.runtime.capabilities_for(id);
         let default_tools = project::agent_tools(&caps);
         let (
@@ -1255,16 +1281,17 @@ impl ManagedState {
                             p.environment_id().to_string(),
                         )
                     });
-                let mcp_servers = typed_mcp_servers(p.visible_mcp_servers());
+                let mcp_servers = typed_mcp_servers(p.visible_mcp_servers())?;
                 (
                     agent_id,
                     model,
                     environment_id,
                     p.title,
                     p.metadata,
-                    p.agent_tools
-                        .map(typed_tools)
-                        .unwrap_or_else(|| default_tools.clone()),
+                    match p.agent_tools {
+                        Some(tools) => typed_tools(tools)?,
+                        None => default_tools.clone(),
+                    },
                     mcp_servers,
                     Self::wire_session_status(&p.status),
                     p.archived_at,
@@ -1283,7 +1310,7 @@ impl ManagedState {
             ),
         };
         let deployment_id = metadata.get("awaken.deployment_id").cloned();
-        Session {
+        Ok(Session {
             id: id.to_string(),
             kind: "session",
             agent: SessionAgent {
@@ -1312,7 +1339,7 @@ impl ManagedState {
             usage: Usage::default(),
             vault_ids: Vec::new(),
             deployment_id,
-        }
+        })
     }
 
     /// Recover a session whose in-memory record was lost from durable truth (a
@@ -1408,7 +1435,7 @@ impl ManagedState {
             .unwrap_or_default();
         let record = SessionRecord {
             agent_id,
-            session: self.rehydrated_session(id, persisted),
+            session: self.rehydrated_session(id, persisted)?,
             resource_state,
             events,
             child_threads: Vec::new(),

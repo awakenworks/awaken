@@ -1016,7 +1016,9 @@ mod tests {
         let state = ManagedState::new_with_mcp(RehydrateFake::default());
         let mut persisted = sample_persisted("sesn_1");
         persisted.agent_tools = Some(vec![serde_json::json!({"name": "durable-tool"})]);
-        let session = state.rehydrated_session("sesn_1", Some(persisted));
+        let session = state
+            .rehydrated_session("sesn_1", Some(persisted))
+            .expect("valid durable projection");
         assert_eq!(session.agent.id, "coder");
         assert_eq!(session.agent.model.id, "kimi-k2");
         assert_eq!(session.title.as_deref(), Some("My session"));
@@ -1042,11 +1044,42 @@ mod tests {
     #[test]
     fn rehydrated_session_falls_back_without_persisted_config() {
         let state = ManagedState::new_with_mcp(RehydrateFake::default());
-        let session = state.rehydrated_session("sesn_1", None);
+        let session = state
+            .rehydrated_session("sesn_1", None)
+            .expect("legacy fallback projection");
         assert_eq!(session.agent.id, "assistant");
         assert_eq!(session.agent.model.id, "host-default-model");
         assert!(session.title.is_none());
         assert!(session.agent.mcp_servers.is_empty());
+    }
+
+    #[test]
+    fn rehydrated_session_rejects_corrupt_tools_without_capability_downgrade() {
+        // Causal graph:
+        // durable tool projection is present but invalid
+        //   -> typed rehydration fails
+        //   -> Runtime defaults are not substituted
+        //   -> caller cannot cache or expose a weaker Session.
+        //
+        // Decision table:
+        // | Durable field | Shape | Expected behavior |
+        // | absent | n/a | use Runtime defaults (legacy compatibility) |
+        // | present | valid typed/legacy tool | restore exact tool |
+        // | present | invalid | stable projection error; no fallback |
+        let state = ManagedState::new_with_mcp(RehydrateFake::default());
+        let mut persisted = sample_persisted("sesn_corrupt");
+        persisted.agent_tools = Some(vec![serde_json::json!({"unexpected": true})]);
+
+        let error = state
+            .rehydrated_session("sesn_corrupt", Some(persisted))
+            .expect_err("corrupt durable capabilities must fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("persisted_session_projection_invalid: agent.tools[0]"),
+            "the recovery boundary returns a stable, indexed reason: {error}"
+        );
     }
 
     #[tokio::test]
