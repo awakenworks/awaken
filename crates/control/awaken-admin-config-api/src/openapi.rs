@@ -34,6 +34,7 @@ pub fn contract_schemas() -> Map<String, Value> {
     add!("AuthorOfferingRequest", crate::AuthorOfferingRequest);
     add!("DiscoverModelsRequest", crate::DiscoverModelsRequest);
     add!("CatalogSyncResult", awaken_model_catalog::CatalogSyncResult);
+    add!("PutModelAttributesRequest", crate::PutModelAttributesRequest);
     add!("ApiDialect", awaken_model_catalog::ApiDialect);
     add!("ProviderCatalog", awaken_model_catalog::ProviderCatalog);
     add!(
@@ -73,6 +74,7 @@ pub fn contract_schemas() -> Map<String, Value> {
         crate::ValidateCredentialRequest
     );
     add!("ResolveRequest", crate::ResolveRequest);
+    add!("ModelTarget", awaken_config_resolver::ModelTarget);
     add!("ResolveProfileRequest", crate::ResolveProfileRequest);
 
     // Route responses (secret-free views).
@@ -245,7 +247,7 @@ fn paths() -> Value {
         },
         "/v1/config/model-attributes/{model_id}": {
             "put": op("put_model_attributes", "catalog", "Author (upsert) a model's intrinsic attributes; published independently of offerings",
-                &[path_param("model_id", "Model id")], Some(schema_ref("ModelAttributes")), 200, schema_ref("ModelAttributes"))
+                &[path_param("model_id", "Model id")], Some(schema_ref("PutModelAttributesRequest")), 200, schema_ref("ModelAttributes"))
         },
         "/v1/config/credentials": {
             "post": op("post_credential", "credentials", "Enter a credential (secret-in; the secret is sealed and never echoed)",

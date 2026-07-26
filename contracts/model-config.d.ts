@@ -107,12 +107,15 @@ export interface AuthorOfferingRequest {
  *
  * The `codex`/OpenAI chat wire.
  *
+ * The OpenAI Responses API wire. This remains distinct from Chat
+ * Completions even though both are served by the OpenAI adapter family.
+ *
  * The Gemini wire.
  *
  * Gemini on Vertex AI: native Gemini payloads with OAuth Bearer auth and
  * a project/location endpoint.
  */
-export type APIDialect = "anthropic_messages" | "open_ai_chat" | "gemini" | "vertex_gemini";
+export type APIDialect = "anthropic_messages" | "open_ai_chat" | "open_ai_responses" | "gemini" | "vertex_gemini";
 
 /**
  * The availability of one credential source at a point in time.
@@ -141,6 +144,10 @@ export interface CatalogSyncResult {
     activated:          number;
     discovered:         number;
     marked_unavailable: number;
+    /**
+     * Observation time shared by every row in this successful atomic refresh.
+     */
+    observed_at_unix_ms: number;
     [property: string]: unknown;
 }
 
@@ -447,6 +454,37 @@ export interface ModelAttributes {
      * Max output tokens the model emits, when published.
      */
     max_output_tokens?: number | null;
+    /**
+     * Field-level origin. Values stay flat and convenient for runtime consumers;
+     * management surfaces use this map to explain whether each fact was authored,
+     * observed from a provider API, or supplied by Awaken's curated registry.
+     */
+    provenance?: { [key: string]: ProvenanceValue };
+    [property: string]: unknown;
+}
+
+/**
+ * Explainability metadata for one field in [`ModelAttributes`].
+ */
+export interface ProvenanceValue {
+    observed_at_unix_ms: number;
+    source:              ProvenanceSource;
+    [property: string]: unknown;
+}
+
+/**
+ * Authority behind one published model-attribute value.
+ */
+export type ProvenanceSource = "manual" | "provider_api" | "curated";
+
+/**
+ * Stable, secret-free identity used to select one catalog offering. `model_id`
+ * alone remains accepted for compatibility only when it resolves uniquely.
+ */
+export interface ModelTarget {
+    model_id:              string;
+    protocol_endpoint_id?: null | string;
+    provider_id?:          null | string;
     [property: string]: unknown;
 }
 
@@ -456,6 +494,13 @@ export interface ModelAttributes {
  */
 export interface Offering {
     dialect: APIDialect;
+    /**
+     * Unix timestamp (milliseconds) of the most recent complete provider listing
+     * that contained this route. Manual offerings never carry this observation.
+     * When a later complete listing omits the model, the timestamp is retained so
+     * operators can distinguish "last seen then" from "never observed".
+     */
+    last_seen_at_unix_ms?: number | null;
     /**
      * The protocol-agnostic catalog model id (e.g. `claude-opus-4-8`).
      */
@@ -467,7 +512,7 @@ export interface Offering {
      * provider refresh; provider-discovered rows follow the provider's latest
      * complete listing.
      */
-    source?: Source;
+    source?: OfferingSource;
     /**
      * Whether this route may be selected for a new publication. Provider sync is
      * non-destructive: a missing discovered model becomes unavailable instead of
@@ -492,7 +537,7 @@ export interface Offering {
  *
  * Observed from the configured endpoint's provider API.
  */
-export type Source = "manual" | "provider_api";
+export type OfferingSource = "manual" | "provider_api";
 
 /**
  * Whether this route may be selected for a new publication. Provider sync is
@@ -606,6 +651,21 @@ export interface ModelAttributeValue {
      * Max output tokens the model emits, when published.
      */
     max_output_tokens?: number | null;
+    /**
+     * Field-level origin. Values stay flat and convenient for runtime consumers;
+     * management surfaces use this map to explain whether each fact was authored,
+     * observed from a provider API, or supplied by Awaken's curated registry.
+     */
+    provenance?: { [key: string]: ProvenanceObject };
+    [property: string]: unknown;
+}
+
+/**
+ * Explainability metadata for one field in [`ModelAttributes`].
+ */
+export interface ProvenanceObject {
+    observed_at_unix_ms: number;
+    source:              ProvenanceSource;
     [property: string]: unknown;
 }
 
@@ -615,6 +675,13 @@ export interface ModelAttributeValue {
  */
 export interface OfferingElement {
     dialect: APIDialect;
+    /**
+     * Unix timestamp (milliseconds) of the most recent complete provider listing
+     * that contained this route. Manual offerings never carry this observation.
+     * When a later complete listing omits the model, the timestamp is retained so
+     * operators can distinguish "last seen then" from "never observed".
+     */
+    last_seen_at_unix_ms?: number | null;
     /**
      * The protocol-agnostic catalog model id (e.g. `claude-opus-4-8`).
      */
@@ -626,7 +693,7 @@ export interface OfferingElement {
      * provider refresh; provider-discovered rows follow the provider's latest
      * complete listing.
      */
-    source?: Source;
+    source?: OfferingSource;
     /**
      * Whether this route may be selected for a new publication. Provider sync is
      * non-destructive: a missing discovered model becomes unavailable instead of
@@ -658,6 +725,15 @@ export interface ProviderValue {
 }
 
 /**
+ * Secret-free authoring input. Provenance is intentionally absent: external
+ * callers cannot claim that a manual value came from a provider or curated source.
+ */
+export interface PutModelAttributesRequest {
+    context_window?:    number | null;
+    max_output_tokens?: number | null;
+}
+
+/**
  * Resolve an authored profile within a workspace's credential scope.
  */
 export interface ResolveProfileRequest {
@@ -666,14 +742,14 @@ export interface ResolveProfileRequest {
 }
 
 /**
- * A dry-run resolve request: bind `model_id` (+ credential `binding`) against the
- * authored catalog. The workspace scopes which credential sources are visible.
+ * A dry-run resolve request. New callers send a complete `target`; legacy
+ * `model_id` remains accepted only when it resolves to exactly one active offering.
  */
 export interface ResolveRequest {
     binding:      Binding;
-    model_id:     string;
+    model_id?:    null | string;
+    target?:      null | TargetObject;
     workspace_id: string;
-    [property: string]: unknown;
 }
 
 /**
@@ -690,6 +766,17 @@ export interface Binding {
     type:                  Type;
     credential_source_id?: string;
     credential_pool_id?:   string;
+    [property: string]: unknown;
+}
+
+/**
+ * Stable, secret-free identity used to select one catalog offering. `model_id`
+ * alone remains accepted for compatibility only when it resolves uniquely.
+ */
+export interface TargetObject {
+    model_id:              string;
+    protocol_endpoint_id?: null | string;
+    provider_id?:          null | string;
     [property: string]: unknown;
 }
 

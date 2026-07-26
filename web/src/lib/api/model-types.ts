@@ -7,7 +7,12 @@ export interface Provider {
   version: number;
 }
 
-export type ApiDialect = "anthropic_messages" | "open_ai_chat" | "gemini" | "vertex_gemini";
+export type ApiDialect =
+  | "anthropic_messages"
+  | "open_ai_chat"
+  | "open_ai_responses"
+  | "gemini"
+  | "vertex_gemini";
 
 export interface ProtocolEndpoint {
   id: string;
@@ -27,18 +32,30 @@ export interface Offering {
   upstream_model?: string | null;
   source?: "manual" | "provider_api";
   status?: "active" | "unavailable";
+  last_seen_at_unix_ms?: number | null;
 }
 
 export interface CatalogSyncResult {
   discovered: number;
   activated: number;
   marked_unavailable: number;
+  observed_at_unix_ms: number;
+}
+
+export interface ModelTarget {
+  model_id: string;
+  provider_id?: string | null;
+  protocol_endpoint_id?: string | null;
 }
 
 /** Intrinsic per-model_id attributes published by the control plane. */
 export interface ModelAttributes {
   context_window?: number | null;
   max_output_tokens?: number | null;
+  provenance?: Record<
+    string,
+    { source: "manual" | "provider_api" | "curated"; observed_at_unix_ms: number }
+  >;
 }
 
 export interface ProviderCatalog {

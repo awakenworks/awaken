@@ -15,8 +15,9 @@ use awaken_agent_contract::RedactedString;
 use awaken_api_contract::{ApiError, PROBLEM_JSON_CONTENT_TYPE, REQUEST_ID_HEADER};
 use awaken_config_resolver::{
     AgentInputBindingRepository, AgentInputConfig, ConfigRepositoryError, InferenceProfile,
-    InferenceProfileStore, ResolveError, ResolvedInference, SourceLookup, cooldown_deadline,
-    resolve_inference, resolve_profile, resolve_profile_candidates,
+    InferenceProfileStore, ModelTarget, ResolveError, ResolvedInference, SourceLookup,
+    cooldown_deadline, resolve_inference, resolve_inference_target, resolve_profile,
+    resolve_profile_candidates,
 };
 use awaken_credential_vault::repo::{CredentialRepo, enter_credential};
 use awaken_credential_vault::{
@@ -26,8 +27,8 @@ use awaken_credential_vault::{
 };
 use awaken_model_catalog::repo::{CatalogRepo, RepoError};
 use awaken_model_catalog::{
-    CatalogSyncResult, DiscoveredModel, ModelAttributes, Offering, OfferingSource, OfferingStatus,
-    ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
+    CatalogSyncResult, DiscoveredModel, ModelAttributeSource, ModelAttributes, Offering,
+    OfferingSource, OfferingStatus, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
 };
 use awaken_runtime_contract::resilience::Disposition;
 use awaken_tenancy::WorkspaceScope as ResourceWorkspace;
@@ -431,6 +432,7 @@ async fn post_offering(
         upstream_model: request.upstream_model,
         source: OfferingSource::Manual,
         status: OfferingStatus::Active,
+        last_seen_at_unix_ms: None,
     };
     // Fail-closed reference integrity (offering → provider/endpoint) lives in the
     // repo's put_offering: a dangling endpoint ref is a 404 (referenced resource
@@ -532,27 +534,56 @@ async fn discover_endpoint_models(
         })?;
     state
         .catalog
-        .reconcile_discovered_models(&endpoint_id, models)
+        .reconcile_discovered_models(&endpoint_id, models, unix_time_ms())
         .await
         .map(Json)
         .map_err(|error| repo_problem(&error, &rid))
+}
+
+fn unix_time_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
 }
 
 async fn put_model_attributes(
     State(state): State<AdminState>,
     Path(model_id): Path<String>,
     headers: HeaderMap,
-    Json(attrs): Json<ModelAttributes>,
+    Json(request): Json<PutModelAttributesRequest>,
 ) -> Result<Json<ModelAttributes>, Problem> {
     // Model attributes publish independently of offerings — they carry no
     // provider/endpoint reference (`ProviderCatalog::validate` leaves them
     // unconstrained), so the only failure surface is a whole-catalog invariant (422).
+    let attrs = ModelAttributes {
+        context_window: request.context_window,
+        max_output_tokens: request.max_output_tokens,
+        provenance: Default::default(),
+    }
+    .stamped(ModelAttributeSource::Manual, unix_time_ms());
     state
         .catalog
         .put_model_attributes(model_id, attrs.clone())
         .await
         .map_err(|e| repo_problem(&e, &req_id(&headers)))?;
     Ok(Json(attrs))
+}
+
+/// Secret-free authoring input. Provenance is intentionally absent: external
+/// callers cannot claim that a manual value came from a provider or curated source.
+#[derive(Debug, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct PutModelAttributesRequest {
+    #[serde(default)]
+    pub context_window: Option<u32>,
+    #[serde(default)]
+    pub max_output_tokens: Option<u32>,
 }
 
 async fn get_catalog(
@@ -638,6 +669,7 @@ impl SourceLookup for WorkspaceLookup {
 fn resolve_problem(error: &ResolveError, rid: &str) -> Problem {
     let (status, code) = match error {
         ResolveError::ModelUnresolved(_) => (404, "model_unresolved"),
+        ResolveError::ModelAmbiguous { .. } => (409, "model_ambiguous"),
         ResolveError::EndpointMissing(_) => (422, "endpoint_missing"),
         ResolveError::SourceMissing(_) | ResolveError::PoolMissing(_) => (404, "not_found"),
         ResolveError::IncompatibleCredential { .. } => (422, "incompatible_credential"),
@@ -655,14 +687,29 @@ fn resolve_problem(error: &ResolveError, rid: &str) -> Problem {
     ))
 }
 
-/// A dry-run resolve request: bind `model_id` (+ credential `binding`) against the
-/// authored catalog. The workspace scopes which credential sources are visible.
+/// A dry-run resolve request. New callers send a complete `target`; legacy
+/// `model_id` remains accepted only when it resolves to exactly one active offering.
 #[derive(serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct ResolveRequest {
     workspace_id: String,
-    model_id: String,
+    #[serde(default)]
+    model_id: Option<String>,
+    #[serde(default)]
+    target: Option<ModelTarget>,
     binding: CredentialBinding,
+}
+
+impl ResolveRequest {
+    fn target(&self) -> Result<ModelTarget, &'static str> {
+        match (&self.target, &self.model_id) {
+            (Some(target), None) => Ok(target.clone()),
+            (None, Some(model_id)) => Ok(ModelTarget::unqualified(model_id)),
+            (Some(_), Some(_)) => Err("send target or legacy model_id, not both"),
+            (None, None) => Err("target is required"),
+        }
+    }
 }
 
 /// The **secret-free** result of a resolve (ADR-0043): the execution triple + the
@@ -697,11 +744,24 @@ async fn resolve_route(
         .snapshot()
         .await
         .map_err(|e| repo_problem(&e, &rid))?;
-    let workspace = scope.map_or(request.workspace_id, |Extension(scope)| scope.0);
+    let target = request.target().map_err(|detail| {
+        Problem(ApiError::new(
+            400,
+            "model_target_invalid",
+            "Invalid model target",
+            detail,
+            &rid,
+        ))
+    })?;
+    let workspace = scope.map_or_else(
+        || request.workspace_id.clone(),
+        |Extension(scope)| scope.0,
+    );
     let lookup = workspace_lookup(&state, &workspace, &rid).await?;
-    let resolved = resolve_inference(
+    let resolved = resolve_inference_target(
         &catalog,
-        &request.model_id,
+        &target,
+        &[],
         &request.binding,
         &lookup,
         &*state.secrets,
@@ -1420,6 +1480,19 @@ mod tests {
         let p = resolve_problem(&ResolveError::ModelUnresolved("m".into()), "rid");
         assert_eq!(p.0.status, 404);
         assert_eq!(p.0.code, "model_unresolved");
+    }
+
+    #[test]
+    fn resolve_problem_model_ambiguous_is_409() {
+        let p = resolve_problem(
+            &ResolveError::ModelAmbiguous {
+                model_id: "m".into(),
+                candidates: vec!["p/ep1".into(), "p/ep2".into()],
+            },
+            "rid",
+        );
+        assert_eq!(p.0.status, 409);
+        assert_eq!(p.0.code, "model_ambiguous");
     }
 
     #[test]

@@ -83,7 +83,7 @@ impl awaken_admin_config_api::ModelCatalogDiscovery for GenaiModelDiscovery {
 
         let adapter = match endpoint.dialect {
             ApiDialect::AnthropicMessages => AdapterKind::Anthropic,
-            ApiDialect::OpenAiChat => AdapterKind::OpenAI,
+            ApiDialect::OpenAiChat | ApiDialect::OpenAiResponses => AdapterKind::OpenAI,
             ApiDialect::Gemini => AdapterKind::Gemini,
             ApiDialect::VertexGemini => AdapterKind::Vertex,
         };

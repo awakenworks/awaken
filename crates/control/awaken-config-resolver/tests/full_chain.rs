@@ -48,6 +48,7 @@ fn catalog(model_id: &str, base_url: &str) -> ProviderCatalog {
         upstream_model: None,
         source: Default::default(),
         status: Default::default(),
+        last_seen_at_unix_ms: None,
     });
     c
 }

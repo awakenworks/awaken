@@ -313,6 +313,7 @@ mod tests {
             upstream_model: None,
             source: Default::default(),
             status: Default::default(),
+            last_seen_at_unix_ms: None,
         }
     }
 
@@ -466,6 +467,7 @@ mod tests {
             ModelAttributes {
                 context_window: Some(200_000),
                 max_output_tokens: Some(40_000),
+                provenance: Default::default(),
             },
         );
         let credentials = resolver(&["unused"]).await.credentials;

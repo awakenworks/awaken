@@ -132,6 +132,11 @@
             "type": "string"
           },
           {
+            "const": "open_ai_responses",
+            "description": "The OpenAI Responses API wire. This remains distinct from Chat\nCompletions even though both are served by the OpenAI adapter family.",
+            "type": "string"
+          },
+          {
             "const": "gemini",
             "description": "The Gemini wire.",
             "type": "string"
@@ -225,6 +230,11 @@
               {
                 "const": "open_ai_chat",
                 "description": "The `codex`/OpenAI chat wire.",
+                "type": "string"
+              },
+              {
+                "const": "open_ai_responses",
+                "description": "The OpenAI Responses API wire. This remains distinct from Chat\nCompletions even though both are served by the OpenAI adapter family.",
                 "type": "string"
               },
               {
@@ -351,12 +361,19 @@
             "format": "uint",
             "minimum": 0,
             "type": "integer"
+          },
+          "observed_at_unix_ms": {
+            "description": "Observation time shared by every row in this successful atomic refresh.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "required": [
           "discovered",
           "activated",
-          "marked_unavailable"
+          "marked_unavailable",
+          "observed_at_unix_ms"
         ],
         "title": "CatalogSyncResult",
         "type": "object"
@@ -880,6 +897,11 @@
                 "type": "string"
               },
               {
+                "const": "open_ai_responses",
+                "description": "The OpenAI Responses API wire. This remains distinct from Chat\nCompletions even though both are served by the OpenAI adapter family.",
+                "type": "string"
+              },
+              {
                 "const": "gemini",
                 "description": "The Gemini wire.",
                 "type": "string"
@@ -1036,6 +1058,35 @@
         "type": "object"
       },
       "ModelAttributes": {
+        "$defs": {
+          "ModelAttributeProvenance": {
+            "description": "Explainability metadata for one field in [`ModelAttributes`].",
+            "properties": {
+              "observed_at_unix_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "source": {
+                "$ref": "#/$defs/ModelAttributeSource"
+              }
+            },
+            "required": [
+              "source",
+              "observed_at_unix_ms"
+            ],
+            "type": "object"
+          },
+          "ModelAttributeSource": {
+            "description": "Authority behind one published model-attribute value.",
+            "enum": [
+              "manual",
+              "provider_api",
+              "curated"
+            ],
+            "type": "string"
+          }
+        },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "description": "The published intrinsic attributes of a catalog model, keyed by `model_id`. This is\nthe control plane's OWN projection of what a console publishes — deliberately not the\nagent-domain `ModelSpec` (a runtime type the control plane must not depend on, per the\ndependency-direction ban); it carries only what the catalog's consumers read. Extended\nas the console publishes more attributes.",
         "properties": {
@@ -1056,9 +1107,42 @@
               "integer",
               "null"
             ]
+          },
+          "provenance": {
+            "additionalProperties": {
+              "$ref": "#/$defs/ModelAttributeProvenance"
+            },
+            "description": "Field-level origin. Values stay flat and convenient for runtime consumers;\nmanagement surfaces use this map to explain whether each fact was authored,\nobserved from a provider API, or supplied by Awaken's curated registry.",
+            "type": "object"
           }
         },
         "title": "ModelAttributes",
+        "type": "object"
+      },
+      "ModelTarget": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Stable, secret-free identity used to select one catalog offering. `model_id`\nalone remains accepted for compatibility only when it resolves uniquely.",
+        "properties": {
+          "model_id": {
+            "type": "string"
+          },
+          "protocol_endpoint_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "model_id"
+        ],
+        "title": "ModelTarget",
         "type": "object"
       },
       "Offering": {
@@ -1074,6 +1158,11 @@
               {
                 "const": "open_ai_chat",
                 "description": "The `codex`/OpenAI chat wire.",
+                "type": "string"
+              },
+              {
+                "const": "open_ai_responses",
+                "description": "The OpenAI Responses API wire. This remains distinct from Chat\nCompletions even though both are served by the OpenAI adapter family.",
                 "type": "string"
               },
               {
@@ -1125,6 +1214,15 @@
         "properties": {
           "dialect": {
             "$ref": "#/$defs/ApiDialect"
+          },
+          "last_seen_at_unix_ms": {
+            "description": "Unix timestamp (milliseconds) of the most recent complete provider listing\nthat contained this route. Manual offerings never carry this observation.\nWhen a later complete listing omits the model, the timestamp is retained so\noperators can distinguish \"last seen then\" from \"never observed\".",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "model_id": {
             "description": "The protocol-agnostic catalog model id (e.g. `claude-opus-4-8`).",
@@ -1198,6 +1296,11 @@
               {
                 "const": "open_ai_chat",
                 "description": "The `codex`/OpenAI chat wire.",
+                "type": "string"
+              },
+              {
+                "const": "open_ai_responses",
+                "description": "The OpenAI Responses API wire. This remains distinct from Chat\nCompletions even though both are served by the OpenAI adapter family.",
                 "type": "string"
               },
               {
@@ -1316,6 +1419,11 @@
                 "type": "string"
               },
               {
+                "const": "open_ai_responses",
+                "description": "The OpenAI Responses API wire. This remains distinct from Chat\nCompletions even though both are served by the OpenAI adapter family.",
+                "type": "string"
+              },
+              {
                 "const": "gemini",
                 "description": "The Gemini wire.",
                 "type": "string"
@@ -1326,6 +1434,33 @@
                 "type": "string"
               }
             ]
+          },
+          "ModelAttributeProvenance": {
+            "description": "Explainability metadata for one field in [`ModelAttributes`].",
+            "properties": {
+              "observed_at_unix_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "source": {
+                "$ref": "#/$defs/ModelAttributeSource"
+              }
+            },
+            "required": [
+              "source",
+              "observed_at_unix_ms"
+            ],
+            "type": "object"
+          },
+          "ModelAttributeSource": {
+            "description": "Authority behind one published model-attribute value.",
+            "enum": [
+              "manual",
+              "provider_api",
+              "curated"
+            ],
+            "type": "string"
           },
           "ModelAttributes": {
             "description": "The published intrinsic attributes of a catalog model, keyed by `model_id`. This is\nthe control plane's OWN projection of what a console publishes — deliberately not the\nagent-domain `ModelSpec` (a runtime type the control plane must not depend on, per the\ndependency-direction ban); it carries only what the catalog's consumers read. Extended\nas the console publishes more attributes.",
@@ -1347,6 +1482,13 @@
                   "integer",
                   "null"
                 ]
+              },
+              "provenance": {
+                "additionalProperties": {
+                  "$ref": "#/$defs/ModelAttributeProvenance"
+                },
+                "description": "Field-level origin. Values stay flat and convenient for runtime consumers;\nmanagement surfaces use this map to explain whether each fact was authored,\nobserved from a provider API, or supplied by Awaken's curated registry.",
+                "type": "object"
               }
             },
             "type": "object"
@@ -1356,6 +1498,15 @@
             "properties": {
               "dialect": {
                 "$ref": "#/$defs/ApiDialect"
+              },
+              "last_seen_at_unix_ms": {
+                "description": "Unix timestamp (milliseconds) of the most recent complete provider listing\nthat contained this route. Manual offerings never carry this observation.\nWhen a later complete listing omits the model, the timestamp is retained so\noperators can distinguish \"last seen then\" from \"never observed\".",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "model_id": {
                 "description": "The protocol-agnostic catalog model id (e.g. `claude-opus-4-8`).",
@@ -1530,6 +1681,33 @@
         "title": "ProviderCatalog",
         "type": "object"
       },
+      "PutModelAttributesRequest": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "Secret-free authoring input. Provenance is intentionally absent: external\ncallers cannot claim that a manual value came from a provider or curated source.",
+        "properties": {
+          "context_window": {
+            "default": null,
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_output_tokens": {
+            "default": null,
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "title": "PutModelAttributesRequest",
+        "type": "object"
+      },
       "ResolveProfileRequest": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "description": "Resolve an authored profile within a workspace's credential scope.",
@@ -1605,16 +1783,56 @@
           "CredentialSourceId": {
             "description": "Stable id of a [`CredentialSource`].",
             "type": "string"
+          },
+          "ModelTarget": {
+            "description": "Stable, secret-free identity used to select one catalog offering. `model_id`\nalone remains accepted for compatibility only when it resolves uniquely.",
+            "properties": {
+              "model_id": {
+                "type": "string"
+              },
+              "protocol_endpoint_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "provider_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "model_id"
+            ],
+            "type": "object"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "A dry-run resolve request: bind `model_id` (+ credential `binding`) against the\nauthored catalog. The workspace scopes which credential sources are visible.",
+        "additionalProperties": false,
+        "description": "A dry-run resolve request. New callers send a complete `target`; legacy\n`model_id` remains accepted only when it resolves to exactly one active offering.",
         "properties": {
           "binding": {
             "$ref": "#/$defs/CredentialBinding"
           },
           "model_id": {
-            "type": "string"
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "target": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ModelTarget"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "workspace_id": {
             "type": "string"
@@ -1622,7 +1840,6 @@
         },
         "required": [
           "workspace_id",
-          "model_id",
           "binding"
         ],
         "title": "ResolveRequest",
@@ -2716,7 +2933,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ModelAttributes"
+                "$ref": "#/components/schemas/PutModelAttributesRequest"
               }
             }
           },

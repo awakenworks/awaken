@@ -182,6 +182,7 @@ impl CatalogRepo for PostgresCatalogRepo {
     async fn put_offering(&self, mut offering: Offering) -> Result<(), RepoError> {
         offering.source = crate::OfferingSource::Manual;
         offering.status = crate::OfferingStatus::Active;
+        offering.last_seen_at_unix_ms = None;
         let p = NS;
         // Insert + whole-catalog re-validation in one transaction (fail-closed): a
         // rejected offering rolls back and leaves no trace — same no-trace semantics
@@ -220,6 +221,7 @@ impl CatalogRepo for PostgresCatalogRepo {
         &self,
         endpoint_id: &ProtocolEndpointId,
         models: Vec<DiscoveredModel>,
+        observed_at_unix_ms: u64,
     ) -> Result<CatalogSyncResult, RepoError> {
         let p = NS;
         let mut tx = self.pool.begin().await.map_err(storage)?;
@@ -233,7 +235,8 @@ impl CatalogRepo for PostgresCatalogRepo {
             return Err(RepoError::EndpointNotFound(endpoint_id.0.clone()));
         }
         let mut catalog = load_catalog(&mut tx, p).await?;
-        let result = catalog.reconcile_discovered_models(endpoint_id, models)?;
+        let result =
+            catalog.reconcile_discovered_models(endpoint_id, models, observed_at_unix_ms)?;
         for offering in catalog
             .offerings
             .iter()
@@ -261,6 +264,7 @@ impl CatalogRepo for PostgresCatalogRepo {
         model_id: String,
         attrs: ModelAttributes,
     ) -> Result<(), RepoError> {
+        attrs.validate(&model_id)?;
         let p = NS;
         sqlx::query(&format!(
             "INSERT INTO {p}_model_attributes (model_id, data) VALUES ($1, $2) \

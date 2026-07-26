@@ -66,6 +66,7 @@ async fn catalog() -> ProviderCatalog {
         upstream_model: None,
         source: Default::default(),
         status: Default::default(),
+        last_seen_at_unix_ms: None,
     })
     .await
     .unwrap();
@@ -240,6 +241,7 @@ async fn dual_endpoint_catalog() -> ProviderCatalog {
             upstream_model: None,
             source: Default::default(),
             status: Default::default(),
+            last_seen_at_unix_ms: None,
         })
         .await
         .unwrap();
@@ -370,6 +372,7 @@ async fn two_model_catalog() -> ProviderCatalog {
             upstream_model: None,
             source: Default::default(),
             status: Default::default(),
+            last_seen_at_unix_ms: None,
         })
         .await
         .unwrap();

@@ -48,6 +48,29 @@ pub struct InferenceTriple {
     pub dialect: ApiDialect,
 }
 
+/// Stable, secret-free identity used to select one catalog offering. `model_id`
+/// alone remains accepted for compatibility only when it resolves uniquely.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ModelTarget {
+    pub model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_endpoint_id: Option<String>,
+}
+
+impl ModelTarget {
+    #[must_use]
+    pub fn unqualified(model_id: impl Into<String>) -> Self {
+        Self {
+            model_id: model_id.into(),
+            provider_id: None,
+            protocol_endpoint_id: None,
+        }
+    }
+}
+
 /// What the resolver hands the run loop: the concrete target + wire + an
 /// already-resolved secret for management preview/probe. Production publication
 /// emits complete secret-free model candidates; runtime never consumes this preview type.
@@ -68,6 +91,11 @@ pub struct ResolvedInference {
 pub enum ResolveError {
     #[error("no offering for model `{0}` (model reference did not resolve — fail closed)")]
     ModelUnresolved(String),
+    #[error("model `{model_id}` matches multiple offerings ({candidates:?}); select a provider and endpoint")]
+    ModelAmbiguous {
+        model_id: String,
+        candidates: Vec<String>,
+    },
     #[error("endpoint `{0}` missing from catalog")]
     EndpointMissing(String),
     #[error("credential source `{0}` not provided")]
@@ -133,30 +161,63 @@ pub async fn resolve_inference(
     sources: &dyn SourceLookup,
     secret_store: &dyn SecretStore,
 ) -> Result<ResolvedInference, ResolveError> {
-    resolve_inference_toggled(catalog, model_id, &[], binding, sources, secret_store).await
+    resolve_inference_target(
+        catalog,
+        &ModelTarget::unqualified(model_id),
+        &[],
+        binding,
+        sources,
+        secret_store,
+    )
+    .await
 }
 
 /// The core resolution, with an operator's disabled-endpoint toggle applied: an
 /// offering whose endpoint id is in `disabled_endpoints` is skipped, so a
 /// `(credential × interface)` an operator turned off is never selected.
-async fn resolve_inference_toggled(
+pub async fn resolve_inference_target(
     catalog: &ProviderCatalog,
-    model_id: &str,
+    target: &ModelTarget,
     disabled_endpoints: &[String],
     binding: &CredentialBinding,
     sources: &dyn SourceLookup,
     secret_store: &dyn SecretStore,
 ) -> Result<ResolvedInference, ResolveError> {
-    // reconcile_model_ref + resolve_inference (Derive: first enabled offering).
-    let offering = catalog
+    let candidates = catalog
         .offerings
         .iter()
-        .find(|o| {
+        .filter(|o| {
             o.status == awaken_model_catalog::OfferingStatus::Active
-                && o.model_id == model_id
+                && o.model_id == target.model_id
+                && target
+                    .provider_id
+                    .as_deref()
+                    .is_none_or(|provider| o.provider_id.as_str() == provider)
+                && target
+                    .protocol_endpoint_id
+                    .as_deref()
+                    .is_none_or(|endpoint| o.protocol_endpoint_id.as_str() == endpoint)
                 && !disabled_endpoints.contains(&o.protocol_endpoint_id.0)
         })
-        .ok_or_else(|| ResolveError::ModelUnresolved(model_id.to_string()))?;
+        .collect::<Vec<_>>();
+    let offering = match candidates.as_slice() {
+        [offering] => *offering,
+        [] => return Err(ResolveError::ModelUnresolved(target.model_id.clone())),
+        candidates => {
+            return Err(ResolveError::ModelAmbiguous {
+                model_id: target.model_id.clone(),
+                candidates: candidates
+                    .iter()
+                    .map(|offering| {
+                        format!(
+                            "{}/{}",
+                            offering.provider_id, offering.protocol_endpoint_id
+                        )
+                    })
+                    .collect(),
+            });
+        }
+    };
 
     let endpoint = catalog
         .endpoints
@@ -298,9 +359,9 @@ pub async fn resolve_profile(
     sources: &dyn SourceLookup,
     secret_store: &dyn SecretStore,
 ) -> Result<ResolvedInference, ResolveError> {
-    resolve_inference_toggled(
+    resolve_inference_target(
         catalog,
-        &profile.model_id,
+        &ModelTarget::unqualified(&profile.model_id),
         &profile.disabled_endpoint_ids,
         &profile.credential_binding,
         sources,
@@ -329,9 +390,9 @@ pub async fn resolve_profile_candidates(
     let mut resolved = Vec::new();
     let mut last_err = None;
     for model_id in profile.model_axis().candidates() {
-        match resolve_inference_toggled(
+        match resolve_inference_target(
             catalog,
-            &model_id,
+            &ModelTarget::unqualified(&model_id),
             &profile.disabled_endpoint_ids,
             &profile.credential_binding,
             sources,
@@ -736,6 +797,7 @@ mod tests {
             upstream_model: None,
             source: Default::default(),
             status: Default::default(),
+            last_seen_at_unix_ms: None,
         });
         c
     }
@@ -799,6 +861,47 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, ResolveError::ModelUnresolved(_)));
+    }
+
+    #[tokio::test]
+    async fn unqualified_duplicate_model_is_ambiguous_and_endpoint_target_is_exact() {
+        let mut cat = catalog();
+        let mut endpoint = cat.endpoints["ep1"].clone();
+        endpoint.id = awaken_model_catalog::ProtocolEndpointId::new("ep2");
+        endpoint.display_name = "backup".into();
+        cat.endpoints.insert("ep2".into(), endpoint);
+        let mut offering = cat.offerings[0].clone();
+        offering.protocol_endpoint_id = awaken_model_catalog::ProtocolEndpointId::new("ep2");
+        cat.offerings.push(offering);
+        let store = InMemorySecretStore::new();
+        let sources: HashMap<String, CredentialSource> = HashMap::new();
+
+        let error = resolve_inference(
+            &cat,
+            "claude-opus-4-8",
+            &CredentialBinding::None,
+            &sources,
+            &store,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, ResolveError::ModelAmbiguous { .. }));
+
+        let resolved = resolve_inference_target(
+            &cat,
+            &ModelTarget {
+                model_id: "claude-opus-4-8".into(),
+                provider_id: Some("anthropic".into()),
+                protocol_endpoint_id: Some("ep2".into()),
+            },
+            &[],
+            &CredentialBinding::None,
+            &sources,
+            &store,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resolved.triple.protocol_endpoint_id, "ep2");
     }
 
     #[tokio::test]
@@ -1483,7 +1586,7 @@ mod tests {
         assert_eq!(ok.unwrap().expose_secret(), "sk-exact-b");
     }
 
-    // ---- CEG 02: resolve_inference_toggled core (A3) ----
+    // ---- CEG 02: resolve_inference_target core (A3) ----
 
     #[tokio::test]
     async fn resolve_inference_missing_endpoint_is_endpoint_missing() {
@@ -1492,9 +1595,9 @@ mod tests {
         cat.endpoints.clear();
         let store = InMemorySecretStore::new();
         let sources: HashMap<String, CredentialSource> = HashMap::new();
-        let err = resolve_inference_toggled(
+        let err = resolve_inference_target(
             &cat,
-            "claude-opus-4-8",
+            &ModelTarget::unqualified("claude-opus-4-8"),
             &[],
             &CredentialBinding::None,
             &sources,
@@ -1513,9 +1616,9 @@ mod tests {
         cat.offerings[0].upstream_model = Some("claude-opus-4-8-20990101".into());
         let store = InMemorySecretStore::new();
         let sources: HashMap<String, CredentialSource> = HashMap::new();
-        let resolved = resolve_inference_toggled(
+        let resolved = resolve_inference_target(
             &cat,
-            "claude-opus-4-8",
+            &ModelTarget::unqualified("claude-opus-4-8"),
             &[],
             &CredentialBinding::None,
             &sources,
@@ -1536,9 +1639,9 @@ mod tests {
         let cat = catalog();
         let store = InMemorySecretStore::new();
         let sources: HashMap<String, CredentialSource> = HashMap::new();
-        let err = resolve_inference_toggled(
+        let err = resolve_inference_target(
             &cat,
-            "claude-opus-4-8",
+            &ModelTarget::unqualified("claude-opus-4-8"),
             &["ep1".to_string()],
             &CredentialBinding::None,
             &sources,

@@ -204,6 +204,7 @@ impl CatalogRepo for SqliteCatalogRepo {
     async fn put_offering(&self, mut offering: Offering) -> Result<(), RepoError> {
         offering.source = crate::OfferingSource::Manual;
         offering.status = crate::OfferingStatus::Active;
+        offering.last_seen_at_unix_ms = None;
         let model_id = offering.model_id.clone();
         let endpoint_id = offering.protocol_endpoint_id.0.clone();
         let data = serde_json::to_string(&offering).map_err(storage)?;
@@ -237,6 +238,7 @@ impl CatalogRepo for SqliteCatalogRepo {
         &self,
         endpoint_id: &ProtocolEndpointId,
         models: Vec<DiscoveredModel>,
+        observed_at_unix_ms: u64,
     ) -> Result<CatalogSyncResult, RepoError> {
         let endpoint_id = endpoint_id.0.clone();
         self.with_conn(move |conn, p| {
@@ -248,6 +250,7 @@ impl CatalogRepo for SqliteCatalogRepo {
             let result = catalog.reconcile_discovered_models(
                 &ProtocolEndpointId::new(endpoint_id.clone()),
                 models,
+                observed_at_unix_ms,
             )?;
             for offering in catalog
                 .offerings
@@ -277,6 +280,7 @@ impl CatalogRepo for SqliteCatalogRepo {
         model_id: String,
         attrs: ModelAttributes,
     ) -> Result<(), RepoError> {
+        attrs.validate(&model_id)?;
         let data = serde_json::to_string(&attrs).map_err(storage)?;
         self.with_conn(move |conn, p| {
             conn.execute(

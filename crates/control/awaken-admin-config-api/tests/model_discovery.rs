@@ -21,6 +21,7 @@ use tower::ServiceExt;
 struct FixedDiscovery {
     models: Mutex<Vec<DiscoveredModel>>,
     calls: Mutex<Vec<(String, String)>>,
+    fail: Mutex<bool>,
 }
 
 #[async_trait::async_trait]
@@ -34,6 +35,11 @@ impl ModelCatalogDiscovery for FixedDiscovery {
             .lock()
             .unwrap()
             .push((endpoint.id.0.clone(), credential.id.0.clone()));
+        if *self.fail.lock().unwrap() {
+            return Err(ModelCatalogDiscoveryError::Provider(
+                "injected provider failure".into(),
+            ));
+        }
         Ok(self.models.lock().unwrap().clone())
     }
 }
@@ -58,6 +64,7 @@ fn harness() -> Harness {
             },
         ]),
         calls: Mutex::new(Vec::new()),
+        fail: Mutex::new(false),
     });
     let app = admin_router(AdminState {
         catalog: catalog.clone(),
@@ -156,6 +163,8 @@ async fn discovery_reconciles_through_the_existing_catalog_truth() {
     assert_eq!(status, StatusCode::OK, "{result}");
     assert_eq!(result["discovered"], 2);
     assert_eq!(result["activated"], 2);
+    let first_observed_at = result["observed_at_unix_ms"].as_u64().unwrap();
+    assert!(first_observed_at > 0);
     assert_eq!(harness.discovery.calls.lock().unwrap().len(), 1);
 
     *harness.discovery.models.lock().unwrap() = vec![DiscoveredModel {
@@ -171,6 +180,8 @@ async fn discovery_reconciles_through_the_existing_catalog_truth() {
     .await;
     assert_eq!(status, StatusCode::OK, "{result}");
     assert_eq!(result["marked_unavailable"], 1);
+    let second_observed_at = result["observed_at_unix_ms"].as_u64().unwrap();
+    assert!(second_observed_at >= first_observed_at);
 
     let catalog = harness.catalog.snapshot().await.unwrap();
     let stale = catalog
@@ -180,11 +191,44 @@ async fn discovery_reconciles_through_the_existing_catalog_truth() {
         .unwrap();
     assert_eq!(stale.source, OfferingSource::ProviderApi);
     assert_eq!(stale.status, OfferingStatus::Unavailable);
+    assert_eq!(stale.last_seen_at_unix_ms, Some(first_observed_at));
     assert!(
         catalog
             .resolve_offering("provider-a", stale.dialect)
             .is_none()
     );
+}
+
+#[tokio::test]
+async fn failed_refresh_does_not_advance_last_seen_or_change_availability() {
+    let harness = harness();
+    let credential_id = author_prerequisites(&harness.app).await;
+    let request = json!({
+        "workspace_id":"workspace-a",
+        "credential_source_id": credential_id
+    });
+    let (status, first) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/endpoints/ep1/discover-models",
+        request.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    let before = harness.catalog.snapshot().await.unwrap();
+
+    *harness.discovery.fail.lock().unwrap() = true;
+    *harness.discovery.models.lock().unwrap() = Vec::new();
+    let (status, problem) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/endpoints/ep1/discover-models",
+        request,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{problem}");
+    assert_eq!(problem["code"], "model_discovery_failed");
+    assert_eq!(harness.catalog.snapshot().await.unwrap(), before);
 }
 
 #[tokio::test]

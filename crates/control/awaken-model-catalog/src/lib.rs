@@ -69,6 +69,9 @@ pub enum ApiDialect {
     AnthropicMessages,
     /// The `codex`/OpenAI chat wire.
     OpenAiChat,
+    /// The OpenAI Responses API wire. This remains distinct from Chat
+    /// Completions even though both are served by the OpenAI adapter family.
+    OpenAiResponses,
     /// The Gemini wire.
     Gemini,
     /// Gemini on Vertex AI: native Gemini payloads with OAuth Bearer auth and
@@ -83,6 +86,7 @@ impl ApiDialect {
         match self {
             Self::AnthropicMessages => "anthropic",
             Self::OpenAiChat => "openai",
+            Self::OpenAiResponses => "openai",
             Self::Gemini => "gemini",
             Self::VertexGemini => "vertex",
         }
@@ -133,6 +137,90 @@ pub struct ModelAttributes {
     /// Max output tokens the model emits, when published.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
+    /// Field-level origin. Values stay flat and convenient for runtime consumers;
+    /// management surfaces use this map to explain whether each fact was authored,
+    /// observed from a provider API, or supplied by Awaken's curated registry.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub provenance: BTreeMap<String, ModelAttributeProvenance>,
+}
+
+/// Authority behind one published model-attribute value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ModelAttributeSource {
+    Manual,
+    ProviderApi,
+    Curated,
+}
+
+/// Explainability metadata for one field in [`ModelAttributes`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ModelAttributeProvenance {
+    pub source: ModelAttributeSource,
+    pub observed_at_unix_ms: u64,
+}
+
+impl ModelAttributes {
+    /// Stamp every populated field with one trusted application-side source.
+    /// Omitted fields and their old provenance disappear because PUT is replace,
+    /// keeping an explicit unknown distinct from a stale known value.
+    #[must_use]
+    pub fn stamped(mut self, source: ModelAttributeSource, observed_at_unix_ms: u64) -> Self {
+        self.provenance.clear();
+        let provenance = ModelAttributeProvenance {
+            source,
+            observed_at_unix_ms,
+        };
+        if self.context_window.is_some() {
+            self.provenance
+                .insert("context_window".into(), provenance.clone());
+        }
+        if self.max_output_tokens.is_some() {
+            self.provenance
+                .insert("max_output_tokens".into(), provenance);
+        }
+        self
+    }
+
+    fn validate(&self, model_id: &str) -> Result<(), CatalogError> {
+        if self.context_window == Some(0) {
+            return Err(CatalogError::InvalidModelAttributes {
+                model: model_id.into(),
+                reason: "context_window must be greater than zero".into(),
+            });
+        }
+        if self.max_output_tokens == Some(0) {
+            return Err(CatalogError::InvalidModelAttributes {
+                model: model_id.into(),
+                reason: "max_output_tokens must be greater than zero".into(),
+            });
+        }
+        if matches!(
+            (self.context_window, self.max_output_tokens),
+            (Some(context), Some(output)) if output > context
+        ) {
+            return Err(CatalogError::InvalidModelAttributes {
+                model: model_id.into(),
+                reason: "max_output_tokens cannot exceed context_window".into(),
+            });
+        }
+        for field in self.provenance.keys() {
+            let populated = match field.as_str() {
+                "context_window" => self.context_window.is_some(),
+                "max_output_tokens" => self.max_output_tokens.is_some(),
+                _ => false,
+            };
+            if !populated {
+                return Err(CatalogError::InvalidModelAttributes {
+                    model: model_id.into(),
+                    reason: format!("provenance references unknown or absent field `{field}`"),
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A model reachable on a protocol surface. `model_id` references the catalog's
@@ -158,6 +246,12 @@ pub struct Offering {
     /// being deleted, so existing immutable publications remain explainable.
     #[serde(default, skip_serializing_if = "OfferingStatus::is_active")]
     pub status: OfferingStatus,
+    /// Unix timestamp (milliseconds) of the most recent complete provider listing
+    /// that contained this route. Manual offerings never carry this observation.
+    /// When a later complete listing omits the model, the timestamp is retained so
+    /// operators can distinguish "last seen then" from "never observed".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_at_unix_ms: Option<u64>,
 }
 
 /// Authority that published an [`Offering`].
@@ -212,6 +306,8 @@ pub struct CatalogSyncResult {
     pub discovered: usize,
     pub activated: usize,
     pub marked_unavailable: usize,
+    /// Observation time shared by every row in this successful atomic refresh.
+    pub observed_at_unix_ms: u64,
 }
 
 /// The catalog aggregate: providers, their endpoints, and the offerings across
@@ -275,6 +371,8 @@ pub enum CatalogError {
     EmptyDiscoveredModelId,
     #[error("provider discovery references unknown endpoint `{0}`")]
     DiscoveryEndpointUnknown(String),
+    #[error("model `{model}` has invalid attributes: {reason}")]
+    InvalidModelAttributes { model: String, reason: String },
     /// Not an invariant: a durable-backend failure (I/O, serde, poisoned lock)
     /// surfaced by a persistent [`repo::CatalogRepo`] such as the sqlite one. It
     /// lives here rather than on [`repo::RepoError`] so downstream exhaustive
@@ -322,6 +420,9 @@ impl ProviderCatalog {
                 });
             }
         }
+        for (model_id, attributes) in &self.model_attributes {
+            attributes.validate(model_id)?;
+        }
         Ok(())
     }
 
@@ -341,6 +442,7 @@ impl ProviderCatalog {
         &mut self,
         endpoint_id: &ProtocolEndpointId,
         models: Vec<DiscoveredModel>,
+        observed_at_unix_ms: u64,
     ) -> Result<CatalogSyncResult, CatalogError> {
         let endpoint = self
             .endpoints
@@ -358,6 +460,7 @@ impl ProviderCatalog {
 
         let mut result = CatalogSyncResult {
             discovered: normalized.len(),
+            observed_at_unix_ms,
             ..CatalogSyncResult::default()
         };
         for offering in self.offerings.iter_mut().filter(|offering| {
@@ -370,6 +473,7 @@ impl ProviderCatalog {
                 }
                 offering.status = OfferingStatus::Active;
                 offering.upstream_model = upstream_model;
+                offering.last_seen_at_unix_ms = Some(observed_at_unix_ms);
             } else if offering.status != OfferingStatus::Unavailable {
                 offering.status = OfferingStatus::Unavailable;
                 result.marked_unavailable += 1;
@@ -392,6 +496,7 @@ impl ProviderCatalog {
                 upstream_model,
                 source: OfferingSource::ProviderApi,
                 status: OfferingStatus::Active,
+                last_seen_at_unix_ms: Some(observed_at_unix_ms),
             });
             result.activated += 1;
         }
@@ -476,6 +581,7 @@ mod tests {
             upstream_model: None,
             source: Default::default(),
             status: Default::default(),
+            last_seen_at_unix_ms: None,
         });
         c
     }
@@ -493,6 +599,7 @@ mod tests {
             ModelAttributes {
                 context_window: Some(200_000),
                 max_output_tokens: Some(64_000),
+                provenance: Default::default(),
             },
         );
         // Published window is returned…
@@ -503,6 +610,64 @@ mod tests {
         c.model_attributes
             .insert("bare".into(), ModelAttributes::default());
         assert_eq!(c.context_window("bare"), None);
+    }
+
+    #[test]
+    fn populated_attributes_are_stamped_per_field_and_unknown_stays_unknown() {
+        let stamped = ModelAttributes {
+            context_window: Some(200_000),
+            max_output_tokens: Some(32_000),
+            provenance: BTreeMap::from([(
+                "forged".into(),
+                ModelAttributeProvenance {
+                    source: ModelAttributeSource::ProviderApi,
+                    observed_at_unix_ms: 1,
+                },
+            )]),
+        }
+        .stamped(ModelAttributeSource::Manual, 42);
+        assert_eq!(
+            stamped.provenance.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["context_window", "max_output_tokens"]
+        );
+        assert!(stamped.provenance.values().all(|item| {
+            item.source == ModelAttributeSource::Manual && item.observed_at_unix_ms == 42
+        }));
+
+        let unknown = ModelAttributes::default().stamped(ModelAttributeSource::Curated, 43);
+        assert!(unknown.provenance.is_empty());
+
+        for (attributes, expected_field) in [
+            (
+                ModelAttributes {
+                    context_window: Some(128_000),
+                    ..Default::default()
+                },
+                "context_window",
+            ),
+            (
+                ModelAttributes {
+                    max_output_tokens: Some(8_192),
+                    ..Default::default()
+                },
+                "max_output_tokens",
+            ),
+        ] {
+            let stamped = attributes.stamped(ModelAttributeSource::ProviderApi, 44);
+            assert_eq!(stamped.provenance.len(), 1);
+            assert_eq!(
+                stamped.provenance[expected_field].source,
+                ModelAttributeSource::ProviderApi
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_model_attributes_without_provenance_remain_readable() {
+        let attrs: ModelAttributes =
+            serde_json::from_str(r#"{"context_window":128000}"#).unwrap();
+        assert_eq!(attrs.context_window, Some(128_000));
+        assert!(attrs.provenance.is_empty());
     }
 
     #[test]
@@ -536,6 +701,7 @@ mod tests {
             upstream_model: None,
             source: Default::default(),
             status: Default::default(),
+            last_seen_at_unix_ms: None,
         });
         let got = c
             .resolve_offering("claude-opus-4-8", ApiDialect::AnthropicMessages)
@@ -559,6 +725,7 @@ mod tests {
             upstream_model: None,
             source: Default::default(),
             status: Default::default(),
+            last_seen_at_unix_ms: None,
         });
         assert!(matches!(
             c.validate(),
@@ -581,6 +748,7 @@ mod tests {
             upstream_model: None,
             source: Default::default(),
             status: Default::default(),
+            last_seen_at_unix_ms: None,
         });
         assert!(matches!(
             ValidCatalog::parse(c),
@@ -623,6 +791,7 @@ mod tests {
     fn api_dialect_adapter_kind_maps_each_variant() {
         assert_eq!(ApiDialect::AnthropicMessages.adapter_kind(), "anthropic");
         assert_eq!(ApiDialect::OpenAiChat.adapter_kind(), "openai");
+        assert_eq!(ApiDialect::OpenAiResponses.adapter_kind(), "openai");
         assert_eq!(ApiDialect::Gemini.adapter_kind(), "gemini");
         assert_eq!(ApiDialect::VertexGemini.adapter_kind(), "vertex");
     }
@@ -633,6 +802,7 @@ mod tests {
         for (dialect, wire) in [
             (ApiDialect::AnthropicMessages, "\"anthropic_messages\""),
             (ApiDialect::OpenAiChat, "\"open_ai_chat\""),
+            (ApiDialect::OpenAiResponses, "\"open_ai_responses\""),
             (ApiDialect::Gemini, "\"gemini\""),
             (ApiDialect::VertexGemini, "\"vertex_gemini\""),
         ] {
@@ -708,6 +878,7 @@ mod tests {
             upstream_model: None,
             source: Default::default(),
             status: Default::default(),
+            last_seen_at_unix_ms: None,
         };
         assert!(
             !serde_json::to_string(&off)
@@ -730,6 +901,7 @@ mod tests {
             ModelAttributes {
                 context_window: Some(200_000),
                 max_output_tokens: None,
+                provenance: Default::default(),
             },
         );
         let json = serde_json::to_string(&c).unwrap();
@@ -759,6 +931,7 @@ mod tests {
             upstream_model: Some("models/gemini-2.5-pro".into()),
             source: Default::default(),
             status: Default::default(),
+            last_seen_at_unix_ms: None,
         });
         assert!(c.validate().is_ok());
         let got = c

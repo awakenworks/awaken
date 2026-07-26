@@ -143,6 +143,11 @@ async fn model_attributes_publish_and_surface_in_the_catalog() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(echoed["context_window"], 1_000_000);
     assert_eq!(echoed["max_output_tokens"], 8192);
+    assert_eq!(echoed["provenance"]["context_window"]["source"], "manual");
+    assert_eq!(echoed["provenance"]["max_output_tokens"]["source"], "manual");
+    assert!(echoed["provenance"]["context_window"]["observed_at_unix_ms"]
+        .as_u64()
+        .is_some_and(|timestamp| timestamp > 0));
 
     // They publish independently of any offering and land in the catalog snapshot.
     let (s, _, catalog) = call(&app, "GET", "/v1/config/catalog", None).await;
@@ -168,6 +173,49 @@ async fn model_attributes_upsert_replaces_the_prior_value() {
     }
     let (_, _, catalog) = call(&app, "GET", "/v1/config/catalog", None).await;
     assert_eq!(catalog["model_attributes"]["m"]["context_window"], 262_144);
+    assert!(catalog["model_attributes"]["m"]["max_output_tokens"].is_null());
+    assert!(catalog["model_attributes"]["m"]["provenance"]
+        .get("max_output_tokens")
+        .is_none());
+}
+
+#[tokio::test]
+async fn model_attribute_clients_cannot_forge_provenance() {
+    let app = router(None);
+    let (status, _, _) = call(
+        &app,
+        "PUT",
+        "/v1/config/model-attributes/m",
+        Some(json!({
+            "context_window": 128_000,
+            "provenance": {
+                "context_window": {"source":"provider_api", "observed_at_unix_ms":1}
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn model_attribute_token_limits_fail_closed_when_impossible() {
+    let app = router(None);
+    for body in [
+        json!({"context_window": 0}),
+        json!({"max_output_tokens": 0}),
+        json!({"context_window": 8_192, "max_output_tokens": 16_384}),
+    ] {
+        let (status, _, problem) = call(
+            &app,
+            "PUT",
+            "/v1/config/model-attributes/m",
+            Some(body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{problem}");
+    }
+    let (_, _, catalog) = call(&app, "GET", "/v1/config/catalog", None).await;
+    assert!(catalog["model_attributes"].get("m").is_none());
 }
 
 // ── cooldown: the quota default-window branch (CD1 always passed retry_after) ──
@@ -227,7 +275,11 @@ async fn resolve_over_http_reports_the_binding_and_credential_presence() {
         "/v1/config/inference/resolve",
         Some(json!({
             "workspace_id": "ws",
-            "model_id": "claude-opus-4-8",
+            "target": {
+                "model_id": "claude-opus-4-8",
+                "provider_id": "anthropic",
+                "protocol_endpoint_id": "ep1"
+            },
             "binding": { "type": "exact", "credential_source_id": cred }
         })),
     )
@@ -235,6 +287,7 @@ async fn resolve_over_http_reports_the_binding_and_credential_presence() {
     assert_eq!(s, StatusCode::OK, "resolve view: {view}");
     assert_eq!(view["model_id"], "claude-opus-4-8");
     assert_eq!(view["provider_id"], "anthropic");
+    assert_eq!(view["protocol_endpoint_id"], "ep1");
     assert_eq!(view["adapter_kind"], "anthropic");
     assert_eq!(view["credential_present"], true);
 
@@ -252,6 +305,72 @@ async fn resolve_over_http_reports_the_binding_and_credential_presence() {
     .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(view["credential_present"], false);
+}
+
+#[tokio::test]
+async fn resolve_target_rejects_ambiguous_legacy_identity_and_conflicting_shapes() {
+    let app = router(None);
+    author_model(&app, "anthropic", "anthropic_messages", "same-model").await;
+    let (status, _, _) = call(
+        &app,
+        "PUT",
+        "/v1/config/endpoints/ep2",
+        Some(json!({
+            "id":"ep2", "provider_id":"anthropic", "dialect":"anthropic_messages",
+            "base_url":"https://backup.example/v1", "timeout_secs":300,
+            "display_name":"backup", "version":1
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, _) = call(
+        &app,
+        "POST",
+        "/v1/config/offerings",
+        Some(json!({
+            "model_id":"same-model", "provider_id":"anthropic",
+            "protocol_endpoint_id":"ep2", "dialect":"anthropic_messages"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _, problem) = call(
+        &app,
+        "POST",
+        "/v1/config/inference/resolve",
+        Some(json!({
+            "workspace_id":"ws", "model_id":"same-model", "binding":{"type":"none"}
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{problem}");
+    assert_eq!(problem["code"], "model_ambiguous");
+
+    let (status, _, problem) = call(
+        &app,
+        "POST",
+        "/v1/config/inference/resolve",
+        Some(json!({
+            "workspace_id":"ws",
+            "model_id":"same-model",
+            "target":{"model_id":"same-model", "provider_id":"anthropic", "protocol_endpoint_id":"ep2"},
+            "binding":{"type":"none"}
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{problem}");
+    assert_eq!(problem["code"], "model_target_invalid");
+
+    let (status, _, problem) = call(
+        &app,
+        "POST",
+        "/v1/config/inference/resolve",
+        Some(json!({"workspace_id":"ws", "binding":{"type":"none"}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{problem}");
+    assert_eq!(problem["code"], "model_target_invalid");
 }
 
 #[tokio::test]

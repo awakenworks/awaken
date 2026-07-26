@@ -427,6 +427,7 @@ mod tests {
                 upstream_model: None,
                 source: Default::default(),
                 status: Default::default(),
+                last_seen_at_unix_ms: None,
             })
             .await
             .unwrap();
@@ -1068,6 +1069,7 @@ mod tests {
                 upstream_model: None,
                 source: Default::default(),
                 status: Default::default(),
+                last_seen_at_unix_ms: None,
             })
             .await
             .unwrap();

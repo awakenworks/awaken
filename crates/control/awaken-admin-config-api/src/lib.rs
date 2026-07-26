@@ -40,8 +40,8 @@ pub use router::{
     AdminState, AuthorOfferingRequest, CooldownRequest, CredentialProbe, CredentialSourceView,
     CredentialValidation, DiscoverModelsRequest, EnterCredentialRequest,
     EnvironmentProviderProposal, ModelCatalogDiscovery, ModelCatalogDiscoveryError,
-    PoolEligibleView, ProbeStatus, ResolveProfileRequest, ResolveRequest, ResolvedCandidatesView,
-    ResolvedInferenceView, ValidateCredentialRequest, admin_router,
+    PoolEligibleView, ProbeStatus, PutModelAttributesRequest, ResolveProfileRequest, ResolveRequest,
+    ResolvedCandidatesView, ResolvedInferenceView, ValidateCredentialRequest, admin_router,
 };
 
 /// The API surface version this crate serves.

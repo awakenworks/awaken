@@ -36,6 +36,7 @@ pub trait CatalogRepo: Send + Sync {
         &self,
         endpoint_id: &ProtocolEndpointId,
         models: Vec<DiscoveredModel>,
+        observed_at_unix_ms: u64,
     ) -> Result<CatalogSyncResult, RepoError>;
     /// Publish the intrinsic attributes of a `model_id` (upsert on the model id).
     /// Model attributes publish independently of offerings — they carry no
@@ -108,6 +109,7 @@ impl CatalogRepo for InMemoryCatalogRepo {
     async fn put_offering(&self, mut offering: Offering) -> Result<(), RepoError> {
         offering.source = crate::OfferingSource::Manual;
         offering.status = crate::OfferingStatus::Active;
+        offering.last_seen_at_unix_ms = None;
         let mut guard = self.inner.lock().expect("catalog mutex");
         if !guard
             .get()
@@ -150,13 +152,14 @@ impl CatalogRepo for InMemoryCatalogRepo {
         &self,
         endpoint_id: &ProtocolEndpointId,
         models: Vec<DiscoveredModel>,
+        observed_at_unix_ms: u64,
     ) -> Result<CatalogSyncResult, RepoError> {
         let mut guard = self.inner.lock().expect("catalog mutex");
         if !guard.get().endpoints.contains_key(endpoint_id.as_str()) {
             return Err(RepoError::EndpointNotFound(endpoint_id.0.clone()));
         }
         let mut next = guard.get().clone();
-        let result = next.reconcile_discovered_models(endpoint_id, models)?;
+        let result = next.reconcile_discovered_models(endpoint_id, models, observed_at_unix_ms)?;
         *guard = ValidCatalog::parse(next)?;
         Ok(result)
     }
@@ -246,6 +249,7 @@ mod tests {
             upstream_model: None,
             source: Default::default(),
             status: Default::default(),
+            last_seen_at_unix_ms: None,
         })
         .await
         .unwrap();
@@ -303,6 +307,7 @@ mod tests {
             upstream_model: None,
             source: Default::default(),
             status: Default::default(),
+            last_seen_at_unix_ms: None,
         };
         assert!(repo.put_offering(bad).await.is_err());
     }
@@ -353,6 +358,7 @@ mod tests {
             upstream_model: Some("v1".into()),
             source: Default::default(),
             status: Default::default(),
+            last_seen_at_unix_ms: None,
         };
         repo.put_offering(first.clone()).await.unwrap();
         first.upstream_model = Some("v2".into());

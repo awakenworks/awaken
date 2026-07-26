@@ -9,6 +9,7 @@ export type {
   CatalogSyncResult,
   EnvironmentProviderProposal,
   ModelAttributes,
+  ModelTarget,
   Offering,
   ProtocolEndpoint,
   Provider,

@@ -23,6 +23,25 @@ function fmtTokens(n: number): string {
   return String(n);
 }
 
+function fmtObservedAt(timestamp: number): string {
+  return new Date(timestamp).toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function parseOptionalTokenLimit(label: string, value: string): number | undefined {
+  if (!value.trim()) return undefined;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(`${label} must be a positive integer`);
+  }
+  return parsed;
+}
+
 /** A live model test: a scratch session (via the `default` agent) pinned to the
  * chosen model, so a real reply proves the connection — the same transcript
  * engine as the Sandbox. No provider key → the run errors honestly, not a stub. */
@@ -110,6 +129,7 @@ export default function ModelsSurface() {
     model: "claude-sonnet-4-5",
     dialect: "anthropic_messages",
     contextWindow: "",
+    maxOutputTokens: "",
   });
   const upsert = useMutation({
     mutationFn: async () => {
@@ -135,11 +155,18 @@ export default function ModelsSurface() {
         dialect: draft.dialect,
         upstream_model: null,
       });
-      // The context window is a per-model_id attribute (not an offering field): it feeds
-      // the compaction token budget. Publish it only when the operator entered one.
-      const ctx = Number(draft.contextWindow);
-      if (draft.contextWindow.trim() && Number.isFinite(ctx) && ctx > 0) {
-        await api.put(ws(`/v1/config/model-attributes/${draft.model}`), { context_window: Math.round(ctx) });
+      // Token limits are optional per-model_id facts, not connection prerequisites.
+      // Omitted fields remain explicitly unknown; the server stamps their provenance.
+      const contextWindow = parseOptionalTokenLimit("Context window", draft.contextWindow);
+      const maxOutputTokens = parseOptionalTokenLimit("Max output tokens", draft.maxOutputTokens);
+      if (contextWindow != null && maxOutputTokens != null && maxOutputTokens > contextWindow) {
+        throw new Error("Max output tokens cannot exceed the context window");
+      }
+      if (contextWindow != null || maxOutputTokens != null) {
+        await api.put(ws(`/v1/config/model-attributes/${draft.model}`), {
+          ...(contextWindow != null ? { context_window: contextWindow } : {}),
+          ...(maxOutputTokens != null ? { max_output_tokens: maxOutputTokens } : {}),
+        });
       }
     },
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["catalog"] }),
@@ -155,12 +182,18 @@ export default function ModelsSurface() {
   });
   const [testModel, setTestModel] = useState<string | null>(null);
   const [resolveModel, setResolveModel] = useState("claude-sonnet-4-5");
+  const [resolveProvider, setResolveProvider] = useState("anthropic");
+  const [resolveEndpoint, setResolveEndpoint] = useState("anthropic-messages");
   const [resolveBinding, setResolveBinding] = useState("");
   const resolve = useMutation({
     mutationFn: () =>
       api.post<ResolvedInferenceView>(ws("/v1/config/inference/resolve"), {
         workspace_id: workspace,
-        model_id: resolveModel,
+        target: {
+          model_id: resolveModel,
+          provider_id: resolveProvider,
+          protocol_endpoint_id: resolveEndpoint,
+        },
         binding: resolveBinding
           ? { type: "exact", credential_source_id: resolveBinding }
           : { type: "none" },
@@ -188,6 +221,7 @@ export default function ModelsSurface() {
               <th>Dialect</th>
               <th>Status</th>
               <th>{app.t("Context", "上下文")}</th>
+              <th>{app.t("Max output", "最大输出")}</th>
               <th style={{ textAlign: "right" }}></th>
             </tr>
           </thead>
@@ -204,11 +238,41 @@ export default function ModelsSurface() {
                   <Pill tone={(o.status ?? "active") === "active" ? "agent" : "neutral"}>
                     {o.status ?? "active"} · {o.source ?? "manual"}
                   </Pill>
+                  {(o.source ?? "manual") === "provider_api" && (
+                    <div
+                      className="mut"
+                      title={
+                        o.last_seen_at_unix_ms
+                          ? new Date(o.last_seen_at_unix_ms).toISOString()
+                          : app.t("No successful observation recorded", "尚无成功发现记录")
+                      }
+                      style={{ marginTop: 4, fontSize: 11 }}
+                    >
+                      {o.last_seen_at_unix_ms
+                        ? `${app.t("last seen", "上次发现")} ${fmtObservedAt(o.last_seen_at_unix_ms)}`
+                        : app.t("last seen unknown", "上次发现时间未知")}
+                    </div>
+                  )}
                 </td>
                 <td className="mut">
                   {c?.model_attributes?.[o.model_id]?.context_window
                     ? `${fmtTokens(c.model_attributes[o.model_id].context_window!)}`
                     : "—"}
+                  {c?.model_attributes?.[o.model_id]?.provenance?.context_window?.source && (
+                    <div style={{ fontSize: 11 }}>
+                      {c.model_attributes[o.model_id].provenance!.context_window.source}
+                    </div>
+                  )}
+                </td>
+                <td className="mut">
+                  {c?.model_attributes?.[o.model_id]?.max_output_tokens
+                    ? `${fmtTokens(c.model_attributes[o.model_id].max_output_tokens!)}`
+                    : "—"}
+                  {c?.model_attributes?.[o.model_id]?.provenance?.max_output_tokens?.source && (
+                    <div style={{ fontSize: 11 }}>
+                      {c.model_attributes[o.model_id].provenance!.max_output_tokens.source}
+                    </div>
+                  )}
                 </td>
                 <td style={{ textAlign: "right" }}>
                   <Button style={{ height: 24 }} onClick={() => setTestModel(o.model_id)}>
@@ -219,7 +283,7 @@ export default function ModelsSurface() {
             ))}
             {(c?.offerings ?? []).length === 0 && (
               <tr>
-                <td colSpan={7} className="mut">
+                <td colSpan={8} className="mut">
                   {app.t("Empty catalog — author one below.", "目录为空——在下方作者化。")}
                 </td>
               </tr>
@@ -272,6 +336,7 @@ export default function ModelsSurface() {
           <SelectField label="Dialect" value={draft.dialect} onChange={(e) => setDraft({ ...draft, dialect: e.target.value })}>
             <option value="anthropic_messages">anthropic_messages</option>
             <option value="open_ai_chat">open_ai_chat</option>
+            <option value="open_ai_responses">open_ai_responses</option>
             <option value="gemini">gemini</option>
             <option value="vertex_gemini">vertex_gemini</option>
           </SelectField>
@@ -282,6 +347,13 @@ export default function ModelsSurface() {
             placeholder="200000"
             value={draft.contextWindow}
             onChange={(e) => setDraft({ ...draft, contextWindow: e.target.value })}
+          />
+          <TextField
+            label={app.t("Max output tokens", "最大输出 token")}
+            mono
+            placeholder={app.t("unknown", "未知")}
+            value={draft.maxOutputTokens}
+            onChange={(e) => setDraft({ ...draft, maxOutputTokens: e.target.value })}
           />
           <Button variant="primary" style={{ alignSelf: "flex-end" }} disabled={upsert.isPending} onClick={() => upsert.mutate()}>
             {app.t("Author", "写入")}
@@ -334,6 +406,8 @@ export default function ModelsSurface() {
         </p>
         <div className="row">
           <TextField label="Model" mono value={resolveModel} onChange={(e) => setResolveModel(e.target.value)} />
+          <TextField label="Provider" mono value={resolveProvider} onChange={(e) => setResolveProvider(e.target.value)} />
+          <TextField label="Endpoint" mono value={resolveEndpoint} onChange={(e) => setResolveEndpoint(e.target.value)} />
           <TextField
             label={app.t("Credential source (empty = none)", "凭证源(留空 = none)")}
             mono
