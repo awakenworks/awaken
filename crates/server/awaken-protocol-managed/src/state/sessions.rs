@@ -581,25 +581,6 @@ impl ManagedState {
                 .map(|default| default.binding_id.clone());
             attachments.push(awaken_session_contract::SessionInputAttachment { binding, replaces });
         }
-        // Sole composition/resolution point. Runtime receives this persisted,
-        // secret-free manifest and never re-opens Agent or Resource config stores.
-        let mut resolved_resources = awaken_session_contract::SessionInputResolver::resolve_inputs(
-            &owner_scope,
-            self.resource_catalog
-                .as_deref()
-                .map(|catalog| catalog as &dyn awaken_resource_contract::ResourceConfigSource),
-            agent_defaults,
-            &attachments,
-        )
-        .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        if let Some(view) = &config_view {
-            resolved_resources.skills = Some(
-                self.runtime
-                    .resolve_session_skills(&owner_scope, &view.skill_ids)
-                    .await
-                    .map_err(StateError::Run)?,
-            );
-        }
         // Resolve the session's environment (defaulting to the local one) and its
         // networking policy once, for both the SessionInit (staged before the first
         // turn) and the echoed Session object.
@@ -621,6 +602,28 @@ impl ManagedState {
                 req.awaken_runtime(),
             ),
         };
+        // Sole protocol-neutral composition/resolution point. Runtime receives this
+        // persisted, secret-free result and never re-opens Agent or Resource stores.
+        let compiled_defaults = awaken_session_contract::SessionDefaultsCompiler::compile(
+            &owner_scope,
+            self.resource_catalog
+                .as_deref()
+                .map(|catalog| catalog as &dyn awaken_resource_contract::ResourceConfigSource),
+            environment,
+            agent_defaults,
+            &attachments,
+        )
+        .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
+        let environment = compiled_defaults.environment;
+        let mut resolved_resources = compiled_defaults.resources;
+        if let Some(view) = &config_view {
+            resolved_resources.skills = Some(
+                self.runtime
+                    .resolve_session_skills(&owner_scope, &view.skill_ids)
+                    .await
+                    .map_err(StateError::Run)?,
+            );
+        }
         self.pin_repository_credentials(
             &owner_scope,
             &environment.credential_realization.resource_holder,

@@ -55,3 +55,25 @@ E6                               -> R4 and (R1 or R2)
 
 Later phases extend this document with Agent defaults, exact Resource resolution,
 SandboxExecutionPolicy binding, protocol orthogonality, and restart behavior.
+
+## Phase 2: one defaults compiler
+
+### Graph
+
+```text
+Agent defaults + no Session attachment       -> inherit defaults
+Agent defaults + explicit replaces           -> replace named default
+Agent defaults + implicit id/path collision  -> reject
+Selected Environment snapshot                -> preserve exact revision/fingerprint
+```
+
+### Decision table
+
+| Cause/effect | D1 inherit | D2 replace | D3 collision |
+|---|---:|---:|---:|
+| Agent default exists | 1 | 1 | 1 |
+| Session attachment exists | 0 | 1 | 1 |
+| Explicit `replaces` | - | 1 | 0 |
+| Compile succeeds | 1 | 1 | 0 |
+| Exact Environment preserved | 1 | 1 | 0 |
+| Collision error | 0 | 0 | 1 |

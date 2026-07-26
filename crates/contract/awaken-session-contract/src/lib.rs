@@ -14,6 +14,7 @@
 mod agent_config;
 mod application_contribution;
 mod baseline;
+mod defaults;
 pub mod env_registry;
 mod lifecycle;
 mod mcp_attachment;
@@ -47,6 +48,7 @@ pub use baseline::{
     SessionCreationFinalizeError, SessionCreationIntent, SessionMcpAuthoringContext,
     SessionNetworkPolicy,
 };
+pub use defaults::{CompiledSessionDefaults, SessionDefaultsCompiler};
 pub use lifecycle::{SessionLifecycleFact, SessionLifecycleSink};
 pub use mcp_attachment::{
     McpAttachmentDraft, McpAttachmentError, McpAttachmentId, McpAttachmentOrigin,
