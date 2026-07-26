@@ -50,7 +50,7 @@ fn session() -> PersistedSession {
         ),
         title: None,
         metadata: BTreeMap::new(),
-        agent_tools: None,
+        agent_tools: Vec::new(),
         environment_binding: None,
         mcp: Default::default(),
         resources: Default::default(),

@@ -241,12 +241,7 @@ impl ManagedState {
             }
         }
         if let Some(tools) = &command.tools {
-            persisted.agent_tools = Some(
-                tools
-                    .iter()
-                    .map(|tool| serde_json::to_value(tool).expect("typed AgentTool serializes"))
-                    .collect(),
-            );
+            persisted.agent_tools = tools.clone();
         }
         let title_changed = persisted.title != initial_title;
         let metadata_changed = persisted.metadata != initial_metadata;

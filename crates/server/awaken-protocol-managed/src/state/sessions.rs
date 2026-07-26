@@ -4,56 +4,6 @@
 use super::application::{ManagedMcpCandidate, initial_mcp_candidates};
 use super::*;
 
-fn typed_tools(
-    values: Vec<serde_json::Value>,
-) -> Result<Vec<crate::types::agent::AgentTool>, StateError> {
-    values
-        .into_iter()
-        .enumerate()
-        .map(|(index, value)| match serde_json::from_value(value.clone()) {
-            Ok(tool) => Ok(tool),
-            Err(typed_error) => {
-                let Some(name) = value
-                    .get("name")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string)
-                else {
-                    return Err(StateError::Run(RunError::internal(format!(
-                        "persisted_session_projection_invalid: agent.tools[{index}]: {typed_error}"
-                    ))));
-                };
-                let input_schema = crate::types::agent::CustomToolInputSchema::from_value(
-                    value
-                        .get("input_schema")
-                        .cloned()
-                        .unwrap_or_else(|| json!({"type":"object"})),
-                )
-                .map_err(|error| {
-                    StateError::Run(RunError::internal(format!(
-                        "persisted_session_projection_invalid: agent.tools[{index}]: {error}"
-                    )))
-                })?;
-                Ok(crate::types::agent::AgentTool::Custom {
-                    description: value
-                        .get("description")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("Client-executed tool")
-                        .to_string(),
-                    name,
-                    input_schema,
-                })
-            }
-        })
-        .collect()
-}
-
-fn stored_tools(values: &[crate::types::agent::AgentTool]) -> Vec<serde_json::Value> {
-    values
-        .iter()
-        .map(|tool| serde_json::to_value(tool).expect("typed AgentTool serializes"))
-        .collect()
-}
-
 pub(super) fn typed_mcp_servers(
     values: Vec<serde_json::Value>,
 ) -> Result<Vec<crate::types::agent::UrlMcpServer>, StateError> {
@@ -70,7 +20,6 @@ pub(super) fn typed_mcp_servers(
         .collect()
 }
 use crate::types::AgentRef;
-use serde_json::json;
 
 pub(super) fn mcp_generation_ref(
     session_id: &str,
@@ -796,7 +745,7 @@ impl ManagedState {
             baseline: awaken_session_contract::SessionBaselineState::Preparing(creation_intent),
             title: req.title.clone(),
             metadata: req.metadata.clone(),
-            agent_tools: None,
+            agent_tools: Vec::new(),
             environment_binding: None,
             mcp: Default::default(),
             resources: Default::default(),
@@ -913,7 +862,7 @@ impl ManagedState {
                 session.agent.skills = skills.clone().unwrap_or_default();
             }
         }
-        persisted.agent_tools = Some(stored_tools(&session.agent.tools));
+        persisted.agent_tools = session.agent.tools.clone();
         // Persist the session's config (secret-free) so a restart or a peer process
         // rehydrates its real agent/model/title/metadata/MCP, not a placeholder.
         // The core session record is tenancy-agnostic (authz is an edge aspect) —
@@ -1306,10 +1255,7 @@ impl ManagedState {
                     environment_id,
                     p.title,
                     p.metadata,
-                    match p.agent_tools {
-                        Some(tools) => typed_tools(tools)?,
-                        None => default_tools.clone(),
-                    },
+                    p.agent_tools,
                     mcp_servers,
                     Self::wire_session_status(&p.status),
                     p.archived_at,

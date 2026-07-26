@@ -1609,7 +1609,7 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
     assert_eq!(updated["agent"]["tools"], tools, "I6");
     assert_eq!(
         h.repo.get(id).await.unwrap().agent_tools,
-        Some(tools.as_array().unwrap().clone()),
+        serde_json::from_value::<Vec<awaken_session_contract::AgentTool>>(tools).unwrap(),
         "I6"
     );
 }
