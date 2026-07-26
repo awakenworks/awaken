@@ -82,7 +82,7 @@ awaken-admin-config-api = { path = "crates/control/awaken-admin-config-api" }
 awaken-control = { path = "crates/control/awaken-control" }
 # Foundation contract half (ADR-0043): RFC-9457 ApiError, pagination, and the
 # allowlisted ListQuery/QuerySchema the admin config API serves its CRUD on.
-awaken-api-contract = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9" }
+awaken-api-contract = { git = "https://github.com/awakenworks/awaken-foundation", rev = "111aaf8a22e0ade4f02548732fd852057180a174" }
 # Embedded IAM for the management plane (ADR-0042/0043 P1): bearer ApiToken
 # authn (argon2id at rest) + grant-based authz gating /v1/config/* and
 # /v1/vaults/* in awaken-server, opt-in via AWAKEN_MGMT_IAM=embedded.
@@ -90,15 +90,15 @@ awaken-api-contract = { git = "https://github.com/awakenworks/awaken-foundation"
 # became consumable once iam adopted foundation ADR-0005 (rusqlite as a
 # links-safe *range*, >=0.32 <0.41), so its SqlStore/migrations now back the
 # embedded authz rows instead of a hand-rolled schema.
-awaken-iam-contract = { git = "https://github.com/awakenworks/awaken-iam", rev = "5b9dab1b5bce97850cdf9e567b276125a53e2031" }
-awaken-iam-server = { git = "https://github.com/awakenworks/awaken-iam", rev = "5b9dab1b5bce97850cdf9e567b276125a53e2031" }
-awaken-iam-core = { git = "https://github.com/awakenworks/awaken-iam", rev = "5b9dab1b5bce97850cdf9e567b276125a53e2031" }
-awaken-iam-preset = { git = "https://github.com/awakenworks/awaken-iam", rev = "5b9dab1b5bce97850cdf9e567b276125a53e2031" }
-awaken-iam-client = { git = "https://github.com/awakenworks/awaken-iam", rev = "5b9dab1b5bce97850cdf9e567b276125a53e2031" }
+awaken-iam-contract = { git = "https://github.com/awakenworks/awaken-iam", rev = "9c5a94c" }
+awaken-iam-server = { git = "https://github.com/awakenworks/awaken-iam", rev = "9c5a94c" }
+awaken-iam-core = { git = "https://github.com/awakenworks/awaken-iam", rev = "9c5a94c" }
+awaken-iam-preset = { git = "https://github.com/awakenworks/awaken-iam", rev = "9c5a94c" }
+awaken-iam-client = { git = "https://github.com/awakenworks/awaken-iam", rev = "9c5a94c" }
 # The assembly layer (ADR-0048): one IamGate (authn+authz PDP) + auth_layer PEP,
 # three modes (Open/Local/Remote). Local mode is the zero-config single-machine
 # embed (in-memory SQLite, seeded roles, ephemeral bootstrap admin token).
-awaken-iam-host = { git = "https://github.com/awakenworks/awaken-iam", rev = "5b9dab1b5bce97850cdf9e567b276125a53e2031" }
+awaken-iam-host = { git = "https://github.com/awakenworks/awaken-iam", rev = "9c5a94c" }
 awaken-managed-bridge = { path = "crates/server/awaken-managed-bridge" }
 awaken-store-conformance = { path = "crates/stores/awaken-store-conformance" }
 awaken-store-inmem = { path = "crates/runtime/awaken-store-inmem" }

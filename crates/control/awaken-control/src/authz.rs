@@ -119,7 +119,7 @@ use awaken_iam_core::{
 use awaken_iam_core::{ApiTokenRepo, RoleBindingRepo};
 #[cfg(test)]
 use awaken_iam_core::{Effect, Grant, GrantId, GrantSubject};
-use awaken_iam_host::{AuthReject, HostConfig, IamClient, IamGate, LocalIamState, connect_remote};
+use awaken_iam_host::{AuthReject, IamClient, IamGate, LocalIamState};
 use awaken_iam_preset::{named_role_catalog, seed_named_roles};
 use awaken_iam_server::{
     AuthorizationProfileAdmin, AuthzApi, SqlStore, SqliteBackend, sqlite_migrated_store,
@@ -135,8 +135,10 @@ use axum::routing::delete;
 use axum::{Json, Router};
 
 mod bootstrap;
+mod remote;
 
 use bootstrap::bootstrap_admin_token;
+pub use remote::RemoteManagementAuthz;
 
 /// Name of the bootstrap admin-token file under the management directory.
 pub const ADMIN_TOKEN_FILE: &str = "admin-token";
@@ -241,14 +243,6 @@ pub struct ManagementAuthz {
     org_id: OrgId,
 }
 
-/// Remote awaken-iam relying-party adapter for a locally running management
-/// plane. The cached user token authenticates local single-user requests and,
-/// unless a separate service credential is configured, the remote PDP call.
-pub struct RemoteManagementAuthz {
-    gate: IamGate,
-    user_token: String,
-}
-
 /// User-selectable identity posture for the local product.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ManagementIdentityMode {
@@ -268,67 +262,6 @@ impl ManagementIdentityMode {
             "embedded" | "local" | "self-managed" => Some(Self::SelfManaged),
             _ => None,
         }
-    }
-}
-
-impl RemoteManagementAuthz {
-    /// Connect to the authoritative IAM service and fetch its JWKS. Startup is
-    /// fail-closed when no cloud credential or trust anchor is available.
-    pub fn connect(
-        base_url: String,
-        audience: String,
-        issuer: String,
-        user_token: String,
-        service_token: Option<String>,
-    ) -> Result<Arc<Self>, String> {
-        let mut config = HostConfig::remote(base_url)
-            .with_audience(audience)
-            .with_issuer(issuer);
-        config.service_token = Some(service_token.unwrap_or_else(|| user_token.clone()));
-        // `connect_remote` performs the one-time JWKS fetch through reqwest's
-        // blocking client. This constructor is called by an async composition
-        // root, where creating/dropping that client's private runtime would panic.
-        // Isolate trust-anchor establishment on an ordinary OS thread; request-time
-        // PDP calls are already dispatched through `spawn_blocking` by the PEPs.
-        let handle = std::thread::spawn(move || connect_remote(&config))
-            .join()
-            .map_err(|_| "cloud IAM connection worker panicked".to_string())?
-            .map_err(|error| error.to_string())?;
-        Ok(Arc::new(Self {
-            gate: handle.gate,
-            user_token,
-        }))
-    }
-
-    fn authenticate(&self, presented: Option<String>) -> Result<PrincipalRef, AuthReject> {
-        let token = presented.as_deref().unwrap_or(&self.user_token);
-        self.gate
-            .authenticate_detailed(token, &Timestamp(now_rfc3339()), now_unix())
-            .map(|(principal, _)| principal)
-    }
-
-    fn authorize(
-        &self,
-        principal: PrincipalRef,
-        action: &str,
-        scope: ScopeRef,
-    ) -> AuthorizationDecision {
-        IamClient::authorize(
-            &self.gate,
-            AuthorizationRequest::direct(principal, qualify_action(action), scope),
-        )
-    }
-
-    fn authorize_resource(
-        &self,
-        principal: PrincipalRef,
-        action: &str,
-        scope: ScopeRef,
-    ) -> AuthorizationDecision {
-        IamClient::authorize(
-            &self.gate,
-            AuthorizationRequest::direct(principal, qualify_resource_action(action), scope),
-        )
     }
 }
 

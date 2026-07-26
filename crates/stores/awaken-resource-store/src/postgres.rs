@@ -37,6 +37,14 @@ impl PostgresResourceStore {
         Ok(store)
     }
 
+    /// Connect to an already-migrated schema without executing DDL.
+    pub async fn connect_existing(url: &str) -> Result<Self, ResourcePurgeError> {
+        PgPool::connect(url)
+            .await
+            .map(Self::with_pool)
+            .map_err(|error| storage(format!("connect: {error}")))
+    }
+
     /// Wrap a shared pool without running migrations.
     #[must_use]
     pub fn with_pool(pool: PgPool) -> Self {

@@ -29,6 +29,8 @@ pub enum StoreError {
     Connect(String),
     #[error("migrate: {0}")]
     Migrate(String),
+    #[error("schema: {0}")]
+    Schema(String),
 }
 
 /// A Postgres-backed [`CatalogRepo`].
@@ -53,6 +55,20 @@ impl PostgresCatalogRepo {
             .run_bundle(&bundle)
             .await
             .map_err(|err| StoreError::Migrate(err.to_string()))?;
+        Ok(Self { pool })
+    }
+
+    /// Connect to a schema migrated by the deployment migration phase.
+    pub async fn connect_existing(url: &str) -> Result<Self, StoreError> {
+        let pool = PgPool::connect(url)
+            .await
+            .map_err(|err| StoreError::Connect(err.to_string()))?;
+        let bundle = catalog_bundle().map_err(|err| StoreError::Schema(err.to_string()))?;
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+            .map_err(|err| StoreError::Schema(err.to_string()))?
+            .verify_bundle(&bundle)
+            .await
+            .map_err(|err| StoreError::Schema(err.to_string()))?;
         Ok(Self { pool })
     }
 }

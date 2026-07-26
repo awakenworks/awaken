@@ -32,6 +32,8 @@ pub enum StoreError {
     Connect(String),
     #[error("migrate: {0}")]
     Migrate(String),
+    #[error("schema: {0}")]
+    Schema(String),
 }
 
 async fn connect_migrated(url: &str) -> Result<PgPool, StoreError> {
@@ -49,6 +51,45 @@ async fn pool_migrated(pool: PgPool) -> Result<PgPool, StoreError> {
         .await
         .map_err(|err| StoreError::Migrate(err.to_string()))?;
     Ok(pool)
+}
+
+async fn connect_verified(url: &str) -> Result<PgPool, StoreError> {
+    let pool = PgPool::connect(url)
+        .await
+        .map_err(|err| StoreError::Connect(err.to_string()))?;
+    let bundle = credential_bundle().map_err(|err| StoreError::Schema(err.to_string()))?;
+    awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+        .map_err(|err| StoreError::Schema(err.to_string()))?
+        .verify_bundle(&bundle)
+        .await
+        .map_err(|err| StoreError::Schema(err.to_string()))?;
+    Ok(pool)
+}
+
+/// Open the two credential adapters over one verified pool. This is the
+/// canonical application startup path; it avoids checking or migrating the
+/// same credential scope once per adapter.
+pub async fn connect_existing_pair(
+    url: &str,
+) -> Result<(PostgresCredentialRepo, PostgresSealedBlobStore), StoreError> {
+    let pool = connect_verified(url).await?;
+    Ok((
+        PostgresCredentialRepo { pool: pool.clone() },
+        PostgresSealedBlobStore { pool },
+    ))
+}
+
+/// Apply the credential bundle once and construct both adapters over the same
+/// pool. Operational migration composition uses this instead of independently
+/// opening the row and blob adapters.
+pub async fn connect_migrated_pair(
+    url: &str,
+) -> Result<(PostgresCredentialRepo, PostgresSealedBlobStore), StoreError> {
+    let pool = connect_migrated(url).await?;
+    Ok((
+        PostgresCredentialRepo { pool: pool.clone() },
+        PostgresSealedBlobStore { pool },
+    ))
 }
 
 fn storage(err: impl std::fmt::Display) -> CredentialError {

@@ -33,10 +33,11 @@ A third integration mode, **self-managed IAM**, remains supported through
 explicit deployment configuration. It is an operator feature documented only on
 awakenworks.com; local product copy and onboarding do not promote it.
 
-`AWAKEN_IDENTITY_MODE` accepts `no-login`, `awaken-cloud`, and `self-managed`.
-Legacy `AWAKEN_MGMT_IAM=embedded` remains an alias during migration. Cloud mode
-fails closed when no cached/explicit login credential or JWKS trust root is
-available. Self-managed mode requires a durable management directory.
+The typed deployment field `identity_mode` accepts `no-login`, `awaken-cloud`,
+and `self-managed`. Retired process-environment aliases do not participate in
+deployment resolution. Cloud mode fails closed when no cached/explicit login
+credential or JWKS trust root is available. Self-managed mode requires a durable
+management directory.
 
 An API key is a credential, not a permission model. Authentication resolves a
 principal and credential constraints; the PDP still evaluates principal,
@@ -73,9 +74,9 @@ PDP verifies it against the active profile. Project routes submit
 `ScopeRef::Project`; they are not silently reduced to Workspace scope.
 
 The PAP activates immutable profile revisions atomically and supports rollback.
-Embedded and remote deployments consume the same profile/snapshot format. An
-environment variable may select a profile or IAM endpoint, but cannot redefine
-individual action/scope rules.
+Embedded and remote deployments consume the same profile/snapshot format. Typed
+deployment configuration may select a profile or IAM endpoint, but cannot
+redefine individual action/scope rules.
 
 This paragraph is the cross-repository completion contract, not a claim that the
 currently pinned IAM wire API already implements it. Today
@@ -199,3 +200,56 @@ DTOs are removed by the scoped admin migration. Historical migration files stay
 append-only. A Session persists the effective published-or-explicit-override MCP
 projection needed for restart; that immutable Session value is not another
 authoring aggregate.
+
+## Amendment (2026-07-26): Hosted Management uses workload identity
+
+`awaken-cloud` identity has two compositions over the same
+`RemoteManagementAuthz` adapter. A local interactive process may use the cached
+Cloud login as its default request bearer and as the remote PDP carrier. A
+server-mode Awaken Management process has no local user and instead requires a
+dedicated projected service-token file; browser requests must present their own
+bearer. The projected token is read by the IAM HTTP transport for every PDP
+attempt, so atomic replacement rotates it without restarting Management.
+
+```text
+browser bearer -> local JWT verification -> subject principal
+Management projected token file -> remote PDP carrier
+subject + exact Workspace + action -> IAM decision
+```
+
+| Mode | Request bearer | Management token file | Result |
+|---|---|---|---|
+| local | absent | absent | cached Cloud login may authenticate |
+| local | valid | absent | explicit bearer overrides cached login |
+| server | valid | readable, non-empty | authenticate user, authorize through IAM |
+| server | absent/invalid | any | `401`; workload identity is not a user identity |
+| server | valid | missing/empty/expired | fail closed at PDP; no local authorization fallback |
+| server | any | Flow or another workload's token | IAM audience/subject policy denies |
+
+Server mode rejects an inline service token, a missing token file, and dual
+inline/file configuration before serving. Management never mounts a Flow token
+or an IAM signing key. The `awaken management` process mounts only the existing
+authoring/control router; it does not mount Session, protocol, Run ingress,
+Worker transport, or local dispatch routes and therefore cannot become a second
+Runtime authority beside a hosted Coordinator. Runtime/resource stores remain
+unaware of the deployment credential.
+
+Managed PostgreSQL schema changes have one operational writer. The explicit
+`awaken database migrate` command applies the existing scoped bundles; a
+server-mode `awaken management` process opens the same bundle-specific stores
+in verification mode and performs no DDL. Local SQLite `awaken start` continues
+to migrate on open so a new local install stays zero-configuration.
+
+```text
+deployment migration Job -> scoped migration run_bundle -> ledger + DDL
+application Pod          -> scoped migration verify_bundle -> serve or fail
+```
+
+| Mode/caller | Schema | Decision |
+|---|---|---|
+| local `start` | absent/pending | apply embedded SQLite migrations and start |
+| migration command | absent/pending | apply PostgreSQL bundles idempotently |
+| migration command | current | no-op success |
+| server `management` | absent/pending | fail closed without DDL |
+| server `management` | current | start control-only surface |
+| either | checksum drift/unknown version | fail closed |
