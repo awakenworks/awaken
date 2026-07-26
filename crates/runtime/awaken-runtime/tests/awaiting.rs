@@ -4,6 +4,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use awaken_agent_contract::agent::awaiting::AwaitReason;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
@@ -18,7 +19,7 @@ use awaken_runtime_contract::llm::{
 };
 use awaken_runtime_contract::permission::{GateOutcome, ToolGateHook};
 use awaken_runtime_contract::resolved::{
-    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,
+    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor, ToolKind,
 };
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -381,6 +382,63 @@ async fn resume_with_a_client_tool_result_is_used_directly() {
             .iter()
             .any(|m| m.role == Role::Tool && m.text_content() == "client-computed")
     );
+}
+
+#[tokio::test]
+async fn declared_client_tool_awaits_external_result_without_entering_host_executor() {
+    // Causal graph:
+    // ClientExecuted descriptor -> model calls exact id -> durable ExternalEvent wait
+    // -> exact ToolResult resume -> model continues; host executor is never entered.
+    //
+    // Decision table:
+    // | descriptor owner | gate | first terminal | host runs | accepted resume |
+    // | regular          | allow | tool executes | once      | n/a             |
+    // | client-executed  | allow | awaiting      | never     | exact result    |
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = runtime(ran.clone());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let mut activation = activation();
+    activation.snapshot.resolved_spec.tool_descriptors[0] =
+        activation.snapshot.resolved_spec.tool_descriptors[0]
+            .clone()
+            .with_kind(ToolKind::ClientExecuted);
+
+    let outcome = runtime
+        .execute(
+            activation,
+            RuntimeRunContext::new().with_commit(commit.clone()),
+        )
+        .await
+        .expect("client tool call is admitted");
+    assert_eq!(outcome, RunState::Awaiting);
+    assert_eq!(ran.load(Ordering::SeqCst), 0);
+    let ticket = commit
+        .resume_ticket_for(&RunId("run-1".into()))
+        .expect("external result ticket is durable");
+    assert_eq!(ticket.reason, AwaitReason::ExternalEvent);
+    assert_eq!(ticket.call_id.as_deref(), Some("call-1"));
+
+    let outcome = runtime
+        .resume(
+            ResumeCommand {
+                correlation_id: ticket.correlation_id,
+                run_id: RunId("run-1".into()),
+                thread_id: ThreadId("thread-1".into()),
+                snapshot_id: ExecutableAgentSnapshotId(SNAPSHOT_ID.into()),
+                catalog_fingerprint: CatalogFingerprint(FINGERPRINT.into()),
+                result: ResumeResult::ToolResult(ToolOutput::ok("call-1", "client-computed")),
+                now_ms: 0,
+            },
+            commit.as_ref(),
+            RuntimeRunContext::new().with_commit(commit.clone()),
+        )
+        .await
+        .expect("exact client result resumes the run");
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
+    assert_eq!(ran.load(Ordering::SeqCst), 0);
+    assert!(commit.committed().messages.iter().any(|message| {
+        message.role == Role::Tool && message.text_content() == "client-computed"
+    }));
 }
 
 #[tokio::test]

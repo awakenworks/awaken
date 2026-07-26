@@ -2,16 +2,16 @@
 
 use super::application::ManagedMcpCandidate;
 use super::*;
-use crate::types::McpServer;
+use crate::types::agent::{AgentTool, UrlMcpServer};
 
 /// One application-layer Session update command compiled from the Managed wire.
 /// Keeping its fields together prevents the public endpoint and CAS retry path
 /// from growing parallel positional parameter lists.
 pub(crate) struct SessionUpdateCommand {
     pub(crate) title: Option<Option<String>>,
-    pub(crate) metadata: Option<std::collections::BTreeMap<String, Option<String>>>,
-    pub(crate) tools: Option<Vec<serde_json::Value>>,
-    pub(crate) mcp_servers: Option<Vec<serde_json::Value>>,
+    pub(crate) metadata: Option<Option<std::collections::BTreeMap<String, Option<String>>>>,
+    pub(crate) tools: Option<Vec<AgentTool>>,
+    pub(crate) mcp_servers: Option<Vec<UrlMcpServer>>,
     pub(crate) idempotency_key: Option<String>,
     pub(crate) if_match: Option<awaken_session_contract::SessionRevision>,
 }
@@ -148,14 +148,11 @@ impl ManagedState {
                 .clone();
             let servers = wire_servers
                 .into_iter()
-                .map(|server| {
-                    serde_json::from_value::<McpServer>(server).map_err(|error| {
-                        StateError::Run(RunError::bad_request(format!(
-                            "invalid agent.mcp_servers entry: {error}"
-                        )))
-                    })
+                .map(|server| crate::types::McpServer {
+                    name: server.name,
+                    url: server.url,
                 })
-                .collect::<Result<Vec<_>, _>>()?;
+                .collect::<Vec<_>>();
             let drafts = self
                 .normalize_mcp_drafts(
                     servers
@@ -227,19 +224,29 @@ impl ManagedState {
             persisted.title = title;
         }
         if let Some(patch) = command.metadata.clone() {
-            for (key, value) in patch {
-                match value {
-                    Some(v) => {
-                        persisted.metadata.insert(key, v);
-                    }
-                    None => {
-                        persisted.metadata.remove(&key);
+            match patch {
+                None => persisted.metadata.clear(),
+                Some(patch) => {
+                    for (key, value) in patch {
+                        match value {
+                            Some(v) => {
+                                persisted.metadata.insert(key, v);
+                            }
+                            None => {
+                                persisted.metadata.remove(&key);
+                            }
+                        }
                     }
                 }
             }
         }
         if let Some(tools) = &command.tools {
-            persisted.agent_tools = Some(tools.clone());
+            persisted.agent_tools = Some(
+                tools
+                    .iter()
+                    .map(|tool| serde_json::to_value(tool).expect("typed AgentTool serializes"))
+                    .collect(),
+            );
         }
         let title_changed = persisted.title != initial_title;
         let metadata_changed = persisted.metadata != initial_metadata;
@@ -297,7 +304,8 @@ impl ManagedState {
             record.session.agent.tools = tools;
         }
         if let Some(visible_mcp_servers) = visible_mcp_servers {
-            record.session.agent.mcp_servers = visible_mcp_servers;
+            record.session.agent.mcp_servers =
+                super::sessions::typed_mcp_servers(visible_mcp_servers)?;
         }
         record.events.push(Event {
             id: self.next_event_id(),

@@ -803,7 +803,7 @@ async fn outcome_loop_projects_evaluations() {
         &app,
         "POST",
         &format!("/v1/sessions/{id}/events"),
-        serde_json::json!({ "events": [{ "type": "user.define_outcome", "description": "finish", "rubric": "FINAL", "max_iterations": 3 }] }),
+        serde_json::json!({ "events": [{ "type": "user.define_outcome", "description": "finish", "rubric": { "type": "text", "content": "FINAL" }, "max_iterations": 3 }] }),
     )
     .await;
     let list = json_call(
@@ -848,7 +848,7 @@ async fn session_records_outcome_evaluations() {
         &app,
         "POST",
         &format!("/v1/sessions/{id}/events"),
-        serde_json::json!({ "events": [{ "type": "user.define_outcome", "description": "finish", "rubric": "FINAL", "max_iterations": 3 }] }),
+        serde_json::json!({ "events": [{ "type": "user.define_outcome", "description": "finish", "rubric": { "type": "text", "content": "FINAL" }, "max_iterations": 3 }] }),
     )
     .await;
     let session = json_call(

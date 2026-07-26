@@ -44,7 +44,7 @@ use awaken_runtime_contract::plugin::{
     ResolvedExecutionEnv, RunEndContext, RunEndDecision,
 };
 use awaken_runtime_contract::resolved::{
-    CatalogFingerprint, ContextPolicy, ResolvedRun, ToolPresentation,
+    CatalogFingerprint, ContextPolicy, ResolvedRun, ToolKind, ToolPresentation,
 };
 use awaken_runtime_contract::resolver::{self, RunResolver};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult, validate_resume};

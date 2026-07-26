@@ -6,18 +6,50 @@
 
 use awaken_config_store::{AgentConfig, ModelSelection, MultiagentConfig, ToolOverride};
 use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
+use awaken_runtime_contract::resolved::ToolDescriptor;
 use serde_json::{Value, json};
 
 fn managed_tool_id(value: &Value) -> Option<String> {
     match value {
         Value::String(id) => Some(id.clone()),
-        Value::Object(object) => object
-            .get("id")
-            .or_else(|| object.get("name"))
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        Value::Object(object) if object.get("type").and_then(Value::as_str) != Some("custom") => {
+            object
+                .get("id")
+                .or_else(|| object.get("name"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        }
         _ => None,
     }
+}
+
+fn managed_client_tool(value: &Value) -> Result<Option<ToolDescriptor>, String> {
+    if value.get("type").and_then(Value::as_str) != Some("custom") {
+        return Ok(None);
+    }
+    let name = value
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "custom tool requires a non-empty name".to_string())?;
+    let description = value
+        .get("description")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("custom tool {name:?} requires description"))?;
+    let schema = value
+        .get("input_schema")
+        .cloned()
+        .ok_or_else(|| format!("custom tool {name:?} requires input_schema"))?;
+    if schema.get("type").and_then(Value::as_str) != Some("object") {
+        return Err(format!(
+            "custom tool {name:?} input_schema must be an object schema"
+        ));
+    }
+    Ok(Some(ToolDescriptor::client_executed(
+        name,
+        description,
+        schema,
+    )))
 }
 
 /// Parse a managed-shaped Agent object into the domain compile input.
@@ -97,13 +129,22 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
         .map(serde_json::from_value::<MultiagentConfig>)
         .transpose()
         .map_err(|error| format!("invalid multiagent roster: {error}"))?;
+    let tools = array("tools");
+    let client_tools = tools
+        .iter()
+        .map(managed_client_tool)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect();
     Ok(AgentConfig {
         id,
         instructions: string("system").unwrap_or_default(),
         max_steps: body.get("max_steps").and_then(Value::as_u64).unwrap_or(8) as usize,
         delegation_limits: Default::default(),
         model_binding: ModelSelection::pinned(provider_identity_ref, model_ref, backend_ref),
-        tool_ids: array("tools").iter().filter_map(managed_tool_id).collect(),
+        tool_ids: tools.iter().filter_map(managed_tool_id).collect(),
+        client_tools,
         plugin_ids: array("plugins")
             .iter()
             .filter_map(|value| value.as_str().map(str::to_string))
@@ -146,6 +187,19 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
 /// Project a stored config into the managed-shaped object and its live state.
 pub fn managed_from_agent_config(config: &AgentConfig, published: bool) -> Value {
     let binding = config.model_binding.resolved();
+    let mut tools = config
+        .tool_ids
+        .iter()
+        .map(|id| Value::String(id.clone()))
+        .collect::<Vec<_>>();
+    tools.extend(config.client_tools.iter().map(|tool| {
+        json!({
+            "type": "custom",
+            "name": tool.id,
+            "description": tool.description,
+            "input_schema": tool.parameters,
+        })
+    }));
     json!({
         "id": config.id,
         "type": "agent",
@@ -159,7 +213,7 @@ pub fn managed_from_agent_config(config: &AgentConfig, published: bool) -> Value
         },
         "system": config.instructions,
         "metadata": config.metadata,
-        "tools": config.tool_ids,
+        "tools": tools,
         "recovery_policies": config.recovery_policies,
         "mcp_servers": config.mcp_servers,
         "skills": config.skill_ids,

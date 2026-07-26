@@ -373,6 +373,10 @@ pub struct ToolDescriptor {
 pub enum ToolKind {
     #[default]
     Regular,
+    /// Declared by a protocol client. The runtime advertises it to the model but
+    /// never invokes a host executor; it awaits an exact externally supplied
+    /// result through the normal durable resume ticket.
+    ClientExecuted,
     AgentDelegation,
 }
 
@@ -407,6 +411,18 @@ impl ToolDescriptor {
             kind: ToolKind::Regular,
             recovery_policy: crate::tool::ToolRecoveryPolicy::default(),
         }
+    }
+
+    /// Build a tool whose result is owned by the calling protocol client. This
+    /// is the single constructor for that execution ownership; adapters must not
+    /// recreate its namespace/kind convention independently.
+    pub fn client_executed(
+        id: impl Into<String>,
+        description: impl Into<String>,
+        parameters: serde_json::Value,
+    ) -> Self {
+        Self::pinned("client-executed", id, description, parameters)
+            .with_kind(ToolKind::ClientExecuted)
     }
 
     /// Mark the descriptor as the one Agent-delegation capability. The role is

@@ -37,6 +37,7 @@ pub mod agent;
 pub mod deployment;
 pub mod environment;
 pub mod page;
+pub mod resource;
 pub mod session;
 pub mod user_profile;
 pub mod vault;

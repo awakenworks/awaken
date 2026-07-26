@@ -1,19 +1,13 @@
 //! Managed wire parsing and projection for typed Session inputs.
 
 use super::*;
+use crate::types::resource::{RepositoryCheckout, ResourceAccess, ResourceInput};
 
-#[derive(Debug, Clone, Copy, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum WireAccess {
-    ReadOnly,
-    ReadWrite,
-}
-
-impl From<WireAccess> for awaken_resource_contract::ResourceAccess {
-    fn from(value: WireAccess) -> Self {
+impl From<ResourceAccess> for awaken_resource_contract::ResourceAccess {
+    fn from(value: ResourceAccess) -> Self {
         match value {
-            WireAccess::ReadOnly => Self::ReadOnly,
-            WireAccess::ReadWrite => Self::ReadWrite,
+            ResourceAccess::ReadOnly => Self::ReadOnly,
+            ResourceAccess::ReadWrite => Self::ReadWrite,
         }
     }
 }
@@ -36,56 +30,6 @@ fn repo_name(url: &str) -> String {
     }
 }
 
-/// A wire `resources[]` entry — the official `BetaManagedAgents` resource union,
-/// tagged by `type`. Unknown fields are ignored (tolerant of the full SDK payload);
-/// an unknown `type` is a deserialize error (fail closed), never a silent drop.
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum WireResource {
-    File {
-        file_id: String,
-        #[serde(default)]
-        mount_path: Option<String>,
-        #[serde(default)]
-        instructions: Option<String>,
-    },
-    MemoryStore {
-        memory_store_id: String,
-        #[serde(default)]
-        mount_path: Option<String>,
-        #[serde(default)]
-        instructions: Option<String>,
-        #[serde(default)]
-        access: Option<WireAccess>,
-    },
-    GithubRepository {
-        url: String,
-        #[serde(default)]
-        mount_path: Option<String>,
-        #[serde(default)]
-        instructions: Option<String>,
-        #[serde(default)]
-        checkout: Option<WireCheckout>,
-    },
-}
-
-/// A `github_repository` checkout selector. Only `branch` maps to a git ref today
-/// (a `commit` sha clones the default branch, matching the prior behavior).
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum WireCheckout {
-    Branch {
-        name: String,
-    },
-    // Accepted so the full SDK payload deserializes, but not yet wired to the clone
-    // (the host checks out a branch ref; a `sha` clones the default branch). Parsed,
-    // deliberately not consumed — mutable repositories are not commit-pinned.
-    Commit {
-        #[allow(dead_code)]
-        sha: String,
-    },
-}
-
 #[derive(Debug, Clone)]
 pub(crate) enum ParsedInputTarget {
     File(awaken_resource_contract::FileId),
@@ -104,46 +48,52 @@ pub(crate) struct ParsedSessionInput {
     pub instructions: Option<String>,
 }
 
-impl WireResource {
-    fn into_parsed_input(self) -> ParsedSessionInput {
+impl ResourceInput {
+    pub(crate) fn to_parsed_input(&self) -> ParsedSessionInput {
         match self {
-            WireResource::File {
+            ResourceInput::File {
                 file_id,
                 mount_path,
                 instructions,
             } => ParsedSessionInput {
                 target: ParsedInputTarget::File(file_id.clone().into()),
-                mount_path: mount_path.unwrap_or_else(|| format!("/mnt/session/uploads/{file_id}")),
+                mount_path: mount_path
+                    .clone()
+                    .unwrap_or_else(|| format!("/mnt/session/uploads/{file_id}")),
                 access: awaken_resource_contract::ResourceAccess::ReadOnly,
-                instructions,
+                instructions: instructions.clone(),
             },
-            WireResource::MemoryStore {
+            ResourceInput::MemoryStore {
                 memory_store_id,
                 mount_path,
                 instructions,
                 access,
             } => ParsedSessionInput {
-                target: ParsedInputTarget::MemoryStore(memory_store_id.into()),
-                mount_path: mount_path.unwrap_or_else(|| "/mnt/memory/store".into()),
-                access: access.unwrap_or(WireAccess::ReadWrite).into(),
-                instructions,
+                target: ParsedInputTarget::MemoryStore(memory_store_id.clone().into()),
+                mount_path: mount_path
+                    .clone()
+                    .unwrap_or_else(|| "/mnt/memory/store".into()),
+                access: access.unwrap_or(ResourceAccess::ReadWrite).into(),
+                instructions: instructions.clone(),
             },
-            WireResource::GithubRepository {
+            ResourceInput::GithubRepository {
                 url,
                 mount_path,
                 instructions,
                 checkout,
             } => ParsedSessionInput {
-                mount_path: mount_path.unwrap_or_else(|| format!("/workspace/{}", repo_name(&url))),
+                mount_path: mount_path
+                    .clone()
+                    .unwrap_or_else(|| format!("/workspace/{}", repo_name(url))),
                 target: ParsedInputTarget::Repository {
-                    remote_url: url,
+                    remote_url: url.clone(),
                     initial_branch: match checkout {
-                        Some(WireCheckout::Branch { name }) => Some(name),
-                        Some(WireCheckout::Commit { .. }) | None => None,
+                        Some(RepositoryCheckout::Branch { name }) => Some(name.clone()),
+                        Some(RepositoryCheckout::Commit { .. }) | None => None,
                     },
                 },
                 access: awaken_resource_contract::ResourceAccess::ReadWrite,
-                instructions,
+                instructions: instructions.clone(),
             },
         }
     }
@@ -153,9 +103,9 @@ pub(crate) fn parse_session_input(v: &serde_json::Value) -> Option<ParsedSession
     if v.get("authorization_token").is_some() {
         return None;
     }
-    serde_json::from_value::<WireResource>(v.clone())
+    serde_json::from_value::<ResourceInput>(v.clone())
         .ok()
-        .map(WireResource::into_parsed_input)
+        .map(|resource| resource.to_parsed_input())
 }
 
 /// Lower a parsed Managed resource into the shared typed binding language. The

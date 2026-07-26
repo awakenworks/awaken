@@ -16,14 +16,14 @@ use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde_json::Value;
 
 use crate::routes::{ManagedJson, WorkspaceScope};
 use crate::types::agent::AgentReference;
 use crate::types::deployment::{
-    Deployment, DeploymentCreateParams, DeploymentRun, DeploymentUpdateParams, PausedReason,
-    RunError, TriggerContext,
+    Deployment, DeploymentCreateParams, DeploymentInitialEvent, DeploymentRun,
+    DeploymentUpdateParams, PausedReason, RunError, Schedule, TriggerContext,
 };
+use crate::types::resource::ResourceInput;
 use crate::types::{ErrorResponse, Page, PageQuery, paginate};
 
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
@@ -36,9 +36,9 @@ struct DeploymentRecord {
     name: String,
     description: Option<String>,
     metadata: BTreeMap<String, String>,
-    initial_events: Vec<Value>,
-    resources: Vec<Value>,
-    schedule: Option<Value>,
+    initial_events: Vec<DeploymentInitialEvent>,
+    resources: Vec<ResourceInput>,
+    schedule: Option<Schedule>,
     vault_ids: Vec<String>,
     /// `"active"` | `"paused"`.
     status: &'static str,
@@ -75,12 +75,10 @@ impl DeploymentRecord {
 
     /// The schedule object echoed back, with `last_run_at` reflecting the most
     /// recent fire (the stored expression/timezone pass through unchanged).
-    fn projected_schedule(&self) -> Option<Value> {
-        let mut sched = self.schedule.clone()?;
-        if let (Some(obj), Some(last)) = (sched.as_object_mut(), &self.last_run_at) {
-            obj.insert("last_run_at".into(), Value::String(last.clone()));
-        }
-        Some(sched)
+    fn projected_schedule(&self) -> Option<Schedule> {
+        self.schedule
+            .as_ref()
+            .map(|schedule| schedule.with_last_run_at(self.last_run_at.clone()))
     }
 
     /// The parsed cron for an active, non-archived deployment; `None` when it has no
@@ -90,7 +88,7 @@ impl DeploymentRecord {
         if self.status != "active" || self.archived_at.is_some() {
             return None;
         }
-        let expr = self.schedule.as_ref()?.get("expression")?.as_str()?;
+        let expr = self.schedule.as_ref()?.expression();
         crate::cron::Cron::parse(expr).ok()
     }
 
@@ -150,8 +148,8 @@ pub struct DeploymentLaunch {
     pub agent: AgentReference,
     pub environment_id: String,
     pub metadata: BTreeMap<String, String>,
-    pub initial_events: Vec<Value>,
-    pub resources: Vec<Value>,
+    pub initial_events: Vec<DeploymentInitialEvent>,
+    pub resources: Vec<ResourceInput>,
     pub vault_ids: Vec<String>,
 }
 
@@ -310,22 +308,11 @@ fn not_found(what: &str) -> WireError {
 /// Validate a schedule payload: when present, its `expression` must be a
 /// well-formed 5-field cron (the SDK's `BetaManagedAgentsSchedule`). A malformed
 /// schedule is rejected at write time rather than silently stored.
-fn validate_schedule(schedule: &Option<Value>) -> Result<(), WireError> {
-    let Some(sched) = schedule.as_ref().filter(|v| !v.is_null()) else {
+fn validate_schedule(schedule: Option<&Schedule>) -> Result<(), WireError> {
+    let Some(schedule) = schedule else {
         return Ok(());
     };
-    let expr = sched
-        .get("expression")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse::new(
-                    "invalid_request_error",
-                    "schedule requires a string `expression`",
-                )),
-            )
-        })?;
+    let expr = schedule.expression();
     crate::cron::Cron::parse(expr).map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
@@ -343,7 +330,7 @@ async fn create_deployment(
     scope: Option<Extension<WorkspaceScope>>,
     ManagedJson(params): ManagedJson<DeploymentCreateParams>,
 ) -> Result<Json<Deployment>, WireError> {
-    validate_schedule(&params.schedule)?;
+    validate_schedule(params.schedule.as_ref())?;
     let record = DeploymentRecord {
         workspace_id: scope
             .map(|Extension(scope)| scope.0)
@@ -355,7 +342,7 @@ async fn create_deployment(
         metadata: params.metadata,
         initial_events: params.initial_events,
         resources: params.resources,
-        schedule: params.schedule.filter(|v| !v.is_null()),
+        schedule: params.schedule,
         vault_ids: params.vault_ids,
         status: "active",
         paused_reason: None,
@@ -393,8 +380,8 @@ async fn update_deployment(
     Path(id): Path<String>,
     ManagedJson(params): ManagedJson<DeploymentUpdateParams>,
 ) -> Result<Json<Deployment>, WireError> {
-    if let Some(schedule) = &params.schedule {
-        validate_schedule(&Some(schedule.clone()))?;
+    if let Some(Some(schedule)) = &params.schedule {
+        validate_schedule(Some(schedule))?;
     }
     let mut store = state.deployments.lock().unwrap();
     let record = store.get_mut(&id).ok_or_else(|| not_found("deployment"))?;
@@ -408,23 +395,37 @@ async fn update_deployment(
         record.name = name;
     }
     if let Some(description) = params.description {
-        record.description = Some(description);
+        record.description = description;
     }
     if let Some(metadata) = params.metadata {
-        record.metadata = metadata;
+        match metadata {
+            None => record.metadata.clear(),
+            Some(patch) => {
+                for (key, value) in patch {
+                    match value {
+                        Some(value) => {
+                            record.metadata.insert(key, value);
+                        }
+                        None => {
+                            record.metadata.remove(&key);
+                        }
+                    }
+                }
+            }
+        }
     }
     if let Some(initial_events) = params.initial_events {
         record.initial_events = initial_events;
     }
     if let Some(resources) = params.resources {
-        record.resources = resources;
+        record.resources = resources.unwrap_or_default();
     }
     if let Some(schedule) = params.schedule {
-        record.schedule = Some(schedule).filter(|v| !v.is_null());
+        record.schedule = schedule;
         record.next_fire_ms = None; // re-seed the cursor against the new schedule
     }
     if let Some(vault_ids) = params.vault_ids {
-        record.vault_ids = vault_ids;
+        record.vault_ids = vault_ids.unwrap_or_default();
     }
     Ok(Json(record.project(&id)))
 }
@@ -514,39 +515,35 @@ async fn list_runs(
 #[async_trait::async_trait]
 impl DeploymentSessionLauncher for crate::ManagedState {
     async fn launch(&self, request: DeploymentLaunch) -> DeploymentLaunchOutcome {
-        // Validate every initial event before creating the Session, so malformed
-        // deployment input cannot leave an orphan.
-        let events: crate::types::SendEventsRequest =
-            match serde_json::from_value(serde_json::json!({ "events": request.initial_events })) {
-                Ok(events) => events,
-                Err(error) => {
-                    return DeploymentLaunchOutcome {
-                        session_id: None,
-                        error: Some(format!("invalid deployment initial_events: {error}")),
-                    };
-                }
-            };
+        // Admission already decoded the exact deployment-event subset. Lower it
+        // directly into the shared Session event command; no second JSON parser.
+        let events = crate::types::SendEventsRequest {
+            events: request.initial_events.into_iter().map(Into::into).collect(),
+        };
         let mut metadata = request.metadata;
         metadata.insert(
             "awaken.deployment_id".to_string(),
             request.deployment_id.clone(),
         );
-        let create: crate::types::SessionCreateParams =
-            match serde_json::from_value(serde_json::json!({
-                "agent": { "id": request.agent.id, "version": request.agent.version },
-                "environment_id": request.environment_id,
-                "metadata": metadata,
-                "resources": request.resources,
-                "vault_ids": request.vault_ids,
-            })) {
-                Ok(create) => create,
-                Err(error) => {
-                    return DeploymentLaunchOutcome {
-                        session_id: None,
-                        error: Some(format!("invalid deployment Session config: {error}")),
-                    };
-                }
-            };
+        let create = crate::types::SessionCreateParams {
+            agent: crate::types::AgentRef::Object(crate::types::AgentRefObject {
+                id: request.agent.id,
+                kind: Some(crate::types::AgentRefKind::Agent),
+                version: Some(request.agent.version as u32),
+                system: None,
+                tools: None,
+                mcp_servers: None,
+                skills: None,
+                model: None,
+            }),
+            application_contribution_required: false,
+            environment_id: Some(request.environment_id),
+            title: None,
+            metadata,
+            mcp_servers: Vec::new(),
+            vault_ids: request.vault_ids,
+            resources: request.resources,
+        };
         let session = match self
             .create_session(create, Some(request.workspace_id))
             .await
@@ -585,11 +582,16 @@ mod tests {
     // 2026-01-05 09:00:00 UTC (a Monday).
     const MON_0900: u64 = 1_767_603_600_000;
 
-    fn cron_schedule(expr: &str) -> Value {
-        serde_json::json!({ "type": "cron", "expression": expr, "timezone": "UTC" })
+    fn cron_schedule(expr: &str) -> Schedule {
+        Schedule::Cron {
+            expression: expr.into(),
+            timezone: "UTC".into(),
+            last_run_at: None,
+            upcoming_runs_at: Vec::new(),
+        }
     }
 
-    fn deployment(schedule: Option<Value>) -> DeploymentRecord {
+    fn deployment(schedule: Option<Schedule>) -> DeploymentRecord {
         DeploymentRecord {
             workspace_id: "default".into(),
             agent: AgentReference::new("coder", 1),
@@ -611,12 +613,25 @@ mod tests {
 
     #[test]
     fn validate_schedule_rejects_a_malformed_cron() {
-        assert!(validate_schedule(&None).is_ok(), "no schedule is fine");
-        assert!(validate_schedule(&Some(cron_schedule("0 9 * * 1-5"))).is_ok());
-        assert!(validate_schedule(&Some(cron_schedule("not a cron"))).is_err());
+        // schedule JSON -> typed union -> cron semantic validation -> store/no store
+        //
+        // | tag  | required fields | expression | result |
+        // |------|-----------------|------------|--------|
+        // | none | -               | -          | accept |
+        // | cron | all             | valid      | accept |
+        // | cron | all             | invalid    | reject |
+        // | cron | missing         | -          | decode reject |
+        assert!(validate_schedule(None).is_ok(), "no schedule is fine");
+        let valid = cron_schedule("0 9 * * 1-5");
+        let invalid = cron_schedule("not a cron");
+        assert!(validate_schedule(Some(&valid)).is_ok());
+        assert!(validate_schedule(Some(&invalid)).is_err());
         assert!(
-            validate_schedule(&Some(serde_json::json!({ "timezone": "UTC" }))).is_err(),
-            "a schedule without an expression is rejected"
+            serde_json::from_value::<Schedule>(
+                serde_json::json!({ "type":"cron", "timezone": "UTC" })
+            )
+            .is_err(),
+            "a schedule without an expression is rejected at admission"
         );
     }
 
@@ -699,7 +714,7 @@ mod tests {
         state.tick(MON_0900 + 16 * 60_000);
         let store = state.deployments.lock().unwrap();
         let projected = store.get("deploy_y").unwrap().project("deploy_y");
-        let sched = projected.schedule.expect("schedule present");
-        assert_eq!(sched["last_run_at"], "2026-01-05T09:15:00Z");
+        let Schedule::Cron { last_run_at, .. } = projected.schedule.expect("schedule present");
+        assert_eq!(last_run_at.as_deref(), Some("2026-01-05T09:15:00Z"));
     }
 }
