@@ -18,15 +18,11 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
-import net from 'node:net';
 import path from 'node:path';
-import readline from 'node:readline';
-import { spawn, execSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
+import { spawnProduction, stopServer, waitForPort } from './harness.mjs';
 
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BASE_PORT = Number(process.env.E2E_PORT ?? 38441);
 const BETAS = ['managed-agents-2026-04-01'];
 const FAKE_KEY = 'sk-awaken-durability-fake-key'; // awaken-allow: secret
@@ -35,43 +31,6 @@ const WORKSPACE = 'wrkspc_default';
 const AGENT = 'durable-agent';
 const MODEL = 'fake-haiku';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-function awakenBin() {
-  const out = execSync('cargo build --quiet --message-format=json -p awaken-cli --bin awaken', {
-    cwd: REPO_ROOT,
-    maxBuffer: 64 * 1024 * 1024,
-  }).toString();
-  for (const line of out.split('\n')) {
-    if (!line.trim()) continue;
-    let msg;
-    try {
-      msg = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (msg.executable && msg.target?.name === 'awaken') return msg.executable;
-  }
-  throw new Error('could not resolve the awaken binary path');
-}
-
-function waitForPort(port, timeoutMs = 60_000) {
-  const deadline = Date.now() + timeoutMs;
-  return new Promise((resolve, reject) => {
-    const attempt = () => {
-      const sock = net.createConnection({ port, host: '127.0.0.1' });
-      sock.once('connect', () => {
-        sock.destroy();
-        resolve();
-      });
-      sock.once('error', () => {
-        sock.destroy();
-        if (Date.now() > deadline) reject(new Error(`server did not listen on ${port}`));
-        else setTimeout(attempt, 200);
-      });
-    };
-    attempt();
-  });
-}
 
 async function ready(base, timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs;
@@ -86,28 +45,16 @@ async function ready(base, timeoutMs = 60_000) {
   }
 }
 
-// Boot `awaken` (Serve) on `port` over a persistent bundle + storage dir, so a
-// second boot over the SAME dirs is a real process restart. Returns the base URL
-// and a `stop()` that resolves once the process has actually exited (dirs flushed).
-function startAwaken(bin, port, dirs) {
-  const server = spawn(bin, {
-    env: {
-      ...process.env,
-      AWAKEN_HTTP_ADDR: `127.0.0.1:${port}`,
-      AWAKEN_MGMT_DIR: dirs.bundle,
-      AWAKEN_STORAGE_DIR: dirs.storage,
-      AWAKEN_MGMT_SEAL_KEY: SEAL_KEY,
-    },
-    stdio: ['ignore', 'inherit', 'pipe'],
-  });
-  readline.createInterface({ input: server.stderr }).on('line', (l) => process.stderr.write(`${l}\n`));
-  const stop = () =>
-    new Promise((resolve) => {
-      if (server.exitCode !== null) return resolve();
-      server.on('exit', () => resolve());
-      server.kill('SIGINT');
-    });
-  return { baseUrl: `http://127.0.0.1:${port}`, stop };
+// Boot production `awaken serve` from the one typed deployment source. Reusing
+// the exact data root across boots proves process durability without restoring
+// the retired management/storage environment-variable configuration path.
+function startAwaken(port, dataDir) {
+  const server = spawnProduction(dataDir, port, { controlSealKey: SEAL_KEY });
+  return {
+    baseUrl: `http://127.0.0.1:${port}`,
+    server,
+    stop: () => stopServer(server),
+  };
 }
 
 async function req(base, method, uri, body) {
@@ -174,17 +121,13 @@ async function converse(sdk, sessionId, text) {
 
 async function main() {
   const upstream = await startFakeAnthropic(FAKE_KEY);
-  const bin = awakenBin();
-  const dirs = {
-    bundle: fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-durable-mgmt-')),
-    storage: fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-durable-store-')),
-  };
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-durable-'));
 
   let sessionId;
   // ── Boot 1: author the model, run one turn, and stream one turn ───────────────
-  const first = startAwaken(bin, BASE_PORT, dirs);
+  const first = startAwaken(BASE_PORT, dataDir);
   try {
-    await waitForPort(BASE_PORT);
+    await waitForPort(BASE_PORT, 60_000, first.server);
     await ready(first.baseUrl);
     await authorModel(first.baseUrl, upstream);
     console.log('ok: awaken booted (durable) + authored the DB-configured model');
@@ -222,9 +165,9 @@ async function main() {
   // the in-process seed model: on boot the server WARM-LOADS the installed catalog
   // from config.db, so a rehydrated session's published agent still resolves its
   // configured model across the restart (the config-durability fix).
-  const second = startAwaken(bin, BASE_PORT + 1, dirs);
+  const second = startAwaken(BASE_PORT + 1, dataDir);
   try {
-    await waitForPort(BASE_PORT + 1);
+    await waitForPort(BASE_PORT + 1, 60_000, second.server);
     await ready(second.baseUrl);
     const sdk = client(second.baseUrl);
     // (a) Config durability: a NEW session for the same agent resolves the
@@ -247,8 +190,7 @@ async function main() {
   } finally {
     await second.stop();
     upstream.close();
-    fs.rmSync(dirs.bundle, { recursive: true, force: true });
-    fs.rmSync(dirs.storage, { recursive: true, force: true });
+    fs.rmSync(dataDir, { recursive: true, force: true });
   }
   console.log('\nawaken_durability_e2e: PASS');
 }
