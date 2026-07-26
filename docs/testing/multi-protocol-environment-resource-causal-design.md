@@ -174,6 +174,10 @@ composition path.
 The same rule covers every Resource family, including the delivered Skill store:
 durable File, Memory, Skill, lifecycle, Session, and sandbox adapters come from the
 one ResourcePlane/deployment constructor and survive or fail together.
+Production-config E2E fixtures isolate the standard path itself: a temporary HOME
+contains `~/.awaken/config.toml`, whose `data_dir` is the only persisted catalog
+root. Inherited user data and removed `AWAKEN_*` compatibility inputs are never
+part of an expected result.
 
 Gate composition follows one ordering rule: ordinary authorization is built first,
 Skill wiring may decorate that base, and an explicit Host override is applied last.
