@@ -420,3 +420,16 @@ causal path.
 The scenario explicitly selects Docker through its test-only Session tier. The
 Session aggregate remains the sole owner of the opaque binding; retained columns
 and a default local/namespace provider cannot participate in recovery.
+
+## Phase 19: typed Postgres persistence axes
+
+| Rule | Typed database fields | Node roots | Credential input | Expected |
+|---|---|---|---|---|
+| G1 | resource + Session/admin | different | exact binding only | shared File/Memory/Skill/lifecycle truth |
+| G2 | catalog/credential/config/admin/Session | replacement | exact references | publication and Session survive restart |
+| G3 | same Postgres resource DB | different | raw Repository token | reject before mutation |
+| G4 | same Postgres resource DB | different | no raw token | mount-only update succeeds |
+
+Both production processes receive database topology through one generated typed
+config. Per-database `AWAKEN_*` variables and node-local fallback stores are not
+part of either persistence axis.
