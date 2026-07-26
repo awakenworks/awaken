@@ -45,12 +45,18 @@ fn env_bundle() -> Result<MigrationBundle, MigrationError> {
                 "monotonic environment revision",
                 "ALTER TABLE {prefix}_env ADD COLUMN revision BIGINT NOT NULL DEFAULT 1",
             )?,
+            Migration::new(
+                3,
+                "Anthropic Environment visibility scope",
+                "ALTER TABLE {prefix}_env ADD COLUMN scope TEXT",
+            )?,
         ],
     )
 }
 
 /// The columns an env row projects to an [`EnvItem`], in `SELECT` order.
-const COLS: &str = "env_id, name, description, metadata_json, config_json, archived_at, revision";
+const COLS: &str =
+    "env_id, name, description, metadata_json, config_json, archived_at, revision, scope";
 
 fn metadata_str(m: &BTreeMap<String, String>) -> String {
     serde_json::to_string(m).expect("env metadata serializes")
@@ -68,6 +74,7 @@ fn decode(
     config_json: &str,
     archived_at: Option<String>,
     revision: i64,
+    scope: Option<String>,
 ) -> EnvItem {
     EnvItem {
         id,
@@ -75,6 +82,7 @@ fn decode(
         name,
         description,
         metadata: serde_json::from_str(metadata_json).unwrap_or_default(),
+        scope,
         config: serde_json::from_str(config_json).unwrap_or(Value::Null),
         archived_at,
     }
@@ -91,6 +99,7 @@ fn sqlite_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EnvItem> {
         &config_json,
         row.get(5)?,
         row.get(6)?,
+        row.get(7)?,
     ))
 }
 
@@ -105,6 +114,7 @@ fn pg_row(row: &PgRow) -> EnvItem {
         &config_json,
         row.get("archived_at"),
         row.get("revision"),
+        row.get("scope"),
     )
 }
 
@@ -146,11 +156,12 @@ impl SqliteEnvRegistry {
 
 #[async_trait]
 impl EnvRegistry for SqliteEnvRegistry {
-    async fn create(
+    async fn create_scoped(
         &self,
         name: String,
         description: String,
         metadata: BTreeMap<String, String>,
+        scope: Option<String>,
         config: Value,
     ) -> EnvItem {
         let mut guard = self.conn.lock().expect("env registry mutex poisoned");
@@ -167,15 +178,16 @@ impl EnvRegistry for SqliteEnvRegistry {
         let id = format!("env_{next:016}");
         tx.execute(
             "INSERT INTO env_registry_env \
-                (env_id, seq, name, description, metadata_json, config_json) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                (env_id, seq, name, description, metadata_json, config_json, scope) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 id,
                 next,
                 name,
                 description,
                 metadata_str(&metadata),
-                config_str(&config)
+                config_str(&config),
+                scope
             ],
         )
         .expect("insert env");
@@ -186,6 +198,7 @@ impl EnvRegistry for SqliteEnvRegistry {
             name,
             description,
             metadata,
+            scope,
             config,
             archived_at: None,
         }
@@ -221,13 +234,14 @@ impl EnvRegistry for SqliteEnvRegistry {
         item.apply(patch);
         tx.execute(
             "UPDATE env_registry_env SET name = ?1, description = ?2, metadata_json = ?3, \
-             config_json = ?4, revision = ?5 WHERE env_id = ?6",
+             config_json = ?4, revision = ?5, scope = ?6 WHERE env_id = ?7",
             params![
                 item.name,
                 item.description,
                 metadata_str(&item.metadata),
                 config_str(&item.config),
                 item.revision.0,
+                item.scope,
                 id
             ],
         )
@@ -302,11 +316,12 @@ impl PostgresEnvRegistry {
 
 #[async_trait]
 impl EnvRegistry for PostgresEnvRegistry {
-    async fn create(
+    async fn create_scoped(
         &self,
         name: String,
         description: String,
         metadata: BTreeMap<String, String>,
+        scope: Option<String>,
         config: Value,
     ) -> EnvItem {
         let mut tx = self.pool.begin().await.expect("begin");
@@ -318,8 +333,8 @@ impl EnvRegistry for PostgresEnvRegistry {
         let id = format!("env_{next:016}");
         sqlx::query(
             "INSERT INTO env_registry_env \
-                (env_id, seq, name, description, metadata_json, config_json) \
-             VALUES ($1, $2, $3, $4, $5, $6)",
+                (env_id, seq, name, description, metadata_json, config_json, scope) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(&id)
         .bind(next)
@@ -327,6 +342,7 @@ impl EnvRegistry for PostgresEnvRegistry {
         .bind(&description)
         .bind(metadata_str(&metadata))
         .bind(config_str(&config))
+        .bind(&scope)
         .execute(&mut *tx)
         .await
         .expect("insert env");
@@ -337,6 +353,7 @@ impl EnvRegistry for PostgresEnvRegistry {
             name,
             description,
             metadata,
+            scope,
             config,
             archived_at: None,
         }
@@ -375,13 +392,14 @@ impl EnvRegistry for PostgresEnvRegistry {
         item.apply(patch);
         sqlx::query(
             "UPDATE env_registry_env SET name = $1, description = $2, metadata_json = $3, \
-             config_json = $4, revision = $5 WHERE env_id = $6",
+             config_json = $4, revision = $5, scope = $6 WHERE env_id = $7",
         )
         .bind(&item.name)
         .bind(&item.description)
         .bind(metadata_str(&item.metadata))
         .bind(config_str(&item.config))
         .bind(i64::try_from(item.revision.0).expect("Environment revision fits i64"))
+        .bind(&item.scope)
         .bind(id)
         .execute(&mut *tx)
         .await

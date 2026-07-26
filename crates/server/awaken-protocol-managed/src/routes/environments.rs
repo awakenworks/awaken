@@ -174,7 +174,13 @@ impl EnvironmentState {
     pub async fn author(&self, name: &str, config: serde_json::Value) -> String {
         let item = self
             .envs
-            .create(name.to_string(), String::new(), Default::default(), config)
+            .create_scoped(
+                name.to_string(),
+                String::new(),
+                Default::default(),
+                None,
+                config,
+            )
             .await;
         self.work.enqueue_healthcheck(&item.id).await;
         item.id
@@ -252,10 +258,11 @@ async fn create_env(
     // workspace) and any awaken tenancy is an ingress concern.
     let item = state
         .envs
-        .create(
+        .create_scoped(
             params.name,
             params.description.unwrap_or_default(),
             params.metadata,
+            params.scope.map(|scope| scope.as_str().to_string()),
             config,
         )
         .await;
@@ -303,6 +310,7 @@ async fn update_env(
         name: params.name,
         description: params.description,
         config,
+        scope: params.scope.map(|scope| Some(scope.as_str().to_string())),
         metadata: params.metadata,
     };
     let item = state

@@ -67,12 +67,10 @@ async fn call_with_worker(
     (status, value)
 }
 
-/// The environment projects to the official `BetaEnvironment` shape: ownership is
-/// credential-implicit, so the object carries NO `scope` — and a `scope` sent in
-/// the create body is ignored (non-official field), keeping the response byte-
-/// compatible with the Anthropic SDK's decoder.
+/// Scope cause graph: omitted -> absent; organization/account -> exact echo;
+/// update changes scope and revision; invalid enum -> 400 before persistence.
 #[tokio::test]
-async fn environment_carries_no_scope_and_ignores_a_body_scope() {
+async fn environment_scope_follows_the_official_decision_table() {
     let app = app();
 
     // A plain create: exactly the official field set, no `scope`.
@@ -106,19 +104,37 @@ async fn environment_carries_no_scope_and_ignores_a_body_scope() {
         .collect();
     assert_eq!(got, expected, "only the official BetaEnvironment fields");
 
-    // A caller sending `scope` gets it ignored, not echoed.
+    // Official organization scope is persisted and echoed.
     let (s, scoped) = call(
         &app,
         "POST",
         "/v1/environments",
-        Some(json!({ "name": "prod2", "scope": "org_acme/ws_eng/proj_x" })),
+        Some(json!({ "name": "prod2", "scope": "organization" })),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
     assert!(
-        scoped.get("scope").is_none(),
-        "a body scope is ignored, not echoed"
+        scoped["scope"] == "organization",
+        "official scope is echoed"
     );
+    let id = scoped["id"].as_str().unwrap();
+    let (s, updated) = call(
+        &app,
+        "POST",
+        &format!("/v1/environments/{id}"),
+        Some(json!({"scope":"account"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(updated["scope"], "account");
+    let (s, _) = call(
+        &app,
+        "POST",
+        "/v1/environments",
+        Some(json!({"name":"bad", "scope":"workspace"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
 }
 
 /// Environment config admission cause graph:

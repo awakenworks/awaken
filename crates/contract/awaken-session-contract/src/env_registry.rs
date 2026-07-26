@@ -41,6 +41,8 @@ pub struct EnvItem {
     pub name: String,
     pub description: String,
     pub metadata: BTreeMap<String, String>,
+    /// Anthropic visibility scope (`organization` or `account`).
+    pub scope: Option<String>,
     /// `BetaCloudConfig | BetaSelfHostedConfig`.
     pub config: Value,
     pub archived_at: Option<String>,
@@ -65,6 +67,9 @@ impl EnvItem {
         }
         if let Some(config) = patch.config.filter(|v| !v.is_null()) {
             self.config = config;
+        }
+        if let Some(scope) = patch.scope {
+            self.scope = scope;
         }
         if let Some(md) = patch.metadata {
             for (k, v) in md {
@@ -94,6 +99,8 @@ pub struct EnvUpdate {
     pub name: Option<String>,
     pub description: Option<String>,
     pub config: Option<Value>,
+    /// Outer `Some` means the field was supplied; inner `None` clears it.
+    pub scope: Option<Option<String>>,
     pub metadata: Option<BTreeMap<String, Option<String>>>,
 }
 
@@ -107,6 +114,18 @@ pub trait EnvRegistry: Send + Sync {
         name: String,
         description: String,
         metadata: BTreeMap<String, String>,
+        config: Value,
+    ) -> EnvItem {
+        self.create_scoped(name, description, metadata, None, config)
+            .await
+    }
+
+    async fn create_scoped(
+        &self,
+        name: String,
+        description: String,
+        metadata: BTreeMap<String, String>,
+        scope: Option<String>,
         config: Value,
     ) -> EnvItem;
     /// All non-archived environments, ascending by id.

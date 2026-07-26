@@ -36,19 +36,24 @@ async function main() {
       assert.ok(env.id.startsWith('env_'), `id: ${env.id}`);
       pass('beta.environments.create -> BetaEnvironment');
 
-      // Byte-faithful to the official BetaEnvironment: ownership is credential-
-      // implicit, so the object carries no `scope`, and a `scope` sent in the body
-      // is ignored (non-official field) rather than echoed.
+      // Scope decision table: omitted is absent; organization/account round-trip;
+      // an unknown scope fails before Environment creation.
       assert.equal(env.scope, undefined, 'SDK-created environment carries no scope');
-      const rawRes = await fetch(`${baseUrl}/v1/environments`, {
+      const scoped = await client.beta.environments.create({
+        name: 'scoped', scope: 'organization', betas: BETAS,
+      });
+      assert.equal(scoped.scope, 'organization');
+      const scopedUpdate = await client.beta.environments.update(scoped.id, {
+        scope: 'account', betas: BETAS,
+      });
+      assert.equal(scopedUpdate.scope, 'account');
+      const invalidScope = await fetch(`${baseUrl}/v1/environments`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'anthropic-beta': BETAS[0] },
-        body: JSON.stringify({ name: 'raw-scoped', scope: 'org_acme/ws_eng/proj_x' }),
+        body: JSON.stringify({ name: 'bad-scope', scope: 'workspace' }),
       });
-      assert.equal(rawRes.status, 200);
-      const rawEnv = await rawRes.json();
-      assert.ok(!('scope' in rawEnv), 'a body scope is ignored, not echoed on the wire');
-      pass('environment is byte-faithful: no scope field, body scope ignored');
+      assert.equal(invalidScope.status, 400);
+      pass('official Environment scope omission/create/update/rejection decision table');
 
       // Environment-config admission cause graph:
       // official tagged union + official nested fields -> canonical resource;

@@ -38,11 +38,12 @@ impl InMemoryEnvRegistry {
 
 #[async_trait]
 impl EnvRegistry for InMemoryEnvRegistry {
-    async fn create(
+    async fn create_scoped(
         &self,
         name: String,
         description: String,
         metadata: BTreeMap<String, String>,
+        scope: Option<String>,
         config: Value,
     ) -> EnvItem {
         let n = self.seq.fetch_add(1, Ordering::SeqCst);
@@ -53,6 +54,7 @@ impl EnvRegistry for InMemoryEnvRegistry {
             name,
             description,
             metadata,
+            scope,
             config,
             archived_at: None,
         };

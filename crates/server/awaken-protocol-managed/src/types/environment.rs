@@ -83,6 +83,8 @@ pub struct EnvironmentCreateParams {
     #[serde(default)]
     pub metadata: BTreeMap<String, String>,
     #[serde(default)]
+    pub scope: Option<EnvironmentScope>,
+    #[serde(default)]
     pub config: Option<EnvironmentConfigParams>,
 }
 
@@ -99,6 +101,24 @@ pub struct EnvironmentUpdateParams {
     pub config: Option<EnvironmentConfigParams>,
     #[serde(default)]
     pub metadata: Option<BTreeMap<String, Option<String>>>,
+    #[serde(default)]
+    pub scope: Option<EnvironmentScope>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentScope {
+    Organization,
+    Account,
+}
+
+impl EnvironmentScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Organization => "organization",
+            Self::Account => "account",
+        }
+    }
 }
 
 /// `BetaSelfHostedWorkUpdateRequest` — the `POST .../work/:wid` body: a metadata
@@ -121,6 +141,8 @@ pub struct Environment {
     pub name: String,
     pub description: String,
     pub metadata: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
     /// `BetaCloudConfig | BetaSelfHostedConfig`.
     pub config: Value,
 }
