@@ -906,14 +906,15 @@ mod resource_prompt_tests {
                     "provider@2",
                     "endpoint@4",
                     workspace.clone(),
-                    Some(awaken_runtime_contract::CredentialAccess {
-                        credential: awaken_runtime_contract::CredentialRef {
+                    Some(awaken_runtime_contract::CredentialAccess::new(
+                        awaken_runtime_contract::CredentialRef {
                             id: format!("credential-{workspace}"),
                             revision: 3,
                         },
-                        injection: awaken_runtime_contract::CredentialInjectionKind::Reference,
-                        usage: awaken_runtime_contract::CredentialUsage::ProviderAdapter,
-                    }),
+                        awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+                        awaken_runtime_contract::CredentialUsage::ProviderAdapter,
+                        awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+                    )),
                     awaken_runtime_contract::InferenceEndpoint {
                         adapter_kind: "openai".into(),
                         base_url: "https://example.invalid/v1".into(),

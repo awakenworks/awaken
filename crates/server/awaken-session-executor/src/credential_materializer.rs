@@ -11,7 +11,10 @@ use awaken_agent_contract::RedactedString;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_credential_vault::{CredentialSourceId, CredentialStatus, SecretStore};
 use awaken_runtime_contract::resolved::{ModelProvisioning, ResolvedModelCandidate};
-use awaken_runtime_contract::{CredentialInjectionKind, CredentialUsage};
+use awaken_runtime_contract::{
+    CredentialMaterialSource, CredentialRealizationCapabilities, CredentialRealizationKind,
+    CredentialUsage, PlaintextBoundary, PlaintextHolder,
+};
 
 /// Worker/host-side realization of one already-published credential reference.
 #[derive(Clone)]
@@ -38,6 +41,24 @@ impl PinnedCredentialMaterializer {
         &self,
         candidate: &ResolvedModelCandidate,
     ) -> Result<RedactedString, String> {
+        self.materialize_provider_for(
+            candidate,
+            &PlaintextHolder::new(
+                PlaintextBoundary::Worker,
+                awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+            ),
+            CredentialRealizationKind::WorkerProviderAdapter,
+        )
+        .await
+    }
+
+    /// Materialize for the exact holder and mechanism selected by admission.
+    pub async fn materialize_provider_for(
+        &self,
+        candidate: &ResolvedModelCandidate,
+        selected_holder: &PlaintextHolder,
+        realization: CredentialRealizationKind,
+    ) -> Result<RedactedString, String> {
         let ModelProvisioning::Provider {
             provider_ref,
             scope_id,
@@ -54,11 +75,22 @@ impl PinnedCredentialMaterializer {
         let credential = credential
             .as_ref()
             .ok_or_else(|| "published model candidate has no credential pin".to_string())?;
-        if credential.injection != CredentialInjectionKind::Reference
-            || credential.usage != CredentialUsage::ProviderAdapter
-        {
+        if credential.usage != CredentialUsage::ProviderAdapter {
             return Err("published credential injection contract is invalid".to_string());
         }
+        let capabilities = CredentialRealizationCapabilities {
+            holders: [selected_holder.clone()].into_iter().collect(),
+            material_sources: [
+                CredentialMaterialSource::ControlPlaneReference,
+                CredentialMaterialSource::WorkerReference,
+            ]
+            .into_iter()
+            .collect(),
+            realization_kinds: [realization].into_iter().collect(),
+        };
+        credential
+            .admit(selected_holder, realization, &capabilities, unix_time_ms())
+            .map_err(|error| error.to_string())?;
 
         let source = self
             .credentials
@@ -90,6 +122,13 @@ impl PinnedCredentialMaterializer {
             .await
             .map_err(|error| error.to_string())
     }
+}
+
+fn unix_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
 }
 
 #[async_trait::async_trait]

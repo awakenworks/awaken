@@ -582,7 +582,16 @@ mod tests {
         else {
             panic!("publication must carry a credential pin")
         };
-        credential.injection = awaken_runtime_contract::CredentialInjectionKind::Direct;
+        *credential = serde_json::from_value(serde_json::json!({
+            "credential": {
+                "id": credential.credential.id,
+                "revision": credential.credential.revision
+            },
+            "injection": "direct",
+            "usage": { "type": "provider_adapter" },
+            "policy": credential.policy
+        }))
+        .unwrap();
 
         assert!(
             p.materializer
