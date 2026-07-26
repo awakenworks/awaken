@@ -51,7 +51,8 @@ function seedRepository(root) {
   const work = path.join(root, 'catalog-repository-work');
   const remote = path.join(root, 'catalog-repository.git');
   fs.mkdirSync(work, { recursive: true });
-  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: work });
+  execFileSync('git', ['init', '-q'], { cwd: work });
+  execFileSync('git', ['symbolic-ref', 'HEAD', 'refs/heads/main'], { cwd: work });
   execFileSync('git', ['config', 'user.email', 'catalog@example.invalid'], { cwd: work });
   execFileSync('git', ['config', 'user.name', 'catalog-corruption'], { cwd: work });
   fs.writeFileSync(path.join(work, 'README.md'), 'catalog corruption recovery');

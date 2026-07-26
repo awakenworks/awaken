@@ -1,6 +1,16 @@
-// e2e for the fixture-driven eval harness (#4): drive the real `awaken-eval`
-// binary over a dataset file and assert it replays each case through the real
-// runtime and scores it, exiting non-zero when an expectation fails.
+// Cause graph (fixture-driven eval harness):
+//   C1 dataset expectations all match -> E1 report every result as passed, exit 0
+//   C2 any expectation mismatches       -> E2 report the failed result, exit non-zero
+//   C3 cargo cannot build/start eval     -> E3 expose stderr as infrastructure failure
+//
+// Decision table:
+//   Rule  C1  C2  C3  Expected
+//   T1    Y   N   N   E1
+//   T2    N   Y   N   E2
+//   T3    -   -   Y   E3 (diagnostic assertion message)
+//
+// Drive the real `awaken-eval` binary over a dataset file and assert it
+// replays each case through the real runtime and scores it.
 //
 // Run: (from e2e/)  node eval_e2e.mjs
 
@@ -73,15 +83,15 @@ const failing = {
 
 // 1) A fully-passing dataset exits 0 and reports every case passed.
 {
-  const { status, report } = runEval(passing);
-  assert.equal(status, 0, 'a fully-passing dataset exits 0');
+  const { status, report, stderr } = runEval(passing);
+  assert.equal(status, 0, `T1: a fully-passing dataset exits 0\n${stderr}`);
   assert.equal(report.dataset, 'e2e-pass');
   assert.equal(report.scores.length, 2);
   assert.ok(
     report.scores.every((s) => s.results.every((r) => r.passed)),
     'every expectation (including a tool call) passed by replaying through the real runtime',
   );
-  console.log('  ok: passing dataset (text + tool-scripted) replays and scores 0');
+  console.log('  ok T1: passing dataset (text + tool-scripted) replays and scores 0');
 }
 
 // 2) A dataset with a failing expectation exits non-zero and marks it failed.
@@ -90,7 +100,7 @@ const failing = {
   assert.notEqual(status, 0, 'a failing expectation exits non-zero');
   assert.equal(report.scores[0].results[0].passed, false);
   assert.ok(report.scores[0].results[0].detail.includes('999'));
-  console.log('  ok: failing dataset scores and gates via exit code');
+  console.log('  ok T2: failing dataset scores and gates via exit code');
 }
 
 console.log('E2E PASS: awaken-eval replays datasets through the real runtime and gates on scores.');

@@ -5,9 +5,9 @@
   "type": "module",
   "description": "End-to-end tests that drive awaken-server-local's protocol adapters with their official TypeScript/JS SDKs: managed (@anthropic-ai/sdk), ai-sdk (ai), ag-ui (@ag-ui/client), a2a (@a2a-js/sdk). Covers multi-turn, multimodal, and HITL.",
   "scripts": {
-    "pretest": "node managed_skill_bundle_pin_e2e.mjs && SESSION_ENVIRONMENT_TIER=local node managed_namespace_session_environment_e2e.mjs && SESSION_ENVIRONMENT_TIER=namespace node managed_namespace_session_environment_e2e.mjs && node managed_mcp_hot_swap_e2e.ts && node managed_mcp_recovery_e2e.ts",
+    "pretest": "node managed_skill_bundle_pin_e2e.mjs && cross-env SESSION_ENVIRONMENT_TIER=local node managed_namespace_session_environment_e2e.mjs && cross-env SESSION_ENVIRONMENT_TIER=namespace node managed_namespace_session_environment_e2e.mjs && node managed_mcp_hot_swap_e2e.ts && node managed_mcp_recovery_e2e.ts",
     "test:aux-windows": "node auxiliary_windows_causal_graph_e2e.mjs",
-    "test:aux-windows:live": "E2E_CAUSAL_LIVE=1 node auxiliary_windows_causal_graph_e2e.mjs",
+    "test:aux-windows:live": "cross-env E2E_CAUSAL_LIVE=1 node auxiliary_windows_causal_graph_e2e.mjs",
     "test:skill-pin": "node managed_skill_bundle_pin_e2e.mjs",
     "test:memoryd-copy": "node memoryd_copy_lifecycle_e2e.mjs",
     "test:resource-upgrade": "node resource_legacy_upgrade_e2e.mjs",
@@ -30,7 +30,7 @@
     "test:application-auth": "node application_auth_e2e.mjs",
     "test:mcp": "node mcp_official_sdk_e2e.ts && node managed_mcp_e2e.ts && node managed_mcp_hot_swap_e2e.ts && node managed_mcp_recovery_e2e.ts && node management_mcp_e2e.mjs && node managed_mcp_refresh_e2e.mjs",
     "check:mcp-injection-compat": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --types node --skipLibCheck --allowImportingTsExtensions managed_mcp_e2e.ts managed_mcp_hot_swap_e2e.ts managed_mcp_recovery_e2e.ts mcp_official_sdk_e2e.ts",
-    "test:real": "E2E_LIVE=1 node managed_real_e2e.mjs && E2E_LIVE=1 node ai_sdk_real_e2e.mjs && E2E_LIVE=1 node managed_resolved_real_e2e.mjs && E2E_LIVE=1 node management_validate_e2e.mjs && E2E_LIVE=1 node managed_resources_e2e.mjs && E2E_LIVE=1 node managed_real_tool_loop_e2e.mjs && E2E_LIVE=1 node managed_real_multiturn_e2e.mjs && E2E_LIVE=1 node managed_real_thinking_e2e.mjs",
+    "test:real": "cross-env E2E_LIVE=1 node managed_real_e2e.mjs && cross-env E2E_LIVE=1 node ai_sdk_real_e2e.mjs && cross-env E2E_LIVE=1 node managed_resolved_real_e2e.mjs && cross-env E2E_LIVE=1 node management_validate_e2e.mjs && cross-env E2E_LIVE=1 node managed_resources_e2e.mjs && cross-env E2E_LIVE=1 node managed_real_tool_loop_e2e.mjs && cross-env E2E_LIVE=1 node managed_real_multiturn_e2e.mjs && cross-env E2E_LIVE=1 node managed_real_thinking_e2e.mjs",
     "test:conformance": "node conformance/gate_event_catalog_e2e.mjs && node conformance/gate_beta_sentinel_e2e.mjs && node conformance/gate_event_golden_e2e.mjs && node conformance/when_online_smoke_e2e.mjs",
     "test:sdk-surface": "node conformance/sdk_surface_coverage_e2e.mjs",
     "test:when-online": "node conformance/when_online_smoke_e2e.mjs",
@@ -40,11 +40,11 @@
     "test:trace": "node trace_capture_e2e.mjs && node durable_trace_propagation_e2e.mjs && node durable_dispatch_trace_e2e.ts && node trace_backends_e2e.mjs",
     "test:k6": "bash k6/run.sh smoke",
     "test:k6:stress": "bash k6/run.sh stress",
-    "test:durable": "sh -c 'export SESSION_DEPLOYMENT_STORAGE_DIR=\"${SESSION_DEPLOYMENT_STORAGE_DIR:-$(mktemp -d)}\"; node managed_e2e.mjs && node managed_hitl_e2e.mjs && node managed_mcp_e2e.ts && node managed_restart_e2e.mjs && node managed_durable_e2e.mjs'",
+    "test:durable": "node storage_backend_suite.mjs durable",
     "test:soak": "node managed_soak_e2e.mjs && node durable_soak_fairness_e2e.mjs",
-    "test:fs": "sh -c 'export SESSION_DEPLOYMENT_STORAGE_DIR=\"${SESSION_DEPLOYMENT_STORAGE_DIR:-$(mktemp -d)}\"; export SESSION_DEPLOYMENT_STORE=fs; node managed_statemachine_e2e.mjs && node ai_sdk_e2e.mjs && node ag_ui_e2e.mjs && node a2a_e2e.mjs && node acp_e2e.mjs && node managed_mcp_e2e.ts && node secret_nonleak_e2e.mjs && node managed_restart_e2e.mjs'",
+    "test:fs": "node storage_backend_suite.mjs fs",
     "test:environment-matrix": "node multi_protocol_environment_resource_matrix_e2e.mjs",
-    "test:extended": "E2E_PORT=38401 node management_environments_e2e.mjs && E2E_PORT=38402 node management_deployments_e2e.mjs && E2E_PORT=38403 node management_agents_e2e.mjs && E2E_PORT=38404 node management_user_profiles_e2e.mjs && E2E_PORT=38405 node management_memory_stores_e2e.mjs && E2E_PORT=38425 node management_memory_tenancy_e2e.mjs && E2E_PORT=38426 node management_env_work_persistence_e2e.mjs && E2E_PORT=38406 node management_skills_e2e.mjs && E2E_PORT=38407 node management_vaults_family_e2e.mjs && E2E_PORT=38408 node management_files_models_e2e.mjs && E2E_PORT=38409 node management_egress_bind_e2e.mjs && E2E_PORT=38410 node managed_full_lifecycle_e2e.mjs && E2E_PORT=38411 node managed_system_message_e2e.mjs && E2E_PORT=38412 node managed_terminated_e2e.mjs && E2E_PORT=38413 node managed_reconnect_e2e.mjs && E2E_PORT=38414 node managed_concurrency_e2e.mjs && E2E_PORT=38415 node managed_contract_guard_e2e.mjs && E2E_PORT=38416 node managed_processed_at_e2e.mjs && E2E_PORT=38417 node managed_post_idle_race_e2e.mjs && E2E_PORT=38418 node acp_jsonrpc_e2e.mjs && E2E_PORT=38419 node acp_sandboxed_e2e.mjs && E2E_PORT=38424 node managed_error_recovery_e2e.mjs && node management_session_threads_e2e.mjs && node management_sessions_family_e2e.mjs && node acp_gateway_e2e.mjs && node acp_managed_mcp_e2e.mjs && E2E_PORT=38433 node management_deployment_schedule_e2e.mjs"
+    "test:extended": "cross-env E2E_PORT=38401 node management_environments_e2e.mjs && cross-env E2E_PORT=38402 node management_deployments_e2e.mjs && cross-env E2E_PORT=38403 node management_agents_e2e.mjs && cross-env E2E_PORT=38404 node management_user_profiles_e2e.mjs && cross-env E2E_PORT=38405 node management_memory_stores_e2e.mjs && cross-env E2E_PORT=38425 node management_memory_tenancy_e2e.mjs && cross-env E2E_PORT=38426 node management_env_work_persistence_e2e.mjs && cross-env E2E_PORT=38406 node management_skills_e2e.mjs && cross-env E2E_PORT=38407 node management_vaults_family_e2e.mjs && cross-env E2E_PORT=38408 node management_files_models_e2e.mjs && cross-env E2E_PORT=38409 node management_egress_bind_e2e.mjs && cross-env E2E_PORT=38410 node managed_full_lifecycle_e2e.mjs && cross-env E2E_PORT=38411 node managed_system_message_e2e.mjs && cross-env E2E_PORT=38412 node managed_terminated_e2e.mjs && cross-env E2E_PORT=38413 node managed_reconnect_e2e.mjs && cross-env E2E_PORT=38414 node managed_concurrency_e2e.mjs && cross-env E2E_PORT=38415 node managed_contract_guard_e2e.mjs && cross-env E2E_PORT=38416 node managed_processed_at_e2e.mjs && cross-env E2E_PORT=38417 node managed_post_idle_race_e2e.mjs && cross-env E2E_PORT=38418 node acp_jsonrpc_e2e.mjs && cross-env E2E_PORT=38419 node acp_sandboxed_e2e.mjs && cross-env E2E_PORT=38424 node managed_error_recovery_e2e.mjs && node management_session_threads_e2e.mjs && node management_sessions_family_e2e.mjs && node acp_gateway_e2e.mjs && node acp_managed_mcp_e2e.mjs && cross-env E2E_PORT=38433 node management_deployment_schedule_e2e.mjs"
   },
   "dependencies": {
     "@a2a-js/sdk": "^0.3.13",
@@ -58,6 +58,8 @@
   },
   "devDependencies": {
     "@types/node": "22.18.11",
+    "cross-env": "7.0.3",
+    "tsx": "4.20.6",
     "typescript": "6.0.3"
   }
 }

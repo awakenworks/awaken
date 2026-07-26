@@ -29,6 +29,9 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
 use awaken_runtime_contract::resume::ResumeResult;
 
+const IDEMPOTENT_TRANSPORT_ATTEMPTS: usize = 3;
+const IDEMPOTENT_TRANSPORT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
+
 /// Client-side counterpart of the Control Node's worker authenticator.
 ///
 /// One implementation decorates every lifecycle, dispatch, recovery, and commit
@@ -118,6 +121,72 @@ impl HttpDispatchQueue {
         resp.json()
             .await
             .map_err(|e| DispatchError::Rejected(format!("dispatch transport decode: {e}")))
+    }
+
+    /// Retry a claim-fenced operation whose repeated application is explicitly
+    /// idempotent. This is intentionally separate from `post`: claim/admission
+    /// responses cannot be replayed safely after an ambiguous receipt, while an
+    /// exact-claim sandbox bind writes the same opaque reference each time.
+    async fn post_idempotent(
+        &self,
+        path: &str,
+        body: serde_json::Value,
+        worker_id: &str,
+    ) -> Result<serde_json::Value, DispatchError> {
+        let mut last_retryable_error = None;
+        for attempt in 1..=IDEMPOTENT_TRANSPORT_ATTEMPTS {
+            let request = self.client.post(format!("{}{}", self.base_url, path));
+            let request = if let Some(authorizer) = &self.request_authorizer {
+                authorizer
+                    .authorize("POST", path, worker_id, request)
+                    .map_err(DispatchError::Rejected)?
+            } else {
+                request.header("x-awaken-worker-id", worker_id)
+            };
+            let response = match request.json(&body).send().await {
+                Ok(response) => response,
+                Err(error) => {
+                    last_retryable_error = Some(format!("idempotent dispatch transport: {error}"));
+                    if attempt < IDEMPOTENT_TRANSPORT_ATTEMPTS {
+                        tokio::time::sleep(IDEMPOTENT_TRANSPORT_RETRY_DELAY).await;
+                        continue;
+                    }
+                    break;
+                }
+            };
+            if response.status().is_server_error() {
+                last_retryable_error = Some(format!(
+                    "idempotent dispatch transport server returned {}",
+                    response.status()
+                ));
+                if attempt < IDEMPOTENT_TRANSPORT_ATTEMPTS {
+                    tokio::time::sleep(IDEMPOTENT_TRANSPORT_RETRY_DELAY).await;
+                    continue;
+                }
+                break;
+            }
+            if !response.status().is_success() {
+                return Err(DispatchError::Rejected(format!(
+                    "dispatch transport server returned {}",
+                    response.status()
+                )));
+            }
+            match response.json().await {
+                Ok(value) => return Ok(value),
+                Err(error) => {
+                    last_retryable_error =
+                        Some(format!("idempotent dispatch transport decode: {error}"));
+                    if attempt < IDEMPOTENT_TRANSPORT_ATTEMPTS {
+                        tokio::time::sleep(IDEMPOTENT_TRANSPORT_RETRY_DELAY).await;
+                    }
+                }
+            }
+        }
+        Err(DispatchError::Rejected(
+            last_retryable_error.unwrap_or_else(|| {
+                "idempotent dispatch transport exhausted without a response".to_string()
+            }),
+        ))
     }
 
     fn server_local<T>(verb: &str) -> Result<T, DispatchError> {
@@ -272,7 +341,7 @@ impl DispatchQueue for HttpDispatchQueue {
         sandbox_ref: &str,
     ) -> Result<SettleOutcome, DispatchError> {
         let value = self
-            .post(
+            .post_idempotent(
                 "/v1/worker/dispatch/bind_sandbox",
                 json!({
                     "claim": claim,

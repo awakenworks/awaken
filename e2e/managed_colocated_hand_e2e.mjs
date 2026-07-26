@@ -131,10 +131,21 @@ async function listEvents(client, sessionId) {
 }
 
 async function main() {
+  const handBin = ensureHandBin();
+  if (process.platform === 'win32') {
+    // Unix rendezvous is structurally unavailable on Windows; retain coverage
+    // of the same real hand binary's portable framed-stdio and fail-closed CLI
+    // paths instead of substituting a different network topology.
+    console.log('E2E SKIP: co-located Unix rendezvous is unavailable on Windows.');
+    await exerciseStdioHand(handBin);
+    console.log('  ok: the execution-plane hand served a framed tool call over stdio');
+    await rejectInvalidHandArgs(handBin);
+    console.log('  ok: invalid hand transport arguments fail closed before serving');
+    return;
+  }
   const rv = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-colocated-hand-'));
   const sock = path.join(rv, 'hand.sock');
 
-  const handBin = ensureHandBin();
   const hand = spawn(handBin, ['hand', '--unix', sock], { stdio: ['ignore', 'inherit', 'inherit'] });
   let handExited = false;
   hand.on('exit', () => {

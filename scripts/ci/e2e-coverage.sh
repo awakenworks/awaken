@@ -23,6 +23,15 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import sys' >/dev/null 2>&1; then
+  coverage_python=python3
+elif command -v python >/dev/null 2>&1 && python -c 'import sys' >/dev/null 2>&1; then
+  coverage_python=python
+else
+  echo "ERROR: a working Python 3 interpreter is required" >&2
+  exit 1
+fi
+
 # Denominator = code the SERVED binary (awaken-server) can actually reach
 # from an e2e run. Two exclusion classes, each principled:
 #
@@ -73,9 +82,23 @@ IGNORE='(awaken-store-conformance|awaken-runtime-examples|awaken-eval|awaken-sce
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/awaken-e2e-coverage}"
 export CARGO_LLVM_COV_TARGET_DIR="${CARGO_LLVM_COV_TARGET_DIR:-$CARGO_TARGET_DIR}"
 eval "$(cargo llvm-cov show-env --sh)"
-export RUSTFLAGS="${RUSTFLAGS:-} -C llvm-args=-runtime-counter-relocation"
-export LLVM_PROFILE_FILE="$CARGO_LLVM_COV_TARGET_DIR/awaken-%p%c.profraw"
-cargo llvm-cov clean --workspace
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    # LLVM's runtime-counter relocation cannot close instrumented proc-macro
+    # DLLs on MSVC (LNK1105/code 1224). Windows therefore uses one ordinary
+    # profile per process; the harness shuts served processes down after use.
+    export LLVM_PROFILE_FILE="$CARGO_LLVM_COV_TARGET_DIR/awaken-%p.profraw"
+    ;;
+  *)
+    export RUSTFLAGS="${RUSTFLAGS:-} -C llvm-args=-runtime-counter-relocation"
+    export LLVM_PROFILE_FILE="$CARGO_LLVM_COV_TARGET_DIR/awaken-%p%c.profraw"
+    ;;
+esac
+if [ "${AWAKEN_COVERAGE_RESUME:-0}" = "1" ]; then
+  echo "RESUME coverage profiles and instrumented build cache"
+else
+  cargo llvm-cov clean --workspace
+fi
 
 # The deterministic suites contain optional live-provider arms when a developer
 # happens to have credentials in the shell. Keep those credentials out of the
@@ -85,6 +108,12 @@ coverage_kimi_key="${KIMI_API_KEY:-}"
 unset ANTHROPIC_API_KEY KIMI_API_KEY
 
 pushd e2e >/dev/null
+# Node 22 does not execute `.ts` entry points directly. Load the repository's
+# pinned TypeScript runner once for every npm/Node child in this coverage chain.
+# Use a file URL so stage tests that intentionally set cwd to the repository root
+# do not lose package resolution from e2e/node_modules (especially on Windows).
+tsx_loader_url="$(node -p "require('node:url').pathToFileURL(require.resolve('tsx')).href")"
+export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--import=$tsx_loader_url"
 npm run test
 npm run test:protocols
 npm run test:management
@@ -127,7 +156,7 @@ fi
 popd >/dev/null
 
 cargo llvm-cov report --ignore-filename-regex "$IGNORE" --summary-only
-python3 scripts/ci/check_changed_e2e_line_coverage.py \
+"$coverage_python" scripts/ci/check_changed_e2e_line_coverage.py \
   --base "${AWAKEN_COVERAGE_BASE:-origin/1.0.0-dev}" \
   --minimum "${AWAKEN_CHANGED_E2E_MINIMUM:-0.95}" \
   --ignore-filename-regex "$IGNORE" \

@@ -124,7 +124,8 @@ function seedRepository(root) {
   const work = path.join(root, 'repository-work');
   const remote = path.join(root, 'repository.git');
   fs.mkdirSync(work, { recursive: true });
-  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: work });
+  execFileSync('git', ['init', '-q'], { cwd: work });
+  execFileSync('git', ['symbolic-ref', 'HEAD', 'refs/heads/main'], { cwd: work });
   execFileSync('git', ['config', 'user.email', 'resource-e2e@example.invalid'], { cwd: work });
   execFileSync('git', ['config', 'user.name', 'resource-e2e'], { cwd: work });
   fs.writeFileSync(path.join(work, 'README.md'), 'sqlite resource catalog');
@@ -485,6 +486,13 @@ async function main() {
     assert.equal(upstream.requests.length, callsBeforeRevocation, 'revoked pin never reaches any endpoint');
     console.log('ok: archived/version-changed credential rejected the already-published pin fail-closed');
 
+    // Cause graph (production composition Workspace ownership):
+    //   C1 path Workspace differs from body -> E1 trusted path stamps ownership
+    //   C2 B reads A-owned aggregate       -> E2 hide it with 404
+    //   C3 global aggregate id belongs A   -> E3 B write cannot transfer ownership
+    //   C4 B authors same profile id       -> E4 independent B profile + resolution
+    // Decision table: T1=C1/E1, T2=C2/E2, T3=C3/E3, T4=C2+C4/E4.
+    //
     // Defense in depth without IAM: workspace-path addressing supplies the
     // trusted platform scope directly, and each resource aggregate enforces its
     // own persisted owner. This proves the resource service does not depend on a
@@ -572,7 +580,25 @@ async function main() {
       scoped(WS_B, 'agents/owned-agent'),
     ]) assert.equal((await req(base, 'GET', uri)).status, 404, `${uri} hides foreign ownership`);
     assert.equal((await req(base, 'PUT', scoped(WS_B, 'credential-pools/owned-pool'), pool)).status, 404);
-    assert.equal((await req(base, 'PUT', scoped(WS_B, 'inference-profiles/owned-profile'), profile)).status, 404);
+    const ownedCredentialB = await req(base, 'POST', scoped(WS_B, 'credentials'), {
+      workspace_id: 'forged-body-owner', kind: 'vault', provider_id: 'anthropic',
+      env_key: null, secret: 'sk-resource-owner-b-e2e', // awaken-allow: secret
+    });
+    assert.equal(ownedCredentialB.status, 201, JSON.stringify(ownedCredentialB.json));
+    const profileB = {
+      ...profile,
+      credential_binding: { type: 'exact', credential_source_id: ownedCredentialB.json.id },
+    };
+    assert.equal((await req(base, 'PUT', scoped(WS_B, 'inference-profiles/owned-profile'), profileB)).status, 200);
+    const storedProfileB = await req(base, 'GET', scoped(WS_B, 'inference-profiles/owned-profile'));
+    assert.equal(storedProfileB.status, 200);
+    assert.equal(storedProfileB.json.workspace_id, WS_B);
+    assert.equal(
+      storedProfileB.json.primary.credential_binding.credential_source_id,
+      ownedCredentialB.json.id,
+    );
+    const storedProfileA = await req(base, 'GET', scoped(WS_A, 'inference-profiles/owned-profile'));
+    assert.equal(storedProfileA.json.primary.credential_binding.credential_source_id, ownedId);
     assert.equal(
       (await req(base, 'PUT', scoped(WS_B, 'agents/owned-agent'), agentMcp)).status,
       200,
@@ -581,7 +607,7 @@ async function main() {
     assert.equal((await req(base, 'GET', scoped(WS_B, 'agents/owned-agent'))).status, 404);
     assert.equal((await req(base, 'POST', scoped(WS_B, 'inference-profiles/owned-profile/resolve-candidates'), {
       workspace_id: WS_A,
-    })).status, 404);
+    })).status, 200, 'trusted B path resolves B profile despite forged body Workspace');
     const listedAgents = await req(base, 'GET', scoped(WS_B, 'agents'));
     assert.equal(listedAgents.status, 200);
     assert.ok(!listedAgents.json.data.some((entry) => entry.id === 'owned-agent'));
