@@ -8,6 +8,14 @@
 // `BetaManagedAgentsDeletedCredential` types surfaces as an SDK decode error.
 //
 // Run: (from e2e/)  node management_vaults_family_e2e.mjs
+//
+// Causal graph: Vault -> credential revisions -> metadata/network update ->
+// archive/delete fences -> paginated public projection with no secret material.
+// Decision table:
+// | aggregate | lifecycle | command | observable behavior |
+// | Vault | active | patch | merge/delete metadata keys |
+// | Credential | active | update | revisioned secret-free projection |
+// | Credential | active/archived | delete/archive | terminal state, no plaintext |
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
