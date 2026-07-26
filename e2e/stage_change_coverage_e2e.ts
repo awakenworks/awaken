@@ -36,6 +36,7 @@ const scenarios: Scenario[] = [
   { id: 'pg_wake', file: 'e2e/durable_pg_wake_e2e.mjs', postgres: true },
   { id: 'credential_reference_worker', file: 'e2e/credential_reference_worker_e2e.ts' },
   { id: 'credential_materialization_worker', file: 'e2e/credential_materialization_worker_e2e.ts' },
+  { id: 'application_session_worker', file: 'e2e/application_session_worker_e2e.ts' },
   { id: 'acp_projected_local', file: 'e2e/acp_projected_local_e2e.mjs' },
   { id: 'acp_projected_container', file: 'e2e/acp_projected_container_e2e.mjs' },
   { id: 'child_recovery', file: 'e2e/durable_child_sandbox_recovery_e2e.ts' },
@@ -117,6 +118,11 @@ const obligations: Obligation[] = [
   { id: 'D4-09', stage: '4 credential injection', behavior: 'the production composition projects endpoint and credential use once into the per-thread ACP sandbox', scenario: 'acp_projected_local' },
   { id: 'D4-10', stage: '4 credential injection', behavior: 'config-file ACP adapters receive a per-run materialized config home through the same local projection', scenario: 'acp_projected_local' },
   { id: 'D4-11', stage: '4 credential injection', behavior: 'the production container projection carries model access, MCP metadata, and a File input into one frozen run', scenario: 'acp_projected_container' },
+
+  { id: 'D4-A01', stage: '4 application Session contribution', behavior: 'a Managed creation intent remains preparing until its registered Worker contributes', scenario: 'application_session_worker' },
+  { id: 'D4-A02', stage: '4 application Session contribution', behavior: 'the claim-fenced application plan crosses the authenticated Worker control boundary', scenario: 'application_session_worker' },
+  { id: 'D4-A03', stage: '4 application Session contribution', behavior: 'the one realization driver projects the frozen application prompt into the claimed model attempt', scenario: 'application_session_worker' },
+  { id: 'D4-A04', stage: '4 application Session contribution', behavior: 'realization acknowledgement makes durable and Managed wire status idle', scenario: 'application_session_worker' },
 
   { id: 'D5-01', stage: '5 durable child lifecycle', behavior: 'child has a first-class stable run identity', scenario: 'child_recovery' },
   { id: 'D5-02', stage: '5 durable child lifecycle', behavior: 'hard process crash occurs while child inference is in flight', scenario: 'child_recovery' },

@@ -24,6 +24,23 @@ export const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url
 // harness can kill cleanly — a `cargo run` wrapper would leave the real server
 // orphaned and keep Node alive past the test.
 let serverBin = null;
+
+// Cause graph: inherited/fixture environment may contain an old listen
+// address; the address selected for this process is the sole cause of its bind
+// address. Decision table:
+//
+// inherited address | configured address | selected address || result
+// absent            | absent             | A                || A
+// stale             | absent             | A                || A
+// stale             | stale              | A                || A
+// any               | any                | B                || B
+//
+// Keeping this merge in one place prevents the three spawn entry points from
+// recreating competing precedence rules.
+function serverProcessEnv(addr, configured = {}) {
+  return { ...process.env, ...configured, AWAKEN_HTTP_ADDR: addr };
+}
+
 function ensureBuilt() {
   if (serverBin) return serverBin;
   const out = execSync(
@@ -105,7 +122,7 @@ export async function withServer(mode, port, fn) {
   const listenPort = await availablePort(port);
   const addr = `127.0.0.1:${listenPort}`;
   const server = spawn(bin, {
-    env: { ...process.env, AWAKEN_HTTP_ADDR: addr, AWAKEN_MODEL_MODE: mode },
+    env: serverProcessEnv(addr, { AWAKEN_MODEL_MODE: mode }),
     stdio: ['ignore', 'inherit', 'inherit'],
   });
   try {
@@ -174,7 +191,7 @@ export async function withRealServer(behavior, port, fn, opts = {}) {
   // accumulated text is exposed to `fn` as a third `{ text() }` argument.
   const capture = opts.capture ? { buf: '' } : null;
   const server = spawn(bin, {
-    env: { ...process.env, AWAKEN_HTTP_ADDR: addr, ...realServerEnv(behavior, upstream, opts) },
+    env: serverProcessEnv(addr, realServerEnv(behavior, upstream, opts)),
     stdio: capture ? ['ignore', 'pipe', 'pipe'] : ['ignore', 'inherit', 'inherit'],
   });
   if (capture) {
@@ -202,7 +219,7 @@ export function spawnServer(mode, port, extraEnv = {}) {
   const bin = ensureBuilt();
   const addr = `127.0.0.1:${port}`;
   const server = spawn(bin, {
-    env: { ...process.env, AWAKEN_HTTP_ADDR: addr, AWAKEN_MODEL_MODE: mode, ...extraEnv },
+    env: serverProcessEnv(addr, { ...extraEnv, AWAKEN_MODEL_MODE: mode }),
     stdio: ['ignore', 'inherit', 'inherit'],
   });
   return { server, baseUrl: `http://${addr}` };

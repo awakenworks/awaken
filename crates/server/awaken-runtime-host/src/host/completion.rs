@@ -222,17 +222,16 @@ impl SharedHost {
         // removes the waiter if this future is dropped (client disconnect) before it
         // settles — held to the end of this method.
         let (settled, _waiter_guard) = self.completion.register(&run_id);
-        let pool = self.dispatch_pool_or_err()?;
         let request = self.resolved_dispatch(activation)?;
         // Enqueue only — never drive here; the pool is the sole claimer. The common
         // path goes through `pool.submit` (which stamps the trace); a superseding
         // submit needs the supersede option, so it enqueues on the shared store and
         // nudges the pool directly.
+        let ingress = ctx
+            .durable_ingress
+            .as_ref()
+            .ok_or_else(|| HostError::internal("durable submit requires durable ingress"))?;
         if supersede {
-            let ingress = ctx
-                .durable_ingress
-                .as_ref()
-                .ok_or_else(|| HostError::internal("durable submit requires durable ingress"))?;
             ingress
                 .worker()
                 .store()
@@ -245,9 +244,22 @@ impl SharedHost {
                 )
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))?;
-            pool.notify().await;
-        } else {
+            if let Some(pool) = self.dispatch_pool.get() {
+                pool.notify().await;
+            }
+        } else if let Some(pool) = self.dispatch_pool.get() {
             pool.submit_dispatch(request)
+                .await
+                .map_err(|e| HostError::internal(e.to_string()))?;
+        } else {
+            // A coordinator-only cell still authors the same durable dispatch;
+            // registered remote Workers are its only claimers. Their authenticated
+            // settle route wakes this Host's completion registry from committed
+            // Run truth, so no local executor or polling compatibility path exists.
+            ingress
+                .worker()
+                .store()
+                .enqueue(request)
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))?;
         }

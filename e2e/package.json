@@ -16,7 +16,7 @@
     "test:resource-scope": "node resource_scope_boundary_e2e.mjs",
     "test:resource-plane-postgres": "node resource_plane_postgres_e2e.ts",
     "test:worker-resources": "node worker_resource_manifest_e2e.ts",
-    "test:inference-truth": "node management_admin_e2e.mjs && node managed_config_e2e.mjs && node awaken_cli_e2e.mjs && node credential_materialization_worker_e2e.ts && node credential_reference_worker_e2e.ts",
+    "test:inference-truth": "node management_admin_e2e.mjs && node managed_config_e2e.mjs && node awaken_cli_e2e.mjs && node credential_materialization_worker_e2e.ts && node credential_reference_worker_e2e.ts && node application_session_worker_e2e.ts",
     "test:agent-publication": "node agent_publication_truth_e2e.ts",
     "test:runtime-stages": "node stage_change_coverage_e2e.ts",
     "test:public-benchmark": "node public_benchmark_eval_e2e.ts",

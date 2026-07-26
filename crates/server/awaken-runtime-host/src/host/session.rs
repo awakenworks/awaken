@@ -655,6 +655,11 @@ impl SharedHost {
                     .as_ref()
                     .map(|snapshot| &snapshot.resolved_spec),
             ));
+        let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
+            Arc::new(crate::application::SessionPromptAttemptExecutor::new(
+                attempt_executor,
+                self.thread_session_prompts(thread),
+            ));
         let attempt_executor = self
             .application_attempt_decorator
             .as_ref()
@@ -720,15 +725,6 @@ impl SharedHost {
             .runtime
             .reconcile_delegation_cancellations(&ctx.thread_id, ctx.commit.as_ref())
             .await;
-        // Deliver the session's staged resource prompts (ADR-0038 A3a) as system
-        // context on the first turn, so the model knows what it has mounted and where.
-        let prompts = self.thread_resource_prompts(thread);
-        if !prompts.is_empty() {
-            let mut st = ctx.state.lock().await;
-            for prompt in prompts {
-                st.pending_system.push(prompt);
-            }
-        }
         // Recover the generic after-commit observer gap from committed Run truth.
         if let Some(run) = ctx.commit.latest_run(&ctx.thread_id)
             && run.state.is_terminal()

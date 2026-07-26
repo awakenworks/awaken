@@ -8,8 +8,11 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+use awaken_agent_contract::agent::run::RunState;
 use awaken_run_ingress::{RunClaim, WorkerIdentity};
 use awaken_runtime_contract::activation::RunActivation;
+use awaken_runtime_contract::execution::{ExecutorCapabilities, RunAttemptExecutor};
 use awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier;
 
 /// Frozen application additions for one claimed Session.
@@ -207,6 +210,110 @@ impl awaken_protocol_managed::SessionRealizationControl for WorkerControlApplica
             .fail_session_realization(&self.identity, command)
             .await
             .map_err(awaken_protocol_managed::SessionRealizationControlFailure::Unavailable)
+    }
+}
+
+/// The single Session-baseline prompt projection boundary for foreground,
+/// durable, Native, ACP, and A2A attempts.
+///
+/// A contribution may freeze after a durable dispatch was authored, so mutating
+/// only Host `pending_system` state cannot affect that already-serialized
+/// activation. Wrapping the authoritative attempt router keeps one mechanism for
+/// every topology. Deterministic message ids make a retried uncommitted attempt
+/// byte-for-byte stable; committed history prevents later turns from reinjecting
+/// the baseline.
+pub(crate) struct SessionPromptAttemptExecutor {
+    inner: Arc<dyn RunAttemptExecutor>,
+    prompts: Vec<String>,
+}
+
+impl SessionPromptAttemptExecutor {
+    pub(crate) fn new(inner: Arc<dyn RunAttemptExecutor>, prompts: Vec<String>) -> Self {
+        Self { inner, prompts }
+    }
+
+    fn project(
+        &self,
+        mut activation: RunActivation,
+        context: &awaken_runtime_contract::RuntimeRunContext,
+    ) -> RunActivation {
+        let first_turn = context
+            .reader
+            .as_ref()
+            .is_none_or(|reader| reader.committed_messages(&activation.thread_id).is_empty());
+        if !first_turn || self.prompts.is_empty() {
+            return activation;
+        }
+        let already_present = |prompt: &str| {
+            activation.input.iter().any(|message| {
+                message.role == Role::System
+                    && message.content.iter().any(|content| {
+                        matches!(
+                            content,
+                            awaken_agent_contract::agent::content::ContentBlock::Text { text }
+                                if text == prompt
+                        )
+                    })
+            })
+        };
+        let mut projected = self
+            .prompts
+            .iter()
+            .enumerate()
+            .filter(|(_, prompt)| !already_present(prompt))
+            .map(|(index, prompt)| {
+                Message::text(
+                    MessageId(format!(
+                        "session-baseline:{}:{index}",
+                        activation.thread_id.0
+                    )),
+                    Role::System,
+                    prompt.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        projected.append(&mut activation.input);
+        activation.input = projected;
+        activation
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_runtime_contract::execution::RunExecutor for SessionPromptAttemptExecutor {
+    async fn execute(
+        &self,
+        activation: RunActivation,
+        context: awaken_runtime_contract::RuntimeRunContext,
+    ) -> awaken_runtime_contract::execution::Result<RunState> {
+        self.inner
+            .execute(self.project(activation, &context), context)
+            .await
+    }
+
+    fn capabilities(&self) -> ExecutorCapabilities {
+        self.inner.capabilities()
+    }
+}
+
+#[async_trait::async_trait]
+impl RunAttemptExecutor for SessionPromptAttemptExecutor {
+    async fn resume(
+        &self,
+        activation: RunActivation,
+        command: awaken_runtime_contract::resume::ResumeCommand,
+        context: awaken_runtime_contract::RuntimeRunContext,
+    ) -> awaken_runtime_contract::execution::Result<RunState> {
+        self.inner
+            .resume(self.project(activation, &context), command, context)
+            .await
+    }
+
+    async fn cancel(
+        &self,
+        activation: RunActivation,
+        context: awaken_runtime_contract::RuntimeRunContext,
+    ) -> awaken_runtime_contract::execution::Result<()> {
+        self.inner.cancel(activation, context).await
     }
 }
 

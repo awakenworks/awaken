@@ -21,10 +21,10 @@ use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
 };
 use awaken_run_ingress::{
-    AnyDispatchStore, CredentialRealizationReceipt, Dispatch, DispatchOutcome, DispatchQueue,
-    HttpDispatchQueue, PendingInput, PlacementPolicy, RunClaim, RunDispatch, SubmitOptions,
-    WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerRegistration, WorkerSnapshot,
-    WorkerState,
+    AnyDispatchStore, CompletionSink, CredentialRealizationReceipt, Dispatch, DispatchOutcome,
+    DispatchQueue, HttpDispatchQueue, PendingInput, PlacementPolicy, RunClaim, RunDispatch,
+    SubmitOptions, WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerRegistration,
+    WorkerSnapshot, WorkerState,
 };
 
 use crate::host::{HostError, SharedHost};
@@ -58,6 +58,7 @@ pub struct WorkerDispatchService {
     registry_ttl_ms: u64,
     checkpoint: Option<Arc<dyn StreamCheckpointStore>>,
     recovery: Option<Arc<dyn RunRecoverySource>>,
+    completion: Option<Arc<dyn CompletionSink>>,
     application_session_control:
         Option<Arc<dyn awaken_protocol_managed::ApplicationSessionControl>>,
     local_credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
@@ -81,6 +82,7 @@ impl WorkerDispatchService {
             registry_ttl_ms: 30_000,
             checkpoint: None,
             recovery: None,
+            completion: None,
             application_session_control: None,
             local_credential_capabilities: Default::default(),
         }
@@ -95,6 +97,15 @@ impl WorkerDispatchService {
     #[must_use]
     pub fn with_recovery_source(mut self, recovery: Arc<dyn RunRecoverySource>) -> Self {
         self.recovery = Some(recovery);
+        self
+    }
+
+    /// Project an applied remote settlement into the foreground wakeup channel.
+    /// The exact Run state is re-read from committed recovery truth; this sink is
+    /// never a dispatch or lifecycle authority.
+    #[must_use]
+    pub fn with_completion_sink(mut self, completion: Arc<dyn CompletionSink>) -> Self {
+        self.completion = Some(completion);
         self
     }
 
@@ -219,6 +230,7 @@ fn registered_dispatch_router(
     } else {
         Arc::new(awaken_runtime::memory::MemoryStreamCheckpointStore::new())
     };
+    let completion = host.completion.clone() as Arc<dyn CompletionSink>;
     let recovery: Arc<dyn RunRecoverySource> = Arc::new(HostRunRecoverySource(host));
     dispatch_transport_router_with_service(Arc::new(
         WorkerDispatchService::local(dispatch)
@@ -226,6 +238,7 @@ fn registered_dispatch_router(
             .with_placement_policy(policy)
             .with_checkpoint_store(checkpoint)
             .with_recovery_source(recovery)
+            .with_completion_sink(completion)
             .with_application_session_control(application_session_control),
     ))
 }
@@ -1285,6 +1298,7 @@ async fn settle(
         let Some(guard) = authorized else {
             return Ok(json!({ "settled": false }));
         };
+        let thread_id = guard.request().thread_id().clone();
         drop(guard);
         let outcome = service
             .dispatch
@@ -1296,6 +1310,16 @@ async fn settle(
             )
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
+        if outcome.applied()
+            && let (Some(completion), Some(recovery)) = (&service.completion, &service.recovery)
+            && let Ok(snapshot) = recovery.recovery_snapshot(&thread_id, &claim.run_id).await
+            && let Some(record) = snapshot
+                .runs
+                .iter()
+                .find(|record| record.id == claim.run_id)
+        {
+            completion.settled(&claim.run_id, &record.state);
+        }
         Ok(json!({ "settled": outcome.applied() }))
     }
     .await;

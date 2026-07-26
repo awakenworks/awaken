@@ -166,6 +166,12 @@ impl AgentRef {
 #[derive(Debug, Clone, Deserialize)]
 pub struct SessionCreateParams {
     pub agent: AgentRef,
+    /// Awaken extension: leave the Session creation intent in `Preparing`
+    /// until the registered Worker application contributes its claim-fenced
+    /// plan. The contribution is consumed by the one baseline compiler; this
+    /// flag is never retained as a second runtime authority.
+    #[serde(default)]
+    pub application_contribution_required: bool,
     #[serde(default)]
     pub environment_id: Option<String>,
     #[serde(default)]
