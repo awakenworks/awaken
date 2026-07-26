@@ -198,20 +198,6 @@ impl SharedHost {
             .unwrap_or_default()
     }
 
-    /// Replace only the repository-derived MCP projections, preserving authored
-    /// and Session-inline MCP servers owned by the independent MCP plane.
-    pub(crate) fn replace_thread_repository_mcp(
-        &self,
-        thread: &str,
-        repository_mcp: Vec<crate::host::PreparedMcpServer>,
-    ) {
-        self.session_slots.update(thread, |slot| {
-            slot.mcp
-                .retain(|server| !server.name.starts_with("github:"));
-            slot.mcp.extend(repository_mcp);
-        });
-    }
-
     /// The Repository activations queued for `thread` (test-only observability: a
     /// working tree is realized through its port, not as a byte mount, so it is absent
     /// from `sandbox_spec`).
@@ -220,15 +206,6 @@ impl SharedHost {
         self.session_slots
             .read(thread, |slot| slot.resources.repositories.clone())
             .unwrap_or_default()
-    }
-
-    /// The MCP servers staged for `thread` (test-only observability, mirrors
-    /// [`Self::thread_repository_activations`]): the set `register_thread_mcp`
-    /// recorded, including any
-    /// `github:<logical>` server bridged from a github_repository resource.
-    #[cfg(test)]
-    pub(crate) fn thread_mcp(&self, thread: &str) -> Vec<crate::host::PreparedMcpServer> {
-        self.thread_session_mcp(thread)
     }
 
     /// The prompt fragments staged for `thread`'s bound resources (ADR-0038 A3a).
@@ -442,17 +419,8 @@ impl SharedHost {
         let Some(env) = env else {
             return;
         };
-        // Repos the agent pushes itself via an injected `github:<logical>` MCP server.
-        let mcp_owned: std::collections::HashSet<String> = self
-            .thread_session_mcp(thread)
-            .iter()
-            .filter_map(|s| s.name.strip_prefix("github:").map(String::from))
-            .collect();
         for repository in repositories {
             if repository.plan.access == pc::MountAccess::ReadOnly {
-                continue;
-            }
-            if mcp_owned.contains(&repository.plan.mount_path) {
                 continue;
             }
             let _ = pc::RepositoryRealizer::publish_repository(

@@ -890,7 +890,7 @@ C111 → E106(成功) ∨ ModelUnresolved     C112=不兼容 → E107     C112=�
 | C113 | 创建或动态替换产生新的 resolved manifest | `SessionResourceState::prepare` |
 | C114 | Host 对待应用 manifest 物化成功 | `activate_inputs` / `prepare_session` |
 | C115 | 物化失败；子分支旧 manifest 回滚成功 vs 回滚也失败 | `activate_inputs` |
-| C116 | 进程重启时存在 Prepared/Releasing 或终态仍有 Active | `pending_resource_sessions` |
+| C116 | 进程重启时存在 Resource 或 MCP 非终态恢复工作 | `reconcilable_sessions` |
 | C117 | Session 终止；子分支 sandbox/兼容 Repo 清理成功 vs 失败 | `release_terminal_resources` |
 | C118 | Active Session 调用 `GET /v1/files?scope_id=...` | Files router |
 

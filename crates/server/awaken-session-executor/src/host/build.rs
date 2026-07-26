@@ -249,9 +249,6 @@ impl SharedHost {
             hand_placement: crate::hand_placement::HandPlacement::new(),
             capture_sink: None,
             admin_tools: Vec::new(),
-            // Default α: never hand a raw MCP bearer to the CLI — a trusted-local
-            // deployment opts into β with `with_trusted_acp_mcp`.
-            mcp_trusted_inline: false,
         }
     }
 
@@ -363,16 +360,6 @@ impl SharedHost {
     #[must_use]
     pub fn runs_local_dispatch_pool(&self) -> bool {
         !self.deployment.disable_local_pool
-    }
-
-    /// Opt this host into **β** (trusted-inline) MCP credential delivery for its ACP
-    /// runs: a staged server's raw bearer is handed to the CLI inline instead of as a
-    /// secretless α reference. Only sound when the CLI is a trusted-local (non-sandboxed)
-    /// process — the host owns the isolation decision. Default (unset) is α.
-    #[must_use]
-    pub fn with_trusted_acp_mcp(mut self, trusted: bool) -> Self {
-        self.mcp_trusted_inline = trusted;
-        self
     }
 
     /// Register the management assistant's tool executables globally (ADR-0052). They
@@ -685,15 +672,6 @@ impl SharedHost {
     /// ACP channel source (like [`Self::thread_egress`]) before the builder is consumed.
     pub fn thread_sandbox(&self) -> crate::sandbox_source::ThreadSandbox {
         self.thread_sandbox.clone()
-    }
-
-    /// Stage MCP servers for `thread`, to be connected when the thread's context
-    /// is first built (its first turn) — the Managed session-create path calls
-    /// this from `prepare_session`, so the credential is materialized before the
-    /// session exists but the network connect happens lazily (ADR-0043 Phase 3).
-    /// Re-registering replaces the thread's staged set.
-    pub fn register_thread_mcp(&self, thread: &str, servers: Vec<PreparedMcpServer>) {
-        self.session_slots.update(thread, |slot| slot.mcp = servers);
     }
 
     /// The model id echoed by adapters in their session/agent objects.

@@ -11,7 +11,7 @@ use std::collections::HashSet;
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest, Path, Query, RawQuery, Request, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::routing::{get, post};
@@ -171,7 +171,7 @@ pub(crate) fn error_response(err: StateError) -> (StatusCode, Json<ErrorResponse
         ),
         // Writing to an archived (terminated, read-only) session conflicts with the
         // session's terminal state — 409 in the shared error envelope.
-        err @ (StateError::Archived | StateError::Conflict) => (
+        err @ (StateError::Archived | StateError::Conflict | StateError::IdempotencyMismatch) => (
             StatusCode::CONFLICT,
             "invalid_request_error",
             err.to_string(),
@@ -259,22 +259,47 @@ async fn create_session(
     State(state): State<Arc<ManagedState>>,
     workspace: Option<axum::Extension<WorkspaceScope>>,
     ManagedJson(req): ManagedJson<SessionCreateParams>,
-) -> Result<Json<Session>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<(HeaderMap, Json<Session>), (StatusCode, Json<ErrorResponse>)> {
     // Session preparation (MCP provisioning, ADR-0043 Phase 3) can fail; map the
     // RunError to the envelope exactly like a turn's failure, so a failed create
     // is loud rather than a half-provisioned session.
-    state
+    let session = state
         .create_session(req, workspace.map(|w| w.0.0.clone()))
         .await
-        .map(Json)
-        .map_err(error_response)
+        .map_err(error_response)?;
+    versioned_session_response(&state, session, None).await
 }
 
 async fn retrieve_session(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
-) -> Result<Json<Session>, (StatusCode, Json<ErrorResponse>)> {
-    state.get_session(&id).map(Json).map_err(error_response)
+) -> Result<(HeaderMap, Json<Session>), (StatusCode, Json<ErrorResponse>)> {
+    let session = state.get_session(&id).map_err(error_response)?;
+    versioned_session_response(&state, session, None).await
+}
+
+async fn versioned_session_response(
+    state: &ManagedState,
+    session: Session,
+    operation_id: Option<String>,
+) -> Result<(HeaderMap, Json<Session>), WireErr> {
+    let revision = state
+        .session_revision(&session.id)
+        .await
+        .map_err(error_response)?;
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::ETAG,
+        HeaderValue::from_str(&format!("\"{}\"", revision.0))
+            .expect("numeric Session revision is a valid ETag"),
+    );
+    if let Some(operation_id) = operation_id {
+        headers.insert(
+            "x-awaken-operation-id",
+            HeaderValue::from_str(&operation_id).expect("fingerprint is a valid header value"),
+        );
+    }
+    Ok((headers, Json(session)))
 }
 
 type WireErr = (StatusCode, Json<ErrorResponse>);
@@ -304,8 +329,9 @@ async fn list_sessions(
 async fn update_session(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
+    headers: HeaderMap,
     ManagedJson(body): ManagedJson<serde_json::Value>,
-) -> Result<Json<Session>, WireErr> {
+) -> Result<(HeaderMap, Json<Session>), WireErr> {
     let agent = body.get("agent").cloned();
     let (tools, mcp_servers) = if let Some(agent) = agent {
         let object = agent
@@ -357,10 +383,64 @@ async fn update_session(
             .map(|(k, v)| (k.clone(), v.as_str().map(str::to_string)))
             .collect()
     });
-    state
-        .update_session(&id, title, metadata, tools, mcp_servers)
-        .map(Json)
-        .map_err(error_response)
+    let idempotency_key = headers
+        .get("idempotency-key")
+        .map(|value| {
+            value.to_str().map(str::to_string).map_err(|_| {
+                error_response(StateError::Run(RunError::bad_request(
+                    "Idempotency-Key must be visible ASCII",
+                )))
+            })
+        })
+        .transpose()?;
+    if idempotency_key
+        .as_ref()
+        .is_some_and(|key| key.trim().is_empty() || key.len() > 255)
+    {
+        return Err(error_response(StateError::Run(RunError::bad_request(
+            "Idempotency-Key must contain 1 to 255 characters",
+        ))));
+    }
+    let if_match = headers
+        .get(header::IF_MATCH)
+        .map(|value| {
+            let raw = value.to_str().map_err(|_| {
+                error_response(StateError::Run(RunError::bad_request(
+                    "If-Match must be a quoted Session revision",
+                )))
+            })?;
+            if raw == "*" {
+                return Ok(None);
+            }
+            let revision = raw
+                .strip_prefix('"')
+                .and_then(|value| value.strip_suffix('"'))
+                .and_then(|value| value.parse::<u64>().ok())
+                .ok_or_else(|| {
+                    error_response(StateError::Run(RunError::bad_request(
+                        "If-Match must be `*` or a quoted Session revision",
+                    )))
+                })?;
+            Ok(Some(awaken_session_contract::SessionRevision(revision)))
+        })
+        .transpose()?
+        .flatten();
+    let operation_id = idempotency_key
+        .as_deref()
+        .map(|key| ManagedState::update_operation_id(&id, key));
+    let session = state
+        .update_session(
+            &id,
+            title,
+            metadata,
+            tools,
+            mcp_servers,
+            idempotency_key,
+            if_match,
+        )
+        .await
+        .map_err(error_response)?;
+    versioned_session_response(&state, session, operation_id).await
 }
 
 /// `DELETE /v1/sessions/:id`.

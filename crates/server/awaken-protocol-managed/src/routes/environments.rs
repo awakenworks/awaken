@@ -107,8 +107,11 @@ impl EnvironmentState {
             )
         };
         let credential_realization = awaken_credential_contract::CredentialRealizationProfile {
-            inference_holder: holder.clone(),
-            mcp_holder: holder,
+            inference_holder: holder,
+            mcp_holder: awaken_credential_contract::PlaintextHolder::new(
+                awaken_credential_contract::PlaintextBoundary::Worker,
+                awaken_credential_contract::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+            ),
         };
         let sandbox = serde_json::to_value(sandbox).expect("Sandbox requirement serializes");
         let config_fingerprint = awaken_session_contract::EnvironmentFingerprint(
@@ -569,14 +572,15 @@ mod tests {
     #[tokio::test]
     async fn environment_snapshot_decision_table() {
         // Cause graph: active exact record -> normalize networking and choose the
-        // runtime holder -> fingerprint. Missing/archived records fail closed;
+        // inference holder while MCP remains on the one Worker relay boundary,
+        // then fingerprint. Missing/archived records fail closed;
         // a later edit increments the registry revision but cannot mutate an old
         // value snapshot.
         //
         // | Rule | Record | Runtime | Later edit | Effect |
         // |------|--------|---------|------------|--------|
-        // | S1   | active | native  | F          | Worker snapshot |
-        // | S2   | active | ACP     | F          | Workload snapshot |
+        // | S1   | active | native  | F          | Worker inference + MCP |
+        // | S2   | active | ACP     | F          | Workload inference + Worker MCP |
         // | S3   | active | native  | T          | new rev/fingerprint; old frozen |
         // | S4   | missing/archived | any | -    | None |
         let state = EnvironmentState::new();
@@ -609,9 +613,14 @@ mod tests {
             .await
             .expect("S2");
         assert_eq!(
-            acp.credential_realization.mcp_holder.boundary,
+            acp.credential_realization.inference_holder.boundary,
             awaken_credential_contract::PlaintextBoundary::Workload,
-            "S2"
+            "S2 inference"
+        );
+        assert_eq!(
+            acp.credential_realization.mcp_holder.boundary,
+            awaken_credential_contract::PlaintextBoundary::Worker,
+            "S2 MCP"
         );
         state
             .envs
