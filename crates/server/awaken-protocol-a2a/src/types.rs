@@ -23,14 +23,16 @@ pub enum MessageRole {
 }
 
 /// One message part. A2A parts carry a `kind` discriminator (`text`/`file`/`data`)
-/// alongside the payload field. A part holds text, or a `file` (inline base64 or a
-/// remote URI) for multimodal input.
+/// alongside the payload field. A part holds text, a `file` (inline base64 or a
+/// remote URI), or an opaque JSON `data` payload owned by the A2A boundary.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Part {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<FilePart>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -52,6 +54,7 @@ impl<'de> Deserialize<'de> for Part {
             return Ok(Self {
                 kind: kind.or_else(|| Some("text".into())),
                 text: Some(text.to_string()),
+                data: None,
                 file: None,
                 metadata,
             });
@@ -59,7 +62,8 @@ impl<'de> Deserialize<'de> for Part {
         if let Some(data) = value.get("data") {
             return Ok(Self {
                 kind: kind.or_else(|| Some("data".into())),
-                text: Some(serde_json::to_string(data).map_err(serde::de::Error::custom)?),
+                text: None,
+                data: Some(data.clone()),
                 file: None,
                 metadata,
             });
@@ -68,6 +72,7 @@ impl<'de> Deserialize<'de> for Part {
             return Ok(Self {
                 kind: kind.or_else(|| Some("file".into())),
                 text: None,
+                data: None,
                 file: Some(serde_json::from_value(file.clone()).map_err(serde::de::Error::custom)?),
                 metadata,
             });
@@ -84,6 +89,7 @@ impl<'de> Deserialize<'de> for Part {
             return Ok(Self {
                 kind: Some("file".into()),
                 text: None,
+                data: None,
                 file: Some(FilePart {
                     bytes,
                     uri,
@@ -110,6 +116,7 @@ impl Part {
         Self {
             kind: Some("text".to_string()),
             text: Some(text.into()),
+            data: None,
             file: None,
             metadata: None,
         }
@@ -693,6 +700,29 @@ mod tests {
     }
 
     #[test]
+    fn data_part_round_trips_json_without_a_text_encoding() {
+        // Causal graph: A2A data JSON -> Part::data -> A2A data JSON.
+        //
+        // Decision table:
+        // | payload                   | data retained | text populated | output exact |
+        // | nested object/array       | yes           | no             | yes          |
+        // | JSON null                 | yes           | no             | yes          |
+        // | metadata beside payload  | yes           | no             | yes          |
+        // These assertions forbid the former JSON -> String -> JSON compatibility
+        // path, including its ambiguity between JSON strings and encoded objects.
+        for input in [
+            json!({"kind":"data","data":{"nested":[1,true,{"s":"x"}]}}),
+            json!({"kind":"data","data":null}),
+            json!({"kind":"data","data":"literal","metadata":{"trace":7}}),
+        ] {
+            let part: Part = serde_json::from_value(input.clone()).unwrap();
+            assert!(part.text.is_none());
+            assert_eq!(part.data.as_ref(), input.get("data"));
+            assert_eq!(serde_json::to_value(part).unwrap(), input);
+        }
+    }
+
+    #[test]
     fn send_message_accepts_legacy_tenant_and_snake_case_agent() {
         let a: SendMessageRequest = serde_json::from_value(json!({
             "tenant": "agent-legacy",
@@ -847,6 +877,7 @@ mod tests {
         let file = Part {
             kind: Some("file".into()),
             text: None,
+            data: None,
             file: Some(FilePart {
                 bytes: Some("AAAA".into()),
                 uri: None,

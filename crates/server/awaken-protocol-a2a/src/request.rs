@@ -140,6 +140,7 @@ mod tests {
                     Part {
                         kind: Some("file".into()),
                         text: None,
+                        data: None,
                         file: Some(FilePart {
                             bytes: Some("AAAA".into()),
                             uri: None,
@@ -178,6 +179,7 @@ mod tests {
                 parts: vec![Part {
                     kind: Some("file".into()),
                     text: None,
+                    data: None,
                     file: Some(file),
                     metadata: None,
                 }],
@@ -258,6 +260,12 @@ mod tests {
 
     #[test]
     fn a_data_kind_part_with_no_text_or_file_is_dropped() {
+        // Decision table at the runtime ACL:
+        // | A2A part | neutral mapping | prompt effect |
+        // | data     | none            | none          |
+        // | text     | Text            | retained      |
+        // A2A owns arbitrary data; inventing a generic neutral ContentBlock would
+        // leak wire vocabulary into every protocol and model adapter.
         let r = SendMessageRequest {
             agent_id: None,
             configuration: None,
@@ -270,6 +278,7 @@ mod tests {
                     Part {
                         kind: Some("data".into()),
                         text: None,
+                        data: Some(serde_json::json!({ "ignored": true })),
                         file: None,
                         metadata: None,
                     },
