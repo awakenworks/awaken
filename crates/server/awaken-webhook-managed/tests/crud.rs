@@ -38,32 +38,12 @@ struct SessionOutbox(Mutex<HashMap<String, SessionLifecycleFact>>);
 
 #[async_trait]
 impl ManagedSessionRepository for SessionOutbox {
-    async fn save_owned(&self, _owner_scope: &str, _session: PersistedSession) {}
-    async fn save_owned_with_lifecycle(
-        &self,
-        _owner_scope: &str,
-        _session: PersistedSession,
-        fact: SessionLifecycleFact,
-    ) {
-        self.append_lifecycle(fact).await;
-    }
     async fn append_lifecycle(&self, fact: SessionLifecycleFact) {
         self.0
             .lock()
             .unwrap()
             .entry(fact.id.clone())
             .or_insert(fact);
-    }
-    async fn archive_with_lifecycle(
-        &self,
-        _session_id: &str,
-        _archived_at: &str,
-        fact: SessionLifecycleFact,
-    ) {
-        self.append_lifecycle(fact).await;
-    }
-    async fn delete_with_lifecycle(&self, _session_id: &str, fact: SessionLifecycleFact) {
-        self.append_lifecycle(fact).await;
     }
     async fn pending_lifecycle(&self) -> Vec<SessionLifecycleFact> {
         self.0.lock().unwrap().values().cloned().collect()
@@ -73,9 +53,6 @@ impl ManagedSessionRepository for SessionOutbox {
     }
     async fn get(&self, _session_id: &str) -> Option<PersistedSession> {
         None
-    }
-    async fn bind_environment(&self, _session_id: &str, _binding: &str) -> bool {
-        false
     }
 }
 

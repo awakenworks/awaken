@@ -41,6 +41,7 @@ const PROCESSED_AT: &str = "2026-01-01T00:00:00Z";
 const MEMORY_CREATE_ONLY: &str = "memory stores can only be attached at session creation time; \
      adding or removing one from a running session is not supported";
 
+mod environment;
 mod events;
 mod helpers;
 mod resource;
@@ -50,9 +51,7 @@ mod sessions;
 mod threads;
 mod types;
 
-pub(crate) use helpers::{
-    content_text, default_environment_snapshot, lifecycle_fact, rubric_text, session_usage_value,
-};
+pub(crate) use helpers::{content_text, lifecycle_fact, rubric_text, session_usage_value};
 pub(crate) use resource::{
     ParsedInputTarget, ParsedSessionInput, input_binding, parse_session_input,
     resolved_resource_dto, resource_binding_id,
@@ -117,10 +116,6 @@ pub struct ManagedState {
     resource_catalog: Option<Arc<dyn awaken_resource_contract::ResourceCatalog>>,
     resource_purge_scheduler: Option<Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>>,
     sessions: Mutex<HashMap<String, SessionRecord>>,
-    /// Serializes process-local external resource operations. Durable mutation
-    /// authority is the repository root CAS; this lock remains until every
-    /// resource command carries its expected revision through external IO.
-    resource_mutations: tokio::sync::Mutex<()>,
     /// The aspect-layer session→owner index (ADR-0051): the [`ScopeId`] that
     /// created each session, keyed by the tenancy-agnostic session id. It is NOT
     /// on the core session aggregate (which stays tenancy-agnostic) — it lives
@@ -233,7 +228,6 @@ impl ManagedState {
             resource_catalog: None,
             resource_purge_scheduler: None,
             sessions: Mutex::new(HashMap::new()),
-            resource_mutations: tokio::sync::Mutex::new(()),
             owners: Mutex::new(HashMap::new()),
             sessions_repo: Arc::new(
                 SqliteManagedSessionRepository::open_in_memory()
@@ -376,6 +370,27 @@ mod tests {
     fn ephemeral_session_repo() -> SqliteManagedSessionRepository {
         SqliteManagedSessionRepository::open_in_memory()
             .expect("open ephemeral managed Session repository")
+    }
+
+    async fn create_session_fixture(
+        repo: &dyn ManagedSessionRepository,
+        owner: &str,
+        mut session: PersistedSession,
+    ) {
+        session.revision = awaken_session_contract::SessionRevision(0);
+        let payload = awaken_session_contract::SessionMutationPayload::Replace(session.clone());
+        let payload_hash = payload.stable_hash();
+        repo.create(
+            owner,
+            session.clone(),
+            awaken_session_contract::IdempotencyRecord {
+                key: format!("test:create:{}:{payload_hash}", session.session_id),
+                payload_hash,
+            },
+            Vec::new(),
+        )
+        .await
+        .expect("create Session fixture");
     }
 
     fn ephemeral_resource_catalog() -> awaken_admin_config_api::SqliteAdminStore {
@@ -894,7 +909,7 @@ mod tests {
         {
             let id = format!("sesn_application_cas_{index}");
             let repo = Arc::new(ephemeral_session_repo());
-            repo.save_owned("workspace-a", sample_persisted(&id)).await;
+            create_session_fixture(repo.as_ref(), "workspace-a", sample_persisted(&id)).await;
             let stale = repo.get(&id).await.unwrap();
             let state = ManagedState::new(RehydrateFake::default()).with_session_repo(repo.clone());
             let applied = state
@@ -996,7 +1011,7 @@ mod tests {
         let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
         let mut persisted = sample_persisted("sesn_1");
         persisted.environment_binding = Some("opaque-runtime-binding".to_string());
-        repo.save(persisted).await;
+        create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, persisted).await;
 
         // Fresh state (empty cache) sharing the durable repo — simulates a restart.
         let runtime = RehydrateFake::default();
@@ -1071,7 +1086,7 @@ mod tests {
             .prepare("sesn_pending", desired.clone())
             .unwrap();
         pending.resources.start_attempt().unwrap();
-        repo.save(pending).await;
+        create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, pending).await;
 
         let runtime = RehydrateFake::default();
         let restored = runtime.restored.clone();
@@ -1100,7 +1115,7 @@ mod tests {
         deleted.status = "deleted".into();
         deleted.resources.adopt_legacy_active("sesn_deleted");
         deleted.resources.begin_release().unwrap();
-        repo.save_owned("workspace-a", deleted).await;
+        create_session_fixture(repo.as_ref(), "workspace-a", deleted).await;
 
         let restarted = ManagedState::new(RehydrateFake::default()).with_session_repo(repo.clone());
         assert_eq!(restarted.reconcile_resource_activations().await, 1);

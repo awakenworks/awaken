@@ -1,6 +1,8 @@
 //! Adapter integration tests with fake runtimes: the happy path, and the HITL
 //! await -> `requires_action` -> `user.tool_confirmation` -> resume round-trip.
 
+mod support;
+
 use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::content::ContentBlock;
@@ -17,6 +19,8 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
+
+use support::{ScheduledConflictRepository, replace_session_fixture};
 
 async fn json_call(
     app: &Router,
@@ -117,12 +121,31 @@ impl SessionRuntime for EchoFake {
 }
 
 /// A runtime whose turn fails; the `kind` selects the HTTP status.
-struct FailingFake(RunErrorKind);
+struct FailingFake {
+    kind: RunErrorKind,
+    environment_binding: Option<&'static str>,
+}
+
+impl FailingFake {
+    fn with_environment(kind: RunErrorKind) -> Self {
+        Self {
+            kind,
+            environment_binding: Some("opaque-failed-turn-binding"),
+        }
+    }
+
+    fn without_environment(kind: RunErrorKind) -> Self {
+        Self {
+            kind,
+            environment_binding: None,
+        }
+    }
+}
 
 #[async_trait::async_trait]
 impl SessionRuntime for FailingFake {
     async fn session_environment_binding(&self, _thread: &str) -> Result<Option<String>, RunError> {
-        Ok(Some("opaque-failed-turn-binding".to_string()))
+        Ok(self.environment_binding.map(str::to_string))
     }
 
     async fn run(
@@ -131,7 +154,7 @@ impl SessionRuntime for FailingFake {
         _t: &str,
         _c: Vec<ContentBlock>,
     ) -> Result<StepOutcome, RunError> {
-        Err(match self.0 {
+        Err(match self.kind {
             RunErrorKind::BadRequest => RunError::bad_request("nope"),
             RunErrorKind::Internal => RunError::internal("boom"),
         })
@@ -177,7 +200,8 @@ async fn failed_first_turn_still_persists_the_materialized_environment() {
             .expect("open ephemeral Managed Session repository"),
     );
     let app = router(Arc::new(
-        ManagedState::new(FailingFake(RunErrorKind::Internal)).with_session_repo(repo.clone()),
+        ManagedState::new(FailingFake::with_environment(RunErrorKind::Internal))
+            .with_session_repo(repo.clone()),
     ));
     let id = create(&app).await;
     let response = app
@@ -208,13 +232,146 @@ async fn failed_first_turn_still_persists_the_materialized_environment() {
     );
 }
 
+#[derive(Clone, Copy)]
+enum EnvironmentBindingRule {
+    Missing,
+    Same,
+    New,
+    ConcurrentMetadata,
+    ConflictsExhausted,
+}
+
+/// Environment binding is a narrow aggregate command generated from this cause graph:
+///
+/// runtime has no binding ────────────────────────────────> no root mutation
+/// runtime binding equals durable binding ────────────────> idempotent no-op
+/// new binding + root CAS applies ────────────────────────> persist binding
+/// new binding + one unrelated root conflict ────────────> reload, preserve fact, persist binding
+/// new binding + root conflict x3 ────────────────────────> fail closed, no stale overwrite
+///
+/// | Rule | Runtime binding | Durable same | CAS schedule | Effect |
+/// |---|---|---|---|---|
+/// | B1 | none | - | - | no write |
+/// | B2 | value | yes | - | no write |
+/// | B3 | value | no | apply | binding committed |
+/// | B4 | value | no | metadata conflict once | both facts committed |
+/// | B5 | value | no | conflict x3 | 409; binding absent |
+#[tokio::test]
+async fn environment_binding_root_cas_cases_follow_the_decision_table() {
+    for (index, rule) in [
+        EnvironmentBindingRule::Missing,
+        EnvironmentBindingRule::Same,
+        EnvironmentBindingRule::New,
+        EnvironmentBindingRule::ConcurrentMetadata,
+        EnvironmentBindingRule::ConflictsExhausted,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let inner = Arc::new(
+            SqliteManagedSessionRepository::open_in_memory()
+                .expect("open environment binding repository"),
+        );
+        let repo = Arc::new(ScheduledConflictRepository::new(inner));
+        let runtime = if matches!(rule, EnvironmentBindingRule::Missing) {
+            FailingFake::without_environment(RunErrorKind::Internal)
+        } else {
+            FailingFake::with_environment(RunErrorKind::Internal)
+        };
+        let app = router(Arc::new(
+            ManagedState::new(runtime).with_session_repo(repo.clone()),
+        ));
+        let id = create(&app).await;
+
+        if matches!(rule, EnvironmentBindingRule::Same) {
+            let mut session = repo.get(&id).await.unwrap();
+            session.environment_binding = Some("opaque-failed-turn-binding".to_string());
+            replace_session_fixture(repo.as_ref(), "default", session, "test:binding:same").await;
+        }
+        let calls_before = repo.commit_call_count();
+        match rule {
+            EnvironmentBindingRule::ConcurrentMetadata => {
+                repo.metadata_change_on_next(1, "concurrent", "preserved");
+            }
+            EnvironmentBindingRule::ConflictsExhausted => {
+                repo.conflicts_on_next(&[1, 2, 3]);
+            }
+            _ => {}
+        }
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/sessions/{id}/events"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "events": [{
+                                "type": "user.message",
+                                "content": [{"type": "text", "text": format!("B{}", index + 1)}]
+                            }]
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let durable = repo.get(&id).await.unwrap();
+        let calls = repo.commit_call_count() - calls_before;
+
+        match rule {
+            EnvironmentBindingRule::Missing => {
+                assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR, "B1");
+                assert_eq!(calls, 0, "B1");
+                assert!(durable.environment_binding.is_none(), "B1");
+            }
+            EnvironmentBindingRule::Same => {
+                assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR, "B2");
+                assert_eq!(calls, 0, "B2");
+            }
+            EnvironmentBindingRule::New => {
+                assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR, "B3");
+                assert_eq!(calls, 1, "B3");
+                assert_eq!(
+                    durable.environment_binding.as_deref(),
+                    Some("opaque-failed-turn-binding"),
+                    "B3"
+                );
+            }
+            EnvironmentBindingRule::ConcurrentMetadata => {
+                assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR, "B4");
+                assert_eq!(calls, 2, "B4");
+                assert_eq!(
+                    durable.metadata.get("concurrent").map(String::as_str),
+                    Some("preserved"),
+                    "B4"
+                );
+                assert_eq!(
+                    durable.environment_binding.as_deref(),
+                    Some("opaque-failed-turn-binding"),
+                    "B4"
+                );
+            }
+            EnvironmentBindingRule::ConflictsExhausted => {
+                assert_eq!(response.status(), StatusCode::CONFLICT, "B5");
+                assert_eq!(calls, 3, "B5");
+                assert!(durable.environment_binding.is_none(), "B5");
+            }
+        }
+    }
+}
+
 #[tokio::test]
 async fn run_error_kind_maps_to_http_status() {
     for (kind, want) in [
         (RunErrorKind::BadRequest, StatusCode::BAD_REQUEST),
         (RunErrorKind::Internal, StatusCode::INTERNAL_SERVER_ERROR),
     ] {
-        let app = router(Arc::new(ManagedState::new(FailingFake(kind))));
+        let app = router(Arc::new(ManagedState::new(FailingFake::with_environment(
+            kind,
+        ))));
         let id = create(&app).await;
         let req = Request::builder()
             .method("POST")
@@ -1344,7 +1501,7 @@ async fn missing_content_type_is_400_with_error_envelope() {
 #[tokio::test]
 async fn caller_fault_is_400_with_invalid_request_envelope() {
     // A caller-fault RunError -> 400 + the invalid_request envelope.
-    let app = router(Arc::new(ManagedState::new(FailingFake(
+    let app = router(Arc::new(ManagedState::new(FailingFake::with_environment(
         RunErrorKind::BadRequest,
     ))));
     let id = create(&app).await;

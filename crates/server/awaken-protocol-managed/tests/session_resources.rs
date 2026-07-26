@@ -3,6 +3,8 @@
 //! session, but a `memory_store` binds at session-create time only — attaching one
 //! to a running session fails closed with a 400 (`invalid_request_error`).
 
+mod support;
+
 use awaken_admin_config_api::SqliteAdminStore;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_protocol_managed::{
@@ -22,6 +24,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
+use support::ScheduledConflictRepository;
 use tower::ServiceExt;
 
 fn input(
@@ -740,6 +743,130 @@ async fn failed_live_activation_rolls_back_before_reporting_failure() {
         durable.resources.activations[0].state,
         awaken_session_contract::ActivationState::Failed
     );
+}
+
+#[derive(Clone, Copy)]
+enum ResourceCasRule {
+    NoConflict,
+    PrepareConflictOnce,
+    SettlementConflictOnce,
+    SettlementConflictsExhausted,
+    RollbackSettlementConflictOnce,
+    ConcurrentResourceChange,
+}
+
+/// Resource commands use the repository root CAS as their only serializer.
+/// The cases are generated from this cause graph:
+///
+/// unchanged Resource state + prepare CAS conflict -> reload/rebase before I/O;
+/// durable Prepared + runtime effect + root-only conflict -> settle the same
+/// Resource revision on the latest aggregate; a changed/exhausted fence leaves
+/// durable pending work for recovery. Runtime failure follows the same settlement
+/// path, but records rollback rather than Active.
+///
+/// | Rule | Runtime | Prepare CAS | Settlement CAS | Result | Runtime applies | Durable Resource |
+/// |------|---------|-------------|----------------|--------|-----------------|------------------|
+/// | C1 | success | apply | apply | success | 1 | Active |
+/// | C2 | success | conflict once | apply | success | 1 | Active |
+/// | C3 | success | apply | conflict once | success | 1 | Active |
+/// | C4 | success | apply | conflict x3 | conflict | 1 | Prepared/recoverable |
+/// | C5 | fail then rollback | apply | conflict once | runtime error | 2 | Failed/no pending |
+/// | C6 | success | another Resource wins | - | conflict | 0 | other intent preserved |
+#[tokio::test]
+async fn resource_root_cas_cases_follow_the_decision_table_without_a_process_lock() {
+    for (index, rule) in [
+        ResourceCasRule::NoConflict,
+        ResourceCasRule::PrepareConflictOnce,
+        ResourceCasRule::SettlementConflictOnce,
+        ResourceCasRule::SettlementConflictsExhausted,
+        ResourceCasRule::RollbackSettlementConflictOnce,
+        ResourceCasRule::ConcurrentResourceChange,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let runtime = AcceptingFake::default();
+        let applied = runtime.applied.clone();
+        let fail_next = runtime.fail_next_apply.clone();
+        let inner = std::sync::Arc::new(
+            SqliteManagedSessionRepository::open_in_memory().expect("open ephemeral Session store"),
+        );
+        let repo = std::sync::Arc::new(ScheduledConflictRepository::new(inner));
+        let state = ManagedState::new(runtime)
+            .with_session_repo(repo.clone())
+            .with_resource_catalog(resource_catalog());
+        let request = serde_json::from_value(json!({ "agent": "a" })).unwrap();
+        let id = state.create_session(request, None).await.unwrap().id;
+
+        match rule {
+            ResourceCasRule::NoConflict => {}
+            ResourceCasRule::PrepareConflictOnce => repo.conflict_on_next(1),
+            ResourceCasRule::SettlementConflictOnce => repo.conflict_on_next(2),
+            ResourceCasRule::SettlementConflictsExhausted => {
+                repo.conflicts_on_next(&[2, 3, 4]);
+            }
+            ResourceCasRule::RollbackSettlementConflictOnce => {
+                fail_next.store(true, std::sync::atomic::Ordering::SeqCst);
+                repo.conflict_on_next(2);
+            }
+            ResourceCasRule::ConcurrentResourceChange => repo.resource_change_on_next(1),
+        }
+
+        let result = state
+            .create_resource(
+                &id,
+                json!({
+                    "type": "file",
+                    "file_id": format!("file-cas-{index}"),
+                    "mount_path": format!("/cas-{index}.txt")
+                }),
+            )
+            .await;
+        let durable = repo.get(&id).await.unwrap();
+        let apply_count = applied.lock().unwrap().len();
+
+        match rule {
+            ResourceCasRule::NoConflict
+            | ResourceCasRule::PrepareConflictOnce
+            | ResourceCasRule::SettlementConflictOnce => {
+                assert!(result.is_ok(), "C{}: {result:?}", index + 1);
+                assert_eq!(apply_count, 1, "C{}", index + 1);
+                assert!(durable.resources.pending.is_none(), "C{}", index + 1);
+                assert_eq!(durable.resources.active.inputs.len(), 1, "C{}", index + 1);
+            }
+            ResourceCasRule::SettlementConflictsExhausted => {
+                assert!(
+                    matches!(result, Err(awaken_protocol_managed::StateError::Conflict)),
+                    "C4: {result:?}"
+                );
+                assert_eq!(apply_count, 1, "C4");
+                assert!(durable.resources.pending.is_some(), "C4");
+                assert!(durable.resources.needs_reconciliation(), "C4");
+            }
+            ResourceCasRule::RollbackSettlementConflictOnce => {
+                assert!(
+                    format!("{result:?}").contains("injected activation failure"),
+                    "C5"
+                );
+                assert_eq!(apply_count, 2, "C5");
+                assert!(durable.resources.pending.is_none(), "C5");
+                assert_eq!(
+                    durable.resources.activations.last().unwrap().state,
+                    awaken_session_contract::ActivationState::Failed,
+                    "C5"
+                );
+            }
+            ResourceCasRule::ConcurrentResourceChange => {
+                assert!(
+                    matches!(result, Err(awaken_protocol_managed::StateError::Conflict)),
+                    "C6: {result:?}"
+                );
+                assert_eq!(apply_count, 0, "C6");
+                assert!(durable.resources.pending.is_some(), "C6");
+                assert_eq!(durable.resources.revision, 2, "C6");
+            }
+        }
+    }
 }
 
 #[tokio::test]
