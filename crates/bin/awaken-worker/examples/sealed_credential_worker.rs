@@ -72,6 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let provider_ref = std::env::var("AWAKEN_TEST_PROVIDER_REF")?;
     let endpoint = InferenceEndpoint {
         adapter_kind: "anthropic".into(),
+        api_dialect: "anthropic_messages".into(),
         base_url: std::env::var("AWAKEN_TEST_PROVIDER_URL")?,
         upstream_model: std::env::var("AWAKEN_TEST_PROVIDER_MODEL")?,
     };

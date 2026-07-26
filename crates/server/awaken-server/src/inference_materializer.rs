@@ -21,7 +21,7 @@ use awaken_runtime_contract::resolved::{ModelProvisioning, ResolvedModelCandidat
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_session_executor::InferenceExecutorMaterializer;
 
-use crate::executor_from_materialized_access;
+use crate::executor_from_materialized_endpoint;
 
 /// Runtime adapter that materializes only the access already pinned in an
 /// executable snapshot. It cannot enumerate the model catalog or select a
@@ -93,7 +93,8 @@ impl CredentialInferenceMaterializer {
         if endpoint.upstream_model.is_empty() {
             return Ok(None);
         }
-        let executor = executor_from_materialized_access(
+        let executor = executor_from_materialized_endpoint(
+            &endpoint.api_dialect,
             &endpoint.adapter_kind,
             Some(&endpoint.base_url),
             secret.as_ref(),
@@ -427,6 +428,7 @@ mod tests {
                 upstream_model: None,
                 source: Default::default(),
                 status: Default::default(),
+                last_seen_at_unix_ms: None,
             })
             .await
             .unwrap();
@@ -574,6 +576,7 @@ mod tests {
             )),
             awaken_runtime_contract::InferenceEndpoint {
                 adapter_kind: "anthropic".into(),
+                api_dialect: "anthropic_messages".into(),
                 base_url: "https://provider.invalid/v1".into(),
                 upstream_model: "claude-x".into(),
             },
@@ -1068,6 +1071,7 @@ mod tests {
                 upstream_model: None,
                 source: Default::default(),
                 status: Default::default(),
+                last_seen_at_unix_ms: None,
             })
             .await
             .unwrap();

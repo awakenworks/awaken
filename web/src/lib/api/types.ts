@@ -4,15 +4,21 @@
 
 // ---- admin config plane ----
 
+import type { ModelTarget } from "./model-types";
+
 export type {
   ApiDialect,
   CatalogSyncResult,
   EnvironmentProviderProposal,
   ModelAttributes,
+  ModelTarget,
   Offering,
   ProtocolEndpoint,
   Provider,
   ProviderCatalog,
+  ProviderConnectionView,
+  ProviderConnectionSummary,
+  ProviderDriverDescriptor,
 } from "./model-types";
 
 export type CredentialBinding =
@@ -59,9 +65,17 @@ export interface ResolvedMcpServerView {
   credential_present: boolean;
 }
 export interface InferenceProfile {
-  model_id: string;
-  credential_binding: CredentialBinding;
+  workspace_id: string;
+  primary: ProfileCandidate;
+  fallbacks: ProfileCandidate[];
   disabled_endpoint_ids: string[];
+}
+export interface ProfileCandidate {
+  target: ModelTarget;
+  credential_binding: CredentialBinding;
+}
+export interface ResolvedCandidatesView {
+  candidates: ResolvedInferenceView[];
 }
 export interface McpServerDef {
   id: string;

@@ -33,13 +33,24 @@ cargo run --locked -q -p awaken-admin-config-api --features schema --example exp
 #    one file per type so quicktype emits a single deduped .d.ts.
 generated_ts=0
 if command -v npx >/dev/null 2>&1; then
-    python3 - "$tmp/schemas.json" "$tmp/split" <<'PY'
+    # The WindowsApps `python3.exe` shim is discoverable but not executable from
+    # Git Bash. Prefer the real `python.exe` on Windows; elsewhere retain the
+    # conventional python3-first lookup.
+    if [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ]]; then
+        python_bin=python
+    elif command -v python3 >/dev/null 2>&1; then
+        python_bin=python3
+    else
+        python_bin=python
+    fi
+    "$python_bin" - "$tmp/schemas.json" "$tmp/split" <<'PY'
 import json, os, sys
-data = json.load(open(sys.argv[1]))
+data = json.load(open(sys.argv[1], encoding="utf-8"))
 os.makedirs(sys.argv[2], exist_ok=True)
 for name, schema in data["schemas"].items():
     schema.setdefault("title", name)
-    json.dump(schema, open(os.path.join(sys.argv[2], f"{name}.json"), "w"))
+    with open(os.path.join(sys.argv[2], f"{name}.json"), "w", encoding="utf-8") as handle:
+        json.dump(schema, handle, ensure_ascii=False)
 PY
     if npx --yes quicktype --quiet -s schema --lang typescript --just-types \
         --prefer-unions -o "$tmp/model-config.d.ts" "$tmp"/split/*.json 2>/dev/null; then

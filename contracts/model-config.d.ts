@@ -28,19 +28,19 @@ export interface InputElement {
     binding_id:    string;
     instructions?: null | string;
     mount_path:    string;
-    target:        Target;
+    target:        InputTarget;
     [property: string]: unknown;
 }
 
 export type Access = "read_only" | "read_write";
 
-export interface Target {
+export interface InputTarget {
     id:   string;
-    kind: Kind;
+    kind: TargetKind;
     [property: string]: unknown;
 }
 
-export type Kind = "file" | "memory_store" | "repository";
+export type TargetKind = "file" | "memory_store" | "repository";
 
 /**
  * RFC 9457 Problem Details with stable application extension members (`code`, `request_id`,
@@ -107,12 +107,15 @@ export interface AuthorOfferingRequest {
  *
  * The `codex`/OpenAI chat wire.
  *
+ * The OpenAI Responses API wire. This remains distinct from Chat
+ * Completions even though both are served by the OpenAI adapter family.
+ *
  * The Gemini wire.
  *
  * Gemini on Vertex AI: native Gemini payloads with OAuth Bearer auth and
  * a project/location endpoint.
  */
-export type APIDialect = "anthropic_messages" | "open_ai_chat" | "gemini" | "vertex_gemini";
+export type APIDialect = "anthropic_messages" | "open_ai_chat" | "open_ai_responses" | "gemini" | "vertex_gemini";
 
 /**
  * The availability of one credential source at a point in time.
@@ -141,6 +144,10 @@ export interface CatalogSyncResult {
     activated:          number;
     discovered:         number;
     marked_unavailable: number;
+    /**
+     * Observation time shared by every row in this successful atomic refresh.
+     */
+    observed_at_unix_ms: number;
     [property: string]: unknown;
 }
 
@@ -369,37 +376,23 @@ export interface EnvironmentProviderProposal {
 
 /**
  * An authored "how to run this model" unit (ADR-0043 `InferenceProfile` /
- * oversight-next `ProviderIdentity`): it names the model, the credential binding
- * (vault-backed, never inline), and any endpoints the operator has toggled off.
- * The resolver reads it — it is never flowed into the runtime.
+ * oversight-next `ProviderIdentity`): it names an exact primary and ordered
+ * fallback candidates, each with a vault-backed (never inline) credential
+ * binding, plus endpoints the operator has toggled off. The resolver reads it —
+ * it is never flowed into the runtime.
  */
 export interface InferenceProfile {
-    /**
-     * The credential-identity axis. `CredentialBinding` is *already* an
-     * [`AxisBinding`] over provider identities — `Exact` is a pin, and
-     * `OneOfCredentialPool` is a pool with failover — so the identity axis needs
-     * no new type here; each resolved model reuses this binding.
-     */
-    credential_binding:     CredentialBindingObject;
     disabled_endpoint_ids?: string[];
     /**
-     * Additional models the resolver falls over to, in order, after `model_id`.
-     * Empty (the default) means a single-model profile — unchanged behavior, and
-     * older stored rows load without the field. Together with `model_id` these
-     * form the [`AxisBinding`] the profile exposes as [`model_axis`].
-     *
-     * [`model_axis`]: InferenceProfile::model_axis
+     * Explicit alternates, tried in authored order. The resolver never appends an
+     * implicit Cloud, BYOK, or local fallback.
      */
-    model_fallbacks?: string[];
+    fallbacks?: PrimaryElement[];
     /**
-     * The pinned / primary model — tried first. Kept as a bare field for wire and
-     * storage compatibility; the ordered model axis is [`model_axis`] (this plus
-     * [`model_fallbacks`]).
-     *
-     * [`model_axis`]: InferenceProfile::model_axis
-     * [`model_fallbacks`]: InferenceProfile::model_fallbacks
+     * Exact preferred offering. Provider and endpoint qualifiers prevent a model
+     * id shared by BYOK and Cloud sources from becoming ambiguous at runtime.
      */
-    model_id: string;
+    primary: PrimaryElement;
     /**
      * Owning workspace, stamped by the trusted configuration edge. Empty only
      * for legacy rows, which scoped APIs treat as unowned.
@@ -409,11 +402,20 @@ export interface InferenceProfile {
 }
 
 /**
- * The credential-identity axis. `CredentialBinding` is *already* an
- * [`AxisBinding`] over provider identities — `Exact` is a pin, and
- * `OneOfCredentialPool` is a pool with failover — so the identity axis needs
- * no new type here; each resolved model reuses this binding.
+ * One explicit step in a profile's failover chain. Binding credentials per
+ * target allows a BYOK primary and Cloud fallback (or the reverse) without ever
+ * guessing which identity may authenticate which provider.
  *
+ * Exact preferred offering. Provider and endpoint qualifiers prevent a model
+ * id shared by BYOK and Cloud sources from becoming ambiguous at runtime.
+ */
+export interface PrimaryElement {
+    credential_binding: CredentialBindingObject;
+    target:             PrimaryTarget;
+    [property: string]: unknown;
+}
+
+/**
  * The "which credential" axis (oversight-next / awaken-management-contract).
  *
  * No credential is needed.
@@ -427,6 +429,17 @@ export interface CredentialBindingObject {
     type:                  Type;
     credential_source_id?: string;
     credential_pool_id?:   string;
+    [property: string]: unknown;
+}
+
+/**
+ * Stable, secret-free identity used to select one catalog offering. `model_id`
+ * alone remains accepted for compatibility only when it resolves uniquely.
+ */
+export interface PrimaryTarget {
+    model_id:              string;
+    protocol_endpoint_id?: null | string;
+    provider_id?:          null | string;
     [property: string]: unknown;
 }
 
@@ -447,6 +460,37 @@ export interface ModelAttributes {
      * Max output tokens the model emits, when published.
      */
     max_output_tokens?: number | null;
+    /**
+     * Field-level origin. Values stay flat and convenient for runtime consumers;
+     * management surfaces use this map to explain whether each fact was authored,
+     * observed from a provider API, or supplied by Awaken's curated registry.
+     */
+    provenance?: { [key: string]: ProvenanceValue };
+    [property: string]: unknown;
+}
+
+/**
+ * Explainability metadata for one field in [`ModelAttributes`].
+ */
+export interface ProvenanceValue {
+    observed_at_unix_ms: number;
+    source:              ProvenanceSource;
+    [property: string]: unknown;
+}
+
+/**
+ * Authority behind one published model-attribute value.
+ */
+export type ProvenanceSource = "manual" | "provider_api" | "curated";
+
+/**
+ * Stable, secret-free identity used to select one catalog offering. `model_id`
+ * alone remains accepted for compatibility only when it resolves uniquely.
+ */
+export interface ModelTarget {
+    model_id:              string;
+    protocol_endpoint_id?: null | string;
+    provider_id?:          null | string;
     [property: string]: unknown;
 }
 
@@ -456,6 +500,13 @@ export interface ModelAttributes {
  */
 export interface Offering {
     dialect: APIDialect;
+    /**
+     * Unix timestamp (milliseconds) of the most recent complete provider listing
+     * that contained this route. Manual offerings never carry this observation.
+     * When a later complete listing omits the model, the timestamp is retained so
+     * operators can distinguish "last seen then" from "never observed".
+     */
+    last_seen_at_unix_ms?: number | null;
     /**
      * The protocol-agnostic catalog model id (e.g. `claude-opus-4-8`).
      */
@@ -467,7 +518,7 @@ export interface Offering {
      * provider refresh; provider-discovered rows follow the provider's latest
      * complete listing.
      */
-    source?: Source;
+    source?: OfferingSource;
     /**
      * Whether this route may be selected for a new publication. Provider sync is
      * non-destructive: a missing discovered model becomes unavailable instead of
@@ -492,7 +543,7 @@ export interface Offering {
  *
  * Observed from the configured endpoint's provider API.
  */
-export type Source = "manual" | "provider_api";
+export type OfferingSource = "manual" | "provider_api";
 
 /**
  * Whether this route may be selected for a new publication. Provider sync is
@@ -606,6 +657,21 @@ export interface ModelAttributeValue {
      * Max output tokens the model emits, when published.
      */
     max_output_tokens?: number | null;
+    /**
+     * Field-level origin. Values stay flat and convenient for runtime consumers;
+     * management surfaces use this map to explain whether each fact was authored,
+     * observed from a provider API, or supplied by Awaken's curated registry.
+     */
+    provenance?: { [key: string]: ProvenanceObject };
+    [property: string]: unknown;
+}
+
+/**
+ * Explainability metadata for one field in [`ModelAttributes`].
+ */
+export interface ProvenanceObject {
+    observed_at_unix_ms: number;
+    source:              ProvenanceSource;
     [property: string]: unknown;
 }
 
@@ -615,6 +681,13 @@ export interface ModelAttributeValue {
  */
 export interface OfferingElement {
     dialect: APIDialect;
+    /**
+     * Unix timestamp (milliseconds) of the most recent complete provider listing
+     * that contained this route. Manual offerings never carry this observation.
+     * When a later complete listing omits the model, the timestamp is retained so
+     * operators can distinguish "last seen then" from "never observed".
+     */
+    last_seen_at_unix_ms?: number | null;
     /**
      * The protocol-agnostic catalog model id (e.g. `claude-opus-4-8`).
      */
@@ -626,7 +699,7 @@ export interface OfferingElement {
      * provider refresh; provider-discovered rows follow the provider's latest
      * complete listing.
      */
-    source?: Source;
+    source?: OfferingSource;
     /**
      * Whether this route may be selected for a new publication. Provider sync is
      * non-destructive: a missing discovered model becomes unavailable instead of
@@ -657,6 +730,151 @@ export interface ProviderValue {
     [property: string]: unknown;
 }
 
+export interface ProviderConnectionSummary {
+    active_credentials:    number;
+    active_models:         number;
+    display_name:          string;
+    endpoint_ids:          string[];
+    last_seen_at_unix_ms?: number | null;
+    provider_id:           string;
+    status:                ProviderConnectionSummaryStatus;
+    unavailable_models:    number;
+    [property: string]: unknown;
+}
+
+export type ProviderConnectionSummaryStatus = "not_configured" | "connected" | "ready" | "stale" | "needs_attention" | "unavailable";
+
+export interface ProviderConnectionView {
+    credential: Credential;
+    endpoint:   Endpoint;
+    provider:   ProviderObject;
+    sync:       Sync;
+    [property: string]: unknown;
+}
+
+/**
+ * Secret-free credential projection. Internal token-source argv and vault refs
+ * never cross the admin boundary; consumers bind this stable source id.
+ */
+export interface Credential {
+    env_key?:      null | string;
+    id:            string;
+    kind:          CredentialKind;
+    oauth_helper?: CredentialSource | null;
+    provider_id?:  null | string;
+    status:        CredentialStatus;
+    version:       number;
+    workspace_id:  string;
+    [property: string]: unknown;
+}
+
+/**
+ * A concrete protocol surface of a provider: which wire + which URL. Distinct
+ * flavors of one provider typically have distinct `base_url`s.
+ */
+export interface Endpoint {
+    /**
+     * `http(s)` base URL override (proxy / self-hosted / compat endpoint).
+     */
+    base_url?:    null | string;
+    dialect:      APIDialect;
+    display_name: string;
+    id:           string;
+    provider_id:  string;
+    /**
+     * Request timeout in seconds.
+     */
+    timeout_secs: number;
+    version:      number;
+    [property: string]: unknown;
+}
+
+/**
+ * A vendor namespace (`anthropic`, `openai`, …).
+ */
+export interface ProviderObject {
+    display_name: string;
+    id:           string;
+    /**
+     * URL-safe vendor slug, unique in the catalog.
+     */
+    slug: string;
+    /**
+     * Append-only version bumped on change.
+     */
+    version: number;
+    [property: string]: unknown;
+}
+
+/**
+ * Durable outcome of reconciling one complete provider model listing.
+ */
+export interface Sync {
+    activated:          number;
+    discovered:         number;
+    marked_unavailable: number;
+    /**
+     * Observation time shared by every row in this successful atomic refresh.
+     */
+    observed_at_unix_ms: number;
+    [property: string]: unknown;
+}
+
+/**
+ * One supported provider driver's authoring capabilities. The list returned by
+ * [`provider_driver_descriptors`] is the single source used by API clients to
+ * render provider cards and forms.
+ */
+export interface ProviderDriverDescriptor {
+    auth_methods:             AuthMethodElement[];
+    configuration_fields:     ConfigurationFieldElement[];
+    default_endpoints:        DefaultEndpointElement[];
+    display_name:             string;
+    documentation_url?:       null | string;
+    provider_kind:            string;
+    supported_dialects:       APIDialect[];
+    supports_model_discovery: boolean;
+    [property: string]: unknown;
+}
+
+/**
+ * Authentication input a provider connection can request. This describes the
+ * authoring UI only; credential material remains owned by the vault.
+ */
+export type AuthMethodElement = "api_key" | "o_auth";
+
+export interface ConfigurationFieldElement {
+    advanced:     boolean;
+    key:          string;
+    kind:         ConfigurationFieldKind;
+    label:        string;
+    placeholder?: null | string;
+    required:     boolean;
+    [property: string]: unknown;
+}
+
+/**
+ * Input widget rendered from a provider descriptor. Descriptors are static
+ * adapter capabilities, not user configuration and not another model catalog.
+ */
+export type ConfigurationFieldKind = "secret" | "text" | "url";
+
+export interface DefaultEndpointElement {
+    base_url:  string;
+    dialect:   APIDialect;
+    id_suffix: string;
+    [property: string]: unknown;
+}
+
+/**
+ * Secret-free authoring input. Provenance is intentionally absent: external
+ * callers cannot claim that a manual value came from a provider or curated source.
+ */
+export interface PutModelAttributesRequest {
+    context_window?:    number | null;
+    max_output_tokens?: number | null;
+}
+
 /**
  * Resolve an authored profile within a workspace's credential scope.
  */
@@ -666,14 +884,14 @@ export interface ResolveProfileRequest {
 }
 
 /**
- * A dry-run resolve request: bind `model_id` (+ credential `binding`) against the
- * authored catalog. The workspace scopes which credential sources are visible.
+ * A dry-run resolve request. New callers send a complete `target`; legacy
+ * `model_id` remains accepted only when it resolves to exactly one active offering.
  */
 export interface ResolveRequest {
     binding:      Binding;
-    model_id:     string;
+    model_id?:    null | string;
+    target?:      null | TargetObject;
     workspace_id: string;
-    [property: string]: unknown;
 }
 
 /**
@@ -690,6 +908,17 @@ export interface Binding {
     type:                  Type;
     credential_source_id?: string;
     credential_pool_id?:   string;
+    [property: string]: unknown;
+}
+
+/**
+ * Stable, secret-free identity used to select one catalog offering. `model_id`
+ * alone remains accepted for compatibility only when it resolves uniquely.
+ */
+export interface TargetObject {
+    model_id:              string;
+    protocol_endpoint_id?: null | string;
+    provider_id?:          null | string;
     [property: string]: unknown;
 }
 
@@ -735,6 +964,22 @@ export interface ResolvedInferenceView {
     model_id:             string;
     protocol_endpoint_id: string;
     provider_id:          string;
+    [property: string]: unknown;
+}
+
+export interface SaveProviderConnectionRequest {
+    base_url?:    null | string;
+    dialect:      APIDialect;
+    display_name: string;
+    endpoint_id:  string;
+    provider_id:  string;
+    /**
+     * Write-only API key. It is tested before entering the vault and never
+     * appears in the response or any catalog row.
+     */
+    secret:        string;
+    timeout_secs?: number;
+    workspace_id:  string;
     [property: string]: unknown;
 }
 

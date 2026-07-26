@@ -390,6 +390,7 @@ mod tests {
             )),
             InferenceEndpoint {
                 adapter_kind: "anthropic".into(),
+                api_dialect: "anthropic_messages".into(),
                 base_url: "https://db.example/v1".into(),
                 upstream_model: "upstream-model".into(),
             },
@@ -563,6 +564,7 @@ mod tests {
                 )),
                 InferenceEndpoint {
                     adapter_kind: "anthropic".into(),
+                    api_dialect: "anthropic_messages".into(),
                     base_url: "https://db.example/v1".into(),
                     upstream_model: "upstream-model".into(),
                 },
