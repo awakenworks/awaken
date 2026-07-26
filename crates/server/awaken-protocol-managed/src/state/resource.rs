@@ -65,8 +65,6 @@ enum WireResource {
         #[serde(default)]
         instructions: Option<String>,
         #[serde(default)]
-        authorization_token: Option<String>,
-        #[serde(default)]
         checkout: Option<WireCheckout>,
     },
 }
@@ -94,7 +92,6 @@ pub(crate) enum ParsedInputTarget {
     MemoryStore(awaken_resource_contract::MemoryStoreId),
     Repository {
         remote_url: String,
-        authorization_token: Option<String>,
         initial_branch: Option<String>,
     },
 }
@@ -135,13 +132,11 @@ impl WireResource {
                 url,
                 mount_path,
                 instructions,
-                authorization_token,
                 checkout,
             } => ParsedSessionInput {
                 mount_path: mount_path.unwrap_or_else(|| format!("/workspace/{}", repo_name(&url))),
                 target: ParsedInputTarget::Repository {
                     remote_url: url,
-                    authorization_token,
                     initial_branch: match checkout {
                         Some(WireCheckout::Branch { name }) => Some(name),
                         Some(WireCheckout::Commit { .. }) | None => None,
@@ -155,6 +150,9 @@ impl WireResource {
 }
 
 pub(crate) fn parse_session_input(v: &serde_json::Value) -> Option<ParsedSessionInput> {
+    if v.get("authorization_token").is_some() {
+        return None;
+    }
     serde_json::from_value::<WireResource>(v.clone())
         .ok()
         .map(WireResource::into_parsed_input)

@@ -42,13 +42,20 @@ async fn run(command: console::Command) -> Result<(), String> {
             println!("awaken {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        console::Command::Config { json } => {
-            let deployment = ResolvedDeployment::load(ConfigOverrides::default())?;
+        console::Command::Config { json, config_path } => {
+            let deployment = ResolvedDeployment::load(ConfigOverrides {
+                config_path,
+                ..Default::default()
+            })?;
             println!("{}", deployment.report(json).trim_end());
             Ok(())
         }
-        console::Command::Worker { server } => {
+        console::Command::Worker {
+            server,
+            config_path,
+        } => {
             let deployment = ResolvedDeployment::load(ConfigOverrides {
+                config_path,
                 role: Some(Role::Worker),
                 worker_server: Some(server.clone()),
                 ..Default::default()
@@ -97,6 +104,7 @@ async fn run(command: console::Command) -> Result<(), String> {
 
 async fn serve(args: console::StartArgs, presentation: Presentation) -> Result<(), String> {
     let deployment = ResolvedDeployment::load(ConfigOverrides {
+        config_path: args.config_path,
         role: Some(Role::Serve),
         data_dir: args.data_dir,
         port: args.port,
@@ -126,7 +134,7 @@ async fn serve_resolved(
         || deployment.runtime.store == awaken_runtime_host::StoreKind::Postgres;
     let migration_lock = if postgres_startup {
         let url = deployment.runtime.database_url.as_deref().ok_or_else(|| {
-            "a Postgres runtime requires AWAKEN_RUNTIME_DISPATCH_DATABASE_URL".to_owned()
+            "a Postgres runtime requires runtime.database_url in the deployment config".to_owned()
         })?;
         Some(
             awaken_runtime_host::PostgresMigrationLock::acquire(url)
@@ -228,7 +236,7 @@ fn warn_deprecations(deployment: &ResolvedDeployment) {
 fn friendly_bind_error(kind: &str, address: &str, error: std::io::Error) -> String {
     if error.kind() == std::io::ErrorKind::AddrInUse {
         format!(
-            "cannot start {kind} on {address}: the address is already in use; choose another with --port or AWAKEN_BIND"
+            "cannot start {kind} on {address}: the address is already in use; choose another with --port or bind in the deployment config"
         )
     } else {
         format!("cannot bind {kind} to {address}: {error}")

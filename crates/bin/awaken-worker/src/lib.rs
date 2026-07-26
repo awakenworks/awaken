@@ -14,7 +14,7 @@
 //! ([`CredentialInferenceMaterializer`]),
 //! which consumes the snapshot-pinned endpoint and credential reference and
 //! injects the credential from the shared vault — see
-//! [`awaken_control::open_inference_materialization_stores_from_env`]). The host's
+//! [`awaken_control::open_inference_materialization_stores`]). The host's
 //! [`NoModelConfiguredExecutor`]
 //! is only an inert construction placeholder: because the materializer is installed,
 //! an unavailable publication pin fails closed before that executor can run.
@@ -171,38 +171,14 @@ async fn shared_resource_wiring(
             }))
         }
         (Some(_), None) => Err(std::io::Error::other(
-            "AWAKEN_RESOURCE_DATABASE_URL requires shared AWAKEN_ADMIN_DB on a remote worker",
+            "resource_database_url requires a shared admin store on a remote worker",
         )
         .into()),
         (None, Some(_)) => Err(std::io::Error::other(
-            "shared AWAKEN_ADMIN_DB requires AWAKEN_RESOURCE_DATABASE_URL on a resource worker",
+            "a shared admin store requires resource_database_url on a resource worker",
         )
         .into()),
     }
-}
-
-async fn shared_resource_wiring_from_env(
-    credentials: Option<awaken_control::InferenceMaterializationStores>,
-) -> Result<Option<WorkerResourcePlane>, Box<dyn std::error::Error + Send + Sync>> {
-    let resource_url = std::env::var("AWAKEN_RESOURCE_DATABASE_URL")
-        .ok()
-        .filter(|value| !value.trim().is_empty());
-    let admin_value = std::env::var("AWAKEN_ADMIN_DB")
-        .ok()
-        .filter(|value| !value.trim().is_empty());
-    let admin_backend = admin_value.map(|value| {
-        if value.starts_with("postgres://") || value.starts_with("postgresql://") {
-            awaken_control::StoreBackend::Postgres(value)
-        } else {
-            awaken_control::StoreBackend::Sqlite(value.into())
-        }
-    });
-    shared_resource_wiring(credentials, resource_url.as_deref(), admin_backend.as_ref()).await
-}
-
-fn shared_credential_backend(value: Option<&str>) -> bool {
-    value
-        .is_some_and(|value| value.starts_with("postgres://") || value.starts_with("postgresql://"))
 }
 
 struct WorkerProcessConfig {
@@ -222,23 +198,13 @@ pub struct WorkerRunOptions {
 }
 
 impl WorkerProcessConfig {
-    fn from_env() -> Self {
-        let configured_grace = std::env::var("AWAKEN_WORKER_DRAIN_GRACE_SECS")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok());
+    fn embedded_defaults() -> Self {
         Self {
-            deployment: awaken_runtime_host::DeploymentConfig::from_env(),
-            manifest: StandardManifestConfig::from_env(),
-            admin_listen: Some(
-                std::env::var("AWAKEN_WORKER_ADMIN_LISTEN")
-                    .ok()
-                    .filter(|value| !value.is_empty())
-                    .unwrap_or_else(|| "0.0.0.0:9090".to_string()),
-            ),
-            graceful_drain: grace_window(true, configured_grace),
-            repository_credentials: shared_credential_backend(
-                std::env::var("AWAKEN_CREDENTIAL_DB").ok().as_deref(),
-            ),
+            deployment: awaken_runtime_host::DeploymentConfig::ephemeral(),
+            manifest: StandardManifestConfig::default(),
+            admin_listen: None,
+            graceful_drain: grace_window(true, None),
+            repository_credentials: false,
         }
     }
 }
@@ -364,24 +330,6 @@ impl StandardManifestConfig {
     pub fn with_max_concurrent(mut self, max_concurrent: u32) -> Self {
         self.max_concurrent = max_concurrent;
         self
-    }
-
-    /// Parse the legacy `AWAKEN_WORKER_*` manifest metadata once at a process
-    /// composition edge.
-    #[must_use]
-    pub fn from_env() -> Self {
-        let mut config = Self::default();
-        config.build_digest = std::env::var("AWAKEN_WORKER_BUILD_DIGEST")
-            .unwrap_or_else(|_| config.build_digest.clone());
-        config.zone = std::env::var("AWAKEN_WORKER_ZONE").ok();
-        config.extra_capabilities = std::env::var("AWAKEN_WORKER_CAPABILITIES")
-            .unwrap_or_default()
-            .split(',')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .collect();
-        config
     }
 }
 
@@ -627,6 +575,7 @@ impl WorkerNodeBuilder {
                 "Session container provider backend must not be empty".to_string(),
             ));
         }
+        let credential_observation_resolver = self.external_credential_resolver.clone();
         if let Some(resolver) = self.external_credential_resolver.take() {
             let Some(materializer) = self.credential_materializer.take() else {
                 return Err(WorkerNodeBuildError(
@@ -684,6 +633,7 @@ impl WorkerNodeBuilder {
             application_gate: self.application_gate,
             materializer: self.materializer,
             credential_materializer: self.credential_materializer,
+            credential_observation_resolver,
             session_container_provider: self.session_container_provider,
             mcp_attachment_realizer: self.mcp_attachment_realizer,
             resources: self.resources,
@@ -734,6 +684,8 @@ pub struct WorkerNode {
     application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
     credential_materializer: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
+    credential_observation_resolver:
+        Option<Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>>,
     session_container_provider: Option<InstalledSessionContainerProvider>,
     mcp_attachment_realizer: Option<Arc<dyn awaken_runtime_host::McpAttachmentRealizer>>,
     resources: Option<WorkerResourcePlane>,
@@ -751,7 +703,8 @@ struct WorkerLifecycle {
     host: Arc<SharedHost>,
     control: WorkerControlClient,
     identity: WorkerIdentity,
-    materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
+    credential_observation_resolver:
+        Option<Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>>,
 }
 
 impl WorkerLifecycle {
@@ -785,10 +738,8 @@ impl WorkerLifecycle {
 /// The injected remote dispatch store is the durable-ingress authority and enables
 /// the pool directly; embedding does not require `AWAKEN_INGRESS=durable`.
 pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    build_standard_worker(WorkerUpstream::new(upstream))
-        .await?
-        .run_until_shutdown()
-        .await
+    let _ = upstream;
+    Err("standalone awaken-worker configuration was removed; run `awaken worker --config <PATH> --server <URL>`".into())
 }
 
 /// Run a Worker from the product command's already-resolved deployment and
@@ -830,31 +781,6 @@ pub async fn run_with_config(
     builder.build()?.run_until_shutdown().await
 }
 
-async fn build_standard_worker(
-    upstream: WorkerUpstream,
-) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
-    let process = WorkerProcessConfig::from_env();
-    let stores = awaken_control::open_inference_materialization_stores_from_env().await;
-    build_worker_with_materialization_stores(upstream, process, stores).await
-}
-
-async fn build_worker_with_materialization_stores(
-    upstream: WorkerUpstream,
-    process: WorkerProcessConfig,
-    stores: awaken_control::InferenceMaterializationStores,
-) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
-    let resource_credentials = process.repository_credentials.then(|| stores.clone());
-    let resources = shared_resource_wiring_from_env(resource_credentials).await?;
-    let mut builder = WorkerNodeBuilder::new(upstream)
-        .with_process_config(process)
-        .with_credential_stores(stores.credentials, stores.secrets)
-        .with_standard_manifest(Default::default());
-    if let Some(resources) = resources {
-        builder = builder.with_resource_plane(resources);
-    }
-    Ok(builder.build()?)
-}
-
 /// Run a genuinely secretless worker with a deployment-provided materializer.
 /// It receives each durable run's snapshot-pinned inference access and may
 /// realize an executor through a remote broker without opening a credential
@@ -865,7 +791,7 @@ pub async fn run_with_inference_materializer(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     build_secretless_worker(
         WorkerUpstream::new(upstream),
-        WorkerProcessConfig::from_env(),
+        WorkerProcessConfig::embedded_defaults(),
         materializer,
     )
     .await?
@@ -878,14 +804,10 @@ async fn build_secretless_worker(
     process: WorkerProcessConfig,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
 ) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
-    let resources = shared_resource_wiring_from_env(None).await?;
-    let mut builder = WorkerNodeBuilder::new(upstream)
+    let builder = WorkerNodeBuilder::new(upstream)
         .with_process_config(process)
         .with_inference_materializer(materializer)
         .with_standard_manifest(Default::default());
-    if let Some(resources) = resources {
-        builder = builder.with_resource_plane(resources);
-    }
     Ok(builder.build()?)
 }
 
@@ -1045,12 +967,18 @@ impl WorkerNode {
             host: host.clone(),
             control: control.clone(),
             identity: registration.snapshot.identity,
-            materializer: self.materializer,
+            credential_observation_resolver: self.credential_observation_resolver,
         });
         // Publish Ready before starting the pull loop. Starting the pool while the
         // directory still says Starting creates a tight claim/reject race; publishing
         // first is safe because any assignment remains queued until this process starts
         // polling immediately below.
+        let initial_observations =
+            credential_observations(lifecycle.credential_observation_resolver.as_deref())
+                .await
+                .map_err(|error| {
+                    std::io::Error::other(format!("local_credential_probe_failed: {error}"))
+                })?;
         let initial = control
             .heartbeat(
                 &lifecycle.identity,
@@ -1058,9 +986,7 @@ impl WorkerNode {
                     sequence: 1,
                     ready: true,
                     in_flight: 0,
-                    available_credentials: credential_observations(
-                        lifecycle.materializer.as_deref(),
-                    ),
+                    credential_observations: initial_observations,
                 },
             )
             .await;
@@ -1305,6 +1231,17 @@ fn spawn_heartbeat(
         interval.tick().await;
         loop {
             interval.tick().await;
+            let observations =
+                match credential_observations(lifecycle.credential_observation_resolver.as_deref())
+                    .await
+                {
+                    Ok(observations) => observations,
+                    Err(error) => {
+                        eprintln!("local_credential_probe_failed: {error}; draining locally");
+                        revoke_worker_session_authority(&lifecycle).await;
+                        break;
+                    }
+                };
             let mutation = lifecycle
                 .control
                 .heartbeat(
@@ -1313,9 +1250,7 @@ fn spawn_heartbeat(
                         sequence,
                         ready: lifecycle.host.pool_accepting_work(),
                         in_flight: lifecycle.host.pool_in_flight(),
-                        available_credentials: credential_observations(
-                            lifecycle.materializer.as_deref(),
-                        ),
+                        credential_observations: observations,
                     },
                 )
                 .await;
@@ -1364,20 +1299,52 @@ async fn revoke_worker_session_authority(lifecycle: &WorkerLifecycle) {
     }
 }
 
-fn credential_observations(
-    materializer: Option<&dyn InferenceExecutorMaterializer>,
-) -> std::collections::BTreeSet<awaken_worker_contract::WorkerCredentialRevision> {
-    materializer
-        .map(InferenceExecutorMaterializer::available_credential_refs)
-        .unwrap_or_default()
-        .into_iter()
-        .map(
-            |credential| awaken_worker_contract::WorkerCredentialRevision {
-                source_id: credential.id,
-                revision: credential.revision,
-            },
-        )
-        .collect()
+async fn credential_observations(
+    resolver: Option<&dyn awaken_runtime_contract::CredentialMaterialResolver>,
+) -> Result<
+    std::collections::BTreeSet<awaken_worker_contract::WorkerCredentialObservation>,
+    awaken_runtime_contract::CredentialMaterialError,
+> {
+    match resolver {
+        Some(resolver) => {
+            resolver
+                .credential_observations()
+                .await
+                .map(|observations| {
+                    observations
+                        .into_iter()
+                        .map(|observation| {
+                            awaken_worker_contract::WorkerCredentialObservation {
+                    credential: awaken_worker_contract::WorkerCredentialRevision {
+                        id: observation.credential.id,
+                        revision: observation.credential.revision,
+                    },
+                    state: match observation.state {
+                        awaken_runtime_contract::CredentialObservationState::Available => {
+                            awaken_worker_contract::WorkerCredentialState::Available
+                        }
+                        awaken_runtime_contract::CredentialObservationState::LoginRequired => {
+                            awaken_worker_contract::WorkerCredentialState::LoginRequired
+                        }
+                        awaken_runtime_contract::CredentialObservationState::Expired => {
+                            awaken_worker_contract::WorkerCredentialState::Expired
+                        }
+                        awaken_runtime_contract::CredentialObservationState::Invalid => {
+                            awaken_worker_contract::WorkerCredentialState::Invalid
+                        }
+                        awaken_runtime_contract::CredentialObservationState::Disabled => {
+                            awaken_worker_contract::WorkerCredentialState::Disabled
+                        }
+                    },
+                    observed_at_ms: observation.observed_at_ms,
+                    reason_code: observation.reason_code,
+                }
+                        })
+                        .collect()
+                })
+        }
+        None => Ok(std::collections::BTreeSet::new()),
+    }
 }
 
 async fn wait_for_in_flight(host: &SharedHost, grace: std::time::Duration) {
@@ -1406,7 +1373,7 @@ mod grace_tests {
     use super::{
         CredentialMaterializerSupport, InferenceExecutorMaterializer, ResourceManifestSupport,
         StandardManifestConfig, StandardManifestInputs, WorkerNodeBuilder, credential_observations,
-        derive_standard_manifest, grace_window, shared_credential_backend,
+        derive_standard_manifest, grace_window,
     };
 
     struct SchemeMaterializer;
@@ -1428,6 +1395,23 @@ mod grace_tests {
             true
         }
 
+        async fn credential_observations(
+            &self,
+        ) -> Result<
+            std::collections::BTreeSet<awaken_runtime_contract::CredentialObservation>,
+            awaken_runtime_contract::CredentialMaterialError,
+        > {
+            Ok(std::collections::BTreeSet::from([
+                awaken_runtime_contract::CredentialObservation::available(
+                    awaken_runtime_contract::CredentialRef {
+                        id: "cred:worker".into(),
+                        revision: 4,
+                    },
+                    1,
+                ),
+            ]))
+        }
+
         async fn resolve_exact(
             &self,
             _request: awaken_runtime_contract::CredentialMaterialRequest<'_>,
@@ -1442,15 +1426,6 @@ mod grace_tests {
     impl InferenceExecutorMaterializer for SchemeMaterializer {
         fn supported_access_schemes(&self) -> &'static [&'static str] {
             &["test-access/v1"]
-        }
-
-        fn available_credential_refs(
-            &self,
-        ) -> std::collections::BTreeSet<awaken_runtime_contract::CredentialRef> {
-            std::collections::BTreeSet::from([awaken_runtime_contract::CredentialRef {
-                id: "cred:worker".into(),
-                revision: 4,
-            }])
         }
 
         fn credential_realization_capabilities(
@@ -1499,8 +1474,8 @@ mod grace_tests {
         }
     }
 
-    #[test]
-    fn worker_manifest_derives_materialization_capabilities_from_the_adapter() {
+    #[tokio::test]
+    async fn worker_manifest_derives_materialization_capabilities_from_the_adapter() {
         let materializer = SchemeMaterializer;
         let deployment = deployment();
         let manifest = derive_standard_manifest(StandardManifestInputs {
@@ -1539,11 +1514,18 @@ mod grace_tests {
             )
         );
         assert_eq!(
-            credential_observations(Some(&materializer)),
-            std::collections::BTreeSet::from([awaken_worker_contract::WorkerCredentialRevision {
-                source_id: "cred:worker".into(),
-                revision: 4,
-            }])
+            credential_observations(Some(&ExternalCredentialResolver))
+                .await
+                .expect("worker-local probe"),
+            std::collections::BTreeSet::from([
+                awaken_worker_contract::WorkerCredentialObservation::available(
+                    awaken_worker_contract::WorkerCredentialRevision {
+                        id: "cred:worker".into(),
+                        revision: 4,
+                    },
+                    1,
+                ),
+            ])
         );
     }
 
@@ -1896,18 +1878,6 @@ mod grace_tests {
         assert_eq!(manifest.zone.as_deref(), Some("zone:test"));
         assert!(manifest.capabilities.contains("operator:test/v1"));
         assert_eq!(manifest.capacity.max_concurrent, 7);
-    }
-
-    #[test]
-    fn repository_credentials_require_an_explicit_shared_backend() {
-        assert!(!shared_credential_backend(None));
-        assert!(!shared_credential_backend(Some(
-            "/var/lib/awaken/credential.db"
-        )));
-        assert!(shared_credential_backend(Some("postgres://db/credentials")));
-        assert!(shared_credential_backend(Some(
-            "postgresql://db/credentials"
-        )));
     }
 
     #[test]

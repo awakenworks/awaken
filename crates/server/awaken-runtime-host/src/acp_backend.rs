@@ -419,6 +419,7 @@ mod tests {
                 base_url: "http://example.invalid".into(),
                 model: "test".into(),
                 process_secret: None,
+                credential_artifact: None,
             })
         }
     }

@@ -18,7 +18,8 @@ use awaken_run_ingress_contract::operational::{
 };
 use awaken_run_ingress_contract::{
     LeastLoadedPolicy, PlacementRequirements, WORKER_LOCAL_CREDENTIALS_CAPABILITY,
-    WorkerCredentialRevision, WorkerIdentity, WorkerManifest, WorkerSnapshot, WorkerState,
+    WorkerCredentialObservation, WorkerCredentialRevision, WorkerIdentity, WorkerManifest,
+    WorkerSnapshot, WorkerState,
 };
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
@@ -641,7 +642,7 @@ where
 
 async fn local_claims_skip_remote_only_work(store: &dyn DispatchQueue, ns: &str) {
     let required_credential = WorkerCredentialRevision {
-        source_id: format!("{ns}-worker-credential"),
+        id: format!("{ns}-worker-credential"),
         revision: 7,
     };
     let mut remote_placement = PlacementRequirements::remote_required();
@@ -700,7 +701,12 @@ async fn local_claims_skip_remote_only_work(store: &dyn DispatchQueue, ns: &str)
         manifest,
         state: WorkerState::Ready,
         in_flight: 0,
-        available_credentials: [required_credential].into_iter().collect(),
+        credential_observations: [WorkerCredentialObservation::available(
+            required_credential,
+            0,
+        )]
+        .into_iter()
+        .collect(),
         expires_at_ms: 10_000,
     };
     let remote = store
@@ -1215,7 +1221,7 @@ async fn completion_is_atomic_and_prevents_resurrection(
             .expect("default worker manifest fingerprints"),
         manifest,
         in_flight: 0,
-        available_credentials: Default::default(),
+        credential_observations: Default::default(),
         expires_at_ms: 100_000,
     };
     assert!(
@@ -1340,7 +1346,7 @@ fn credential_worker(ns: &str, holder: &PlaintextHolder, capable: bool) -> Worke
         manifest,
         state: WorkerState::Ready,
         in_flight: 0,
-        available_credentials: Default::default(),
+        credential_observations: Default::default(),
         expires_at_ms: 100_000,
     }
 }

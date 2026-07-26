@@ -1693,11 +1693,14 @@ impl LaunchResolver for FixedModel {
     ) -> std::result::Result<ResolvedModel, OpenError> {
         Ok(self.0.clone())
     }
-    fn extra_env(&self, _a: &RunActivation) -> Vec<(String, String)> {
-        vec![(
+    fn extra_env(
+        &self,
+        _a: &RunActivation,
+    ) -> std::result::Result<Vec<(String, String)>, OpenError> {
+        Ok(vec![(
             "CLAUDE_CONFIG_DIR".to_string(),
             "/run/agent/.claude".to_string(),
-        )]
+        )])
     }
 }
 
@@ -1719,6 +1722,7 @@ fn projecting_source_plans_launch_from_resolved_model_and_host_env() {
         base_url: "https://api.kimi.com/coding/".to_string(),
         model: "kimi-k2".to_string(),
         process_secret: Some(ProcessSecretRequirement::new("lease://projected-host")),
+        credential_artifact: None,
     }));
     // The resolver supplies the config-home path as non-secret per-run env.
     let source = ProjectingChannelSource::new(cli, resolver);
@@ -1757,33 +1761,43 @@ impl LaunchResolver for ConfigHomeAt {
             base_url: "u".into(),
             model: "m".into(),
             process_secret: None,
+            credential_artifact: None,
         })
     }
-    fn extra_env(&self, _a: &RunActivation) -> Vec<(String, String)> {
-        vec![(self.key.to_string(), self.dir.clone())]
+    fn extra_env(
+        &self,
+        _a: &RunActivation,
+    ) -> std::result::Result<Vec<(String, String)>, OpenError> {
+        Ok(vec![(self.key.to_string(), self.dir.clone())])
     }
 }
 
 /// End to end through the real launch path: a run that declares an MCP server on its ACP
 /// plugin config (what the host's `overlay_acp_mcp` produces) makes `open()` write the
-/// codex `config.toml` into the config home before it spawns — proving the whole
+/// a legacy adapter config into an isolated config home before it spawns — proving the whole
 /// host→plugin_config→config-file chain. The file contains only the mediated route;
 /// credential material and references remain outside the ACP process contract.
 #[tokio::test]
 #[cfg(unix)]
-async fn open_writes_the_codex_mcp_config_into_the_config_home() {
+async fn open_writes_legacy_mcp_config_into_the_isolated_config_home() {
     let dir = std::env::temp_dir().join(format!("awaken-acpmcp-e2e-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
 
-    // A codex row (ConfigFileToml, CODEX_HOME) with a cheap spawnable command.
-    let mut cli = *acp_cli("codex").expect("codex in the catalog");
+    // A synthetic legacy ConfigFileToml row with a cheap spawnable command. Codex
+    // deliberately does not use this protocol.
+    let mut cli = *acp_cli("claude").expect("claude in the catalog");
     cli.command = "/bin/sh";
     cli.args = &["-c", "exit 0"];
+    cli.mcp_interface = McpInterface::ConfigFileToml {
+        path: "config.toml",
+    };
+    cli.config_home_env = Some("TEST_CONFIG_HOME");
+    cli.retained_paths = &["config.toml"];
     let source = ProjectingChannelSource::new(
         cli,
         Arc::new(ConfigHomeAt {
-            key: cli.config_home_env,
+            key: cli.config_home_env.expect("test CLI has config home"),
             dir: dir.to_string_lossy().to_string(),
         }),
     );
@@ -1859,6 +1873,7 @@ async fn open_and_drive_inject_the_mcp_server_into_session_new_for_an_acp_sessio
             base_url: "u".into(),
             model: "m".into(),
             process_secret: None,
+            credential_artifact: None,
         })),
     ));
     let e = AcpRunExecutor::new(source);
@@ -1915,6 +1930,7 @@ async fn retained_inline_mcp_credential_is_ignored_before_session_new() {
             base_url: "u".into(),
             model: "m".into(),
             process_secret: None,
+            credential_artifact: None,
         })),
     ));
     let e = AcpRunExecutor::new(source);
@@ -1976,6 +1992,7 @@ async fn acp_session_id_is_carried_across_the_per_turn_relaunch() {
             base_url: "u".into(),
             model: "m".into(),
             process_secret: None,
+            credential_artifact: None,
         })),
     ));
     let e = AcpRunExecutor::new(source);
@@ -2034,6 +2051,7 @@ async fn paused_run_resumes_after_executor_replacement_with_the_committed_sessio
             base_url: "u".into(),
             model: "m".into(),
             process_secret: None,
+            credential_artifact: None,
         })),
     ));
     let committed = Arc::new(RecordingCoordinator::default());
@@ -2094,6 +2112,7 @@ fn projecting_source_reads_the_cli_compact_window_from_config() {
         base_url: "u".to_string(),
         model: "m".to_string(),
         process_secret: None,
+        credential_artifact: None,
     }));
     let source = ProjectingChannelSource::new(cli, resolver);
 
@@ -2361,6 +2380,7 @@ impl LaunchResolver for MatrixModel {
             base_url: "https://gateway.example/anthropic".to_string(),
             model: "MiniMax-M2".to_string(),
             process_secret: Some(ProcessSecretRequirement::new("lease://matrix")),
+            credential_artifact: None,
         })
     }
 
@@ -2379,9 +2399,13 @@ fn every_backend_row_projects_a_launchable_process_through_the_source() {
         .unwrap();
     for cli in known_acp_clis() {
         let source = ProjectingChannelSource::new(*cli, Arc::new(MatrixModel));
-        let launch = source
-            .plan(&activation(), &RuntimeRunContext::new())
-            .expect("plan");
+        let planned = source.plan(&activation(), &RuntimeRunContext::new());
+        let Some(d) = cli.model_delivery.as_ref() else {
+            let error = planned.unwrap_err();
+            assert!(error.0.contains("credential_driver_required"), "{}", cli.id);
+            continue;
+        };
+        let launch = planned.expect("plan");
         let env = |k: &str| projected_env(&launch, k);
         assert_eq!(
             launch.argv.first().map(String::as_str),
@@ -2389,7 +2413,6 @@ fn every_backend_row_projects_a_launchable_process_through_the_source() {
             "{}: argv[0] is the row's command",
             cli.id
         );
-        let d = &cli.model_delivery;
         assert_eq!(
             env(d.base_url),
             Some(model.base_url.as_str()),
@@ -2439,6 +2462,13 @@ const PONG_ECHO: &str = "while IFS= read -r line; do \
 #[cfg(unix)]
 async fn every_backend_row_drives_a_plain_turn_to_a_committed_reply() {
     for row in known_acp_clis() {
+        if row.model_delivery.is_none() {
+            let error = ProjectingChannelSource::new(*row, Arc::new(MatrixModel))
+                .plan(&activation(), &RuntimeRunContext::new())
+                .expect_err("driver-managed row must fail before spawn");
+            assert_eq!(error.0, format!("credential_driver_required: {}", row.id));
+            continue;
+        }
         let mut cli = *row;
         cli.command = "/bin/sh";
         cli.args = &["-c", PONG_ECHO];

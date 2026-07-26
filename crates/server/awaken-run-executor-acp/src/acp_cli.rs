@@ -5,7 +5,7 @@
 //! references by id (`Backend::Acp { cli }`), the same category as a model provider
 //! — never agent config itself.
 
-use crate::AcpLaunch;
+use crate::{AcpLaunch, OpenError};
 use awaken_provisioning_contract as pc;
 
 /// How resolved model coordinates reach a CLI. Endpoints and secrets use env keys;
@@ -70,7 +70,7 @@ pub enum SessionPersistence {
 pub enum McpInterface {
     /// Passed at `session/new` (the ACP `mcpServers` param).
     AcpSession,
-    /// Written into a config file inside the config home (e.g. codex `config.toml`).
+    /// Written into a config file inside an isolated home for legacy adapters.
     ConfigFileToml { path: &'static str },
 }
 
@@ -86,23 +86,21 @@ pub struct AcpCli {
     /// this in the catalog row avoids both runtime package downloads and adapter
     /// branches in the container mechanism.
     pub container_argv: &'static [&'static str],
-    pub model_delivery: ModelDelivery,
+    /// Environment projection used only by legacy API-key adapters. `None`
+    /// means the adapter requires its provider-specific credential driver.
+    pub model_delivery: Option<ModelDelivery>,
     /// ACP authentication method selected after initialize, when the adapter
     /// exposes more than one protocol-level method.
     pub auth_method_id: Option<&'static str>,
     pub mcp_interface: McpInterface,
     /// Env key naming the CLI's isolated config directory (e.g. `CLAUDE_CONFIG_DIR`).
-    pub config_home_env: &'static str,
+    pub config_home_env: Option<&'static str>,
     /// Additional standard/vendor home variables that point at the same isolated
     /// root. Some CLIs split extensions from global config/data/cache state.
     pub config_home_aliases: &'static [&'static str],
-    /// Native credential file relative to the config home. The host may project an
-    /// opaque credential-broker reference to this path as a durable writable Secret;
-    /// the CLI owns its JSON format and token refresh behavior.
-    pub credential_file: Option<&'static str>,
     /// The memory file the CLI reads from its config home (e.g. `CLAUDE.md`).
     pub memory_entrypoint: &'static str,
-    /// Paths under the config home that survive across sessions (auth, config).
+    /// Non-credential paths under the config home that survive across sessions.
     /// Also the exclusion set when harvesting the portable session-home — these are
     /// credential/local-config, never carried into a cross-machine session blob.
     pub retained_paths: &'static [&'static str],
@@ -121,6 +119,41 @@ pub struct AcpCli {
 #[derive(Clone, PartialEq, Eq)]
 pub struct ProcessSecretRequirement {
     reference: String,
+}
+
+/// One claim-fenced provider credential artifact. The executor carries only the
+/// broker reference and provider-owned relative path; bytes are materialized by
+/// the sandbox immediately before the ACP process starts.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CredentialArtifactRequirement {
+    reference: String,
+    relative_path: String,
+}
+
+impl CredentialArtifactRequirement {
+    #[must_use]
+    pub fn new(reference: impl Into<String>, relative_path: impl Into<String>) -> Self {
+        Self {
+            reference: reference.into(),
+            relative_path: relative_path.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn reference(&self) -> &str {
+        &self.reference
+    }
+
+    #[must_use]
+    pub fn relative_path(&self) -> &str {
+        &self.relative_path
+    }
+}
+
+impl std::fmt::Debug for CredentialArtifactRequirement {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("CredentialArtifactRequirement(***)")
+    }
 }
 
 impl ProcessSecretRequirement {
@@ -151,6 +184,7 @@ pub struct ResolvedModel {
     pub base_url: String,
     pub model: String,
     pub process_secret: Option<ProcessSecretRequirement>,
+    pub credential_artifact: Option<CredentialArtifactRequirement>,
 }
 
 impl ResolvedModel {
@@ -171,6 +205,7 @@ impl ResolvedModel {
             base_url: gateway_base_url.into(),
             model: model.into(),
             process_secret: Some(ProcessSecretRequirement::new(lease_reference)),
+            credential_artifact: None,
         }
     }
 }
@@ -183,12 +218,12 @@ impl AcpCli {
     /// fact (model/base_url) always wins over a stray passthrough key, and the key
     /// is always the host's.
     #[must_use]
-    pub fn project(
+    pub fn try_project(
         &self,
         model: &ResolvedModel,
         context_window: Option<u64>,
         extra_env: &[(String, String)],
-    ) -> AcpLaunch {
+    ) -> Result<AcpLaunch, OpenError> {
         use std::collections::BTreeMap;
         let mut env: BTreeMap<String, pc::EnvVar> = BTreeMap::new();
         let inline = |name: &str, value: String| pc::EnvVar {
@@ -202,7 +237,21 @@ impl AcpCli {
         for (k, v) in extra_env {
             env.insert(k.clone(), inline(k, v.clone()));
         }
-        let d = &self.model_delivery;
+        let d = self.model_delivery.as_ref();
+        if d.is_none() && model.credential_artifact.is_none() {
+            return Err(OpenError(format!(
+                "credential_driver_required: {}",
+                self.id
+            )));
+        }
+        let Some(d) = d else {
+            let mut argv = vec![self.command.to_string()];
+            argv.extend(self.args.iter().map(|s| (*s).to_string()));
+            return Ok(AcpLaunch {
+                argv,
+                env: env.into_values().collect(),
+            });
+        };
         if !model.base_url.is_empty() {
             env.insert(
                 d.base_url.to_string(),
@@ -261,10 +310,21 @@ impl AcpCli {
                 argv.push(format!("{key}={:?}", model.model));
             }
         }
-        AcpLaunch {
+        Ok(AcpLaunch {
             argv,
             env: env.into_values().collect(),
-        }
+        })
+    }
+
+    #[cfg(test)]
+    fn project(
+        &self,
+        model: &ResolvedModel,
+        context_window: Option<u64>,
+        extra_env: &[(String, String)],
+    ) -> AcpLaunch {
+        self.try_project(model, context_window, extra_env)
+            .expect("legacy environment projection")
     }
 }
 
@@ -350,7 +410,7 @@ const CLAUDE: AcpCli = AcpCli {
     command: "npx",
     args: &["-y", "@agentclientprotocol/claude-agent-acp@0.44"],
     container_argv: &["claude-agent-acp"],
-    model_delivery: ModelDelivery {
+    model_delivery: Some(ModelDelivery {
         base_url: "ANTHROPIC_BASE_URL",
         model: "ANTHROPIC_MODEL",
         model_config_key: None,
@@ -361,12 +421,11 @@ const CLAUDE: AcpCli = AcpCli {
             "ANTHROPIC_OPUS_MODEL",
             "ANTHROPIC_HAIKU_MODEL",
         ],
-    },
+    }),
     auth_method_id: None,
     mcp_interface: McpInterface::AcpSession,
-    config_home_env: "CLAUDE_CONFIG_DIR",
+    config_home_env: Some("CLAUDE_CONFIG_DIR"),
     config_home_aliases: &[],
-    credential_file: Some(".credentials.json"),
     memory_entrypoint: "CLAUDE.md",
     retained_paths: &[".credentials.json", "settings.json"],
     // Claude Code stores conversations under `projects/<cwd-slug>/`, keyed by cwd.
@@ -380,41 +439,25 @@ const CLAUDE: AcpCli = AcpCli {
 
 // Codex is likewise fronted by the official adapter package
 // (`@agentclientprotocol/codex-acp`),
-// not a native `codex acp` subcommand. `CODEX_CONFIG` disables Codex's own approval
-// prompts and sets it to workspace-write — our layer owns the gate and the jail, so
-// the CLI must not block on its own confirmations.
+// not a native `codex acp` subcommand. Credential and model materialization are
+// provider-driver responsibilities; the generic environment/file projection is
+// deliberately unavailable for this row.
 const CODEX: AcpCli = AcpCli {
     id: "codex",
     command: "npx",
     args: &["-y", "@agentclientprotocol/codex-acp@1.1"],
     container_argv: &["codex-acp"],
-    model_delivery: ModelDelivery {
-        base_url: "OPENAI_BASE_URL",
-        model: "OPENAI_MODEL",
-        model_config_key: Some("model"),
-        model_config_env: Some("CODEX_CONFIG"),
-        key: "OPENAI_API_KEY",
-        aliases: &[],
-    },
+    model_delivery: None,
     auth_method_id: None,
-    mcp_interface: McpInterface::ConfigFileToml {
-        path: "config.toml",
-    },
-    config_home_env: "CODEX_HOME",
+    mcp_interface: McpInterface::AcpSession,
+    config_home_env: None,
     config_home_aliases: &[],
-    credential_file: Some("auth.json"),
     memory_entrypoint: "AGENTS.md",
-    retained_paths: &["auth.json", "config.toml"],
+    retained_paths: &[],
     // Codex writes rollout files under `sessions/`, keyed by an internal id.
-    session_persistence: SessionPersistence::LocalDir {
-        session_subpath: "sessions",
-        keyed_by: SessionKey::InternalId,
-    },
+    session_persistence: SessionPersistence::None,
     context_window_env: None,
-    env: &[(
-        "CODEX_CONFIG",
-        r#"{"approval_policy":"never","sandbox_mode":"workspace-write"}"#,
-    )],
+    env: &[],
 };
 
 // Gemini CLI speaks ACP natively via `--experimental-acp` (no npm wrapper), so it
@@ -424,19 +467,18 @@ const GEMINI: AcpCli = AcpCli {
     command: "gemini",
     args: &["--experimental-acp"],
     container_argv: &["gemini", "--experimental-acp"],
-    model_delivery: ModelDelivery {
+    model_delivery: Some(ModelDelivery {
         base_url: "GOOGLE_GEMINI_BASE_URL",
         model: "GEMINI_MODEL",
         model_config_key: None,
         model_config_env: None,
         key: "GEMINI_API_KEY",
         aliases: &[],
-    },
+    }),
     auth_method_id: None,
     mcp_interface: McpInterface::AcpSession,
-    config_home_env: "GEMINI_DIR",
+    config_home_env: Some("GEMINI_DIR"),
     config_home_aliases: &[],
-    credential_file: None,
     memory_entrypoint: "GEMINI.md",
     retained_paths: &[],
     // Gemini keeps chat state under `tmp/<hash>/`, keyed by an internal id
@@ -459,24 +501,23 @@ const OPENCODE: AcpCli = AcpCli {
     command: "opencode",
     args: &["acp"],
     container_argv: &["opencode", "acp"],
-    model_delivery: ModelDelivery {
+    model_delivery: Some(ModelDelivery {
         base_url: "OPENAI_BASE_URL",
         model: "OPENAI_MODEL",
         model_config_key: None,
         model_config_env: None,
         key: "OPENAI_API_KEY",
         aliases: &[],
-    },
+    }),
     auth_method_id: None,
     mcp_interface: McpInterface::AcpSession,
-    config_home_env: "OPENCODE_CONFIG_DIR",
+    config_home_env: Some("OPENCODE_CONFIG_DIR"),
     config_home_aliases: &[
         "XDG_CONFIG_HOME",
         "XDG_DATA_HOME",
         "XDG_CACHE_HOME",
         "XDG_STATE_HOME",
     ],
-    credential_file: Some("auth.json"),
     memory_entrypoint: "AGENTS.md",
     retained_paths: &["auth.json"],
     // opencode keeps conversation state in a local store, keyed by an internal id
@@ -510,6 +551,20 @@ pub fn acp_cli(id: &str) -> Option<&'static AcpCli> {
     known_acp_clis().iter().find(|c| c.id == id)
 }
 
+/// Canonical test fixture for the retired config-file delivery mechanism. Keeping
+/// it outside the production catalog proves legacy behavior without assigning it
+/// to Codex or creating multiple synthetic rows across test modules.
+#[cfg(test)]
+pub(crate) fn legacy_config_file_cli() -> AcpCli {
+    let mut cli = *acp_cli("claude").expect("claude test fixture");
+    cli.mcp_interface = McpInterface::ConfigFileToml {
+        path: "config.toml",
+    };
+    cli.config_home_env = Some("TEST_CONFIG_HOME");
+    cli.retained_paths = &["config.toml"];
+    cli
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -519,6 +574,7 @@ mod tests {
             base_url: "https://api.minimaxi.com/anthropic".to_string(),
             model: "MiniMax-M3[1m]".to_string(),
             process_secret: Some(ProcessSecretRequirement::new("lease://test-model")),
+            credential_artifact: None,
         }
     }
 
@@ -567,9 +623,10 @@ mod tests {
         assert_eq!(ids.len(), n, "catalog has a duplicate CLI id");
         for cli in known_acp_clis() {
             assert!(!cli.command.is_empty(), "{}: command is set", cli.id);
-            assert!(
-                !cli.config_home_env.is_empty(),
-                "{}: config_home_env is set",
+            assert_eq!(
+                cli.config_home_env.is_some(),
+                cli.model_delivery.is_some(),
+                "{}: only driver-managed adapters omit a generic config home",
                 cli.id
             );
         }
@@ -579,8 +636,11 @@ mod tests {
     fn every_cli_injects_the_resolved_model_base_url_and_secret_key() {
         let m = resolved();
         for cli in known_acp_clis() {
+            let Some(d) = cli.model_delivery.as_ref() else {
+                assert!(cli.try_project(&m, None, &[]).is_err(), "{}", cli.id);
+                continue;
+            };
             let launch = cli.project(&m, None, &[]);
-            let d = &cli.model_delivery;
             assert_eq!(
                 env_of(&launch, d.base_url).as_deref(),
                 Some(m.base_url.as_str()),
@@ -611,30 +671,13 @@ mod tests {
     }
 
     #[test]
-    fn native_credential_launch_does_not_inject_empty_provider_credentials() {
-        let cli = acp_cli("codex").unwrap();
-        let launch = cli.project(
-            &ResolvedModel {
-                base_url: String::new(),
-                model: "gpt-5-codex".into(),
-                process_secret: None,
-            },
-            None,
-            &[],
-        );
-        assert!(env_of(&launch, "OPENAI_BASE_URL").is_none());
-        assert!(env_of(&launch, "OPENAI_API_KEY").is_none());
-        assert_eq!(
-            env_of(&launch, "OPENAI_MODEL").as_deref(),
-            Some("gpt-5-codex")
-        );
-    }
-
-    #[test]
     fn every_cli_keeps_the_secret_unshadowable_by_passthrough() {
         let m = resolved();
         for cli in known_acp_clis() {
-            let d = cli.model_delivery;
+            let Some(d) = cli.model_delivery else {
+                assert!(cli.try_project(&m, None, &[]).is_err(), "{}", cli.id);
+                continue;
+            };
             // A hostile passthrough tries to override the modeled model + the secret.
             let extra = vec![
                 (d.model.to_string(), "attacker-model".to_string()),
@@ -662,6 +705,14 @@ mod tests {
         // cloud-managed launch carries only a lease requirement, never a raw provider key.
         let raw = "sk-RAW-PROVIDER-SECRET"; // awaken-allow: secret
         for cli in known_acp_clis() {
+            let Some(delivery) = cli.model_delivery else {
+                assert!(
+                    cli.try_project(&resolved(), None, &[]).is_err(),
+                    "{}",
+                    cli.id
+                );
+                continue;
+            };
             let model = ResolvedModel::cloud_managed_gateway(
                 "https://gateway.awaken.internal",
                 "some-model",
@@ -674,13 +725,13 @@ mod tests {
                 cli.id
             );
             assert_eq!(
-                secret_ref_of(&launch, cli.model_delivery.key),
+                secret_ref_of(&launch, delivery.key),
                 Some("lease://gateway-123"),
                 "{}: key env holds only the broker reference",
                 cli.id
             );
             assert_eq!(
-                env_of(&launch, cli.model_delivery.base_url).as_deref(),
+                env_of(&launch, delivery.base_url).as_deref(),
                 Some("https://gateway.awaken.internal"),
                 "{}: base_url is the gateway",
                 cli.id
@@ -742,7 +793,7 @@ mod tests {
 
     #[test]
     fn project_mcp_writes_a_config_file_for_a_config_toml_cli() {
-        let codex = acp_cli("codex").unwrap();
+        let cli = legacy_config_file_cli();
         let servers = vec![McpServerConfig {
             name: "github".into(),
             transport: McpTransport::Stdio {
@@ -750,7 +801,7 @@ mod tests {
                 args: vec!["-y".into(), "@mcp/github".into()],
             },
         }];
-        match codex.project_mcp(&servers) {
+        match cli.project_mcp(&servers) {
             McpDelivery::ConfigFile { path, contents } => {
                 assert_eq!(path, "config.toml");
                 assert!(contents.contains("[mcp_servers.github]"));
@@ -758,7 +809,7 @@ mod tests {
                 assert!(contents.contains("\"@mcp/github\""));
                 assert!(!contents.to_ascii_lowercase().contains("credential"));
             }
-            other => panic!("codex delivers MCP via a config file, got {other:?}"),
+            other => panic!("config-file fixture must deliver a file, got {other:?}"),
         }
     }
 
@@ -787,9 +838,9 @@ mod tests {
         }))
         .expect("retained unknown field remains decode-compatible");
         let McpDelivery::ConfigFile { contents, .. } =
-            acp_cli("codex").unwrap().project_mcp(&[server])
+            legacy_config_file_cli().project_mcp(&[server])
         else {
-            panic!("codex is a config-file CLI");
+            panic!("config-file fixture must deliver a file");
         };
         assert!(
             !contents.contains(raw),
@@ -857,10 +908,7 @@ mod tests {
         );
         assert_eq!(
             acp_cli("codex").unwrap().session_persistence,
-            SessionPersistence::LocalDir {
-                session_subpath: "sessions",
-                keyed_by: SessionKey::InternalId,
-            }
+            SessionPersistence::None
         );
     }
 
@@ -918,16 +966,31 @@ mod tests {
     }
 
     #[test]
-    fn codex_projects_model_and_noninteractive_policy_through_codex_config() {
+    fn codex_requires_its_provider_credential_driver() {
         let cli = acp_cli("codex").unwrap();
-        let model = resolved();
-        let launch = cli.project(&model, None, &[]);
-        let config: serde_json::Value =
-            serde_json::from_str(&env_of(&launch, "CODEX_CONFIG").unwrap()).unwrap();
-        assert_eq!(config["model"], model.model);
-        assert_eq!(config["approval_policy"], "never");
-        assert_eq!(config["sandbox_mode"], "workspace-write");
-        assert!(!launch.argv.iter().any(|arg| arg == "-c"));
+        assert!(cli.model_delivery.is_none());
+        assert!(cli.config_home_env.is_none());
+        assert!(cli.retained_paths.is_empty());
+        let error = cli.try_project(&resolved(), None, &[]).unwrap_err();
+        assert_eq!(error.0, "credential_driver_required: codex");
+    }
+
+    #[test]
+    fn codex_artifact_launch_has_no_model_or_credential_environment_projection() {
+        let cli = acp_cli("codex").unwrap();
+        let mut model = resolved();
+        model.process_secret = None;
+        model.credential_artifact = Some(CredentialArtifactRequirement::new(
+            "awaken-credential-artifact://one-shot",
+            ".codex/auth.json",
+        ));
+        let launch = cli.try_project(&model, None, &[]).expect("artifact launch");
+        assert!(
+            launch
+                .env
+                .iter()
+                .all(|var| { !var.name.starts_with("OPENAI_") && !var.name.starts_with("CODEX_") })
+        );
     }
 
     #[test]
@@ -1000,16 +1063,5 @@ mod tests {
             Some("lease://test-model")
         );
         assert_eq!(env_of(&launch, "EXTRA_FLAG").as_deref(), Some("1"));
-    }
-
-    #[test]
-    fn a_cli_without_a_compact_window_omits_it() {
-        let cli = acp_cli("codex").unwrap();
-        let launch = cli.project(&resolved(), Some(999), &[]);
-        assert!(env_of(&launch, "CLAUDE_CODE_AUTO_COMPACT_WINDOW").is_none());
-        assert_eq!(
-            env_of(&launch, "OPENAI_MODEL").as_deref(),
-            Some("MiniMax-M3[1m]")
-        );
     }
 }

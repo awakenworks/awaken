@@ -16,7 +16,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 use awaken_run_executor_acp::{
-    AcpCli, AcpLaunch, AgentChannelSource, AgentSession, LaunchResolver, OpenError, project_launch,
+    AcpCli, AcpLaunch, AgentChannelSource, AgentSession, LaunchResolver, OpenError,
 };
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_sandbox_local::NamespaceProvider;
@@ -126,6 +126,12 @@ pub enum LaunchSource {
     Projected(AcpLaunchRegistry),
 }
 
+struct ResolvedLaunch {
+    launch: AcpLaunch,
+    credential_artifact: Option<awaken_run_executor_acp::CredentialArtifactRequirement>,
+    secret_broker: Option<Arc<dyn pc::SecretBroker>>,
+}
+
 impl LaunchSource {
     pub(crate) fn credential_realization_capabilities(
         &self,
@@ -146,17 +152,28 @@ impl LaunchSource {
         activation: &RunActivation,
         backend: &awaken_runtime_contract::resolved::Backend,
         context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
-    ) -> Result<AcpLaunch, OpenError> {
+    ) -> Result<ResolvedLaunch, OpenError> {
         match self {
-            LaunchSource::Fixed(launch) => Ok(launch.clone()),
+            LaunchSource::Fixed(launch) => Ok(ResolvedLaunch {
+                launch: launch.clone(),
+                credential_artifact: None,
+                secret_broker: None,
+            }),
             LaunchSource::Projected(registry) => {
                 let selected = registry.selected(backend)?;
-                project_launch(
-                    &selected.cli,
-                    selected.resolver.as_ref(),
-                    activation,
-                    context,
+                let model = selected.resolver.model(activation, context)?;
+                let credential_artifact = model.credential_artifact.clone();
+                let extra_env = selected.resolver.extra_env(activation)?;
+                let window = awaken_run_executor_acp::AcpSettings::from_plugin_config(
+                    &activation.snapshot.resolved_spec.plugin_config,
                 )
+                .compact_window;
+                let launch = selected.cli.try_project(&model, window, &extra_env)?;
+                Ok(ResolvedLaunch {
+                    launch,
+                    credential_artifact,
+                    secret_broker: selected.resolver.secret_broker(),
+                })
             }
         }
     }
@@ -181,7 +198,7 @@ const SANDBOX_WORKSPACE: &str = "/workspace";
 
 /// The fixed interior config-home a `ConfigFileToml` CLI (codex) reads its MCP config
 /// from: the projected `config.toml` is mounted here (`MountSource::Inline`) and the
-/// CLI's config-home env (e.g. `CODEX_HOME`) points at it.
+/// the legacy CLI's isolated config-home setting points at it.
 pub(crate) const SANDBOX_CONFIG_HOME: &str = "/acp-config";
 
 /// The workdir-relative config-home for the unsandboxed Workdir tier: the CLI runs on
@@ -261,6 +278,12 @@ enum SandboxBackend {
 }
 
 impl SandboxBackend {
+    fn install_secret_broker(&self, broker: Arc<dyn pc::SecretBroker>) {
+        match self {
+            Self::Namespace(provider) => provider.install_secret_broker(broker),
+            Self::Workdir(provider) => provider.install_secret_broker(broker),
+        }
+    }
     /// The isolation class the spec must declare for this backend.
     fn isolation(&self) -> pc::IsolationClass {
         match self {
@@ -278,7 +301,7 @@ impl SandboxBackend {
     /// The config-home a `ConfigFileToml` CLI reads: a fixed **interior absolute** path
     /// for the bwrap namespace (bound there), or a **workdir-relative** path for the
     /// unsandboxed Workdir tier (the CLI runs on the host in its workdir, so an absolute
-    /// interior path would not exist — the mount + `CODEX_HOME` are relative instead).
+    /// interior path would not exist — the mount and isolated home are relative instead).
     fn config_home(&self) -> &'static str {
         match self {
             SandboxBackend::Namespace(_) => SANDBOX_CONFIG_HOME,
@@ -499,7 +522,8 @@ impl AgentChannelSource for SandboxChannelSource {
         let backend = awaken_runtime_contract::resolved::Backend::from_ref(
             &activation.snapshot.resolved_spec.model_binding.backend_ref,
         );
-        let mut launch = self.launch.resolve(activation, &backend, context)?;
+        let resolved = self.launch.resolve(activation, &backend, context)?;
+        let mut launch = resolved.launch;
         // Project the run's declared MCP servers once. `session/new` servers ride in-band
         // over the ACP wire the executor drives (claude/gemini/opencode); a config-file
         // CLI (codex) gets its config.toml. The typed ACP contract has no credential
@@ -516,6 +540,52 @@ impl AgentChannelSource for SandboxChannelSource {
         // projected config as an inline, read-only, never-harvested mount at the fixed
         // interior config home, with the CLI's config-home env pointed there.
         let mut spec = self.spec(thread);
+        if let Some(artifact) = resolved.credential_artifact {
+            let broker = resolved.secret_broker.ok_or_else(|| {
+                OpenError("credential_provision_failed: secret broker unavailable".into())
+            })?;
+            self.provider.install_secret_broker(broker);
+            let home = self.provider.config_home();
+            spec.mounts.push(pc::MountRequirement {
+                mount_id: "provider-credential".into(),
+                source: pc::MountSource::Secret {
+                    reference: artifact.reference().to_string(),
+                    content_hash: None,
+                },
+                mount_path: format!(
+                    "{}/{}",
+                    home.trim_end_matches('/'),
+                    artifact.relative_path()
+                ),
+                access: if self.provider.enforces_read_only() {
+                    pc::MountAccess::ReadOnly
+                } else {
+                    pc::MountAccess::ReadWrite
+                },
+                lifetime: pc::MountLifetime::PerRun,
+                required: true,
+            });
+            launch.env.retain(|var| var.name != "HOME");
+            launch.env.push(pc::EnvVar {
+                name: "HOME".into(),
+                value: pc::EnvValue::Inline {
+                    value: home.to_string(),
+                },
+                visibility: pc::EnvVisibility::Process,
+            });
+            if let Some(cli) = cli
+                && let Some(config_home_env) = cli.config_home_env
+            {
+                launch.env.retain(|var| var.name != config_home_env);
+                launch.env.push(pc::EnvVar {
+                    name: config_home_env.into(),
+                    value: pc::EnvValue::Inline {
+                        value: home.to_string(),
+                    },
+                    visibility: pc::EnvVisibility::Process,
+                });
+            }
+        }
         if let Some(cli) = cli
             && let Some((mount, (env_key, env_val))) = acp_config_mount(
                 cli,
@@ -597,7 +667,8 @@ impl AgentChannelSource for BoundLocalChannelSource {
         activation: &RunActivation,
         context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
     ) -> Result<AgentSession, OpenError> {
-        let mut launch = self.launch.resolve(activation, &self.backend, context)?;
+        let resolved = self.launch.resolve(activation, &self.backend, context)?;
+        let mut launch = resolved.launch;
         let cli = self.launch.cli(&self.backend)?;
         // Cause/decision table for executable lookup and ambient isolation:
         //
@@ -632,14 +703,16 @@ impl AgentChannelSource for BoundLocalChannelSource {
                 .materialize_inline(&format!("{config_home_logical}/.awaken-config-home"), b"")
                 .await
                 .map_err(|error| OpenError(format!("materialize ACP config home: {error}")))?;
-            launch.env.retain(|var| var.name != cli.config_home_env);
-            launch.env.push(pc::EnvVar {
-                name: cli.config_home_env.to_string(),
-                value: pc::EnvValue::Inline {
-                    value: config_home.to_string(),
-                },
-                visibility: pc::EnvVisibility::Process,
-            });
+            if let Some(config_home_env) = cli.config_home_env {
+                launch.env.retain(|var| var.name != config_home_env);
+                launch.env.push(pc::EnvVar {
+                    name: config_home_env.to_string(),
+                    value: pc::EnvValue::Inline {
+                        value: config_home.to_string(),
+                    },
+                    visibility: pc::EnvVisibility::Process,
+                });
+            }
             for alias in cli.config_home_aliases {
                 launch.env.retain(|var| var.name != *alias);
                 launch.env.push(pc::EnvVar {
@@ -658,6 +731,24 @@ impl AgentChannelSource for BoundLocalChannelSource {
                 value: pc::EnvValue::Inline { value: config_home },
                 visibility: pc::EnvVisibility::Process,
             });
+        }
+        if let Some(artifact) = resolved.credential_artifact {
+            let broker = resolved.secret_broker.ok_or_else(|| {
+                OpenError("credential_provision_failed: secret broker unavailable".into())
+            })?;
+            let bytes = broker
+                .materialize(artifact.reference())
+                .await
+                .map_err(|error| OpenError(format!("credential_provision_failed: {error}")))?;
+            let path = format!(
+                "{}/{}",
+                self.sandbox.config_home_logical().trim_end_matches('/'),
+                artifact.relative_path()
+            );
+            self.sandbox
+                .materialize_inline(&path, &bytes)
+                .await
+                .map_err(|error| OpenError(format!("credential_provision_failed: {error}")))?;
         }
         let injection = match cli {
             Some(cli) => {
@@ -738,7 +829,7 @@ fn acp_config_mount(
             lifetime: pc::MountLifetime::PerRun,
             required: true,
         },
-        (cli.config_home_env.to_string(), exposed_home.to_string()),
+        (cli.config_home_env?.to_string(), exposed_home.to_string()),
     ))
 }
 
@@ -1009,7 +1100,60 @@ mod tests {
                 base_url: "http://model.invalid".into(),
                 model: "model".into(),
                 process_secret: None,
+                credential_artifact: None,
             })
+        }
+    }
+
+    struct ArtifactResolver {
+        broker: Arc<dyn pc::SecretBroker>,
+    }
+
+    impl LaunchResolver for ArtifactResolver {
+        fn model(
+            &self,
+            _activation: &RunActivation,
+            _context: &awaken_runtime_contract::RuntimeRunContext,
+        ) -> Result<awaken_run_executor_acp::ResolvedModel, OpenError> {
+            Ok(awaken_run_executor_acp::ResolvedModel {
+                base_url: "http://model.invalid".into(),
+                model: "model".into(),
+                process_secret: None,
+                credential_artifact: Some(
+                    awaken_run_executor_acp::CredentialArtifactRequirement::new(
+                        "credential-artifact://one-shot",
+                        ".codex/auth.json",
+                    ),
+                ),
+            })
+        }
+
+        fn secret_broker(&self) -> Option<Arc<dyn pc::SecretBroker>> {
+            Some(self.broker.clone())
+        }
+    }
+
+    struct ArtifactBroker;
+
+    #[async_trait]
+    impl pc::SecretBroker for ArtifactBroker {
+        async fn materialize(&self, reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
+            if reference != "credential-artifact://one-shot" {
+                return Err(pc::SandboxError::new("unexpected artifact reference"));
+            }
+            Ok(br#"{"auth_mode":"chatgpt","tokens":{"access_token":"secret"}}"#.to_vec())
+        }
+
+        async fn materialize_process(&self, _reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
+            Err(pc::SandboxError::new("not a process credential"))
+        }
+
+        async fn write_back(
+            &self,
+            _reference: &str,
+            _bytes: Vec<u8>,
+        ) -> Result<(), pc::SandboxError> {
+            Err(pc::SandboxError::new("per-run artifact is not durable"))
         }
     }
 
@@ -1254,6 +1398,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bound_codex_provisions_the_claimed_artifact_without_credential_environment() {
+        let sandbox = Arc::new(CapturingAgentSandbox::default());
+        let cli = *awaken_run_executor_acp::acp_cli("codex").expect("Codex ACP profile");
+        let source = BoundLocalChannelSource {
+            sandbox: sandbox.clone(),
+            launch: LaunchSource::Projected(AcpLaunchRegistry::single(
+                cli,
+                Arc::new(ArtifactResolver {
+                    broker: Arc::new(ArtifactBroker),
+                }),
+            )),
+            codec: awaken_run_executor_acp::Codec::Acp,
+            backend: awaken_runtime_contract::resolved::Backend::Acp {
+                cli: "codex".into(),
+            },
+            mcp_servers: Vec::new(),
+        };
+
+        source
+            .open(
+                &acp_activation("acp:codex"),
+                &awaken_runtime_contract::RuntimeRunContext::new(),
+            )
+            .await
+            .expect("provision Codex credential artifact");
+
+        let files = sandbox.materialized.lock().unwrap();
+        let (_, bytes) = files
+            .iter()
+            .find(|(path, _)| path == "/acp-config/.codex/auth.json")
+            .expect("artifact uses the provider codec's exact sandbox path");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(bytes).unwrap()["auth_mode"],
+            "chatgpt"
+        );
+        drop(files);
+
+        let command = sandbox.command.lock().unwrap();
+        let command = command.as_ref().expect("Codex was spawned");
+        assert!(command.env.iter().any(|entry| {
+            entry.name == "HOME"
+                && entry.value
+                    == pc::EnvValue::Inline {
+                        value: SANDBOX_CONFIG_HOME.into(),
+                    }
+        }));
+        assert!(command.env.iter().all(|entry| {
+            !entry.name.starts_with("OPENAI_")
+                && entry.name != "CODEX_HOME"
+                && entry.name != "CODEX_CONFIG"
+        }));
+    }
+
+    #[tokio::test]
     async fn bound_fixed_launch_admits_host_path_only_outside_a_container() {
         for (container, expect_path) in [(false, true), (true, false)] {
             let sandbox = Arc::new(if container {
@@ -1423,29 +1621,33 @@ mod tests {
     }
 
     #[test]
-    fn codex_config_file_becomes_an_inline_readonly_mount_and_points_the_config_home() {
-        // A config-file CLI (codex): the projected config.toml is mounted inline
+    fn legacy_config_file_becomes_an_inline_readonly_mount_and_points_the_config_home() {
+        // A synthetic config-file CLI: the projected config.toml is mounted inline
         // (ephemeral, read-only, never-harvested) at the interior config home, and the
-        // CLI's config-home env (CODEX_HOME) points there so it reads the MCP config.
-        let cli = awaken_run_executor_acp::acp_cli("codex").unwrap();
+        // Its isolated config-home env points there so it reads the MCP config.
+        let mut cli = *awaken_run_executor_acp::acp_cli("claude").unwrap();
+        cli.mcp_interface = awaken_run_executor_acp::McpInterface::ConfigFileToml {
+            path: "config.toml",
+        };
+        cli.config_home_env = Some("TEST_CONFIG_HOME");
         // bwrap: interior absolute config home, read-only (enforceable).
         let (mount, (env_key, env_val)) = acp_config_mount(
-            cli,
+            &cli,
             Some(("config.toml".into(), "[mcp_servers.gh]\n".into())),
             SANDBOX_CONFIG_HOME,
             SANDBOX_CONFIG_HOME,
             true,
         )
-        .expect("codex gets a config mount");
+        .expect("config-file CLI gets a config mount");
         assert_eq!(mount.mount_path, "/acp-config/config.toml");
         assert!(matches!(mount.source, pc::MountSource::Inline { .. }));
         assert_eq!(mount.access, pc::MountAccess::ReadOnly);
         assert_eq!(mount.lifetime, pc::MountLifetime::PerRun);
-        assert_eq!(env_key, "CODEX_HOME");
+        assert_eq!(env_key, "TEST_CONFIG_HOME");
         assert_eq!(env_val, "/acp-config");
         // Workdir: workdir-relative config home, read-write (RO not enforceable).
         let (rw, (_, rw_home)) = acp_config_mount(
-            cli,
+            &cli,
             Some(("config.toml".into(), "x".into())),
             WORKDIR_CONFIG_HOME,
             WORKDIR_CONFIG_HOME,

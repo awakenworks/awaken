@@ -49,16 +49,6 @@ static SHARED_NATS_WAKE: std::sync::OnceLock<Arc<dyn WakeSignal>> = std::sync::O
 static SHARED_SQLITE_DISPATCH: std::sync::OnceLock<Arc<AnyDispatchStore>> =
     std::sync::OnceLock::new();
 
-/// Connect the process-wide Postgres dispatch pool at `url` and publish it for
-/// `AWAKEN_DISPATCH_BACKEND=postgres`. Call this ONCE at startup (the server does
-/// so before it serves) — it must run here, not in the per-thread run path, so the
-/// non-`Send` sqlx connect future never enters the run loop's future. Idempotent:
-/// a second call keeps the first pool.
-pub async fn init_shared_postgres_dispatch(url: &str) -> Result<(), String> {
-    let deployment = crate::deployment_config::DeploymentConfig::from_env();
-    init_shared_postgres_dispatch_with_config(url, &deployment).await
-}
-
 /// Initialize the process-shared Postgres dispatch from an explicitly resolved
 /// deployment snapshot.
 pub async fn init_shared_postgres_dispatch_with_config(
@@ -141,17 +131,6 @@ fn dispatch_wake_kind(deployment: &crate::DeploymentConfig) -> DispatchWake {
         Wake::Nats => DispatchWake::Nats,
         Wake::None => DispatchWake::None,
     }
-}
-
-/// Fail fast at startup when `AWAKEN_INGRESS=durable` would resolve to a volatile
-/// in-memory queue (see [`durable_backend_persisted`]). Call this in the composition
-/// root before serving — every open boot path (`awaken` / `awaken-server`)
-/// does. A no-op unless durable ingress is enabled.
-pub fn ensure_durable_backend() -> Result<(), String> {
-    crate::deployment_config::DeploymentConfig::from_env()
-        .durable_needs_persistence_error(false)
-        .map(str::to_string)
-        .map_or(Ok(()), Err)
 }
 
 /// The cross-node wake to spawn the served pool with, if one was built at startup

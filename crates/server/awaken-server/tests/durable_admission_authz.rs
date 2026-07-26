@@ -30,11 +30,10 @@
 //! builds a router (the `LazyLock` `Once` synchronizes the single write
 //! happens-before every later env read).
 
-use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::LazyLock;
 
-use awaken_scenario_host::{EchoModel, build_router};
+use awaken_runtime_host::DeploymentConfig;
+use awaken_scenario_host::{EchoModel, build_router_with_deployment};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -51,27 +50,15 @@ use tower::ServiceExt;
 /// operations alone.
 static GATE: Mutex<()> = Mutex::const_new(());
 
-/// Engage durable ingress for this test binary's process, backed by an on-disk
-/// sqlite dispatch queue (not the volatile in-memory footgun). Runs its body
-/// exactly once; every test dereferences it before building a router, so the two
-/// `set_var` writes happen-before every later env read (no data race).
-static DURABLE: LazyLock<PathBuf> = LazyLock::new(|| {
+fn app() -> Router {
     let dir = std::env::temp_dir().join(format!("awaken-durable-admission-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create durable storage dir");
-    // SAFETY: the LazyLock `Once` runs this closure a single time with no other
-    // thread able to observe the vars until it returns; after that the values are
-    // constant, so all subsequent reads are synchronized-after these writes.
-    unsafe {
-        std::env::set_var("AWAKEN_INGRESS", "durable");
-        std::env::set_var("AWAKEN_STORAGE_DIR", &dir);
-    }
-    dir
-});
-
-fn app() -> Router {
-    // Touch the durable init before the router reads any of its env.
-    let _ = &*DURABLE;
-    build_router(Arc::new(EchoModel), "echo")
+    let deployment = DeploymentConfig {
+        durable: true,
+        storage_dir: Some(dir),
+        ..DeploymentConfig::ephemeral()
+    };
+    build_router_with_deployment(Arc::new(EchoModel), "echo", deployment)
 }
 
 /// Send a request with an explicit raw body + optional Authorization header and

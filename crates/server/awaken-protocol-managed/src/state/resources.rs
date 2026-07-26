@@ -323,7 +323,6 @@ impl ManagedState {
     ) -> Result<awaken_session_contract::ResolvedInput, StateError> {
         let repository_id = if let ParsedInputTarget::Repository {
             remote_url,
-            authorization_token,
             initial_branch,
         } = &parsed.target
         {
@@ -333,27 +332,6 @@ impl ManagedState {
                 ))
             })?;
             let repository_id = format!("managed:{session_id}:repository:{binding_id}");
-            let credential_binding = match authorization_token {
-                Some(token) => {
-                    let vaults = self.vaults.as_ref().ok_or_else(|| {
-                        StateError::Run(RunError::bad_request(
-                            "repository authorization requires a configured credential vault",
-                        ))
-                    })?;
-                    Some(
-                        vaults
-                            .enter_session_bearer(owner_scope, token.clone())
-                            .await
-                            .map_err(|error| {
-                                StateError::Run(RunError::bad_request(format!(
-                                    "repository credential could not be stored: {error}"
-                                )))
-                            })?
-                            .0,
-                    )
-                }
-                None => None,
-            };
             catalog
                 .create_repository(
                     awaken_resource_contract::RepositoryDefinition {
@@ -370,7 +348,7 @@ impl ManagedState {
                         repository_id: repository_id.clone().into(),
                         version: awaken_resource_contract::ConfigVersion::INITIAL,
                         remote_url: remote_url.clone(),
-                        credential_binding,
+                        credential_binding: None,
                         initial_branch: initial_branch.clone(),
                         clone_policy: awaken_resource_contract::ClonePolicy::default(),
                     },
@@ -530,56 +508,10 @@ impl ManagedState {
         current
             .replace(replacement.clone())
             .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        if let Some(token) = patch
-            .get("authorization_token")
-            .and_then(serde_json::Value::as_str)
-        {
-            let awaken_session_contract::ResolvedInputSource::Repository {
-                repository_id,
-                config: pinned,
-                ..
-            } = &previous.source
-            else {
-                return Err(StateError::Run(RunError::bad_request(
-                    "authorization_token is valid only for github_repository",
-                )));
-            };
-            let vaults = self.vaults.as_ref().ok_or_else(|| {
-                StateError::Run(RunError::bad_request(
-                    "repository authorization requires a configured credential vault",
-                ))
-            })?;
-            let credential = vaults
-                .enter_session_bearer(&owner_scope, token.to_string())
-                .await
-                .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-            let catalog = self.resource_catalog.as_ref().ok_or_else(|| {
-                StateError::Run(RunError::bad_request("Resource Catalog is not configured"))
-            })?;
-            let definition = catalog
-                .repository(&owner_scope, repository_id.as_str())
-                .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?
-                .ok_or(StateError::NotFound)?;
-            let mut next_config = pinned.clone();
-            next_config.version = definition
-                .current_config_version
-                .checked_next()
-                .ok_or_else(|| {
-                    StateError::Run(RunError::bad_request("config version exhausted"))
-                })?;
-            next_config.credential_binding = Some(credential.0);
-            catalog
-                .publish_repository_config(
-                    &owner_scope,
-                    definition.current_config_version,
-                    next_config.clone(),
-                )
-                .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-            replacement.source = awaken_session_contract::ResolvedInputSource::Repository {
-                repository_id: repository_id.clone(),
-                config: next_config,
-                credential: None,
-            };
+        if patch.get("authorization_token").is_some() {
+            return Err(StateError::Run(RunError::bad_request(
+                "raw_repository_credentials_unsupported",
+            )));
         }
         self.pin_repository_credential(&owner_scope, &selected_holder, &mut replacement)
             .await?;

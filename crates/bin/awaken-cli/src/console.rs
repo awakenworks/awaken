@@ -9,6 +9,7 @@ include!(concat!(env!("OUT_DIR"), "/embedded_console.rs"));
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct StartArgs {
+    pub config_path: Option<std::path::PathBuf>,
     pub port: Option<u16>,
     pub data_dir: Option<std::path::PathBuf>,
     pub no_browser: bool,
@@ -18,8 +19,14 @@ pub(crate) struct StartArgs {
 pub(crate) enum Command {
     Start(StartArgs),
     Serve(StartArgs),
-    Worker { server: String },
-    Config { json: bool },
+    Worker {
+        server: String,
+        config_path: Option<std::path::PathBuf>,
+    },
+    Config {
+        json: bool,
+        config_path: Option<std::path::PathBuf>,
+    },
     Version,
     Help,
 }
@@ -36,12 +43,7 @@ pub(crate) fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Comma
         "serve" if args.iter().any(|arg| is_help(arg)) => Ok(Command::Help),
         "serve" => parse_start_args(&args).map(Command::Serve),
         "worker" => parse_worker_args(&args),
-        "config" => match args.as_slice() {
-            [] => Ok(Command::Config { json: false }),
-            [flag] if flag == "--json" => Ok(Command::Config { json: true }),
-            [flag] if is_help(flag) => Ok(Command::Help),
-            _ => Err(format!("unexpected config arguments: {}", args.join(" "))),
-        },
+        "config" => parse_config_args(&args),
         "version" | "-V" | "--version" if args.is_empty() => Ok(Command::Version),
         "help" | "-h" | "--help" if args.is_empty() => Ok(Command::Help),
         other => Err(format!("unknown command {other:?}; run `awaken --help`")),
@@ -54,6 +56,14 @@ fn parse_start_args(args: &[String]) -> Result<StartArgs, String> {
     while index < args.len() {
         match args[index].as_str() {
             "--no-browser" => parsed.no_browser = true,
+            "--config" => {
+                index += 1;
+                parsed.config_path =
+                    Some(parse_path(args.get(index).map(String::as_str), "--config")?);
+            }
+            value if value.starts_with("--config=") => {
+                parsed.config_path = Some(parse_path(Some(&value[9..]), "--config")?);
+            }
             "--port" => {
                 index += 1;
                 parsed.port = Some(parse_port(args.get(index).map(String::as_str))?);
@@ -79,16 +89,62 @@ fn parse_start_args(args: &[String]) -> Result<StartArgs, String> {
 }
 
 fn parse_worker_args(args: &[String]) -> Result<Command, String> {
-    let server = match args {
-        [flag, value] if flag == "--server" => value.clone(),
-        [value] if value.starts_with("--server=") => value[9..].to_owned(),
-        [flag] if is_help(flag) => return Ok(Command::Help),
-        _ => return Err("worker requires --server <URL>".to_owned()),
-    };
+    if args.iter().any(|arg| is_help(arg)) {
+        return Ok(Command::Help);
+    }
+    let mut server = None;
+    let mut config_path = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--server" => {
+                index += 1;
+                server = args.get(index).cloned();
+            }
+            value if value.starts_with("--server=") => server = Some(value[9..].to_owned()),
+            "--config" => {
+                index += 1;
+                config_path = Some(parse_path(args.get(index).map(String::as_str), "--config")?);
+            }
+            value if value.starts_with("--config=") => {
+                config_path = Some(parse_path(Some(&value[9..]), "--config")?);
+            }
+            other => return Err(format!("unexpected argument {other:?}")),
+        }
+        index += 1;
+    }
+    let server = server.ok_or_else(|| "worker requires --server <URL>".to_owned())?;
     if !(server.starts_with("http://") || server.starts_with("https://")) {
         return Err("--server must be an http:// or https:// URL".to_owned());
     }
-    Ok(Command::Worker { server })
+    Ok(Command::Worker {
+        server,
+        config_path,
+    })
+}
+
+fn parse_config_args(args: &[String]) -> Result<Command, String> {
+    if args.iter().any(|arg| is_help(arg)) {
+        return Ok(Command::Help);
+    }
+    let mut json = false;
+    let mut config_path = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => json = true,
+            "--config" => {
+                index += 1;
+                config_path = Some(parse_path(args.get(index).map(String::as_str), "--config")?);
+            }
+            value if value.starts_with("--config=") => {
+                config_path = Some(parse_path(Some(&value[9..]), "--config")?);
+            }
+            other => return Err(format!("unexpected config argument {other:?}")),
+        }
+        index += 1;
+    }
+    Ok(Command::Config { json, config_path })
 }
 
 fn parse_port(value: Option<&str>) -> Result<u16, String> {
@@ -116,7 +172,7 @@ fn is_help(value: &str) -> bool {
 
 pub(crate) fn print_help() {
     println!(
-        "Awaken\n\nUSAGE:\n    awaken [COMMAND] [OPTIONS]\n\nRunning `awaken` without a command is the same as `awaken start`.\n\nCOMMANDS:\n    start                 Start locally, print readiness, and open the browser\n    serve                 Start headless for service managers\n    worker --server URL   Join an Awaken server as a worker\n    config [--json]       Print effective, redacted configuration\n    version               Print the installed version\n\nSTART / SERVE OPTIONS:\n    --port PORT           Override the listen port\n    --data-dir PATH       Override the persistent data root (default ~/.awaken)\n    --no-browser          Do not open a browser\n    -h, --help            Print this help\n\nConfiguration precedence: command line > AWAKEN_* environment > config.toml > defaults."
+        "Awaken\n\nUSAGE:\n    awaken [COMMAND] [OPTIONS]\n\nRunning `awaken` without a command is the same as `awaken start`.\n\nCOMMANDS:\n    start                 Start locally, print readiness, and open the browser\n    serve                 Start headless for service managers\n    worker --server URL   Join an Awaken server as a worker\n    config [--json]       Print effective, redacted configuration\n    version               Print the installed version\n\nOPTIONS:\n    --config PATH         Read typed configuration from PATH\n    --port PORT           Override the listen port\n    --data-dir PATH       Override the persistent data root (default ~/.awaken)\n    --no-browser          Do not open a browser\n    -h, --help            Print this help\n\nConfiguration sources: --config PATH or ~/.awaken/config.toml, then defaults."
     );
 }
 

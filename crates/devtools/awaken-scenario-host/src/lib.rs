@@ -585,19 +585,18 @@ const FAKE_ACP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_acp::A
     command: "/bin/sh",
     args: &["-c", FAKE_ACP_GATEWAY_JSONRPC_SCRIPT],
     container_argv: &["/bin/sh", "-c", FAKE_ACP_GATEWAY_JSONRPC_SCRIPT],
-    model_delivery: awaken_run_executor_acp::ModelDelivery {
+    model_delivery: Some(awaken_run_executor_acp::ModelDelivery {
         base_url: "ANTHROPIC_BASE_URL",
         model: "ANTHROPIC_MODEL",
         model_config_key: None,
         model_config_env: None,
         key: "ANTHROPIC_API_KEY",
         aliases: &[],
-    },
+    }),
     auth_method_id: None,
     mcp_interface: awaken_run_executor_acp::McpInterface::AcpSession,
-    config_home_env: "CLAUDE_CONFIG_DIR",
+    config_home_env: Some("CLAUDE_CONFIG_DIR"),
     config_home_aliases: &[],
-    credential_file: None,
     memory_entrypoint: "CLAUDE.md",
     retained_paths: &[],
     // The fake gateway CLI keeps no local session (it is a scripted stand-in).
@@ -637,19 +636,18 @@ const FAKE_ACP_MCP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_ac
     command: "/bin/sh",
     args: &["-c", FAKE_ACP_MCP_ECHO_SCRIPT],
     container_argv: &["/bin/sh", "-c", FAKE_ACP_MCP_ECHO_SCRIPT],
-    model_delivery: awaken_run_executor_acp::ModelDelivery {
+    model_delivery: Some(awaken_run_executor_acp::ModelDelivery {
         base_url: "ANTHROPIC_BASE_URL",
         model: "ANTHROPIC_MODEL",
         model_config_key: None,
         model_config_env: None,
         key: "ANTHROPIC_API_KEY",
         aliases: &[],
-    },
+    }),
     auth_method_id: None,
     mcp_interface: awaken_run_executor_acp::McpInterface::AcpSession,
-    config_home_env: "CLAUDE_CONFIG_DIR",
+    config_home_env: Some("CLAUDE_CONFIG_DIR"),
     config_home_aliases: &[],
-    credential_file: None,
     memory_entrypoint: "CLAUDE.md",
     retained_paths: &[],
     session_persistence: awaken_run_executor_acp::SessionPersistence::None,
@@ -674,6 +672,7 @@ impl awaken_run_executor_acp::LaunchResolver for FixedAcpModel {
             base_url: "http://fake".into(),
             model: "fake".into(),
             process_secret: None,
+            credential_artifact: None,
         })
     }
 }
@@ -825,6 +824,23 @@ pub async fn build_acp_container_router() -> Router {
 /// Build the server router backed by the kernel with the given model.
 pub fn build_router(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Router {
     mount(Arc::new(resource_host(llm, model_ref)))
+}
+
+/// Test/embedder composition with one explicitly resolved deployment snapshot.
+/// Production callers resolve this snapshot from typed configuration before
+/// constructing the host.
+pub fn build_router_with_deployment(
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: impl Into<String>,
+    deployment: awaken_runtime_host::DeploymentConfig,
+) -> Router {
+    let host = SharedHost::new_with_deployment(llm, model_ref, deployment).with_resource_lifecycle(
+        Arc::new(
+            awaken_resource_store::SqliteResourceStore::in_memory()
+                .expect("open scenario resource lifecycle sqlite"),
+        ),
+    );
+    mount(Arc::new(host))
 }
 
 /// The model backing a scenario router, and its advertised ref. Normally the

@@ -19,7 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // starts the HTTP surface; Serve is the default — single-machine all-in-one, or a
     // coordinator when the local pool is disabled. (The hand is now the separate
     // `awaken-sandbox hand` execution-plane binary, not a server role.)
-    match awaken_server::deployment_role() {
+    match awaken_server::Role::Serve {
         awaken_server::Role::Worker => {
             let upstream = std::env::var("AWAKEN_UPSTREAM_URL").unwrap_or_default();
             // Test-only echo-draining worker (the worker-pool e2e). The production
@@ -33,8 +33,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // resolve to a volatile in-memory queue (durable + default sqlite backend + no
     // AWAKEN_STORAGE_DIR) — such a queue silently drops every queued/crashed/scheduled
     // run on restart, defeating the whole point of durable ingress (no-data-loss).
-    awaken_runtime_host::ensure_durable_backend()?;
-    let deployment = awaken_runtime_host::DeploymentConfig::from_env();
+    let deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
+    if let Some(error) = deployment.durable_needs_persistence_error(false) {
+        return Err(error.to_owned().into());
+    }
     let postgres_startup = (deployment.durable
         && deployment.dispatch_backend == awaken_runtime_host::DispatchBackend::Postgres)
         || deployment.store == awaken_runtime_host::StoreKind::Postgres;
@@ -50,12 +52,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Connect the shared Postgres dispatch pool once, before serving, when durable
     // ingress is backed by Postgres (a multi-node fleet sharing one queue). Doing it
     // here keeps the non-`Send` sqlx connect future out of the per-thread run loop.
-    if std::env::var("AWAKEN_INGRESS").as_deref() == Ok("durable")
-        && std::env::var("AWAKEN_DISPATCH_BACKEND").as_deref() == Ok("postgres")
+    if deployment.durable
+        && deployment.dispatch_backend == awaken_runtime_host::DispatchBackend::Postgres
     {
-        let url = std::env::var("AWAKEN_DATABASE_URL")
-            .map_err(|_| "AWAKEN_DISPATCH_BACKEND=postgres requires AWAKEN_DATABASE_URL")?;
-        awaken_runtime_host::init_shared_postgres_dispatch(&url).await?;
+        let url = deployment
+            .database_url
+            .as_deref()
+            .ok_or("Postgres dispatch requires runtime.database_url")?;
+        awaken_runtime_host::init_shared_postgres_dispatch_with_config(url, &deployment).await?;
         // The worker transport mounted by awaken-server shares the same durable
         // Postgres topology. Initialize its sole process-wide directory before the
         // router is built, matching the production awaken composition root.

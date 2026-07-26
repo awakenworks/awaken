@@ -141,7 +141,6 @@ struct AssemblyOverrides {
     deployment: Option<awaken_runtime_host::DeploymentConfig>,
     org_id: Option<String>,
     mcp_bearer_token: Option<String>,
-    resolved: bool,
 }
 
 type IdentityWiring = (
@@ -354,6 +353,7 @@ fn in_memory_management_stores() -> ManagementStores {
 /// durable, even when the rest of the management plane intentionally remains
 /// ephemeral. A restarted runtime can only rehydrate a governed Session when its
 /// configuration and owner fence survive beside the committed thread facts.
+#[cfg(test)]
 fn management_stores_for_runtime_storage(
     storage_dir: Option<&std::path::Path>,
 ) -> ManagementStores {
@@ -584,7 +584,7 @@ async fn open_local_management_stores(
     key: &[u8; 32],
 ) -> Result<ManagementStores, String> {
     open_management_stores(
-        awaken_control::ControlStoreConfig::resolve(dir, |_| None),
+        awaken_control::ControlStoreConfig::local(dir),
         config::ResourcePlaneStoreBackend::Embedded(dir.to_path_buf()),
         dir.to_path_buf(),
         key,
@@ -592,33 +592,23 @@ async fn open_local_management_stores(
     .await
 }
 
-/// Compatibility data-root adapter for the legacy embedding entrypoint below.
-fn deployment_data_dir_from_env() -> Option<String> {
-    std::env::var("AWAKEN_DEPLOYMENT_DATA_DIR")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            std::env::var("AWAKEN_MGMT_DIR")
-                .ok()
-                .filter(|value| !value.is_empty())
-        })
-}
-
-/// Serve the management plane (authoring + data plane) with **persistence selected
-/// from the environment**:
-///
-/// - `AWAKEN_DEPLOYMENT_DATA_DIR` unset — in-memory stores.
-/// - `AWAKEN_DEPLOYMENT_DATA_DIR=<dir>` — durable stores rooted under `<dir>`, secrets AEAD-sealed
-///   under the seal key (required then; unset or malformed panics rather than sealing
-///   under a key that cannot survive a restart). The key comes from exactly one of
-///   `AWAKEN_CONTROL_SEAL_KEY` (inline) or `AWAKEN_CONTROL_SEAL_KEY_FILE`.
-///
-/// Additionally (ADR-0042/0043 P1), `AWAKEN_MGMT_IAM=embedded` gates the management
-/// surfaces behind bearer `ApiToken` authn + preset-role authz; it requires
-/// `AWAKEN_DEPLOYMENT_DATA_DIR` and panics with a clear message when it is missing. Unset — the
-/// default — is today's open behavior, byte-identical.
+/// Serve the management plane from the standard typed deployment configuration.
 pub async fn build_management_router() -> Router {
     build_management_router_with_composition(ManagementModelComposition::PublishedProviders).await
+}
+
+/// Hermetic management composition for tests and embedders that explicitly want
+/// volatile stores. It never consults the standard deployment config path.
+pub async fn build_ephemeral_management_router() -> Router {
+    management_router_over(
+        in_memory_management_stores(),
+        None,
+        None,
+        ManagementModelComposition::PublishedProviders,
+        AssemblyOverrides::default(),
+        None,
+    )
+    .await
 }
 
 /// Canonical product assembly from the command's one resolved configuration.
@@ -649,7 +639,6 @@ pub async fn build_management_router_with_deployment(
             deployment: Some(deployment.runtime.clone()),
             org_id: Some(deployment.org_id.clone()),
             mcp_bearer_token: deployment.mcp_bearer_token.clone(),
-            resolved: true,
         },
         None,
     )
@@ -676,78 +665,41 @@ pub async fn build_management_router_with_scenario_model(
 async fn build_management_router_with_composition(
     model_composition: ManagementModelComposition,
 ) -> Router {
-    let legacy_mode = std::env::var("AWAKEN_MGMT_IAM").ok();
-    let identity_mode = std::env::var("AWAKEN_IDENTITY_MODE")
-        .ok()
-        .as_deref()
-        .and_then(ManagementIdentityMode::parse)
-        .or_else(|| {
-            legacy_mode
-                .as_deref()
-                .and_then(ManagementIdentityMode::parse)
-        })
-        .unwrap_or(ManagementIdentityMode::NoLogin);
-    let deployment_data_dir = deployment_data_dir_from_env();
+    let deployment = config::ResolvedDeployment::load(config::ConfigOverrides::default())
+        .unwrap_or_else(|error| panic!("deployment configuration: {error}"));
+    let key = deployment
+        .seal_key
+        .load_or_create()
+        .unwrap_or_else(|error| panic!("control seal key: {error}"));
     let (iam, remote_iam) = identity_wiring(
-        identity_mode,
-        deployment_data_dir.as_deref().map(std::path::Path::new),
-        &local_org_id(),
-        &std::env::var("AWAKEN_IAM_WORKSPACES")
-            .unwrap_or_default()
-            .split(',')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-            .collect::<Vec<_>>(),
-        &legacy_cloud_iam_config(),
+        deployment.identity_mode,
+        Some(&deployment.data_dir),
+        &deployment.org_id,
+        &deployment.iam_workspaces,
+        &deployment.cloud_iam,
     )
     .unwrap_or_else(|error| panic!("identity configuration: {error}"));
-    match deployment_data_dir {
-        Some(dir) => {
-            let key = awaken_control::control_seal_key_from_env();
-            // Each control-plane store honors its own `AWAKEN_<COMPONENT>_DB` override
-            // (SQLite path or shared Postgres), defaulting to `<dir>/<name>.db`.
-            let cfg = awaken_control::ControlStoreConfig::from_env(std::path::Path::new(&dir));
-            let resource_backend =
-                config::ResourcePlaneStoreBackend::from_env(std::path::Path::new(&dir))
-                    .unwrap_or_else(|error| panic!("resource plane configuration: {error}"));
-            let shared_runtime = std::env::var("AWAKEN_RUNTIME_DISPATCH_DATABASE_URL")
-                .is_ok_and(|value| !value.is_empty())
-                || std::env::var("AWAKEN_STORE").as_deref() == Ok("postgres")
-                || std::env::var("AWAKEN_DISPATCH_BACKEND").as_deref() == Ok("postgres");
-            let shared_resource_catalog =
-                matches!(&cfg.admin, awaken_control::StoreBackend::Postgres(_));
-            resource_backend
-                .validate_runtime_shape(shared_runtime, shared_resource_catalog)
-                .unwrap_or_else(|error| panic!("{error}"));
-            management_router_over(
-                open_management_stores(cfg, resource_backend, std::path::PathBuf::from(&dir), &key)
-                    .await
-                    .unwrap_or_else(|error| panic!("open management stores: {error}")),
-                iam,
-                remote_iam,
-                model_composition,
-                AssemblyOverrides::default(),
-                None,
-            )
-            .await
-        }
-        None => {
-            let deployment = awaken_runtime_host::DeploymentConfig::from_env();
-            management_router_over(
-                management_stores_for_runtime_storage(deployment.storage_dir.as_deref()),
-                iam,
-                remote_iam,
-                model_composition,
-                AssemblyOverrides {
-                    deployment: Some(deployment),
-                    ..Default::default()
-                },
-                None,
-            )
-            .await
-        }
-    }
+    let stores = open_management_stores(
+        deployment.control.clone(),
+        deployment.resources.clone(),
+        deployment.data_dir.clone(),
+        &key,
+    )
+    .await
+    .unwrap_or_else(|error| panic!("open management stores: {error}"));
+    management_router_over(
+        stores,
+        iam,
+        remote_iam,
+        model_composition,
+        AssemblyOverrides {
+            deployment: Some(deployment.runtime),
+            org_id: Some(deployment.org_id),
+            mcp_bearer_token: deployment.mcp_bearer_token,
+        },
+        None,
+    )
+    .await
 }
 
 fn identity_wiring(
@@ -793,19 +745,6 @@ fn awaken_cloud_authz(
         user_token,
         config.service_token.clone(),
     )
-}
-
-fn legacy_cloud_iam_config() -> config::CloudIamConfig {
-    config::CloudIamConfig {
-        base_url: std::env::var("AWAKEN_CLOUD_IAM_URL")
-            .unwrap_or_else(|_| "https://accounts.awakenworks.com".to_owned()),
-        audience: std::env::var("AWAKEN_CLOUD_IAM_AUDIENCE")
-            .unwrap_or_else(|_| "awaken-runtime".to_owned()),
-        issuer: std::env::var("AWAKEN_CLOUD_IAM_ISSUER")
-            .unwrap_or_else(|_| "https://accounts.awakenworks.com".to_owned()),
-        access_token: std::env::var("AWAKEN_CLOUD_ACCESS_TOKEN").ok(),
-        service_token: std::env::var("AWAKEN_CLOUD_IAM_SERVICE_TOKEN").ok(),
-    }
 }
 
 /// [`build_management_router_with_model`] plus a last-mile hook on the assembled host
@@ -949,16 +888,9 @@ async fn management_router_over(
     // serves external-CLI sessions.
     customize_host: Option<Box<dyn FnOnce(SharedHost) -> SharedHost + Send>>,
 ) -> Router {
-    let resolved = assembly.resolved;
     let deployment = assembly.deployment;
     let org_id = assembly.org_id.unwrap_or_else(local_org_id);
-    let mcp_bearer_token = if resolved {
-        assembly.mcp_bearer_token
-    } else {
-        assembly
-            .mcp_bearer_token
-            .or_else(|| std::env::var("AWAKEN_MCP_BEARER_TOKEN").ok())
-    };
+    let mcp_bearer_token = assembly.mcp_bearer_token;
     let ManagementStores {
         workspace_root,
         resource_plane,
@@ -1401,10 +1333,7 @@ async fn management_router_over(
 /// deployments may explicitly configure it; single-machine mode never asks the
 /// user and consistently uses the default Org.
 fn local_org_id() -> String {
-    std::env::var("AWAKEN_ORG_ID")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| awaken_control::DEFAULT_ORG_ID.to_owned())
+    awaken_control::DEFAULT_ORG_ID.to_owned()
 }
 
 // The seal-key resolution tests moved to `awaken_credential_vault::sealed`, the

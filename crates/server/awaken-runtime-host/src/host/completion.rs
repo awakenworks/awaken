@@ -38,7 +38,7 @@ fn worker_local_credentials(
                 ..
             } if credential.material_source == CredentialMaterialSource::WorkerReference => {
                 Some(awaken_run_ingress::WorkerCredentialRevision {
-                    source_id: credential.credential.id.clone(),
+                    id: credential.credential.id.clone(),
                     revision: credential.credential.revision,
                 })
             }
@@ -525,11 +525,11 @@ mod completion_tests {
             placement.required_credentials,
             std::collections::BTreeSet::from([
                 awaken_run_ingress::WorkerCredentialRevision {
-                    source_id: "cred:fallback".into(),
+                    id: "cred:fallback".into(),
                     revision: 5,
                 },
                 awaken_run_ingress::WorkerCredentialRevision {
-                    source_id: "cred:primary".into(),
+                    id: "cred:primary".into(),
                     revision: 2,
                 },
             ])

@@ -13,8 +13,9 @@ mod transition;
 pub use awaken_worker_contract::{
     ExecutionLocation, LeastLoadedPolicy, PlacementContext, PlacementError, PlacementPolicy,
     PlacementRequirements, RankedWorker, RegisteredWorker, RegistryError, RegistryMutation,
-    WorkerAssignment, WorkerCredentialRevision, WorkerDirectory, WorkerHeartbeat, WorkerIdentity,
-    WorkerManifest, WorkerRegistration, WorkerSnapshot, WorkerState, place, place_assignment,
+    WorkerAssignment, WorkerCredentialObservation, WorkerCredentialRevision, WorkerCredentialState,
+    WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerRegistration,
+    WorkerSnapshot, WorkerState, place, place_assignment,
 };
 pub use memory::MemoryWorkerDirectory;
 pub use postgres::PostgresWorkerDirectory;

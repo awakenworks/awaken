@@ -20,9 +20,10 @@ pub use awaken_worker_contract::{
     PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, PlacementContext, PlacementError, PlacementPolicy,
     REPOSITORY_CREDENTIALS_CAPABILITY, RankedWorker, RegisteredWorker, RegistryError,
     RegistryMutation, SESSION_RESOURCES_CAPABILITY, WORKER_LOCAL_CREDENTIALS_CAPABILITY,
-    WorkerAssignment, WorkerCredentialRevision, WorkerDirectory, WorkerHeartbeat, WorkerIdentity,
-    WorkerManifest, WorkerRecoveryMode, WorkerRegistration, WorkerSnapshot, WorkerState,
-    can_assign, can_claim, can_claim_locally, place_assignment,
+    WorkerAssignment, WorkerCredentialObservation, WorkerCredentialRevision, WorkerCredentialState,
+    WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerRecoveryMode,
+    WorkerRegistration, WorkerSnapshot, WorkerState, can_assign, can_claim, can_claim_locally,
+    place_assignment,
 };
 pub use dispatch::{
     AttemptCredentialBindingError, CasOutcome, Claimed, ClaimedCommitCommand, CommitEpochGuard,

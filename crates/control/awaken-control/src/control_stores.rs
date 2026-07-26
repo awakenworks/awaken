@@ -42,8 +42,7 @@ fn is_postgres_url(value: &str) -> bool {
     value.starts_with("postgres://") || value.starts_with("postgresql://")
 }
 
-/// The database backing each control-plane store. Built from the environment against a
-/// bundle directory (`AWAKEN_MGMT_DIR`), with per-component `AWAKEN_*_DB` overrides.
+/// The typed database configuration backing each control-plane store.
 #[derive(Debug, Clone)]
 pub struct ControlStoreConfig {
     pub catalog: StoreBackend,
@@ -57,21 +56,27 @@ pub struct ControlStoreConfig {
 }
 
 impl ControlStoreConfig {
-    /// Read the per-component config against the bundle `dir`. Each component defaults
-    /// to `<dir>/<name>.db` (SQLite) unless its `AWAKEN_*_DB` override is set.
-    pub fn from_env(dir: &Path) -> Self {
-        Self::resolve(dir, |k| std::env::var(k).ok().filter(|v| !v.is_empty()))
+    #[must_use]
+    pub fn local(dir: &Path) -> Self {
+        Self::from_values(dir, None, None, None, None, None)
     }
 
-    /// Pure resolution, testable without touching the process environment.
-    pub fn resolve(dir: &Path, env: impl Fn(&str) -> Option<String>) -> Self {
+    #[must_use]
+    pub fn from_values(
+        dir: &Path,
+        catalog: Option<String>,
+        credential: Option<String>,
+        config: Option<String>,
+        admin: Option<String>,
+        sessions: Option<String>,
+    ) -> Self {
         let bundle = |name: &str| dir.join(name);
         Self {
-            catalog: StoreBackend::resolve(env("AWAKEN_CATALOG_DB"), bundle("catalog.db")),
-            credential: StoreBackend::resolve(env("AWAKEN_CREDENTIAL_DB"), bundle("credential.db")),
-            config: StoreBackend::resolve(env("AWAKEN_CONFIG_DB"), bundle("config.db")),
-            admin: StoreBackend::resolve(env("AWAKEN_ADMIN_DB"), bundle("admin.db")),
-            sessions: StoreBackend::resolve(env("AWAKEN_SESSIONS_DB"), bundle("sessions.db")),
+            catalog: StoreBackend::resolve(catalog, bundle("catalog.db")),
+            credential: StoreBackend::resolve(credential, bundle("credential.db")),
+            config: StoreBackend::resolve(config, bundle("config.db")),
+            admin: StoreBackend::resolve(admin, bundle("admin.db")),
+            sessions: StoreBackend::resolve(sessions, bundle("sessions.db")),
         }
     }
 }
@@ -82,11 +87,19 @@ mod tests {
 
     fn cfg(env: &[(&str, &str)]) -> ControlStoreConfig {
         let dir = Path::new("/var/awaken");
-        ControlStoreConfig::resolve(dir, |k| {
+        let get = |key| {
             env.iter()
-                .find(|(key, _)| *key == k)
-                .map(|(_, v)| v.to_string())
-        })
+                .find(|(candidate, _)| *candidate == key)
+                .map(|(_, value)| value.to_string())
+        };
+        ControlStoreConfig::from_values(
+            dir,
+            get("AWAKEN_CATALOG_DB"),
+            get("AWAKEN_CREDENTIAL_DB"),
+            get("AWAKEN_CONFIG_DB"),
+            get("AWAKEN_ADMIN_DB"),
+            get("AWAKEN_SESSIONS_DB"),
+        )
     }
 
     #[test]

@@ -58,7 +58,9 @@ impl CredentialMaterialResolver for ExactSealedResolver {
         Ok(ResolvedCredentialMaterial {
             credential: self.credential.clone(),
             holder: self.holder.clone(),
-            material: RedactedString::new(self.material.clone()),
+            material: awaken_runtime_contract::CredentialMaterial::bearer(RedactedString::new(
+                self.material.clone(),
+            )),
         })
     }
 }

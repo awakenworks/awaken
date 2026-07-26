@@ -4,9 +4,7 @@
 
 use std::sync::{Arc, OnceLock};
 
-use awaken_worker_registry::{
-    MemoryWorkerDirectory, PostgresWorkerDirectory, SqliteWorkerDirectory, WorkerDirectory,
-};
+use awaken_worker_registry::{MemoryWorkerDirectory, PostgresWorkerDirectory, WorkerDirectory};
 
 static DIRECTORY: OnceLock<Arc<dyn WorkerDirectory>> = OnceLock::new();
 
@@ -29,32 +27,7 @@ pub(crate) fn shared() -> Arc<dyn WorkerDirectory> {
     if let Some(directory) = DIRECTORY.get() {
         return directory.clone();
     }
-    let directory: Arc<dyn WorkerDirectory> = match awaken_runtime_host::DeploymentConfig::from_env(
-    )
-    .dispatch_backend
-    {
-        awaken_runtime_host::DispatchBackend::Postgres => {
-            panic!(
-                "Postgres dispatch requires awaken_server::init_postgres_worker_registry before mount"
-            )
-        }
-        awaken_runtime_host::DispatchBackend::Sqlite => {
-            match std::env::var("AWAKEN_STORAGE_DIR")
-                .ok()
-                .filter(|value| !value.is_empty())
-            {
-                Some(directory) => {
-                    std::fs::create_dir_all(&directory)
-                        .expect("create worker registry storage directory");
-                    Arc::new(
-                        SqliteWorkerDirectory::open(&format!("{directory}/worker_registry.db"))
-                            .expect("open worker registry database"),
-                    )
-                }
-                None => Arc::new(MemoryWorkerDirectory::new()),
-            }
-        }
-    };
+    let directory: Arc<dyn WorkerDirectory> = Arc::new(MemoryWorkerDirectory::new());
     let _ = DIRECTORY.set(directory);
     DIRECTORY.get().cloned().expect("worker directory set")
 }

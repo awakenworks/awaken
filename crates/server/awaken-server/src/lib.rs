@@ -121,19 +121,6 @@ pub fn embedded_resource_plane(root: &std::path::Path) -> awaken_runtime_host::R
     )
 }
 
-/// Open the shared resource data plane used by a database-less execution worker.
-///
-/// A remote worker may not infer a node-local SQLite/filesystem root: that would
-/// create a second File/Memory/Skill/lifecycle truth. Absence means the worker is
-/// resource-ineligible; an explicitly configured non-Postgres value is rejected.
-pub async fn shared_worker_resource_plane_from_env()
--> Result<Option<awaken_runtime_host::ResourcePlanePorts>, String> {
-    let url = std::env::var("AWAKEN_RESOURCE_DATABASE_URL")
-        .ok()
-        .filter(|value| !value.trim().is_empty());
-    shared_worker_resource_plane(url.as_deref()).await
-}
-
 /// Open a remote Worker's shared resource ports from an explicitly resolved
 /// backend URL. `None` means that Worker is resource-ineligible.
 pub async fn shared_worker_resource_plane(
@@ -276,6 +263,7 @@ pub enum Role {
 /// Pure role selection: an explicit `AWAKEN_ROLE` wins; otherwise infer from whether
 /// the historic worker env is configured. Unit-tested without env. (The hand is now a
 /// separate execution-plane binary — `awaken-sandbox hand` — not a server role.)
+#[cfg(test)]
 fn role_from(explicit: Option<&str>, worker_configured: bool) -> Role {
     match explicit {
         Some("worker") => Role::Worker,
@@ -283,13 +271,6 @@ fn role_from(explicit: Option<&str>, worker_configured: bool) -> Role {
         _ if worker_configured => Role::Worker,
         _ => Role::Serve,
     }
-}
-
-/// The deployment role from the environment.
-pub fn deployment_role() -> Role {
-    let set = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty()).is_some();
-    let explicit = std::env::var("AWAKEN_ROLE").ok();
-    role_from(explicit.as_deref(), set("AWAKEN_UPSTREAM_URL"))
 }
 
 #[cfg(test)]
@@ -488,33 +469,10 @@ pub fn data_subject_plane() -> (
     Arc<dyn awaken_runtime_contract::ContentEraser>,
     Arc<dyn awaken_data_subject::DataSubjectRepo>,
 ) {
-    use awaken_data_subject::{
-        InMemoryCapturedContentStore, InMemoryDataSubjectRepo, SqliteCapturedContentStore,
-        SqliteDataSubjectRepo,
-    };
-
-    let dir = std::env::var("AWAKEN_STORAGE_DIR")
-        .ok()
-        .filter(|v| !v.is_empty());
-    match dir {
-        Some(dir) => {
-            std::fs::create_dir_all(&dir).expect("create AWAKEN_STORAGE_DIR");
-            let cap = Arc::new(
-                SqliteCapturedContentStore::open(&format!("{dir}/captured_content.db"))
-                    .expect("open captured-content db"),
-            );
-            let repo = Arc::new(
-                SqliteDataSubjectRepo::open(&format!("{dir}/data_subject.db"))
-                    .expect("open data-subject db"),
-            );
-            (cap.clone(), cap, repo)
-        }
-        None => {
-            let cap = Arc::new(InMemoryCapturedContentStore::new());
-            let repo = Arc::new(InMemoryDataSubjectRepo::new());
-            (cap.clone(), cap, repo)
-        }
-    }
+    use awaken_data_subject::{InMemoryCapturedContentStore, InMemoryDataSubjectRepo};
+    let cap = Arc::new(InMemoryCapturedContentStore::new());
+    let repo = Arc::new(InMemoryDataSubjectRepo::new());
+    (cap.clone(), cap, repo)
 }
 
 /// The worker composition seam refuses incomplete or unsupported materialized

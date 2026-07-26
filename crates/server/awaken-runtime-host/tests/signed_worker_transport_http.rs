@@ -201,7 +201,7 @@ impl WorkerDirectory for TestWorkerDirectory {
                 capability_fingerprint: registration.manifest.fingerprint().unwrap(),
                 manifest: registration.manifest,
                 in_flight: 0,
-                available_credentials: Default::default(),
+                credential_observations: Default::default(),
                 expires_at_ms: now_ms.saturating_add(ttl_ms),
             },
             heartbeat_sequence: 0,
@@ -233,7 +233,7 @@ impl WorkerDirectory for TestWorkerDirectory {
             WorkerState::Starting
         };
         record.snapshot.in_flight = heartbeat.in_flight;
-        record.snapshot.available_credentials = heartbeat.available_credentials;
+        record.snapshot.credential_observations = heartbeat.credential_observations;
         record.snapshot.expires_at_ms = now_ms.saturating_add(ttl_ms);
         record.heartbeat_sequence = heartbeat.sequence;
         record.heartbeat_at_ms = now_ms;
@@ -366,7 +366,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
                     sequence: 1,
                     ready: true,
                     in_flight: 0,
-                    available_credentials: Default::default(),
+                    credential_observations: Default::default(),
                 },
             )
             .await
@@ -382,7 +382,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
                 sequence: 1,
                 ready: true,
                 in_flight: 0,
-                available_credentials: Default::default(),
+                credential_observations: Default::default(),
             },
         )
         .await
@@ -595,7 +595,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
                 sequence: 2,
                 ready: true,
                 in_flight: 1,
-                available_credentials: Default::default(),
+                credential_observations: Default::default(),
             },
         )
         .await

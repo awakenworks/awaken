@@ -19,8 +19,8 @@ use awaken_runtime_host::{
     WorkerDispatchService, WorkerUpstream, dispatch_transport_router_with_service,
 };
 use awaken_worker_registry::{
-    MemoryWorkerDirectory, RegistryMutation, WorkerCredentialRevision, WorkerDirectory,
-    WorkerHeartbeat, WorkerManifest, WorkerState,
+    MemoryWorkerDirectory, RegistryMutation, WorkerCredentialObservation, WorkerCredentialRevision,
+    WorkerDirectory, WorkerHeartbeat, WorkerManifest, WorkerState,
 };
 
 #[tokio::test]
@@ -51,9 +51,10 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
 
     clock.set(110);
     let observed = WorkerCredentialRevision {
-        source_id: "cred:worker".into(),
+        id: "cred:worker".into(),
         revision: 9,
     };
+    let observation = WorkerCredentialObservation::available(observed, 110);
     assert_eq!(
         client
             .heartbeat(
@@ -62,7 +63,9 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
                     sequence: 1,
                     ready: true,
                     in_flight: 1,
-                    available_credentials: std::collections::BTreeSet::from([observed.clone(),]),
+                    credential_observations: std::collections::BTreeSet::from([
+                        observation.clone(),
+                    ]),
                 },
             )
             .await
@@ -86,8 +89,8 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
             .unwrap()
             .unwrap()
             .snapshot
-            .available_credentials,
-        std::collections::BTreeSet::from([observed])
+            .credential_observations,
+        std::collections::BTreeSet::from([observation])
     );
 
     assert_eq!(
@@ -105,7 +108,7 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
                 sequence: 2,
                 ready: true,
                 in_flight: 0,
-                available_credentials: Default::default(),
+                credential_observations: Default::default(),
             },
         )
         .await
@@ -241,7 +244,7 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
                 sequence: 1,
                 ready: true,
                 in_flight: 0,
-                available_credentials: Default::default(),
+                credential_observations: Default::default(),
             },
         )
         .await
@@ -314,7 +317,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
     let directory = Arc::new(MemoryWorkerDirectory::new());
     let dispatch = Arc::new(MemoryDispatchStore::new());
     let required = WorkerCredentialRevision {
-        source_id: "credential-source-worker-private".to_string(),
+        id: "credential-source-worker-private".to_string(),
         revision: 12,
     };
     let mut placement = PlacementRequirements::remote_required();
@@ -365,7 +368,11 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
                     sequence: 1,
                     ready: true,
                     in_flight: 0,
-                    available_credentials: [credential].into_iter().collect(),
+                    credential_observations: [WorkerCredentialObservation::available(
+                        credential, 100,
+                    )]
+                    .into_iter()
+                    .collect(),
                 },
             )
             .await
@@ -377,7 +384,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
         address,
         "worker-wrong-revision",
         WorkerCredentialRevision {
-            source_id: required.source_id.clone(),
+            id: required.id.clone(),
             revision: required.revision - 1,
         },
     )

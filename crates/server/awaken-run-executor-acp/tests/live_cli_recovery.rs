@@ -129,17 +129,19 @@ fn activation(cli: &str, prompt: &str) -> RunActivation {
 /// at `config_home`, plus any model-delivery env keys present in the process env
 /// (the operator supplies real base-url/model/key values).
 fn live_launch(cli: &awaken_run_executor_acp::AcpCli, config_home: &Path) -> AcpLaunch {
+    let config_home_env = cli
+        .config_home_env
+        .expect("live environment projection requires a generic config home");
+    let delivery = cli
+        .model_delivery
+        .expect("live environment projection requires model env keys");
     let mut argv = vec![cli.command.to_string()];
     argv.extend(cli.args.iter().map(|a| (*a).to_string()));
     let mut env = vec![(
-        cli.config_home_env.to_string(),
+        config_home_env.to_string(),
         config_home.display().to_string(),
     )];
-    for key in [
-        cli.model_delivery.base_url,
-        cli.model_delivery.model,
-        cli.model_delivery.key,
-    ] {
+    for key in [delivery.base_url, delivery.model, delivery.key] {
         if let Ok(val) = std::env::var(key) {
             env.push((key.to_string(), val));
         }

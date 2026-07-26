@@ -38,16 +38,53 @@ pub const REPOSITORY_CREDENTIALS_CAPABILITY: &str = "repository-credentials/v1";
 /// for every pinned revision, so this capability alone grants no access.
 pub const WORKER_LOCAL_CREDENTIALS_CAPABILITY: &str = "worker-local-credentials/v1";
 
-pub const CURRENT_CONTRACT_VERSION: u32 = 1;
-
 /// Non-secret worker-side observation key for one locally materializable source
-/// revision. It is derived from a published access reference at admission and is
-/// not credential configuration or secret material.
+/// revision. This Worker wire type deliberately does not depend on the credential
+/// execution contract; the composition root translates resolver observations into it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct WorkerCredentialRevision {
-    pub source_id: String,
+    pub id: String,
     pub revision: u64,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerCredentialState {
+    Available,
+    LoginRequired,
+    Expired,
+    Invalid,
+    Disabled,
+}
+
+/// Point-in-time, non-secret credential evidence published by one Worker.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct WorkerCredentialObservation {
+    pub credential: WorkerCredentialRevision,
+    pub state: WorkerCredentialState,
+    pub observed_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason_code: Option<String>,
+}
+
+impl WorkerCredentialObservation {
+    #[must_use]
+    pub fn available(credential: WorkerCredentialRevision, observed_at_ms: u64) -> Self {
+        Self {
+            credential,
+            state: WorkerCredentialState::Available,
+            observed_at_ms,
+            reason_code: None,
+        }
+    }
+
+    #[must_use]
+    pub fn is_available_for(&self, credential: &WorkerCredentialRevision) -> bool {
+        self.state == WorkerCredentialState::Available && &self.credential == credential
+    }
+}
+
+pub const CURRENT_CONTRACT_VERSION: u32 = 1;
 
 /// One concrete worker process. `worker_id` names the logical slot;
 /// `incarnation_id` changes on every boot; `generation` is allocated durably by
@@ -459,7 +496,7 @@ pub struct WorkerSnapshot {
     /// The set is deliberately outside the immutable manifest: local login or
     /// revocation may change while the worker process remains alive.
     #[serde(default)]
-    pub available_credentials: BTreeSet<WorkerCredentialRevision>,
+    pub credential_observations: BTreeSet<WorkerCredentialObservation>,
     pub expires_at_ms: u64,
 }
 
@@ -560,7 +597,7 @@ pub struct WorkerHeartbeat {
     /// Exact worker-private credential revisions currently materializable.
     /// No secret, local path, environment name, or broker token crosses here.
     #[serde(default)]
-    pub available_credentials: BTreeSet<WorkerCredentialRevision>,
+    pub credential_observations: BTreeSet<WorkerCredentialObservation>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -636,9 +673,11 @@ impl WorkerSnapshot {
             && self.manifest.fingerprint().ok().as_deref()
                 == Some(self.capability_fingerprint.as_str())
             && can_claim(&self.manifest, requirements).is_ok()
-            && requirements
-                .required_credentials
-                .is_subset(&self.available_credentials)
+            && requirements.required_credentials.iter().all(|required| {
+                self.credential_observations
+                    .iter()
+                    .any(|observation| observation.is_available_for(required))
+            })
     }
 }
 
@@ -891,7 +930,7 @@ mod tests {
             manifest,
             capability_fingerprint,
             in_flight: load,
-            available_credentials: BTreeSet::new(),
+            credential_observations: BTreeSet::new(),
             expires_at_ms: 1_000,
         }
     }
@@ -932,7 +971,7 @@ mod tests {
     #[test]
     fn worker_private_credential_requires_the_exact_live_revision() {
         let required = WorkerCredentialRevision {
-            source_id: "cred:worker".into(),
+            id: "cred:worker".into(),
             revision: 7,
         };
         let mut requirements = requirements();
@@ -941,13 +980,30 @@ mod tests {
         let mut worker = manifest("a", 0);
         assert!(!worker.accepts(&requirements, 10));
         worker
-            .available_credentials
-            .insert(WorkerCredentialRevision {
-                source_id: required.source_id.clone(),
-                revision: 6,
-            });
+            .credential_observations
+            .insert(WorkerCredentialObservation::available(
+                WorkerCredentialRevision {
+                    id: required.id.clone(),
+                    revision: 6,
+                },
+                9,
+            ));
         assert!(!worker.accepts(&requirements, 10));
-        worker.available_credentials.insert(required);
+        worker
+            .credential_observations
+            .insert(WorkerCredentialObservation {
+                credential: required.clone(),
+                state: WorkerCredentialState::LoginRequired,
+                observed_at_ms: 10,
+                reason_code: Some("credential_login_required".into()),
+            });
+        assert!(
+            !worker.accepts(&requirements, 10),
+            "an exact but unavailable state is not placement evidence"
+        );
+        worker
+            .credential_observations
+            .insert(WorkerCredentialObservation::available(required, 10));
         assert!(worker.accepts(&requirements, 10));
     }
 
