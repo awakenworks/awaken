@@ -2,10 +2,8 @@
 //! — a reusable, versioned agent configuration (model + system + tools +
 //! mcp_servers + skills + multiagent topology) a session instantiates by id.
 //!
-//! Pure serde shapes. The composite sub-fields the SDK models as their own union
-//! shapes (the normalized `model` config, tools, mcp_servers, skills, multiagent)
-//! stay opaque `Value`s. The store, the version history, and both projections
-//! (registry record and config-plane view) live in `routes::agents_registry`.
+//! Pure serde shapes. SDK unions are decoded here into tagged Rust enums before
+//! the registry normalizes them into its persisted JSON projection.
 
 use std::collections::BTreeMap;
 
@@ -13,6 +11,145 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::types::ModelConfig;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UrlMcpServer {
+    pub name: String,
+    pub url: String,
+    #[serde(rename = "type")]
+    pub kind: UrlMcpServerKind,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum UrlMcpServerKind {
+    #[serde(rename = "url")]
+    Url,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AgentSkill {
+    Anthropic {
+        skill_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
+    },
+    Custom {
+        skill_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PermissionPolicy {
+    AlwaysAllow,
+    AlwaysAsk,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolConfig {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_policy: Option<PermissionPolicy>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolDefaultConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_policy: Option<PermissionPolicy>,
+}
+
+/// JSON Schema is intentionally extensible: schema keywords and property names
+/// are defined by the caller, not by the Managed Agents protocol.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomToolInputSchema {
+    #[serde(rename = "type")]
+    pub kind: ObjectSchemaKind,
+    #[serde(flatten)]
+    pub keywords: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum ObjectSchemaKind {
+    #[serde(rename = "object")]
+    Object,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AgentTool {
+    #[serde(rename = "agent_toolset_20260401")]
+    AgentToolset20260401 {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        configs: Vec<ToolConfig>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        default_config: Option<ToolDefaultConfig>,
+    },
+    McpToolset {
+        mcp_server_name: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        configs: Vec<ToolConfig>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        default_config: Option<ToolDefaultConfig>,
+    },
+    Custom {
+        name: String,
+        description: String,
+        input_schema: CustomToolInputSchema,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MultiagentRosterEntry {
+    Id(String),
+    Reference(AgentRosterReference),
+    SelfReference(SelfRosterReference),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentRosterReference {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub kind: AgentRosterReferenceKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum AgentRosterReferenceKind {
+    #[serde(rename = "agent")]
+    Agent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelfRosterReference {
+    #[serde(rename = "type")]
+    pub kind: SelfRosterReferenceKind,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum SelfRosterReferenceKind {
+    #[serde(rename = "self")]
+    SelfReference,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MultiagentConfig {
+    Coordinator { agents: Vec<MultiagentRosterEntry> },
+}
 
 /// A client's `model` input: a bare id string or a full `{id, speed?}` config
 /// (the SDK's `string | BetaManagedAgentsModelConfig`). Normalized to the shared
@@ -33,9 +170,8 @@ impl ModelInput {
     }
 }
 
-/// `AgentCreateParams` — the `POST /v1/agents` body. The composite fields the SDK
-/// models as unions (`mcp_servers`, `skills`, `tools`, `multiagent`) stay opaque
-/// `Value`s.
+/// `AgentCreateParams` — the `POST /v1/agents` body. Every statically-known SDK
+/// union is decoded before the repository is called.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentCreateParams {
     pub name: String,
@@ -47,13 +183,13 @@ pub struct AgentCreateParams {
     #[serde(default)]
     pub metadata: BTreeMap<String, String>,
     #[serde(default)]
-    pub mcp_servers: Vec<Value>,
+    pub mcp_servers: Vec<UrlMcpServer>,
     #[serde(default)]
-    pub skills: Vec<Value>,
+    pub skills: Vec<AgentSkill>,
     #[serde(default)]
-    pub tools: Vec<Value>,
+    pub tools: Vec<AgentTool>,
     #[serde(default)]
-    pub multiagent: Option<Value>,
+    pub multiagent: Option<MultiagentConfig>,
 }
 
 /// `AgentUpdateParams` — a partial update under optimistic concurrency: `version`
@@ -72,13 +208,13 @@ pub struct AgentUpdateParams {
     #[serde(default)]
     pub metadata: Option<BTreeMap<String, String>>,
     #[serde(default)]
-    pub mcp_servers: Option<Vec<Value>>,
+    pub mcp_servers: Option<Vec<UrlMcpServer>>,
     #[serde(default)]
-    pub skills: Option<Vec<Value>>,
+    pub skills: Option<Vec<AgentSkill>>,
     #[serde(default)]
-    pub tools: Option<Vec<Value>>,
+    pub tools: Option<Vec<AgentTool>>,
     #[serde(default)]
-    pub multiagent: Option<Value>,
+    pub multiagent: Option<MultiagentConfig>,
 }
 
 /// `BetaManagedAgentsAgentReference` — how an agent is *referenced* (by a
@@ -125,12 +261,57 @@ pub struct Agent {
     pub model: ModelConfig,
     pub system: Option<String>,
     pub metadata: BTreeMap<String, String>,
-    // Opaque SDK unions passed through verbatim (`mcp_servers` = MCP server defs,
-    // `tools` = the built-in/custom/MCP tool union, `skills`, and the `multiagent`
-    // coordinator roster) — reproducing each buys nothing this surface constructs.
+    // The durable config domain currently stores canonical JSON projections of
+    // these values; only typed admission can produce those projections.
     pub mcp_servers: Vec<Value>,
     pub skills: Vec<Value>,
     pub tools: Vec<Value>,
     pub multiagent: Option<Value>,
     pub version: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn managed_agent_composites_follow_the_sdk_tagged_unions() {
+        // Causal graph:
+        // official SDK JSON -> tagged Managed DTO -> config-domain normalization.
+        //
+        // Decision table:
+        // | input                                      | admission |
+        // | every known discriminator + exact fields   | accept    |
+        // | unknown discriminator                      | reject    |
+        // | known discriminator + misspelled field     | reject    |
+        // | custom input_schema extension keyword      | preserve  |
+        let valid = json!({
+            "name": "typed",
+            "model": "model-1",
+            "mcp_servers": [{"type":"url","name":"docs","url":"https://mcp.test"}],
+            "skills": [{"type":"custom","skill_id":"skill_1","version":"2"}],
+            "tools": [
+                {"type":"agent_toolset_20260401","configs":[{"name":"bash","enabled":false}]},
+                {"type":"mcp_toolset","mcp_server_name":"docs"},
+                {"type":"custom","name":"lookup","description":"Lookup", "input_schema":{
+                    "type":"object","properties":{"id":{"type":"string"}},"additionalProperties":false
+                }}
+            ],
+            "multiagent": {"type":"coordinator","agents":["worker",{"type":"self"}]}
+        });
+        let parsed: AgentCreateParams = serde_json::from_value(valid).expect("SDK union parses");
+        let AgentTool::Custom { input_schema, .. } = &parsed.tools[2] else {
+            panic!("custom tool retained its variant")
+        };
+        assert_eq!(input_schema.keywords["additionalProperties"], false);
+
+        for invalid in [
+            json!({"name":"x","model":"m","skills":[{"type":"unknown","skill_id":"s"}]}),
+            json!({"name":"x","model":"m","mcp_servers":[{"type":"url","name":"s","uri":"https://x"}]}),
+            json!({"name":"x","model":"m","tools":[{"type":"mcp_toolset","mcp_server":"s"}]}),
+        ] {
+            assert!(serde_json::from_value::<AgentCreateParams>(invalid).is_err());
+        }
+    }
 }

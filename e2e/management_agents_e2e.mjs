@@ -81,10 +81,15 @@ async function main() {
       assert.ok(archived.archived_at, 'archived agent carries archived_at');
       pass('beta.agents.archive -> archived_at set');
 
-      // Exercise the complete authoring projection rather than only name/model.
-      // String and object tool spellings are normalized; malformed entries are
-      // ignored. JSON null deserializes as an absent optional patch and therefore
-      // leaves the existing multiagent binding unchanged.
+      // Cause/effect graph:
+      // official tagged SDK unions -> Managed admission -> config normalization
+      // -> Agent projection. Unknown tags/fields fail before persistence.
+      //
+      // Decision table:
+      // | composite input                        | result |
+      // | URL MCP/custom skill/custom tools      | 200 + typed projection |
+      // | unknown/misspelled union member        | 400, no Agent created  |
+      // | update multiagent:null                 | preserve current value |
       const rich = await json(baseUrl, 'POST', '/v1/agents', {
         name: 'rich-agent',
         model: { id: 'claude-sonnet-5', speed: 'fast' },
@@ -92,8 +97,13 @@ async function main() {
         system: 'rich system',
         metadata: { team: 'platform' },
         mcp_servers: [{ name: 'docs', type: 'url', url: 'https://example.invalid/mcp' }],
-        skills: [{ id: 'skill-a' }],
-        tools: ['bash', { id: 'glob' }, { name: 'read' }, 7, null],
+        skills: [{ type: 'custom', skill_id: 'skill-a' }],
+        tools: ['bash', 'glob', 'read'].map((name) => ({
+          type: 'custom',
+          name,
+          description: `${name} tool`,
+          input_schema: { type: 'object', properties: {} },
+        })),
         multiagent: { type: 'coordinator', agents: ['researcher'] },
       });
       assert.equal(rich.status, 200, JSON.stringify(rich.body));
@@ -107,7 +117,12 @@ async function main() {
         metadata: { team: 'runtime' },
         mcp_servers: [],
         skills: [],
-        tools: [{ name: 'write' }],
+        tools: [{
+          type: 'custom',
+          name: 'write',
+          description: 'write tool',
+          input_schema: { type: 'object', properties: {} },
+        }],
         multiagent: null,
       });
       assert.equal(richUpdated.status, 200, JSON.stringify(richUpdated.body));
@@ -121,6 +136,19 @@ async function main() {
         richUpdated.body.multiagent,
         { type: 'coordinator', agents: ['researcher'] },
       );
+
+      for (const invalid of [
+        { skills: [{ type: 'mystery', skill_id: 'skill-a' }] },
+        { mcp_servers: [{ type: 'url', name: 'docs', uri: 'https://wrong-field.test' }] },
+        { tools: [{ type: 'mcp_toolset', mcp_server: 'docs' }] },
+      ]) {
+        const rejected = await json(baseUrl, 'POST', '/v1/agents', {
+          name: 'must-not-persist',
+          model: 'claude-sonnet-5',
+          ...invalid,
+        });
+        assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
+      }
 
       const richArchived = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}/archive`);
       assert.equal(richArchived.status, 200);
