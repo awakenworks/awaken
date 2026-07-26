@@ -18,15 +18,14 @@ import os from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
 // @ts-ignore -- shared JS harness deliberately serves TS restart scenarios.
-import { pass, realServerEnv, spawnServer, startUpstream, stopServer, waitForPort } from './harness.mjs';
+import { availablePort, pass, realServerEnv, spawnServer, startUpstream, stopServer, waitForPort } from './harness.mjs';
 // @ts-ignore -- shared JS fixture deliberately serves TS scenarios.
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
-const PORT = 38208;
+const PREFERRED_PORT = 38208;
 const TOKEN_A = 'recovery-token-a'; // awaken-allow: secret
 const TOKEN_B = 'recovery-token-b'; // awaken-allow: secret
-const SEAL_KEY = '11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff';
 
 type McpServer = { name: string; type: 'url'; url: string };
 
@@ -66,21 +65,20 @@ function etag(response: Response): string {
 
 async function main(): Promise<void> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-mcp-recovery-'));
+  const port = await availablePort(PREFERRED_PORT);
   const fixtureA = await startCalcFixture(TOKEN_A);
   const fixtureB = await startCalcFixture(TOKEN_B);
   const upstream = await startUpstream('mcp');
   const env = {
-    AWAKEN_MGMT_DIR: path.join(root, 'management'),
     SESSION_DEPLOYMENT_STORAGE_DIR: path.join(root, 'runtime'),
-    AWAKEN_MGMT_SEAL_KEY: SEAL_KEY,
     ...realServerEnv('mcp', upstream, { mode: 'management' }),
   };
   let server: any = null;
   try {
-    let started = spawnServer('management', PORT, env);
+    let started = spawnServer('management', port, env);
     server = started.server;
     let baseUrl = started.baseUrl;
-    await waitForPort(PORT, 180_000, server);
+    await waitForPort(port, 180_000, server);
     let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
     const vault = await client.beta.vaults.create({ display_name: 'recovery', betas: BETAS });
@@ -109,10 +107,10 @@ async function main(): Promise<void> {
 
     await stopServer(server);
     server = null;
-    started = spawnServer('management', PORT, env);
+    started = spawnServer('management', port, env);
     server = started.server;
     baseUrl = started.baseUrl;
-    await waitForPort(PORT, 180_000, server);
+    await waitForPort(port, 180_000, server);
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
     const recoveredEmpty = await client.beta.sessions.retrieve(emptySession.id, { betas: BETAS });
@@ -144,10 +142,10 @@ async function main(): Promise<void> {
     assert.deepEqual(removed.data.agent.mcp_servers, []);
     await stopServer(server);
     server = null;
-    started = spawnServer('management', PORT, env);
+    started = spawnServer('management', port, env);
     server = started.server;
     baseUrl = started.baseUrl;
-    await waitForPort(PORT, 180_000, server);
+    await waitForPort(port, 180_000, server);
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
     const afterRemovalRestart = await client.beta.sessions.retrieve(session.id, { betas: BETAS });
     assert.deepEqual(afterRemovalRestart.agent.mcp_servers, [], 'R3 removed B stays removed');

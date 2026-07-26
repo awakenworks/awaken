@@ -177,7 +177,7 @@ function waitForServer(server, port) {
   return waitForPort(port, 180_000, server);
 }
 
-async function availablePort(preferred) {
+export async function availablePort(preferred) {
   const tryListen = (port) =>
     new Promise((resolve, reject) => {
       const reservation = net.createServer();
