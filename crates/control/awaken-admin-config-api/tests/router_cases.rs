@@ -77,6 +77,24 @@ fn harness() -> Harness {
     harness_with(None)
 }
 
+#[tokio::test]
+async fn provider_descriptors_are_read_only_capabilities_not_catalog_rows() {
+    let harness = harness();
+    let (status, descriptors) =
+        call(&harness.app, "GET", "/v1/config/provider-descriptors", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let descriptors = descriptors.as_array().unwrap();
+    assert!(descriptors.iter().any(|value| {
+        value["provider_kind"] == "openai" && value["supported_dialects"][0] == "open_ai_responses"
+    }));
+
+    let (status, catalog) = call(&harness.app, "GET", "/v1/config/catalog", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(catalog["providers"], json!({}));
+    assert_eq!(catalog["endpoints"], json!({}));
+    assert_eq!(catalog["offerings"], json!([]));
+}
+
 async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
     let mut builder = Request::builder().method(method).uri(uri);
     let body = match body {

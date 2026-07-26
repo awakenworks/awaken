@@ -36,11 +36,11 @@ export type Access = "read_only" | "read_write";
 
 export interface Target {
     id:   string;
-    kind: Kind;
+    kind: TargetKind;
     [property: string]: unknown;
 }
 
-export type Kind = "file" | "memory_store" | "repository";
+export type TargetKind = "file" | "memory_store" | "repository";
 
 /**
  * RFC 9457 Problem Details with stable application extension members (`code`, `request_id`,
@@ -724,6 +724,142 @@ export interface ProviderValue {
     [property: string]: unknown;
 }
 
+export interface ProviderConnectionSummary {
+    active_credentials:    number;
+    active_models:         number;
+    display_name:          string;
+    endpoint_ids:          string[];
+    last_seen_at_unix_ms?: number | null;
+    provider_id:           string;
+    status:                ProviderConnectionSummaryStatus;
+    unavailable_models:    number;
+    [property: string]: unknown;
+}
+
+export type ProviderConnectionSummaryStatus = "not_configured" | "connected" | "ready" | "stale" | "needs_attention" | "unavailable";
+
+export interface ProviderConnectionView {
+    credential: Credential;
+    endpoint:   Endpoint;
+    provider:   ProviderObject;
+    sync:       Sync;
+    [property: string]: unknown;
+}
+
+/**
+ * Secret-free credential projection. Internal token-source argv and vault refs
+ * never cross the admin boundary; consumers bind this stable source id.
+ */
+export interface Credential {
+    env_key?:      null | string;
+    id:            string;
+    kind:          CredentialKind;
+    oauth_helper?: CredentialSource | null;
+    provider_id?:  null | string;
+    status:        CredentialStatus;
+    version:       number;
+    workspace_id:  string;
+    [property: string]: unknown;
+}
+
+/**
+ * A concrete protocol surface of a provider: which wire + which URL. Distinct
+ * flavors of one provider typically have distinct `base_url`s.
+ */
+export interface Endpoint {
+    /**
+     * `http(s)` base URL override (proxy / self-hosted / compat endpoint).
+     */
+    base_url?:    null | string;
+    dialect:      APIDialect;
+    display_name: string;
+    id:           string;
+    provider_id:  string;
+    /**
+     * Request timeout in seconds.
+     */
+    timeout_secs: number;
+    version:      number;
+    [property: string]: unknown;
+}
+
+/**
+ * A vendor namespace (`anthropic`, `openai`, …).
+ */
+export interface ProviderObject {
+    display_name: string;
+    id:           string;
+    /**
+     * URL-safe vendor slug, unique in the catalog.
+     */
+    slug: string;
+    /**
+     * Append-only version bumped on change.
+     */
+    version: number;
+    [property: string]: unknown;
+}
+
+/**
+ * Durable outcome of reconciling one complete provider model listing.
+ */
+export interface Sync {
+    activated:          number;
+    discovered:         number;
+    marked_unavailable: number;
+    /**
+     * Observation time shared by every row in this successful atomic refresh.
+     */
+    observed_at_unix_ms: number;
+    [property: string]: unknown;
+}
+
+/**
+ * One supported provider driver's authoring capabilities. The list returned by
+ * [`provider_driver_descriptors`] is the single source used by API clients to
+ * render provider cards and forms.
+ */
+export interface ProviderDriverDescriptor {
+    auth_methods:             AuthMethodElement[];
+    configuration_fields:     ConfigurationFieldElement[];
+    default_endpoints:        DefaultEndpointElement[];
+    display_name:             string;
+    documentation_url?:       null | string;
+    provider_kind:            string;
+    supported_dialects:       APIDialect[];
+    supports_model_discovery: boolean;
+    [property: string]: unknown;
+}
+
+/**
+ * Authentication input a provider connection can request. This describes the
+ * authoring UI only; credential material remains owned by the vault.
+ */
+export type AuthMethodElement = "api_key" | "o_auth";
+
+export interface ConfigurationFieldElement {
+    advanced:     boolean;
+    key:          string;
+    kind:         ConfigurationFieldKind;
+    label:        string;
+    placeholder?: null | string;
+    required:     boolean;
+    [property: string]: unknown;
+}
+
+/**
+ * Input widget rendered from a provider descriptor. Descriptors are static
+ * adapter capabilities, not user configuration and not another model catalog.
+ */
+export type ConfigurationFieldKind = "secret" | "text" | "url";
+
+export interface DefaultEndpointElement {
+    base_url:  string;
+    dialect:   APIDialect;
+    id_suffix: string;
+    [property: string]: unknown;
+}
+
 /**
  * Secret-free authoring input. Provenance is intentionally absent: external
  * callers cannot claim that a manual value came from a provider or curated source.
@@ -822,6 +958,22 @@ export interface ResolvedInferenceView {
     model_id:             string;
     protocol_endpoint_id: string;
     provider_id:          string;
+    [property: string]: unknown;
+}
+
+export interface SaveProviderConnectionRequest {
+    base_url?:    null | string;
+    dialect:      APIDialect;
+    display_name: string;
+    endpoint_id:  string;
+    provider_id:  string;
+    /**
+     * Write-only API key. It is tested before entering the vault and never
+     * appears in the response or any catalog row.
+     */
+    secret:        string;
+    timeout_secs?: number;
+    workspace_id:  string;
     [property: string]: unknown;
 }
 

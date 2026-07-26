@@ -14,6 +14,9 @@ export type {
   ProtocolEndpoint,
   Provider,
   ProviderCatalog,
+  ProviderConnectionView,
+  ProviderConnectionSummary,
+  ProviderDriverDescriptor,
 } from "./model-types";
 
 export type CredentialBinding =

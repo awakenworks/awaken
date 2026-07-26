@@ -112,6 +112,42 @@ impl awaken_admin_config_api::ModelCatalogDiscovery for GenaiModelDiscovery {
             awaken_admin_config_api::ModelCatalogDiscoveryError::Provider(error.to_string())
         })
     }
+
+    async fn discover_with_secret(
+        &self,
+        endpoint: &awaken_model_catalog::ProtocolEndpoint,
+        secret: &awaken_agent_contract::RedactedString,
+    ) -> Result<
+        Vec<awaken_model_catalog::DiscoveredModel>,
+        awaken_admin_config_api::ModelCatalogDiscoveryError,
+    > {
+        use awaken_model_catalog::ApiDialect;
+        use awaken_provider_genai::AdapterKind;
+
+        let adapter = match endpoint.dialect {
+            ApiDialect::AnthropicMessages => AdapterKind::Anthropic,
+            ApiDialect::OpenAiChat | ApiDialect::OpenAiResponses => AdapterKind::OpenAI,
+            ApiDialect::Gemini => AdapterKind::Gemini,
+            ApiDialect::VertexGemini => AdapterKind::Vertex,
+        };
+        awaken_provider_genai::discover_model_ids(
+            adapter,
+            endpoint.base_url.as_deref(),
+            secret.expose_secret(),
+        )
+        .await
+        .map(|ids| {
+            ids.into_iter()
+                .map(|model_id| awaken_model_catalog::DiscoveredModel {
+                    model_id,
+                    upstream_model: None,
+                })
+                .collect()
+        })
+        .map_err(|error| {
+            awaken_admin_config_api::ModelCatalogDiscoveryError::Provider(error.to_string())
+        })
+    }
 }
 
 /// The two legal composition modes are deliberately disjoint: production

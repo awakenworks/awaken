@@ -420,6 +420,40 @@ async fn rejected_discovery_is_atomic(repo: &dyn CatalogRepo) {
     assert_eq!(snapshot.offerings[0].last_seen_at_unix_ms, Some(1_000));
 }
 
+async fn discovered_connection_is_atomic(repo: &dyn CatalogRepo) {
+    repo.put_discovered_connection(
+        provider("anthropic"),
+        endpoint("ep1", "anthropic", ApiDialect::AnthropicMessages),
+        vec![DiscoveredModel {
+            model_id: "sound".into(),
+            upstream_model: None,
+        }],
+        1_000,
+    )
+    .await
+    .unwrap();
+    let snapshot = repo.snapshot().await.unwrap();
+    assert_eq!(snapshot.providers.len(), 1);
+    assert_eq!(snapshot.endpoints.len(), 1);
+    assert_eq!(snapshot.offerings.len(), 1);
+
+    let before = snapshot;
+    assert!(
+        repo.put_discovered_connection(
+            provider("openai"),
+            endpoint("bad", "openai", ApiDialect::OpenAiResponses),
+            vec![DiscoveredModel {
+                model_id: " ".into(),
+                upstream_model: None,
+            }],
+            2_000,
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(repo.snapshot().await.unwrap(), before);
+}
+
 /// Run every suite, each on a fresh repo from `make`.
 async fn run_all(make: impl Fn() -> Box<dyn CatalogRepo>) {
     crud_round_trip_and_snapshot(&*make()).await;
@@ -434,6 +468,7 @@ async fn run_all(make: impl Fn() -> Box<dyn CatalogRepo>) {
     resolve_first_match_follows_stored_order_deterministically(&*make()).await;
     provider_discovery_reconciles_without_deleting_manual_truth(&*make()).await;
     rejected_discovery_is_atomic(&*make()).await;
+    discovered_connection_is_atomic(&*make()).await;
 }
 
 /// Reload-time integrity guard, at the pure `ValidCatalog::parse` boundary: the
@@ -527,6 +562,7 @@ mod postgres {
             &repo("t_cat_resolve").await.unwrap(),
         )
         .await;
+        discovered_connection_is_atomic(&repo("t_cat_connection").await.unwrap()).await;
     }
 
     /// Reload-time integrity guard on the network backend: an offering row that

@@ -156,6 +156,164 @@ pub struct ModelAttributes {
     pub provenance: BTreeMap<String, ModelAttributeProvenance>,
 }
 
+/// Authentication input a provider connection can request. This describes the
+/// authoring UI only; credential material remains owned by the vault.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAuthMethod {
+    ApiKey,
+    OAuth,
+}
+
+/// Input widget rendered from a provider descriptor. Descriptors are static
+/// adapter capabilities, not user configuration and not another model catalog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderFieldKind {
+    Secret,
+    Text,
+    Url,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ProviderConfigurationField {
+    pub key: String,
+    pub label: String,
+    pub kind: ProviderFieldKind,
+    pub required: bool,
+    pub advanced: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct DefaultProtocolEndpoint {
+    pub id_suffix: String,
+    pub dialect: ApiDialect,
+    pub base_url: String,
+}
+
+/// One supported provider driver's authoring capabilities. The list returned by
+/// [`provider_driver_descriptors`] is the single source used by API clients to
+/// render provider cards and forms.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ProviderDriverDescriptor {
+    pub provider_kind: String,
+    pub display_name: String,
+    pub supported_dialects: Vec<ApiDialect>,
+    pub auth_methods: Vec<ProviderAuthMethod>,
+    pub configuration_fields: Vec<ProviderConfigurationField>,
+    pub default_endpoints: Vec<DefaultProtocolEndpoint>,
+    pub supports_model_discovery: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documentation_url: Option<String>,
+}
+
+/// Built-in provider-driver descriptors. This is capability metadata only: it
+/// never creates a Provider, endpoint, credential, offering, or executable route.
+#[must_use]
+pub fn provider_driver_descriptors() -> Vec<ProviderDriverDescriptor> {
+    let api_key = || ProviderConfigurationField {
+        key: "api_key".into(),
+        label: "API key".into(),
+        kind: ProviderFieldKind::Secret,
+        required: true,
+        advanced: false,
+        placeholder: None,
+    };
+    let custom_url = || ProviderConfigurationField {
+        key: "base_url".into(),
+        label: "Custom endpoint".into(),
+        kind: ProviderFieldKind::Url,
+        required: false,
+        advanced: true,
+        placeholder: Some("https://…/v1".into()),
+    };
+    vec![
+        ProviderDriverDescriptor {
+            provider_kind: "anthropic".into(),
+            display_name: "Anthropic".into(),
+            supported_dialects: vec![ApiDialect::AnthropicMessages],
+            auth_methods: vec![ProviderAuthMethod::ApiKey],
+            configuration_fields: vec![api_key(), custom_url()],
+            default_endpoints: vec![DefaultProtocolEndpoint {
+                id_suffix: "messages".into(),
+                dialect: ApiDialect::AnthropicMessages,
+                base_url: "https://api.anthropic.com/v1".into(),
+            }],
+            supports_model_discovery: true,
+            documentation_url: Some("https://docs.anthropic.com/en/api/getting-started".into()),
+        },
+        ProviderDriverDescriptor {
+            provider_kind: "openai".into(),
+            display_name: "OpenAI".into(),
+            supported_dialects: vec![ApiDialect::OpenAiResponses, ApiDialect::OpenAiChat],
+            auth_methods: vec![ProviderAuthMethod::ApiKey],
+            configuration_fields: vec![api_key(), custom_url()],
+            default_endpoints: vec![
+                DefaultProtocolEndpoint {
+                    id_suffix: "responses".into(),
+                    dialect: ApiDialect::OpenAiResponses,
+                    base_url: "https://api.openai.com/v1".into(),
+                },
+                DefaultProtocolEndpoint {
+                    id_suffix: "chat".into(),
+                    dialect: ApiDialect::OpenAiChat,
+                    base_url: "https://api.openai.com/v1".into(),
+                },
+            ],
+            supports_model_discovery: true,
+            documentation_url: Some("https://developers.openai.com/api/docs".into()),
+        },
+        ProviderDriverDescriptor {
+            provider_kind: "gemini".into(),
+            display_name: "Google AI Studio".into(),
+            supported_dialects: vec![ApiDialect::Gemini],
+            auth_methods: vec![ProviderAuthMethod::ApiKey],
+            configuration_fields: vec![api_key(), custom_url()],
+            default_endpoints: vec![DefaultProtocolEndpoint {
+                id_suffix: "gemini".into(),
+                dialect: ApiDialect::Gemini,
+                base_url: "https://generativelanguage.googleapis.com/v1beta".into(),
+            }],
+            supports_model_discovery: true,
+            documentation_url: Some("https://ai.google.dev/gemini-api/docs".into()),
+        },
+        ProviderDriverDescriptor {
+            provider_kind: "vertex".into(),
+            display_name: "Vertex AI".into(),
+            supported_dialects: vec![ApiDialect::VertexGemini],
+            auth_methods: vec![ProviderAuthMethod::OAuth],
+            configuration_fields: vec![
+                ProviderConfigurationField {
+                    key: "project_id".into(),
+                    label: "Google Cloud project".into(),
+                    kind: ProviderFieldKind::Text,
+                    required: true,
+                    advanced: false,
+                    placeholder: None,
+                },
+                ProviderConfigurationField {
+                    key: "location".into(),
+                    label: "Location".into(),
+                    kind: ProviderFieldKind::Text,
+                    required: true,
+                    advanced: false,
+                    placeholder: Some("global".into()),
+                },
+            ],
+            default_endpoints: Vec::new(),
+            supports_model_discovery: true,
+            documentation_url: Some("https://cloud.google.com/vertex-ai/generative-ai/docs".into()),
+        },
+    ]
+}
+
 /// Authority behind one published model-attribute value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -639,7 +797,11 @@ mod tests {
         }
         .stamped(ModelAttributeSource::Manual, 42);
         assert_eq!(
-            stamped.provenance.keys().map(String::as_str).collect::<Vec<_>>(),
+            stamped
+                .provenance
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
             vec!["context_window", "max_output_tokens"]
         );
         assert!(stamped.provenance.values().all(|item| {
@@ -676,8 +838,7 @@ mod tests {
 
     #[test]
     fn legacy_model_attributes_without_provenance_remain_readable() {
-        let attrs: ModelAttributes =
-            serde_json::from_str(r#"{"context_window":128000}"#).unwrap();
+        let attrs: ModelAttributes = serde_json::from_str(r#"{"context_window":128000}"#).unwrap();
         assert_eq!(attrs.context_window, Some(128_000));
         assert!(attrs.provenance.is_empty());
     }
@@ -806,6 +967,41 @@ mod tests {
         assert_eq!(ApiDialect::OpenAiResponses.adapter_kind(), "openai");
         assert_eq!(ApiDialect::Gemini.adapter_kind(), "gemini");
         assert_eq!(ApiDialect::VertexGemini.adapter_kind(), "vertex");
+    }
+
+    #[test]
+    fn provider_descriptors_are_unique_and_internally_consistent() {
+        let descriptors = provider_driver_descriptors();
+        assert!(!descriptors.is_empty());
+        let mut kinds = std::collections::BTreeSet::new();
+        for descriptor in &descriptors {
+            assert!(kinds.insert(descriptor.provider_kind.as_str()));
+            assert!(!descriptor.supported_dialects.is_empty());
+            assert!(!descriptor.auth_methods.is_empty());
+            let mut fields = std::collections::BTreeSet::new();
+            for field in &descriptor.configuration_fields {
+                assert!(fields.insert(field.key.as_str()));
+            }
+            for endpoint in &descriptor.default_endpoints {
+                assert!(descriptor.supported_dialects.contains(&endpoint.dialect));
+                assert!(endpoint.base_url.starts_with("https://"));
+            }
+        }
+    }
+
+    #[test]
+    fn openai_descriptor_prefers_responses_without_hiding_chat() {
+        let openai = provider_driver_descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.provider_kind == "openai")
+            .unwrap();
+        assert_eq!(openai.supported_dialects[0], ApiDialect::OpenAiResponses);
+        assert!(openai.supported_dialects.contains(&ApiDialect::OpenAiChat));
+        assert_eq!(
+            openai.default_endpoints[0].base_url,
+            "https://api.openai.com/v1"
+        );
+        assert!(openai.supports_model_discovery);
     }
 
     #[test]

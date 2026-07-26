@@ -14,6 +14,54 @@ export type ApiDialect =
   | "gemini"
   | "vertex_gemini";
 
+export interface ProviderConfigurationField {
+  key: string;
+  label: string;
+  kind: "secret" | "text" | "url";
+  required: boolean;
+  advanced: boolean;
+  placeholder?: string | null;
+}
+
+export interface ProviderDriverDescriptor {
+  provider_kind: string;
+  display_name: string;
+  supported_dialects: ApiDialect[];
+  auth_methods: ("api_key" | "oauth")[];
+  configuration_fields: ProviderConfigurationField[];
+  default_endpoints: {
+    id_suffix: string;
+    dialect: ApiDialect;
+    base_url: string;
+  }[];
+  supports_model_discovery: boolean;
+  documentation_url?: string | null;
+}
+
+export interface ProviderConnectionView {
+  provider: Provider;
+  endpoint: ProtocolEndpoint;
+  credential: { id: string; status: string };
+  sync: CatalogSyncResult;
+}
+
+export interface ProviderConnectionSummary {
+  provider_id: string;
+  display_name: string;
+  status:
+    | "not_configured"
+    | "connected"
+    | "ready"
+    | "stale"
+    | "needs_attention"
+    | "unavailable";
+  endpoint_ids: string[];
+  active_credentials: number;
+  active_models: number;
+  unavailable_models: number;
+  last_seen_at_unix_ms?: number | null;
+}
+
 export interface ProtocolEndpoint {
   id: string;
   provider_id: string;

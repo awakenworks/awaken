@@ -45,6 +45,10 @@ fn document_shape_and_schema_components() {
         .expect("schemas object");
     for name in [
         "Provider",
+        "ProviderDriverDescriptor",
+        "SaveProviderConnectionRequest",
+        "ProviderConnectionView",
+        "ProviderConnectionSummary",
         "ProtocolEndpoint",
         "Offering",
         "AuthorOfferingRequest",
@@ -143,6 +147,9 @@ fn every_mounted_route_is_documented() {
     // (METHOD, path-template) for every route `admin_router` mounts.
     const MOUNTED: &[(&str, &str)] = &[
         ("get", "/v1/config/provider-proposals"),
+        ("get", "/v1/config/provider-descriptors"),
+        ("post", "/v1/config/provider-connections"),
+        ("get", "/v1/config/provider-connections"),
         ("put", "/v1/config/providers/{id}"),
         ("get", "/v1/config/providers/{id}"),
         ("put", "/v1/config/endpoints/{id}"),

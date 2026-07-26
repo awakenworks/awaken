@@ -29,12 +29,28 @@ pub fn contract_schemas() -> Map<String, Value> {
 
     // Model-catalog domain.
     add!("Provider", awaken_model_catalog::Provider);
+    add!(
+        "ProviderDriverDescriptor",
+        awaken_model_catalog::ProviderDriverDescriptor
+    );
+    add!(
+        "SaveProviderConnectionRequest",
+        crate::SaveProviderConnectionRequest
+    );
+    add!("ProviderConnectionView", crate::ProviderConnectionView);
+    add!(
+        "ProviderConnectionSummary",
+        crate::ProviderConnectionSummary
+    );
     add!("ProtocolEndpoint", awaken_model_catalog::ProtocolEndpoint);
     add!("Offering", awaken_model_catalog::Offering);
     add!("AuthorOfferingRequest", crate::AuthorOfferingRequest);
     add!("DiscoverModelsRequest", crate::DiscoverModelsRequest);
     add!("CatalogSyncResult", awaken_model_catalog::CatalogSyncResult);
-    add!("PutModelAttributesRequest", crate::PutModelAttributesRequest);
+    add!(
+        "PutModelAttributesRequest",
+        crate::PutModelAttributesRequest
+    );
     add!("ApiDialect", awaken_model_catalog::ApiDialect);
     add!("ProviderCatalog", awaken_model_catalog::ProviderCatalog);
     add!(
@@ -220,6 +236,20 @@ fn paths() -> Value {
         "/v1/config/provider-proposals": {
             "get": op("get_provider_proposals", "catalog", "Discover secret-free environment hints; proposals are not persisted or executable",
                 &[], None, 200, array_of("EnvironmentProviderProposal"))
+        },
+        "/v1/config/provider-descriptors": {
+            "get": op("get_provider_descriptors", "catalog", "List supported provider form descriptors without creating configuration",
+                &[], None, 200, array_of("ProviderDriverDescriptor"))
+        },
+        "/v1/config/provider-connections": {
+            "post": op("test_and_save_provider_connection", "catalog", "Test a write-only API key, discover models, then atomically activate the provider connection",
+                &[], Some(schema_ref("SaveProviderConnectionRequest")), 201, schema_ref("ProviderConnectionView")),
+            "get": op("list_provider_connections", "catalog", "Derive workspace model-source readiness from descriptors, catalog, and credential state",
+                &[json!({
+                    "name": "workspace_id", "in": "query", "required": true,
+                    "schema": { "type": "string" },
+                    "description": "Workspace whose model-source readiness to derive"
+                })], None, 200, array_of("ProviderConnectionSummary"))
         },
         "/v1/config/providers/{id}": {
             "put": op("put_provider", "catalog", "Author (upsert) a provider; the path id is authoritative",

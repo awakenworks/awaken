@@ -2,12 +2,44 @@
 //! HTTP selects one authored endpoint and exact Workspace credential, a fake
 //! provisioning adapter returns a complete secret-free observation, and the
 //! existing catalog repository atomically reconciles it.
+//!
+//! Provider connection cause/effect model (co-located with executable tests):
+//!
+//! - C1 installed provider+dialect, C2 non-empty key, C3 complete non-empty
+//!   discovery => E1 secret-free active credential + E2 atomic Provider/Endpoint/
+//!   Offerings + E5 no secret output (`test_and_save_activates…`, T1).
+//! - C4 discovery failure => E3 no credential or catalog facts
+//!   (`failed_connection_test…`, T4).
+//! - C5 catalog rejects the observed list => E3 no catalog facts + E4 the
+//!   sealed, pre-activation credential remains disabled (`catalog_rejection…`, T5).
+//!
+//! Decision table:
+//!
+//! | Rule | T1 | T2 unsupported | T3 empty key | T4 discovery | T5 catalog |
+//! |---|---:|---:|---:|---:|---:|
+//! | C1 descriptor match | 1 | 0 | 1 | 1 | 1 |
+//! | C2 key present | 1 | 1 | 0 | 1 | 1 |
+//! | C3 discovery success | 1 | - | - | 0 | 1 |
+//! | E1 active secret-free credential | 1 | 0 | 0 | 0 | 0 |
+//! | E2 atomic catalog visibility | 1 | 0 | 0 | 0 | 0 |
+//! | E3 no executable catalog facts | 0 | 1 | 1 | 1 | 1 |
+//! | E4 disabled credential | 0 | 0 | 0 | 0 | 1 |
+//! | E5 no secret serialization | 1 | 1 | 1 | 1 | 1 |
+//!
+//! Read-model status graph (`GET provider-connections`): no authored facts ->
+//! `not_configured`; active credential without offerings -> `connected`; active
+//! credential + active fresh offering -> `ready`; same with last observation
+//! older than TTL -> `stale`; configured without an active credential ->
+//! `needs_attention`; active credential + only unavailable offerings ->
+//! `unavailable`. Tests below exercise every leaf from composed stores.
 
 use std::sync::{Arc, Mutex};
 
 use awaken_admin_config_api::{
     AdminState, ModelCatalogDiscovery, ModelCatalogDiscoveryError, admin_router,
 };
+use awaken_agent_contract::RedactedString;
+use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo};
 use awaken_credential_vault::{AvailabilityLedger, CredentialSource};
 use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo};
 use awaken_model_catalog::{DiscoveredModel, OfferingSource, OfferingStatus, ProtocolEndpoint};
@@ -22,6 +54,7 @@ struct FixedDiscovery {
     models: Mutex<Vec<DiscoveredModel>>,
     calls: Mutex<Vec<(String, String)>>,
     fail: Mutex<bool>,
+    secret_calls: Mutex<Vec<(String, String)>>,
 }
 
 #[async_trait::async_trait]
@@ -42,12 +75,30 @@ impl ModelCatalogDiscovery for FixedDiscovery {
         }
         Ok(self.models.lock().unwrap().clone())
     }
+
+    async fn discover_with_secret(
+        &self,
+        endpoint: &ProtocolEndpoint,
+        secret: &RedactedString,
+    ) -> Result<Vec<DiscoveredModel>, ModelCatalogDiscoveryError> {
+        self.secret_calls
+            .lock()
+            .unwrap()
+            .push((endpoint.id.0.clone(), secret.expose_secret().to_string()));
+        if *self.fail.lock().unwrap() {
+            return Err(ModelCatalogDiscoveryError::Provider(
+                "injected provider failure".into(),
+            ));
+        }
+        Ok(self.models.lock().unwrap().clone())
+    }
 }
 
 struct Harness {
     app: Router,
     catalog: Arc<InMemoryCatalogRepo>,
     discovery: Arc<FixedDiscovery>,
+    credentials: Arc<InMemoryCredentialRepo>,
 }
 
 fn harness() -> Harness {
@@ -65,10 +116,12 @@ fn harness() -> Harness {
         ]),
         calls: Mutex::new(Vec::new()),
         fail: Mutex::new(false),
+        secret_calls: Mutex::new(Vec::new()),
     });
+    let credentials = Arc::new(InMemoryCredentialRepo::new());
     let app = admin_router(AdminState {
         catalog: catalog.clone(),
-        credentials: Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
+        credentials: credentials.clone(),
         secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
         profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
         resources: Arc::new(awaken_admin_config_api::InMemoryAgentInputBindingRepository::new()),
@@ -80,6 +133,7 @@ fn harness() -> Harness {
         app,
         catalog,
         discovery,
+        credentials,
     }
 }
 
@@ -197,6 +251,279 @@ async fn discovery_reconciles_through_the_existing_catalog_truth() {
             .resolve_offering("provider-a", stale.dialect)
             .is_none()
     );
+}
+
+#[tokio::test]
+async fn test_and_save_activates_all_facts_only_after_discovery_succeeds() {
+    let harness = harness();
+    let secret = "connection-test-secret"; // awaken-allow: secret -- inert fixture
+    let (status, result) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/provider-connections",
+        json!({
+            "workspace_id":"workspace-a",
+            "provider_id":"anthropic",
+            "display_name":"Anthropic",
+            "endpoint_id":"anthropic-messages",
+            "dialect":"anthropic_messages",
+            "secret":secret
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    assert_eq!(result["sync"]["discovered"], 2);
+    assert_eq!(result["credential"]["status"], "active");
+    assert_eq!(
+        result["endpoint"]["base_url"],
+        "https://api.anthropic.com/v1"
+    );
+    assert!(!result.to_string().contains(secret));
+    assert_eq!(
+        harness.discovery.secret_calls.lock().unwrap().as_slice(),
+        &[("anthropic-messages".into(), secret.into())]
+    );
+    let catalog = harness.catalog.snapshot().await.unwrap();
+    assert_eq!(catalog.providers.len(), 1);
+    assert_eq!(catalog.endpoints.len(), 1);
+    assert_eq!(catalog.offerings.len(), 2);
+}
+
+#[tokio::test]
+async fn failed_connection_test_leaves_no_executable_catalog_facts() {
+    let harness = harness();
+    *harness.discovery.fail.lock().unwrap() = true;
+    let (status, problem) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/provider-connections",
+        json!({
+            "workspace_id":"workspace-a",
+            "provider_id":"openai",
+            "display_name":"OpenAI",
+            "endpoint_id":"openai-responses",
+            "dialect":"open_ai_responses",
+            "base_url":"https://api.openai.com/v1",
+            "secret":"bad-key"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{problem}");
+    let catalog = harness.catalog.snapshot().await.unwrap();
+    assert!(catalog.providers.is_empty());
+    assert!(catalog.endpoints.is_empty());
+    assert!(catalog.offerings.is_empty());
+}
+
+#[tokio::test]
+async fn unsupported_provider_and_empty_key_fail_before_discovery() {
+    let harness = harness();
+    let secret = "must-not-echo";
+    let (status, problem) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/provider-connections",
+        json!({
+            "workspace_id":"workspace-a",
+            "provider_id":"unknown-provider",
+            "display_name":"Unknown",
+            "endpoint_id":"unknown",
+            "dialect":"open_ai_chat",
+            "secret":secret
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{problem}");
+    assert!(!problem.to_string().contains(secret));
+
+    let (status, _) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/provider-connections",
+        json!({
+            "workspace_id":"workspace-a",
+            "provider_id":"openai",
+            "display_name":"OpenAI",
+            "endpoint_id":"openai-responses",
+            "dialect":"open_ai_responses",
+            "secret":""
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(harness.discovery.secret_calls.lock().unwrap().is_empty());
+    assert!(
+        harness
+            .catalog
+            .snapshot()
+            .await
+            .unwrap()
+            .providers
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn catalog_rejection_disables_the_already_sealed_credential() {
+    let harness = harness();
+    *harness.discovery.models.lock().unwrap() = vec![DiscoveredModel {
+        model_id: " ".into(),
+        upstream_model: None,
+    }];
+    let (status, problem) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/provider-connections",
+        json!({
+            "workspace_id":"workspace-a",
+            "provider_id":"anthropic",
+            "display_name":"Anthropic",
+            "endpoint_id":"anthropic-messages",
+            "dialect":"anthropic_messages",
+            "base_url":"https://provider.invalid/v1",
+            "secret":"sealed-before-catalog-rejection"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{problem}");
+    let catalog = harness.catalog.snapshot().await.unwrap();
+    assert!(catalog.providers.is_empty());
+    assert!(catalog.endpoints.is_empty());
+    assert!(catalog.offerings.is_empty());
+
+    let sources = harness.credentials.list("workspace-a").await.unwrap();
+    assert_eq!(sources.len(), 1);
+    assert_eq!(
+        sources[0].status,
+        awaken_credential_vault::CredentialStatus::Disabled
+    );
+}
+
+fn summary<'a>(values: &'a Value, provider_id: &str) -> &'a Value {
+    values
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|value| value["provider_id"] == provider_id)
+        .unwrap()
+}
+
+#[tokio::test]
+async fn connection_summaries_cover_not_configured_ready_stale_and_unavailable() {
+    let harness = harness();
+    let (_, initial) = call(
+        &harness.app,
+        "GET",
+        "/v1/config/provider-connections?workspace_id=workspace-a",
+        json!({}),
+    )
+    .await;
+    assert_eq!(summary(&initial, "anthropic")["status"], "not_configured");
+
+    let (status, _) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/provider-connections",
+        json!({
+            "workspace_id":"workspace-a", "provider_id":"anthropic",
+            "display_name":"Anthropic", "endpoint_id":"anthropic-messages",
+            "dialect":"anthropic_messages", "secret":"summary-secret"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (_, ready) = call(
+        &harness.app,
+        "GET",
+        "/v1/config/provider-connections?workspace_id=workspace-a",
+        json!({}),
+    )
+    .await;
+    assert_eq!(summary(&ready, "anthropic")["status"], "ready");
+    assert_eq!(summary(&ready, "anthropic")["active_models"], 2);
+
+    harness
+        .catalog
+        .reconcile_discovered_models(
+            &awaken_model_catalog::ProtocolEndpointId::new("anthropic-messages"),
+            vec![DiscoveredModel {
+                model_id: "provider-a".into(),
+                upstream_model: None,
+            }],
+            1,
+        )
+        .await
+        .unwrap();
+    let (_, stale) = call(
+        &harness.app,
+        "GET",
+        "/v1/config/provider-connections?workspace_id=workspace-a",
+        json!({}),
+    )
+    .await;
+    assert_eq!(summary(&stale, "anthropic")["status"], "stale");
+
+    harness
+        .catalog
+        .reconcile_discovered_models(
+            &awaken_model_catalog::ProtocolEndpointId::new("anthropic-messages"),
+            Vec::new(),
+            2,
+        )
+        .await
+        .unwrap();
+    let (_, unavailable) = call(
+        &harness.app,
+        "GET",
+        "/v1/config/provider-connections?workspace_id=workspace-a",
+        json!({}),
+    )
+    .await;
+    assert_eq!(summary(&unavailable, "anthropic")["status"], "unavailable");
+}
+
+#[tokio::test]
+async fn connection_summaries_separate_connected_from_needs_attention() {
+    let harness = harness();
+    let (status, _) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/credentials",
+        json!({
+            "workspace_id":"workspace-a", "kind":"vault", "provider_id":"openai",
+            "secret":"credential-only-secret"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (_, connected) = call(
+        &harness.app,
+        "GET",
+        "/v1/config/provider-connections?workspace_id=workspace-a",
+        json!({}),
+    )
+    .await;
+    assert_eq!(summary(&connected, "openai")["status"], "connected");
+
+    assert_eq!(
+        call(
+            &harness.app,
+            "PUT",
+            "/v1/config/providers/gemini",
+            json!({"id":"ignored", "slug":"gemini", "display_name":"Gemini", "version":1}),
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let (_, attention) = call(
+        &harness.app,
+        "GET",
+        "/v1/config/provider-connections?workspace_id=workspace-a",
+        json!({}),
+    )
+    .await;
+    assert_eq!(summary(&attention, "gemini")["status"], "needs_attention");
 }
 
 #[tokio::test]

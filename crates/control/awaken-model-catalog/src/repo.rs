@@ -26,6 +26,15 @@ pub enum RepoError {
 /// a concrete backend, so the domain is split/merge-friendly (its own scope).
 #[async_trait::async_trait]
 pub trait CatalogRepo: Send + Sync {
+    /// Atomically author a provider + endpoint and reconcile one complete model
+    /// listing. A rejected listing leaves none of the three executable facts.
+    async fn put_discovered_connection(
+        &self,
+        provider: Provider,
+        endpoint: ProtocolEndpoint,
+        models: Vec<DiscoveredModel>,
+        observed_at_unix_ms: u64,
+    ) -> Result<CatalogSyncResult, RepoError>;
     async fn put_provider(&self, provider: Provider) -> Result<(), RepoError>;
     async fn put_endpoint(&self, endpoint: ProtocolEndpoint) -> Result<(), RepoError>;
     /// Explicitly author an offering. The repository normalizes provenance to
@@ -81,6 +90,26 @@ impl InMemoryCatalogRepo {
 
 #[async_trait::async_trait]
 impl CatalogRepo for InMemoryCatalogRepo {
+    async fn put_discovered_connection(
+        &self,
+        provider: Provider,
+        endpoint: ProtocolEndpoint,
+        models: Vec<DiscoveredModel>,
+        observed_at_unix_ms: u64,
+    ) -> Result<CatalogSyncResult, RepoError> {
+        if endpoint.provider_id != provider.id {
+            return Err(RepoError::ProviderNotFound(endpoint.provider_id.0));
+        }
+        let mut guard = self.inner.lock().expect("catalog mutex");
+        let mut next = guard.get().clone();
+        next.providers.insert(provider.id.0.clone(), provider);
+        next.endpoints
+            .insert(endpoint.id.0.clone(), endpoint.clone());
+        let result = next.reconcile_discovered_models(&endpoint.id, models, observed_at_unix_ms)?;
+        *guard = ValidCatalog::parse(next)?;
+        Ok(result)
+    }
+
     async fn put_provider(&self, provider: Provider) -> Result<(), RepoError> {
         let mut guard = self.inner.lock().expect("catalog mutex");
         let mut next = guard.get().clone();
@@ -292,6 +321,48 @@ mod tests {
             repo.put_endpoint(endpoint()).await,
             Err(RepoError::ProviderNotFound(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn discovered_connection_commits_all_facts_or_none() {
+        let repo = InMemoryCatalogRepo::new();
+        let result = repo
+            .put_discovered_connection(
+                provider(),
+                endpoint(),
+                vec![DiscoveredModel {
+                    model_id: "claude-opus-4-8".into(),
+                    upstream_model: None,
+                }],
+                42,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.discovered, 1);
+        let snapshot = repo.snapshot().await.unwrap();
+        assert_eq!(snapshot.providers.len(), 1);
+        assert_eq!(snapshot.endpoints.len(), 1);
+        assert_eq!(snapshot.offerings.len(), 1);
+
+        let empty = InMemoryCatalogRepo::new();
+        assert!(
+            empty
+                .put_discovered_connection(
+                    provider(),
+                    endpoint(),
+                    vec![DiscoveredModel {
+                        model_id: " ".into(),
+                        upstream_model: None,
+                    }],
+                    42,
+                )
+                .await
+                .is_err()
+        );
+        let snapshot = empty.snapshot().await.unwrap();
+        assert!(snapshot.providers.is_empty());
+        assert!(snapshot.endpoints.is_empty());
+        assert!(snapshot.offerings.is_empty());
     }
 
     #[tokio::test]

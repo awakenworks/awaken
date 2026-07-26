@@ -162,6 +162,68 @@ fn select_keyed(conn: &Connection, sql: &str) -> Result<Vec<(String, String)>, R
 
 #[async_trait::async_trait]
 impl CatalogRepo for SqliteCatalogRepo {
+    async fn put_discovered_connection(
+        &self,
+        provider: Provider,
+        endpoint: ProtocolEndpoint,
+        models: Vec<DiscoveredModel>,
+        observed_at_unix_ms: u64,
+    ) -> Result<CatalogSyncResult, RepoError> {
+        if endpoint.provider_id != provider.id {
+            return Err(RepoError::ProviderNotFound(endpoint.provider_id.0));
+        }
+        let provider_id = provider.id.0.clone();
+        let endpoint_id = endpoint.id.0.clone();
+        let provider_data = serde_json::to_string(&provider).map_err(storage)?;
+        let endpoint_data = serde_json::to_string(&endpoint).map_err(storage)?;
+        self.with_conn(move |conn, p| {
+            let tx = conn.transaction().map_err(storage)?;
+            tx.execute(
+                &format!(
+                    "INSERT INTO {p}_provider (id, data) VALUES (?1, ?2) \
+                     ON CONFLICT(id) DO UPDATE SET data = excluded.data"
+                ),
+                params![provider_id, provider_data],
+            )
+            .map_err(storage)?;
+            tx.execute(
+                &format!(
+                    "INSERT INTO {p}_protocol_endpoint (id, provider_id, data) \
+                     VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET \
+                     provider_id = excluded.provider_id, data = excluded.data"
+                ),
+                params![endpoint_id, provider_id, endpoint_data],
+            )
+            .map_err(storage)?;
+            let mut catalog = load_catalog(&tx, p)?;
+            let result = catalog.reconcile_discovered_models(
+                &ProtocolEndpointId::new(endpoint_id.clone()),
+                models,
+                observed_at_unix_ms,
+            )?;
+            for offering in catalog
+                .offerings
+                .iter()
+                .filter(|offering| offering.protocol_endpoint_id.as_str() == endpoint_id)
+            {
+                let data = serde_json::to_string(offering).map_err(storage)?;
+                tx.execute(
+                    &format!(
+                        "INSERT INTO {p}_offering (model_id, protocol_endpoint_id, data) \
+                         VALUES (?1, ?2, ?3) ON CONFLICT(model_id, protocol_endpoint_id) \
+                         DO UPDATE SET data = excluded.data"
+                    ),
+                    params![offering.model_id, endpoint_id, data],
+                )
+                .map_err(storage)?;
+            }
+            ValidCatalog::parse(load_catalog(&tx, p)?)?;
+            tx.commit().map_err(storage)?;
+            Ok(result)
+        })
+        .await
+    }
+
     async fn put_provider(&self, provider: Provider) -> Result<(), RepoError> {
         let id = provider.id.0.clone();
         let data = serde_json::to_string(&provider).map_err(storage)?;

@@ -11,6 +11,9 @@ import type {
   CredentialSource,
   EnvironmentProviderProposal,
   ProviderCatalog,
+  ProviderConnectionView,
+  ProviderConnectionSummary,
+  ProviderDriverDescriptor,
   ResolvedInferenceView,
   Session,
 } from "../lib/api/types";
@@ -40,6 +43,17 @@ function parseOptionalTokenLimit(label: string, value: string): number | undefin
     throw new Error(`${label} must be a positive integer`);
   }
   return parsed;
+}
+
+export function providerDraftDefaults(descriptor: ProviderDriverDescriptor) {
+  const endpoint = descriptor.default_endpoints[0];
+  return {
+    provider: descriptor.provider_kind,
+    endpoint: `${descriptor.provider_kind}-${endpoint?.id_suffix ?? "endpoint"}`,
+    baseUrl: endpoint?.base_url ?? "",
+    dialect: endpoint?.dialect ?? descriptor.supported_dialects[0],
+    model: "",
+  };
 }
 
 /** A live model test: a scratch session (via the `default` agent) pinned to the
@@ -118,6 +132,18 @@ export default function ModelsSurface() {
     queryKey: ["provider-proposals"],
     queryFn: () => api.get<EnvironmentProviderProposal[]>(ws("/v1/config/provider-proposals")),
   });
+  const descriptors = useQuery({
+    queryKey: ["provider-descriptors"],
+    queryFn: () => api.get<ProviderDriverDescriptor[]>(ws("/v1/config/provider-descriptors")),
+    staleTime: Infinity,
+  });
+  const connections = useQuery({
+    queryKey: ["provider-connections", workspace],
+    queryFn: () =>
+      api.get<ProviderConnectionSummary[]>(
+        ws(`/v1/config/provider-connections?workspace_id=${workspace}`),
+      ),
+  });
   const credentials = useQuery({
     queryKey: ["credentials", workspace],
     queryFn: () => api.get<CredentialSource[]>(ws(`/v1/config/credentials?workspace_id=${workspace}`)),
@@ -131,6 +157,16 @@ export default function ModelsSurface() {
     contextWindow: "",
     maxOutputTokens: "",
   });
+  const [apiKey, setApiKey] = useState("");
+  const selectedDescriptor = descriptors.data?.find(
+    (descriptor) => descriptor.provider_kind === draft.provider,
+  );
+  const selectDescriptor = (descriptor: ProviderDriverDescriptor) => {
+    setDraft({
+      ...draft,
+      ...providerDraftDefaults(descriptor),
+    });
+  };
   const upsert = useMutation({
     mutationFn: async () => {
       await api.put(ws(`/v1/config/providers/${draft.provider}`), {
@@ -169,7 +205,30 @@ export default function ModelsSurface() {
         });
       }
     },
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["catalog"] }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["catalog"] });
+      void qc.invalidateQueries({ queryKey: ["provider-connections", workspace] });
+    },
+  });
+  const connect = useMutation({
+    mutationFn: () =>
+      api.post<ProviderConnectionView>(ws("/v1/config/provider-connections"), {
+        workspace_id: workspace,
+        provider_id: draft.provider,
+        display_name: selectedDescriptor?.display_name ?? draft.provider,
+        endpoint_id: draft.endpoint,
+        dialect: draft.dialect,
+        base_url: draft.baseUrl || null,
+        timeout_secs: 60,
+        secret: apiKey,
+      }),
+    onSuccess: (connection) => {
+      setApiKey("");
+      setSyncCredential(connection.credential.id);
+      void qc.invalidateQueries({ queryKey: ["catalog"] });
+      void qc.invalidateQueries({ queryKey: ["credentials", workspace] });
+      void qc.invalidateQueries({ queryKey: ["provider-connections", workspace] });
+    },
   });
   const [syncCredential, setSyncCredential] = useState("");
   const syncModels = useMutation({
@@ -178,7 +237,10 @@ export default function ModelsSurface() {
         workspace_id: workspace,
         credential_source_id: syncCredential,
       }),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["catalog"] }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["catalog"] });
+      void qc.invalidateQueries({ queryKey: ["provider-connections", workspace] });
+    },
   });
   const [testModel, setTestModel] = useState<string | null>(null);
   const [resolveModel, setResolveModel] = useState("claude-sonnet-4-5");
@@ -293,7 +355,35 @@ export default function ModelsSurface() {
       </Card>
 
       <Card>
-        <h2>{app.t("Author provider / endpoint / offering", "作者化 provider / endpoint / offering")}</h2>
+        <h2>{app.t("Connect a model source", "连接模型来源")}</h2>
+        <p className="hint">
+          {app.t(
+            "Choose a supported provider. Its protocols and default endpoint come from the backend driver descriptor.",
+            "选择受支持的供应商；协议与默认端点来自后端驱动描述，而非前端硬编码。",
+          )}
+        </p>
+        <div className="row" style={{ marginBottom: 14 }}>
+          {(descriptors.data ?? []).map((descriptor) => (
+            (() => {
+              const connection = connections.data?.find(
+                (item) => item.provider_id === descriptor.provider_kind,
+              );
+              return (
+                <Button
+                  key={descriptor.provider_kind}
+                  variant={draft.provider === descriptor.provider_kind ? "primary" : "ghost"}
+                  onClick={() => selectDescriptor(descriptor)}
+                >
+                  {descriptor.display_name}
+                  <span className="mut" style={{ marginLeft: 6 }}>
+                    {connection?.status ?? "…"}
+                    {connection?.active_models ? ` · ${connection.active_models} models` : ""}
+                  </span>
+                </Button>
+              );
+            })()
+          ))}
+        </div>
         {(proposals.data ?? []).length > 0 && (
           <div className="banner info" style={{ marginBottom: 12 }}>
             <span>ⓘ</span>
@@ -327,18 +417,16 @@ export default function ModelsSurface() {
           </div>
         )}
         <div className="row">
-          <TextField label="Provider" mono value={draft.provider} onChange={(e) => setDraft({ ...draft, provider: e.target.value })} />
+          <TextField label="Provider" mono value={draft.provider} readOnly />
           <TextField label="Endpoint id" mono value={draft.endpoint} onChange={(e) => setDraft({ ...draft, endpoint: e.target.value })} />
           <span className="field" style={{ flex: 1 }}>
             <label>base_url ({app.t("optional", "可选")})</label>
             <input className="input mono" value={draft.baseUrl} onChange={(e) => setDraft({ ...draft, baseUrl: e.target.value })} />
           </span>
           <SelectField label="Dialect" value={draft.dialect} onChange={(e) => setDraft({ ...draft, dialect: e.target.value })}>
-            <option value="anthropic_messages">anthropic_messages</option>
-            <option value="open_ai_chat">open_ai_chat</option>
-            <option value="open_ai_responses">open_ai_responses</option>
-            <option value="gemini">gemini</option>
-            <option value="vertex_gemini">vertex_gemini</option>
+            {(selectedDescriptor?.supported_dialects ?? [draft.dialect]).map((dialect) => (
+              <option key={dialect} value={dialect}>{dialect}</option>
+            ))}
           </SelectField>
           <TextField label="Model id" mono placeholder="model-id" value={draft.model} onChange={(e) => setDraft({ ...draft, model: e.target.value })} />
           <TextField
@@ -355,10 +443,39 @@ export default function ModelsSurface() {
             value={draft.maxOutputTokens}
             onChange={(e) => setDraft({ ...draft, maxOutputTokens: e.target.value })}
           />
-          <Button variant="primary" style={{ alignSelf: "flex-end" }} disabled={upsert.isPending} onClick={() => upsert.mutate()}>
-            {app.t("Author", "写入")}
+          {selectedDescriptor?.auth_methods.includes("api_key") && (
+            <TextField
+              label={app.t("API key (write-only)", "API Key（仅写入）")}
+              type="password"
+              autoComplete="new-password"
+              value={apiKey}
+              onChange={(event) => setApiKey(event.target.value)}
+            />
+          )}
+          <Button
+            variant="primary"
+            style={{ alignSelf: "flex-end" }}
+            disabled={!apiKey || !draft.endpoint || connect.isPending}
+            onClick={() => connect.mutate()}
+          >
+            {connect.isPending
+              ? app.t("Testing…", "正在测试…")
+              : app.t("Test & save", "测试并保存")}
+          </Button>
+          <Button style={{ alignSelf: "flex-end" }} disabled={!draft.model || upsert.isPending} onClick={() => upsert.mutate()}>
+            {app.t("Add manual model", "添加手工模型")}
           </Button>
         </div>
+        {connect.data && (
+          <div className="banner info" style={{ marginTop: 12 }}>
+            <span>✓</span>
+            <span>
+              {app.t("Tested and saved", "已测试并保存")} · {connect.data.sync.discovered}{" "}
+              {app.t("models discovered", "个模型已发现")}
+            </span>
+          </div>
+        )}
+        {connect.error instanceof Error && <div className="err">{connect.error.message}</div>}
         {upsert.error instanceof Error && <div className="err">{upsert.error.message}</div>}
         <div className="row" style={{ marginTop: 12 }}>
           <SelectField
