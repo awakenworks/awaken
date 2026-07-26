@@ -1787,6 +1787,7 @@ async fn minting_skips_session_ids_that_own_committed_truth() {
         .create_session(
             awaken_protocol_managed::types::SessionCreateParams {
                 agent: awaken_protocol_managed::types::AgentRef::Id("assistant".into()),
+                application_contribution_required: false,
                 environment_id: None,
                 title: None,
                 metadata: Default::default(),
@@ -1799,6 +1800,88 @@ async fn minting_skips_session_ids_that_own_committed_truth() {
         .await
         .expect("create skips haunted ids");
     assert_eq!(session.id, "sesn_2", "sesn_0/sesn_1 own committed truth");
+}
+
+/// Cause graph for the public creation switch:
+/// C1 = a registered application contribution is required. C1 freezes only the
+/// preparation intent; !C1 compiles and realizes immediately. The two effects
+/// are mutually exclusive, so creation cannot publish idle while still waiting
+/// for an application or invoke Runtime before that contribution exists.
+///
+/// | Rule | C1 | wire status | Runtime prepare | idled fact | contribution |
+/// |---|---|---|---|---|---|
+/// | A1 | 0 | idle | once | once | NotRequired |
+/// | A2 | 1 | preparing | never | never | Accepted |
+#[tokio::test]
+async fn application_required_creation_is_generated_from_the_decision_table() {
+    #[derive(Default)]
+    struct CapturingSink(Mutex<Vec<String>>);
+
+    #[async_trait::async_trait]
+    impl SessionLifecycleSink for CapturingSink {
+        async fn emit(&self, _session_id: &str, _workspace_id: Option<&str>, event_type: &str) {
+            self.0.lock().unwrap().push(event_type.to_string());
+        }
+    }
+
+    for (required, expected_status, expected_prepares, expected_facts, rule) in
+        [(false, "idle", 1, 1, "A1"), (true, "preparing", 0, 0, "A2")]
+    {
+        let prepared = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::new(CapturingSink::default());
+        let state = ManagedState::new_with_mcp(PreparingFake {
+            captured: prepared.clone(),
+            staged: Arc::new(Mutex::new(Vec::new())),
+            observed_durable: Arc::new(Mutex::new(Vec::new())),
+            repo: None,
+            fail_with: None,
+        })
+        .with_lifecycle_sink(sink.clone());
+        let session = state
+            .create_session(
+                awaken_protocol_managed::types::SessionCreateParams {
+                    agent: awaken_protocol_managed::types::AgentRef::Id("assistant".into()),
+                    application_contribution_required: required,
+                    environment_id: None,
+                    title: None,
+                    metadata: Default::default(),
+                    mcp_servers: Vec::new(),
+                    vault_ids: Vec::new(),
+                    resources: Vec::new(),
+                },
+                Some("workspace-application".into()),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{rule}: {error:?}"));
+        assert_eq!(session.status, expected_status, "{rule}");
+        assert_eq!(prepared.lock().unwrap().len(), expected_prepares, "{rule}");
+        assert_eq!(sink.0.lock().unwrap().len(), expected_facts, "{rule}");
+
+        let contribution = awaken_protocol_managed::ApplicationSessionContribution {
+            session_id: session.id,
+            application_fingerprint: "application-v1".into(),
+            input: Default::default(),
+        };
+        let outcome =
+            awaken_protocol_managed::ApplicationSessionContributionPort::contribute_application(
+                &state,
+                contribution,
+            )
+            .await;
+        if required {
+            assert!(outcome.is_ok(), "{rule}");
+        } else {
+            assert!(
+                matches!(
+                    outcome,
+                    Err(
+                        awaken_protocol_managed::ApplicationSessionContributionFailure::NotRequired
+                    )
+                ),
+                "{rule}"
+            );
+        }
+    }
 }
 
 /// ADR-0048 / S10: creating a session fires the lifecycle projection sink with the
@@ -1836,6 +1919,7 @@ async fn create_session_fires_the_lifecycle_sink_with_the_owner() {
         .create_session(
             awaken_protocol_managed::types::SessionCreateParams {
                 agent: awaken_protocol_managed::types::AgentRef::Id("assistant".into()),
+                application_contribution_required: false,
                 environment_id: None,
                 title: None,
                 metadata: Default::default(),
@@ -1895,6 +1979,7 @@ async fn archive_session_fires_the_terminated_fact_once() {
         .create_session(
             awaken_protocol_managed::types::SessionCreateParams {
                 agent: awaken_protocol_managed::types::AgentRef::Id("assistant".into()),
+                application_contribution_required: false,
                 environment_id: None,
                 title: None,
                 metadata: Default::default(),
@@ -1964,6 +2049,7 @@ async fn delete_session_fires_the_deleted_fact_with_the_owner() {
         .create_session(
             awaken_protocol_managed::types::SessionCreateParams {
                 agent: awaken_protocol_managed::types::AgentRef::Id("assistant".into()),
+                application_contribution_required: false,
                 environment_id: None,
                 title: None,
                 metadata: Default::default(),

@@ -51,6 +51,33 @@ impl ManagedState {
     /// never merged wholesale.
     pub(super) const ROOT_CAS_ATTEMPTS: usize = 3;
 
+    fn wire_session_status(status: &str) -> &'static str {
+        match status {
+            "preparing" => "preparing",
+            "activating" => "activating",
+            "activation_failed" => "failed",
+            "terminated" => "terminated",
+            _ => "idle",
+        }
+    }
+
+    /// Refresh the disposable HTTP projection after the one durable root CAS.
+    /// Every mutation crosses this seam, so realization, update, archive, and
+    /// recovery cannot each invent a second cache-synchronization path.
+    fn refresh_cached_projection(&self, persisted: &PersistedSession) {
+        let mut sessions = self.sessions.lock().unwrap();
+        let Some(record) = sessions.get_mut(&persisted.session_id) else {
+            return;
+        };
+        record.session.status = Self::wire_session_status(&persisted.status);
+        record.session.title = persisted.title.clone();
+        record.session.metadata = persisted.metadata.clone();
+        record.session.deployment_id = persisted.metadata.get("awaken.deployment_id").cloned();
+        record.session.archived_at = persisted.archived_at.clone();
+        record.session.agent.mcp_servers = persisted.visible_mcp_servers();
+        record.resource_state = persisted.resources.clone();
+    }
+
     /// Sole Managed anti-corruption compiler for create-time and hot MCP input.
     /// URL identity, Vault ordering and exact credential pinning cannot be
     /// repeated by either caller after this function returns.
@@ -195,14 +222,18 @@ impl ManagedState {
         {
             awaken_session_contract::SessionMutationResult::Applied { new_revision } => {
                 session.revision = new_revision;
+                self.refresh_cached_projection(&session);
                 Ok((session, true))
             }
-            awaken_session_contract::SessionMutationResult::Replayed { .. } => self
-                .sessions_repo
-                .get(&session.session_id)
-                .await
-                .map(|session| (session, false))
-                .ok_or(StateError::NotFound),
+            awaken_session_contract::SessionMutationResult::Replayed { .. } => {
+                let session = self
+                    .sessions_repo
+                    .get(&session.session_id)
+                    .await
+                    .ok_or(StateError::NotFound)?;
+                self.refresh_cached_projection(&session);
+                Ok((session, false))
+            }
             awaken_session_contract::SessionMutationResult::Conflict { .. } => {
                 Err(StateError::Conflict)
             }
@@ -586,6 +617,7 @@ impl ManagedState {
         let resolved_model = selected_model
             .clone()
             .unwrap_or_else(|| ModelConfig::new(self.runtime.model()));
+        let application_required = req.application_contribution_required;
         let creation_intent = awaken_session_contract::SessionCreationIntent {
             control: awaken_session_contract::ControlSessionCreationInputs {
                 environment,
@@ -602,15 +634,25 @@ impl ManagedState {
                 resources: resolved_resources,
                 initial_mcp: mcp_drafts,
             },
-            application: awaken_session_contract::ApplicationContributionState::Absent,
+            application: if application_required {
+                awaken_session_contract::ApplicationContributionState::Required
+            } else {
+                awaken_session_contract::ApplicationContributionState::Absent
+            },
         };
         // Compile before insert so malformed no-application input cannot strand a
         // preparation row. The transient result is committed exactly once after
         // the insert; required applications compile only after their contribution.
-        let compiled = creation_intent
-            .clone()
-            .finalize(Vec::new())
-            .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
+        let compiled = if application_required {
+            None
+        } else {
+            Some(
+                creation_intent
+                    .clone()
+                    .finalize(Vec::new())
+                    .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?,
+            )
+        };
         let mut persisted = PersistedSession {
             session_id: id.clone(),
             revision: Default::default(),
@@ -629,20 +671,22 @@ impl ManagedState {
         persisted = self
             .create_session_snapshot(&owner_scope, persisted)
             .await?;
-        self.commit_compiled_session_creation(&owner_scope, persisted, compiled)
-            .await?;
-        // One phase driver now owns create, update, and recovery realization.
-        // The frozen baseline and Requested generations are durable before the
-        // driver performs any Runtime effect.
-        persisted = match self.realize_session_locally(&id).await {
-            Ok(persisted) => persisted,
-            Err(error) => {
-                let _ = self
-                    .release_terminal_resources(&id, Some(&owner_scope), &[])
-                    .await;
-                return Err(error);
-            }
-        };
+        if let Some(compiled) = compiled {
+            self.commit_compiled_session_creation(&owner_scope, persisted, compiled)
+                .await?;
+            // One phase driver now owns create, update, and recovery realization.
+            // The frozen baseline and Requested generations are durable before the
+            // driver performs any Runtime effect.
+            persisted = match self.realize_session_locally(&id).await {
+                Ok(persisted) => persisted,
+                Err(error) => {
+                    let _ = self
+                        .release_terminal_resources(&id, Some(&owner_scope), &[])
+                        .await;
+                    return Err(error);
+                }
+            };
+        }
         let deployment_id = req.metadata.get("awaken.deployment_id").cloned();
         let mut session = Session {
             id: id.clone(),
@@ -684,7 +728,11 @@ impl ManagedState {
             // Resource wire values are projected from `resource_state` on response.
             resources: Vec::new(),
             outcome_evaluations: Vec::new(),
-            status: "idle",
+            status: if application_required {
+                "preparing"
+            } else {
+                "idle"
+            },
             stats: SessionStats::default(),
             usage: Usage::default(),
             vault_ids: req.vault_ids.clone(),
@@ -715,20 +763,28 @@ impl ManagedState {
         // rehydrates its real agent/model/title/metadata/MCP, not a placeholder.
         // The core session record is tenancy-agnostic (authz is an edge aspect) —
         // it never stores a workspace/org.
-        let created_fact = lifecycle_fact(
-            format!("session:{id}:created"),
-            &id,
-            workspace_id.clone(),
-            lifecycle_event::SESSION_IDLED,
-        );
-        persisted = self
-            .commit_session_snapshot(
-                &owner_scope,
-                persisted,
-                "activate",
-                vec![created_fact.clone()],
-            )
-            .await?;
+        let created_fact = if application_required {
+            persisted = self
+                .commit_session_snapshot(
+                    &owner_scope,
+                    persisted,
+                    "record-preparing-config",
+                    Vec::new(),
+                )
+                .await?;
+            None
+        } else {
+            let fact = lifecycle_fact(
+                format!("session:{id}:created"),
+                &id,
+                workspace_id.clone(),
+                lifecycle_event::SESSION_IDLED,
+            );
+            persisted = self
+                .commit_session_snapshot(&owner_scope, persisted, "activate", vec![fact.clone()])
+                .await?;
+            Some(fact)
+        };
         self.owners.lock().unwrap().insert(id.clone(), owner_scope);
         let record = SessionRecord {
             agent_id,
@@ -742,7 +798,8 @@ impl ManagedState {
         // Dispatch only after the active activation and Session lifecycle fact are
         // durable. A worker can never claim a work item whose resource intent is
         // still merely Prepared.
-        if let Some(envs) = self.environments.as_ref()
+        if !application_required
+            && let Some(envs) = self.environments.as_ref()
             && envs.is_self_hosted(&environment_id).await
         {
             envs.enqueue_session_work(&environment_id, &id).await;
@@ -752,7 +809,7 @@ impl ManagedState {
         // fact, distinct from the SSE `session.status_idle` transition) to any
         // workspace-scoped subscribers. The owning workspace comes from the edge (the
         // aspect), passed in — never read back from the core record. Out-of-band.
-        if let Some(sink) = &self.lifecycle_sink {
+        if let (Some(sink), Some(created_fact)) = (&self.lifecycle_sink, &created_fact) {
             sink.emit_fact(
                 &created_fact.id,
                 &id,
@@ -1076,10 +1133,7 @@ impl ManagedState {
                     p.metadata,
                     p.agent_tools.unwrap_or_else(|| default_tools.clone()),
                     mcp_servers,
-                    match p.status.as_str() {
-                        "terminated" => "terminated",
-                        _ => "idle",
-                    },
+                    Self::wire_session_status(&p.status),
                     p.archived_at,
                 )
             }
@@ -1516,7 +1570,7 @@ impl ManagedState {
             let terminated_id = self.next_event_id();
             let mut sessions = self.sessions.lock().unwrap();
             let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
-            if newly_terminated && record.session.archived_at.is_none() {
+            if newly_terminated {
                 record.session.archived_at = Some(PROCESSED_AT.to_string());
                 record.session.status = "terminated";
                 record.events.push(Event {

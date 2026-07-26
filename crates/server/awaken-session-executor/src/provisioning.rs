@@ -229,11 +229,6 @@ impl SharedHost {
             .unwrap_or_default()
     }
 
-    /// The prompt fragments staged for `thread`'s bound resources (ADR-0038 A3a).
-    pub(crate) fn thread_resource_prompts(&self, thread: &str) -> Vec<String> {
-        self.thread_session_prompts(thread)
-    }
-
     /// The content-addressed blob store (Files API, file-resource mounts, artifacts).
     pub fn file_store(&self) -> Arc<dyn FileStore> {
         self.file_store.clone()
@@ -647,10 +642,7 @@ mod provisioning_registry_tests {
         );
 
         assert_eq!(host.sandbox_spec("t").mounts.len(), 1, "old mounts dropped");
-        assert_eq!(
-            host.thread_resource_prompts("t"),
-            vec!["second".to_string()]
-        );
+        assert_eq!(host.thread_session_prompts("t"), vec!["second".to_string()]);
         assert!(
             host.thread_repository_activations("t").is_empty(),
             "old repository activation dropped"
