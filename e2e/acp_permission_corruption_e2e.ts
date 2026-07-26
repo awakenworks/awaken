@@ -3,12 +3,14 @@
 // stopped; recovery is driven through the normal Managed API.
 
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import fs, { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
+// @ts-ignore -- shared JavaScript harness intentionally serves TS scenarios.
 import { pass, spawnServer, stopServer, waitForPort } from './harness.mjs';
+// @ts-ignore -- shared JavaScript SQLite fixture intentionally serves TS scenarios.
+import { sqliteRows, sqliteRun } from './sqlite.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 39773);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -39,26 +41,22 @@ async function startAwaiting(client: Anthropic): Promise<string> {
 
 function rewriteTicket(storage: string, sessionId: string, rewrite: (ticket: any) => void): void {
   const database = path.join(storage, `${sessionId}.db`);
-  const encoded = execFileSync(
-    'sqlite3',
-    [database, 'SELECT run_id || char(9) || ticket FROM runtime_waiting LIMIT 1'],
-    { encoding: 'utf8' },
-  ).trim();
+  const row = sqliteRows(
+    database,
+    'SELECT run_id || char(9) || ticket FROM runtime_waiting LIMIT 1',
+  )[0] as Record<string, unknown> | undefined;
+  const encoded = row ? String(Object.values(row)[0]) : '';
   const separator = encoded.indexOf('\t');
   assert.ok(separator > 0, `ACP permission ticket exists for ${sessionId}: ${encoded}`);
   const runId = encoded.slice(0, separator);
   const ticket = JSON.parse(encoded.slice(separator + 1));
   rewrite(ticket);
   const serialized = JSON.stringify(ticket).replaceAll("'", "''");
-  const changed = execFileSync(
-    'sqlite3',
-    [
-      database,
-      `UPDATE runtime_waiting SET ticket = '${serialized}' WHERE run_id = '${runId.replaceAll("'", "''")}'; SELECT changes();`,
-    ],
-    { encoding: 'utf8' },
-  ).trim();
-  assert.equal(changed, '1');
+  const changed = sqliteRun(
+    database,
+    `UPDATE runtime_waiting SET ticket = '${serialized}' WHERE run_id = '${runId.replaceAll("'", "''")}'`,
+  );
+  assert.equal(Number(changed.changes), 1);
 }
 
 async function expectDecisionFailure(client: Anthropic, sessionId: string, status: number): Promise<void> {

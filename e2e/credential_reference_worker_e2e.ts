@@ -3,6 +3,17 @@
 // TypeScript injects an opaque grant into a durable dispatch. A real database-less
 // worker claims it over HTTP, passes it to its inference materializer, executes
 // the returned model, commits through the claimed epoch, and settles the queue.
+//
+// Cause graph:
+//   C1 opaque reference is authorized -> E1 worker materializes without a raw key
+//   C2 epoch/owner are current         -> E2 one committed provider result
+//   C3 stdin reaches EOF in E2E mode   -> E3 graceful drain + coverage flush
+//
+// Decision table:
+//   Rule  C1  C2  C3  Expected
+//   T1    Y   Y   N   E1 + E2; worker remains live
+//   T2    Y   Y   Y   E1 + E2 + E3
+//   T3    N   -   Y   fail closed; E3
 
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -238,6 +249,8 @@ async function main(): Promise<void> {
       AWAKEN_TEST_CREDENTIAL_REVISION: String(GRANT_REVISION),
       AWAKEN_TEST_CREDENTIAL_STATE_FILE: credentialState,
       AWAKEN_WORKER_ID: 'gateway-worker-ts',
+      AWAKEN_WORKER_ADMIN_LISTEN: `127.0.0.1:${WORKER_ADMIN_PORT}`,
+      AWAKEN_E2E_SHUTDOWN_ON_STDIN_EOF: '1',
     });
     worker = spawn(buildGatewayWorker(), [], { cwd: ROOT, env, stdio: ['pipe', 'pipe', 'pipe'] });
     worker.stdout.on('data', (chunk) => (workerOutput += chunk.toString()));

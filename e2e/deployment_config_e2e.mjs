@@ -54,7 +54,11 @@ async function rejected(bin, fields, expected) {
 async function main() {
   const bin = ensureProductionBuilt();
 
-  const worker = await runToExit(bin, ['worker', '--config', '/tmp/not-read-without-server.toml'], {});
+  // Cause graph: a Worker without a server cannot drain work; a coordinator
+  // without a local pool needs one shared queue; shared runtime ownership needs
+  // one shared resource/catalog plane. Every contradiction fails before I/O.
+  const missingWorkerConfig = path.join(os.tmpdir(), 'not-read-without-server.toml');
+  const worker = await runToExit(bin, ['worker', '--config', missingWorkerConfig], {});
   assert.notEqual(worker.code, 0);
   assert.match(worker.output, /worker requires --server/u);
   pass('worker role requires an exact typed worker_server');
@@ -62,7 +66,7 @@ async function main() {
   await rejected(bin, { run_local_pool: false }, /run_local_pool=false requires runtime_database_url/u);
   pass('pool-less coordinator requires a typed shared dispatch store');
 
-  await rejected(bin, { resource_database_url: '/tmp/resources.sqlite' }, /must be postgres:\/\//u);
+  await rejected(bin, { resource_database_url: path.join(os.tmpdir(), 'resources.sqlite') }, /must be postgres:\/\//u);
   pass('resource plane rejects a second embedded database path');
 
   await rejected(
@@ -82,7 +86,7 @@ async function main() {
     Object.assign(env, {
       AWAKEN_ROLE: 'worker',
       AWAKEN_HTTP_ADDR: '127.0.0.1:1',
-      AWAKEN_DEPLOYMENT_DATA_DIR: '/tmp/forbidden-awaken-data',
+      AWAKEN_DEPLOYMENT_DATA_DIR: path.join(os.tmpdir(), 'forbidden-awaken-data'),
       AWAKEN_RUNTIME_DISPATCH_DATABASE_URL: 'postgres://forbidden',
       AWAKEN_CONTROL_SEAL_KEY: 'forbidden',
     });

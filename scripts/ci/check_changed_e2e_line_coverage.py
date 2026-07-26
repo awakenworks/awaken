@@ -19,7 +19,11 @@ TEST_MODULE = re.compile(r"^\s*#\s*\[\s*cfg\s*\([^]]*\btest\b[^]]*\)\s*\]")
 
 def run(*args: str) -> str:
     return subprocess.run(
-        args, cwd=ROOT, check=True, text=True, stdout=subprocess.PIPE
+        args,
+        cwd=ROOT,
+        check=True,
+        encoding="utf-8",
+        stdout=subprocess.PIPE,
     ).stdout
 
 

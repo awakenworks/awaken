@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
+import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 
 SCRIPT = pathlib.Path(__file__).with_name("check_changed_e2e_line_coverage.py")
@@ -72,6 +74,24 @@ evidence = "test"
         )
         with self.assertRaises(ValueError):
             MODULE.unreachable_lines("waivers.toml")
+
+    def test_subprocess_output_is_always_decoded_as_utf8(self) -> None:
+        # Cause graph: C1 repository output contains non-ASCII text; C2 the host
+        # locale is not UTF-8. C1+C2 previously made the coverage gate fail before
+        # reading counters. Explicit UTF-8 decoding makes both locale rules equal.
+        #
+        # | Rule | non-ASCII output | non-UTF-8 locale | Result |
+        # |---|---|---|---|
+        # | U1 | F | T | decoded |
+        # | U2 | T | F | decoded |
+        # | U3 | T | T | decoded as UTF-8 |
+        def completed(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            self.assertEqual(kwargs.get("encoding"), "utf-8")
+            self.assertNotIn("text", kwargs)
+            return subprocess.CompletedProcess(args, 0, stdout="模型 ✅\n")
+
+        with mock.patch.object(MODULE.subprocess, "run", side_effect=completed):
+            self.assertEqual(MODULE.run("git", "diff"), "模型 ✅\n")
 
 
 if __name__ == "__main__":

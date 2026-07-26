@@ -56,6 +56,16 @@ function waitForPort(port, timeoutMs = 60_000) {
 async function main() {
   const bin = awakenBin();
 
+  // Cause graph for command selection:
+  // C1 command is `start`; C2 command is `serve`; C3 an unknown option is
+  // present. E1 starts the interactive surface, E2 starts headless, E3 rejects
+  // before binding a port or opening the data directory.
+  // Decision table:
+  // | Rule | C1 | C2 | C3 | Expected effect |
+  // | K1   | T  | F  | F  | E1              |
+  // | K2   | F  | T  | F  | E2              |
+  // | K3   | -  | -  | T  | E3              |
+
   const help = spawnSync(bin, ['--help'], { encoding: 'utf8' });
   assert.equal(help.status, 0, help.stderr);
   assert.match(help.stdout, /awaken start/);
@@ -77,7 +87,7 @@ async function main() {
     `data_dir = ${JSON.stringify(path.join(temp, 'data'))}`,
     `bind = ${JSON.stringify(`127.0.0.1:${PORT}`)}`,
   ].join('\n'));
-  let server = spawn(bin, ['start'], {
+  let server = spawn(bin, ['start', '--no-browser'], {
     cwd: temp,
     env: {
       ...process.env,
@@ -89,13 +99,22 @@ async function main() {
   });
   const stop = async () => {
     if (server.exitCode !== null) return;
+    // Shutdown decision table:
+    // | SIGINT exits within grace | process still live | action |
+    // | true                     | false              | cleanup |
+    // | false                    | true               | SIGKILL, await exit, cleanup |
+    // Waiting for the terminal event after SIGKILL is required on Windows:
+    // the child keeps its cwd/SQLite handles until process teardown completes.
+    const exited = new Promise((resolve) => server.once('exit', resolve));
     server.kill('SIGINT');
-    await Promise.race([
-      new Promise((resolve) => server.once('exit', resolve)),
-      sleep(10_000).then(() => {
-        server.kill('SIGKILL');
-      }),
+    const graceful = await Promise.race([
+      exited.then(() => true),
+      sleep(10_000).then(() => false),
     ]);
+    if (!graceful && server.exitCode === null && server.signalCode === null) {
+      server.kill('SIGKILL');
+      await exited;
+    }
   };
 
   try {

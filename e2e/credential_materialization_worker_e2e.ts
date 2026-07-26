@@ -276,7 +276,7 @@ async function main() {
     ].join('\n'));
     worker = spawn(workerBinary(), ['worker', '--config', workerConfig, '--server', BASE], {
       cwd: ROOT,
-      env: process.env,
+      env: { ...process.env, AWAKEN_E2E_SHUTDOWN_ON_STDIN_EOF: '1' },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     worker.stdout.on('data', (chunk) => (output += chunk.toString()));

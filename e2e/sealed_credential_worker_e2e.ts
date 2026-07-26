@@ -130,6 +130,15 @@ async function waitForReply(timeoutMs = 30_000) {
 async function main() {
   const storage = mkdtempSync(path.join(tmpdir(), 'awaken-sealed-worker-'));
   const upstream = await startFakeAnthropic(PROVIDER_SECRET);
+  // Cause graph: a time-bounded sealed envelope starts aging only after the
+  // instrumented fixture binary is built. Building after issuance can consume
+  // its whole TTL before the worker is eligible to claim.
+  //
+  // | Rule | Binary ready before issue | Envelope within TTL | Result |
+  // |---|---|---|---|
+  // | S0 | T | T | valid case reaches the provider |
+  // | S1 | F | F | all cases fail expired before execution |
+  const sealedWorkerBinary = workerBinary();
   const cell = spawnServer('echo', PORT, {
     SESSION_DEPLOYMENT_INGRESS: 'durable',
     SESSION_DEPLOYMENT_STORAGE_DIR: storage,
@@ -221,13 +230,14 @@ async function main() {
     }, seed.id);
     assert.equal(settled.json.settled, true, settled.text);
 
-    worker = spawn(workerBinary(), [], {
+    worker = spawn(sealedWorkerBinary, [], {
       cwd: ROOT,
       env: {
         ...process.env,
         AWAKEN_UPSTREAM_URL: BASE,
         AWAKEN_WORKER_ID: 'sealed-worker',
         AWAKEN_WORKER_ADMIN_LISTEN: `127.0.0.1:${ADMIN_PORT}`,
+        AWAKEN_E2E_SHUTDOWN_ON_STDIN_EOF: '1',
         AWAKEN_TEST_PROVIDER_REF: providerRef,
         AWAKEN_TEST_PROVIDER_URL: endpoint.base_url,
         AWAKEN_TEST_PROVIDER_MODEL: endpoint.upstream_model,

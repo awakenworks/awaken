@@ -81,7 +81,13 @@ let productionBin = null;
 // Keeping this merge in one place prevents the three spawn entry points from
 // recreating competing precedence rules.
 function serverProcessEnv(addr, configured = {}) {
-  return { ...process.env, HOME: E2E_HOME, ...configured, AWAKEN_HTTP_ADDR: addr };
+  return {
+    ...process.env,
+    HOME: E2E_HOME,
+    ...configured,
+    AWAKEN_HTTP_ADDR: addr,
+    AWAKEN_E2E_SHUTDOWN_ON_STDIN_EOF: '1',
+  };
 }
 
 function ensureBuilt() {
@@ -203,7 +209,7 @@ export async function withServer(mode, port, fn) {
   const addr = `127.0.0.1:${listenPort}`;
   const server = spawn(bin, {
     env: serverProcessEnv(addr, { AWAKEN_MODEL_MODE: mode }),
-    stdio: ['ignore', 'inherit', 'inherit'],
+    stdio: ['pipe', 'inherit', 'inherit'],
   });
   try {
     await waitForServer(server, listenPort);
@@ -272,7 +278,7 @@ export async function withRealServer(behavior, port, fn, opts = {}) {
   const capture = opts.capture ? { buf: '' } : null;
   const server = spawn(bin, {
     env: serverProcessEnv(addr, realServerEnv(behavior, upstream, opts)),
-    stdio: capture ? ['ignore', 'pipe', 'pipe'] : ['ignore', 'inherit', 'inherit'],
+    stdio: capture ? ['pipe', 'pipe', 'pipe'] : ['pipe', 'inherit', 'inherit'],
   });
   if (capture) {
     const tee = (chunk, sink) => {
@@ -300,7 +306,7 @@ export function spawnServer(mode, port, extraEnv = {}) {
   const addr = `127.0.0.1:${port}`;
   const server = spawn(bin, {
     env: serverProcessEnv(addr, { ...extraEnv, AWAKEN_MODEL_MODE: mode }),
-    stdio: ['ignore', 'inherit', 'inherit'],
+    stdio: ['pipe', 'inherit', 'inherit'],
   });
   return { server, baseUrl: `http://${addr}` };
 }
@@ -315,7 +321,16 @@ export function stopServer(server) {
     // and wait forever.
     if (server.exitCode !== null || server.signalCode !== null) return resolve();
     server.on('exit', () => resolve());
-    server.kill('SIGINT');
+    // Shutdown decision table:
+    // | stdin pipe | process terminal | action |
+    // |---|---|---|
+    // | open | no | close stdin; server drains and coverage flushes |
+    // | absent | no | signal fallback for non-harness children |
+    // | any | yes | resolve without a second stop |
+    // Windows maps Node SIGINT to forced termination, so EOF is the portable
+    // graceful cause; Unix production signal behavior remains independently wired.
+    if (server.stdin && !server.stdin.destroyed) server.stdin.end();
+    else server.kill('SIGINT');
   });
 }
 

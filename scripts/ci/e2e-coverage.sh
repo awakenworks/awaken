@@ -84,9 +84,10 @@ export CARGO_LLVM_COV_TARGET_DIR="${CARGO_LLVM_COV_TARGET_DIR:-$CARGO_TARGET_DIR
 eval "$(cargo llvm-cov show-env --sh)"
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*)
-    # LLVM's runtime-counter relocation cannot close instrumented proc-macro
-    # DLLs on MSVC (LNK1105/code 1224). Windows therefore uses one ordinary
-    # profile per process; the harness shuts served processes down after use.
+    # MSVC cannot link instrumented proc-macro/build-script binaries with runtime
+    # counter relocation (LNK1105/code 1224). Use ordinary per-process profiles;
+    # the E2E harness closes server stdin so Windows performs a real graceful
+    # shutdown and LLVM flushes counters instead of Node force-terminating it.
     export LLVM_PROFILE_FILE="$CARGO_LLVM_COV_TARGET_DIR/awaken-%p.profraw"
     ;;
   *)
@@ -107,52 +108,57 @@ coverage_anthropic_key="${ANTHROPIC_API_KEY:-}"
 coverage_kimi_key="${KIMI_API_KEY:-}"
 unset ANTHROPIC_API_KEY KIMI_API_KEY
 
-pushd e2e >/dev/null
 # Node 22 does not execute `.ts` entry points directly. Load the repository's
 # pinned TypeScript runner once for every npm/Node child in this coverage chain.
 # Use a file URL so stage tests that intentionally set cwd to the repository root
 # do not lose package resolution from e2e/node_modules (especially on Windows).
+pushd e2e >/dev/null
 tsx_loader_url="$(node -p "require('node:url').pathToFileURL(require.resolve('tsx')).href")"
 export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--import=$tsx_loader_url"
-npm run test
-npm run test:protocols
-npm run test:management
-npm run test:durable
-npm run test:fs
-# Extended surfaces (management config APIs + managed engine lifecycle + ACP):
-# existing e2e that were not previously in a coverage chain, so their served
-# code (environments/deployments/agents/user-profiles/memory-stores/skills/
-# vaults/files APIs; managed full-lifecycle/reconnect/terminated/concurrency) was
-# measured as uncovered though the tests exist and pass.
-npm run test:extended
-npm run test:environment-matrix
-# The production `awaken` composition (not the scenario host) proves
-# catalog publication -> snapshot-pinned access -> credential materialization.
-# `test:extended` uses 38411 immediately before this process. Give the CLI
-# composition a distinct port so a shutting-down scenario server cannot satisfy
-# its readiness probe and then disappear between requests.
-E2E_PORT=39411 node awaken_cli_e2e.mjs
-node runtime_embedded_e2e.mjs
-# Exercise the production cross-node worker-pool path as part of the same
-# changed-line evidence instead of leaving scenario-host worker code uncovered.
-node worker_pool_e2e.mjs
-# Cross-process worker/credential-reference, sandbox, MCP and PostgreSQL stage
-# scenarios are part of the changed runtime surface and must contribute real
-# process coverage (including the exact anonymous-worker 401 contract).
-npm run test:runtime-stages
-# Deterministic production-composition and lifecycle scenarios that are not part
-# of the historical aggregate suites. Keeping the list in package.json makes the
-# exact changed-line evidence runnable locally without invoking the reporter.
-npm run test:coverage-gaps
-if [ "${AWAKEN_COVERAGE_REAL:-0}" = "1" ] && [ -n "${coverage_anthropic_key}${coverage_kimi_key}" ]; then
-  (
-    export ANTHROPIC_API_KEY="$coverage_anthropic_key" # awaken-allow: secret
-    export KIMI_API_KEY="$coverage_kimi_key" # awaken-allow: secret
-    npm run test:real
-  )
-else
-  echo "SKIP test:real (hermetic by default; set AWAKEN_COVERAGE_REAL=1 with a provider key to opt in)"
-fi
+
+run_coverage_suites() {
+  npm run test
+  npm run test:protocols
+  npm run test:management
+  npm run test:durable
+  npm run test:fs
+  # Extended surfaces (management config APIs + managed engine lifecycle + ACP):
+  # existing e2e that were not previously in a coverage chain, so their served
+  # code (environments/deployments/agents/user-profiles/memory-stores/skills/
+  # vaults/files APIs; managed full-lifecycle/reconnect/terminated/concurrency) was
+  # measured as uncovered though the tests exist and pass.
+  npm run test:extended
+  npm run test:environment-matrix
+  # The production `awaken` composition (not the scenario host) proves
+  # catalog publication -> snapshot-pinned access -> credential materialization.
+  # `test:extended` uses 38411 immediately before this process. Give the CLI
+  # composition a distinct port so a shutting-down scenario server cannot satisfy
+  # its readiness probe and then disappear between requests.
+  E2E_PORT=39411 node awaken_cli_e2e.mjs
+  node runtime_embedded_e2e.mjs
+  # Exercise the production cross-node worker-pool path as part of the same
+  # changed-line evidence instead of leaving scenario-host worker code uncovered.
+  node worker_pool_e2e.mjs
+  # Cross-process worker/credential-reference, sandbox, MCP and PostgreSQL stage
+  # scenarios are part of the changed runtime surface and must contribute real
+  # process coverage (including the exact anonymous-worker 401 contract).
+  npm run test:runtime-stages
+  # Deterministic production-composition and lifecycle scenarios that are not part
+  # of the historical aggregate suites. Keeping the list in package.json makes the
+  # exact changed-line evidence runnable locally without invoking the reporter.
+  npm run test:coverage-gaps
+  if [ "${AWAKEN_COVERAGE_REAL:-0}" = "1" ] && [ -n "${coverage_anthropic_key}${coverage_kimi_key}" ]; then
+    (
+      export ANTHROPIC_API_KEY="$coverage_anthropic_key" # awaken-allow: secret
+      export KIMI_API_KEY="$coverage_kimi_key" # awaken-allow: secret
+      npm run test:real
+    )
+  else
+    echo "SKIP test:real (hermetic by default; set AWAKEN_COVERAGE_REAL=1 with a provider key to opt in)"
+  fi
+}
+
+run_coverage_suites
 popd >/dev/null
 
 cargo llvm-cov report --ignore-filename-regex "$IGNORE" --summary-only

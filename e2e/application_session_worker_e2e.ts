@@ -128,6 +128,7 @@ async function main(): Promise<void> {
         AWAKEN_UPSTREAM_URL: BASE,
         AWAKEN_WORKER_ID: `application-session-worker-${process.pid}`,
         AWAKEN_TEST_MCP_URL: applicationMcp.url,
+        AWAKEN_E2E_SHUTDOWN_ON_STDIN_EOF: '1',
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
