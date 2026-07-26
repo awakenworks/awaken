@@ -60,6 +60,7 @@ export function deploymentEnv(
 // harness can kill cleanly — a `cargo run` wrapper would leave the real server
 // orphaned and keep Node alive past the test.
 let serverBin = null;
+let productionBin = null;
 
 // Cause graph: inherited/fixture environment may contain an old listen
 // address; the address selected for this process is the sole cause of its bind
@@ -95,6 +96,43 @@ function ensureBuilt() {
   }
   if (!serverBin) throw new Error('could not resolve the awaken-server binary path');
   return serverBin;
+}
+
+export function ensureProductionBuilt() {
+  if (productionBin) return productionBin;
+  const out = execSync(
+    'cargo build --quiet --message-format=json -p awaken-cli --bin awaken',
+    { cwd: REPO_ROOT, maxBuffer: 64 * 1024 * 1024 },
+  ).toString();
+  for (const line of out.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const message = JSON.parse(line);
+      if (message.executable && message.target?.name === 'awaken') productionBin = message.executable;
+    } catch { /* cargo diagnostic */ }
+  }
+  if (!productionBin) throw new Error('could not resolve the awaken production binary path');
+  return productionBin;
+}
+
+// Start the production composition from its single typed deployment source.
+// Scenario-only metadata may be passed as process metadata, but deployment,
+// credential, model, and resource configuration must remain in config.toml.
+export function spawnProduction(
+  dataDir,
+  port,
+  { workspace, controlSealKey, extraEnv = {}, stderr = 'inherit' } = {},
+) {
+  const env = {
+    ...process.env,
+    ...deploymentEnv(dataDir, { controlSealKey }),
+    ...extraEnv,
+  };
+  if (workspace) env.AWAKEN_SCENARIO_WORKSPACE = workspace;
+  return spawn(ensureProductionBuilt(), ['serve', '--port', String(port)], {
+    env,
+    stdio: ['ignore', 'ignore', stderr],
+  });
 }
 
 // A 64x64 solid-red PNG, base64-encoded (deterministic, generated offline). The

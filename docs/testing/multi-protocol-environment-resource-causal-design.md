@@ -320,3 +320,27 @@ later legacy-column drift -> ignored
 Management and Runtime persistence use the same resolved data root. Removed
 `AWAKEN_MGMT_*` and runtime storage variables cannot recreate split Session
 authority in either production or process E2E.
+
+## Phase 14: one production process fixture and canonical resource recovery
+
+```text
+typed config.toml + CLI port
+  -> one production composition
+  -> canonical Session aggregate_json
+  -> Resource activation/reclamation recovery
+  -> exact durable terminal outcome
+```
+
+| Rule | Deployment source | Session state source | Fault | Expected |
+|---|---|---|---|---|
+| R1 | typed config | canonical aggregate | process death after prepare | same generation becomes active |
+| R2 | typed config | retained legacy columns | first recovery | one-way upgrade, then canonical aggregate |
+| R3 | typed config | canonical aggregate | corrupt catalog revision | fail closed; repair resumes exact generation |
+| R4 | typed config | canonical aggregate | reclaim fence/store fault | durable retry without duplicate purge |
+| R5 | removed `AWAKEN_*` deployment vars | either | any | no effect on port, root, seal, or stores |
+
+All production resource scenarios use `spawnProduction`; binary discovery,
+typed deployment construction, process lifecycle, and readiness are no longer
+copied per protocol test. Fault injection edits `aggregate_json` as one value.
+Only the explicit retained-row case clears it and writes legacy columns, so the
+test cannot accidentally create a second live Session state authority.

@@ -4,42 +4,22 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync, execSync, spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { spawnProduction, stopServer, waitForPort } from './harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38440);
 const WORKSPACE = `reclamation-faults-${process.pid}`;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function binary() {
-  const output = execSync('cargo build --quiet --message-format=json -p awaken-cli --bin awaken', {
-    cwd: ROOT,
-    maxBuffer: 64 * 1024 * 1024,
-  }).toString();
-  for (const line of output.split('\n')) {
-    try {
-      const message = JSON.parse(line);
-      if (message.executable && message.target?.name === 'awaken') return message.executable;
-    } catch { /* cargo diagnostic */ }
-  }
-  throw new Error('awaken binary was not produced');
-}
-
-function start(bin, directory, { captureStderr = false } = {}) {
-  const child = spawn(bin, {
-    env: {
-      ...process.env,
-      AWAKEN_HTTP_ADDR: `127.0.0.1:${PORT}`,
-      AWAKEN_SCENARIO_WORKSPACE: WORKSPACE,
-      AWAKEN_STORAGE_DIR: directory,
-      AWAKEN_DEPLOYMENT_DATA_DIR: directory,
-      AWAKEN_MGMT_SEAL_KEY: '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
-    },
-    stdio: ['ignore', 'ignore', captureStderr ? 'pipe' : 'inherit'],
+function start(directory, { captureStderr = false } = {}) {
+  const child = spawnProduction(directory, PORT, {
+    workspace: WORKSPACE,
+    controlSealKey: '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
+    stderr: captureStderr ? 'pipe' : 'inherit',
   });
   child.stderrText = '';
   if (captureStderr) {
@@ -53,21 +33,11 @@ function start(bin, directory, { captureStderr = false } = {}) {
 }
 
 async function ready(child) {
-  const deadline = Date.now() + 60_000;
-  while (Date.now() < deadline) {
-    const connected = await new Promise((resolve) => {
-      const socket = net.createConnection({ port: PORT, host: '127.0.0.1' });
-      socket.once('connect', () => { socket.destroy(); resolve(true); });
-      socket.once('error', () => { socket.destroy(); resolve(false); });
-    });
-    if (connected) return;
-    if (child.exitCode !== null) throw new Error(`awaken exited with ${child.exitCode}`);
-    await sleep(100);
-  }
-  throw new Error('awaken did not become ready');
+  await waitForPort(PORT, 60_000, child);
 }
 
 async function stop(child, signal = 'SIGINT') {
+  if (signal === 'SIGINT') return stopServer(child);
   if (child.exitCode !== null || child.signalCode !== null) return;
   const exited = new Promise((resolve) => child.once('exit', resolve));
   child.kill(signal);
@@ -165,8 +135,7 @@ async function main() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-reclamation-faults-'));
   const lifecycle = path.join(directory, 'resource-lifecycle.db');
   const files = path.join(directory, 'files.db');
-  const bin = binary();
-  let server = start(bin, directory);
+  let server = start(directory);
   try {
     await ready(server);
     const releaseFailure = await upload('release-failure', 'release.txt');
@@ -324,7 +293,7 @@ async function main() {
       `,
     );
 
-    server = start(bin, directory, { captureStderr: true });
+    server = start(directory, { captureStderr: true });
     await ready(server);
     await waitForStderr(server, /injected claim save failure/u);
     assert.equal(intentFor(directory, saveConflict).attempts, 0);
@@ -550,7 +519,7 @@ async function main() {
         blockers: [{ kind: 'artifact', reference_id: ' ' }],
       }, /reference_id must not be empty/u],
     ];
-    server = start(bin, directory, { captureStderr: true });
+    server = start(directory, { captureStderr: true });
     await ready(server);
     for (const [corrupt, expected] of corruptions) {
       server.stderrText = '';

@@ -5,61 +5,30 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync, execSync, spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { spawnProduction, stopServer, waitForPort } from './harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38439);
 const WORKSPACE = `catalog-corruption-${process.pid}`;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function binary() {
-  const output = execSync('cargo build --quiet --message-format=json -p awaken-cli --bin awaken', {
-    cwd: ROOT,
-    maxBuffer: 64 * 1024 * 1024,
-  }).toString();
-  for (const line of output.split('\n')) {
-    try {
-      const message = JSON.parse(line);
-      if (message.executable && message.target?.name === 'awaken') return message.executable;
-    } catch { /* cargo diagnostic */ }
-  }
-  throw new Error('awaken binary was not produced');
-}
-
-function start(bin, directory) {
-  return spawn(bin, {
-    env: {
-      ...process.env,
-      AWAKEN_HTTP_ADDR: `127.0.0.1:${PORT}`,
-      AWAKEN_SCENARIO_WORKSPACE: WORKSPACE,
-      AWAKEN_STORAGE_DIR: directory,
-      AWAKEN_DEPLOYMENT_DATA_DIR: directory,
-      AWAKEN_MGMT_SEAL_KEY: '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
-    },
-    stdio: ['ignore', 'ignore', 'inherit'],
+function start(directory) {
+  return spawnProduction(directory, PORT, {
+    workspace: WORKSPACE,
+    controlSealKey: '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
   });
 }
 
 async function ready(child) {
-  const deadline = Date.now() + 60_000;
-  while (Date.now() < deadline) {
-    const connected = await new Promise((resolve) => {
-      const socket = net.createConnection({ port: PORT, host: '127.0.0.1' });
-      socket.once('connect', () => { socket.destroy(); resolve(true); });
-      socket.once('error', () => { socket.destroy(); resolve(false); });
-    });
-    if (connected) return;
-    if (child.exitCode !== null) throw new Error(`awaken exited with ${child.exitCode}`);
-    await sleep(100);
-  }
-  throw new Error('awaken did not become ready');
+  await waitForPort(PORT, 60_000, child);
 }
 
 async function stop(child, signal = 'SIGINT') {
+  if (signal === 'SIGINT') return stopServer(child);
   if (child.exitCode !== null) return;
   child.kill(signal);
   await new Promise((resolve) => child.once('exit', resolve));
@@ -120,19 +89,25 @@ function writeCatalogRaw(database, kind, id, data) {
   ]);
 }
 
-function sessionResources(database, sessionId) {
+function sessionAggregate(database, sessionId) {
   const output = execFileSync('sqlite3', [
     '-json',
     database,
-    `SELECT effective_inputs_json FROM managed_session WHERE session_id=${sqlQuote(sessionId)}`,
+    `SELECT aggregate_json FROM managed_session WHERE session_id=${sqlQuote(sessionId)}`,
   ]).toString().trim();
   const rows = output ? JSON.parse(output) : [];
   assert.equal(rows.length, 1, `missing Session ${sessionId}`);
-  return JSON.parse(rows[0].effective_inputs_json);
+  assert.ok(rows[0].aggregate_json, `Session ${sessionId} has no canonical aggregate`);
+  return JSON.parse(rows[0].aggregate_json);
+}
+
+function sessionResources(database, sessionId) {
+  return sessionAggregate(database, sessionId).resources;
 }
 
 function persistPreparedGeneration(database, sessionId) {
-  const state = sessionResources(database, sessionId);
+  const aggregate = sessionAggregate(database, sessionId);
+  const state = aggregate.resources;
   const revision = state.revision + 1;
   const previous = state.activations.map((activation) => ({
     ...activation,
@@ -156,7 +131,10 @@ function persistPreparedGeneration(database, sessionId) {
   };
   execFileSync('sqlite3', [
     database,
-    `UPDATE managed_session SET effective_inputs_json=${sqlQuote(JSON.stringify(next))} WHERE session_id=${sqlQuote(sessionId)}`,
+    `UPDATE managed_session SET aggregate_json=${sqlQuote(JSON.stringify({
+      ...aggregate,
+      resources: next,
+    }))} WHERE session_id=${sqlQuote(sessionId)}`,
   ]);
 }
 
@@ -164,8 +142,7 @@ async function main() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-catalog-corruption-'));
   const adminDatabase = path.join(directory, 'admin.db');
   const sessionsDatabase = path.join(directory, 'sessions.db');
-  const bin = binary();
-  let server = start(bin, directory);
+  let server = start(directory);
   try {
     await ready(server);
     const memory = await json('POST', 'memory_stores', {
@@ -200,7 +177,7 @@ async function main() {
     });
     persistPreparedGeneration(sessionsDatabase, session.body.id);
 
-    server = start(bin, directory);
+    server = start(directory);
     await ready(server);
 
     assert.equal((await json('GET', `memory_stores/${memory.body.id}/config`)).status, 500);
@@ -241,7 +218,7 @@ async function main() {
     await stop(server, 'SIGKILL');
     writeCatalogRecord(adminDatabase, 'memory_store', memory.body.id, memoryRecord);
     writeCatalogRecord(adminDatabase, 'repository', repositoryId, repositoryRecord);
-    server = start(bin, directory);
+    server = start(directory);
     await ready(server);
 
     const recovered = sessionResources(sessionsDatabase, session.body.id);
@@ -283,7 +260,7 @@ async function main() {
     ];
     for (const [name, data] of memoryCorruptions) {
       writeCatalogRaw(adminDatabase, 'memory_store', memory.body.id, data);
-      server = start(bin, directory);
+      server = start(directory);
       await ready(server);
       const denied = await json('GET', 'memory_stores');
       assert.equal(denied.status, 500, `${name}: ${JSON.stringify(denied.body)}`);
@@ -292,7 +269,7 @@ async function main() {
       await stop(server, 'SIGKILL');
     }
     writeCatalogRecord(adminDatabase, 'memory_store', memory.body.id, memoryRecord);
-    server = start(bin, directory);
+    server = start(directory);
     await ready(server);
     assert.equal((await json('GET', 'memory_stores')).status, 200);
 
@@ -331,7 +308,7 @@ async function main() {
       await stop(server, 'SIGKILL');
       writeCatalogRaw(adminDatabase, 'repository', repositoryId, data);
       persistPreparedGeneration(sessionsDatabase, session.body.id);
-      server = start(bin, directory);
+      server = start(directory);
       await ready(server);
 
       const denied = sessionResources(sessionsDatabase, session.body.id);
@@ -343,7 +320,7 @@ async function main() {
 
       await stop(server, 'SIGKILL');
       writeCatalogRecord(adminDatabase, 'repository', repositoryId, repositoryRecord);
-      server = start(bin, directory);
+      server = start(directory);
       await ready(server);
       const repaired = sessionResources(sessionsDatabase, session.body.id);
       assert.equal(repaired.pending, undefined, `${name}: repaired generation did not commit`);
