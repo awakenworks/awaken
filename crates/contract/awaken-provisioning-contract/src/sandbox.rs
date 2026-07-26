@@ -218,6 +218,14 @@ pub struct SandboxCapabilities {
 }
 
 impl SandboxCapabilities {
+    /// Whether this provider can keep a real secret outside an arbitrary
+    /// workload while forcing traffic through the substitution boundary.
+    /// Neither substitution nor an allowlist alone is custody evidence.
+    #[must_use]
+    pub const fn supports_secret_egress_without_bypass(&self) -> bool {
+        self.secret_egress_substitution && self.enforced_network_allowlist
+    }
+
     /// Fail-closed backend selection (ADR-0021 §8): does this backend meet
     /// **everything** `spec` requires? A router filters candidate providers by this
     /// before applying any load/region/affinity policy, so a spec is never placed on
@@ -1075,6 +1083,37 @@ mod tests {
             let wire = serde_json::to_string(&s).unwrap();
             assert_eq!(wire, format!("\"{tag}\""));
             assert_eq!(serde_json::from_str::<SandboxStatus>(&wire).unwrap(), s);
+        }
+    }
+
+    /// Cause-effect graph for mediated secret custody:
+    ///
+    /// C1 provider substitutes the secret at egress
+    /// C2 provider enforces a no-bypass target allowlist
+    /// E1 real material may remain outside the workload iff C1 AND C2.
+    ///
+    /// | Rule | C1 substitution | C2 no-bypass | E1 custody evidence |
+    /// |---|---|---|---|
+    /// | E1 | F | F | F |
+    /// | E2 | T | F | F |
+    /// | E3 | F | T | F |
+    /// | E4 | T | T | T |
+    #[test]
+    fn secret_egress_custody_requires_substitution_and_no_bypass() {
+        for (substitution, no_bypass, expected) in [
+            (false, false, false),
+            (true, false, false),
+            (false, true, false),
+            (true, true, true),
+        ] {
+            let mut capabilities = caps(IsolationClass::Container, true);
+            capabilities.secret_egress_substitution = substitution;
+            capabilities.enforced_network_allowlist = no_bypass;
+            assert_eq!(
+                capabilities.supports_secret_egress_without_bypass(),
+                expected,
+                "substitution={substitution}, no_bypass={no_bypass}"
+            );
         }
     }
 

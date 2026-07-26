@@ -187,9 +187,20 @@ async function main() {
       assert.ok(gatedEvents.some((event) => event.type === 'agent.mcp_tool_result'), JSON.stringify(gatedEvents));
       pass('MCP always_ask -> requires_action -> user.tool_confirmation -> mcp_tool_result');
 
-      // MCP authentication failures are committed through the neutral runtime
-      // failure path and projected as a structured Managed session.error. The
-      // session remains readable/reusable after the failed turn.
+      // Exact-generation staging establishes the MCP connection before durable
+      // activation.  It therefore rejects an invalid credential or unreachable
+      // target at Session creation instead of publishing a Session whose MCP
+      // projection cannot be realized.
+      //
+      // Cause-effect graph:
+      // C1 target reachable + C2 credential accepted -> E1 activate Session
+      // C1 target reachable + !C2 credential rejected -> E2 creation fails closed
+      // !C1 target unreachable                    -> E3 creation fails closed
+      //
+      // | Rule | C1 reachable | C2 accepted | Result                    |
+      // | F1   | yes          | yes         | active Session            |
+      // | F2   | yes          | no          | reject before activation  |
+      // | F3   | no           | -           | reject before activation  |
       const wrong = await req(base, 'POST', '/v1/config/credentials', {
         workspace_id: 'ws', kind: 'vault', secret: 'wrong-mcp-token', // awaken-allow: secret (deliberate auth-failure fixture)
       });
@@ -204,15 +215,18 @@ async function main() {
       assert.equal(r.status, 200, JSON.stringify(r.json));
       r = await req(base, 'POST', `/v1/config/agents/${badAgent}/publish`);
       assert.equal(r.status, 200, JSON.stringify(r.json));
-      const bad = await client.beta.sessions.create({ agent: badAgent, betas: BETAS });
-      await assert.rejects(() => sendMessage(client, bad.id, 'add 2 2'), /APIError|500/);
-      const badEvents = await listEvents(client, bad.id);
-      const failure = badEvents.find((event) => event.type === 'session.error');
-      assert.ok(failure, `MCP auth failure must be durable: ${badEvents.map((event) => event.type)}`);
-      assert.equal(failure.error.type, 'mcp_authentication_failed_error');
-      assert.equal(failure.error.mcp_server_name, 'calc');
-      assert.equal(failure.error.retry_status.type, 'terminal');
-      pass('MCP 401 -> neutral classified failure -> session.error with server and retry status');
+      await assert.rejects(
+        client.beta.sessions.create({ agent: badAgent, betas: BETAS }),
+        (error) => error?.status === 500 &&
+          error?.message?.includes('auth challenge: HTTP 401') &&
+          !error?.message?.includes('wrong-mcp-token'),
+        'F2: rejected MCP credentials must fail creation without leaking material',
+      );
+      assert.ok(
+        fixture.tokenRequests['wrong-mcp-token'] > 0, // awaken-allow: secret
+        'F2: exact pinned credential reached only the MCP target during staging',
+      );
+      pass('F2: MCP 401 rejects the staged generation before Session activation');
 
       const offlineAgent = 'calc-connection-failure-agent';
       r = await req(base, 'PUT', `/v1/config/agents/${offlineAgent}`, {
@@ -224,15 +238,12 @@ async function main() {
       assert.equal(r.status, 200, JSON.stringify(r.json));
       r = await req(base, 'POST', `/v1/config/agents/${offlineAgent}/publish`);
       assert.equal(r.status, 200, JSON.stringify(r.json));
-      const offline = await client.beta.sessions.create({ agent: offlineAgent, betas: BETAS });
-      await assert.rejects(() => sendMessage(client, offline.id, 'use offline tool'), /APIError|500/);
-      const offlineEvents = await listEvents(client, offline.id);
-      const offlineFailure = offlineEvents.find((event) => event.type === 'session.error');
-      assert.ok(offlineFailure, `MCP connection failure must be durable: ${offlineEvents.map((event) => event.type)}`);
-      assert.equal(offlineFailure.error.type, 'mcp_connection_failed_error');
-      assert.equal(offlineFailure.error.mcp_server_name, 'offline');
-      assert.equal(offlineFailure.error.retry_status.type, 'retrying');
-      pass('MCP connection failure -> neutral classified session.error with retrying status');
+      await assert.rejects(
+        client.beta.sessions.create({ agent: offlineAgent, betas: BETAS }),
+        (error) => error?.status === 500 && error?.message?.includes('offline'),
+        'F3: an unreachable MCP target must fail creation before activation',
+      );
+      pass('F3: MCP connection failure rejects the staged generation before activation');
 
     });
 

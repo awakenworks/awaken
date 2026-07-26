@@ -6,12 +6,6 @@ pub use awaken_run_executor_acp::Codec
 pub use awaken_run_executor_acp::LaunchObserver
 pub use awaken_run_executor_acp::SandboxError
 pub use awaken_run_executor_acp::SecretBroker
-pub enum awaken_run_executor_acp::McpCredential
-pub awaken_run_executor_acp::McpCredential::None
-pub awaken_run_executor_acp::McpCredential::Reference
-pub awaken_run_executor_acp::McpCredential::Reference::reference: alloc::string::String
-pub awaken_run_executor_acp::McpCredential::TrustedInline
-pub awaken_run_executor_acp::McpCredential::TrustedInline::secret: alloc::string::String
 pub enum awaken_run_executor_acp::McpDelivery
 pub awaken_run_executor_acp::McpDelivery::ConfigFile
 pub awaken_run_executor_acp::McpDelivery::ConfigFile::contents: alloc::string::String
@@ -71,7 +65,7 @@ pub fn awaken_run_executor_acp::AcpLaunch::claude(&str, &str, awaken_run_executo
 pub fn awaken_run_executor_acp::AcpLaunch::custom(alloc::vec::Vec<alloc::string::String>, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>) -> Self
 pub struct awaken_run_executor_acp::AcpRunExecutor
 impl awaken_run_executor_acp::AcpRunExecutor
-pub fn awaken_run_executor_acp::AcpRunExecutor::for_permission_policy(&self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>) -> Self
+pub fn awaken_run_executor_acp::AcpRunExecutor::for_session(&self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>, &[awaken_run_executor_acp::McpServerConfig]) -> Self
 pub fn awaken_run_executor_acp::AcpRunExecutor::new(alloc::sync::Arc<dyn awaken_run_executor_acp::AgentChannelSource>) -> Self
 pub fn awaken_run_executor_acp::AcpRunExecutor::with_launch_observer(self, alloc::sync::Arc<dyn awaken_protocol_acp::LaunchObserver>) -> Self
 pub fn awaken_run_executor_acp::AcpRunExecutor::with_permission_policy(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>) -> Self
@@ -118,11 +112,8 @@ pub struct awaken_run_executor_acp::McpInjection
 pub awaken_run_executor_acp::McpInjection::config_file: core::option::Option<(alloc::string::String, alloc::string::String)>
 pub awaken_run_executor_acp::McpInjection::session_servers: alloc::vec::Vec<awaken_protocol_acp::SessionMcpServer>
 pub struct awaken_run_executor_acp::McpServerConfig
-pub awaken_run_executor_acp::McpServerConfig::credential: awaken_run_executor_acp::McpCredential
 pub awaken_run_executor_acp::McpServerConfig::name: alloc::string::String
 pub awaken_run_executor_acp::McpServerConfig::transport: awaken_run_executor_acp::McpTransport
-impl awaken_run_executor_acp::McpServerConfig
-pub fn awaken_run_executor_acp::McpServerConfig::is_sandbox_safe(&self) -> bool
 pub struct awaken_run_executor_acp::ModelDelivery
 pub awaken_run_executor_acp::ModelDelivery::aliases: &'static [&'static str]
 pub awaken_run_executor_acp::ModelDelivery::base_url: &'static str
@@ -198,6 +189,6 @@ pub fn awaken_run_executor_acp::NoSessionHome::restore<'life0, 'life1, 'life2, '
 pub fn awaken_run_executor_acp::acp_cli(&str) -> core::option::Option<&'static awaken_run_executor_acp::AcpCli>
 pub fn awaken_run_executor_acp::is_dynamic_install(&awaken_run_executor_acp::AcpCli) -> bool
 pub fn awaken_run_executor_acp::known_acp_clis() -> &'static [awaken_run_executor_acp::AcpCli]
-pub fn awaken_run_executor_acp::mcp_injection(&awaken_run_executor_acp::AcpCli, &alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>, bool) -> core::result::Result<awaken_run_executor_acp::McpInjection, awaken_run_executor_acp::OpenError>
-pub fn awaken_run_executor_acp::mcp_injection_from_servers(&awaken_run_executor_acp::AcpCli, &[awaken_run_executor_acp::McpServerConfig], bool) -> core::result::Result<awaken_run_executor_acp::McpInjection, awaken_run_executor_acp::OpenError>
+pub fn awaken_run_executor_acp::mcp_injection(&awaken_run_executor_acp::AcpCli, &alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>) -> core::result::Result<awaken_run_executor_acp::McpInjection, awaken_run_executor_acp::OpenError>
+pub fn awaken_run_executor_acp::mcp_injection_from_servers(&awaken_run_executor_acp::AcpCli, &[awaken_run_executor_acp::McpServerConfig]) -> core::result::Result<awaken_run_executor_acp::McpInjection, awaken_run_executor_acp::OpenError>
 pub fn awaken_run_executor_acp::project_launch(&awaken_run_executor_acp::AcpCli, &dyn awaken_run_executor_acp::LaunchResolver, &awaken_runtime_contract::activation::RunActivation, &awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_run_executor_acp::AcpLaunch, awaken_run_executor_acp::OpenError>

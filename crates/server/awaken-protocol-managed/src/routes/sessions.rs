@@ -274,6 +274,7 @@ async fn retrieve_session(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
 ) -> Result<(HeaderMap, Json<Session>), (StatusCode, Json<ErrorResponse>)> {
+    state.ensure_session(&id).await.map_err(error_response)?;
     let session = state.get_session(&id).map_err(error_response)?;
     versioned_session_response(&state, session, None).await
 }
@@ -287,6 +288,18 @@ async fn versioned_session_response(
         .session_revision(&session.id)
         .await
         .map_err(error_response)?;
+    Ok(versioned_session_response_at_revision(
+        session,
+        revision,
+        operation_id,
+    ))
+}
+
+fn versioned_session_response_at_revision(
+    session: Session,
+    revision: awaken_session_contract::SessionRevision,
+    operation_id: Option<String>,
+) -> (HeaderMap, Json<Session>) {
     let mut headers = HeaderMap::new();
     headers.insert(
         header::ETAG,
@@ -299,7 +312,7 @@ async fn versioned_session_response(
             HeaderValue::from_str(&operation_id).expect("fingerprint is a valid header value"),
         );
     }
-    Ok((headers, Json(session)))
+    (headers, Json(session))
 }
 
 type WireErr = (StatusCode, Json<ErrorResponse>);
@@ -332,6 +345,7 @@ async fn update_session(
     headers: HeaderMap,
     ManagedJson(body): ManagedJson<serde_json::Value>,
 ) -> Result<(HeaderMap, Json<Session>), WireErr> {
+    state.ensure_session(&id).await.map_err(error_response)?;
     let agent = body.get("agent").cloned();
     let (tools, mcp_servers) = if let Some(agent) = agent {
         let object = agent.as_object().ok_or_else(|| {
@@ -423,7 +437,7 @@ async fn update_session(
     let operation_id = idempotency_key
         .as_deref()
         .map(|key| ManagedState::update_operation_id(&id, key));
-    let session = state
+    let (session, command_revision) = state
         .update_session(
             &id,
             crate::state::SessionUpdateCommand {
@@ -437,7 +451,11 @@ async fn update_session(
         )
         .await
         .map_err(error_response)?;
-    versioned_session_response(&state, session, operation_id).await
+    Ok(versioned_session_response_at_revision(
+        session,
+        command_revision,
+        operation_id,
+    ))
 }
 
 /// `DELETE /v1/sessions/:id`.

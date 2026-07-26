@@ -50,34 +50,6 @@ impl SessionRuntime for PreparingFake {
             None => Ok(()),
         }
     }
-    async fn stage_mcp_attachment(
-        &self,
-        request: awaken_session_contract::StageMcpAttachment,
-    ) -> Result<awaken_session_contract::McpRealizationReceipt, RunError> {
-        self.staged.lock().unwrap().push(request.clone());
-        let receipt_fingerprint = request.fingerprint();
-        Ok(awaken_session_contract::McpRealizationReceipt {
-            generation: request.generation,
-            realization_id: request.realization_id,
-            selected_plaintext_holder: request.selected_plaintext_holder,
-            actual_realization_kind: Some(
-                awaken_credential_contract::CredentialRealizationKind::WorkerRelay,
-            ),
-            receipt_fingerprint,
-        })
-    }
-    async fn publish_mcp_generation(
-        &self,
-        _generation: awaken_session_contract::McpGenerationRef,
-    ) -> Result<(), RunError> {
-        Ok(())
-    }
-    async fn drain_mcp_generation(
-        &self,
-        _generation: awaken_session_contract::McpGenerationRef,
-    ) -> Result<(), RunError> {
-        Ok(())
-    }
     async fn run(
         &self,
         _a: &str,
@@ -120,6 +92,40 @@ impl SessionRuntime for PreparingFake {
     }
 }
 
+#[async_trait::async_trait]
+impl awaken_protocol_managed::McpAttachmentRealizer for PreparingFake {
+    async fn stage_mcp_attachment(
+        &self,
+        request: awaken_session_contract::StageMcpAttachment,
+    ) -> Result<awaken_session_contract::McpRealizationReceipt, RunError> {
+        self.staged.lock().unwrap().push(request.clone());
+        let receipt_fingerprint = request.fingerprint();
+        Ok(awaken_session_contract::McpRealizationReceipt {
+            generation: request.generation,
+            realization_id: request.realization_id,
+            selected_plaintext_holder: request.selected_plaintext_holder,
+            actual_realization_kind: Some(
+                awaken_credential_contract::CredentialRealizationKind::WorkerRelay,
+            ),
+            receipt_fingerprint,
+        })
+    }
+
+    async fn publish_mcp_generation(
+        &self,
+        _generation: awaken_session_contract::McpGenerationRef,
+    ) -> Result<(), RunError> {
+        Ok(())
+    }
+
+    async fn drain_mcp_generation(
+        &self,
+        _generation: awaken_session_contract::McpGenerationRef,
+    ) -> Result<(), RunError> {
+        Ok(())
+    }
+}
+
 struct Harness {
     app: Router,
     vaults: Arc<VaultState>,
@@ -159,6 +165,50 @@ impl SessionRuntime for HotRuntime {
         Ok(())
     }
 
+    async fn run(
+        &self,
+        _agent: &str,
+        _thread: &str,
+        _content: Vec<ContentBlock>,
+    ) -> Result<StepOutcome, RunError> {
+        Err(RunError::internal("unused"))
+    }
+    async fn resume(
+        &self,
+        _thread: &str,
+        _tool_use_id: &str,
+        _decision: ToolPermissionDecision,
+    ) -> Result<StepOutcome, RunError> {
+        Err(RunError::internal("unused"))
+    }
+    async fn resume_custom(
+        &self,
+        _thread: &str,
+        _tool_use_id: &str,
+        _content: &str,
+        _is_error: bool,
+    ) -> Result<StepOutcome, RunError> {
+        Err(RunError::internal("unused"))
+    }
+    async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+        Ok(())
+    }
+    async fn define_outcome(
+        &self,
+        _thread: &str,
+        _description: &str,
+        _rubric: &str,
+        _max_iterations: u32,
+    ) -> Result<OutcomeReport, RunError> {
+        Err(RunError::internal("unused"))
+    }
+    fn model(&self) -> String {
+        "hot-model".into()
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_protocol_managed::McpAttachmentRealizer for HotRuntime {
     async fn stage_mcp_attachment(
         &self,
         request: awaken_session_contract::StageMcpAttachment,
@@ -212,47 +262,6 @@ impl SessionRuntime for HotRuntime {
         }
         Ok(())
     }
-
-    async fn run(
-        &self,
-        _agent: &str,
-        _thread: &str,
-        _content: Vec<ContentBlock>,
-    ) -> Result<StepOutcome, RunError> {
-        Err(RunError::internal("unused"))
-    }
-    async fn resume(
-        &self,
-        _thread: &str,
-        _tool_use_id: &str,
-        _decision: ToolPermissionDecision,
-    ) -> Result<StepOutcome, RunError> {
-        Err(RunError::internal("unused"))
-    }
-    async fn resume_custom(
-        &self,
-        _thread: &str,
-        _tool_use_id: &str,
-        _content: &str,
-        _is_error: bool,
-    ) -> Result<StepOutcome, RunError> {
-        Err(RunError::internal("unused"))
-    }
-    async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
-        Ok(())
-    }
-    async fn define_outcome(
-        &self,
-        _thread: &str,
-        _description: &str,
-        _rubric: &str,
-        _max_iterations: u32,
-    ) -> Result<OutcomeReport, RunError> {
-        Err(RunError::internal("unused"))
-    }
-    fn model(&self) -> String {
-        "hot-model".into()
-    }
 }
 
 struct HotHarness {
@@ -272,7 +281,7 @@ fn hot_harness() -> HotHarness {
 fn hot_harness_with_repo(repo: Arc<dyn ManagedSessionRepository>) -> HotHarness {
     let runtime_state = Arc::new(Mutex::new(HotRuntimeState::default()));
     let managed = Arc::new(
-        ManagedState::new(HotRuntime {
+        ManagedState::new_with_mcp(HotRuntime {
             state: runtime_state.clone(),
             repo: repo.clone(),
         })
@@ -298,7 +307,7 @@ fn harness(fail_with: Option<RunErrorKind>) -> Harness {
     let repo: Arc<dyn ManagedSessionRepository> = Arc::new(
         SqliteManagedSessionRepository::open_in_memory().expect("open Session repository"),
     );
-    let state = ManagedState::new(PreparingFake {
+    let state = ManagedState::new_with_mcp(PreparingFake {
         captured: captured.clone(),
         staged: staged.clone(),
         observed_durable: observed_durable.clone(),
@@ -325,7 +334,7 @@ fn check_bind_is_fail_closed_on_unknown_vault() {
     let secrets = Arc::new(InMemorySecretStore::new());
     let credentials = Arc::new(InMemoryCredentialRepo::new());
     let vaults = Arc::new(VaultState::new(secrets, credentials));
-    let state = ManagedState::new(PreparingFake {
+    let state = ManagedState::new_with_mcp(PreparingFake {
         captured: Arc::new(Mutex::new(Vec::new())),
         staged: Arc::new(Mutex::new(Vec::new())),
         observed_durable: Arc::new(Mutex::new(Vec::new())),
@@ -1175,7 +1184,7 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
 /// | R2 | Active + expired lease | success | restaged + republished; remains Active |
 /// | R3 | Draining | success/unknown | Removed; no stage/publish |
 /// | R4 | Removed | - | not selected; no Runtime effect |
-/// | R5 | Requested | stage failure | terminal Failed; no publish |
+/// | R5 | Requested on idle Session | stage failure | terminal Failed; Session remains idle |
 /// | R6 | prior R5 Failed | same desired command | generation N+1 becomes Active |
 #[tokio::test]
 async fn mcp_recovery_tests_are_generated_from_decision_table() {
@@ -1313,11 +1322,13 @@ async fn mcp_recovery_tests_are_generated_from_decision_table() {
     replace_session_fixture(h.repo.as_ref(), "default", retry, "test:recovery-retry").await;
     h.state.lock().unwrap().mode = HotStageMode::FailNext;
     assert_eq!(h.managed.reconcile_mcp_attachments().await, 0, "R5");
+    let failed_retry = h.repo.get(retry_id).await.unwrap();
     assert_eq!(
-        h.repo.get(retry_id).await.unwrap().mcp.attachments[0].state,
+        failed_retry.mcp.attachments[0].state,
         awaken_session_contract::McpAttachmentState::Failed,
         "R5"
     );
+    assert_eq!(failed_retry.status, "idle", "R5");
 
     let (status, _) = call(
         &h.app,
@@ -1448,6 +1459,7 @@ async fn publication_and_drain_gap_tests_are_generated_from_decision_table() {
 /// |---|---|---|---|---|
 /// | I1 | new | same | exact | apply once + ETag + operation id |
 /// | I2 | same | same | omitted | replay; revision/effects unchanged |
+/// | I2b | same | same | later root revision | replay original command revision |
 /// | I3 | same | different | omitted | 409; no effect |
 /// | I4 | absent | - | stale | 409 before Runtime effect |
 /// | I5 | absent | - | malformed | 400 before Runtime effect |
@@ -1515,7 +1527,11 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
     )
     .await;
     assert_eq!(status, StatusCode::OK, "I2");
-    assert_eq!(replayed["agent"]["mcp_servers"], json!([desired]), "I2");
+    assert_eq!(
+        replayed["agent"]["mcp_servers"],
+        json!([desired.clone()]),
+        "I2"
+    );
     assert_eq!(replay_headers["etag"], applied_etag, "I2");
     {
         let state = h.state.lock().unwrap();
@@ -1529,6 +1545,29 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
             "I2"
         );
     }
+
+    let (status, later_headers, later) = call_with_headers(
+        &h.app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        Some(json!({"title": "later root fact"})),
+        &[("if-match", replay_headers["etag"].to_str().unwrap())],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "I2b setup");
+    assert_ne!(later_headers["etag"], applied_etag, "I2b setup");
+    assert_eq!(later["title"], "later root fact", "I2b setup");
+    let (status, historical_headers, historical) = call_with_headers(
+        &h.app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        Some(json!({"agent": {"mcp_servers": [desired.clone()]}})),
+        &[("idempotency-key", "command-1")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "I2b");
+    assert_eq!(historical_headers["etag"], applied_etag, "I2b");
+    assert_eq!(historical["title"], "later root fact", "I2b current body");
 
     let (status, _, _) = call_with_headers(
         &h.app,
@@ -1550,7 +1589,7 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "I5");
 
-    let current_etag = replay_headers["etag"].to_str().unwrap();
+    let current_etag = later_headers["etag"].to_str().unwrap();
     let tools = json!([{"name": "client_tool", "description": "durable"}]);
     let (status, _, updated) = call_with_headers(
         &h.app,
@@ -1784,7 +1823,7 @@ async fn create_session_fires_the_lifecycle_sink_with_the_owner() {
     }
 
     let sink = Arc::new(CapturingSink::default());
-    let state = ManagedState::new(PreparingFake {
+    let state = ManagedState::new_with_mcp(PreparingFake {
         captured: Arc::new(Mutex::new(Vec::new())),
         staged: Arc::new(Mutex::new(Vec::new())),
         observed_durable: Arc::new(Mutex::new(Vec::new())),
@@ -1843,7 +1882,7 @@ async fn archive_session_fires_the_terminated_fact_once() {
     }
 
     let sink = Arc::new(CapturingSink::default());
-    let state = ManagedState::new(PreparingFake {
+    let state = ManagedState::new_with_mcp(PreparingFake {
         captured: Arc::new(Mutex::new(Vec::new())),
         staged: Arc::new(Mutex::new(Vec::new())),
         observed_durable: Arc::new(Mutex::new(Vec::new())),
@@ -1912,7 +1951,7 @@ async fn delete_session_fires_the_deleted_fact_with_the_owner() {
     }
 
     let sink = Arc::new(CapturingSink::default());
-    let state = ManagedState::new(PreparingFake {
+    let state = ManagedState::new_with_mcp(PreparingFake {
         captured: Arc::new(Mutex::new(Vec::new())),
         staged: Arc::new(Mutex::new(Vec::new())),
         observed_durable: Arc::new(Mutex::new(Vec::new())),

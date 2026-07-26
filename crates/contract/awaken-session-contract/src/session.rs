@@ -190,20 +190,10 @@ pub struct SessionInit {
     /// The session's requested runtime adapter (R3): `"acp:*"` routes to an ACP
     /// CLI; `None`/`"awaken"` → native.
     pub runtime: Option<String>,
-    /// Exact frozen Environment decision for inference and MCP credential
-    /// plaintext. Runtime projects this value; it never derives another holder
-    /// from a Vault or the current Environment registry.
-    pub credential_realization: awaken_credential_contract::CredentialRealizationProfile,
-    /// Deny network egress for the session's sandbox, resolved from its environment's
-    /// networking policy (a non-`unrestricted` policy → `true`). The host runs the
-    /// `bash` tool under a `bwrap --unshare-net` namespace. `false` = host network.
-    pub deny_egress: bool,
-    /// The session environment's raw `config.sandbox` blob (isolation/network/limits),
-    /// opaque here — the host parses it into a provisioning `SandboxOverride` and applies
-    /// it onto the synthesized sandbox spec for both the native jail and the ACP CLI.
-    /// `None` = host default spec. Kept as a `Value` so this leaf stays free of the
-    /// provisioning contract; `deny_egress` remains for the coarse bwrap on/off.
-    pub sandbox: Option<serde_json::Value>,
+    /// The one exact frozen Environment authority. Runtime projects its network,
+    /// Sandbox, and credential-realization facts without deriving a second policy
+    /// or accepting a late override.
+    pub environment: crate::EnvironmentSnapshot,
 }
 
 /// A queued live-inbox message on the session's in-flight turn. `id` is the
@@ -248,8 +238,48 @@ pub enum LiveInboxError {
     StaleOrder,
 }
 
+/// Public exact-generation realization port owned by the Session application
+/// boundary. Local Host relay/connection code and downstream platform gateways
+/// implement this same contract; neither becomes Session desired-state authority.
+#[async_trait]
+pub trait McpAttachmentRealizer: Send + Sync {
+    /// Stage one exact generation without making it tool-visible.
+    async fn stage_mcp_attachment(
+        &self,
+        _request: crate::StageMcpAttachment,
+    ) -> Result<crate::McpRealizationReceipt, RunError> {
+        Err(RunError::classified(
+            "mcp_runtime_unsupported",
+            "runtime does not support generation-fenced MCP realization",
+        ))
+    }
+
+    /// Publish one durably active exact generation at a safe boundary.
+    async fn publish_mcp_generation(
+        &self,
+        _generation: crate::McpGenerationRef,
+    ) -> Result<(), RunError> {
+        Err(RunError::classified(
+            "mcp_runtime_unsupported",
+            "runtime does not support generation-fenced MCP publication",
+        ))
+    }
+
+    /// Hide and dispose one exact generation idempotently.
+    async fn drain_mcp_generation(
+        &self,
+        _generation: crate::McpGenerationRef,
+    ) -> Result<(), RunError> {
+        Err(RunError::classified(
+            "mcp_runtime_unsupported",
+            "runtime does not support generation-fenced MCP drain",
+        ))
+    }
+}
+
 /// The runtime seam the adapter drives (DDD port). Implemented by the server over
-/// the kernel; the adapter never constructs a runtime.
+/// the kernel; the adapter never constructs a runtime. MCP realization is kept on
+/// [`McpAttachmentRealizer`] because it has a distinct hot-attachment lifecycle.
 #[async_trait]
 pub trait SessionRuntime: Send + Sync {
     /// Run one user turn on `thread` to its first pause or end. `content` is the
@@ -306,42 +336,6 @@ pub trait SessionRuntime: Send + Sync {
     /// wiring is unaffected.
     async fn prepare_session(&self, _thread: &str, _init: SessionInit) -> Result<(), RunError> {
         Ok(())
-    }
-
-    /// Stage one exact MCP generation without making it tool-visible. The
-    /// default fails closed: a Runtime that has not implemented generation
-    /// fencing must never acknowledge dynamic or initial MCP realization.
-    async fn stage_mcp_attachment(
-        &self,
-        _request: crate::StageMcpAttachment,
-    ) -> Result<crate::McpRealizationReceipt, RunError> {
-        Err(RunError::classified(
-            "mcp_runtime_unsupported",
-            "runtime does not support generation-fenced MCP realization",
-        ))
-    }
-
-    /// Publish a durably active exact generation at a Runtime safe boundary.
-    async fn publish_mcp_generation(
-        &self,
-        _generation: crate::McpGenerationRef,
-    ) -> Result<(), RunError> {
-        Err(RunError::classified(
-            "mcp_runtime_unsupported",
-            "runtime does not support generation-fenced MCP publication",
-        ))
-    }
-
-    /// Hide and dispose one exact generation idempotently. This also disposes a
-    /// staged generation whose activation CAS did not commit.
-    async fn drain_mcp_generation(
-        &self,
-        _generation: crate::McpGenerationRef,
-    ) -> Result<(), RunError> {
-        Err(RunError::classified(
-            "mcp_runtime_unsupported",
-            "runtime does not support generation-fenced MCP drain",
-        ))
     }
 
     /// Return the runtime-owned, secret-free binding for the Session's live
@@ -730,7 +724,10 @@ mod tests {
             McpAttachmentId, McpGeneration, McpGenerationRef, McpTarget, StageMcpAttachment,
         };
 
-        let runtime = MinimalRuntime;
+        struct UnsupportedRealizer;
+        #[async_trait]
+        impl McpAttachmentRealizer for UnsupportedRealizer {}
+        let runtime = UnsupportedRealizer;
         let generation = McpGenerationRef {
             session_id: "session-1".into(),
             attachment_id: McpAttachmentId("mcp-1".into()),
@@ -774,10 +771,15 @@ mod tests {
             resources: crate::ResolvedSessionResources::default(),
             model: None,
             runtime: None,
-            credential_realization:
-                awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
-            deny_egress: false,
-            sandbox: None,
+            environment: crate::EnvironmentSnapshot {
+                environment_id: "env".into(),
+                revision: crate::env_registry::EnvironmentRevision(1),
+                config_fingerprint: crate::EnvironmentFingerprint("env-1".into()),
+                sandbox: serde_json::json!({}),
+                network: crate::SessionNetworkPolicy::Unrestricted,
+                credential_realization:
+                    awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
+            },
         }
     }
 

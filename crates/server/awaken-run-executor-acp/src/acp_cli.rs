@@ -270,50 +270,13 @@ impl AcpCli {
 
 /// A neutral MCP server a run wants an ACP CLI to reach. Serializable so it rides the
 /// config plane into `ResolvedSpec.plugin_config` (the seam `mcp_servers_of` reads back).
-/// The `credential` models the trust boundary explicitly (α vs β) — see [`McpCredential`].
+/// Authentication is deliberately absent: the Runtime Host projects either an
+/// anonymous endpoint or an already-mediated generation route. ACP never receives
+/// a real or virtual credential through this transport DTO.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct McpServerConfig {
     pub name: String,
     pub transport: McpTransport,
-    #[serde(default, skip_serializing_if = "McpCredential::is_none")]
-    pub credential: McpCredential,
-}
-
-impl McpServerConfig {
-    /// Safe to hand to a **sandboxed** CLI: it carries no raw secret (α or none). A
-    /// `TrustedInline` (β) credential is rejected — a raw secret must never enter a
-    /// sandboxed delivery (G3/D-R2). The host asserts this before a sandboxed launch.
-    #[must_use]
-    pub fn is_sandbox_safe(&self) -> bool {
-        !matches!(self.credential, McpCredential::TrustedInline { .. })
-    }
-}
-
-/// The server's auth, modeling the trust boundary of *how* the ACP CLI gets it:
-/// - **α — [`Reference`](McpCredential::Reference)**: secretless (G3/D-R2). A
-///   broker/gateway reference the host resolves out of the sandbox's address space —
-///   the same rule the model key follows via [`ResolvedModel::cloud_managed_gateway`].
-///   The only credential form valid for a **sandboxed** CLI.
-/// - **β — [`TrustedInline`](McpCredential::TrustedInline)**: a raw secret, valid ONLY
-///   on a **non-sandboxed trusted** launch (a local trusted CLI). Never emitted into a
-///   sandboxed delivery — [`McpServerConfig::is_sandbox_safe`] fails closed on it.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "auth", rename_all = "snake_case")]
-pub enum McpCredential {
-    /// No credential — an unauthenticated server.
-    #[default]
-    None,
-    /// α: a secretless broker/gateway reference.
-    Reference { reference: String },
-    /// β: a raw secret, trusted-launch-only.
-    TrustedInline { secret: String },
-}
-
-impl McpCredential {
-    #[must_use]
-    fn is_none(&self) -> bool {
-        matches!(self, McpCredential::None)
-    }
 }
 
 /// How an MCP server is reached — a stdio child or an HTTP endpoint.
@@ -354,18 +317,6 @@ fn render_mcp_config_toml(servers: &[McpServerConfig]) -> String {
             McpTransport::Http { url } => {
                 out.push_str(&format!("url = {url:?}\n"));
             }
-        }
-        match &s.credential {
-            // α: a broker reference the host resolves out-of-band; never the bytes.
-            McpCredential::Reference { reference } => {
-                out.push_str(&format!("credential_ref = {reference:?}\n"));
-            }
-            // β: a raw secret — only ever reached on a trusted (non-sandboxed) launch;
-            // a sandboxed delivery is refused upstream by `is_sandbox_safe`.
-            McpCredential::TrustedInline { secret } => {
-                out.push_str(&format!("credential = {secret:?}\n"));
-            }
-            McpCredential::None => {}
         }
         out.push('\n');
     }
@@ -798,9 +749,6 @@ mod tests {
                 command: "npx".into(),
                 args: vec!["-y".into(), "@mcp/github".into()],
             },
-            credential: McpCredential::Reference {
-                reference: "broker://gh-token".into(),
-            },
         }];
         match codex.project_mcp(&servers) {
             McpDelivery::ConfigFile { path, contents } => {
@@ -808,65 +756,10 @@ mod tests {
                 assert!(contents.contains("[mcp_servers.github]"));
                 assert!(contents.contains("command = \"npx\""));
                 assert!(contents.contains("\"@mcp/github\""));
-                assert!(contents.contains("broker://gh-token"));
+                assert!(!contents.to_ascii_lowercase().contains("credential"));
             }
             other => panic!("codex delivers MCP via a config file, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn sandbox_safety_admits_alpha_and_none_but_rejects_beta_inline() {
-        // α (Reference) and None are sandbox-safe; β (TrustedInline, a raw secret) is not.
-        let server = |cred: McpCredential| McpServerConfig {
-            name: "s".into(),
-            transport: McpTransport::Http {
-                url: "https://s".into(),
-            },
-            credential: cred,
-        };
-        assert!(server(McpCredential::None).is_sandbox_safe());
-        assert!(
-            server(McpCredential::Reference {
-                reference: "broker://x".into()
-            })
-            .is_sandbox_safe()
-        );
-        assert!(
-            !server(McpCredential::TrustedInline {
-                secret: "sk-RAW".into()
-            })
-            .is_sandbox_safe(),
-            "a raw inline secret must never be sandbox-safe"
-        );
-    }
-
-    #[test]
-    fn a_beta_inline_credential_renders_a_raw_secret_only_on_the_trusted_path() {
-        // β is reachable only on a trusted (non-sandboxed) launch; the config-file render
-        // emits the raw secret then. Sandboxed callers are gated by `is_sandbox_safe`.
-        let servers = vec![McpServerConfig {
-            name: "local".into(),
-            transport: McpTransport::Stdio {
-                command: "mcp".into(),
-                args: vec![],
-            },
-            credential: McpCredential::TrustedInline {
-                secret: "sk-trusted".into(), // awaken-allow: secret
-            },
-        }];
-        let McpDelivery::ConfigFile { contents, .. } =
-            acp_cli("codex").unwrap().project_mcp(&servers)
-        else {
-            panic!("codex is a config-file CLI");
-        };
-        assert!(contents.contains("credential = \"sk-trusted\""));
-        // Serde round-trips the trust boundary (rides the config plane).
-        let wire = serde_json::to_string(&servers[0]).unwrap();
-        assert!(wire.contains("trusted_inline"));
-        assert_eq!(
-            serde_json::from_str::<McpServerConfig>(&wire).unwrap(),
-            servers[0]
-        );
     }
 
     #[test]
@@ -877,7 +770,6 @@ mod tests {
             transport: McpTransport::Http {
                 url: "https://mcp.internal/fs".into(),
             },
-            credential: McpCredential::None,
         }];
         match claude.project_mcp(&servers) {
             McpDelivery::SessionServers(s) => assert_eq!(s, servers),
@@ -886,20 +778,16 @@ mod tests {
     }
 
     #[test]
-    fn a_projected_mcp_config_carries_a_reference_never_a_raw_secret() {
-        // D-R2 for MCP: even a config-file delivery holds only the broker reference.
+    fn a_retained_credential_field_cannot_enter_projected_mcp_config() {
         let raw = "sk-RAW-MCP-TOKEN"; // awaken-allow: secret
-        let servers = vec![McpServerConfig {
-            name: "x".into(),
-            transport: McpTransport::Http {
-                url: "https://x".into(),
-            },
-            credential: McpCredential::Reference {
-                reference: "broker://x".into(),
-            },
-        }];
+        let server: McpServerConfig = serde_json::from_value(serde_json::json!({
+            "name": "x",
+            "transport": {"kind": "http", "url": "https://x"},
+            "credential": {"auth": "trusted_inline", "secret": raw}
+        }))
+        .expect("retained unknown field remains decode-compatible");
         let McpDelivery::ConfigFile { contents, .. } =
-            acp_cli("codex").unwrap().project_mcp(&servers)
+            acp_cli("codex").unwrap().project_mcp(&[server])
         else {
             panic!("codex is a config-file CLI");
         };
@@ -907,7 +795,7 @@ mod tests {
             !contents.contains(raw),
             "a raw secret must never enter the MCP config"
         );
-        assert!(contents.contains("broker://x"));
+        assert!(!contents.to_ascii_lowercase().contains("credential"));
     }
 
     #[test]
@@ -920,7 +808,6 @@ mod tests {
             transport: McpTransport::Http {
                 url: "https://s".into(),
             },
-            credential: McpCredential::None,
         }];
         for cli in known_acp_clis() {
             match (cli.mcp_interface, cli.project_mcp(&servers)) {

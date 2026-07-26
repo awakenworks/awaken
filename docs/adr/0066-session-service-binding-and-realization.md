@@ -455,7 +455,7 @@ the wrappers, narrow direct updates, and process-local Resource mutation mutex
 are deleted. A second storage algorithm hidden behind compatibility methods is
 not permitted.
 
-### D5: reuse the existing Session application port before adding a public realizer
+### D5: one public MCP realization port, with relay kept private
 
 The first feature slice after contract closure extends the existing Session
 application/Host seam narrowly with an explicit stage/commit/publish protocol:
@@ -469,7 +469,7 @@ struct SessionRealizationLease {
     expires_at: Timestamp,
 }
 
-trait SessionRuntime {
+trait McpAttachmentRealizer {
     async fn stage_mcp_attachment(
         &self,
         request: StageMcpAttachment,
@@ -511,11 +511,22 @@ lease epoch and Runtime incarnation and fails closed after replacement or expiry
 The root mutation that enters `Realizing` records `McpRealizationClaim` under the
 current Session lease before external I/O.
 
-The application layer sees one `SessionRuntime` port. A local adapter invokes
-Runtime Host directly; a remote adapter sends the same exact-generation command
-to the Worker holding `SessionRealizationLease` and returns a secret-free
-receipt. These are topology adapters over one port, not two realization models.
-The Worker has no direct Control database access and cannot mutate desired state.
+The application layer sees one `McpAttachmentRealizer` port owned by
+`awaken-session-contract`. `SessionRuntime` retains ordinary Session execution
+and preparation only; it does not duplicate MCP stage/publish/drain. A local
+Runtime Host implementation realizes the projection in-process. A downstream
+implementation can be injected through `WorkerNodeBuilder` and realizes the
+same exact-generation request through its gateway. These are topology adapters
+over one port, not two realization models. The Worker has no direct Control
+database access and cannot mutate desired state.
+
+Local Managed execution and remote Worker execution also reuse one exported
+`drive_session_realization` phase driver. Topology adapters implement only
+`SessionProjectionSynchronizer` and the existing realization/control ports; they
+cannot copy the Stage → Activate → Publish/Drain → Acknowledge ordering, receipt
+verification, partial-stage cleanup, or failure reporting. The Worker
+application-control client extends `SessionRealizationControl` instead of
+redeclaring parallel activate/acknowledge/fail methods.
 
 The Managed Session application layer persists intent and checks authorization.
 `stage_mcp_attachment` creates an exact-generation route/connection that remains
@@ -526,7 +537,16 @@ After the same generation is CAS-committed `Active`,
 generation idempotently. A failed/stale activation CAS disposes its staged
 receipt; it never publishes it.
 
-Runtime Host implements the port by adapting the existing `McpRelay`,
+For a remote Worker, `FrozenSessionProjection.mcp` is durable realization input,
+not a reason to reject or install a second desired-state copy. The Worker first
+installs only the frozen baseline, Environment, and Resource projection, then
+executes the directive's exact `mcp_stages` through `McpAttachmentRealizer`.
+Only the subsequent Control activation directive permits publish. A failed
+stage reports `fail_session_realization`, drains any earlier receipts from that
+batch, and does not open the Session environment; there is no local retry or
+credential fallback.
+
+Runtime Host implements the port by adapting the private existing `McpRelay`,
 `awaken-ext-mcp` connection behavior, and Runtime safe-boundary capability
 refresh. A process-local MCP runtime is only a projection of durable active
 attachments and never a second desired-state registry.
@@ -535,15 +555,25 @@ Every relay route, Runtime descriptor, tool call, receipt, and drain request
 carries `(session_id, attachment_id, generation)`. Replacement receives a new
 route identity; an old route never starts using a new generation's credential.
 Each external effect rechecks generation and the exact Session lease epoch.
+Continuing ownership is explicitly renewed through the same phase protocol.
+`renew_existing_lease` is false for create and hot-update work and true only for
+the lease supervisor, so a later wall clock cannot accidentally restage every
+unchanged attachment. A valid renewal retains attachment generation,
+realization id, owner incarnation, epoch, target, credential pin, and selected
+holder; it advances only expiry and the stage-attempt idempotency key, then
+requires an exact Runtime receipt and publication acknowledgement. No
+relay-private lease registry or renewal API exists.
 
 `awaken-provisioning-contract` continues to own Sandbox environment, process
 launch, `NetworkPolicy`, env/mount delivery, and `SandboxProvider`. It does not
 own MCP target selection, transport streams, route lifetime, or hot-plug state.
 
-A public `McpAttachmentRealizer` may be extracted into
-`awaken-session-contract` only when a second implementation, such as a downstream
-platform adapter, needs injection. It is not part of the first slice. Awaken
-never depends on downstream gateway, IAM, route, or Vault-backend types.
+`McpAttachmentRealizer` is the only public realization abstraction. An injected
+implementation is exclusive: an error is terminal for that exact attempt and
+must never fall back to the local Host relay, because fallback would change the
+selected custody boundary. `McpRelay` remains `pub(crate)` and is not visible to
+Session, Worker assembly, or downstream implementations. Awaken never depends
+on downstream gateway, IAM, route, or Vault-backend types.
 
 ### D6: one frozen network authority constrains every generation
 
@@ -556,6 +586,13 @@ A hot attachment may use a route behind a stable endpoint already admitted by
 the frozen policy. It may not widen the Sandbox allowlist. Direct access to a new
 host outside the policy requires an explicit Environment migration and normally
 a replacement Sandbox.
+
+The implemented projection has no `ThreadEgress` or `ThreadSandbox` mutation
+surface. `SessionInit` carries the exact `EnvironmentSnapshot`; Native and ACP
+read it through one process-local `SessionRuntimeProjectionSource`. Empty
+allowlists canonicalize to `None`, and a retained `sandbox.network` field is
+discarded before provider realization, so it cannot widen or replace the frozen
+network fact.
 
 ### D7: Runtime refresh is reused, not duplicated
 
@@ -590,7 +627,7 @@ claim-fenced application contribution┘
                                       │
 Published/inline/application MCP ──────┘ one normalizer
                                                    │
-                                                   │ one SessionRuntime port
+                                                   │ one McpAttachmentRealizer port
                                                    ▼
                                  SessionRealizationLease
                                          │
@@ -725,6 +762,15 @@ disposed. These are the only crash recovery interpretations.
 Session lease replacement/expiry, revocation, or revision mismatch hides the
 attachment and rejects new effects before cleanup. Cleanup retries cannot restore
 visibility or select a weaker credential realization.
+
+The local composition runs one Managed realization-lease supervisor. A remote
+Worker couples renewal to its authenticated registry heartbeat; Control caps the
+requested Session expiry by the current Worker registry lease. If heartbeat,
+registry mutation, or due renewal can no longer prove authority, the Worker
+stops claiming and disposes every process-local Session environment and MCP
+projection through the terminal Host path. Route capabilities and credential
+material are therefore removed rather than surviving as an independent relay
+lifecycle.
 
 ## Ownership and Dependency Rules
 

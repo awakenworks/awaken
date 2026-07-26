@@ -22,8 +22,8 @@ use crate::dispatch::{
     AttemptCredentialBinding, CasOutcome, Claimed, CommitEpochGuard, CredentialRealizationReceipt,
     DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue, DispatchState,
     DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim, SettleOutcome,
-    SubmitOptions, compile_attempt_credential_bindings, installed_worker_credential_capabilities,
-    verify_credential_realization_receipt,
+    SubmitOptions, can_admit_attempt_credentials, compile_attempt_credential_bindings,
+    installed_worker_credential_capabilities, verify_credential_realization_receipt,
 };
 use crate::dispatch_schema::dispatch_bundle;
 use crate::{
@@ -567,7 +567,7 @@ impl DispatchQueue for PostgresDispatchStore {
     ) -> Result<Option<Claimed>, DispatchError> {
         let p = NS;
         let rows = sqlx::query(&format!(
-            "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.cancel_requested FROM {p}_dispatch d WHERE \
+            "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d WHERE \
              (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < $1) OR \
              (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS (SELECT 1 FROM {p}_pending pe \
                WHERE pe.run_id = d.run_id AND (pe.available_at IS NULL OR pe.available_at <= $1)) \
@@ -581,6 +581,7 @@ impl DispatchQueue for PostgresDispatchStore {
         .fetch_all(&self.pool)
         .await
         .map_err(reject)?;
+        let capabilities = installed_worker_credential_capabilities(worker)?;
         let mut selected = None;
         for row in rows {
             let Json(request): Json<RunDispatch> = row.try_get("request").map_err(reject)?;
@@ -588,8 +589,9 @@ impl DispatchQueue for PostgresDispatchStore {
             let previous: Option<Json<WorkerAssignment>> =
                 row.try_get("worker_assignment").map_err(reject)?;
             let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(reject)?;
+            let lease_epoch: i64 = row.try_get("lease_epoch").map_err(reject)?;
             if cancellation_requested != 0
-                || can_assign(
+                || (can_assign(
                     worker,
                     &request.placement,
                     previous.as_ref().map(|value| &value.0),
@@ -597,6 +599,11 @@ impl DispatchQueue for PostgresDispatchStore {
                     now_ms,
                 )
                 .is_ok()
+                    && (lease_epoch.max(0) as u64)
+                        .checked_add(1)
+                        .is_some_and(|epoch| {
+                            can_admit_attempt_credentials(&request, &capabilities, epoch, now_ms)
+                        }))
             {
                 selected = Some(RunId(row.try_get("run_id").map_err(reject)?));
                 break;
@@ -613,7 +620,7 @@ impl DispatchQueue for PostgresDispatchStore {
             lease_ms,
             now_ms,
             Some(worker),
-            &installed_worker_credential_capabilities(worker)?,
+            &capabilities,
         )
         .await?;
         tx.commit().await.map_err(reject)?;
@@ -630,7 +637,7 @@ impl DispatchQueue for PostgresDispatchStore {
     ) -> Result<Option<Claimed>, DispatchError> {
         let p = NS;
         let rows = sqlx::query(&format!(
-            "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.status, d.cancel_requested FROM {p}_dispatch d WHERE \
+            "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.status, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d WHERE \
              (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < $1) OR \
              (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS (SELECT 1 FROM {p}_pending pe \
                WHERE pe.run_id = d.run_id AND (pe.available_at IS NULL OR pe.available_at <= $1)) \
@@ -644,6 +651,7 @@ impl DispatchQueue for PostgresDispatchStore {
         .fetch_all(&self.pool)
         .await
         .map_err(reject)?;
+        let capabilities = installed_worker_credential_capabilities(requester)?;
         let mut selected = None;
         for row in rows {
             let Json(request): Json<RunDispatch> = row.try_get("request").map_err(reject)?;
@@ -652,8 +660,9 @@ impl DispatchQueue for PostgresDispatchStore {
                 row.try_get("worker_assignment").map_err(reject)?;
             let status: String = row.try_get("status").map_err(reject)?;
             let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(reject)?;
+            let lease_epoch: i64 = row.try_get("lease_epoch").map_err(reject)?;
             if cancellation_requested != 0
-                || policy_selects_requester(
+                || (policy_selects_requester(
                     &request,
                     policy.as_ref(),
                     DispatchPlacement {
@@ -664,7 +673,11 @@ impl DispatchQueue for PostgresDispatchStore {
                         workers: &workers,
                         now_ms,
                     },
-                )?
+                )? && (lease_epoch.max(0) as u64)
+                    .checked_add(1)
+                    .is_some_and(|epoch| {
+                        can_admit_attempt_credentials(&request, &capabilities, epoch, now_ms)
+                    }))
             {
                 selected = Some(RunId(row.try_get("run_id").map_err(reject)?));
                 break;
@@ -681,7 +694,7 @@ impl DispatchQueue for PostgresDispatchStore {
             lease_ms,
             now_ms,
             Some(requester),
-            &installed_worker_credential_capabilities(requester)?,
+            &capabilities,
         )
         .await?;
         tx.commit().await.map_err(reject)?;
