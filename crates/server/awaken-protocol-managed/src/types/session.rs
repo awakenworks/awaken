@@ -195,6 +195,30 @@ pub struct SessionCreateParams {
     pub resources: Vec<ResourceInput>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionAgentUpdate {
+    #[serde(default)]
+    pub tools: Option<Vec<AgentTool>>,
+    #[serde(default)]
+    pub mcp_servers: Option<Vec<UrlMcpServer>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionUpdateParams {
+    #[serde(default)]
+    pub agent: Option<SessionAgentUpdate>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub title: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub metadata: Option<Option<std::collections::BTreeMap<String, Option<String>>>>,
+    /// Reserved by the SDK but not supported by the product yet. The route rejects
+    /// a present value before any state mutation.
+    #[serde(default)]
+    pub vault_ids: Option<Vec<String>>,
+}
+
 /// One MCP server on the wire (`BetaManagedAgentsMCPServerURLDefinition` /
 /// `BetaManagedAgentsURLMCPServerParams`): `{ name, type: "url", url }`. The
 /// SDK's `type: "url"` tag is tolerated (and ignored) on input — there is only

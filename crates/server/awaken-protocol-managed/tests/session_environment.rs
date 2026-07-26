@@ -128,9 +128,13 @@ async fn environment_is_immutable_across_update() {
     .await;
     let id = session["id"].as_str().unwrap().to_string();
 
-    // Update sends a new environment_id alongside a title change. The contract
-    // pins the environment at creation, so the update changes the title but the
-    // environment stays put.
+    // Cause graph: immutable field present -> admission rejects the whole update
+    // -> neither environment nor an otherwise-valid title is changed.
+    //
+    // | environment_id | title | status | environment | title |
+    // |----------------|-------|--------|-------------|-------|
+    // | absent         | set   | 200    | env_a       | set   |
+    // | env_b          | set   | 400    | env_a       | old   |
     let (s, updated) = call(
         &app,
         "POST",
@@ -138,15 +142,12 @@ async fn environment_is_immutable_across_update() {
         Some(json!({ "title": "renamed", "environment_id": "env_b" })),
     )
     .await;
-    assert_eq!(s, StatusCode::OK);
-    assert_eq!(updated["title"], "renamed", "title is updatable");
-    assert_eq!(
-        updated["environment_id"], "env_a",
-        "environment is immutable — the update's env is ignored"
-    );
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert_eq!(updated["error"]["type"], "invalid_request_error");
 
     // And a fresh GET still reports the create-time environment.
     let (s, got) = call(&app, "GET", &format!("/v1/sessions/{id}"), None).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(got["environment_id"], "env_a");
+    assert_eq!(got["title"], serde_json::Value::Null);
 }

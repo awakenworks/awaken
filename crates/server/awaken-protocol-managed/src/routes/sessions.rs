@@ -343,55 +343,20 @@ async fn update_session(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
     headers: HeaderMap,
-    ManagedJson(body): ManagedJson<serde_json::Value>,
+    ManagedJson(body): ManagedJson<crate::types::SessionUpdateParams>,
 ) -> Result<(HeaderMap, Json<Session>), WireErr> {
     state.ensure_session(&id).await.map_err(error_response)?;
-    let agent = body.get("agent").cloned();
-    let (tools, mcp_servers) = if let Some(agent) = agent {
-        let object = agent.as_object().ok_or_else(|| {
-            error_response(StateError::Run(RunError::bad_request(
-                "agent update must be an object",
-            )))
-        })?;
-        for immutable in ["model", "system", "skills"] {
-            if object.contains_key(immutable) {
-                return Err(error_response(StateError::Run(RunError::bad_request(
-                    format!(
-                        "agent.{immutable} is not updatable; only tools and mcp_servers may change"
-                    ),
-                ))));
-            }
-        }
-        let tools = object
-            .get("tools")
-            .map(|value| {
-                value.as_array().cloned().ok_or_else(|| {
-                    error_response(StateError::Run(RunError::bad_request(
-                        "agent.tools must be an array",
-                    )))
-                })
-            })
-            .transpose()?;
-        let mcp_servers = object
-            .get("mcp_servers")
-            .map(|value| {
-                value.as_array().cloned().ok_or_else(|| {
-                    error_response(StateError::Run(RunError::bad_request(
-                        "agent.mcp_servers must be an array",
-                    )))
-                })
-            })
-            .transpose()?;
-        (tools, mcp_servers)
-    } else {
-        (None, None)
-    };
-    let title = body.get("title").map(|t| t.as_str().map(str::to_string));
-    let metadata = body.get("metadata").and_then(|m| m.as_object()).map(|o| {
-        o.iter()
-            .map(|(k, v)| (k.clone(), v.as_str().map(str::to_string)))
-            .collect()
-    });
+    if body.vault_ids.is_some() {
+        return Err(error_response(StateError::Run(RunError::bad_request(
+            "vault_ids is reserved and not yet supported on Session update",
+        ))));
+    }
+    let (tools, mcp_servers) = body
+        .agent
+        .map(|agent| (agent.tools, agent.mcp_servers))
+        .unwrap_or_default();
+    let title = body.title;
+    let metadata = body.metadata;
     let idempotency_key = headers
         .get("idempotency-key")
         .map(|value| {

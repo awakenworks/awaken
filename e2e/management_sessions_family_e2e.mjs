@@ -13,6 +13,7 @@
 //   C3 metadata key carries null -> U3 delete key + one update event
 //   C4 malformed update body or command precondition -> U4 reject before mutation
 //   C5 wildcard precondition -> U5 apply against the current root revision
+//   C6 metadata bag is null -> U6 clear the complete bag
 //
 // | Rule | Session | semantic delta | key | Effect |
 // |---|---|---|---|---|
@@ -21,6 +22,7 @@
 // | U3 | present | delete metadata | none | new ETag, key absent, one event |
 // | U4 | present | malformed agent/header | invalid | 400, unchanged root |
 // | U5 | present | title change | If-Match: * | apply, new title |
+// | U6 | present | metadata null | none | clear all metadata keys |
 
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
@@ -104,7 +106,16 @@ async function main() {
         .withResponse();
       assert.notEqual(removedMetadata.response.headers.get('etag'), beforeNoopEtag, 'U3 advances revision');
       assert.equal(removedMetadata.data.metadata.team, undefined, 'U3 deletes the metadata key');
-      pass('U1-U3 root update decision table rejects absence and distinguishes no-op from deletion');
+      await client.beta.sessions.update(session.id, {
+        metadata: { first: '1', second: '2' },
+        betas: BETAS,
+      });
+      const clearedMetadata = await client.beta.sessions.update(session.id, {
+        metadata: null,
+        betas: BETAS,
+      });
+      assert.deepEqual(clearedMetadata.metadata, {}, 'U6 null clears the entire metadata bag');
+      pass('U1-U3/U6 root update table distinguishes no-op, key deletion, and bag clear');
 
       // -- mid-session agent update gate ------------------------------------
       // Only tools and MCP servers are mutable. Arrays are full replacements;
@@ -127,6 +138,7 @@ async function main() {
       );
       for (const [label, body, headers] of [
         ['agent must be an object', { agent: 'not-an-object' }, {}],
+        ['immutable environment', { title: 'must-not-apply', environment_id: 'env_other' }, {}],
         ['empty idempotency key', { title: 'must-not-apply' }, { 'idempotency-key': '   ' }],
         ['malformed If-Match', { title: 'must-not-apply' }, { 'if-match': '7' }],
       ]) {
