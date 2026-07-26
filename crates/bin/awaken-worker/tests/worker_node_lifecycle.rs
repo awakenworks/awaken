@@ -180,11 +180,14 @@ async fn node_runs_register_ready_drain_quiesce_and_deregister() {
     ));
     let registered_identity = Arc::new(Mutex::new(None));
     let observed = registered_identity.clone();
+    let mut coordinator_defaults = awaken_runtime_host::DeploymentConfig::ephemeral();
+    coordinator_defaults.disable_local_pool = true;
     WorkerNodeBuilder::new(
         WorkerUpstream::new(upstream.url())
             .with_request_authorizer(request_authorizer)
             .with_worker_id("worker-node-test"),
     )
+    .with_deployment_config(coordinator_defaults)
     .with_manifest(manifest())
     .with_application_factory(Arc::new(move |context| {
         *observed.lock().expect("identity observation mutex") = Some(context.identity().clone());
@@ -194,7 +197,25 @@ async fn node_runs_register_ready_drain_quiesce_and_deregister() {
     .without_admin_surface()
     .build()
     .expect("valid explicit Worker topology")
-    .run_until(async { Ok(WorkerShutdown::Prompt) })
+    .run_until(async {
+        // Cause graph and decision table:
+        // C1 registered + C2 initial Ready + C3 WorkerNode role
+        // => E1 claim loop starts before shutdown, even when injected deployment
+        // carried coordinator defaults (`durable=false`, local pool disabled).
+        // | Rule | C1 | C2 | C3 | E1 |
+        // | W1   | 1  | 1  | 1  | 1  |
+        for _ in 0..100 {
+            if upstream
+                .requests()
+                .iter()
+                .any(|path| path == "/v1/worker/dispatch/claim")
+            {
+                return Ok(WorkerShutdown::Prompt);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("W1: Ready Worker did not poll the authoritative dispatch queue");
+    })
     .await
     .expect("Worker lifecycle completes");
 
@@ -210,6 +231,7 @@ async fn node_runs_register_ready_drain_quiesce_and_deregister() {
     let positions: Vec<_> = [
         "/v1/worker/register",
         "/v1/worker/heartbeat",
+        "/v1/worker/dispatch/claim",
         "/v1/worker/drain",
         "/v1/worker/quiesced",
         "/v1/worker/deregister",
