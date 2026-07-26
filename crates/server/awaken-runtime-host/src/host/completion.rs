@@ -430,6 +430,7 @@ mod completion_tests {
                 None,
                 awaken_runtime_contract::InferenceEndpoint {
                     adapter_kind: "openai".into(),
+                    api_dialect: "open_ai_chat".into(),
                     base_url: "https://example.invalid".into(),
                     upstream_model: "fallback".into(),
                 },
@@ -500,6 +501,7 @@ mod completion_tests {
                 )),
                 InferenceEndpoint {
                     adapter_kind: "openai".into(),
+                    api_dialect: "open_ai_chat".into(),
                     base_url: "https://example.invalid".into(),
                     upstream_model: model.into(),
                 },

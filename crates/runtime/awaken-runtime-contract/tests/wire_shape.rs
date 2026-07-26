@@ -126,6 +126,7 @@ fn provider_model_candidate_provisioning_is_pinned() {
         )),
         awaken_runtime_contract::InferenceEndpoint {
             adapter_kind: "openai_chat_completions".into(),
+            api_dialect: "open_ai_chat".into(),
             base_url: "https://provider.example/v1".into(),
             upstream_model: "upstream-a".into(),
         },
@@ -153,6 +154,7 @@ fn provider_model_candidate_provisioning_is_pinned() {
             },
             "endpoint": {
                 "adapter_kind": "openai_chat_completions",
+                "api_dialect": "open_ai_chat",
                 "base_url": "https://provider.example/v1",
                 "upstream_model": "upstream-a"
             }

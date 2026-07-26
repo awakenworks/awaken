@@ -21,6 +21,10 @@ pub struct CatalogFingerprint(pub String);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InferenceEndpoint {
     pub adapter_kind: String,
+    /// Exact catalog protocol. Empty only for legacy snapshots that predate
+    /// protocol pinning; modern provider realization must not infer it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub api_dialect: String,
     pub base_url: String,
     pub upstream_model: String,
 }

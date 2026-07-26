@@ -52,6 +52,7 @@ fn provider_candidate(
         )),
         awaken_runtime_contract::InferenceEndpoint {
             adapter_kind: "openai".into(),
+            api_dialect: "open_ai_chat".into(),
             base_url: "https://gateway.invalid/v1".into(),
             upstream_model: "gateway-model".into(),
         },

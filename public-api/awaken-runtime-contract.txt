@@ -799,6 +799,7 @@ pub awaken_runtime_contract::resolved::ToolKind::Regular
 pub struct awaken_runtime_contract::resolved::CatalogFingerprint(pub alloc::string::String)
 pub struct awaken_runtime_contract::resolved::InferenceEndpoint
 pub awaken_runtime_contract::resolved::InferenceEndpoint::adapter_kind: alloc::string::String
+pub awaken_runtime_contract::resolved::InferenceEndpoint::api_dialect: alloc::string::String
 pub awaken_runtime_contract::resolved::InferenceEndpoint::base_url: alloc::string::String
 pub awaken_runtime_contract::resolved::InferenceEndpoint::upstream_model: alloc::string::String
 pub struct awaken_runtime_contract::resolved::ModelBinding
@@ -1507,6 +1508,7 @@ impl awaken_runtime_contract::execution::ExecutorCapabilities
 pub const awaken_runtime_contract::execution::ExecutorCapabilities::NATIVE: Self
 pub struct awaken_runtime_contract::InferenceEndpoint
 pub awaken_runtime_contract::InferenceEndpoint::adapter_kind: alloc::string::String
+pub awaken_runtime_contract::InferenceEndpoint::api_dialect: alloc::string::String
 pub awaken_runtime_contract::InferenceEndpoint::base_url: alloc::string::String
 pub awaken_runtime_contract::InferenceEndpoint::upstream_model: alloc::string::String
 pub struct awaken_runtime_contract::LiveInbox

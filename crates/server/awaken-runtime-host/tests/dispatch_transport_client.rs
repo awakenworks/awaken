@@ -87,6 +87,7 @@ fn credential_dispatch(
             )),
             InferenceEndpoint {
                 adapter_kind: "openai".into(),
+                api_dialect: "open_ai_chat".into(),
                 base_url: "https://provider.invalid/v1".into(),
                 upstream_model: "model".into(),
             },

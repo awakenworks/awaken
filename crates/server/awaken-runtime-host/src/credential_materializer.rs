@@ -1202,6 +1202,7 @@ mod tests {
         });
         let endpoint = InferenceEndpoint {
             adapter_kind: "anthropic".into(),
+            api_dialect: "anthropic_messages".into(),
             base_url: "https://provider.example".into(),
             upstream_model: "model".into(),
         };
@@ -1274,6 +1275,7 @@ mod tests {
                 )),
                 InferenceEndpoint {
                     adapter_kind: "anthropic".into(),
+                    api_dialect: "anthropic_messages".into(),
                     base_url: "https://example.invalid".into(),
                     upstream_model: "model".into(),
                 },

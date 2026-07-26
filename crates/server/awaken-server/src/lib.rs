@@ -36,7 +36,7 @@ use std::sync::Arc;
 
 use awaken_protocol_managed::{ManagedState, router};
 use awaken_protocol_transport::ProtocolRuntime;
-use awaken_provider_genai::GenaiExecutor;
+use awaken_provider_genai::{GenaiExecutor, OpenAiResponsesExecutor};
 use awaken_runtime_contract::llm::LlmExecutor;
 use axum::Router;
 
@@ -507,6 +507,48 @@ pub enum ResolvedExecutorError {
     MissingCredential,
     #[error("no provider executor in this build serves adapter `{0}`")]
     UnsupportedAdapter(String),
+    #[error("no provider executor in this build serves API dialect `{0}`")]
+    UnsupportedDialect(String),
+    #[error("API dialect `{dialect}` is incompatible with adapter `{adapter}`")]
+    DialectAdapterMismatch { dialect: String, adapter: String },
+    #[error("provider executor could not be constructed: {0}")]
+    ExecutorBuild(String),
+}
+
+/// Construct from the exact protocol frozen in a modern publication. An empty
+/// dialect is accepted only for legacy snapshots and follows the adapter-family
+/// path; declared modern dialects are checked before any credential-backed
+/// executor is constructed.
+pub fn executor_from_materialized_endpoint(
+    api_dialect: &str,
+    adapter_kind: &str,
+    base_url: Option<&str>,
+    credential: Option<&awaken_agent_contract::RedactedString>,
+) -> Result<Arc<dyn LlmExecutor>, ResolvedExecutorError> {
+    let expected_adapter = match api_dialect {
+        "" => None,
+        "anthropic_messages" => Some("anthropic"),
+        "open_ai_chat" => Some("openai"),
+        "gemini" => Some("gemini"),
+        "vertex_gemini" => Some("vertex"),
+        "open_ai_responses" => Some("openai"),
+        other => return Err(ResolvedExecutorError::UnsupportedDialect(other.to_string())),
+    };
+    if expected_adapter.is_some_and(|expected| expected != adapter_kind) {
+        return Err(ResolvedExecutorError::DialectAdapterMismatch {
+            dialect: api_dialect.to_string(),
+            adapter: adapter_kind.to_string(),
+        });
+    }
+    if api_dialect == "open_ai_responses" {
+        let base_url = base_url
+            .ok_or_else(|| ResolvedExecutorError::MissingBaseUrl(adapter_kind.to_string()))?;
+        let credential = credential.ok_or(ResolvedExecutorError::MissingCredential)?;
+        return OpenAiResponsesExecutor::new(base_url, credential.expose_secret())
+            .map(|executor| Arc::new(executor) as Arc<dyn LlmExecutor>)
+            .map_err(|error| ResolvedExecutorError::ExecutorBuild(error.to_string()));
+    }
+    executor_from_materialized_access(adapter_kind, base_url, credential)
 }
 
 /// Construct a provider executor from publication-pinned endpoint facts and
@@ -584,6 +626,36 @@ mod executor_seam_tests {
             Some(ResolvedExecutorError::UnsupportedAdapter(a)) => assert_eq!(a, "cohere"),
             other => panic!("expected UnsupportedAdapter, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn exact_dialect_is_checked_and_responses_uses_a_dedicated_executor() {
+        let credential = RedactedString::new("sk-secret");
+        assert!(
+            executor_from_materialized_endpoint(
+                "open_ai_responses",
+                "openai",
+                Some("https://api.openai.com/v1"),
+                Some(&credential),
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            executor_from_materialized_endpoint(
+                "anthropic_messages",
+                "openai",
+                Some("https://provider.invalid"),
+                Some(&credential),
+            ),
+            Err(ResolvedExecutorError::DialectAdapterMismatch { .. })
+        ));
+        assert!(executor_from_materialized_endpoint(
+            "open_ai_chat",
+            "openai",
+            Some("https://provider.invalid"),
+            Some(&credential),
+        )
+        .is_ok());
     }
 
     /// `MissingBaseUrl` is a reachable fail-closed arm: a resolved inference whose

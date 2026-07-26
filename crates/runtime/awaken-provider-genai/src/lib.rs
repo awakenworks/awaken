@@ -24,6 +24,9 @@ use genai::chat::{ChatOptions, ReasoningEffort as GenaiReasoningEffort};
 /// naming the model SDK itself (which stays named only in this crate).
 pub use genai::adapter::AdapterKind;
 
+mod openai_responses;
+pub use openai_responses::OpenAiResponsesExecutor;
+
 /// Failure to obtain a complete provider model listing. Callers must not
 /// reconcile a partial response because doing so could falsely mark offerings
 /// unavailable.

@@ -4065,6 +4065,7 @@ fn cold_host_inference_holder_follows_the_candidate_backend_decision_table() {
             )),
             awaken_runtime_contract::InferenceEndpoint {
                 adapter_kind: "test".into(),
+                api_dialect: String::new(),
                 base_url: "https://example.invalid".into(),
                 upstream_model: model.into(),
             },

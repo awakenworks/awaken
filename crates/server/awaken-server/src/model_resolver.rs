@@ -226,6 +226,7 @@ impl CatalogModelPublicationResolver {
             )),
             InferenceEndpoint {
                 adapter_kind: endpoint.dialect.adapter_kind().to_string(),
+                api_dialect: endpoint.dialect.as_str().to_string(),
                 base_url,
                 upstream_model: offering
                     .upstream_model

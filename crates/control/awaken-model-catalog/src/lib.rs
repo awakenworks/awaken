@@ -80,6 +80,18 @@ pub enum ApiDialect {
 }
 
 impl ApiDialect {
+    /// Stable wire token carried into immutable runtime publications.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AnthropicMessages => "anthropic_messages",
+            Self::OpenAiChat => "open_ai_chat",
+            Self::OpenAiResponses => "open_ai_responses",
+            Self::Gemini => "gemini",
+            Self::VertexGemini => "vertex_gemini",
+        }
+    }
+
     /// The adapter kind that speaks this dialect.
     #[must_use]
     pub fn adapter_kind(self) -> &'static str {
@@ -807,6 +819,7 @@ mod tests {
             (ApiDialect::VertexGemini, "\"vertex_gemini\""),
         ] {
             assert_eq!(serde_json::to_string(&dialect).unwrap(), wire);
+            assert_eq!(dialect.as_str(), wire.trim_matches('"'));
             assert_eq!(serde_json::from_str::<ApiDialect>(wire).unwrap(), dialect);
         }
         // An unknown dialect token is rejected (fail-closed), not silently defaulted.

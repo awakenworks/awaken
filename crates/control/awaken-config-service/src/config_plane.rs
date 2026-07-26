@@ -688,6 +688,7 @@ pub(crate) mod resource_prompt_tests {
                     )),
                     awaken_runtime_contract::InferenceEndpoint {
                         adapter_kind: "openai".into(),
+                        api_dialect: "open_ai_chat".into(),
                         base_url: "https://example.invalid/v1".into(),
                         upstream_model: binding.model_ref,
                     },
