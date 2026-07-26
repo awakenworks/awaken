@@ -116,14 +116,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let upstream = std::env::var("AWAKEN_UPSTREAM_URL")?;
     let credential_id = std::env::var("AWAKEN_TEST_CREDENTIAL_ID")?;
     let credential_revision = std::env::var("AWAKEN_TEST_CREDENTIAL_REVISION")?.parse()?;
+    let resource_url = std::env::var("AWAKEN_TEST_RESOURCE_DATABASE_URL")?;
+    let admin_url = std::env::var("AWAKEN_TEST_ADMIN_DATABASE_URL")?;
+    let storage_dir = std::env::var("AWAKEN_TEST_WORKER_STORAGE_DIR")?;
     let materializer = Arc::new(ReferenceMaterializer {
         credential: awaken_runtime_contract::CredentialRef {
             id: credential_id,
             revision: credential_revision,
         },
     });
-    awaken_worker::run_with_inference_and_credential_resolver(
+    let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
+    deployment.durable = true;
+    deployment.storage_dir = Some(storage_dir.into());
+    awaken_worker::run_with_inference_and_credential_resolver_and_resources(
         &upstream,
+        deployment,
+        &resource_url,
+        &awaken_control::StoreBackend::Postgres(admin_url),
         materializer.clone(),
         materializer,
     )

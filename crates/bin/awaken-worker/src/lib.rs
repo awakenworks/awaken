@@ -794,6 +794,7 @@ pub async fn run_with_inference_materializer(
         WorkerProcessConfig::embedded_defaults(),
         materializer,
         None,
+        None,
     )
     .await?
     .run_until_shutdown()
@@ -812,6 +813,33 @@ pub async fn run_with_inference_and_credential_resolver(
         WorkerProcessConfig::embedded_defaults(),
         materializer,
         Some(resolver),
+        None,
+    )
+    .await?
+    .run_until_shutdown()
+    .await
+}
+
+/// Embedded secretless Worker with an explicitly resolved deployment and shared
+/// ResourcePlane. This extends the same authoritative builder used above; it
+/// performs no environment/config rediscovery and installs no second resolver.
+pub async fn run_with_inference_and_credential_resolver_and_resources(
+    upstream: &str,
+    deployment: awaken_runtime_host::DeploymentConfig,
+    resource_url: &str,
+    admin_backend: &awaken_control::StoreBackend,
+    materializer: Arc<dyn InferenceExecutorMaterializer>,
+    resolver: Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let resources = shared_resource_wiring(None, Some(resource_url), Some(admin_backend)).await?;
+    let mut process = WorkerProcessConfig::embedded_defaults();
+    process.deployment = deployment;
+    build_secretless_worker(
+        WorkerUpstream::new(upstream),
+        process,
+        materializer,
+        Some(resolver),
+        resources,
     )
     .await?
     .run_until_shutdown()
@@ -823,6 +851,7 @@ async fn build_secretless_worker(
     process: WorkerProcessConfig,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
     credential_resolver: Option<Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>>,
+    resources: Option<WorkerResourcePlane>,
 ) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
     let mut builder = WorkerNodeBuilder::new(upstream).with_process_config(process);
     if let Some(resolver) = credential_resolver {
@@ -836,6 +865,9 @@ async fn build_secretless_worker(
     builder = builder
         .with_inference_materializer(materializer)
         .with_standard_manifest(Default::default());
+    if let Some(resources) = resources {
+        builder = builder.with_resource_plane(resources);
+    }
     Ok(builder.build()?)
 }
 

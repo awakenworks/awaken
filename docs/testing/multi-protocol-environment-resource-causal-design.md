@@ -433,3 +433,24 @@ and a default local/namespace provider cannot participate in recovery.
 Both production processes receive database topology through one generated typed
 config. Per-database `AWAKEN_*` variables and node-local fallback stores are not
 part of either persistence axis.
+
+## Phase 20: typed remote Worker resource composition
+
+```text
+production config ResourcePlane
+  -> frozen Session Resource manifest
+  -> placement requires resource-capable Worker
+  -> explicit embedded Worker deployment + same shared ResourcePlane
+  -> exact File/Skill/Memory projection and detach
+```
+
+| Rule | Worker ResourcePlane | Manifest | Workspace | Expected |
+|---|---:|---|---|---|
+| W1 | absent | non-empty | exact | cannot claim |
+| W2 | shared Postgres | File/Skill/Memory | exact | claim and realize exact tree |
+| W3 | shared Postgres | empty successor | exact | detach prior projection |
+| W4 | shared Postgres | valid resource | different | fail closed |
+
+The injected credential resolver remains the sole resolver. The embedded Worker
+receives a resolved DeploymentConfig and reuses the canonical shared resource
+wiring; removed worker `from_env` configuration is not recreated by the fixture.
