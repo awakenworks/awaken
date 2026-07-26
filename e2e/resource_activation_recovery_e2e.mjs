@@ -4,60 +4,30 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync, execSync, spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { spawnProduction, stopServer, waitForPort } from './harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38436);
 const WORKSPACE = `activation-recovery-${process.pid}`;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function binary() {
-  const output = execSync('cargo build --quiet --message-format=json -p awaken-cli --bin awaken', {
-    cwd: ROOT,
-    maxBuffer: 64 * 1024 * 1024,
-  }).toString();
-  for (const line of output.split('\n')) {
-    try {
-      const message = JSON.parse(line);
-      if (message.executable && message.target?.name === 'awaken') return message.executable;
-    } catch { /* cargo diagnostic */ }
-  }
-  throw new Error('awaken binary was not produced');
-}
-
-function start(bin, directory) {
-  return spawn(bin, {
-    env: {
-      ...process.env,
-      AWAKEN_HTTP_ADDR: `127.0.0.1:${PORT}`,
-      AWAKEN_SCENARIO_WORKSPACE: WORKSPACE,
-      AWAKEN_STORAGE_DIR: directory,
-      AWAKEN_DEPLOYMENT_DATA_DIR: directory,
-      AWAKEN_MGMT_SEAL_KEY: '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
-    },
-    stdio: ['ignore', 'ignore', 'inherit'],
+function start(directory) {
+  return spawnProduction(directory, PORT, {
+    workspace: WORKSPACE,
+    controlSealKey: '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
   });
 }
 
 async function ready() {
-  const deadline = Date.now() + 60_000;
-  while (Date.now() < deadline) {
-    const connected = await new Promise((resolve) => {
-      const socket = net.createConnection({ port: PORT, host: '127.0.0.1' });
-      socket.once('connect', () => { socket.destroy(); resolve(true); });
-      socket.once('error', () => { socket.destroy(); resolve(false); });
-    });
-    if (connected) return;
-    await sleep(100);
-  }
-  throw new Error('awaken did not become ready');
+  await waitForPort(PORT, 60_000);
 }
 
 async function stop(child, signal = 'SIGINT') {
+  if (signal === 'SIGINT') return stopServer(child);
   if (child.exitCode !== null) return;
   child.kill(signal);
   await new Promise((resolve) => child.once('exit', resolve));
@@ -114,23 +84,32 @@ function sessionRow(database, sessionId) {
   const output = execFileSync('sqlite3', [
     '-json',
     database,
-    `SELECT status, archived_at, effective_inputs_json FROM managed_session WHERE session_id=${sqlQuote(sessionId)}`,
+    `SELECT aggregate_json FROM managed_session WHERE session_id=${sqlQuote(sessionId)}`,
   ]).toString().trim();
   const rows = output ? JSON.parse(output) : [];
   assert.equal(rows.length, 1, `missing durable Session ${sessionId}`);
+  assert.ok(rows[0].aggregate_json, `Session ${sessionId} has no canonical aggregate`);
+  const aggregate = JSON.parse(rows[0].aggregate_json);
   return {
-    status: rows[0].status,
-    archivedAt: rows[0].archived_at,
-    resources: JSON.parse(rows[0].effective_inputs_json),
+    aggregate,
+    status: aggregate.status,
+    archivedAt: aggregate.archived_at,
+    resources: aggregate.resources,
   };
 }
 
 function updateSessionRow(database, sessionId, status, archivedAt, resources) {
+  const row = sessionRow(database, sessionId);
+  const aggregate = {
+    ...row.aggregate,
+    status,
+    archived_at: archivedAt,
+    resources,
+  };
   execFileSync('sqlite3', [
     database,
-    `UPDATE managed_session SET status=${sqlQuote(status)}, archived_at=${
-      archivedAt === null ? 'NULL' : sqlQuote(archivedAt)
-    }, effective_inputs_json=${sqlQuote(JSON.stringify(resources))} WHERE session_id=${sqlQuote(sessionId)}`,
+    `UPDATE managed_session SET aggregate_json=${sqlQuote(JSON.stringify(aggregate))}
+       WHERE session_id=${sqlQuote(sessionId)}`,
   ]);
 }
 
@@ -181,7 +160,15 @@ function persistLegacyManifest(database, sessionId) {
   assert.equal(row.status, 'idle');
   assert.equal(row.resources.pending, undefined);
   assert.ok(row.resources.active.inputs.length > 0);
-  updateSessionRow(database, sessionId, 'idle', null, row.resources.active);
+  // Exercise the retained one-way row decoder deliberately: legacy resource
+  // manifests exist only in retained columns, never inside aggregate_json.
+  execFileSync('sqlite3', [
+    database,
+    `UPDATE managed_session
+       SET aggregate_json=NULL, status='idle', archived_at=NULL,
+           effective_inputs_json=${sqlQuote(JSON.stringify(row.resources.active))}
+       WHERE session_id=${sqlQuote(sessionId)}`,
+  ]);
 }
 
 function persistInconsistentRelease(database, sessionId) {
@@ -238,8 +225,7 @@ async function main() {
   const sessionsDatabase = path.join(directory, 'sessions.db');
   const adminDatabase = path.join(directory, 'admin.db');
   const lifecycleDatabase = path.join(directory, 'resource-lifecycle.db');
-  const bin = binary();
-  let server = start(bin, directory);
+  let server = start(directory);
   try {
     await ready();
 
@@ -346,7 +332,7 @@ async function main() {
       `,
     );
 
-    server = start(bin, directory);
+    server = start(directory);
     await ready();
 
     const recovered = sessionRow(sessionsDatabase, recovering.body.id);
@@ -359,11 +345,11 @@ async function main() {
     assert.equal(recovered.resources.activations[1].attempts, 1);
     assert.equal(recovered.resources.activations[1].last_error, undefined);
 
-    // Legacy rows stored only the resolved manifest. A request after restart
-    // forces durable rehydration, realizes the same manifest, and upgrades the
-    // row to the activation state machine before transcript lookup returns 404.
+    // Legacy resource state stored only the resolved manifest. The durable
+    // live-inbox ingress reads the same Session aggregate after restart,
+    // realizes that manifest, and upgrades it to the activation state machine.
     const legacyLookup = await json('GET', scoped(`sessions/${legacy.body.id}/live-inbox`));
-    assert.equal(legacyLookup.status, 404);
+    assert.equal(legacyLookup.status, 200);
     const upgraded = sessionRow(sessionsDatabase, legacy.body.id);
     assert.equal(upgraded.status, 'idle');
     assert.equal(upgraded.resources.revision, 1);
@@ -430,7 +416,7 @@ async function main() {
       `,
     );
     sqlite(lifecycleDatabase, 'DROP TRIGGER reject_repository_purge_schedule;');
-    server = start(bin, directory);
+    server = start(directory);
     await ready();
     for (const cleanup of cleanupCases.filter((entry) => entry.name !== 'already-gone')) {
       const settled = sessionRow(sessionsDatabase, cleanup.sessionId);
