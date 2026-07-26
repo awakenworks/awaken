@@ -559,6 +559,7 @@ mod completion_tests {
                             remote_url: "https://example.invalid/repo.git".into(),
                             credential_binding: Some("credential-a".into()),
                             initial_branch: None,
+                            initial_commit: None,
                             clone_policy: ClonePolicy::default(),
                         },
                         credential: None,

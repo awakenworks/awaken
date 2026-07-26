@@ -8,8 +8,8 @@
 //   1. CREATE resources: environment, vault + MCP credential, file, memory store
 //      (+ seed), and an agent in the registry (declaring the MCP server).
 //   2. CREATE a session that ASSOCIATES them: agent id + environment_id + vault_ids
-//      + mcp_servers + create-time resources (file, memory_store), then attach a
-//      github_repository to the live session.
+//      + mcp_servers + one exact create-time resource snapshot (file, memory_store,
+//      github_repository).
 //   3. RUN it: an MCP-tool turn ("add 2 3" -> mcp__calc__add -> "result: 5") and a
 //      plain echo turn.
 //   4. CHECK existing resources (env / agent / memory / file / attached resources)
@@ -125,6 +125,11 @@ async function main() {
         resources: [
           { type: 'file', file_id: file.id, mount_path: '/notes.txt' },
           { type: 'memory_store', memory_store_id: store.id, mount_path: '/mnt/memory/kb.md' },
+          {
+            type: 'github_repository',
+            url: 'https://github.com/octocat/Hello-World',
+            mount_path: '/workspace/repo',
+          },
         ],
         betas: BETAS,
       });
@@ -134,18 +139,8 @@ async function main() {
       assert.ok((session.vault_ids ?? []).includes(vault.id), 'session carries the vault binding');
       pass(`session created + associated: ${session.id}`);
 
-      // attach a github repository to the LIVE session (association; the actual clone
-      // happens only in the git-repo host — here we prove attach + list).
-      const repoRes = await client.beta.sessions.resources.add(session.id, {
-        type: 'github_repository',
-        url: 'https://github.com/octocat/Hello-World',
-        mount_path: '/workspace/repo',
-        betas: BETAS,
-      });
-      assert.equal(repoRes.type, 'github_repository');
-      pass('github_repository attached to the live session');
-
-      // the create-time + live resources are all backfilled and addressable
+      // The complete create-time snapshot is backfilled; live add remains the
+      // official file-only subresource operation.
       const resources = await drain(client.beta.sessions.resources.list(session.id, { betas: BETAS }));
       const resTypes = resources.map((r) => r.type).sort();
       for (const want of ['file', 'github_repository', 'memory_store']) {

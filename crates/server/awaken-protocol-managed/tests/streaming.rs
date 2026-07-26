@@ -619,6 +619,23 @@ async fn archiving_a_child_thread_streams_thread_status_terminated() {
         sse.contains(&format!("\"session_thread_id\":\"{child_id}\"")),
         "the terminated frame names the child thread — sse:\n{sse}"
     );
+    let (child_status, child_sse) = http_sse(
+        &app,
+        &format!("/v1/sessions/{id}/threads/{child_id}/stream"),
+        &[],
+    )
+    .await;
+    assert_eq!(child_status, StatusCode::OK);
+    assert!(
+        !child_sse.contains("event: session.status_")
+            && !child_sse.contains("event: agent.message\n"),
+        "a child stream must not alias the primary Session stream — sse:\n{child_sse}"
+    );
+    assert!(
+        child_sse.contains("event: agent.thread_message_received")
+            && child_sse.contains("event: agent.thread_message_sent"),
+        "the child stream projects both message directions from the child perspective — sse:\n{child_sse}"
+    );
 }
 
 /// `state/threads.rs::archive_thread` commits `session.thread_status_terminated` to
@@ -637,7 +654,10 @@ async fn archive_thread_broadcasts_to_an_open_live_stream() {
     let (_caught_up, _) = drain(&mut rx);
 
     let child_id = "child-run-stream";
-    state.archive_thread(&id, child_id).expect("archive child");
+    state
+        .archive_thread(&id, child_id)
+        .await
+        .expect("archive child");
 
     // The terminate was broadcast — the open stream receives it live.
     let (frames, _) = drain(&mut rx);
@@ -683,19 +703,27 @@ async fn stream_thread_events_backfills_the_primary_thread() {
     assert!(sse.contains("event: session.status_idle"), "sse:\n{sse}");
 }
 
-/// The per-thread stream rejects the `event_deltas[]` preview opt-in outright (only
-/// the session-level stream supports previews), before resolving the thread — a 400.
+/// The official per-thread EventStreamParams accepts the same `event_deltas[]`
+/// preview selector. The primary Thread shares the Session producer, so admission
+/// succeeds; unsupported values still fail through the one shared parser.
 #[tokio::test]
-async fn stream_thread_events_rejects_the_preview_opt_in() {
+async fn stream_thread_events_accepts_the_preview_opt_in() {
     let app = router(Arc::new(ManagedState::new(EchoFake)));
     let id = http_create(&app).await;
+    http_json(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": "hi" }] }] }),
+    )
+    .await;
     let (status, _) = http_sse(
         &app,
         &format!("/v1/sessions/{id}/threads/{id}:primary/stream?event_deltas[]=agent.message"),
         &[],
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::OK);
 }
 
 /// An unknown thread id on the per-thread stream is a 404 (fail-closed).

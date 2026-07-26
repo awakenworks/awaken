@@ -122,26 +122,18 @@ pub struct DeploymentUpdateParams {
     pub environment_id: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_double_option")]
+    #[serde(default, deserialize_with = "super::presence::double_option")]
     pub description: Option<Option<String>>,
-    #[serde(default, deserialize_with = "deserialize_double_option")]
+    #[serde(default, deserialize_with = "super::presence::double_option")]
     pub metadata: Option<Option<BTreeMap<String, Option<String>>>>,
     #[serde(default)]
     pub initial_events: Option<Vec<DeploymentInitialEvent>>,
-    #[serde(default, deserialize_with = "deserialize_double_option")]
+    #[serde(default, deserialize_with = "super::presence::double_option")]
     pub resources: Option<Option<Vec<ResourceInput>>>,
-    #[serde(default, deserialize_with = "deserialize_double_option")]
+    #[serde(default, deserialize_with = "super::presence::double_option")]
     pub schedule: Option<Option<Schedule>>,
-    #[serde(default, deserialize_with = "deserialize_double_option")]
+    #[serde(default, deserialize_with = "super::presence::double_option")]
     pub vault_ids: Option<Option<Vec<String>>>,
-}
-
-fn deserialize_double_option<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
-where
-    T: Deserialize<'de>,
-    D: serde::Deserializer<'de>,
-{
-    Deserialize::deserialize(deserializer).map(Some)
 }
 
 /// `BetaManagedAgentsTriggerContext` — why a deployment run started. This surface

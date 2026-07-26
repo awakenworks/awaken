@@ -59,6 +59,11 @@ async function main() {
       // official tagged union + official nested fields -> canonical resource;
       // any private sandbox/unknown variant/unknown nested field -> 400 before
       // an Environment or healthcheck work item can be created.
+      // Decision table:
+      // | tagged config | fields                 | admission | durable effect       |
+      // | self_hosted   | official only          | accept    | env + healthcheck     |
+      // | cloud         | omitted/null optionals | accept    | canonical defaults    |
+      // | either        | unknown/private field  | reject    | no env and no work     |
       const rejectedConfigs = [
         ['private sandbox', { type: 'self_hosted', sandbox: { isolation: 'container' } }],
         ['unknown variant', { type: 'custom_cloud' }],
@@ -73,6 +78,12 @@ async function main() {
         });
         assert.equal(response.status, 400, rule);
       }
+      const unknownCreateField = await fetch(`${baseUrl}/v1/environments`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'anthropic-beta': BETAS[0] },
+        body: JSON.stringify({ name: 'must-not-exist', execution_policy: 'parallel-owner' }),
+      });
+      assert.equal(unknownCreateField.status, 400);
       const cloud = await client.beta.environments.create({
         name: 'official-cloud-defaults',
         config: { type: 'cloud' },
@@ -82,6 +93,27 @@ async function main() {
       for (const manager of ['apt', 'cargo', 'gem', 'go', 'npm', 'pip']) {
         assert.deepEqual(cloud.config.packages[manager], [], manager);
       }
+      const nullableCloud = await client.beta.environments.create({
+        name: 'official-cloud-null-defaults',
+        config: {
+          type: 'cloud',
+          networking: {
+            type: 'limited', allowed_hosts: null,
+            allow_mcp_servers: null, allow_package_managers: null,
+          },
+          packages: { type: 'packages', apt: null, npm: ['tsx'] },
+        },
+        betas: BETAS,
+      });
+      assert.deepEqual(nullableCloud.config.networking.allowed_hosts, []);
+      assert.equal(nullableCloud.config.networking.allow_mcp_servers, false);
+      assert.equal(nullableCloud.config.networking.allow_package_managers, false);
+      assert.deepEqual(nullableCloud.config.packages.apt, []);
+      assert.deepEqual(nullableCloud.config.packages.npm, ['tsx']);
+      const namesAfterRejectedCreate = (await drain(
+        client.beta.environments.list({ betas: BETAS }),
+      )).map((item) => item.name);
+      assert.ok(!namesAfterRejectedCreate.includes('must-not-exist'));
       pass('official Environment config union accepts canonical cases and rejects extensions');
 
       // Awaken sandbox policy is a separate, versioned aggregate. The Environment

@@ -10,16 +10,19 @@ pub(super) async fn provision(
     sandbox: &dyn awaken_sandbox_container::ContainerEnvironment,
     logical: &str,
     url: &str,
-    git_ref: Option<&str>,
+    initial_branch: Option<&str>,
+    initial_commit: Option<&str>,
     token: Option<&str>,
 ) -> Result<(), pc::SandboxError> {
     let url_owned = url.to_string();
-    let git_ref_owned = git_ref.map(str::to_string);
+    let initial_branch_owned = initial_branch.map(str::to_string);
+    let initial_commit_owned = initial_commit.map(str::to_string);
     let token_owned = token.map(str::to_string);
     let bundle = tokio::task::spawn_blocking(move || {
         awaken_sandbox_local::clone_repo_bundle(
             &url_owned,
-            git_ref_owned.as_deref(),
+            initial_branch_owned.as_deref(),
+            initial_commit_owned.as_deref(),
             token_owned.as_deref(),
         )
     })
@@ -38,11 +41,13 @@ pub(super) async fn provision(
                 "sh".into(),
                 "-c".into(),
                 concat!(
-                    "set -eu; bundle=$1; destination=$2; remote=$3; ",
+                    "set -eu; bundle=$1; destination=$2; remote=$3; branch=$4; commit=$5; ",
                     "trap 'rm -f -- \"$bundle\"' EXIT; ",
                     "test ! -e \"$destination\"; ",
                     "mkdir -p -- \"$(dirname -- \"$destination\")\"; ",
                     "git clone -- \"$bundle\" \"$destination\"; ",
+                    "if test -n \"$branch\"; then git -C \"$destination\" checkout \"$branch\"; fi; ",
+                    "if test -n \"$commit\"; then git -C \"$destination\" checkout --detach \"$commit\"; fi; ",
                     "git -C \"$destination\" remote set-url origin \"$remote\""
                 )
                 .into(),
@@ -50,6 +55,8 @@ pub(super) async fn provision(
                 bundle_path,
                 destination,
                 url.to_string(),
+                initial_branch.unwrap_or_default().to_string(),
+                initial_commit.unwrap_or_default().to_string(),
             ],
             cwd: "/workspace".into(),
             env: Vec::new(),

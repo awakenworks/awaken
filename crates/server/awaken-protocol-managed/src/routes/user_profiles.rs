@@ -101,7 +101,7 @@ fn bad_request(message: impl Into<String>) -> WireError {
     )
 }
 
-fn check_len(field: &str, value: &Option<String>) -> Result<(), WireError> {
+fn check_len(field: &str, value: Option<&str>) -> Result<(), WireError> {
     if let Some(v) = value
         && v.len() > 255
     {
@@ -116,8 +116,8 @@ async fn create_profile(
     State(state): State<Arc<UserProfileState>>,
     ManagedJson(params): ManagedJson<UserProfileCreateParams>,
 ) -> Result<Json<UserProfile>, WireError> {
-    check_len("external_id", &params.external_id)?;
-    check_len("name", &params.name)?;
+    check_len("external_id", params.external_id.as_deref())?;
+    check_len("name", params.name.as_deref())?;
     let n = state.seq.fetch_add(1, Ordering::SeqCst);
     let id = format!("uprof_{n:016}");
     let record = Record {
@@ -157,18 +157,27 @@ async fn update_profile(
     Path(id): Path<String>,
     ManagedJson(params): ManagedJson<UserProfileUpdateParams>,
 ) -> Result<Json<UserProfile>, WireError> {
-    check_len("external_id", &params.external_id)?;
-    check_len("name", &params.name)?;
+    check_len(
+        "external_id",
+        params
+            .external_id
+            .as_ref()
+            .and_then(|value| value.as_deref()),
+    )?;
+    check_len(
+        "name",
+        params.name.as_ref().and_then(|value| value.as_deref()),
+    )?;
     let mut store = state.inner.lock().unwrap();
     let record = store.get_mut(&id).ok_or_else(not_found)?;
     if let Some(external_id) = params.external_id {
-        record.external_id = Some(external_id);
+        record.external_id = external_id;
     }
     if let Some(name) = params.name {
-        record.name = Some(name);
+        record.name = name;
     }
     if let Some(relationship) = params.relationship {
-        record.relationship = relationship;
+        record.relationship = relationship.unwrap_or_default();
     }
     if let Some(patch) = params.metadata {
         // SDK convention: an empty-string value removes the key; else upsert.

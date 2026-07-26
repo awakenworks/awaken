@@ -3,14 +3,23 @@
 // covers the corrected create-time-vs-live distinction that the mount-at-creation
 // test (managed_resource_mount_e2e.mjs) does not:
 //
-//   • file / github_repository CAN be attached (and file detached) on a LIVE session
-//   • memory_store CANNOT be attached to a running session — it binds at creation
-//     only, so `resources.add({type:'memory_store'})` fails closed with a 400.
+//   • only file can be attached to a LIVE session
+//   • github_repository / memory_store bind at creation only
 //
 // Deterministic (echo model, no API key), so it runs in the keyless coverage arm.
 //
-// A creation-time memory_store is reflected into `Session.resources`, so this also
-// proves its binding cannot be detached after the Session has frozen it.
+// Cause graph:
+// typed create-time union -> exact Session manifest -> sandbox realization;
+// typed live File add/delete -> prepare/apply/commit -> durable projection;
+// non-File add or raw-token update -> admission reject -> no Runtime/state effect.
+//
+// Decision table:
+// | Rule | Operation | Shape | Expected behavior | Observable effect |
+// | R1 | create | Memory/Repository | accept | listed from frozen manifest |
+// | R2 | live add | File | accept | exact mount appears |
+// | R3 | live add | Memory/Repository | 400 | manifest unchanged |
+// | R4 | update | authorization_token/unknown | 400 | manifest unchanged |
+// | R5 | delete | addressable File/Repository | accept | resource disappears |
 
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
@@ -50,27 +59,19 @@ async function main() {
     assert.equal(seeded.resources?.length, 1, 'create-time memory_store is backfilled');
     assert.equal(seeded.resources[0].type, 'memory_store');
     assert.equal(seeded.resources[0].memory_store_id, mem.id);
-    assert.ok(
-      seeded.resources[0].id && seeded.resources[0].created_at,
-      'the backfilled entry is SDK-decodable (id + created_at)',
-    );
+    assert.equal(seeded.resources[0].id, undefined, 'official memory resources have no synthetic id');
     assert.equal((await listResources(client, seeded.id)).length, 1, 'create-time resource is listed');
     pass('create-time resources are backfilled on the session and listed');
 
-    await assert.rejects(
-      () => client.beta.sessions.resources.delete(seeded.resources[0].id, {
-        session_id: seeded.id,
-        betas: BETAS,
-      }),
-      (e) => e.status === 400,
-      'a frozen memory_store binding cannot be detached from a live session',
-    );
-    const seededAfterDeny = await listResources(client, seeded.id);
-    assert.equal(seededAfterDeny.length, 1, 'rejected detach preserves the binding');
-    assert.equal(seededAfterDeny[0].memory_store_id, mem.id);
-    pass('create-time memory_store cannot be detached after the Session is live');
-
-    const session = await client.beta.sessions.create({ agent: 'assistant', betas: BETAS });
+    const session = await client.beta.sessions.create({
+      agent: 'assistant',
+      resources: [{
+        type: 'github_repository',
+        url: 'https://github.com/owner/repo',
+        mount_path: '/workspace/repository',
+      }],
+      betas: BETAS,
+    });
     assert.ok(session.id.startsWith('sesn_'), `session created: ${session.id}`);
 
     // ── file: attach to a live session ─────────────────────────────────────────
@@ -85,15 +86,10 @@ async function main() {
     assert.ok(fileRes.created_at && fileRes.updated_at, 'the attached entry carries timestamps');
     pass(`file attached to a live session: ${fileRes.id}`);
 
-    // ── github_repository: attach to a live session ────────────────────────────
-    const repoRes = await client.beta.sessions.resources.add(session.id, {
-      type: 'github_repository',
-      url: 'https://github.com/owner/repo',
-      authorization_token: 'ghp_e2e', // awaken-allow: secret
-      betas: BETAS,
-    });
+    const repoRes = session.resources.find((resource) => resource.type === 'github_repository');
+    assert.ok(repoRes?.id);
     assert.equal(repoRes.type, 'github_repository');
-    pass('github_repository attached to a live session');
+    pass('github_repository is frozen at Session creation');
 
     const retrievedRepo = await client.beta.sessions.resources.retrieve(repoRes.id, {
       session_id: session.id,
@@ -109,15 +105,17 @@ async function main() {
       (e) => e.status === 400,
       'repository authorization cannot be applied to a File binding',
     );
-    const updatedRepo = await client.beta.sessions.resources.update(repoRes.id, {
-      session_id: session.id,
-      mount_path: '/workspace/repository',
-      instructions: 'updated repository instructions',
-      authorization_token: 'ghp_rotated_e2e', // awaken-allow: secret
-      betas: BETAS,
-    });
-    assert.equal(updatedRepo.mount_path, '/workspace/repository');
-    pass('repository config publication rotates only its governed credential reference');
+    await assert.rejects(
+      () => client.beta.sessions.resources.update(repoRes.id, {
+        session_id: session.id,
+        authorization_token: 'must-not-enter', // awaken-allow: secret
+        betas: BETAS,
+      }),
+      (e) => e.status === 400,
+      'raw repository credentials fail typed admission',
+    );
+    assert.equal((await listResources(client, session.id)).find((r) => r.id === repoRes.id).mount_path,
+      '/workspace/repository', 'R4 rejected update preserves the manifest');
 
     assert.equal((await listResources(client, session.id)).length, 2, 'both live mounts are listed');
 
@@ -159,7 +157,7 @@ async function main() {
     pass('repository detach retires its resource-catalog aggregate');
   });
 
-  console.log('E2E PASS: session resource lifecycle (file/repo live-attachable, memory create-time only).');
+  console.log('E2E PASS: typed Session resources (File live; Repository/Memory create-time only).');
   process.exitCode = 0;
 }
 

@@ -7,6 +7,16 @@
 // back → a later session re-clones and sees the pushed change (durable in the remote,
 // across a real process restart).
 //
+// Cause graph:
+// create-time Repository checkout -> frozen exact config -> provision plan
+// -> host clone/checkout -> sandbox-visible tree -> terminal publish.
+//
+// Decision table:
+// | Rule | Checkout | Expected sandbox tree | Fallback |
+// | G1 | omitted | remote default branch | none |
+// | G2 | branch name | named branch HEAD | never default |
+// | G3 | commit SHA | exact historical commit | never branch HEAD |
+//
 // Deterministic: the remote is a LOCAL bare git repo (no network, no real GitHub),
 // and the `git-repo` model reads `workspace/repo/README.md` then writes NEW.txt.
 //
@@ -22,6 +32,7 @@ const BETAS = ['managed-agents-2026-04-01'];
 const TMP = `/tmp/awaken-gitrepo-e2e-${process.pid}`;
 const README = 'SEED_README_CONTENT_7742';
 const FEATURE_README = 'FEATURE_BRANCH_CONTENT_5521';
+const FEATURE_LATEST = 'FEATURE_BRANCH_LATEST_9981';
 const MARKER = 'AGENT_REPO_MARKER_3390'; // must match GitRepoModel
 
 let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
@@ -44,10 +55,13 @@ function seedRemote() {
   git(['checkout', '-q', '-b', 'feature'], work);
   fs.writeFileSync(`${work}/README.md`, FEATURE_README);
   git(['commit', '-q', '-am', 'feature readme'], work);
+  const pinnedCommit = git(['rev-parse', 'HEAD'], work).trim();
+  fs.writeFileSync(`${work}/README.md`, FEATURE_LATEST);
+  git(['commit', '-q', '-am', 'advance feature'], work);
   git(['checkout', '-q', 'main'], work);
   const bare = `${TMP}/remote.git`;
   git(['clone', '-q', '--bare', work, bare]);
-  return bare;
+  return { bare, pinnedCommit };
 }
 
 const listEvents = async (sid) => {
@@ -90,6 +104,9 @@ async function driveRepoSession(bare, checkout) {
     resources: [repo],
     betas: BETAS,
   });
+  const projected = session.resources.find((resource) => resource.type === 'github_repository');
+  assert.ok(projected?.id, 'Repository projection is addressable');
+  assert.deepEqual(projected.checkout ?? null, checkout ?? null, 'wire projection preserves checkout');
   await client.beta.sessions.events.send(session.id, {
     events: [{ type: 'user.message', content: [{ type: 'text', text: 'work on the repo' }] }],
     betas: BETAS,
@@ -116,7 +133,7 @@ async function driveRepoSession(bare, checkout) {
 async function main() {
   fs.rmSync(TMP, { recursive: true, force: true });
   fs.mkdirSync(TMP, { recursive: true });
-  const bare = seedRemote();
+  const { bare, pinnedCommit } = seedRemote();
   const servers = [];
   const upstream = await startUpstream('gitRepo');
   try {
@@ -132,11 +149,20 @@ async function main() {
     // ---- checkout: {type:"branch"} clones that ref, not the default branch ----
     const sf = await driveRepoSession(bare, { type: 'branch', name: 'feature' });
     assert.ok(
-      sf.toolText.includes(FEATURE_README),
+      sf.toolText.includes(FEATURE_LATEST),
       `checkout:{branch:"feature"} put the feature README in the jail: ${sf.toolText}`,
     );
     assert.ok(!sf.toolText.includes(README), 'the feature checkout did not clone the default branch');
     pass('checkout:{type:"branch"} mounts the requested ref');
+
+    // ---- checkout: {type:"commit"} is an exact historical tree pin --------
+    const sc = await driveRepoSession(bare, { type: 'commit', sha: pinnedCommit });
+    assert.ok(
+      sc.toolText.includes(FEATURE_README),
+      `checkout:{commit:${pinnedCommit}} exposed the historical tree: ${sc.toolText}`,
+    );
+    assert.ok(!sc.toolText.includes(FEATURE_LATEST), 'commit checkout never fell forward to branch HEAD');
+    pass('checkout:{type:"commit"} mounts the exact historical commit');
 
     // The release boundary published the agent's own NEW.txt commit.
     const pushed = git(['show', `main:NEW.txt`], bare).trim();

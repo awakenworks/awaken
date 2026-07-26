@@ -598,24 +598,25 @@ async function main() {
     // Exercise the production embedded Resource Catalog adapter through the same
     // Managed Session edge used by cloud mode. Only the persistence adapter differs.
     const repository = seedRepository(mgmtDir);
-    const repositoryResource = await client.beta.sessions.resources.add(warm.id, {
-      type: 'github_repository',
-      url: repository,
-      mount_path: '/workspace/repository',
+    const repositorySession = await client.beta.sessions.create({
+      agent: AGENT,
+      environment_id: 'env_local',
+      resources: [{
+        type: 'github_repository',
+        url: repository,
+        mount_path: '/workspace/repository',
+      }],
       betas: BETAS,
     });
-    const updatedRepository = await client.beta.sessions.resources.update(repositoryResource.id, {
-      session_id: warm.id,
-      mount_path: '/workspace/repository-updated',
-      betas: BETAS,
-    });
-    assert.equal(updatedRepository.mount_path, '/workspace/repository-updated');
+    const repositoryResource = repositorySession.resources.find((resource) =>
+      resource.type === 'github_repository');
+    assert.ok(repositoryResource?.id);
     const retiredRepository = await client.beta.sessions.resources.delete(repositoryResource.id, {
-      session_id: warm.id,
+      session_id: repositorySession.id,
       betas: BETAS,
     });
     assert.equal(retiredRepository.type, 'session_resource_deleted');
-    console.log('ok: embedded repository configuration publishes and retires through SQLite');
+    console.log('ok: create-time repository configuration publishes and retires through SQLite');
   } finally {
     await h.stop();
     upstream.close();

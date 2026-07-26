@@ -159,6 +159,7 @@ pub struct CustomTool {
 pub struct OutcomeIteration {
     pub messages: Vec<Message>,
     pub outcome_id: String,
+    pub description: String,
     pub iteration: u32,
     pub result: String,
     pub explanation: String,
@@ -282,6 +283,13 @@ pub trait McpAttachmentRealizer: Send + Sync {
 /// [`McpAttachmentRealizer`] because it has a distinct hot-attachment lifecycle.
 #[async_trait]
 pub trait SessionRuntime: Send + Sync {
+    /// Read the runtime-owned, durable child-Run relationships for `thread`.
+    /// Protocol adapters use this only to rebuild disposable projections after a
+    /// restart; the runtime relationship registry remains the sole authority.
+    async fn delegated_runs(&self, _thread: &str) -> Result<Vec<DelegatedRun>, RunError> {
+        Ok(Vec::new())
+    }
+
     /// Run one user turn on `thread` to its first pause or end. `content` is the
     /// user message's full block list (multimodal): text interleaved with any
     /// image blocks, never flattened to a bare string.
