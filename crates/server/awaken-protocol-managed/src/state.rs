@@ -1289,6 +1289,8 @@ mod tests {
         // | E1 | non-empty | yes | create under exact id |
         // | E2 | empty | yes | reject, no row |
         // | E3 | non-empty | no | reject, no row |
+        // | E4 | same id | same request | replay exact Session |
+        // | E5 | same id | different request | reject conflict |
         let state = ManagedState::new_with_mcp(RehydrateFake::default());
         let required: SessionCreateParams = serde_json::from_value(serde_json::json!({
             "agent": "assistant",
@@ -1301,6 +1303,24 @@ mod tests {
             .expect("E1");
         assert_eq!(created.id, "flow/run-1", "E1 exact identity");
         assert_eq!(created.status, "preparing", "E1 waits for contribution");
+        let replayed = state
+            .create_application_session("flow/run-1", required.clone(), Some("workspace".into()))
+            .await
+            .expect("E4");
+        assert_eq!(replayed.id, created.id, "E4 exact replay");
+
+        let different: SessionCreateParams = serde_json::from_value(serde_json::json!({
+            "agent": "other-agent",
+            "application_contribution_required": true
+        }))
+        .unwrap();
+        assert!(
+            state
+                .create_application_session("flow/run-1", different, Some("workspace".into()),)
+                .await
+                .is_err(),
+            "E5"
+        );
 
         assert!(
             state
