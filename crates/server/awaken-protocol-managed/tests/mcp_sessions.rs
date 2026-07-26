@@ -1,5 +1,5 @@
 //! Session-create MCP binding (ADR-0043 Phase 3): a session's `mcp_servers` are
-//! bound to vault credentials by exact URL and provisioned through
+//! bound to vault credentials by the canonical normalized-URL rule and provisioned through
 //! `SessionRuntime::prepare_session` BEFORE the record exists — a failed
 //! preparation fails the create with the mapped error envelope.
 
@@ -179,6 +179,37 @@ async fn vault_with_mcp_oauth(h: &Harness) -> (String, String) {
     (vault_id, cred["id"].as_str().unwrap().to_string())
 }
 
+async fn create_mcp_credential(
+    h: &Harness,
+    vault_id: &str,
+    kind: &str,
+    url: &str,
+    secret: &str,
+) -> String {
+    let auth = match kind {
+        "static_bearer" => json!({
+            "type": kind,
+            "mcp_server_url": url,
+            "token": secret
+        }),
+        "mcp_oauth" => json!({
+            "type": kind,
+            "mcp_server_url": url,
+            "access_token": secret
+        }),
+        _ => panic!("unsupported test credential kind: {kind}"),
+    };
+    let (status, credential) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials"),
+        Some(auth),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    credential["id"].as_str().unwrap().to_string()
+}
+
 #[tokio::test]
 async fn create_binds_mcp_server_to_vault_credential_and_echoes_the_wire_shape() {
     let h = harness(None);
@@ -228,6 +259,148 @@ async fn create_binds_mcp_server_to_vault_credential_and_echoes_the_wire_shape()
     // The credential was entered without a refresh object, so the binding
     // carries no refresh configuration.
     assert!(init.mcp_servers[0].refresh.is_none());
+}
+
+#[tokio::test]
+async fn session_binding_supports_static_bearer_and_normalized_mcp_urls() {
+    let h = harness(None);
+    let (status, vault) = call(
+        &h.app,
+        "POST",
+        "/v1/vaults",
+        Some(json!({ "display_name": "bearer" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let vault_id = vault["id"].as_str().unwrap().to_string();
+    let credential_id = create_mcp_credential(
+        &h,
+        &vault_id,
+        "static_bearer",
+        "HTTPS://MCP.EXAMPLE.COM:443/sse/",
+        "static-secret", // awaken-allow: secret
+    )
+    .await;
+
+    let (status, _) = call(
+        &h.app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({
+            "agent": "calc-agent",
+            "mcp_servers": [{ "name": "calc", "type": "url", "url": "https://mcp.example.com/sse" }],
+            "vault_ids": [vault_id.clone()]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let expected = h
+        .vaults
+        .credential_source_id(&vault_id, &credential_id)
+        .unwrap();
+    let captured = h.captured.lock().unwrap();
+    assert_eq!(
+        captured[0].mcp_servers[0].credential_source_id.as_deref(),
+        Some(expected.0.as_str())
+    );
+}
+
+#[tokio::test]
+async fn session_binding_honors_vault_order_and_leaves_a_miss_unauthenticated() {
+    let h = harness(None);
+    let mut vaults = Vec::new();
+    let mut sources = Vec::new();
+    for name in ["first-created", "second-created"] {
+        let (status, vault) = call(
+            &h.app,
+            "POST",
+            "/v1/vaults",
+            Some(json!({ "display_name": name })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let vault_id = vault["id"].as_str().unwrap().to_string();
+        let credential_id = create_mcp_credential(
+            &h,
+            &vault_id,
+            "mcp_oauth",
+            MCP_URL,
+            name, // awaken-allow: secret
+        )
+        .await;
+        sources.push(
+            h.vaults
+                .credential_source_id(&vault_id, &credential_id)
+                .unwrap(),
+        );
+        vaults.push(vault_id);
+    }
+
+    let (status, _) = call(
+        &h.app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({
+            "agent": "ordered",
+            "mcp_servers": [{ "name": "calc", "type": "url", "url": MCP_URL }],
+            "vault_ids": [vaults[1].clone(), vaults[0].clone()]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        h.captured.lock().unwrap()[0].mcp_servers[0]
+            .credential_source_id
+            .as_deref(),
+        Some(sources[1].0.as_str())
+    );
+
+    let (status, _) = call(
+        &h.app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({
+            "agent": "anonymous",
+            "mcp_servers": [{ "name": "other", "type": "url", "url": "https://other.example.com/mcp" }],
+            "vault_ids": [vaults[0].clone()]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        h.captured.lock().unwrap()[1].mcp_servers[0]
+            .credential_source_id
+            .is_none(),
+        "Anthropic-compatible optional MCP auth leaves a non-match unauthenticated"
+    );
+}
+
+#[tokio::test]
+async fn an_archived_vault_cannot_be_attached_to_a_new_session() {
+    let h = harness(None);
+    let (vault_id, _) = vault_with_mcp_oauth(&h).await;
+    let (status, _) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/archive"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _) = call(
+        &h.app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({
+            "agent": "calc-agent",
+            "mcp_servers": [{ "name": "calc", "type": "url", "url": MCP_URL }],
+            "vault_ids": [vault_id]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(h.captured.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
