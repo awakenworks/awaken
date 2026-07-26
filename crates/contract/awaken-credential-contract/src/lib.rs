@@ -570,19 +570,34 @@ impl CredentialAccess {
         {
             return Err(CredentialAdmissionError::HolderNotAllowed);
         }
-        if !capabilities.holders.contains(requested_holder)
-            || !capabilities.realization_kinds.contains(&realization)
-        {
+        if !capabilities.supports(
+            requested_holder,
+            self.material_source,
+            realization,
+            self.envelope.is_some(),
+        ) {
+            if !capabilities.holders.contains(requested_holder)
+                && !capabilities
+                    .alternatives
+                    .iter()
+                    .any(|profile| profile.holders.contains(requested_holder))
+            {
+                return Err(CredentialAdmissionError::HolderUnsupported);
+            }
+            if !capabilities
+                .material_sources
+                .contains(&self.material_source)
+                && !capabilities
+                    .alternatives
+                    .iter()
+                    .any(|profile| profile.material_sources.contains(&self.material_source))
+            {
+                return Err(CredentialAdmissionError::MaterialSourceUnsupported);
+            }
+            if self.envelope.is_some() {
+                return Err(CredentialAdmissionError::EnvelopeUnsupported);
+            }
             return Err(CredentialAdmissionError::HolderUnsupported);
-        }
-        if !capabilities
-            .material_sources
-            .contains(&self.material_source)
-        {
-            return Err(CredentialAdmissionError::MaterialSourceUnsupported);
-        }
-        if self.envelope.is_some() && !capabilities.recipient_bound_envelopes {
-            return Err(CredentialAdmissionError::EnvelopeUnsupported);
         }
         if let Some(envelope) = &self.envelope {
             if envelope.envelope_ref().id.trim().is_empty() {
@@ -655,6 +670,14 @@ pub struct CredentialRealizationCapabilities {
     pub realization_kinds: BTreeSet<CredentialRealizationKind>,
     #[serde(default)]
     pub recipient_bound_envelopes: bool,
+    /// Independent adapter profiles installed in one process/Worker.
+    ///
+    /// Keeping profiles separate is security-significant: flattening a Native
+    /// Worker-holder profile and an ACP Workload-holder profile into three unions
+    /// would synthesize holder/source/realization combinations that no adapter
+    /// actually implements. Legacy single-profile declarations leave this empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alternatives: Vec<CredentialRealizationCapabilities>,
 }
 
 /// WorkerManifest capability namespace for one canonical credential realization
@@ -670,6 +693,43 @@ impl CredentialRealizationCapabilities {
             && self.material_sources.is_empty()
             && self.realization_kinds.is_empty()
             && !self.recipient_bound_envelopes
+            && self.alternatives.iter().all(Self::is_empty)
+    }
+
+    /// Compose independent adapter evidence without creating a Cartesian-product
+    /// capability. Nested compositions are flattened and empty profiles discarded.
+    #[must_use]
+    pub fn alternatives(
+        profiles: impl IntoIterator<Item = CredentialRealizationCapabilities>,
+    ) -> Self {
+        let mut alternatives = Vec::new();
+        for mut profile in profiles {
+            alternatives.append(&mut profile.alternatives);
+            if !profile.is_empty() {
+                alternatives.push(profile);
+            }
+        }
+        Self {
+            alternatives,
+            ..Self::default()
+        }
+    }
+
+    fn supports(
+        &self,
+        holder: &PlaintextHolder,
+        source: CredentialMaterialSource,
+        realization: CredentialRealizationKind,
+        envelope: bool,
+    ) -> bool {
+        (self.holders.contains(holder)
+            && self.material_sources.contains(&source)
+            && self.realization_kinds.contains(&realization)
+            && (!envelope || self.recipient_bound_envelopes))
+            || self
+                .alternatives
+                .iter()
+                .any(|profile| profile.supports(holder, source, realization, envelope))
     }
 
     /// Encode this evidence as one canonical Worker capability. Empty evidence
@@ -917,6 +977,7 @@ mod tests {
             material_sources: BTreeSet::from([CredentialMaterialSource::WorkerReference]),
             realization_kinds: BTreeSet::from([CredentialRealizationKind::WorkerProviderAdapter]),
             recipient_bound_envelopes: true,
+            alternatives: Vec::new(),
         };
         let encoded = exact
             .manifest_capability()
@@ -966,6 +1027,55 @@ mod tests {
                 .expect("encode empty capabilities"),
             None
         );
+    }
+
+    /// Multi-adapter cause graph: C1 holder, C2 source, and C3 realization must
+    /// coexist in one installed profile. Evidence from separate profiles never
+    /// combines into synthetic authority.
+    ///
+    /// | Rule | holder profile | source profile | kind profile | Result |
+    /// |---|---|---|---|---|
+    /// | A1 | ACP | ACP | ACP | admit |
+    /// | A2 | Native | Native | Native | admit |
+    /// | A3 | Native | ACP | ACP | reject cross-profile product |
+    #[test]
+    fn independent_adapter_profiles_do_not_create_cartesian_authority() {
+        let worker = PlaintextHolder::new(PlaintextBoundary::Worker, "worker");
+        let workload = PlaintextHolder::new(PlaintextBoundary::Workload, "workload");
+        let native = CredentialRealizationCapabilities {
+            holders: BTreeSet::from([worker.clone()]),
+            material_sources: BTreeSet::from([CredentialMaterialSource::ControlPlaneReference]),
+            realization_kinds: BTreeSet::from([CredentialRealizationKind::WorkerProviderAdapter]),
+            ..CredentialRealizationCapabilities::default()
+        };
+        let acp = CredentialRealizationCapabilities {
+            holders: BTreeSet::from([workload.clone()]),
+            material_sources: BTreeSet::from([CredentialMaterialSource::WorkerReference]),
+            realization_kinds: BTreeSet::from([
+                CredentialRealizationKind::ProcessSecretEnvironment,
+            ]),
+            ..CredentialRealizationCapabilities::default()
+        };
+        let installed = CredentialRealizationCapabilities::alternatives([native, acp]);
+
+        assert!(installed.supports(
+            &workload,
+            CredentialMaterialSource::WorkerReference,
+            CredentialRealizationKind::ProcessSecretEnvironment,
+            false,
+        ));
+        assert!(installed.supports(
+            &worker,
+            CredentialMaterialSource::ControlPlaneReference,
+            CredentialRealizationKind::WorkerProviderAdapter,
+            false,
+        ));
+        assert!(!installed.supports(
+            &worker,
+            CredentialMaterialSource::WorkerReference,
+            CredentialRealizationKind::ProcessSecretEnvironment,
+            false,
+        ));
     }
 
     /// Exposure decision table: provider material never needs a model-visible
@@ -1056,6 +1166,7 @@ mod tests {
             material_sources: BTreeSet::from([CredentialMaterialSource::ControlPlaneReference]),
             realization_kinds: BTreeSet::from([CredentialRealizationKind::WorkerProviderAdapter]),
             recipient_bound_envelopes: true,
+            alternatives: Vec::new(),
         }
     }
 

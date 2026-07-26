@@ -919,6 +919,7 @@ mod tests {
             material_sources: BTreeSet::from([CredentialMaterialSource::ControlPlaneReference]),
             realization_kinds: BTreeSet::from([realization]),
             recipient_bound_envelopes: true,
+            alternatives: Vec::new(),
         }
     }
 

@@ -1,8 +1,9 @@
 // Production composition E2E for the projected ACP launch on the local Workdir
 // tier. A PATH-local `gemini` fixture speaks the real ACP JSON-RPC wire, while the
-// aggregated `awaken` process performs the same catalog selection, model endpoint /
-// credential injection, per-thread config-home projection, and sandbox realization
-// used by an installed CLI. No scenario-host-only composition is involved.
+// aggregated `awaken` process performs the same catalog selection, exact credential
+// admission, and sandbox realization used by an installed CLI. Gemini exercises
+// process-secret projection; Codex proves a bearer-only publication cannot bypass
+// its typed credential-artifact driver. No scenario-host composition is involved.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -20,7 +21,7 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-acp-projected-local-')
 const STORAGE = path.join(TMP, 'storage');
 const BIN_DIR = path.join(TMP, 'bin');
 const BETAS = ['managed-agents-2026-04-01'];
-const WORKSPACE = `workspace_acp_projected_${process.pid}`;
+let WORKSPACE;
 const SEAL_KEY = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
 const GEMINI_AGENT = 'projected-gemini-agent';
 const CODEX_AGENT = 'projected-codex-agent';
@@ -62,46 +63,28 @@ done
 `);
   fs.chmodSync(fixture, 0o755);
 
-  const npx = path.join(BIN_DIR, 'npx');
-  fs.writeFileSync(npx, `#!/bin/sh
-while IFS= read -r line; do
-  case "$line" in
-    *'"method":"initialize"'*)
-      printf '%s\\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}' ;;
-    *'"method":"session/new"'*)
-      printf '%s\\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"codex-session"}}' ;;
-    *'"method":"session/prompt"'*)
-      mounted=no; test -f "$CODEX_HOME/config.toml" && mounted=yes
-      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"codex-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"CODEX_PROJECTED base=%s key=%s home=%s config=%s"}}}}\\n' \
-        "$OPENAI_BASE_URL" "$(printf %s "$OPENAI_API_KEY" | cut -c1-6)" "$CODEX_HOME" "$mounted"
-      printf '%s\\n' '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}'
-      exit 0 ;;
-  esac
-done
-`);
-  fs.chmodSync(npx, 0o755);
 }
 
 function start(binary, cli) {
   const environment = { ...process.env };
-  return spawn(binary, {
+  const configPath = path.join(TMP, 'config.toml');
+  fs.writeFileSync(configPath, [
+    `data_dir = ${JSON.stringify(STORAGE)}`,
+    `bind = ${JSON.stringify(`127.0.0.1:${PORT}`)}`,
+    `control_seal_key = ${JSON.stringify(SEAL_KEY)}`,
+    'sandbox_tier = "local"',
+    `acp_clis = [${JSON.stringify(cli)}]`,
+    `acp_default_cli = ${JSON.stringify(cli)}`,
+  ].join('\n'));
+  return spawn(binary, ['serve', '--config', configPath], {
     env: {
       ...environment,
       PATH: `${BIN_DIR}:${environment.PATH ?? ''}`,
-      AWAKEN_HTTP_ADDR: `127.0.0.1:${PORT}`,
-      AWAKEN_LOCAL_WORKSPACE_ID: WORKSPACE,
-      AWAKEN_DEPLOYMENT_DATA_DIR: STORAGE,
-      AWAKEN_CONTROL_SEAL_KEY: SEAL_KEY,
-      AWAKEN_ACP_CLI: cli,
-      AWAKEN_SANDBOX_TIER: 'local',
       // These ambient values are deliberately wrong. The launched CLI must receive
       // only the endpoint, upstream model, and credential revision published below.
       GOOGLE_GEMINI_BASE_URL: 'http://ambient-gemini.invalid/v1',
       GEMINI_API_KEY: 'ambient-gemini-must-not-win', // awaken-allow: secret (fixture)
       GEMINI_MODEL: 'environment-fallback-must-not-win',
-      OPENAI_BASE_URL: 'http://ambient-codex.invalid/v1',
-      OPENAI_API_KEY: 'ambient-codex-must-not-win', // awaken-allow: secret (fixture)
-      OPENAI_MODEL: 'codex-fallback-must-not-win',
     },
     stdio: ['ignore', 'ignore', 'inherit'],
   });
@@ -210,6 +193,7 @@ async function main() {
   });
   try {
     await ready(server);
+    WORKSPACE = fs.readFileSync(path.join(STORAGE, 'platform-workspace-id'), 'utf8').trim();
     const base = `http://127.0.0.1:${PORT}`;
     await publishProviderAgent(base, {
       agent: GEMINI_AGENT,
@@ -232,18 +216,8 @@ async function main() {
       envKey: 'OPENAI_API_KEY',
     });
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
-    const environment = await client.beta.environments.create({
-      name: `projected-local-${process.pid}`,
-      config: {
-        type: 'cloud',
-        networking: { type: 'unrestricted' },
-        sandbox: { isolation: 'workdir', network: { mode: 'unrestricted' } },
-      },
-      betas: BETAS,
-    });
     const session = await client.beta.sessions.create({
       agent: GEMINI_AGENT,
-      environment_id: environment.id,
       metadata: { 'awaken.runtime': 'acp:gemini' },
       betas: BETAS,
     });
@@ -270,11 +244,6 @@ async function main() {
       apiKey: 'e2e-dummy',
       baseURL: `http://127.0.0.1:${PORT}`,
     });
-    const codexEnvironment = await codexClient.beta.environments.create({
-      name: `projected-codex-${process.pid}`,
-      config: { type: 'cloud', networking: { type: 'unrestricted' } },
-      betas: BETAS,
-    });
     const vault = await codexClient.beta.vaults.create({
       display_name: 'Projected Codex MCP vault',
       betas: BETAS,
@@ -296,7 +265,6 @@ async function main() {
     await assert.rejects(
       codexClient.beta.sessions.create({
         agent: CODEX_AGENT,
-        environment_id: codexEnvironment.id,
         metadata: { 'awaken.runtime': 'acp:codex' },
         mcp_servers: [{ name: 'calc-secure', type: 'url', url: fixture.url }],
         vault_ids: [vault.id],
@@ -307,7 +275,6 @@ async function main() {
     );
     const codexSession = await codexClient.beta.sessions.create({
       agent: CODEX_AGENT,
-      environment_id: codexEnvironment.id,
       metadata: { 'awaken.runtime': 'acp:codex' },
       mcp_servers: [{ name: 'calc-anonymous', type: 'url', url: anonymousFixture.url }],
       betas: BETAS,
@@ -316,17 +283,13 @@ async function main() {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'exercise config mount' }] }],
       betas: BETAS,
     });
-    const codexReply = (await messages(codexClient, codexSession.id))
-      .find((text) => text.includes('CODEX_PROJECTED'));
-    assert.ok(codexReply, 'the projected Codex adapter returned an agent message');
-    assert.match(codexReply, /base=http:\/\/codex-db\.invalid\/v1/u);
-    assert.match(codexReply, /key=persis/u);
-    assert.ok(!codexReply.includes('ambient-codex'));
-    assert.match(codexReply, /home=.*awaken-acp-sbx.*\.acp-config/u);
-    assert.ok(!codexReply.includes(os.homedir()), 'Codex receives the Session home, not operator HOME');
-    assert.match(codexReply, /config=yes/u, 'the projected config.toml was materialized');
+    const codexTexts = await messages(codexClient, codexSession.id);
+    assert.ok(
+      codexTexts.some((text) => text.includes('credential_driver_required: codex')),
+      `Codex rejects bearer-only publication instead of restoring its removed environment protocol: ${JSON.stringify(codexTexts)}`,
+    );
 
-    console.log('E2E PASS: aggregated awaken projects publication-pinned Gemini and Codex access into per-thread local sandboxes, including config-file materialization.');
+    console.log('E2E PASS: aggregated awaken projects publication-pinned Gemini access and rejects bearer-only Codex access before launch; authenticated MCP remains fail closed on Workdir.');
   } finally {
     await stop(server).catch(() => {});
     await fixture.close();

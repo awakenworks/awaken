@@ -203,6 +203,7 @@ impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
             .into_iter()
             .collect(),
             recipient_bound_envelopes,
+            alternatives: Vec::new(),
         }
     }
 

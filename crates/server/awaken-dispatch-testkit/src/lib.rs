@@ -1330,6 +1330,7 @@ fn credential_worker(ns: &str, holder: &PlaintextHolder, capable: bool) -> Worke
                 .into_iter()
                 .collect(),
             recipient_bound_envelopes: false,
+            alternatives: Vec::new(),
         };
         manifest.capabilities.insert(
             realization
