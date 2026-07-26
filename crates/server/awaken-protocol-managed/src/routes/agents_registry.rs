@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::routes::{ManagedJson, WorkspaceScope};
 use crate::state::DEFAULT_SCOPE;
 use crate::types::agent::{Agent, AgentCreateParams, AgentUpdateParams};
-use crate::types::{ErrorResponse, Page, PageQuery, paginate};
+use crate::types::{ErrorResponse, Page, PageQuery, paginate, paginate_by};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
@@ -185,6 +185,10 @@ async fn list_versions(
         .repository
         .versions(&request_scope(&scope), &id)
         .await
-        .map(|versions| Json(paginate(versions, &page, |agent| agent.id.as_str())))
+        .map(|versions| {
+            Json(paginate_by(versions, &page, |agent| {
+                agent.version.to_string()
+            }))
+        })
         .map_err(wire_error)
 }

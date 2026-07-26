@@ -65,7 +65,12 @@ const surfaces = [
       'resources/beta/user-profiles.d.ts',
     ],
     rules: [
-      [/resources\/beta\/agents/, 'management_agents_e2e.mjs'],
+      [
+        /^resources\/beta\/agents\/versions\.d\.ts$/,
+        'management_agents_e2e.mjs',
+        '[SDK:resources/beta/agents/versions.d.ts]',
+      ],
+      [/resources\/beta\/agents(?!\/versions\.d\.ts$)/, 'management_agents_e2e.mjs'],
       [/resources\/beta\/environments/, 'management_environments_e2e.mjs'],
       [/resources\/beta\/deployment/, 'management_deployments_e2e.mjs'],
       [/resources\/beta\/sessions/, 'management_sessions_family_e2e.mjs'],
@@ -140,6 +145,13 @@ for (const surface of surfaces) {
     );
     const test = resolve(E2E, matches[0][1]);
     assert.ok(existsSync(test), `mapped behavior test is missing: ${matches[0][1]}`);
+    if (matches[0][2]) {
+      const source = readFileSync(test, 'utf8');
+      assert.ok(
+        source.includes(matches[0][2]),
+        `${surface.package}/${path} behavior owner must contain ${matches[0][2]}`,
+      );
+    }
     mappedTests.add(test);
     files += 1;
   }

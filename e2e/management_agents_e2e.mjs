@@ -69,9 +69,33 @@ async function main() {
       );
       pass('beta.agents.update(stale version) -> 409');
 
+      // [SDK:resources/beta/agents/versions.d.ts]
+      // Causal graph:
+      // create/update commits immutable revisions -> versions.list orders the
+      // complete history -> PagePromise follows cursors; archive appends one
+      // terminal revision; an unknown aggregate produces no fabricated history.
+      //
+      // Decision table:
+      // | Rule | Agent | Mutations       | limit | Effect |
+      // | V1   | exists| create + update | none  | exact revisions 1,2 |
+      // | V2   | exists| create + update | 1     | SDK follows cursor; same 1,2 |
+      // | V3   | exists| then archive    | 1     | immutable 1,2 + archived 3 |
+      // | V4   | missing| none           | any   | 404; no history |
       const versions = await drain(client.beta.agents.versions.list(agent.id, { betas: BETAS }));
-      assert.deepEqual(versions.map((v) => v.version), [1, 2]);
-      pass(`beta.agents.versions.list -> ${versions.length} versions`);
+      assert.deepEqual(versions.map((v) => [v.version, v.name]), [
+        [1, 'assistant'],
+        [2, 'assistant-2'],
+      ], 'V1: update appends and does not rewrite the original revision');
+      const pagedVersions = await drain(client.beta.agents.versions.list(agent.id, {
+        limit: 1,
+        betas: BETAS,
+      }));
+      assert.deepEqual(
+        pagedVersions.map((v) => v.version),
+        [1, 2],
+        'V2: official SDK PagePromise consumes every version page in order',
+      );
+      pass(`beta.agents.versions.list -> ${versions.length} immutable versions + cursor traversal`);
 
       const ids = (await drain(client.beta.agents.list({ betas: BETAS }))).map((a) => a.id);
       assert.ok(ids.includes(agent.id));
@@ -79,6 +103,14 @@ async function main() {
 
       const archived = await client.beta.agents.archive(agent.id, { betas: BETAS });
       assert.ok(archived.archived_at, 'archived agent carries archived_at');
+      const archivedVersions = await drain(client.beta.agents.versions.list(agent.id, {
+        limit: 1,
+        betas: BETAS,
+      }));
+      assert.deepEqual(archivedVersions.map((v) => v.version), [1, 2, 3], 'V3');
+      assert.equal(archivedVersions[0].archived_at, null, 'V3 old revision remains live history');
+      assert.equal(archivedVersions[1].archived_at, null, 'V3 update revision remains unchanged');
+      assert.ok(archivedVersions[2].archived_at, 'V3 terminal revision records archive');
       pass('beta.agents.archive -> archived_at set');
 
       // Cause/effect graph:
@@ -185,6 +217,14 @@ async function main() {
       ]) {
         assert.equal((await json(baseUrl, method, route, body)).status, 404, route);
       }
+      await assert.rejects(
+        () => drain(client.beta.agents.versions.list('agent_missing', {
+          limit: 1,
+          betas: BETAS,
+        })),
+        (error) => error.status === 404,
+        'V4',
+      );
 
       const firstPage = await json(baseUrl, 'GET', '/v1/agents?limit=1');
       assert.equal(firstPage.status, 200);
