@@ -4,9 +4,9 @@
 
 use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo, RepoError};
 use awaken_model_catalog::{
-    ApiDialect, CatalogError, DiscoveredModel, ModelAttributes, Offering, OfferingSource,
-    OfferingStatus, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderCatalog, ProviderId,
-    ValidCatalog,
+    ApiDialect, BrokeredCatalogProjection, BrokeredModelProjection, CatalogError, DiscoveredModel,
+    ModelAttributeSource, ModelAttributes, Offering, OfferingSource, OfferingStatus,
+    ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderCatalog, ProviderId, ValidCatalog,
 };
 
 fn provider(id: &str) -> Provider {
@@ -240,6 +240,69 @@ async fn put_model_attributes_round_trips(repo: &dyn CatalogRepo) {
     assert!(snap.offerings.is_empty());
 }
 
+async fn brokered_projection_persists_attributes_without_deleting_manual_truth(
+    repo: &dyn CatalogRepo,
+) {
+    // Cause graph:
+    // C1 Cloud publishes token limits -> E1 persist values with Brokered provenance.
+    // C2 a later complete Cloud listing omits the model -> E2 remove stale Brokered facts.
+    // C3 a Manual fact exists during refresh -> E3 preserve the Manual fact.
+    // Decision table: T1(C1)=E1; T2(C1,C2)=E2; T3(C1,C2,C3)=E2+E3.
+    let projection = |models| BrokeredCatalogProjection {
+        broker_id: "awaken-cloud-conformance".into(),
+        control_base_url: "https://cloud.invalid".into(),
+        models,
+        observed_at_unix_ms: 2_000,
+    };
+    repo.reconcile_brokered_projection(projection(vec![BrokeredModelProjection {
+        provider_id: "openai-cloud".into(),
+        model_id: "cloud-attribute-model".into(),
+        dialect: ApiDialect::OpenAiResponses,
+        context_window: Some(400_000),
+        max_output_tokens: Some(128_000),
+        publication_revision: 7,
+    }]))
+    .await
+    .unwrap();
+
+    let snapshot = repo.snapshot().await.unwrap();
+    let attributes = &snapshot.model_attributes["cloud-attribute-model"];
+    assert_eq!(attributes.context_window, Some(400_000));
+    assert_eq!(attributes.max_output_tokens, Some(128_000));
+    assert_eq!(
+        attributes.provenance["context_window"].source,
+        ModelAttributeSource::Brokered
+    );
+
+    repo.put_model_attributes(
+        "manual-attribute-model".into(),
+        ModelAttributes {
+            context_window: Some(200_000),
+            max_output_tokens: Some(64_000),
+            provenance: Default::default(),
+        }
+        .stamped(ModelAttributeSource::Manual, 2_001),
+    )
+    .await
+    .unwrap();
+    repo.reconcile_brokered_projection(projection(Vec::new()))
+        .await
+        .unwrap();
+
+    let snapshot = repo.snapshot().await.unwrap();
+    assert!(
+        !snapshot
+            .model_attributes
+            .contains_key("cloud-attribute-model")
+    );
+    let manual = &snapshot.model_attributes["manual-attribute-model"];
+    assert_eq!(manual.context_window, Some(200_000));
+    assert_eq!(
+        manual.provenance["context_window"].source,
+        ModelAttributeSource::Manual
+    );
+}
+
 /// `resolve_offering` is a linear first-match over the snapshot's stored offering
 /// order, so for two offerings sharing one `model_id`+dialect it returns whichever
 /// the backend lists first — and that choice is stable across independent snapshots.
@@ -465,6 +528,7 @@ async fn run_all(make: impl Fn() -> Box<dyn CatalogRepo>) {
     offering_put_is_upsert(&*make()).await;
     explicit_offering_authoring_owns_provenance(&*make()).await;
     put_model_attributes_round_trips(&*make()).await;
+    brokered_projection_persists_attributes_without_deleting_manual_truth(&*make()).await;
     resolve_first_match_follows_stored_order_deterministically(&*make()).await;
     provider_discovery_reconciles_without_deleting_manual_truth(&*make()).await;
     rejected_discovery_is_atomic(&*make()).await;
@@ -558,6 +622,10 @@ mod postgres {
         put_is_upsert(&repo("t_cat_upsert").await.unwrap()).await;
         offering_put_is_upsert(&repo("t_cat_off_upsert").await.unwrap()).await;
         put_model_attributes_round_trips(&repo("t_cat_attrs").await.unwrap()).await;
+        brokered_projection_persists_attributes_without_deleting_manual_truth(
+            &repo("t_cat_brokered_attrs").await.unwrap(),
+        )
+        .await;
         resolve_first_match_follows_stored_order_deterministically(
             &repo("t_cat_resolve").await.unwrap(),
         )

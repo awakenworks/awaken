@@ -15,8 +15,9 @@ use sqlx::types::Json;
 use crate::repo::{CatalogRepo, RepoError};
 use crate::schema::catalog_bundle;
 use crate::{
-    CatalogError, CatalogSyncResult, DiscoveredModel, ModelAttributes, Offering, ProtocolEndpoint,
-    ProtocolEndpointId, Provider, ProviderCatalog, ProviderId, ValidCatalog,
+    BrokeredCatalogProjection, CatalogError, CatalogSyncResult, DiscoveredModel, ModelAttributes,
+    Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderCatalog, ProviderId,
+    ValidCatalog,
 };
 
 /// The catalog component's table namespace (its bundle prefix).
@@ -306,6 +307,82 @@ impl CatalogRepo for PostgresCatalogRepo {
             .bind(&offering.model_id)
             .bind(endpoint_id.as_str())
             .bind(Json(offering))
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+        }
+        ValidCatalog::parse(load_catalog(&mut tx, p).await?)?;
+        tx.commit().await.map_err(storage)?;
+        Ok(result)
+    }
+
+    async fn reconcile_brokered_projection(
+        &self,
+        projection: BrokeredCatalogProjection,
+    ) -> Result<CatalogSyncResult, RepoError> {
+        let endpoint_prefix = format!("brokered:{}:", projection.broker_id.trim());
+        let p = NS;
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        let mut catalog = load_catalog(&mut tx, p).await?;
+        let result = catalog.reconcile_brokered_projection(projection)?;
+        for provider in catalog.providers.values() {
+            sqlx::query(&format!(
+                "INSERT INTO {p}_provider (id, data) VALUES ($1, $2) \
+                 ON CONFLICT (id) DO UPDATE SET data = excluded.data"
+            ))
+            .bind(&provider.id.0)
+            .bind(Json(provider))
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+        }
+        for endpoint in catalog
+            .endpoints
+            .values()
+            .filter(|endpoint| endpoint.id.0.starts_with(&endpoint_prefix))
+        {
+            sqlx::query(&format!(
+                "INSERT INTO {p}_protocol_endpoint (id, provider_id, data) VALUES ($1, $2, $3) \
+                 ON CONFLICT (id) DO UPDATE SET provider_id = excluded.provider_id, data = excluded.data"
+            ))
+            .bind(&endpoint.id.0)
+            .bind(&endpoint.provider_id.0)
+            .bind(Json(endpoint))
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+        }
+        for offering in catalog.offerings.iter().filter(|offering| {
+            offering.source == crate::OfferingSource::Brokered
+                && offering
+                    .protocol_endpoint_id
+                    .0
+                    .starts_with(&endpoint_prefix)
+        }) {
+            sqlx::query(&format!(
+                "INSERT INTO {p}_offering (model_id, protocol_endpoint_id, data) VALUES ($1, $2, $3) \
+                 ON CONFLICT (model_id, protocol_endpoint_id) DO UPDATE SET data = excluded.data"
+            ))
+            .bind(&offering.model_id)
+            .bind(&offering.protocol_endpoint_id.0)
+            .bind(Json(offering))
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+        }
+        // Reconciliation produces the authoritative merged view. Replace the
+        // attribute projection atomically so stale Brokered-only values are
+        // removed without losing Manual or Provider API facts.
+        sqlx::query(&format!("DELETE FROM {p}_model_attributes"))
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+        for (model_id, attributes) in &catalog.model_attributes {
+            sqlx::query(&format!(
+                "INSERT INTO {p}_model_attributes (model_id, data) VALUES ($1, $2)"
+            ))
+            .bind(model_id)
+            .bind(Json(attributes))
             .execute(&mut *tx)
             .await
             .map_err(storage)?;

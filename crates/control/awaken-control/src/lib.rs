@@ -182,6 +182,8 @@ pub struct ControlRouterInput {
     pub probe: Arc<dyn CredentialProbe>,
     /// Provisioning-side provider model discovery, injected by composition.
     pub model_discovery: Arc<dyn awaken_admin_config_api::ModelCatalogDiscovery>,
+    /// Signed-in managed model projection, absent outside Awaken Cloud mode.
+    pub brokered_catalog: Option<Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>>,
     /// The Managed vault state, shared with the data-plane managed state.
     pub vault_state: Arc<VaultState>,
     /// The environment state, shared with the data-plane managed state.
@@ -221,6 +223,7 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
         resource_store,
         probe,
         model_discovery,
+        brokered_catalog,
         vault_state,
         env_state,
         deployment_state,
@@ -244,6 +247,7 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
         // SDK-free.
         probe: Some(probe),
         model_discovery: Some(model_discovery),
+        brokered_catalog,
         // Shared credential-availability cooldowns (E3-4).
         availability: Default::default(),
     });

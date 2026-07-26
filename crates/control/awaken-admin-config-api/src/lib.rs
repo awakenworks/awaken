@@ -37,8 +37,8 @@ pub use awaken_config_resolver::{
     InMemoryWebhookStore, InferenceProfileStore, WebhookStore,
 };
 pub use router::{
-    AdminState, AuthorOfferingRequest, CooldownRequest, CredentialProbe, CredentialSourceView,
-    CredentialValidation, DiscoverModelsRequest, EnterCredentialRequest,
+    AdminState, AuthorOfferingRequest, BrokeredCatalogDiscovery, CooldownRequest, CredentialProbe,
+    CredentialSourceView, CredentialValidation, DiscoverModelsRequest, EnterCredentialRequest,
     EnvironmentProviderProposal, ModelCatalogDiscovery, ModelCatalogDiscoveryError,
     PoolEligibleView, ProbeStatus, ProviderConnectionStatus, ProviderConnectionSummary,
     ProviderConnectionView, PutModelAttributesRequest, ResolveProfileRequest, ResolveRequest,

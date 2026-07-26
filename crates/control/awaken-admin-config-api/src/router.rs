@@ -61,6 +61,10 @@ pub struct AdminState {
     /// layer passes only an authored endpoint plus a secret-free credential row;
     /// the adapter owns exact credential materialization and provider I/O.
     pub model_discovery: Option<Arc<dyn ModelCatalogDiscovery>>,
+    /// Optional authenticated managed-model projection. The adapter may call a
+    /// commercial service, but returns only the portable, rebuildable catalog
+    /// projection owned by `awaken-model-catalog`.
+    pub brokered_catalog: Option<Arc<dyn BrokeredCatalogDiscovery>>,
     /// Credential availability cooldowns (ADR-0043 / E3-4). An operator (or an
     /// external rate-limit signal) cools a source through `POST
     /// /credentials/:id/cooldown`; pool resolution then rotates past it. Shared, so
@@ -110,6 +114,11 @@ pub trait ModelCatalogDiscovery: Send + Sync {
     }
 }
 
+#[async_trait::async_trait]
+pub trait BrokeredCatalogDiscovery: Send + Sync {
+    async fn projection(&self) -> Result<awaken_model_catalog::BrokeredCatalogProjection, String>;
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ModelCatalogDiscoveryError {
     /// The exact source cannot be materialized by this provisioning adapter
@@ -151,6 +160,10 @@ pub fn admin_router(state: AdminState) -> Router {
             put(put_model_attributes),
         )
         .route("/v1/config/catalog", get(get_catalog))
+        .route(
+            "/v1/config/brokered-models/refresh",
+            post(refresh_brokered_models),
+        )
         .route(
             "/v1/config/credentials",
             post(post_credential).get(list_credentials),
@@ -198,6 +211,37 @@ pub fn admin_router(state: AdminState) -> Router {
             put(put_agent_inputs).get(get_agent_inputs),
         )
         .with_state(state)
+}
+
+async fn refresh_brokered_models(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+) -> Result<Json<CatalogSyncResult>, Problem> {
+    let rid = req_id(&headers);
+    let discovery = state.brokered_catalog.as_ref().ok_or_else(|| {
+        Problem(ApiError::new(
+            503,
+            "brokered_catalog_unavailable",
+            "Managed model catalog unavailable",
+            "Sign in to Awaken Cloud before refreshing managed models",
+            &rid,
+        ))
+    })?;
+    let projection = discovery.projection().await.map_err(|detail| {
+        Problem(ApiError::new(
+            503,
+            "brokered_catalog_unavailable",
+            "Managed model catalog unavailable",
+            detail,
+            &rid,
+        ))
+    })?;
+    let result = state
+        .catalog
+        .reconcile_brokered_projection(projection)
+        .await
+        .map_err(|error| repo_problem(&error, &rid))?;
+    Ok(Json(result))
 }
 
 /// A read-only, non-executable hint derived from process environment. It is not a

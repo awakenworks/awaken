@@ -173,6 +173,29 @@ see [ADR-0043](../adr/0043-management-plane-config-credential-model-and-runtime-
 runtime-unaware boundary as D6/D9 / [ADR-0043](../adr/0043-management-plane-config-credential-model-and-runtime-unaware-secret-seam.md)).
 It has its **own config API**, separate from agent config and from credentials.
 
+### Direct and Cloud-brokered sources
+
+The open catalog uses two explicit access paths and never infers one from an
+empty credential:
+
+| Path | Local source | Access binding | Authority |
+|---|---|---|---|
+| Direct/BYOK | manual or Provider API Offering | exact local credential, pool, or explicit no-auth | Awaken catalog, vault, and Profile |
+| Awaken Cloud subscription | on-demand `brokered` Offering projection | `brokered` | Cloud identity/entitlement/grant; Awaken Profile selection |
+
+Cloud discovery is an authenticated on-demand API projection, not a timer and
+not a second writable local catalog. It may publish optional context/output
+limits with `brokered` field provenance. Unknown remains absent, stale Cloud
+facts may clear only prior `brokered` facts, and manually authored facts win.
+Capabilities that vary by protocol remain Offering/endpoint evidence rather
+than being flattened into an unsafe model-wide claim.
+
+Billing, subscription, price, quota, usage and charge remain entirely in
+`awaken-cloud`. The open product stores only public model coordinates, optional
+public attributes, local Profile policy, and opaque grant correlation; it never
+stores Cloud internal routes, Provider credentials, prices, balances or usage
+ledger facts.
+
 Names follow `awaken-management-contract` (our Agents-product sibling), not raw
 oversight-next; the execution side keeps our existing `ResolvedSpec` /
 `ModelBinding`. `ModelApiCompat` is the wire/protocol flavor (replaces oversight's

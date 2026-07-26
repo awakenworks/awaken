@@ -13,8 +13,9 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::repo::{CatalogRepo, RepoError};
 use crate::schema::catalog_bundle;
 use crate::{
-    CatalogError, CatalogSyncResult, DiscoveredModel, ModelAttributes, Offering, ProtocolEndpoint,
-    ProtocolEndpointId, Provider, ProviderCatalog, ProviderId, ValidCatalog,
+    BrokeredCatalogProjection, CatalogError, CatalogSyncResult, DiscoveredModel, ModelAttributes,
+    Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderCatalog, ProviderId,
+    ValidCatalog,
 };
 
 /// The catalog component's table namespace (its bundle prefix).
@@ -327,6 +328,81 @@ impl CatalogRepo for SqliteCatalogRepo {
                          DO UPDATE SET data = excluded.data"
                     ),
                     params![offering.model_id, endpoint_id, data],
+                )
+                .map_err(storage)?;
+            }
+            ValidCatalog::parse(load_catalog(&tx, p)?)?;
+            tx.commit().map_err(storage)?;
+            Ok(result)
+        })
+        .await
+    }
+
+    async fn reconcile_brokered_projection(
+        &self,
+        projection: BrokeredCatalogProjection,
+    ) -> Result<CatalogSyncResult, RepoError> {
+        let endpoint_prefix = format!("brokered:{}:", projection.broker_id.trim());
+        self.with_conn(move |conn, p| {
+            let tx = conn.transaction().map_err(storage)?;
+            let mut catalog = load_catalog(&tx, p)?;
+            let result = catalog.reconcile_brokered_projection(projection)?;
+            for provider in catalog.providers.values() {
+                let data = serde_json::to_string(provider).map_err(storage)?;
+                tx.execute(
+                    &format!(
+                        "INSERT INTO {p}_provider (id, data) VALUES (?1, ?2) \
+                         ON CONFLICT(id) DO UPDATE SET data = excluded.data"
+                    ),
+                    params![provider.id.0, data],
+                )
+                .map_err(storage)?;
+            }
+            for endpoint in catalog
+                .endpoints
+                .values()
+                .filter(|endpoint| endpoint.id.0.starts_with(&endpoint_prefix))
+            {
+                let data = serde_json::to_string(endpoint).map_err(storage)?;
+                tx.execute(
+                    &format!(
+                        "INSERT INTO {p}_protocol_endpoint (id, provider_id, data) \
+                         VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET \
+                         provider_id = excluded.provider_id, data = excluded.data"
+                    ),
+                    params![endpoint.id.0, endpoint.provider_id.0, data],
+                )
+                .map_err(storage)?;
+            }
+            for offering in catalog.offerings.iter().filter(|offering| {
+                offering.source == crate::OfferingSource::Brokered
+                    && offering
+                        .protocol_endpoint_id
+                        .0
+                        .starts_with(&endpoint_prefix)
+            }) {
+                let data = serde_json::to_string(offering).map_err(storage)?;
+                tx.execute(
+                    &format!(
+                        "INSERT INTO {p}_offering (model_id, protocol_endpoint_id, data) \
+                         VALUES (?1, ?2, ?3) ON CONFLICT(model_id, protocol_endpoint_id) \
+                         DO UPDATE SET data = excluded.data"
+                    ),
+                    params![offering.model_id, offering.protocol_endpoint_id.0, data],
+                )
+                .map_err(storage)?;
+            }
+            // The aggregate has already merged Brokered observations with any
+            // authoritative local facts. Persist that complete attribute view in
+            // the same transaction so stale Brokered-only values disappear while
+            // Manual/Provider API values survive the refresh.
+            tx.execute(&format!("DELETE FROM {p}_model_attributes"), [])
+                .map_err(storage)?;
+            for (model_id, attributes) in &catalog.model_attributes {
+                let data = serde_json::to_string(attributes).map_err(storage)?;
+                tx.execute(
+                    &format!("INSERT INTO {p}_model_attributes (model_id, data) VALUES (?1, ?2)"),
+                    params![model_id, data],
                 )
                 .map_err(storage)?;
             }

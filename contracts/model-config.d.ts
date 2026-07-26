@@ -170,6 +170,10 @@ export interface CooldownRequest {
  *
  * No credential is needed.
  *
+ * Obtain short-lived, exact-model access from the platform broker at
+ * execution time. No Provider credential or Cloud capability is persisted
+ * in the local profile or publication.
+ *
  * Use exactly one source.
  *
  * Use one eligible member of a pool; the resolver selects by policy and may
@@ -182,7 +186,7 @@ export interface CredentialBinding {
     [property: string]: unknown;
 }
 
-export type Type = "none" | "exact" | "one_of_credential_pool";
+export type Type = "none" | "brokered" | "exact" | "one_of_credential_pool";
 
 /**
  * A pool of interchangeable credential sources for one provider principal
@@ -420,6 +424,10 @@ export interface PrimaryElement {
  *
  * No credential is needed.
  *
+ * Obtain short-lived, exact-model access from the platform broker at
+ * execution time. No Provider credential or Cloud capability is persisted
+ * in the local profile or publication.
+ *
  * Use exactly one source.
  *
  * Use one eligible member of a pool; the resolver selects by policy and may
@@ -481,7 +489,7 @@ export interface ProvenanceValue {
 /**
  * Authority behind one published model-attribute value.
  */
-export type ProvenanceSource = "manual" | "provider_api" | "curated";
+export type ProvenanceSource = "manual" | "provider_api" | "curated" | "brokered";
 
 /**
  * Stable, secret-free identity used to select one catalog offering. `model_id`
@@ -542,8 +550,12 @@ export interface Offering {
  * Explicit UI/API authoring is authoritative over provider discovery.
  *
  * Observed from the configured endpoint's provider API.
+ *
+ * Rebuildable projection of an authenticated managed model service. Access
+ * is authorized just in time; the catalog row carries no entitlement,
+ * Provider credential, internal route, or pricing fact.
  */
-export type OfferingSource = "manual" | "provider_api";
+export type OfferingSource = "manual" | "provider_api" | "brokered";
 
 /**
  * Whether this route may be selected for a new publication. Provider sync is
@@ -898,6 +910,10 @@ export interface ResolveRequest {
  * The "which credential" axis (oversight-next / awaken-management-contract).
  *
  * No credential is needed.
+ *
+ * Obtain short-lived, exact-model access from the platform broker at
+ * execution time. No Provider credential or Cloud capability is persisted
+ * in the local profile or publication.
  *
  * Use exactly one source.
  *

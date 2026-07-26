@@ -32,17 +32,25 @@
 //! older than TTL -> `stale`; configured without an active credential ->
 //! `needs_attention`; active credential + only unavailable offerings ->
 //! `unavailable`. Tests below exercise every leaf from composed stores.
+//!
+//! Brokered refresh decision table: B1 adapter present + valid projection ->
+//! atomically expose only `brokered` offerings; B2 adapter absent -> typed 503
+//! and no catalog mutation; B3 adapter failure -> typed 503 and no mutation.
 
 use std::sync::{Arc, Mutex};
 
 use awaken_admin_config_api::{
-    AdminState, ModelCatalogDiscovery, ModelCatalogDiscoveryError, admin_router,
+    AdminState, BrokeredCatalogDiscovery, ModelCatalogDiscovery, ModelCatalogDiscoveryError,
+    admin_router,
 };
 use awaken_agent_contract::RedactedString;
 use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo};
 use awaken_credential_vault::{AvailabilityLedger, CredentialSource};
 use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo};
-use awaken_model_catalog::{DiscoveredModel, OfferingSource, OfferingStatus, ProtocolEndpoint};
+use awaken_model_catalog::{
+    ApiDialect, BrokeredCatalogProjection, BrokeredModelProjection, DiscoveredModel,
+    OfferingSource, OfferingStatus, ProtocolEndpoint,
+};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -101,6 +109,15 @@ struct Harness {
     credentials: Arc<InMemoryCredentialRepo>,
 }
 
+struct FixedBrokeredDiscovery(Result<BrokeredCatalogProjection, String>);
+
+#[async_trait::async_trait]
+impl BrokeredCatalogDiscovery for FixedBrokeredDiscovery {
+    async fn projection(&self) -> Result<BrokeredCatalogProjection, String> {
+        self.0.clone()
+    }
+}
+
 fn harness() -> Harness {
     let catalog = Arc::new(InMemoryCatalogRepo::new());
     let discovery = Arc::new(FixedDiscovery {
@@ -127,6 +144,7 @@ fn harness() -> Harness {
         resources: Arc::new(awaken_admin_config_api::InMemoryAgentInputBindingRepository::new()),
         probe: None,
         model_discovery: Some(discovery.clone()),
+        brokered_catalog: None,
         availability: Arc::new(AvailabilityLedger::new()),
     });
     Harness {
@@ -197,6 +215,86 @@ async fn author_prerequisites(app: &Router) -> String {
     .await;
     assert_eq!(status, StatusCode::CREATED);
     credential["id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn b1_brokered_refresh_exposes_only_explicit_managed_offerings() {
+    let catalog = Arc::new(InMemoryCatalogRepo::new());
+    let app = admin_router(AdminState {
+        catalog: catalog.clone(),
+        credentials: Arc::new(InMemoryCredentialRepo::new()),
+        secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
+        profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
+        resources: Arc::new(awaken_admin_config_api::InMemoryAgentInputBindingRepository::new()),
+        probe: None,
+        model_discovery: None,
+        brokered_catalog: Some(Arc::new(FixedBrokeredDiscovery(Ok(
+            BrokeredCatalogProjection {
+                broker_id: "awaken-cloud".into(),
+                control_base_url: "https://api.awakenworks.com".into(),
+                models: vec![BrokeredModelProjection {
+                    provider_id: "openai".into(),
+                    model_id: "gpt-5".into(),
+                    dialect: ApiDialect::OpenAiResponses,
+                    context_window: Some(400_000),
+                    max_output_tokens: Some(128_000),
+                    publication_revision: 7,
+                }],
+                observed_at_unix_ms: 42,
+            },
+        )))),
+        availability: Arc::new(AvailabilityLedger::new()),
+    });
+
+    let (status, result) = call(
+        &app,
+        "POST",
+        "/v1/config/brokered-models/refresh",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["activated"], 1);
+    let snapshot = catalog.snapshot().await.unwrap();
+    assert_eq!(snapshot.offerings.len(), 1);
+    assert_eq!(snapshot.offerings[0].source, OfferingSource::Brokered);
+    assert_eq!(
+        snapshot.model_attributes["gpt-5"].context_window,
+        Some(400_000)
+    );
+    assert_eq!(
+        snapshot.model_attributes["gpt-5"].provenance["context_window"].source,
+        awaken_model_catalog::ModelAttributeSource::Brokered
+    );
+    assert_eq!(
+        snapshot.endpoints[&snapshot.offerings[0].protocol_endpoint_id.0]
+            .base_url
+            .as_deref(),
+        Some("https://api.awakenworks.com")
+    );
+}
+
+#[tokio::test]
+async fn b2_missing_broker_adapter_is_typed_and_does_not_mutate_catalog() {
+    let harness = harness();
+    let (status, problem) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/brokered-models/refresh",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(problem["code"], "brokered_catalog_unavailable");
+    assert!(
+        harness
+            .catalog
+            .snapshot()
+            .await
+            .unwrap()
+            .offerings
+            .is_empty()
+    );
 }
 
 #[tokio::test]
