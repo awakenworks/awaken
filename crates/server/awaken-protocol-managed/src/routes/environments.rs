@@ -166,12 +166,16 @@ impl EnvironmentState {
         })
     }
 
-    /// Create an environment named `name` with the opaque `config` blob
-    /// (`{type, runtime?, sandbox?}`) and seed its healthcheck work item — the same
+    /// Create an environment named `name` with the official typed config union and
+    /// seed its healthcheck work item — the same
     /// effect as `POST /v1/environments`, exposed so an in-process author (the admin
     /// assistant's `admin_draft_environment`) persists through the SAME registry path.
     /// Returns the new environment id.
-    pub async fn author(&self, name: &str, config: serde_json::Value) -> String {
+    pub async fn author(&self, name: &str, config: serde_json::Value) -> Result<String, String> {
+        let typed = serde_json::from_value::<EnvironmentConfigParams>(config)
+            .map_err(|error| format!("invalid Environment config: {error}"))?;
+        let config =
+            canonical_environment_config(typed).map_err(|error| error.1.0.error.message)?;
         let item = self
             .envs
             .create_scoped(
@@ -183,7 +187,7 @@ impl EnvironmentState {
             )
             .await;
         self.work.enqueue_healthcheck(&item.id).await;
-        item.id
+        Ok(item.id)
     }
 
     /// Whether `env_id` is a self-hosted environment. Sessions assigned to one are
@@ -669,8 +673,7 @@ mod tests {
         // | S4   | missing/archived custom | any | - | None |
         // | S5   | implicit env_local | native/ACP | - | canonical local snapshot |
         // | S6   | active empty limited allowlist | any | - | network None |
-        // Private sandbox fields are not part of this graph; the typed HTTP edge
-        // rejects them and the snapshot compiler never interprets stored legacy data.
+        // Sandbox policy is not part of the Environment graph.
         let state = EnvironmentState::new();
         let item = state
             .envs
@@ -680,8 +683,7 @@ mod tests {
                 BTreeMap::new(),
                 json!({
                     "type": "cloud",
-                    "networking": {"type": "limited", "allowed_hosts": ["a.test", "shared.test"]},
-                    "sandbox": {"network": {"mode": "allowlist", "hosts": ["shared.test", "b.test"]}}
+                    "networking": {"type": "limited", "allowed_hosts": ["a.test", "shared.test"]}
                 }),
             )
             .await;
@@ -695,7 +697,7 @@ mod tests {
         assert_eq!(
             native.sandbox,
             json!({}),
-            "legacy private config is ignored"
+            "sandbox policy is not an Environment field"
         );
         assert_eq!(
             native.credential_realization.mcp_holder.boundary,
@@ -770,5 +772,35 @@ mod tests {
             awaken_session_contract::SessionNetworkPolicy::None,
             "S6"
         );
+    }
+
+    #[tokio::test]
+    async fn assistant_authoring_uses_the_same_official_union_guard() {
+        let state = EnvironmentState::new();
+        let id = state
+            .author(
+                "cloud",
+                json!({
+                    "type": "cloud",
+                    "networking": {"type": "limited", "allowed_hosts": ["api.example.com"]}
+                }),
+            )
+            .await
+            .expect("official cloud config");
+        assert!(state.snapshot(&id, None).await.is_some());
+
+        for (case, config) in [
+            (
+                "runtime",
+                json!({"type": "self_hosted", "runtime": "acp:codex"}),
+            ),
+            (
+                "sandbox",
+                json!({"type": "self_hosted", "sandbox": {"isolation": "namespace"}}),
+            ),
+        ] {
+            let error = state.author(case, config).await.expect_err(case);
+            assert!(error.contains("unsupported fields"), "{case}: {error}");
+        }
     }
 }

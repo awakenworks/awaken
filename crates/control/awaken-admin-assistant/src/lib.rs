@@ -123,18 +123,10 @@ use `admin_validate_agent` to confirm. Iterate until it compiles cleanly.
 4. Briefly tell the operator what you drafted and the trade-offs. NEVER publish — \
 publishing is the operator's decision in the console.
 
-To AUTHOR an ENVIRONMENT (the 'where/how it runs' — an ACP CLI and/or an isolated \
-sandbox, distinct from an agent), use `admin_draft_environment`:
-1. Call `admin_get_platform_capabilities` first; use its `runtimes` (the valid `runtime` \
-ids: `awaken` native or `acp:<cli>`) and `sandbox.config_schema` + `sandbox.presets`.
-2. Set `runtime` to the operator's chosen backend (e.g. `acp:claude` for Claude Code), \
-`placement` (`self_hosted` unless they say cloud), and — when they want isolation — a \
-`sandbox` conforming to `sandbox.config_schema`. Start from the closest preset spec and \
-adjust; do NOT invent isolation/network shapes. For 'lock it down / no internet' use \
-`network.mode: none`; for 'only reach X' use `allowlist` with `hosts`.
-3. A runtime does NOT go on the agent — an environment carries it. A session binds an \
-agent to an environment. So 'run this agent as claude in a locked-down sandbox' = author \
-the agent normally, THEN author an environment with that runtime + sandbox.
+To AUTHOR an ENVIRONMENT, use `admin_draft_environment`. Environment config follows the \
+official Managed Agents union exactly: choose `placement` (`cloud` or `self_hosted`); only \
+cloud may include official `networking` and `packages`. Runtime and Awaken sandbox policy \
+are separate resources and must never be embedded in Environment config.
 
 AUTHORING RULES:
 - Plugin sections (e.g. `state_machine`, `permission`, `compact`, `memory`) MUST conform \
@@ -320,14 +312,6 @@ pub struct PlatformCapabilities {
     /// Ids of the memory stores an agent may bind (data-plane inventory).
     #[serde(default)]
     pub memory_stores: Vec<String>,
-    /// Execution backends an environment may bind (`awaken` native + `acp:<cli>`), each
-    /// `{id,label,kind,cli,description}`. Grounds `admin_draft_environment`'s `runtime`.
-    #[serde(default)]
-    pub runtimes: Vec<serde_json::Value>,
-    /// The sandbox capability `{config_schema, presets}` — the same schema the console
-    /// renders — so the assistant authors a schema-conformant `config.sandbox`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sandbox: Option<serde_json::Value>,
 }
 
 /// One composable plugin and the config-section keys it reads, plus its full JSON
@@ -533,19 +517,16 @@ pub fn admin_tool_descriptors() -> Vec<ToolDescriptor> {
         ToolDescriptor::pinned(
             "admin",
             CREATE_ENV_TOOL,
-            "Author and persist an execution ENVIRONMENT — the 'where/how it runs' resource \
-             a session binds (distinct from an agent). Sets the `runtime` backend (`awaken` \
-             native, or `acp:claude`/`acp:codex`/… for an ACP CLI — see capabilities \
-             `runtimes`), the `placement` (cloud | self_hosted), and an optional `sandbox` \
-             (isolation/network/limits) conforming to capabilities `sandbox.config_schema` — \
-             prefer a preset spec. Returns the new environment id.",
+            "Author and persist an official Managed Agents ENVIRONMENT. Select cloud or \
+             self_hosted placement; cloud may include official networking and packages. \
+             Runtime and sandbox policy are separate resources. Returns the environment id.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "name": { "type": "string", "description": "A short environment name." },
-                    "runtime": { "type": "string", "description": "Backend id: `awaken` or `acp:<cli>` (from capabilities runtimes)." },
                     "placement": { "type": "string", "enum": ["cloud", "self_hosted"], "description": "Where the worker runs; default self_hosted." },
-                    "sandbox": { "type": "object", "description": "Optional isolation/network/limits per capabilities sandbox.config_schema." }
+                    "networking": { "type": "object", "description": "Official cloud networking union; invalid for self_hosted." },
+                    "packages": { "type": "object", "description": "Official cloud package lists; invalid for self_hosted." }
                 },
                 "required": ["name"]
             }),
@@ -601,11 +582,11 @@ struct DraftEnvironment {
 struct DraftEnvArgs {
     name: String,
     #[serde(default)]
-    runtime: Option<String>,
-    #[serde(default)]
     placement: Option<String>,
     #[serde(default)]
-    sandbox: Option<serde_json::Value>,
+    networking: Option<serde_json::Value>,
+    #[serde(default)]
+    packages: Option<serde_json::Value>,
 }
 
 #[async_trait]
@@ -624,20 +605,16 @@ impl RawTool for DraftEnvironment {
                 ));
             }
         };
-        // Assemble the same `config` shape the console's New-environment modal posts:
-        // {type, runtime?, sandbox?}. `awaken` runtime is the native default → omitted.
+        // Assemble only the official Environment union. The real author adapter
+        // validates it through the same canonicalizer as POST /v1/environments.
         let mut config = serde_json::json!({
             "type": args.placement.as_deref().unwrap_or("self_hosted"),
         });
-        if let Some(rt) = args
-            .runtime
-            .as_deref()
-            .filter(|r| !r.is_empty() && *r != "awaken")
-        {
-            config["runtime"] = serde_json::json!(rt);
+        if let Some(networking) = &args.networking {
+            config["networking"] = networking.clone();
         }
-        if let Some(sb) = &args.sandbox {
-            config["sandbox"] = sb.clone();
+        if let Some(packages) = &args.packages {
+            config["packages"] = packages.clone();
         }
         audit(
             &self.store,
@@ -645,8 +622,8 @@ impl RawTool for DraftEnvironment {
             CREATE_ENV_TOOL,
             &call.call_id,
             format!(
-                "draft environment `{}` runtime={:?}",
-                args.name, args.runtime
+                "draft environment `{}` placement={:?}",
+                args.name, args.placement
             ),
         )
         .await?;
