@@ -16,14 +16,15 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
 import Anthropic from '@anthropic-ai/sdk';
 import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38213);
 const BETAS = ['managed-agents-2026-04-01'];
-const STORE_DIR = `/tmp/awaken-mem-extract-durable-e2e-${process.pid}`;
+const STORE_DIR = path.join(os.tmpdir(), `awaken-mem-extract-durable-e2e-${process.pid}`);
 // A distinctive, once-only memory. The deterministic extractor saves a memory
 // named after a `fact-<tag>` token in the transcript; a recall prompt WITHOUT such
 // a token makes the extractor fall back to its fixed sky memory, so it never
@@ -38,12 +39,16 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function extractionIntents(sessionId) {
   const database = path.join(STORE_DIR, 'sessions.db');
   if (!fs.existsSync(database)) return [];
-  const output = execFileSync('sqlite3', [
-    '-json',
-    database,
-    'SELECT data FROM managed_memory_extraction ORDER BY intent_id',
-  ]).toString().trim();
-  return (output ? JSON.parse(output) : [])
+  const connection = new DatabaseSync(database, { readOnly: true });
+  let rows;
+  try {
+    rows = connection
+      .prepare('SELECT data FROM managed_memory_extraction ORDER BY intent_id')
+      .all();
+  } finally {
+    connection.close();
+  }
+  return rows
     .map((row) => JSON.parse(row.data))
     .filter((intent) => intent.session_id === sessionId);
 }
@@ -147,7 +152,7 @@ async function main() {
   } finally {
     for (const srv of servers) await stopServer(srv);
     upstream.close();
-    fs.rmSync(STORE_DIR, { recursive: true, force: true });
+    fs.rmSync(STORE_DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 

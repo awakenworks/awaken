@@ -16,7 +16,7 @@
 mod harness;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -26,7 +26,7 @@ use awaken_run_ingress::{
 };
 use awaken_runtime_contract::resume::ResumeResult;
 use axum::extract::State;
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::post;
 use axum::{Json, Router};
 use serde_json::{Value, json};
@@ -261,6 +261,81 @@ async fn bind_sandbox(
         .await
         .expect("bind sandbox");
     Json(json!({ "applied": outcome.applied() }))
+}
+
+struct ScriptedBindState {
+    first_status: StatusCode,
+    calls: AtomicUsize,
+}
+
+async fn scripted_bind(State(state): State<Arc<ScriptedBindState>>) -> (StatusCode, Json<Value>) {
+    let call = state.calls.fetch_add(1, Ordering::SeqCst);
+    if call == 0 && state.first_status != StatusCode::OK {
+        return (state.first_status, Json(json!({ "error": "injected" })));
+    }
+    (StatusCode::OK, Json(json!({ "applied": true })))
+}
+
+async fn spawn_scripted_bind_server(first_status: StatusCode) -> (String, Arc<ScriptedBindState>) {
+    let state = Arc::new(ScriptedBindState {
+        first_status,
+        calls: AtomicUsize::new(0),
+    });
+    let app = Router::new()
+        .route("/v1/worker/dispatch/bind_sandbox", post(scripted_bind))
+        .with_state(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind scripted transport");
+    let address = listener.local_addr().expect("scripted address");
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve scripted bind");
+    });
+    (format!("http://{address}"), state)
+}
+
+/// Sandbox-bind transport cause graph:
+/// C1=the exact claim is current; C2=response is ambiguous/5xx; C3=response is
+/// an authoritative 4xx. The same claim + sandbox reference is idempotent, so
+/// C1+C2 may retry; C3 must fail immediately and must never be disguised.
+///
+/// | Rule | first response | retry | result |
+/// |---|---|---|---|
+/// | T1 | 200 | no | applied (covered by the main transport test) |
+/// | T2 | 503 | yes, bounded | applied on the second response |
+/// | T3 | 400 | no | rejected immediately |
+#[tokio::test]
+async fn sandbox_bind_retries_only_ambiguous_transport_outcomes() {
+    let claim = RunClaim {
+        run_id: RunId("bind-retry".into()),
+        owner: "worker-A:1:boot-A".into(),
+        epoch: 1,
+    };
+
+    let (retry_base, retry_state) =
+        spawn_scripted_bind_server(StatusCode::SERVICE_UNAVAILABLE).await;
+    let retrying = HttpDispatchQueue::new(retry_base, WorkerIdentity::new("worker-A", "boot-A", 1));
+    assert!(
+        retrying
+            .bind_sandbox(&claim, "sandbox-stable")
+            .await
+            .expect("T2 retries the ambiguous response")
+            .applied()
+    );
+    assert_eq!(retry_state.calls.load(Ordering::SeqCst), 2);
+
+    let (reject_base, reject_state) = spawn_scripted_bind_server(StatusCode::BAD_REQUEST).await;
+    let rejecting =
+        HttpDispatchQueue::new(reject_base, WorkerIdentity::new("worker-A", "boot-A", 1));
+    assert!(
+        rejecting
+            .bind_sandbox(&claim, "sandbox-invalid")
+            .await
+            .is_err()
+    );
+    assert_eq!(reject_state.calls.load(Ordering::SeqCst), 1);
 }
 
 // ── 1. The db-less remote-worker seam: enqueue → claim → fence → settle ──────────

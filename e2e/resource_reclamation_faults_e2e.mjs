@@ -121,7 +121,8 @@ function seedRepository(root) {
   const work = path.join(root, 'fenced-repository-work');
   const remote = path.join(root, 'fenced-repository.git');
   fs.mkdirSync(work, { recursive: true });
-  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: work });
+  execFileSync('git', ['init', '-q'], { cwd: work });
+  execFileSync('git', ['symbolic-ref', 'HEAD', 'refs/heads/main'], { cwd: work });
   execFileSync('git', ['config', 'user.email', 'reclamation@example.invalid'], { cwd: work });
   execFileSync('git', ['config', 'user.name', 'reclamation-faults'], { cwd: work });
   fs.writeFileSync(path.join(work, 'README.md'), 'fenced repository');

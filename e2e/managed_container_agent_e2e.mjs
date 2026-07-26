@@ -19,6 +19,8 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
 import { spawn, execFileSync, execSync, spawnSync } from 'node:child_process';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import { REPO_ROOT } from './harness.mjs';
@@ -30,7 +32,7 @@ const ENGINE = process.env.AWAKEN_E2E_CONTAINER_ENGINE ?? 'docker';
 assert.ok(['docker', 'podman'].includes(ENGINE), `unsupported container engine ${ENGINE}`);
 const IMAGE = process.env.AWAKEN_TEST_SESSION_IMAGE ?? 'awaken-sandbox:session-e2e';
 const PACKAGE_BASE_IMAGE = `${IMAGE}-package-base`;
-const TMP = `/tmp/awaken-container-agent-${ENGINE}-e2e-${process.pid}`;
+const TMP = path.join(os.tmpdir(), `awaken-container-agent-${ENGINE}-e2e-${process.pid}`);
 const ACP_FIXTURE = `process.stdin.once('data',()=>{fs=require('fs');p='/usr/local/share/awaken-package-proof';pkg=fs.existsSync(p)?'-'+fs.readFileSync(p,'utf8'):'';console.log(JSON.stringify({type:'message',text:'${MARKER}'+pkg}));console.log(JSON.stringify({type:'turn_end',reason:'natural_end'}))})`;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -200,7 +202,8 @@ function git(args, cwd) {
 function seedSkillRepository() {
   const work = `${TMP}/skill-seed`;
   fs.mkdirSync(`${work}/greet`, { recursive: true });
-  git(['init', '-q', '-b', 'main'], work);
+  git(['init', '-q'], work);
+  git(['symbolic-ref', 'HEAD', 'refs/heads/main'], work);
   git(['config', 'user.email', 'container-e2e@awaken.invalid'], work);
   git(['config', 'user.name', 'Awaken Container E2E'], work);
   fs.writeFileSync(
@@ -243,7 +246,7 @@ function cleanupTestContainers() {
 // The image still contains the real `awaken-sandbox hand --stdio` binary.
 function ensureSessionImage() {
   if (spawnSync(ENGINE, ['image', 'inspect', IMAGE], { stdio: 'ignore' }).status === 0) return;
-  execFileSync('deploy/images/sandbox/build.sh', [IMAGE, ''], {
+  execFileSync('bash', ['deploy/images/sandbox/build.sh', IMAGE, ''], {
     cwd: REPO_ROOT,
     env: { ...process.env, CONTAINER_ENGINE: ENGINE },
     stdio: 'inherit',

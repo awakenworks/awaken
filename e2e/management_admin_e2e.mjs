@@ -366,9 +366,26 @@ async function main() {
         protocol_endpoint_id: 'ep2', dialect: 'anthropic_messages', upstream_model: null,
       });
 
+      // Cause graph / decision table:
+      // C1 one model has ep1+ep2 and no qualifier -> E1 fail model_ambiguous.
+      // C2 exact ep1 target -> E2 resolve ep1; C3 ep1 disabled + explicit ep2
+      // fallback -> E3 resolve ep2. No implicit first-match/fallback is allowed.
+      r = await req(base, 'POST', '/v1/config/inference/resolve', {
+        workspace_id: 'ws', model_id: 'claude-opus-4-8',
+        binding: { type: 'exact', credential_source_id: credId },
+      });
+      assert.equal(r.status, 409, JSON.stringify(r.json));
+      assert.equal(r.json.code, 'model_ambiguous');
+      pass('unqualified duplicate model -> 409 model_ambiguous');
+
       r = await req(base, 'PUT', '/v1/config/inference-profiles/prof1', {
-        model_id: 'claude-opus-4-8',
-        credential_binding: { type: 'exact', credential_source_id: credId },
+        primary: {
+          target: {
+            model_id: 'claude-opus-4-8', provider_id: 'anthropic', protocol_endpoint_id: 'ep1',
+          },
+          credential_binding: { type: 'exact', credential_source_id: credId },
+        },
+        fallbacks: [],
         disabled_endpoint_ids: [],
       });
       assert.equal(r.status, 200);
@@ -384,17 +401,34 @@ async function main() {
       checkContract('ResolvedInferenceView', r.json);
       assert.equal(r.json.base_url, 'https://api.anthropic.com/v1/');
       assert.equal(r.json.credential_present, true);
-      pass('resolve-by-profile picks the first offering (ep1)');
+      pass('resolve-by-profile selects the explicitly authored ep1 target');
 
       // A profile that disables ep1 steers resolution to ep2.
       await req(base, 'PUT', '/v1/config/inference-profiles/prof2', {
-        model_id: 'claude-opus-4-8',
-        credential_binding: { type: 'none' },
+        primary: {
+          target: {
+            model_id: 'claude-opus-4-8', provider_id: 'anthropic', protocol_endpoint_id: 'ep1',
+          },
+          credential_binding: { type: 'none' },
+        },
+        fallbacks: [{
+          target: {
+            model_id: 'claude-opus-4-8', provider_id: 'anthropic', protocol_endpoint_id: 'ep2',
+          },
+          credential_binding: { type: 'none' },
+        }],
         disabled_endpoint_ids: ['ep1'],
       });
-      r = await req(base, 'POST', '/v1/config/inference-profiles/prof2/resolve', { workspace_id: 'ws' });
+      r = await req(base, 'POST', '/v1/config/inference-profiles/prof2/resolve-candidates', {
+        workspace_id: 'ws',
+      });
       assert.equal(r.status, 200, JSON.stringify(r.json));
-      assert.equal(r.json.base_url, 'https://ep2.example/v1/', 'disabled ep1 -> resolves to ep2');
+      assert.equal(r.json.candidates.length, 1);
+      assert.equal(
+        r.json.candidates[0].base_url,
+        'https://ep2.example/v1/',
+        'disabled ep1 -> resolves to explicit ep2 fallback',
+      );
       pass('resolve-by-profile honors disabled_endpoint_ids (fails over to ep2)');
 
       r = await req(base, 'POST', '/v1/config/inference-profiles/nope/resolve', { workspace_id: 'ws' });
@@ -407,7 +441,10 @@ async function main() {
       checkContract('CredentialSource', r.json);
       assert.equal(r.json.status, 'disabled');
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
-        workspace_id: 'ws', model_id: 'claude-opus-4-8',
+        workspace_id: 'ws',
+        target: {
+          model_id: 'claude-opus-4-8', provider_id: 'anthropic', protocol_endpoint_id: 'ep1',
+        },
         binding: { type: 'exact', credential_source_id: credId },
       });
       assert.equal(r.status, 422, JSON.stringify(r.json));
@@ -417,7 +454,9 @@ async function main() {
       // --- resolve with a None binding returns a triple with no credential ---
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
         workspace_id: 'ws',
-        model_id: 'claude-opus-4-8',
+        target: {
+          model_id: 'claude-opus-4-8', provider_id: 'anthropic', protocol_endpoint_id: 'ep2',
+        },
         binding: { type: 'none' },
       });
       assert.equal(r.status, 200);

@@ -402,7 +402,8 @@ function seedRepository(root: string): string {
   const work = path.join(root, 'repository-work');
   const remote = path.join(root, 'repository.git');
   fs.mkdirSync(work, { recursive: true });
-  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: work });
+  execFileSync('git', ['init', '-q'], { cwd: work });
+  execFileSync('git', ['symbolic-ref', 'HEAD', 'refs/heads/main'], { cwd: work });
   execFileSync('git', ['config', 'user.email', 'resource-e2e@example.invalid'], { cwd: work });
   execFileSync('git', ['config', 'user.name', 'resource-e2e'], { cwd: work });
   fs.writeFileSync(path.join(work, 'README.md'), 'governed repository');

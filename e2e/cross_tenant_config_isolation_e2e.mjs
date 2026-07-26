@@ -1,8 +1,23 @@
-// Cross-tenant config-store isolation e2e (scenario #45): the config authoring plane
-// is tenant-fenced by an opaque scope_id (ADR-0051). This drives the guarantee end
-// to end through IAM + workspace addressing + the scoped store (the store's own unit
-// test `a_write_cannot_clobber_another_scopes_agent` proves it in isolation; nothing
-// proved it over the full HTTP stack). Two fences compose:
+// Cross-tenant config-store isolation e2e (scenario #45).
+//
+// Cause graph:
+//   C1 token addresses another Workspace path -> E1 reject 403 before repository access
+//   C2 global-id aggregate belongs to A       -> E2 hide/reject from B with 404
+//   C3 profile logical id exists only in A    -> E3 B reads 404
+//   C4 B authors same profile logical id      -> E4 create independent B-owned profile
+//   C5 scoped Agent id is already owned by A  -> E5 B write is a no-op; A remains intact
+//
+// Decision table:
+//   Rule  C1  C2  C3  C4  C5  Expected
+//   T1    Y   -   -   -   -   E1
+//   T2    N   Y   -   -   -   E2
+//   T3    N   N   Y   N   -   E3
+//   T4    N   N   Y   Y   -   E4; A and B may both use `shared-profile`
+//   T5    N   N   -   -   Y   E5
+//
+// The config authoring plane is tenant-fenced by an opaque scope_id (ADR-0051).
+// This drives the guarantee end to end through IAM + workspace addressing + the
+// scoped store. Two fences compose:
 //   • management_guard path fence: a token may only address its OWN workspace path
 //     (`/v1/workspaces/{ws}/…`) — a cross-workspace path is 403.
 //   • scoped store owner-protection: agent ids are global (id is the PK); the scoped
@@ -133,12 +148,36 @@ async function main() {
     }
     const rejectedTakeovers = [
       ['PUT', '/v1/config/credential-pools/shared-pool', { ...poolBody, workspace_id: WS_B }],
-      ['PUT', '/v1/config/inference-profiles/shared-profile', { ...profileBody, workspace_id: WS_B }],
     ];
     for (const [method, uri, body] of rejectedTakeovers) {
       const rejected = await req(base, method, uri, tokenB, body);
       assert.equal(rejected.status, 404, `WS-B cannot take over ${uri}: ${rejected.status}`);
     }
+    const credentialB = await req(base, 'POST', '/v1/config/credentials', tokenB, {
+      workspace_id: WS_B,
+      kind: 'vault',
+      provider_id: null,
+      env_key: null,
+      secret: `xtenant-${randomBytes(12).toString('hex')}`,
+    });
+    assert.equal(credentialB.status, 201, `credential B: ${credentialB.text.slice(0, 200)}`);
+    const profileBodyB = {
+      ...profileBody,
+      workspace_id: WS_B,
+      credential_binding: { type: 'exact', credential_source_id: credentialB.json.id },
+    };
+    const putProfileB = await req(
+      base,
+      'PUT',
+      '/v1/config/inference-profiles/shared-profile',
+      tokenB,
+      profileBodyB,
+    );
+    assert.equal(putProfileB.status, 200, `T4 profile B: ${putProfileB.text.slice(0, 200)}`);
+    const getProfileB = await req(base, 'GET', '/v1/config/inference-profiles/shared-profile', tokenB);
+    assert.equal(getProfileB.status, 200, `T4 B reads its profile: ${getProfileB.text.slice(0, 200)}`);
+    assert.equal(getProfileB.json.workspace_id, WS_B);
+    assert.equal(getProfileB.json.primary.credential_binding.credential_source_id, credentialB.json.id);
     assert.equal(
       (await req(base, 'PUT', '/v1/config/agents/shared-mcp-agent', tokenB, agentMcpBody)).status,
       200,
@@ -149,12 +188,14 @@ async function main() {
       404,
     );
     assert.equal((await req(base, 'GET', '/v1/config/credential-pools/shared-pool', tokenA)).json.workspace_id, WS_A);
-    assert.equal((await req(base, 'GET', '/v1/config/inference-profiles/shared-profile', tokenA)).json.workspace_id, WS_A);
+    const getProfileA = await req(base, 'GET', '/v1/config/inference-profiles/shared-profile', tokenA);
+    assert.equal(getProfileA.json.workspace_id, WS_A);
+    assert.equal(getProfileA.json.primary.credential_binding.credential_source_id, credentialId);
     assert.deepEqual(
       (await req(base, 'GET', '/v1/config/agents/shared-mcp-agent', tokenA)).json.mcp_servers[0].credential,
       { id: credentialId, revision: credentialA.json.version },
     );
-    pass('credential/pool/profile/typed Agent MCP bindings preserve one owner and reject cross-workspace reads, cooldowns, and takeovers');
+    pass('T2-T4: global aggregates reject takeovers while same-id profiles remain independently Workspace-owned');
 
     const ALPHA_STEPS = 7;
     const BETA_STEPS = 3;

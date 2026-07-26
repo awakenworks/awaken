@@ -15,13 +15,15 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import os from 'node:os';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import Anthropic from '@anthropic-ai/sdk';
 import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38513);
 const BETAS = ['managed-agents-2026-04-01'];
-const STORE_DIR = `/tmp/awaken-memory-repository-durable-e2e-${process.pid}`;
+const STORE_DIR = path.join(os.tmpdir(), `awaken-memory-repository-durable-e2e-${process.pid}`);
 
 const client = () => new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
 const drain = async (p) => {
@@ -32,6 +34,24 @@ const drain = async (p) => {
 
 async function rejectsStatus(operation, status, message) {
   await assert.rejects(operation, (error) => error.status === status, message);
+}
+
+function sqliteQueryOne(database, sql) {
+  const connection = new DatabaseSync(database);
+  try {
+    return connection.prepare(sql).get();
+  } finally {
+    connection.close();
+  }
+}
+
+function sqliteExec(database, sql) {
+  const connection = new DatabaseSync(database);
+  try {
+    connection.exec(sql);
+  } finally {
+    connection.close();
+  }
 }
 
 async function main() {
@@ -316,27 +336,27 @@ async function main() {
     // These mutations emulate damaged durable rows; no test-only service route is
     // involved, and each row is restored before checking the next decoder arm.
     const database = `${STORE_DIR}/memory_fs.db`;
-    const modifiedVersion = execFileSync('sqlite3', [
+    const modifiedVersion = sqliteQueryOne(
       database,
       `SELECT id FROM memory_store_versions WHERE store_id='${store.id}' AND operation='modified' ORDER BY ordinal DESC LIMIT 1`,
-    ], { encoding: 'utf8' }).trim();
-    execFileSync('sqlite3', [
+    ).id;
+    sqliteExec(
       database,
       `UPDATE memory_store_versions SET operation='corrupt-operation' WHERE id='${modifiedVersion}'`,
-    ]);
+    );
     await assert.rejects(
       () => drain(c.beta.memoryStores.memoryVersions.list(store.id, { betas: BETAS })),
       (error) => error.status === 500,
       'an unknown durable operation is never projected as a valid version',
     );
-    execFileSync('sqlite3', [
+    sqliteExec(
       database,
       `UPDATE memory_store_versions SET operation='modified' WHERE id='${modifiedVersion}'`,
-    ]);
-    execFileSync('sqlite3', [
+    );
+    sqliteExec(
       database,
       `UPDATE memory_store_memories SET content=X'FFFE' WHERE id='${mem.id}'`,
-    ]);
+    );
     await assert.rejects(
       () => c.beta.memoryStores.memories.retrieve(mem.id, {
         memory_store_id: store.id,
@@ -345,29 +365,31 @@ async function main() {
       (error) => error.status === 404 || error.status === 500,
       'non-UTF8 Memory content fails closed',
     );
-    execFileSync('sqlite3', [
+    sqliteExec(
       database,
       `UPDATE memory_store_memories SET content=CAST('second' AS BLOB) WHERE id='${mem.id}'`,
-    ]);
-    execFileSync('sqlite3', [
+    );
+    sqliteExec(
       database,
       `UPDATE memory_store_versions SET content=X'FFFE' WHERE id='${modifiedVersion}'`,
-    ]);
+    );
     await assert.rejects(
       () => drain(c.beta.memoryStores.memoryVersions.list(store.id, { betas: BETAS })),
       (error) => error.status === 500,
       'non-UTF8 version content fails closed',
     );
-    execFileSync('sqlite3', [
+    sqliteExec(
       database,
       `UPDATE memory_store_versions SET content=CAST('second' AS BLOB) WHERE id='${modifiedVersion}'`,
-    ]);
+    );
     pass('corrupt durable Memory/version rows fail closed without fabricating state');
 
     console.log('E2E PASS: durable path-addressed memory store (create + retrieve + CAS + restart).');
   } finally {
-    stopServer(server);
-    fs.rmSync(STORE_DIR, { recursive: true, force: true });
+    // Cause: SQLite retains the file handle until the child has actually exited;
+    // effect: await shutdown, then tolerate short Windows scanner/FS lock delays.
+    await stopServer(server);
+    fs.rmSync(STORE_DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 

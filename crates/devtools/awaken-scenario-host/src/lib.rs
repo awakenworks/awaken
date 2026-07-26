@@ -165,15 +165,46 @@ const FAKE_OUTCOME_ACP_SCRIPT: &str = "read _p; \
     esac; \
     printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'";
 
+/// Resolve the POSIX shell used only by deterministic scenario fixtures.
+/// Windows developer environments normally provide it through Git for Windows,
+/// but npm launched from PowerShell does not necessarily inherit Git's `bin` in
+/// PATH. `AWAKEN_E2E_SH` remains the explicit override for non-standard installs.
+fn scenario_shell() -> String {
+    if let Ok(shell) = std::env::var("AWAKEN_E2E_SH")
+        && !shell.trim().is_empty()
+    {
+        return shell;
+    }
+    #[cfg(windows)]
+    for candidate in [
+        r"C:\Program Files\Git\bin\sh.exe",
+        r"C:\Program Files\Git\usr\bin\sh.exe",
+    ] {
+        if std::path::Path::new(candidate).is_file() {
+            return candidate.to_string();
+        }
+    }
+    "sh".to_string()
+}
+
+fn scenario_shell_argv(script: &str) -> Vec<String> {
+    vec![scenario_shell(), "-c".to_string(), script.to_string()]
+}
+
+fn scenario_host_acp_cli(
+    mut cli: awaken_run_executor_acp::AcpCli,
+) -> awaken_run_executor_acp::AcpCli {
+    // AcpCli catalog fields are process-lifetime static configuration. The
+    // scenario process creates at most one copy per selected router.
+    cli.command = Box::leak(scenario_shell().into_boxed_str());
+    cli
+}
+
 /// Managed Outcome backend matrix: each Session independently selects a Native
 /// or ACP Worker, while `AWAKEN_OUTCOME_JUDGE_RUNTIME` pins the Judge snapshot.
 pub fn build_outcome_matrix_router() -> Router {
     let launch = awaken_run_executor_acp::AcpLaunch::custom(
-        vec![
-            "/bin/sh".to_string(),
-            "-c".to_string(),
-            FAKE_OUTCOME_ACP_SCRIPT.to_string(),
-        ],
+        scenario_shell_argv(FAKE_OUTCOME_ACP_SCRIPT),
         vec![],
     );
     let source = Arc::new(awaken_run_executor_acp::SubprocessChannelSource::new(
@@ -438,11 +469,7 @@ const SLOW_FAKE_ACP_SCRIPT: &str = "read _prompt; sleep 3; \
 fn slow_acp_source() -> awaken_run_executor_acp::SubprocessChannelSource {
     awaken_run_executor_acp::SubprocessChannelSource::new(
         awaken_run_executor_acp::AcpLaunch::custom(
-            vec![
-                "/bin/sh".to_string(),
-                "-c".to_string(),
-                SLOW_FAKE_ACP_SCRIPT.to_string(),
-            ],
+            scenario_shell_argv(SLOW_FAKE_ACP_SCRIPT),
             vec![],
         ),
     )
@@ -498,11 +525,7 @@ pub fn build_acp_relaunch_failure_router() -> Router {
 /// proving the production codec end-to-end. `AWAKEN_MODEL_MODE=acp-jsonrpc`.
 pub fn build_acp_jsonrpc_router() -> Router {
     let launch = awaken_run_executor_acp::AcpLaunch::custom(
-        vec![
-            "/bin/sh".to_string(),
-            "-c".to_string(),
-            FAKE_ACP_JSONRPC_SCRIPT.to_string(),
-        ],
+        scenario_shell_argv(FAKE_ACP_JSONRPC_SCRIPT),
         vec![],
     );
     let source = Arc::new(
@@ -519,11 +542,7 @@ pub fn build_acp_jsonrpc_router() -> Router {
 /// same per-Session policy and Managed resume API used by native execution.
 pub fn build_acp_permission_router() -> Router {
     let launch = awaken_run_executor_acp::AcpLaunch::custom(
-        vec![
-            "/bin/sh".to_string(),
-            "-c".to_string(),
-            FAKE_ACP_PERMISSION_SCRIPT.to_string(),
-        ],
+        scenario_shell_argv(FAKE_ACP_PERMISSION_SCRIPT),
         vec![],
     );
     let source = Arc::new(
@@ -541,11 +560,7 @@ pub fn build_acp_permission_router() -> Router {
 /// `AWAKEN_MODEL_MODE=acp`.
 pub fn build_acp_router() -> Router {
     let launch = awaken_run_executor_acp::AcpLaunch::custom(
-        vec![
-            "/bin/sh".to_string(),
-            "-c".to_string(),
-            FAKE_ACP_SCRIPT.to_string(),
-        ],
+        scenario_shell_argv(FAKE_ACP_SCRIPT),
         vec![],
     );
     let source = Arc::new(awaken_run_executor_acp::SubprocessChannelSource::new(
@@ -583,7 +598,7 @@ const FAKE_ACP_GATEWAY_JSONRPC_SCRIPT: &str = "while IFS= read -r line; do \
 /// (self-credentialed vs cloud-managed gateway, D-R2) end to end.
 const FAKE_ACP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_acp::AcpCli {
     id: "fake",
-    command: "/bin/sh",
+    command: "sh",
     args: &["-c", FAKE_ACP_GATEWAY_JSONRPC_SCRIPT],
     container_argv: &["/bin/sh", "-c", FAKE_ACP_GATEWAY_JSONRPC_SCRIPT],
     model_delivery: Some(awaken_run_executor_acp::ModelDelivery {
@@ -634,7 +649,7 @@ const FAKE_ACP_MCP_ECHO_SCRIPT: &str = "while IFS= read -r line; do \
 /// `session/new` request the [`awaken_run_executor_acp::Codec::Acp`] driver builds.
 const FAKE_ACP_MCP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_acp::AcpCli {
     id: "fake-mcp",
-    command: "/bin/sh",
+    command: "sh",
     args: &["-c", FAKE_ACP_MCP_ECHO_SCRIPT],
     container_argv: &["/bin/sh", "-c", FAKE_ACP_MCP_ECHO_SCRIPT],
     model_delivery: Some(awaken_run_executor_acp::ModelDelivery {
@@ -685,7 +700,7 @@ impl awaken_run_executor_acp::LaunchResolver for FixedAcpModel {
 /// through the HTTP managed API. `AWAKEN_MODEL_MODE=acp-managed-mcp`.
 pub async fn build_acp_managed_mcp_router() -> Router {
     let source = Arc::new(awaken_run_executor_acp::ProjectingChannelSource::new(
-        FAKE_ACP_MCP_CLI,
+        scenario_host_acp_cli(FAKE_ACP_MCP_CLI),
         Arc::new(FixedAcpModel),
     ));
     let executor = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));

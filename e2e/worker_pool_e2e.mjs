@@ -1,3 +1,15 @@
+// Cause graph (cross-node worker pool):
+//   C1 preferred port is occupied    -> E1 select an available coordinator port
+//   C2 coordinator exits pre-ready   -> E2 readiness fails with process status
+//   C3 coordinator has no local pool -> E3 only the remote worker can claim
+//   C4 remote worker is connected    -> E4 drive and commit exactly one reply
+//
+// Decision table:
+//   Rule  C1  C2  C3  C4  Expected
+//   T1    Y   N   -   -   E1
+//   T2    -   Y   -   -   E2
+//   T3    -   N   Y   Y   E3 + E4
+//
 // The cross-node db-less worker, POOL-DRIVEN, over two real processes.
 //
 //   - A coordinator-only cell server (`disable_local_pool` fixture axis): owns the
@@ -17,10 +29,11 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { availablePort, spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
 
-const SERVER_PORT = Number(process.env.E2E_PORT ?? 38833);
-const SERVER = `http://127.0.0.1:${SERVER_PORT}`;
+const PREFERRED_SERVER_PORT = Number(process.env.E2E_PORT ?? 38833);
+let SERVER_PORT;
+let SERVER;
 const THREAD = 'worker-pool-1';
 const STORAGE = mkdtempSync(path.join(tmpdir(), 'awaken-worker-pool-'));
 
@@ -53,6 +66,8 @@ async function waitForWorkerReply(timeoutMs = 25_000) {
 }
 
 async function main() {
+  SERVER_PORT = await availablePort(PREFERRED_SERVER_PORT);
+  SERVER = `http://127.0.0.1:${SERVER_PORT}`;
   // Coordinator-only server: durable store + HTTP, but no local pool.
   const { server } = spawnServer('echo', SERVER_PORT, {
     SESSION_DEPLOYMENT_INGRESS: 'durable',
@@ -62,7 +77,7 @@ async function main() {
   let worker;
 
   try {
-    await waitForPort(SERVER_PORT);
+    await waitForPort(SERVER_PORT, 180_000, server);
     // Registration is an authority-changing boot operation, so start the worker
     // only after the coordinator is accepting requests (the Kubernetes deployment
     // obtains the same ordering through restart/readiness behavior).

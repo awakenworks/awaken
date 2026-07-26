@@ -8,13 +8,15 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import { spawnServer, stopServer, waitForPort } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38172);
 const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
-const TMP = `/tmp/awaken-namespace-session-e2e-${process.pid}`;
+const TMP = path.join(os.tmpdir(), `awaken-namespace-session-e2e-${process.pid}`);
 const TIER = process.env.SESSION_ENVIRONMENT_TIER ?? 'namespace';
 
 function bwrapAvailable() {
@@ -27,10 +29,17 @@ function git(args, cwd) {
   return execFileSync('git', args, { cwd, encoding: 'utf8' });
 }
 
+function initMainRepository(work) {
+  // Cause: Git <2.28 has no `git init -b`; effect: the fixture must still
+  // expose the exact `main` branch identity on every developer platform.
+  git(['init', '-q'], work);
+  git(['symbolic-ref', 'HEAD', 'refs/heads/main'], work);
+}
+
 function seedRepository() {
   const work = `${TMP}/repo-seed`;
   fs.mkdirSync(work, { recursive: true });
-  git(['init', '-q', '-b', 'main'], work);
+  initMainRepository(work);
   git(['config', 'user.email', 'namespace-e2e@awaken.invalid'], work);
   git(['config', 'user.name', 'Awaken Namespace E2E'], work);
   fs.writeFileSync(`${work}/README.md`, 'NAMESPACE-REPOSITORY-OK');
@@ -44,7 +53,7 @@ function seedRepository() {
 function seedAgentFixtureRepository() {
   const work = `${TMP}/fixture-seed`;
   fs.mkdirSync(work, { recursive: true });
-  git(['init', '-q', '-b', 'main'], work);
+  initMainRepository(work);
   git(['config', 'user.email', 'namespace-e2e@awaken.invalid'], work);
   git(['config', 'user.name', 'Awaken Namespace E2E'], work);
   fs.writeFileSync(

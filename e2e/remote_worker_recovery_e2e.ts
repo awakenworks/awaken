@@ -8,11 +8,11 @@
 // rejected by the same production claimed-commit route.
 
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import fs, { mkdtempSync } from 'node:fs';
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { spawnServer, stopServer, waitForPort } from './harness.mjs';
 
 const CONTROL_PORT = Number(process.env.E2E_PORT ?? 38834);
@@ -114,6 +114,7 @@ async function startFaultProxy(): Promise<{
   const firstOperationAttempts: any[] = [];
   const commits: any[] = [];
   let firstOperationId: string | undefined;
+  let blockedAwaitingSettle = false;
   let signalAwaitingSettle!: () => void;
   const requestCounts = new Map<string, number>();
   let registration: any;
@@ -132,21 +133,35 @@ async function startFaultProxy(): Promise<{
     if (
       request.method === 'POST' &&
       request.url === '/v1/worker/dispatch/settle' &&
-      parsed.outcome === 'Awaiting'
+      parsed.outcome === 'Awaiting' &&
+      !blockedAwaitingSettle
     ) {
+      blockedAwaitingSettle = true;
       signalAwaitingSettle();
       request.once('close', () => response.destroy());
       return;
     }
 
-    const upstream = await fetch(`${CONTROL}${request.url}`, {
-      method: request.method,
-      headers: {
-        'content-type': request.headers['content-type'] ?? 'application/json',
-        ...(workerId ? { 'x-awaken-worker-id': workerId } : {}),
-      },
-      body: body.length > 0 ? body : undefined,
-    });
+    let upstream: Response;
+    try {
+      upstream = await fetch(`${CONTROL}${request.url}`, {
+        method: request.method,
+        headers: {
+          'content-type': request.headers['content-type'] ?? 'application/json',
+          ...(workerId ? { 'x-awaken-worker-id': workerId } : {}),
+        },
+        body: body.length > 0 ? body : undefined,
+      });
+    } catch (error) {
+      // Worker shutdown can leave a final claim/renew request in this test-only
+      // proxy while Control is closing. That transport failure belongs to the
+      // caller; it must not escape the async server callback as an unhandled
+      // rejection and turn an already-passed recovery scenario into a failure.
+      if (!response.destroyed) {
+        json(response, 502, { error: { message: String(error) } });
+      }
+      return;
+    }
     const upstreamBody = Buffer.from(await upstream.arrayBuffer());
 
     if (
@@ -256,56 +271,78 @@ function dispatchDatabases(root: string): string[] {
   return databases;
 }
 
-function sqlite(database: string, statement: string): string {
+function withSqlite<T>(database: string, operation: (db: DatabaseSync) => T): T {
   // Cause/effect graph: C1=the live Control/Worker owns a concurrent SQLite
   // transaction; C2=fixture mutation uses the same durable database.
   // C1+C2 without a busy timeout -> transient SQLITE_BUSY test failure;
   // C1+C2 with bounded wait -> serialize, or fail after a real 10s deadlock.
+  // C3=external sqlite3 is absent; Node's in-process SQLite -> no tool dependency.
   //
-  // | Rule | concurrent owner | timeout | result                    |
-  // | S1   | no               | any     | execute immediately       |
-  // | S2   | yes              | absent  | flaky SQLITE_BUSY         |
-  // | S3   | yes              | 10s     | wait then execute/fail    |
-  return execFileSync(
-    'sqlite3',
-    ['-cmd', '.timeout 10000', database, statement],
-    { encoding: 'utf8' },
-  ).trim();
+  // | Rule | concurrent owner | timeout | in-process | result                 |
+  // | S1   | no               | any     | yes        | execute immediately    |
+  // | S2   | yes              | absent  | yes        | flaky SQLITE_BUSY      |
+  // | S3   | yes              | 10s     | yes        | wait then execute/fail |
+  // | S4   | any              | 10s     | no         | unsupported dependency |
+  const db = new DatabaseSync(database);
+  try {
+    db.exec('PRAGMA busy_timeout = 10000');
+    return operation(db);
+  } finally {
+    db.close();
+  }
+}
+
+function sqliteValue(database: string, statement: string, ...params: any[]): unknown {
+  return withSqlite(database, (db) => {
+    const row = db.prepare(statement).get(...params) as Record<string, unknown> | undefined;
+    return row ? Object.values(row)[0] : undefined;
+  });
+}
+
+function sqliteRun(database: string, statement: string, ...params: any[]): void {
+  withSqlite(database, (db) => {
+    (db.prepare(statement) as StatementSync).run(...params);
+  });
 }
 
 function removeEmptyManagedResourceEnvelope(root: string, runId: string): void {
   for (const database of dispatchDatabases(root)) {
-    const encoded = sqlite(
+    const encoded = sqliteValue(
       database,
-      `SELECT request FROM runtime_dispatch WHERE run_id = '${runId.replaceAll("'", "''")}'`,
+      'SELECT request FROM runtime_dispatch WHERE run_id = ?',
+      runId,
     );
     if (!encoded) continue;
-    const request = JSON.parse(encoded);
+    const request = JSON.parse(String(encoded));
     delete request.session_resources;
     request.placement.required_capabilities =
       request.placement.required_capabilities.filter(
         (capability: string) => capability !== 'session-resources/v1',
       );
-    const rewritten = JSON.stringify(request).replaceAll("'", "''");
-    sqlite(
+    const rewritten = JSON.stringify(request);
+    sqliteRun(
       database,
-      `UPDATE runtime_dispatch SET request = '${rewritten}' ` +
-        `WHERE run_id = '${runId.replaceAll("'", "''")}'`,
+      'UPDATE runtime_dispatch SET request = ? WHERE run_id = ?',
+      rewritten,
+      runId,
     );
   }
 }
 
 function stagePendingInput(root: string, runId: string, ticket: any): void {
-  const result = JSON.stringify({ Input: 'resume-after-reclaim' }).replaceAll("'", "''");
+  const result = JSON.stringify({ Input: 'resume-after-reclaim' });
   for (const database of dispatchDatabases(root)) {
-    sqlite(
+    sqliteRun(
       database,
       `INSERT INTO runtime_pending ` +
         `(message_id, run_id, thread_id, correlation_id, result, available_at) VALUES (` +
-        `'recovery-resume', '${runId.replaceAll("'", "''")}', ` +
-        `'${String(ticket.thread_id).replaceAll("'", "''")}', ` +
-        `'${String(ticket.correlation_id).replaceAll("'", "''")}', '${result}', NULL) ` +
+        `?, ?, ?, ?, ?, NULL) ` +
         `ON CONFLICT(message_id) DO NOTHING`,
+      'recovery-resume',
+      runId,
+      String(ticket.thread_id),
+      String(ticket.correlation_id),
+      result,
     );
   }
 }
@@ -314,18 +351,37 @@ async function waitForDispatchStatus(
   thread: string,
   runId: string,
   status: string,
+  storage: string,
+  diagnostics: () => unknown,
   timeoutMs = 30_000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
+  let lastDispatch: any;
   while (Date.now() <= deadline) {
     const response = await api('GET', `/v1/durable/threads/${thread}/dispatches`);
     const dispatch = (response.body.dispatches ?? []).find(
       (candidate: any) => candidate.run_id === runId,
     );
+    lastDispatch = dispatch;
     if (dispatch?.status === status) return;
     await sleep(50);
   }
-  throw new Error(`run ${runId} did not reach ${status}`);
+  const durableRows = dispatchDatabases(storage).map((database) => ({
+    database,
+    row: withSqlite(database, (db) =>
+      db
+        .prepare(
+          'SELECT status, lease_owner, lease_until, lease_epoch, attempt_count ' +
+            'FROM runtime_dispatch WHERE run_id = ?',
+        )
+        .get(runId),
+    ),
+  }));
+  throw new Error(
+    `run ${runId} did not reach ${status}; ` +
+      `last_dispatch=${JSON.stringify(lastDispatch)} durable_rows=${JSON.stringify(durableRows)} ` +
+      `diagnostics=${JSON.stringify(diagnostics())}`,
+  );
 }
 
 async function waitForTerminalMessage(thread: string, timeoutMs = 30_000): Promise<any[]> {
@@ -376,12 +432,17 @@ async function main(): Promise<void> {
     }).server;
     await Promise.race([
       proxy.awaitingSettle,
-      sleep(10_000).then(async () => {
+      // Cause graph: lost applied-commit receipt -> retry with the same
+      // idempotency identity -> Awaiting settlement. Instrumented Windows builds
+      // can spend more than 10s in the bounded transport backoff, so use the
+      // suite's normal durable-state budget while retaining exact attempt checks.
+      sleep(30_000).then(async () => {
         const dispatches = await api('GET', `/v1/durable/threads/${thread}/dispatches`);
         const requests = dispatchDatabases(storage).map((database) =>
-          sqlite(
+          sqliteValue(
             database,
-            `SELECT request FROM runtime_dispatch WHERE run_id = '${runId.replaceAll("'", "''")}'`,
+            'SELECT request FROM runtime_dispatch WHERE run_id = ?',
+            runId,
           ),
         );
         throw new Error(
@@ -410,15 +471,16 @@ async function main(): Promise<void> {
     const databases = dispatchDatabases(storage);
     assert.ok(databases.length > 0, 'durable dispatch database exists');
     for (const database of databases) {
-      sqlite(
+      sqliteRun(
         database,
-        `UPDATE runtime_dispatch SET lease_until = 0 WHERE run_id = '${runId.replaceAll("'", "''")}'`,
+        'UPDATE runtime_dispatch SET lease_until = 0 WHERE run_id = ?',
+        runId,
       );
     }
 
     workerB = spawnServer('echo', 0, {
       SESSION_DEPLOYMENT_INGRESS: 'durable',
-      AWAKEN_UPSTREAM_URL: CONTROL,
+      AWAKEN_UPSTREAM_URL: proxy.url,
       AWAKEN_SCENARIO_ROLE: 'worker',
       AWAKEN_WORKER_ID: 'recovery-worker-b',
       AWAKEN_WORKER_CAPABILITIES: capability,
@@ -428,9 +490,10 @@ async function main(): Promise<void> {
     const epochB = Math.max(
       ...databases.map((database) =>
         Number(
-          sqlite(
+          sqliteValue(
             database,
-            `SELECT lease_epoch FROM runtime_dispatch WHERE run_id = '${runId.replaceAll("'", "''")}'`,
+            'SELECT lease_epoch FROM runtime_dispatch WHERE run_id = ?',
+            runId,
           ) || 0,
         ),
       ),
