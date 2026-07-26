@@ -487,9 +487,11 @@ impl DispatchQueue for PostgresDispatchStore {
         let p = NS;
         let mut tx = self.pool.begin().await.map_err(reject)?;
 
-        // Priority chooses a candidate only. The exact transition below is the
-        // sole claim algorithm and rechecks every cause while holding the row and
-        // per-thread transaction lock.
+        // Priority chooses and locks a candidate only. `SKIP LOCKED` lets a
+        // concurrent claimer consider the next eligible row instead of selecting
+        // the same candidate and returning `None` at the exact transition below.
+        // That transition remains the sole claim algorithm and rechecks every
+        // cause while holding the row and per-thread transaction lock.
         let local_eligible = "(d.cancel_requested = 1 OR (\
             COALESCE(d.request #>> '{placement,location}', 'remote_preferred') \
                 <> 'remote_required' AND \
@@ -499,7 +501,8 @@ impl DispatchQueue for PostgresDispatchStore {
             "SELECT d.run_id FROM {p}_dispatch d \
              WHERE d.status = 'running' AND d.lease_until IS NOT NULL \
              AND d.lease_until < $1 AND {local_eligible} \
-             ORDER BY d.cancel_requested DESC, d.created_at LIMIT 1"
+             ORDER BY d.cancel_requested DESC, d.created_at \
+             FOR UPDATE SKIP LOCKED LIMIT 1"
         );
         // Single-writer-per-thread (ADR-0022): a wake or fresh pick skips any thread
         // that already has a run in flight. Recovery is exempt (it re-owns the SAME
@@ -515,12 +518,14 @@ impl DispatchQueue for PostgresDispatchStore {
                  SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id \
                  AND (pe.available_at IS NULL OR pe.available_at <= $1))) \
              AND {not_running} AND {local_eligible} \
-             ORDER BY d.cancel_requested DESC, d.created_at LIMIT 1"
+             ORDER BY d.cancel_requested DESC, d.created_at \
+             FOR UPDATE SKIP LOCKED LIMIT 1"
         );
         let fresh = format!(
             "SELECT d.run_id FROM {p}_dispatch d \
              WHERE d.status = 'pending' AND {not_running} AND {local_eligible} \
-             ORDER BY d.cancel_requested DESC, d.priority DESC, d.created_at LIMIT 1"
+             ORDER BY d.cancel_requested DESC, d.priority DESC, d.created_at \
+             FOR UPDATE SKIP LOCKED LIMIT 1"
         );
         let picked = match sqlx::query_scalar::<_, String>(&recovery)
             .bind(now_ms as i64)

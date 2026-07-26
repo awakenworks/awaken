@@ -815,32 +815,34 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
     )
     .await
     .expect("P3");
-    let requests = observed.lock().unwrap();
-    let prompt_count = |request: &ChatRequest, prompt: &str| {
-        request
-            .messages
-            .iter()
-            .filter(|message| message.role == Role::System)
-            .flat_map(|message| message.content.iter())
-            .filter(|content| matches!(content, ContentBlock::Text { text } if text == prompt))
-            .count()
-    };
-    assert_eq!(
-        prompt_count(&requests[0], "Use the bound Flow project."),
-        0,
-        "P1"
-    );
-    assert_eq!(
-        prompt_count(&requests[1], "Use the bound Flow project."),
-        1,
-        "P2"
-    );
-    assert_eq!(
-        prompt_count(&requests[2], "Use the bound Flow project."),
-        1,
-        "P4 history retains the original fact without reinjection"
-    );
-    assert_eq!(prompt_count(&requests[3], "exact prompt"), 1, "P3");
+    {
+        let requests = observed.lock().unwrap();
+        let prompt_count = |request: &ChatRequest, prompt: &str| {
+            request
+                .messages
+                .iter()
+                .filter(|message| message.role == Role::System)
+                .flat_map(|message| message.content.iter())
+                .filter(|content| matches!(content, ContentBlock::Text { text } if text == prompt))
+                .count()
+        };
+        assert_eq!(
+            prompt_count(&requests[0], "Use the bound Flow project."),
+            0,
+            "P1"
+        );
+        assert_eq!(
+            prompt_count(&requests[1], "Use the bound Flow project."),
+            1,
+            "P2"
+        );
+        assert_eq!(
+            prompt_count(&requests[2], "Use the bound Flow project."),
+            1,
+            "P4 history retains the original fact without reinjection"
+        );
+        assert_eq!(prompt_count(&requests[3], "exact prompt"), 1, "P3");
+    }
 
     let replacement = projection("different", true);
     assert!(
