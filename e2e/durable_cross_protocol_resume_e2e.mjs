@@ -1,5 +1,5 @@
 // Durable cross-protocol resume e2e (scenario #49): with durable ingress
-// (AWAKEN_INGRESS=durable + AWAKEN_STORAGE_DIR), a run AWAITS on a tool approval on
+// (SESSION_DEPLOYMENT_INGRESS=durable + SESSION_DEPLOYMENT_STORAGE_DIR), a run AWAITS on a tool approval on
 // the AI-SDK wire and is APPROVED + resumed on the AG-UI wire. The resume is not a
 // foreground inline execution — it flows through DurableRunIngress.deliver_resume
 // and the DISPATCH WORKER drives the awaiting run to completion. Same thread id, same
@@ -59,8 +59,8 @@ async function until(fn, tries = 150) {
 async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-durable-xproto-'));
   const { server, baseUrl: base } = spawnServer('probe', PORT, {
-    AWAKEN_INGRESS: 'durable',
-    AWAKEN_STORAGE_DIR: dir,
+    SESSION_DEPLOYMENT_INGRESS: 'durable',
+    SESSION_DEPLOYMENT_STORAGE_DIR: dir,
   });
   try {
     await waitForPort(PORT);

@@ -1,6 +1,6 @@
 // Cancel a durable run mid-flight, over the durable operations surface.
 //
-// Under AWAKEN_INGRESS=durable a background-submitted run (probe model) awaits on a
+// Under SESSION_DEPLOYMENT_INGRESS=durable a background-submitted run (probe model) awaits on a
 // tool awaiting approval — it sits `Awaiting` in the thread's dispatch queue, never
 // yet resumed by the worker. We cancel it by run id via
 // POST /v1/durable/threads/:thread/cancel: the dispatch is removed and a terminal
@@ -40,8 +40,8 @@ async function main() {
   fs.mkdirSync(STORE, { recursive: true });
   const upstream = await startUpstream('probe');
   const srv = spawnServer('real', PORT, {
-    AWAKEN_INGRESS: 'durable',
-    AWAKEN_STORAGE_DIR: STORE,
+    SESSION_DEPLOYMENT_INGRESS: 'durable',
+    SESSION_DEPLOYMENT_STORAGE_DIR: STORE,
     ...realServerEnv('probe', upstream),
   });
   await waitForPort(PORT);

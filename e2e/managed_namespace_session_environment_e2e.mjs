@@ -124,7 +124,7 @@ async function main() {
     // knobs; the production CLI independently resolves the same values from TOML.
     SESSION_ENVIRONMENT_TIER: TIER,
     AWAKEN_SANDBOX_DIR: `${TMP}/sandboxes`,
-    AWAKEN_STORAGE_DIR: `${TMP}/storage`,
+    SESSION_DEPLOYMENT_STORAGE_DIR: `${TMP}/storage`,
     AWAKEN_ACP_ARGV: TIER === 'namespace'
       ? `${process.execPath} /workspace/fixture/namespace-agent.mjs`
       : `${process.execPath} ${TMP}/fixture-seed/namespace-agent.mjs`,

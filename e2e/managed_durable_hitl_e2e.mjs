@@ -1,4 +1,4 @@
-// Durable HITL: under AWAKEN_INGRESS=durable a run awaits on a tool needing
+// Durable HITL: under SESSION_DEPLOYMENT_INGRESS=durable a run awaits on a tool needing
 // approval, and after the client sends the confirmation the DISPATCH WORKER
 // resumes the awaiting run (not a foreground request). Drives the durable resume
 // path — engine::resume_run / resume_into_messages, SharedHost::resume, and the
@@ -32,7 +32,7 @@ async function until(fn) {
 async function main() {
   fs.rmSync(STORE, { recursive: true, force: true });
   const upstream = await startUpstream('probe');
-  const srv = spawnServer('real', PORT, { AWAKEN_INGRESS: 'durable', AWAKEN_STORAGE_DIR: STORE, ...realServerEnv('probe', upstream) });
+  const srv = spawnServer('real', PORT, { SESSION_DEPLOYMENT_INGRESS: 'durable', SESSION_DEPLOYMENT_STORAGE_DIR: STORE, ...realServerEnv('probe', upstream) });
   await waitForPort(PORT);
   const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
   try {

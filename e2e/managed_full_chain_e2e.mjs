@@ -83,7 +83,7 @@ async function main() {
   const bare = seedRemote();
   const upstream = await startUpstream('fullChain');
   const { server } = spawnServer('full-chain', PORT, {
-    AWAKEN_STORAGE_DIR: STORE_DIR,
+    SESSION_DEPLOYMENT_STORAGE_DIR: STORE_DIR,
     ...realServerEnv('fullChain', upstream, { mode: 'full-chain' }),
   });
   try {

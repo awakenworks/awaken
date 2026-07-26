@@ -6,7 +6,7 @@
 // real values.
 //
 // Flow: management mode with BOTH AWAKEN_MGMT_DIR (session config) and
-// AWAKEN_STORAGE_DIR (transcript, the rehydration precondition). Create a session
+// SESSION_DEPLOYMENT_STORAGE_DIR (transcript, the rehydration precondition). Create a session
 // with a title + metadata, commit a turn, KILL the process, respawn over the same
 // dirs, drive one event to trigger lazy rehydration, then retrieve the session and
 // assert its config came back — not the placeholder.
@@ -38,7 +38,7 @@ async function main() {
   const env = {
     AWAKEN_MGMT_DIR: mgmtDir,
     AWAKEN_MGMT_SEAL_KEY: SEAL_KEY,
-    AWAKEN_STORAGE_DIR: storeDir,
+    SESSION_DEPLOYMENT_STORAGE_DIR: storeDir,
   };
   const upstream = await startUpstream('mcp');
   let server = null;

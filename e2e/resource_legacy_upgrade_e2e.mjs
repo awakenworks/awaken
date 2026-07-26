@@ -221,7 +221,7 @@ async function main() {
   const upstream = await startUpstream('skills');
   const servers = [];
   const environment = {
-    AWAKEN_STORAGE_DIR: storage,
+    SESSION_DEPLOYMENT_STORAGE_DIR: storage,
     AWAKEN_SCENARIO_WORKSPACE: 'default',
     ...realServerEnv('skills', upstream, { mode: 'skills-durable' }),
   };

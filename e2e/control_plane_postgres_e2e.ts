@@ -34,7 +34,7 @@ function docker(...args: string[]): string {
 }
 
 async function postgres(): Promise<{ container: string; url: string; owned: boolean }> {
-  const inheritedUrl = process.env.AWAKEN_DATABASE_URL;
+  const inheritedUrl = process.env.SESSION_DEPLOYMENT_DATABASE_URL;
   const inheritedContainer = process.env.AWAKEN_E2E_POSTGRES_CONTAINER;
   if (inheritedUrl && inheritedContainer) {
     return { container: inheritedContainer, url: inheritedUrl, owned: false };

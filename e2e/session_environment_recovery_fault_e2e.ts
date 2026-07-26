@@ -60,7 +60,7 @@ function spawnBrain(binary: string, storage: string) {
       AWAKEN_MODEL_MODE: 'acp-container',
       AWAKEN_CONTAINER_IMAGE: IMAGE,
       SESSION_ENVIRONMENT_TIER: 'docker',
-      AWAKEN_STORAGE_DIR: storage,
+      SESSION_DEPLOYMENT_STORAGE_DIR: storage,
       AWAKEN_ACP_ARGV: `node -e ${ACP_FIXTURE}`,
       AWAKEN_SANDBOX_REAP_INTERVAL: '3600',
     },

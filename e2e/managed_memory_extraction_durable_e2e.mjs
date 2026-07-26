@@ -4,12 +4,12 @@
 // that a LATER session recalls (extract -> store -> recall -> inject). That loop is
 // already proven within one process by managed_memory_e2e.mjs. This test proves the
 // missing half: the store must survive the process dying, governed by the SAME
-// durable storage dir as every other piece of committed state (AWAKEN_STORAGE_DIR),
+// durable storage dir as every other piece of committed state (SESSION_DEPLOYMENT_STORAGE_DIR),
 // NOT a separate opt-in var or a pid-namespaced temp dir.
 //
 // Flow: session A saves a memory; a later session in the SAME process recalls it
 // (sanity). Then KILL the server and start a fresh one over the SAME
-// AWAKEN_STORAGE_DIR. A new session must STILL recall the memory. If memory lives
+// SESSION_DEPLOYMENT_STORAGE_DIR. A new session must STILL recall the memory. If memory lives
 // outside the durable storage dir it is lost on restart — the gap this test catches.
 //
 // Run: (from e2e/)  node managed_memory_extraction_durable_e2e.mjs
@@ -88,7 +88,7 @@ async function main() {
   const upstream = await startUpstream('memory');
   try {
     // ---- server A: save a memory, confirm it recalls in-process ----
-    const a = spawnServer('memory', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR, ...realServerEnv('memory', upstream, { mode: 'memory' }) });
+    const a = spawnServer('memory', PORT, { SESSION_DEPLOYMENT_STORAGE_DIR: STORE_DIR, ...realServerEnv('memory', upstream, { mode: 'memory' }) });
     servers.push(a.server);
     await waitForPort(PORT);
 
@@ -133,14 +133,14 @@ async function main() {
     // ---- restart: kill A, start B over the SAME storage dir ----
     await stopServer(a.server);
     servers.pop();
-    const b = spawnServer('memory', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR, ...realServerEnv('memory', upstream, { mode: 'memory' }) });
+    const b = spawnServer('memory', PORT, { SESSION_DEPLOYMENT_STORAGE_DIR: STORE_DIR, ...realServerEnv('memory', upstream, { mode: 'memory' }) });
     servers.push(b.server);
     await waitForPort(PORT);
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
 
     assert.ok(
       await recallsMarker(store.id),
-      'a new session AFTER restart still recalls the extracted memory (durable under AWAKEN_STORAGE_DIR)',
+      'a new session AFTER restart still recalls the extracted memory (durable under SESSION_DEPLOYMENT_STORAGE_DIR)',
     );
     pass('extraction memory survived a real process restart');
     console.log('E2E PASS: cross-session extraction memory is durable across restart.');

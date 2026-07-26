@@ -1,6 +1,6 @@
 // Durable-path terminal-fault surfacing e2e: the fix that carries `EndCause::Error`
 // through `StepOutcome` must hold on BOTH ingress paths. The direct path wires a
-// live `StreamSink`; the DURABLE path (AWAKEN_INGRESS=durable) has no live sink and
+// live `StreamSink`; the DURABLE path (SESSION_DEPLOYMENT_INGRESS=durable) has no live sink and
 // degrades to the committed projection — so a failed run there is rendered by
 // `encode_step` from the committed `StepOutcome` (terminal = Failed), not by the
 // live channel. This pins that the AI-SDK wire still surfaces the error frame when
@@ -47,8 +47,8 @@ async function main() {
   process.env.ANTHROPIC_MODEL = 'fake-haiku';
   process.env.ANTHROPIC_BASE_URL = `${upstream.url}/v1/`;
   const { server, baseUrl: base } = spawnServer('real', PORT, {
-    AWAKEN_INGRESS: 'durable',
-    AWAKEN_STORAGE_DIR: dir,
+    SESSION_DEPLOYMENT_INGRESS: 'durable',
+    SESSION_DEPLOYMENT_STORAGE_DIR: dir,
   });
   try {
     await waitForPort(PORT);

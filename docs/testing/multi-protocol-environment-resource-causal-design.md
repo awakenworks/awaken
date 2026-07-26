@@ -514,3 +514,27 @@ has been removed. The real binary now proves the opposite invariant: CLI
 presentation overrides plus typed config and defaults are the only deployment
 causes. Inline seal-key reporting names `config.toml`, never an environment
 source, and remains redacted.
+
+## Phase 24: one explicitly test-only scenario deployment boundary
+
+```text
+SESSION_DEPLOYMENT_* test metadata
+  -> scenario_deployment() exactly once
+  -> typed DeploymentConfig
+  -> scenario Host / pool / store / Worker composition
+```
+
+| Rule | Ingress | Store root | Restart | Expected |
+|---|---|---|---|---|
+| S1 | durable | exact A | no | background pool commits reply |
+| S2 | durable | exact A | yes | history survives and pool resumes |
+| S3 | durable | absent | either | fail before listen |
+| S4 | direct | any | either | no standing durable pool |
+| S5 | retired production-style scenario keys | any | either | no reader exists |
+
+All scenario callers now use the separately named `SESSION_DEPLOYMENT_*` test
+metadata. The former `AWAKEN_*` aliases were removed in one migration, not kept
+as compatibility fallbacks. Within the scenario host, storage is read by the
+single resolver and reused by Skill, Resource, ACP, container, commit, and
+dispatch composition; production runtime diagnostics refer only to typed
+`DeploymentConfig` fields.

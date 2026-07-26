@@ -375,8 +375,8 @@ async function main(): Promise<void> {
   const storage = mkdtempSync(path.join(tmpdir(), 'awaken-remote-attempt-'));
   const peer = await startPeer();
   const environment = {
-    AWAKEN_INGRESS: 'durable',
-    AWAKEN_STORAGE_DIR: storage,
+    SESSION_DEPLOYMENT_INGRESS: 'durable',
+    SESSION_DEPLOYMENT_STORAGE_DIR: storage,
   };
   let server = spawnServer('config', PORT, environment).server;
   try {

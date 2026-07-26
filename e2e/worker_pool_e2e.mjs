@@ -55,9 +55,9 @@ async function waitForWorkerReply(timeoutMs = 25_000) {
 async function main() {
   // Coordinator-only server: durable store + HTTP, but no local pool.
   const { server } = spawnServer('echo', SERVER_PORT, {
-    AWAKEN_INGRESS: 'durable',
-    AWAKEN_STORAGE_DIR: STORAGE,
-    AWAKEN_DISABLE_LOCAL_POOL: '1',
+    SESSION_DEPLOYMENT_INGRESS: 'durable',
+    SESSION_DEPLOYMENT_STORAGE_DIR: STORAGE,
+    SESSION_DEPLOYMENT_DISABLE_LOCAL_POOL: '1',
   });
   let worker;
 
@@ -67,7 +67,7 @@ async function main() {
     // only after the coordinator is accepting requests (the Kubernetes deployment
     // obtains the same ordering through restart/readiness behavior).
     worker = spawnServer('echo', 0, {
-      AWAKEN_INGRESS: 'durable',
+      SESSION_DEPLOYMENT_INGRESS: 'durable',
       AWAKEN_UPSTREAM_URL: SERVER,
       AWAKEN_SCENARIO_ROLE: 'worker',
       AWAKEN_HTTP_ADDR: '127.0.0.1:0',

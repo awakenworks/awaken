@@ -1,6 +1,6 @@
 // Durable run-ingress end-to-end (slice D), via the official Anthropic TS SDK.
 //
-// With AWAKEN_INGRESS=durable the host delivers each turn through a
+// With SESSION_DEPLOYMENT_INGRESS=durable the host delivers each turn through a
 // `DurableRunIngress`: the accepted run is persisted to a per-thread SQLite
 // dispatch queue, then driven by the dispatch worker (`submit_background`) — the
 // same runtime and commit boundary a direct ingress uses (G6), only the delivery
@@ -23,7 +23,7 @@ import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEn
 const PORT = Number(process.env.E2E_PORT ?? 38170);
 const BETAS = ['managed-agents-2026-04-01'];
 const STORE_DIR = `/tmp/awaken-durable-e2e-${process.pid}`;
-const DURABLE_ENV = { AWAKEN_STORAGE_DIR: STORE_DIR, AWAKEN_INGRESS: 'durable' };
+const DURABLE_ENV = { SESSION_DEPLOYMENT_STORAGE_DIR: STORE_DIR, SESSION_DEPLOYMENT_INGRESS: 'durable' };
 
 // `let`, not `const`: after the restart the old keep-alive socket is dead, so the
 // post-restart calls use a freshly connected client.

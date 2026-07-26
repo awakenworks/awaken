@@ -54,12 +54,12 @@ for f in managed_e2e managed_durable_e2e managed_durable_ops_e2e managed_superse
          managed_scheduled_e2e managed_daemon_e2e managed_crossthread_e2e \
          managed_livecontrol_e2e managed_restart_e2e durable_trace_propagation_e2e \
          durable_soak_fairness_e2e durable_worker_metrics_e2e dispatch_metrics_export_e2e; do
-  run "$f.mjs" durable AWAKEN_STORAGE_DIR="$DUR"
+  run "$f.mjs" durable SESSION_DEPLOYMENT_STORAGE_DIR="$DUR"
 done
 # Filesystem store backend.
 FS="$(mktemp -d)"
 for f in managed_statemachine_e2e ai_sdk_e2e ag_ui_e2e a2a_e2e managed_restart_e2e; do
-  run "$f.mjs" fs AWAKEN_STORE=fs AWAKEN_STORAGE_DIR="$FS"
+  run "$f.mjs" fs SESSION_DEPLOYMENT_STORE=fs SESSION_DEPLOYMENT_STORAGE_DIR="$FS"
 done
 
 cd "$ROOT"

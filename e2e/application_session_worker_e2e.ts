@@ -102,9 +102,9 @@ async function main(): Promise<void> {
   const applicationMcp = await startCalcFixture(undefined, { allowAnonymous: true });
   const sessionMcp = await startCalcFixture(undefined, { allowAnonymous: true });
   const cell = spawnServer('echo', PORT, {
-    AWAKEN_INGRESS: 'durable',
-    AWAKEN_STORAGE_DIR: storage,
-    AWAKEN_DISABLE_LOCAL_POOL: '1',
+    SESSION_DEPLOYMENT_INGRESS: 'durable',
+    SESSION_DEPLOYMENT_STORAGE_DIR: storage,
+    SESSION_DEPLOYMENT_DISABLE_LOCAL_POOL: '1',
   }).server;
   let cellStopped = false;
   let worker: ChildProcessWithoutNullStreams | undefined;

@@ -12,7 +12,7 @@ mod models;
 pub use crate::models::*;
 pub use acp_gateway::build_acp_gateway_router;
 pub use deployment::scenario_deployment;
-use deployment::{resource_host, resource_host_with_deployment};
+use deployment::{resource_host, resource_host_with_deployment, scenario_storage_dir};
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -257,10 +257,7 @@ pub fn build_full_chain_router() -> Router {
 /// repository; neither the resource store nor the runtime receives authorization
 /// concepts.
 fn scenario_skill_store_dir() -> std::path::PathBuf {
-    std::env::var("AWAKEN_STORAGE_DIR")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .map(std::path::PathBuf::from)
+    scenario_storage_dir()
         .unwrap_or_else(|| {
             std::env::temp_dir().join(format!("awaken-skills-durable-{}", std::process::id()))
         })
@@ -271,21 +268,13 @@ fn scenario_skill_store_dir() -> std::path::PathBuf {
 /// management composition injects. It owns definition/configuration/lifecycle only;
 /// authentication and policy remain outside this resource-plane adapter.
 fn scenario_resource_catalog() -> Arc<dyn awaken_protocol_managed::ResourceCatalog> {
-    let root = std::env::var("AWAKEN_MGMT_DIR")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            std::env::var("AWAKEN_STORAGE_DIR")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-        });
+    let root = scenario_storage_dir();
     let Some(root) = root else {
         return Arc::new(
             awaken_admin_config_api::SqliteAdminStore::open_in_memory()
                 .expect("open ephemeral scenario resource catalog"),
         );
     };
-    let root = std::path::PathBuf::from(root);
     std::fs::create_dir_all(&root).expect("create scenario resource registry directory");
     let catalog =
         awaken_admin_config_api::SqliteAdminStore::open(&root.join("admin.db").to_string_lossy())
@@ -714,13 +703,10 @@ pub async fn build_acp_managed_mcp_router() -> Router {
 /// `ANTHROPIC_BASE_URL`/`ANTHROPIC_MODEL`/`ANTHROPIC_API_KEY`), and α loopback-relay MCP
 /// delivery so the sandboxed CLI receives no vault secret while the host relay authenticates
 /// upstream. Each thread's config home is isolated under
-/// `AWAKEN_STORAGE_DIR/threads/<t>/config_home` — the CLI never touches the host's real
+/// `DeploymentConfig::storage_dir/threads/<t>/config_home` — the CLI never touches the host's real
 /// `~/.claude`. Drives a real dynamic MCP tool call end to end. `AWAKEN_MODEL_MODE=acp-real-mcp`.
 pub async fn build_acp_real_mcp_router() -> Router {
-    let store_dir = std::env::var("AWAKEN_STORAGE_DIR")
-        .ok()
-        .filter(|v| !v.is_empty())
-        .map(std::path::PathBuf::from);
+    let store_dir = scenario_storage_dir();
     let cli = *awaken_run_executor_acp::acp_cli("claude").expect("claude is a catalog row");
     // The host default model_ref mirrors the operator's `ANTHROPIC_MODEL` — the same env
     // the ACP model-delivery reads — so a session that names no model still hands the CLI
@@ -804,13 +790,9 @@ pub async fn build_acp_sandboxed_router() -> Router {
 /// sandbox image, and a reachable Docker daemon. Misconfiguration fails closed while
 /// building the host rather than falling back to a local process.
 pub async fn build_acp_container_router() -> Router {
-    let storage_dir = std::env::var("AWAKEN_STORAGE_DIR")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::temp_dir().join(format!("awaken-acp-container-{}", std::process::id()))
-        });
+    let storage_dir = scenario_storage_dir().unwrap_or_else(|| {
+        std::env::temp_dir().join(format!("awaken-acp-container-{}", std::process::id()))
+    });
     let mut deployment = scenario_deployment();
     deployment.storage_dir = Some(storage_dir.clone());
     deployment.sandbox_dir = Some(
@@ -1580,7 +1562,7 @@ impl awaken_runtime_contract::permission::ToolGateHook for ScheduleGate {
 }
 
 /// A router whose tool gate defers every tool call as a `ScheduledAction`
-/// (ADR-0020, slice E). Drive it with `AWAKEN_INGRESS=durable` so the dispatch
+/// (ADR-0020, slice E). Drive it with `typed durable ingress` so the dispatch
 /// worker performs the deferred actions out of band: the probe model's
 /// write→read tool calls are each scheduled and auto-performed, so the run
 /// completes without any human confirmation.
@@ -1697,7 +1679,7 @@ pub fn build_skills_router() -> Router {
 }
 
 /// A router whose delivered skills come from a DURABLE catalog (`/v1/skills`) instead
-/// of static config, rooted under `AWAKEN_STORAGE_DIR` (a per-process temp dir when
+/// of static config, rooted under `DeploymentConfig::storage_dir` (a per-process temp dir when
 /// unset). A skill posted to `/v1/skills` is offered on every thread and survives a
 /// restart. The `SkillDrivingModel` discovers → activates `greet` → replies with its
 /// body, so an e2e proves a durably-configured skill reaches the model across a

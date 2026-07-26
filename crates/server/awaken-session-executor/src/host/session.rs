@@ -30,7 +30,7 @@ impl SharedHost {
 
     /// Build a thread's commit boundary under the configured store directory: a
     /// durable SQLite database (default) or the filesystem append-log backend when
-    /// `AWAKEN_STORE=fs`, or an in-memory coordinator when no store dir is set.
+    /// `DeploymentConfig::store=Fs`, or an in-memory coordinator when no store dir is set.
     pub(crate) async fn build_commit(&self, thread: &str) -> Result<HostCommit, HostError> {
         use crate::store::{CommitPlan, plan_commit};
         // The backend-selection decision is pure config (see `plan_commit`): worker
@@ -55,7 +55,7 @@ impl SharedHost {
             // silently degrade to an ephemeral in-memory store and drop committed
             // history on restart (the filesystem append-log has no in-memory form).
             CommitPlan::FsNeedsStorageDir => Err(HostError::internal(
-                "AWAKEN_STORE=fs requires AWAKEN_STORAGE_DIR: the filesystem append-log \
+                "DeploymentConfig::store=Fs requires DeploymentConfig::storage_dir: the filesystem append-log \
                  backend has no in-memory form, so serving it without a storage dir would \
                  silently use an ephemeral store and drop committed history on restart. \
                  Refusing to serve a durable 'fs' store on a volatile backing.",
@@ -102,7 +102,7 @@ impl SharedHost {
     }
 
     /// Build a thread's run-delivery ingress. Default is direct in-process
-    /// execution (`DirectRunIngress`, slice C). With `AWAKEN_INGRESS=durable` the
+    /// execution (`DirectRunIngress`, slice C). With `typed durable ingress` the
     /// turn is delivered through a `DurableRunIngress`: every accepted run is
     /// persisted to a dispatch queue before it executes (so it survives a crash),
     /// and on session (re)build any dispatch a prior process crashed on is

@@ -353,7 +353,7 @@ async function main(): Promise<void> {
         E2E_CONFIG_PORT: String(configPort),
         ...(scenario.postgres
           ? {
-              AWAKEN_DATABASE_URL: postgres.url,
+              SESSION_DEPLOYMENT_DATABASE_URL: postgres.url,
               AWAKEN_E2E_POSTGRES_CONTAINER: postgres.container,
             }
           : {}),
