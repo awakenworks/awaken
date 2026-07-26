@@ -149,7 +149,9 @@ impl AgentRef {
             }) => match model {
                 None => ModelOverride::Absent,
                 Some(None) => ModelOverride::Cleared,
-                Some(Some(input)) => ModelOverride::Set(input.clone().into_config()),
+                Some(Some(input)) => {
+                    ModelOverride::Set(input.clone().into_config().into_resolved())
+                }
             },
             _ => ModelOverride::Absent,
         }
@@ -232,7 +234,7 @@ impl Serialize for McpServer {
     }
 }
 
-/// The `BetaManagedAgentsModelConfig` object: `{ id, speed? }`. A session/agent's
+/// The resolved `BetaManagedAgentsModelConfig` object. A session/agent's
 /// `model` is this object on the wire, never a bare string (the SDK reads
 /// `agent.model.id`). The single definition of the model-config shape — the agent
 /// registry and session/thread projections all reuse it rather than rebuild it.
@@ -240,7 +242,9 @@ impl Serialize for McpServer {
 pub struct ModelConfig {
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub speed: Option<String>,
+    pub speed: Option<ModelSpeed>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<ModelEffort>,
 }
 
 impl ModelConfig {
@@ -248,6 +252,92 @@ impl ModelConfig {
         Self {
             id: id.into(),
             speed: None,
+            effort: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelSpeed {
+    Standard,
+    Fast,
+}
+
+/// Responses use the SDK's tagged effort union (`{type: ...}`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ModelEffort {
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
+/// Create/update accepts either a bare effort level or the tagged response form.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(untagged)]
+pub enum ModelEffortInput {
+    Level(ModelEffortLevel),
+    Tagged(ModelEffort),
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelEffortLevel {
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
+impl ModelEffortInput {
+    #[must_use]
+    pub fn resolved(self) -> ModelEffort {
+        match self {
+            Self::Level(ModelEffortLevel::Low) | Self::Tagged(ModelEffort::Low) => ModelEffort::Low,
+            Self::Level(ModelEffortLevel::Medium) | Self::Tagged(ModelEffort::Medium) => {
+                ModelEffort::Medium
+            }
+            Self::Level(ModelEffortLevel::High) | Self::Tagged(ModelEffort::High) => {
+                ModelEffort::High
+            }
+            Self::Level(ModelEffortLevel::Xhigh) | Self::Tagged(ModelEffort::Xhigh) => {
+                ModelEffort::Xhigh
+            }
+            Self::Level(ModelEffortLevel::Max) | Self::Tagged(ModelEffort::Max) => ModelEffort::Max,
+        }
+    }
+}
+
+/// Input-only model configuration; nullable option values normalize to absence.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelConfigParams {
+    pub id: String,
+    #[serde(default)]
+    pub speed: Option<ModelSpeed>,
+    #[serde(default)]
+    pub effort: Option<ModelEffortInput>,
+}
+
+impl ModelConfigParams {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            speed: None,
+            effort: None,
+        }
+    }
+
+    #[must_use]
+    pub fn into_resolved(self) -> ModelConfig {
+        ModelConfig {
+            id: self.id,
+            speed: self.speed,
+            effort: self.effort.map(ModelEffortInput::resolved),
         }
     }
 }
@@ -1025,7 +1115,7 @@ mod tests {
         match o.model_override() {
             ModelOverride::Set(cfg) => {
                 assert_eq!(cfg.id, "claude-opus-4-8");
-                assert_eq!(cfg.speed.as_deref(), Some("fast"));
+                assert_eq!(cfg.speed, Some(ModelSpeed::Fast));
             }
             other => panic!("expected Set, got {other:?}"),
         }

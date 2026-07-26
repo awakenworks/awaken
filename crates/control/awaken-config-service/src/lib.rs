@@ -15,6 +15,7 @@ mod binding_resolver;
 mod capabilities;
 mod compaction;
 mod config_plane;
+mod config_routes;
 mod credential_reference;
 mod installed_catalog;
 mod managed_agent;
@@ -31,7 +32,8 @@ pub use binding_resolver::{
     PublicationResolutionError, ResolvedPublicationModels,
 };
 pub use capabilities::{capabilities_router, runtime_catalog, sandbox_execution_policy_capability};
-pub use config_plane::{ConfigPlane, ConfigService, config_router};
+pub use config_plane::{ConfigPlane, ConfigService};
+pub use config_routes::config_router;
 pub use credential_reference::CredentialReferenceValidator;
 pub use managed_agent::{agent_config_from_managed, managed_from_agent_config};
 pub use publication::{PublishError, ValidationIssue};

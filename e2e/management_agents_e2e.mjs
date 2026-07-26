@@ -155,17 +155,18 @@ async function main() {
       // unknown tags/fields fail before persistence.
       //
       // Decision table:
-      // | composite input                        | result |
-      // | URL MCP/custom skill/custom tools      | 200 + typed projection |
-      // | unknown/misspelled union member        | 400, no Agent created  |
-      // | update field omitted                   | preserve current value |
-      // | nullable update field = null           | clear exact field/bag  |
-      // | metadata value = null                  | delete only that key   |
-      // | update version omitted                 | unconditional CAS write|
-      // | list archived/time partition           | filter before paging   |
+      // | composite input                         | result |
+      // | model speed + bare/tagged effort        | exact revision + execution controls |
+      // | URL MCP/custom skill/custom tools       | 200 + typed projection |
+      // | unknown/misspelled union member         | 400, no Agent created  |
+      // | update field omitted                    | preserve current value |
+      // | nullable update field = null            | clear exact field/bag  |
+      // | metadata value = null                   | delete only that key   |
+      // | update version omitted                  | unconditional CAS write|
+      // | list archived/time partition            | filter before paging   |
       const rich = await json(baseUrl, 'POST', '/v1/agents', {
         name: 'rich-agent',
-        model: { id: 'claude-sonnet-5', speed: 'fast' },
+        model: { id: 'claude-sonnet-5', speed: 'fast', effort: 'xhigh' },
         description: 'all mutable fields',
         system: 'rich system',
         metadata: { team: 'platform' },
@@ -180,6 +181,11 @@ async function main() {
         multiagent: { type: 'coordinator', agents: ['researcher'] },
       });
       assert.equal(rich.status, 200, JSON.stringify(rich.body));
+      assert.deepEqual(rich.body.model, {
+        id: 'claude-sonnet-5',
+        speed: 'fast',
+        effort: { type: 'xhigh' },
+      });
       assert.deepEqual(
         rich.body.tools,
         ['bash', 'glob', 'read'].map((name) => ({
@@ -194,6 +200,7 @@ async function main() {
 
       const richUpdated = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}`, {
         version: rich.body.version,
+        model: { id: 'claude-sonnet-5', speed: 'standard', effort: { type: 'low' } },
         description: 'replaced',
         system: 'replaced system',
         metadata: { team: 'runtime' },
@@ -210,6 +217,11 @@ async function main() {
       assert.equal(richUpdated.status, 200, JSON.stringify(richUpdated.body));
       assert.equal(richUpdated.body.description, 'replaced');
       assert.equal(richUpdated.body.system, 'replaced system');
+      assert.deepEqual(richUpdated.body.model, {
+        id: 'claude-sonnet-5',
+        speed: 'standard',
+        effort: { type: 'low' },
+      });
       assert.deepEqual(richUpdated.body.metadata, { team: 'runtime' });
       assert.deepEqual(richUpdated.body.mcp_servers, []);
       assert.deepEqual(richUpdated.body.skills, []);
@@ -243,6 +255,11 @@ async function main() {
       assert.deepEqual(cleared.skills, []);
       assert.deepEqual(cleared.tools, []);
       assert.equal(cleared.multiagent, null);
+      assert.deepEqual(
+        cleared.model,
+        richUpdated.body.model,
+        'omitting model preserves the exact resolved inference controls',
+      );
       const richV2 = await client.beta.agents.retrieve(rich.body.id, {
         version: richUpdated.body.version,
         betas: BETAS,

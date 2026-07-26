@@ -143,6 +143,7 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
         max_steps: body.get("max_steps").and_then(Value::as_u64).unwrap_or(8) as usize,
         delegation_limits: Default::default(),
         model_binding: ModelSelection::pinned(provider_identity_ref, model_ref, backend_ref),
+        inference: Default::default(),
         tool_ids: tools.iter().filter_map(managed_tool_id).collect(),
         client_tools,
         plugin_ids: array("plugins")

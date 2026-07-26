@@ -12,26 +12,33 @@ use std::sync::Arc;
 use awaken_config_resolver::AgentInputBindingRepository;
 use awaken_config_store::{
     AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigWrite,
-    DEFAULT_SCOPE, ManagementAuditEntry, ManagementAuditRecord, ManagementEffect, ScopedConfig,
+    ManagementAuditEntry, ManagementAuditRecord, ManagementEffect, ScopedConfig,
     ScopedConfigRegistry, StoredPublication,
 };
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_tenancy::{ExecutionWorkspace, ScopeId};
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
-use axum::routing::{get, post};
-use axum::{Extension, Json, Router};
-use serde_json::{Value, json};
+use awaken_tenancy::ScopeId;
 
 use crate::binding_resolver::ModelPublicationResolver;
 use crate::credential_reference::{CredentialReferenceValidator, validate_credential_references};
 use crate::installed_catalog::InstalledAgentCatalog;
-use crate::managed_agent::{agent_config_from_managed, managed_from_agent_config};
 use crate::publication::{
     PublishError, ValidationIssue, prepare_agent_publication, snapshot_metadata,
 };
 use crate::tool_catalog::RESERVED_ADMIN_SCOPE;
 use crate::tool_catalog::ToolCatalogSource;
+
+#[cfg(test)]
+use crate::config_routes::{get_config, publish, put_config, request_scope, validate};
+#[cfg(test)]
+use awaken_config_store::DEFAULT_SCOPE;
+#[cfg(test)]
+use axum::extract::{Path, State};
+#[cfg(test)]
+use axum::http::StatusCode;
+#[cfg(test)]
+use axum::{Extension, Json};
+#[cfg(test)]
+use serde_json::json;
 
 /// The config domain service: validate, store, publish, and expose the installed
 /// published executable snapshot per agent.
@@ -553,222 +560,6 @@ impl ConfigPlane {
     }
 }
 
-/// The config data-plane router: `/v1/config/agents/:id` (author) plus
-/// `/validate` and `/publish` (lifecycle). The [`ConfigPlane`] state is the scope
-/// edge — it binds the request scope onto the scope-free service.
-pub fn config_router(plane: ConfigPlane) -> Router {
-    Router::new()
-        .route("/v1/config/agents", get(list_configs))
-        .route("/v1/config/agents/{id}/validate", post(validate))
-        .route("/v1/config/agents/{id}/publish", post(publish))
-        .route("/v1/config/agents/{id}", get(get_config).put(put_config))
-        .with_state(plane)
-}
-
-/// The request's owner scope, stamped by the workspace-path rewrite
-/// (`WorkspaceScope`) or the seeded [`DEFAULT_SCOPE`] for a flat/single-tenant call.
-fn request_scope(ext: Option<Extension<awaken_tenancy::WorkspaceScope>>) -> ScopeId {
-    ext.map(|Extension(w)| ScopeId::from(w.0))
-        .unwrap_or_else(|| ScopeId::from(DEFAULT_SCOPE))
-}
-
-/// `GET /v1/config/agents` — every stored draft in the request's scope, each tagged
-/// `published` when a compiled config is currently installed for it.
-async fn list_configs(
-    State(plane): State<ConfigPlane>,
-    scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
-    execution: Option<Extension<ExecutionWorkspace>>,
-) -> (StatusCode, Json<Value>) {
-    let scope = request_scope(scope);
-    let execution = publication_workspace(&scope, execution.as_ref());
-    match plane.list(&scope).await {
-        Ok(configs) => {
-            let data: Vec<Value> = configs
-                .into_iter()
-                .map(|config| {
-                    let published = plane
-                        .service()
-                        .installed_in(execution.unwrap_or(scope.as_str()), &config.id)
-                        .is_some();
-                    managed_from_agent_config(&config, published)
-                })
-                .collect();
-            (StatusCode::OK, Json(json!({ "data": data })))
-        }
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": error })),
-        ),
-    }
-}
-
-/// `GET /v1/config/agents/:id` — one stored draft within the request's scope
-/// (`404` when absent, or owned by another scope — never disclose cross-tenant).
-async fn get_config(
-    State(plane): State<ConfigPlane>,
-    Path(id): Path<String>,
-    scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
-    execution: Option<Extension<ExecutionWorkspace>>,
-) -> (StatusCode, Json<Value>) {
-    let scope = request_scope(scope);
-    match plane.get_versioned(&scope, &id).await {
-        Ok(Some(versioned)) => {
-            let execution = publication_workspace(&scope, execution.as_ref());
-            let published = plane
-                .service()
-                .installed_in(execution.unwrap_or(scope.as_str()), &id)
-                .is_some();
-            let mut body = managed_from_agent_config(&versioned.config, published);
-            body.as_object_mut()
-                .expect("managed config is an object")
-                .insert("generation".to_string(), json!(versioned.revision));
-            (StatusCode::OK, Json(body))
-        }
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": format!("no config stored for agent `{id}`") })),
-        ),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": error })),
-        ),
-    }
-}
-
-async fn validate(
-    State(plane): State<ConfigPlane>,
-    scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
-    execution: Option<Extension<ExecutionWorkspace>>,
-    Path(id): Path<String>,
-    Json(body): Json<Value>,
-) -> (StatusCode, Json<Value>) {
-    let config = match agent_config_from_managed(id, &body) {
-        Ok(c) => c,
-        // A body the projection can't even parse is a whole-config issue (path "").
-        Err(error) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "valid": false,
-                    "issues": [{ "path": "", "message": error, "severity": "error" }],
-                })),
-            );
-        }
-    };
-    // Validation is a query — the request succeeds even when the config is invalid, so
-    // both outcomes are 200 with `{ valid, issues }`. Structured, field-routed issues
-    // (ADR-0053): the UI highlights the section, never re-derives the rule. Compile fails
-    // fast, so there is at most one issue today.
-    let scope = request_scope(scope);
-    let result = match publication_workspace(&scope, execution.as_ref()) {
-        Some(workspace) => {
-            plane
-                .validate_for_execution_workspace(&scope, workspace, &config)
-                .await
-        }
-        None => Err(ValidationIssue {
-            path: "model".into(),
-            message: PublishError::ExecutionWorkspaceRequired.to_string(),
-        }),
-    };
-    match result {
-        Ok(()) => (StatusCode::OK, Json(json!({ "valid": true, "issues": [] }))),
-        Err(issue) => (
-            StatusCode::OK,
-            Json(json!({
-                "valid": false,
-                "issues": [{ "path": issue.path, "message": issue.message, "severity": "error" }],
-            })),
-        ),
-    }
-}
-
-async fn put_config(
-    State(plane): State<ConfigPlane>,
-    scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
-    Path(id): Path<String>,
-    Json(body): Json<Value>,
-) -> (StatusCode, Json<Value>) {
-    let config = match agent_config_from_managed(id.clone(), &body) {
-        Ok(c) => c,
-        Err(error) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
-    };
-    let scope = request_scope(scope);
-    if let Some(expected) = body.get("generation").and_then(Value::as_u64) {
-        return match plane.put_if_revision(&scope, &config, expected).await {
-            Ok(ConfigWrite::Applied { revision }) => (
-                StatusCode::OK,
-                Json(json!({ "id": id, "generation": revision })),
-            ),
-            Ok(ConfigWrite::Conflict { current_revision }) => (
-                StatusCode::CONFLICT,
-                Json(json!({
-                    "error": "config generation conflict",
-                    "current_revision": current_revision,
-                })),
-            ),
-            Err(error) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
-        };
-    }
-    match plane.put(&scope, &config).await {
-        Ok(()) => match plane.get_versioned(&scope, &id).await {
-            Ok(Some(current)) => (
-                StatusCode::OK,
-                Json(json!({ "id": id, "generation": current.revision })),
-            ),
-            _ => (StatusCode::OK, Json(json!({ "id": id }))),
-        },
-        Err(error) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
-    }
-}
-
-async fn publish(
-    State(plane): State<ConfigPlane>,
-    scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
-    execution: Option<Extension<ExecutionWorkspace>>,
-    Path(id): Path<String>,
-) -> (StatusCode, Json<Value>) {
-    let scope = request_scope(scope);
-    let result = match publication_workspace(&scope, execution.as_ref()) {
-        Some(workspace) => {
-            plane
-                .publish_for_execution_workspace(&scope, workspace, &id)
-                .await
-        }
-        None => Err(PublishError::ExecutionWorkspaceRequired),
-    };
-    match result {
-        Ok(publication) => (
-            StatusCode::OK,
-            Json(json!({
-                "publication_id": publication.publication_id,
-                "fingerprint": publication.fingerprint,
-                "agent_id": publication.agent_id,
-                "installed": true,
-            })),
-        ),
-        // An unresolvable auto model is a 409 ("configure a model first"), ADR-0052 D5;
-        // every other publish failure stays a 400.
-        Err(err @ (PublishError::Unresolvable(_) | PublishError::StaleRevision(_))) => (
-            StatusCode::CONFLICT,
-            Json(json!({ "error": err.to_string() })),
-        ),
-        Err(error) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": error.to_string() })),
-        ),
-    }
-}
-
-fn publication_workspace<'a>(
-    scope: &'a ScopeId,
-    execution: Option<&'a Extension<ExecutionWorkspace>>,
-) -> Option<&'a str> {
-    (scope.as_str() != RESERVED_ADMIN_SCOPE)
-        .then(|| scope.as_str())
-        .or_else(|| execution.map(|Extension(workspace)| workspace.0.as_str()))
-}
-
 #[cfg(test)]
 mod resource_prompt_tests {
     use super::*;
@@ -795,6 +586,7 @@ mod resource_prompt_tests {
             max_steps: 8,
             delegation_limits: Default::default(),
             model_binding: awaken_config_store::ModelSelection::pinned("p", "m", "b"),
+            inference: Default::default(),
             tool_ids: vec![],
             model_candidates: Vec::new(),
             plugin_ids: vec![],

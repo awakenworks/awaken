@@ -183,6 +183,7 @@ fn agent_config() -> AgentConfig {
         max_steps: 8,
         delegation_limits: Default::default(),
         model_binding: awaken_config_store::ModelSelection::pinned("p", "m", "b"),
+        inference: Default::default(),
         tool_ids: vec!["echo".to_string()],
         model_candidates: Vec::new(),
         plugin_ids: Vec::new(),
@@ -258,6 +259,7 @@ async fn postgres_list_published_reloads_published_rows_of_the_scope() {
             max_steps: 8,
             delegation_limits: Default::default(),
             model_binding: awaken_config_store::ModelSelection::pinned("p", "m", "b"),
+            inference: Default::default(),
             tool_ids: vec!["echo".to_string()],
             ..Default::default()
         };
@@ -326,6 +328,7 @@ async fn postgres_list_published_warm_load_same_agent_reloads_the_full_set() {
             max_steps: 8,
             delegation_limits: Default::default(),
             model_binding: awaken_config_store::ModelSelection::pinned("p", "m", "b"),
+            inference: Default::default(),
             tool_ids: vec!["echo".to_string()],
             ..Default::default()
         };

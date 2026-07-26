@@ -16,6 +16,7 @@ fn sample_request() -> ChatRequest {
             model_ref: "gpt-4o-mini".to_string(),
             backend_ref: "backend-1".to_string(),
         },
+        inference: Default::default(),
         messages: vec![ChatMessage {
             role: Role::User,
             content: vec![ContentBlock::text("hello")],

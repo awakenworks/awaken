@@ -744,6 +744,7 @@ mod tests {
     fn req(messages: Vec<ChatMessage>) -> ChatRequest {
         ChatRequest {
             model_binding: ModelBinding::new("id", "m", "default"),
+            inference: Default::default(),
             messages,
             tools: vec![],
         }

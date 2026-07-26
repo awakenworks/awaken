@@ -157,6 +157,7 @@ mod tests {
         let llm = ScriptedLlm::default();
         let request = || ChatRequest {
             model_binding: ModelBinding::new("x", "y", "z"),
+            inference: Default::default(),
             messages: Vec::new(),
             tools: Vec::new(),
         };

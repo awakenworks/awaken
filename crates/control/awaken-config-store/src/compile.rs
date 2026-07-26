@@ -354,6 +354,7 @@ fn compile_with_models(
         .plugins(config.plugin_ids.clone())
         .plugin_config(config.plugin_config.clone())
         .agent_bindings(bindings)
+        .inference_options(config.inference)
         .context_policy(config.context_policy.clone())
         .tool_presentation(presentation)
         .fingerprint(fingerprint)
@@ -536,6 +537,7 @@ mod tests {
             max_steps: 8,
             delegation_limits: Default::default(),
             model_binding: ModelSelection::pinned("p", "m", "b"),
+            inference: Default::default(),
             tool_ids: tools.iter().map(|s| s.to_string()).collect(),
             model_candidates: Vec::new(),
             plugin_ids: Vec::new(),

@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use awaken_runtime_contract::agent_bindings::InferenceOptions;
 use awaken_runtime_contract::delegation::DelegationLimits;
 use awaken_runtime_contract::resolved::{ContextPolicy, ModelBinding, ToolDescriptor};
 use awaken_runtime_contract::tool::ToolRecoveryPolicy;
@@ -155,6 +156,10 @@ pub struct AgentConfig {
     /// triple when pinned, so the field name and the publication fingerprint of
     /// every pre-existing config are unchanged.
     pub model_binding: ModelSelection,
+    /// Provider-neutral call controls authored with the model and frozen into
+    /// every executable revision. They are not part of model route identity.
+    #[serde(default, skip_serializing_if = "InferenceOptions::is_default")]
+    pub inference: InferenceOptions,
     pub tool_ids: Vec<String>,
     /// Inline client-executed tools. These are capabilities advertised to the
     /// model, not aliases for host catalog tools with the same name. Their exact

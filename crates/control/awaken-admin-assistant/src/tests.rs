@@ -733,6 +733,7 @@ async fn validate_reports_invalid_for_a_saved_draft_with_an_unknown_tool() {
             max_steps: 8,
             delegation_limits: Default::default(),
             model_binding: ModelSelection::Auto,
+            inference: Default::default(),
             tool_ids: vec!["ghost_tool".into()],
             ..Default::default()
         })
@@ -1239,6 +1240,7 @@ async fn patch_agent_surfaces_a_store_put_failure() {
         max_steps: 8,
         delegation_limits: Default::default(),
         model_binding: ModelSelection::Auto,
+        inference: Default::default(),
         ..Default::default()
     })
     .await
@@ -1308,6 +1310,7 @@ async fn patch_agent_surfaces_a_resource_bind_failure() {
         max_steps: 8,
         delegation_limits: Default::default(),
         model_binding: ModelSelection::Auto,
+        inference: Default::default(),
         ..Default::default()
     })
     .await

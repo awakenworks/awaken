@@ -11,6 +11,43 @@ use std::ops::{Deref, DerefMut};
 use crate::snapshot::AgentId;
 use serde::{Deserialize, Serialize};
 
+/// Provider-neutral inference controls frozen into an Agent publication.
+///
+/// These are deliberately separate from `ModelBinding`: the binding is routing
+/// identity used for exact candidate and credential lookup, whereas these values
+/// tune each call made through that exact route.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InferenceOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<ReasoningEffort>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<InferenceSpeed>,
+}
+
+impl InferenceOptions {
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningEffort {
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InferenceSpeed {
+    Standard,
+    Fast,
+}
+
 /// One direct HTTP MCP server inherited by Sessions of the published Agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentMcpServerBinding {
@@ -46,6 +83,9 @@ pub struct AgentBindings {
 pub struct ResolvedConfiguration {
     #[serde(default)]
     pub agent: AgentBindings,
+    /// Typed model-call controls. This is snapshot data, never plugin-owned JSON.
+    #[serde(default, skip_serializing_if = "InferenceOptions::is_default")]
+    pub inference: InferenceOptions,
     #[serde(default)]
     plugins: BTreeMap<String, serde_json::Value>,
 }
@@ -53,7 +93,17 @@ pub struct ResolvedConfiguration {
 impl ResolvedConfiguration {
     #[must_use]
     pub fn new(agent: AgentBindings, plugins: BTreeMap<String, serde_json::Value>) -> Self {
-        Self { agent, plugins }
+        Self {
+            agent,
+            inference: InferenceOptions::default(),
+            plugins,
+        }
+    }
+
+    #[must_use]
+    pub fn with_inference(mut self, inference: InferenceOptions) -> Self {
+        self.inference = inference;
+        self
     }
 
     #[must_use]
@@ -66,6 +116,7 @@ impl From<BTreeMap<String, serde_json::Value>> for ResolvedConfiguration {
     fn from(plugins: BTreeMap<String, serde_json::Value>) -> Self {
         Self {
             agent: AgentBindings::default(),
+            inference: InferenceOptions::default(),
             plugins,
         }
     }

@@ -60,6 +60,7 @@ fn binding() -> ModelBinding {
 fn user(blocks: Vec<ContentBlock>) -> ChatRequest {
     ChatRequest {
         model_binding: binding(),
+        inference: Default::default(),
         messages: vec![ChatMessage {
             role: Role::User,
             content: blocks,
@@ -170,6 +171,7 @@ fn weather_tool() -> ToolDescriptor {
 async fn minimax_streaming_tool_call_accumulates_arguments() {
     let request = ChatRequest {
         model_binding: binding(),
+        inference: Default::default(),
         messages: vec![ChatMessage {
             role: Role::User,
             content: vec![ContentBlock::text(

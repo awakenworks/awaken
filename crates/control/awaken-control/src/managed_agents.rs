@@ -11,14 +11,15 @@ use awaken_config_service::{ConfigPlane, RESERVED_ADMIN_SCOPE};
 use awaken_config_store::{
     AgentConfig, AgentConfigRevision, ConfigWrite, ModelSelection, MultiagentConfig,
 };
-use awaken_protocol_managed::types::ModelConfig;
 use awaken_protocol_managed::types::agent::{
     Agent, AgentCreateParams, AgentListParams, AgentSkill, AgentTool, AgentUpdateParams,
     CustomToolInputSchema, MultiagentConfig as WireMultiagent, MultiagentRosterEntry,
     ToolDefaultConfig, UrlMcpServer, UrlMcpServerKind,
 };
+use awaken_protocol_managed::types::{ModelConfig, ModelEffort, ModelSpeed};
 use awaken_protocol_managed::{ManagedAgentError, ManagedAgentRepository};
 use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
+use awaken_runtime_contract::agent_bindings::{InferenceOptions, InferenceSpeed, ReasoningEffort};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_tenancy::ScopeId;
 use serde_json::json;
@@ -186,6 +187,7 @@ fn config_from_create(
     params: AgentCreateParams,
 ) -> Result<AgentConfig, ManagedAgentError> {
     let model = params.model.into_config();
+    let inference = inference_from_wire(model.speed, model.effort.map(|value| value.resolved()));
     let multiagent = params.multiagent.map(|value| typed_multiagent(&id, value));
     Ok(AgentConfig {
         id,
@@ -193,6 +195,7 @@ fn config_from_create(
         max_steps: 8,
         delegation_limits: Default::default(),
         model_binding: ModelSelection::pinned("", model.id, ""),
+        inference,
         tool_ids: params.tools.iter().filter_map(tool_id).collect(),
         client_tools: client_tools(&params.tools),
         plugin_ids: Vec::new(),
@@ -211,6 +214,39 @@ fn config_from_create(
         recovery_policies: BTreeMap::new(),
         compaction: None,
     })
+}
+
+fn inference_from_wire(speed: Option<ModelSpeed>, effort: Option<ModelEffort>) -> InferenceOptions {
+    InferenceOptions {
+        speed: speed.map(|value| match value {
+            ModelSpeed::Standard => InferenceSpeed::Standard,
+            ModelSpeed::Fast => InferenceSpeed::Fast,
+        }),
+        effort: effort.map(|value| match value {
+            ModelEffort::Low => ReasoningEffort::Low,
+            ModelEffort::Medium => ReasoningEffort::Medium,
+            ModelEffort::High => ReasoningEffort::High,
+            ModelEffort::Xhigh => ReasoningEffort::Xhigh,
+            ModelEffort::Max => ReasoningEffort::Max,
+        }),
+    }
+}
+
+fn model_config(model: String, inference: InferenceOptions) -> ModelConfig {
+    ModelConfig {
+        id: model,
+        speed: inference.speed.map(|value| match value {
+            InferenceSpeed::Standard => ModelSpeed::Standard,
+            InferenceSpeed::Fast => ModelSpeed::Fast,
+        }),
+        effort: inference.effort.map(|value| match value {
+            ReasoningEffort::Low => ModelEffort::Low,
+            ReasoningEffort::Medium => ModelEffort::Medium,
+            ReasoningEffort::High => ModelEffort::High,
+            ReasoningEffort::Xhigh => ModelEffort::Xhigh,
+            ReasoningEffort::Max => ModelEffort::Max,
+        }),
+    }
 }
 
 fn wire_tools(ids: &[String], client_tools: &[ToolDescriptor]) -> Vec<AgentTool> {
@@ -263,7 +299,7 @@ fn project(revision: AgentConfigRevision) -> Agent {
         updated_at: OBJECT_AT.to_string(),
         name: config.name.unwrap_or(id),
         description: config.description,
-        model: ModelConfig::new(model),
+        model: model_config(model, config.inference),
         system: (!config.instructions.is_empty()).then_some(config.instructions),
         metadata: config.metadata,
         mcp_servers: config
@@ -424,7 +460,10 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             config.name = Some(name);
         }
         if let Some(model) = params.model {
-            config.model_binding = ModelSelection::pinned("", model.into_config().id, "");
+            let model = model.into_config();
+            config.inference =
+                inference_from_wire(model.speed, model.effort.map(|value| value.resolved()));
+            config.model_binding = ModelSelection::pinned("", model.id, "");
         }
         if let Some(description) = params.description {
             config.description = description;
@@ -711,6 +750,67 @@ mod tests {
             repository.versions("workspace-b", &id).await,
             Err(ManagedAgentError::NotFound)
         ));
+    }
+
+    #[tokio::test]
+    async fn model_controls_survive_revision_restart_and_enter_the_executable_snapshot() {
+        // Causal graph:
+        // tagged/bare Managed model controls -> typed authoring revision
+        // -> publication snapshot -> runtime inference controls.
+        //
+        // Decision table:
+        // | create controls       | persisted response | executable snapshot |
+        // | fast + {type:xhigh}   | exact typed values | exact typed values   |
+        // | repository restart    | values preserved   | republished values   |
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.sqlite");
+        let id = {
+            let plane = plane(path.to_str().unwrap());
+            let repository = ConfigPlaneManagedAgentRepository::new(plane.clone(), "workspace-a");
+            let mut params = create_params("controlled");
+            params.model = serde_json::from_value(json!({
+                "id": "claude-opus-4-8",
+                "speed": "fast",
+                "effort": {"type": "xhigh"}
+            }))
+            .unwrap();
+            let created = repository.create("workspace-a", params).await.unwrap();
+            assert_eq!(created.model.speed, Some(ModelSpeed::Fast));
+            assert_eq!(created.model.effort, Some(ModelEffort::Xhigh));
+            let installed = plane
+                .service()
+                .installed_in("workspace-a", &created.id)
+                .expect("create publishes an executable revision");
+            assert_eq!(
+                installed.resolved_spec.plugin_config.inference,
+                InferenceOptions {
+                    speed: Some(InferenceSpeed::Fast),
+                    effort: Some(ReasoningEffort::Xhigh),
+                }
+            );
+            created.id
+        };
+
+        let plane = plane(path.to_str().unwrap());
+        let repository = ConfigPlaneManagedAgentRepository::new(plane.clone(), "workspace-a");
+        let restored = repository.retrieve("workspace-a", &id, None).await.unwrap();
+        assert_eq!(restored.model.speed, Some(ModelSpeed::Fast));
+        assert_eq!(restored.model.effort, Some(ModelEffort::Xhigh));
+        plane
+            .publish(&ScopeId::from("workspace-a"), &id)
+            .await
+            .expect("reconciliation republishes the restored authoring revision");
+        let installed = plane
+            .service()
+            .installed_in("workspace-a", &id)
+            .expect("restart restores the same executable publication");
+        assert_eq!(
+            installed.resolved_spec.plugin_config.inference,
+            InferenceOptions {
+                speed: Some(InferenceSpeed::Fast),
+                effort: Some(ReasoningEffort::Xhigh),
+            }
+        );
     }
 
     #[tokio::test]

@@ -253,6 +253,7 @@ impl Evaluator {
         );
         let request = ChatRequest {
             model_binding: ModelBinding::new("eval", "judge", "genai"),
+            inference: Default::default(),
             messages: vec![ChatMessage {
                 role: Role::User,
                 content: vec![ContentBlock::text(prompt)],

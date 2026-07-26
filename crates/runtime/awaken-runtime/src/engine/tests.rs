@@ -54,6 +54,38 @@ fn empty_instructions_contribute_no_system_message() {
     assert!(matches!(request.messages[0].role, Role::User));
 }
 
+#[test]
+fn published_inference_controls_reach_each_model_call_unchanged() {
+    // Causal graph: resolved Agent snapshot -> request builder -> provider-facing
+    // ChatRequest. The route identity and call controls travel together but remain
+    // separate typed axes.
+    //
+    // Decision table:
+    // | snapshot effort | snapshot speed | request effort | request speed |
+    // | xhigh           | fast           | xhigh          | fast          |
+    // | omitted         | omitted        | omitted        | omitted       |
+    use awaken_runtime_contract::agent_bindings::{
+        InferenceOptions, InferenceSpeed, ReasoningEffort,
+    };
+
+    let mut controlled = spec("");
+    controlled.plugin_config.inference = InferenceOptions {
+        effort: Some(ReasoningEffort::Xhigh),
+        speed: Some(InferenceSpeed::Fast),
+    };
+    let request = build_chat_request(
+        &controlled,
+        &[],
+        &[user_message()],
+        &[],
+        &Default::default(),
+    );
+    assert_eq!(request.inference, controlled.plugin_config.inference);
+
+    let defaults = build_chat_request(&spec(""), &[], &[user_message()], &[], &Default::default());
+    assert_eq!(defaults.inference, InferenceOptions::default());
+}
+
 fn numbered(n: usize) -> Message {
     Message::text(MessageId(format!("m{n}")), Role::User, n.to_string())
 }
@@ -349,6 +381,7 @@ fn one_step_request() -> ChatRequest {
             model_ref: "m".to_string(),
             backend_ref: "b".to_string(),
         },
+        inference: Default::default(),
         messages: vec![ChatMessage {
             role: Role::User,
             content: vec![ContentBlock::text("q")],

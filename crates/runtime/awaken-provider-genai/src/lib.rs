@@ -18,6 +18,7 @@ use genai::chat::{
     Binary, ChatMessage, ChatRequest as GenaiChatRequest, ContentPart, MessageContent,
     Tool as GenaiTool, ToolCall as GenaiToolCall, ToolResponse, Usage,
 };
+use genai::chat::{ChatOptions, ReasoningEffort as GenaiReasoningEffort};
 
 /// The genai wire adapter, re-exported so a consumer selects a provider wire without
 /// naming the model SDK itself (which stays named only in this crate).
@@ -322,10 +323,11 @@ impl LlmExecutor for GenaiExecutor {
     async fn infer(&self, request: ChatRequest) -> Result<ChatResponse> {
         let model = request.model_binding.model_ref.clone();
         let genai_request = to_genai_request(&request);
+        let options = to_genai_options(&request, false)?;
 
         let response = tokio::time::timeout(
             self.timeout,
-            self.client.exec_chat(model, genai_request, None),
+            self.client.exec_chat(model, genai_request, Some(&options)),
         )
         .await
         // A timeout is retryable: the same call may succeed on retry.
@@ -341,7 +343,7 @@ impl LlmExecutor for GenaiExecutor {
         sink: &dyn awaken_runtime_contract::llm::DeltaSink,
     ) -> Result<ChatResponse> {
         use futures::StreamExt;
-        use genai::chat::{ChatOptions, ChatStreamEvent};
+        use genai::chat::ChatStreamEvent;
 
         let model = request.model_binding.model_ref.clone();
         let genai_request = to_genai_request(&request);
@@ -352,7 +354,7 @@ impl LlmExecutor for GenaiExecutor {
         // streams tool arguments as `input_json_delta` text that is only valid
         // JSON once the block ends. Without `capture_*` the `End` event carries
         // no content and we'd be stuck with the raw, string-encoded deltas.
-        let options = ChatOptions::default()
+        let options = to_genai_options(&request, true)?
             .with_capture_content(true)
             .with_capture_tool_calls(true)
             .with_capture_usage(true)
@@ -477,6 +479,31 @@ impl LlmExecutor for GenaiExecutor {
             stop_reason,
         })
     }
+}
+
+/// Materialize the snapshot's typed inference controls into genai's per-call
+/// options. A control the adapter cannot faithfully express is rejected before
+/// network I/O; accepting and silently running with another behavior would make
+/// the immutable Agent revision untrue.
+fn to_genai_options(request: &ChatRequest, _streaming: bool) -> Result<ChatOptions> {
+    use awaken_runtime_contract::agent_bindings::{InferenceSpeed, ReasoningEffort};
+
+    if request.inference.speed == Some(InferenceSpeed::Fast) {
+        return Err(Error::InvalidRequest(
+            "inference speed `fast` is not supported by the configured genai adapter".into(),
+        ));
+    }
+    let mut options = ChatOptions::default();
+    if let Some(effort) = request.inference.effort {
+        options = options.with_reasoning_effort(match effort {
+            ReasoningEffort::Low => GenaiReasoningEffort::Low,
+            ReasoningEffort::Medium => GenaiReasoningEffort::Medium,
+            ReasoningEffort::High => GenaiReasoningEffort::High,
+            ReasoningEffort::Xhigh => GenaiReasoningEffort::XHigh,
+            ReasoningEffort::Max => GenaiReasoningEffort::Max,
+        });
+    }
+    Ok(options)
 }
 
 /// Classify a provider error string into the contract's error taxonomy. The
@@ -617,6 +644,7 @@ pub async fn probe_credential(
             model_ref: model.to_string(),
             backend_ref: "genai".into(),
         },
+        inference: Default::default(),
         messages: vec![awaken_runtime_contract::llm::ChatMessage {
             role: Role::User,
             content: vec![ContentBlock::text("ping")],
@@ -868,6 +896,9 @@ mod hermetic_tests {
 
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_agent_contract::agent::message::Role;
+    use awaken_runtime_contract::agent_bindings::{
+        InferenceOptions, InferenceSpeed, ReasoningEffort,
+    };
     use awaken_runtime_contract::llm::{
         ChatMessage, ChatRequest, DeltaSink, LlmExecutor, StopReason,
     };
@@ -875,8 +906,53 @@ mod hermetic_tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::{
-        AdapterKind, CredentialProbe, GenaiExecutor, discover_model_ids, probe_credential,
+        AdapterKind, CredentialProbe, GenaiExecutor, GenaiReasoningEffort, discover_model_ids,
+        probe_credential, to_genai_options,
     };
+
+    fn controlled_request(inference: InferenceOptions) -> ChatRequest {
+        ChatRequest {
+            model_binding: ModelBinding::new("provider", "claude-opus-4-8", "genai"),
+            inference,
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content: vec![ContentBlock::text("hello")],
+            }],
+            tools: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn typed_inference_controls_are_materialized_or_rejected_before_io() {
+        // Causal graph:
+        // immutable ChatRequest controls -> provider adapter options OR stable
+        // pre-I/O rejection. No branch may silently discard a requested mode.
+        //
+        // Decision table:
+        // | effort | speed    | provider behavior                         |
+        // | high   | standard | genai reasoning_effort=High              |
+        // | none   | omitted  | default options                          |
+        // | any    | fast     | invalid_request before network execution |
+        let standard = controlled_request(InferenceOptions {
+            effort: Some(ReasoningEffort::High),
+            speed: Some(InferenceSpeed::Standard),
+        });
+        let options = to_genai_options(&standard, false).unwrap();
+        assert!(matches!(
+            options.reasoning_effort,
+            Some(GenaiReasoningEffort::High)
+        ));
+
+        let defaults = to_genai_options(&controlled_request(Default::default()), false).unwrap();
+        assert!(defaults.reasoning_effort.is_none());
+
+        let fast = controlled_request(InferenceOptions {
+            effort: Some(ReasoningEffort::Max),
+            speed: Some(InferenceSpeed::Fast),
+        });
+        let error = to_genai_options(&fast, false).unwrap_err();
+        assert_eq!(error.code(), "invalid_request");
+    }
 
     /// One SSE frame: `event:`/`data:` lines terminated by a blank line. The
     /// `data` value is serialized compactly (single line) so it is a valid SSE
@@ -1112,6 +1188,7 @@ mod hermetic_tests {
                 model_ref: "claude-test".to_string(),
                 backend_ref: "b".to_string(),
             },
+            inference: Default::default(),
             messages: vec![ChatMessage {
                 role: Role::User,
                 content: vec![ContentBlock::text("weather in Sao Paulo?")],

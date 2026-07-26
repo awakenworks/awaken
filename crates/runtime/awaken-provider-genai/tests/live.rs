@@ -41,6 +41,7 @@ async fn live_text_completion() {
             model_ref: model,
             backend_ref: "genai".to_string(),
         },
+        inference: Default::default(),
         messages: vec![ChatMessage {
             role: Role::User,
             content: vec![ContentBlock::text("Reply with the single word: pong")],

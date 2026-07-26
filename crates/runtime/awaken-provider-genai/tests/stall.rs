@@ -68,6 +68,7 @@ async fn stalled_stream_times_out_as_a_retryable_timeout() {
             model_ref: "claude-test".to_string(),
             backend_ref: "b".to_string(),
         },
+        inference: Default::default(),
         messages: vec![ChatMessage {
             role: Role::User,
             content: vec![ContentBlock::text("hi")],

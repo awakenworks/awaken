@@ -14,7 +14,7 @@ pub use awaken_session_contract::{
     AgentToolPermissionPolicy as PermissionPolicy, CustomToolInputSchema, ObjectSchemaKind,
 };
 
-use crate::types::ModelConfig;
+use crate::types::{ModelConfig, ModelConfigParams};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -96,13 +96,13 @@ pub enum MultiagentConfig {
 #[serde(untagged)]
 pub enum ModelInput {
     Id(String),
-    Config(ModelConfig),
+    Config(ModelConfigParams),
 }
 
 impl ModelInput {
-    pub fn into_config(self) -> ModelConfig {
+    pub fn into_config(self) -> ModelConfigParams {
         match self {
-            ModelInput::Id(id) => ModelConfig::new(id),
+            ModelInput::Id(id) => ModelConfigParams::new(id),
             ModelInput::Config(config) => config,
         }
     }

@@ -130,6 +130,7 @@ pub async fn select_relevant(
     let prompt = select_input(query, &manifest, max);
     let request = ChatRequest {
         model_binding: model.clone(),
+        inference: Default::default(),
         messages: vec![
             ChatMessage {
                 role: Role::System,
