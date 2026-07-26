@@ -200,6 +200,7 @@ removed AWAKEN_MGMT_* inputs
 | isolated `data_dir` | no-login | empty | open local control plane, no bootstrap token |
 | isolated `data_dir` | self-managed | default | bootstrap token and workspace under that exact root |
 | isolated `data_dir` | self-managed | two exact ids | both scopes authorizable; ownership remains isolated |
+| isolated `data_dir` | awaken-cloud | remote IAM fields | cached login and remote PDP use the same typed deployment |
 | absent | any removed env input | any | removed input cannot select stores, IAM, or credentials |
 
 The shared E2E harness authors this standard config once per isolated deployment.

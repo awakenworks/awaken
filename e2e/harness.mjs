@@ -33,7 +33,10 @@ process.on('exit', () => fs.rmSync(E2E_HOME_ROOT, { recursive: true, force: true
 // durable control-plane root. Tests must not resurrect the removed AWAKEN_MGMT_*
 // configuration path. HOME remains OS metadata; the product reads the one
 // authoritative ~/.awaken/config.toml below.
-export function deploymentEnv(dataDir, { identityMode, iamWorkspaces = [], controlSealKey } = {}) {
+export function deploymentEnv(
+  dataDir,
+  { identityMode, iamWorkspaces = [], controlSealKey, cloudIam } = {},
+) {
   const home = path.join(dataDir, 'e2e-home');
   const configDir = path.join(home, '.awaken');
   fs.mkdirSync(configDir, { recursive: true });
@@ -41,6 +44,13 @@ export function deploymentEnv(dataDir, { identityMode, iamWorkspaces = [], contr
   if (identityMode) lines.push(`identity_mode = ${JSON.stringify(identityMode)}`);
   if (iamWorkspaces.length > 0) lines.push(`iam_workspaces = ${JSON.stringify(iamWorkspaces)}`);
   if (controlSealKey) lines.push(`control_seal_key = ${JSON.stringify(controlSealKey)}`);
+  if (cloudIam) {
+    lines.push(`cloud_iam_url = ${JSON.stringify(cloudIam.url)}`);
+    lines.push(`cloud_iam_issuer = ${JSON.stringify(cloudIam.issuer)}`);
+    lines.push(`cloud_iam_audience = ${JSON.stringify(cloudIam.audience)}`);
+    lines.push(`cloud_access_token = ${JSON.stringify(cloudIam.accessToken)}`);
+    lines.push(`cloud_iam_service_token = ${JSON.stringify(cloudIam.serviceToken)}`);
+  }
   fs.writeFileSync(path.join(configDir, 'config.toml'), `${lines.join('\n')}\n`);
   return { HOME: home };
 }
