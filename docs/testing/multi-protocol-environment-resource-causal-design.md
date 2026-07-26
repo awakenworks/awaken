@@ -161,11 +161,12 @@ typed deployment with storage root
     -> restart reconstructs the same owner and exact Session baseline
 ```
 
-| Storage | Restart | Session row | Owner scope | Expected |
-|---|---:|---:|---:|---|
-| absent | no | process-local | process-local | normal ephemeral turn |
-| present | no | durable | persisted | normal durable turn |
-| present | yes | durable | same persisted id | rehydrate and resume |
+| Storage | Durable ingress | Restart | Session row | Owner scope | Expected |
+|---|---:|---:|---:|---:|---|
+| absent | no | no | process-local | process-local | normal ephemeral turn |
+| present | no | no | durable | persisted | normal durable turn |
+| present | yes | no | durable | persisted | durable operations enabled |
+| present | any | yes | durable | same persisted id | rehydrate and resume |
 
 Constructing an ephemeral Host and adding storage afterward is forbidden: it mints
 a process-specific owner before durability exists and creates a second resource

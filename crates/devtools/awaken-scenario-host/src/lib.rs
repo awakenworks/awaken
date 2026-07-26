@@ -980,6 +980,7 @@ pub fn build_real_router() -> Router {
         .ok()
         .filter(|value| !value.trim().is_empty())
         .map(std::path::PathBuf::from);
+    deployment.durable = std::env::var("AWAKEN_INGRESS").as_deref() == Ok("durable");
     mount(Arc::new(resource_host_with_deployment(
         Arc::new(executor),
         model,
