@@ -135,3 +135,19 @@ snapshot                                 -> existing SandboxOverride -> SandboxS
 | Commit succeeds | 1 | 1 | 1 | 0 | 0 | 0 |
 | Current version substituted | 0 | 0 | 0 | 0 | 0 | 0 |
 | Existing SandboxSpec/provider path | 1 | 1 | 1 | - | - | - |
+
+## Phase 6: orthogonal protocol E2E
+
+```text
+Environment network U|N × Sandbox default|exact-workdir
+× Resource absent|File × Protocol AI-SDK|AG-UI|A2A
+    -> Managed Session freezes one baseline
+    -> ProtocolHost adopts that exact thread
+    -> existing SandboxSpec/provider realizes it
+    -> turn commits and projections retain exact Environment/Resource identity
+```
+
+The Cartesian decision table contains `2 × 2 × 2 × 3 = 24` rows. Every row must
+produce an agent message containing its unique marker, preserve the selected
+Environment id, and preserve the Resource cardinality. There is no protocol-specific
+configuration input, resolver, or expected-result branch.

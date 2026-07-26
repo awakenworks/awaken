@@ -135,6 +135,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok("compaction") => awaken_scenario_host::build_compaction_router(),
         Ok("error") => awaken_scenario_host::build_error_router(),
         Ok("worker") => awaken_scenario_host::build_worker_router(),
+        Ok("environment-matrix") => awaken_scenario_host::build_environment_matrix_router(),
         Ok("full-chain") => awaken_scenario_host::build_full_chain_router(),
         _ => awaken_scenario_host::build_echo_router(),
     };
@@ -282,6 +283,7 @@ mod dispatch_tests {
             ("compaction", sh::build_compaction_router()),
             ("error", sh::build_error_router()),
             ("worker", sh::build_worker_router()),
+            ("environment-matrix", sh::build_environment_matrix_router()),
             ("full-chain", sh::build_full_chain_router()),
             // The `_ =>` fallback: any unrecognized mode routes to the echo router.
             ("<default/unknown>", sh::build_echo_router()),
