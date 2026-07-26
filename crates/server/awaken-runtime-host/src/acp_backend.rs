@@ -32,6 +32,18 @@ pub(crate) struct AcpBackend {
 }
 
 impl AcpBackend {
+    pub(crate) fn credential_realization_capabilities(
+        &self,
+        backend: &awaken_runtime_contract::resolved::Backend,
+    ) -> Result<awaken_runtime_contract::CredentialRealizationCapabilities, String> {
+        match &self.source {
+            AcpExecutorSource::Static(_) => Ok(Default::default()),
+            AcpExecutorSource::Bound { launch, .. } => launch
+                .credential_realization_capabilities(backend)
+                .map_err(|error| error.to_string()),
+        }
+    }
+
     /// Set the deployment default backend adapter (see [`Self::default_adapter`]).
     fn with_default_adapter(mut self, adapter: String) -> Self {
         self.default_adapter = Some(adapter);
@@ -334,6 +346,12 @@ impl crate::host::SharedHost {
         resolver: Arc<dyn awaken_run_executor_acp::LaunchResolver>,
         store_dir: Option<std::path::PathBuf>,
     ) -> Self {
+        // A projected resolver owns both the opaque process-secret requirement and
+        // its broker. Bound ACP launches from the Session Environment, so install
+        // that broker on the same authoritative provider before moving the resolver
+        // into the launch registry. This is last-mile composition, not a second
+        // materialization path: the resolver still emits only the opaque reference.
+        let secret_broker = resolver.secret_broker();
         let source =
             crate::LaunchSource::Projected(crate::AcpLaunchRegistry::single(cli, resolver));
         // When a session-blob root is configured, recover this CLI's session across
@@ -349,7 +367,11 @@ impl crate::host::SharedHost {
         } else {
             None
         };
-        self.with_bound_acp(source, session_home)
+        let host = self.with_bound_acp(source, session_home);
+        match secret_broker {
+            Some(broker) => host.with_session_secret_broker(broker),
+            None => host,
+        }
     }
 
     /// Stage `thread`'s runtime adapter (R3): `"acp:*"` routes it to the ACP CLI.

@@ -397,9 +397,37 @@ impl ManagedState {
                 )));
             }
         }
+        let agent_mcp_override = match &req.agent {
+            AgentRef::Object(override_ref) => override_ref
+                .mcp_servers
+                .as_ref()
+                .map(|servers| {
+                    servers
+                        .as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .cloned()
+                        .map(|server| {
+                            serde_json::from_value::<crate::types::McpServer>(server).map_err(
+                                |error| {
+                                    StateError::Run(RunError::bad_request(format!(
+                                        "invalid agent MCP server override: {error}"
+                                    )))
+                                },
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?,
+            AgentRef::Id(_) => None,
+        };
         let mcp_drafts = self
             .normalize_mcp_drafts(
-                initial_mcp_candidates(&req.mcp_servers, config_view.as_ref()),
+                initial_mcp_candidates(
+                    &req.mcp_servers,
+                    config_view.as_ref(),
+                    agent_mcp_override.as_deref(),
+                ),
                 &req.vault_ids,
             )
             .await?;

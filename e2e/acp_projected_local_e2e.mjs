@@ -134,10 +134,12 @@ async function messages(client, sessionId) {
   for await (const event of client.beta.sessions.events.list(sessionId, { betas: BETAS })) {
     events.push(event);
   }
-  return events
+  const texts = events
     .filter((event) => event.type === 'agent.message')
     .flatMap((event) => event.content ?? [])
     .map((content) => content.text ?? '');
+  const failures = events.filter((event) => event.type === 'session.error');
+  return [...texts, ...failures.map((event) => `ERROR:${JSON.stringify(event.error)}`)];
 }
 
 async function request(base, method, route, body) {
@@ -203,6 +205,9 @@ async function main() {
   let server = start(binary, 'gemini');
   const mcpToken = 'projected-codex-mcp-token'; // awaken-allow: secret (fixture)
   const fixture = await startCalcFixture(mcpToken);
+  const anonymousFixture = await startCalcFixture('unused-anonymous-token', {
+    allowAnonymous: true,
+  });
   try {
     await ready(server);
     const base = `http://127.0.0.1:${PORT}`;
@@ -246,8 +251,9 @@ async function main() {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'exercise projection' }] }],
       betas: BETAS,
     });
-    const reply = (await messages(client, session.id)).find((text) => text.includes('PROJECTED'));
-    assert.ok(reply, 'the production projected ACP process returned an agent message');
+    const geminiTexts = await messages(client, session.id);
+    const reply = geminiTexts.find((text) => text.includes('PROJECTED'));
+    assert.ok(reply, `the production projected ACP process returned an agent message: ${JSON.stringify(geminiTexts)}`);
     assert.match(reply, /base=http:\/\/gemini-db\.invalid\/v1/u);
     assert.match(reply, /model=gemini-upstream/u);
     assert.match(reply, /key=persis/u);
@@ -279,12 +285,31 @@ async function main() {
       access_token: mcpToken,
       betas: BETAS,
     });
+    // Cause/effect graph for MCP on the Workdir provider:
+    // C1=credential is selected; C2=provider proves substitution + no bypass.
+    // C1 + !C2 -> M1 reject Worker custody before launch.
+    // !C1       -> M2 project the anonymous endpoint into the same ACP config path.
+    //
+    // | Rule | credential | provider proof | result                    |
+    // | M1   | yes        | no             | fail closed               |
+    // | M2   | no         | n/a            | config mounted and launch |
+    await assert.rejects(
+      codexClient.beta.sessions.create({
+        agent: CODEX_AGENT,
+        environment_id: codexEnvironment.id,
+        metadata: { 'awaken.runtime': 'acp:codex' },
+        mcp_servers: [{ name: 'calc-secure', type: 'url', url: fixture.url }],
+        vault_ids: [vault.id],
+        betas: BETAS,
+      }),
+      (error) => error?.status === 500 && String(error).includes('provider-enforced secret substitution'),
+      'M1: Workdir must not silently downgrade authenticated MCP out of Worker custody',
+    );
     const codexSession = await codexClient.beta.sessions.create({
       agent: CODEX_AGENT,
       environment_id: codexEnvironment.id,
       metadata: { 'awaken.runtime': 'acp:codex' },
-      mcp_servers: [{ name: 'calc', type: 'url', url: fixture.url }],
-      vault_ids: [vault.id],
+      mcp_servers: [{ name: 'calc-anonymous', type: 'url', url: anonymousFixture.url }],
       betas: BETAS,
     });
     await codexClient.beta.sessions.events.send(codexSession.id, {
@@ -297,13 +322,15 @@ async function main() {
     assert.match(codexReply, /base=http:\/\/codex-db\.invalid\/v1/u);
     assert.match(codexReply, /key=persis/u);
     assert.ok(!codexReply.includes('ambient-codex'));
-    assert.match(codexReply, /home=\.acp-config/u);
+    assert.match(codexReply, /home=.*awaken-acp-sbx.*\.acp-config/u);
+    assert.ok(!codexReply.includes(os.homedir()), 'Codex receives the Session home, not operator HOME');
     assert.match(codexReply, /config=yes/u, 'the projected config.toml was materialized');
 
     console.log('E2E PASS: aggregated awaken projects publication-pinned Gemini and Codex access into per-thread local sandboxes, including config-file materialization.');
   } finally {
     await stop(server).catch(() => {});
     await fixture.close();
+    await anonymousFixture.close();
     fs.rmSync(TMP, { recursive: true, force: true });
   }
 }

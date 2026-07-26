@@ -78,8 +78,9 @@ pub enum AgentRefKind {
 /// struct rather than a hand-rolled deserializer — the one field needing more than a
 /// plain `Option` is `model`, whose absent/`null`/value tri-state (the not-clearable
 /// rule) rides the standard double-`Option` idiom. The other override fields
-/// (`system`/`tools`/`mcp_servers`/`skills`) are accepted for wire-compatibility but
-/// not yet applied, so they are not modeled here.
+/// (`system`/`tools`/`mcp_servers`/`skills`) are session-local replacements. They
+/// are normalized into the same baseline/attachment authorities as non-override
+/// authoring; the wire values never form a second runtime configuration path.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentRefObject {
     pub id: String,

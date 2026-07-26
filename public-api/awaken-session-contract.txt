@@ -249,6 +249,10 @@ pub awaken_session_contract::SessionRealizationControlFailure::NotFound
 pub awaken_session_contract::SessionRealizationControlFailure::NotReady
 pub awaken_session_contract::SessionRealizationControlFailure::StaleOwnership
 pub awaken_session_contract::SessionRealizationControlFailure::Unavailable(alloc::string::String)
+pub enum awaken_session_contract::SessionRealizationDriveError
+pub awaken_session_contract::SessionRealizationDriveError::Control(awaken_session_contract::SessionRealizationControlFailure)
+pub awaken_session_contract::SessionRealizationDriveError::DidNotConverge
+pub awaken_session_contract::SessionRealizationDriveError::Effect(awaken_session_contract::RunError)
 pub enum awaken_session_contract::SessionRepositoryError
 pub awaken_session_contract::SessionRepositoryError::AlreadyExists
 pub awaken_session_contract::SessionRepositoryError::IdempotencyMismatch
@@ -560,6 +564,7 @@ pub fn awaken_session_contract::SessionMcpAttachmentSet::fail_realization(&mut s
 pub fn awaken_session_contract::SessionMcpAttachmentSet::finish_drain(&mut self, &awaken_session_contract::McpAttachmentId, awaken_session_contract::McpGeneration) -> core::result::Result<(), awaken_session_contract::McpAttachmentError>
 pub fn awaken_session_contract::SessionMcpAttachmentSet::from_initial(alloc::vec::Vec<awaken_session_contract::McpAttachmentDraft>, core::option::Option<awaken_credential_contract::PlaintextHolder>) -> core::result::Result<Self, awaken_session_contract::McpAttachmentError>
 pub fn awaken_session_contract::SessionMcpAttachmentSet::needs_reconciliation(&self) -> bool
+pub fn awaken_session_contract::SessionMcpAttachmentSet::renew_active_realizations(&mut self, &str, u64, u64) -> core::result::Result<usize, awaken_session_contract::McpAttachmentError>
 pub fn awaken_session_contract::SessionMcpAttachmentSet::request_full_replacement(&mut self, alloc::vec::Vec<awaken_session_contract::McpAttachmentDraft>, core::option::Option<awaken_credential_contract::PlaintextHolder>) -> core::result::Result<awaken_session_contract::McpReplacementPlan, awaken_session_contract::McpAttachmentError>
 pub fn awaken_session_contract::SessionMcpAttachmentSet::visible(&self) -> alloc::vec::Vec<&awaken_session_contract::SessionMcpAttachment>
 impl core::default::Default for awaken_session_contract::SessionMcpAttachmentSet
@@ -585,6 +590,7 @@ pub awaken_session_contract::SessionRealizationLease::runtime_incarnation: alloc
 pub struct awaken_session_contract::SessionRealizationTarget
 pub awaken_session_contract::SessionRealizationTarget::lease_expires_at_unix_ms: u64
 pub awaken_session_contract::SessionRealizationTarget::owner: alloc::string::String
+pub awaken_session_contract::SessionRealizationTarget::renew_existing_lease: bool
 pub awaken_session_contract::SessionRealizationTarget::runtime_incarnation: alloc::string::String
 pub struct awaken_session_contract::SessionResourceActivation
 pub awaken_session_contract::SessionResourceActivation::access: awaken_resource_contract::input::ResourceAccess
@@ -641,6 +647,7 @@ pub awaken_session_contract::StageMcpAttachment::target: awaken_session_contract
 pub awaken_session_contract::StageMcpAttachment::workspace_id: alloc::string::String
 impl awaken_session_contract::StageMcpAttachment
 pub fn awaken_session_contract::StageMcpAttachment::fingerprint(&self) -> alloc::string::String
+pub fn awaken_session_contract::StageMcpAttachment::renewal_binding_fingerprint(&self) -> alloc::string::String
 pub struct awaken_session_contract::StepOutcome
 pub awaken_session_contract::StepOutcome::compacted: bool
 pub awaken_session_contract::StepOutcome::messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
@@ -682,6 +689,8 @@ pub fn awaken_session_contract::McpProbe::probe<'life0, 'life1, 'life2, 'async_t
 pub trait awaken_session_contract::SessionLifecycleSink: core::marker::Send + core::marker::Sync
 pub fn awaken_session_contract::SessionLifecycleSink::emit<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<&'life2 str>, &'life3 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub fn awaken_session_contract::SessionLifecycleSink::emit_fact<'life0, 'life1, 'life2, 'life3, 'life4, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<&'life3 str>, &'life4 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait
+pub trait awaken_session_contract::SessionProjectionSynchronizer: core::marker::Send + core::marker::Sync
+pub fn awaken_session_contract::SessionProjectionSynchronizer::synchronize_session_projection<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_session_contract::FrozenSessionProjection, &'life3 awaken_session_contract::SessionRealizationLease, bool) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub trait awaken_session_contract::SessionRealizationControl: core::marker::Send + core::marker::Sync
 pub fn awaken_session_contract::SessionRealizationControl::acknowledge_session_realization<'life0, 'async_trait>(&'life0 self, awaken_session_contract::AcknowledgeSessionRealization) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::SessionRealizationDirective, awaken_session_contract::SessionRealizationControlFailure>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_session_contract::SessionRealizationControl::activate_session_realization<'life0, 'async_trait>(&'life0 self, awaken_session_contract::ActivateSessionRealization) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::SessionRealizationDirective, awaken_session_contract::SessionRealizationControlFailure>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
@@ -713,4 +722,5 @@ pub fn awaken_session_contract::SessionRuntime::run<'life0, 'life1, 'life2, 'asy
 pub fn awaken_session_contract::SessionRuntime::run_streaming<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_session_contract::SessionRuntime::session_environment_binding<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<alloc::string::String>, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_session_contract::SessionRuntime::session_usage<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_session_contract::SessionUsage> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub async fn awaken_session_contract::drive_session_realization(&str, &dyn awaken_session_contract::SessionRealizationControl, &dyn awaken_session_contract::SessionProjectionSynchronizer, &dyn awaken_session_contract::McpAttachmentRealizer, awaken_session_contract::SessionRealizationDirective) -> core::result::Result<(), awaken_session_contract::SessionRealizationDriveError>
 pub fn awaken_session_contract::repository_transport_credential_usage() -> awaken_credential_contract::CredentialUsage

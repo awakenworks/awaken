@@ -9,8 +9,8 @@
 // token is RESEALED under the credential, so later turns AND a second session
 // connect with zero additional grants, and `mcpOAuthValidate` now live-probes
 // it `valid`. The invalid arm pins the fail-closed side: a wrong token with NO
-// refresh validates `invalid` (http_status 401) and fails the turn loudly with
-// the api_error envelope naming the challenge. The confidential-client arm
+// refresh validates `invalid` (http_status 401) and fails Session realization
+// before activation with an api_error naming the challenge. The confidential-client arm
 // enters an mcp_oauth credential whose refresh uses `client_secret_basic`: the
 // client_secret is sealed (never echoed by any route), and the grant carries
 // the RFC 6749 §2.3.1 `Authorization: Basic
@@ -229,16 +229,22 @@ async function main() {
       assert.deepEqual(badValidation.mcp_probe, { http_status: 401 });
       pass('mcpOAuthValidate (wrong token, no refresh) -> invalid, mcp_probe {http_status:401}');
 
-      // The turn against it fails LOUDLY with the api_error envelope naming
-      // the server and the unresolved challenge — never silence.
-      const session3 = await client.beta.sessions.create({
-        agent: 'assistant',
-        mcp_servers: [{ name: 'calc', type: 'url', url: fixtureB.url }],
-        vault_ids: [vault2.id],
-        betas: BETAS,
-      });
+      // Cause-effect graph for exact-generation staging:
+      // C1 access token accepted -> E1 stage and activate
+      // !C1 + C2 exact refresh succeeds -> E2 reseal, stage, and activate
+      // !C1 + !C2 -> E3 reject creation without publishing the generation
+      //
+      // | Rule | C1 accepted | C2 refresh succeeds | Result            |
+      // | O1   | yes         | -                   | activate          |
+      // | O2   | no          | yes                 | refresh + activate|
+      // | O3   | no          | no                  | reject creation   |
       await assert.rejects(
-        () => sendMessage(client, session3.id, 'add 2 3'),
+        () => client.beta.sessions.create({
+          agent: 'assistant',
+          mcp_servers: [{ name: 'calc', type: 'url', url: fixtureB.url }],
+          vault_ids: [vault2.id],
+          betas: BETAS,
+        }),
         (err) => {
           assert.equal(err.status, 500, `an api_error envelope — got ${err.status}: ${err.message}`);
           const envelope = err.error?.error ?? err.error;
@@ -249,7 +255,8 @@ async function main() {
         },
       );
       assert.equal(fixtureB.grants.length, 0, 'no refresh config -> no grant was ever attempted');
-      pass('turn against the wrong-token credential fails with api_error naming `auth challenge: HTTP 401`');
+      assert.ok(fixtureB.tokenRequests[WRONG_TOKEN] > 0, 'the exact pinned token reached only its target');
+      pass('O3: wrong token without refresh rejects realization before Session activation');
 
       // --- (e) confidential client: client_secret_basic refresh ---
       const vault3 = await client.beta.vaults.create({ display_name: 'MCP confidential vault', betas: BETAS });

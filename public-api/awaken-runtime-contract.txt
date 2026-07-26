@@ -161,6 +161,17 @@ pub trait awaken_runtime_contract::control::LiveRunControl
 pub fn awaken_runtime_contract::control::LiveRunControl::deliver(&self, awaken_runtime_contract::control::LiveCommand) -> core::result::Result<(), awaken_runtime_contract::control::Error>
 pub mod awaken_runtime_contract::credential
 pub use awaken_runtime_contract::credential::<<awaken_credential_contract::*>>
+pub enum awaken_runtime_contract::credential::AttemptCredentialBindingError
+pub awaken_runtime_contract::credential::AttemptCredentialBindingError::Admission(awaken_credential_contract::CredentialAdmissionError)
+pub awaken_runtime_contract::credential::AttemptCredentialBindingError::DuplicateCandidate
+pub awaken_runtime_contract::credential::AttemptCredentialBindingError::Fingerprint(alloc::string::String)
+pub awaken_runtime_contract::credential::AttemptCredentialBindingError::InvalidClaimEpoch
+pub awaken_runtime_contract::credential::AttemptCredentialBindingError::InvalidCredentialUsage
+pub awaken_runtime_contract::credential::AttemptCredentialBindingError::InvalidWorkerCapabilities(alloc::string::String)
+pub awaken_runtime_contract::credential::AttemptCredentialBindingError::MissingPlaintextHolder
+pub awaken_runtime_contract::credential::AttemptCredentialBindingError::UnsupportedRealization
+pub awaken_runtime_contract::credential::AttemptCredentialBindingError::UnsupportedRealization::backend: alloc::string::String
+pub awaken_runtime_contract::credential::AttemptCredentialBindingError::UnsupportedRealization::boundary: awaken_credential_contract::PlaintextBoundary
 pub enum awaken_runtime_contract::credential::CredentialReceiptError
 pub awaken_runtime_contract::credential::CredentialReceiptError::BindingMismatch
 pub awaken_runtime_contract::credential::CredentialReceiptError::Fingerprint(alloc::string::String)
@@ -193,6 +204,7 @@ pub struct awaken_runtime_contract::credential::CredentialRealizationRecordError
 pub trait awaken_runtime_contract::credential::CredentialRealizationRecorder: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::credential::CredentialRealizationRecorder::record<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::credential::CredentialRealizationReceipt) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_contract::credential::CredentialRealizationRecordError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_runtime_contract::credential::candidate_fingerprint(&awaken_runtime_contract::resolved::ResolvedModelCandidate) -> core::result::Result<awaken_runtime_contract::credential::CandidateFingerprint, awaken_runtime_contract::credential::CredentialReceiptError>
+pub fn awaken_runtime_contract::credential::compile_candidate_credential_bindings(&[&awaken_runtime_contract::resolved::ResolvedModelCandidate], core::option::Option<&awaken_credential_contract::PlaintextHolder>, &awaken_credential_contract::CredentialRealizationCapabilities, u64, u64) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_runtime_contract::credential::AttemptCredentialBindingError>
 pub fn awaken_runtime_contract::credential::verify_credential_realization_receipt(&[awaken_runtime_contract::credential::AttemptCredentialBinding], &awaken_runtime_contract::credential::CredentialRealizationReceipt) -> core::result::Result<(), awaken_runtime_contract::credential::CredentialReceiptError>
 pub mod awaken_runtime_contract::data_subject
 pub enum awaken_runtime_contract::data_subject::Purpose
@@ -1141,6 +1153,17 @@ pub fn awaken_runtime_contract::tool_batch::ToolBatchId::for_step(&awaken_agent_
 pub struct awaken_runtime_contract::tool_batch::ToolWait
 pub awaken_runtime_contract::tool_batch::ToolWait::correlation_id: alloc::string::String
 pub awaken_runtime_contract::tool_batch::ToolWait::kind: awaken_runtime_contract::tool_batch::ToolWaitKind
+pub enum awaken_runtime_contract::AttemptCredentialBindingError
+pub awaken_runtime_contract::AttemptCredentialBindingError::Admission(awaken_credential_contract::CredentialAdmissionError)
+pub awaken_runtime_contract::AttemptCredentialBindingError::DuplicateCandidate
+pub awaken_runtime_contract::AttemptCredentialBindingError::Fingerprint(alloc::string::String)
+pub awaken_runtime_contract::AttemptCredentialBindingError::InvalidClaimEpoch
+pub awaken_runtime_contract::AttemptCredentialBindingError::InvalidCredentialUsage
+pub awaken_runtime_contract::AttemptCredentialBindingError::InvalidWorkerCapabilities(alloc::string::String)
+pub awaken_runtime_contract::AttemptCredentialBindingError::MissingPlaintextHolder
+pub awaken_runtime_contract::AttemptCredentialBindingError::UnsupportedRealization
+pub awaken_runtime_contract::AttemptCredentialBindingError::UnsupportedRealization::backend: alloc::string::String
+pub awaken_runtime_contract::AttemptCredentialBindingError::UnsupportedRealization::boundary: awaken_credential_contract::PlaintextBoundary
 pub enum awaken_runtime_contract::AttemptExecutorRegistryError
 pub awaken_runtime_contract::AttemptExecutorRegistryError::DuplicateBackend(alloc::string::String)
 pub awaken_runtime_contract::AttemptExecutorRegistryError::InvalidBackendRef(alloc::string::String)
@@ -1799,6 +1822,7 @@ pub fn awaken_runtime_contract::ToolPermissionPolicy::evaluate<'life0, 'life1, '
 impl awaken_runtime_contract::permission::ToolPermissionPolicy for awaken_runtime_contract::permission::DenyAllTools
 pub fn awaken_runtime_contract::permission::DenyAllTools::evaluate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::ToolPermissionVerdict> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_contract::candidate_fingerprint(&awaken_runtime_contract::resolved::ResolvedModelCandidate) -> core::result::Result<awaken_runtime_contract::credential::CandidateFingerprint, awaken_runtime_contract::credential::CredentialReceiptError>
+pub fn awaken_runtime_contract::compile_candidate_credential_bindings(&[&awaken_runtime_contract::resolved::ResolvedModelCandidate], core::option::Option<&awaken_credential_contract::PlaintextHolder>, &awaken_credential_contract::CredentialRealizationCapabilities, u64, u64) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_runtime_contract::credential::AttemptCredentialBindingError>
 pub fn awaken_runtime_contract::content_fingerprint<T: serde_core::ser::Serialize + ?core::marker::Sized>(&T) -> core::result::Result<alloc::string::String, serde_json::error::Error>
 pub fn awaken_runtime_contract::evaluate_boundary(&awaken_runtime_contract::runtime_context::RuntimeRunContext, &awaken_agent_contract::agent::run::Id, &[awaken_agent_contract::agent::message::Message]) -> awaken_runtime_contract::boundary::BoundaryOutcome
 pub fn awaken_runtime_contract::execution_capability(&str) -> alloc::string::String

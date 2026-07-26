@@ -317,8 +317,9 @@ It performs no catalog lookup, route selection, model fallback, credential
 selection, or persistence. Session `vault_ids` never select or override the
 model credential.
 
-The selected plaintext holder is an execution fact owned by one durable dispatch
-claim epoch:
+The selected plaintext holder is an execution fact owned by one exact attempt
+epoch. Durable work binds that epoch to its dispatch claim; an explicitly
+non-durable in-process turn binds it to the currently active Session `run_id`:
 
 ```rust
 struct AttemptCredentialBinding {
@@ -355,6 +356,15 @@ Worker incarnation, and lease before materialization. The dispatch repository is
 the persistence boundary: the claim operation stores the binding in the claimed
 attempt-epoch record and returns it in `Claimed`; `RuntimeRunContext` remains live
 wiring and is not durable authority.
+
+An explicitly non-durable direct turn has no recovery or reassignment contract,
+so it cannot truthfully create a durable dispatch claim. At the same pre-I/O
+boundary it invokes the same neutral binding compiler with the frozen Environment
+holder and installed materializer capabilities, assigns a process-local monotonic
+epoch, and fences ownership to the Session's exact active `run_id`. Clearing or
+replacing that active run invalidates materialization and receipt recording. This
+is a different consistency adapter around one binding algorithm, not an unbound
+credential path; it never falls back when admission or ownership fails.
 
 Retries and response-loss recovery under the same claim epoch reuse the binding
 exactly. Reclaim advances the epoch and creates a new attempt-epoch binding only
@@ -540,9 +550,11 @@ join `SessionMcpAttachmentSet` and does not create a common Service authority.
 3. The exact Environment/execution profile requests one holder. Admission proves
    that exact holder belongs to the allowed set and is supported by the installed
    materializer/provider.
-4. The dispatch claim transaction commits `AttemptCredentialBinding` with the
-   claim owner, Worker incarnation, lease, and monotonic epoch before provider
-   or ACP materialization. An unsupported holder fails the claim/admission.
+4. Durable dispatch atomically commits `AttemptCredentialBinding` with the claim
+   owner, Worker incarnation, lease, and monotonic epoch. An explicitly
+   non-durable direct turn compiles the same binding before provider I/O and
+   fences it to the exact active Session `run_id`; it is intentionally
+   unrecoverable. An unsupported holder fails admission in either topology.
 5. The exact material resolver and materializer validate the candidate, binding,
    envelope recipient/expiry, and claim epoch and
    realizes Native or ACP access at the selected boundary.

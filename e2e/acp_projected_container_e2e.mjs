@@ -194,6 +194,9 @@ async function main() {
   fs.mkdirSync(STORAGE, { recursive: true });
   const binary = awakenBin();
   const fixture = await startCalcFixture(MCP_TOKEN);
+  const anonymousFixture = await startCalcFixture('unused-container-anonymous-token', {
+    allowAnonymous: true,
+  });
   const environment = { ...process.env };
   for (const key of [
     'AWAKEN_ACP_ARGV',
@@ -257,6 +260,26 @@ async function main() {
       access_token: MCP_TOKEN,
       betas: BETAS,
     });
+    // Cause/effect graph / decision table for the built-in Docker provider:
+    // C1=credential selected; C2=substitution; C3=no-bypass network enforcement.
+    // C1 + !(C2 && C3) -> D1 reject Worker custody before container launch.
+    // !C1              -> D2 inject the anonymous MCP endpoint normally.
+    //
+    // | Rule | credential | substitution + no-bypass | result             |
+    // | D1   | yes        | no                       | fail closed         |
+    // | D2   | no         | n/a                      | launch + MCP config |
+    await assert.rejects(
+      client.beta.sessions.create({
+        agent: AGENT,
+        environment_id: environmentResource.id,
+        metadata: { 'awaken.runtime': 'acp:gemini' },
+        mcp_servers: [{ name: 'container-fixture-secure', type: 'url', url: fixture.url }],
+        vault_ids: [vault.id],
+        betas: BETAS,
+      }),
+      (error) => error?.status === 500 && String(error).includes('provider-enforced secret substitution'),
+      'D1: Docker must not claim Worker custody without substitution and no-bypass evidence',
+    );
     session = await client.beta.sessions.create({
       agent: AGENT,
       environment_id: environmentResource.id,
@@ -267,11 +290,10 @@ async function main() {
         mount_path: '/workspace/container-input.txt',
       }],
       mcp_servers: [{
-        name: 'container-fixture',
+        name: 'container-fixture-anonymous',
         type: 'url',
-        url: fixture.url,
+        url: anonymousFixture.url,
       }],
-      vault_ids: [vault.id],
       betas: BETAS,
     });
     await client.beta.sessions.events.send(session.id, {
@@ -294,7 +316,7 @@ async function main() {
     assert.match(reply, /key=persis/u);
     assert.match(reply, /file=yes/u, 'the File binding was materialized in the container');
     assert.match(reply, /mcp=yes/u, 'the ACP session received the frozen MCP server list');
-    assert.match(reply, /home=\/acp-config/u);
+    assert.match(reply, /home=\/workspace\/\.acp-config/u);
 
     console.log(
       'E2E PASS: production awaken projected publication-pinned model access, MCP, and File input into one Docker ACP run.',
@@ -309,6 +331,7 @@ async function main() {
     }
     await stop(server).catch(() => {});
     await fixture.close();
+    await anonymousFixture.close();
     spawnSync('docker', ['image', 'rm', '--force', IMAGE], { stdio: 'ignore' });
     fs.rmSync(TMP, { recursive: true, force: true });
   }

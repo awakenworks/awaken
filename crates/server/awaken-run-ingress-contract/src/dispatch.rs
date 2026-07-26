@@ -18,43 +18,22 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
-use awaken_runtime_contract::resolved::{Backend, ModelProvisioning};
+use awaken_runtime_contract::CredentialRealizationCapabilities;
+#[cfg(test)]
+use awaken_runtime_contract::resolved::ModelProvisioning;
 use awaken_runtime_contract::resume::ResumeResult;
 pub use awaken_runtime_contract::{
-    AttemptCredentialBinding, CandidateFingerprint, CredentialRealizationReceipt,
-    CredentialReceiptError, verify_credential_realization_receipt,
+    AttemptCredentialBinding, AttemptCredentialBindingError, CandidateFingerprint,
+    CredentialRealizationReceipt, CredentialReceiptError, verify_credential_realization_receipt,
 };
+#[cfg(test)]
 use awaken_runtime_contract::{
-    CredentialAdmissionError, CredentialRealizationCapabilities, CredentialRealizationKind,
-    CredentialUsage, PlaintextBoundary, candidate_fingerprint,
+    CredentialAdmissionError, CredentialRealizationKind, CredentialUsage, PlaintextBoundary,
 };
 use awaken_worker_contract::{PlacementPolicy, WorkerAssignment, WorkerIdentity, WorkerSnapshot};
 use serde::{Deserialize, Serialize};
 
 use crate::run_dispatch::RunDispatch;
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum AttemptCredentialBindingError {
-    #[error("dispatch claim epoch must be greater than zero")]
-    InvalidClaimEpoch,
-    #[error("credential-bearing inference has no exact plaintext holder request")]
-    MissingPlaintextHolder,
-    #[error("inference credential usage must be provider_adapter")]
-    InvalidCredentialUsage,
-    #[error("plaintext boundary {boundary:?} is unsupported for inference backend {backend}")]
-    UnsupportedRealization {
-        boundary: PlaintextBoundary,
-        backend: String,
-    },
-    #[error("published model candidate fingerprint failed: {0}")]
-    Fingerprint(String),
-    #[error("published model candidate is duplicated in the selected fallback set")]
-    DuplicateCandidate,
-    #[error("invalid Worker credential capability evidence: {0}")]
-    InvalidWorkerCapabilities(String),
-    #[error(transparent)]
-    Admission(#[from] CredentialAdmissionError),
-}
 
 pub fn worker_credential_realization_capabilities(
     worker: &WorkerSnapshot,
@@ -73,64 +52,18 @@ pub fn compile_attempt_credential_bindings(
     claim_epoch: u64,
     now_unix_ms: u64,
 ) -> Result<Vec<AttemptCredentialBinding>, AttemptCredentialBindingError> {
-    if claim_epoch == 0 {
-        return Err(AttemptCredentialBindingError::InvalidClaimEpoch);
-    }
     let candidates = request
         .activation
         .snapshot
         .resolved_spec
         .execution_candidates(request.activation.model_ref_override.as_deref());
-    let mut seen = std::collections::BTreeSet::new();
-    let mut bindings = Vec::new();
-    for candidate in candidates {
-        let ModelProvisioning::Provider {
-            credential: Some(access),
-            ..
-        } = &candidate.provisioning
-        else {
-            continue;
-        };
-        if access.usage != CredentialUsage::ProviderAdapter {
-            return Err(AttemptCredentialBindingError::InvalidCredentialUsage);
-        }
-        let holder = request
-            .inference_plaintext_holder
-            .as_ref()
-            .ok_or(AttemptCredentialBindingError::MissingPlaintextHolder)?;
-        let backend = Backend::from_ref(&candidate.binding.backend_ref);
-        let realization = match (&backend, holder.boundary) {
-            (Backend::Native, PlaintextBoundary::Worker) => {
-                CredentialRealizationKind::WorkerProviderAdapter
-            }
-            (Backend::Acp { .. }, PlaintextBoundary::Workload) => {
-                CredentialRealizationKind::ProcessSecretEnvironment
-            }
-            (Backend::Acp { .. }, PlaintextBoundary::Worker) => {
-                CredentialRealizationKind::WorkerRelay
-            }
-            (Backend::Native | Backend::Acp { .. } | Backend::Remote { .. }, boundary) => {
-                return Err(AttemptCredentialBindingError::UnsupportedRealization {
-                    boundary,
-                    backend: candidate.binding.backend_ref.clone(),
-                });
-            }
-        };
-        access.admit(holder, realization, installed, now_unix_ms)?;
-        let fingerprint = candidate_fingerprint(candidate)
-            .map_err(|error| AttemptCredentialBindingError::Fingerprint(error.to_string()))?;
-        if !seen.insert(fingerprint.clone()) {
-            return Err(AttemptCredentialBindingError::DuplicateCandidate);
-        }
-        bindings.push(AttemptCredentialBinding {
-            candidate_fingerprint: fingerprint,
-            credential: access.credential.clone(),
-            selected_plaintext_holder: holder.clone(),
-            selected_realization_kind: realization,
-            claim_epoch,
-        });
-    }
-    Ok(bindings)
+    awaken_runtime_contract::compile_candidate_credential_bindings(
+        &candidates,
+        request.inference_plaintext_holder.as_ref(),
+        installed,
+        claim_epoch,
+        now_unix_ms,
+    )
 }
 
 /// Read-only eligibility check for a scheduler selecting among multiple rows.

@@ -119,6 +119,18 @@ fn with_host_passthrough(
     env
 }
 
+/// Add the deliberately small host launch allowlist to a local ACP process.
+///
+/// Both the direct subprocess adapter and a Session-bound local/namespace
+/// provider use this function. Keeping the policy here prevents the two launch
+/// paths from drifting on which ambient values may cross the process boundary.
+/// Container launches must not call this function: their executable lookup and
+/// home belong to the image rather than the Worker host.
+#[must_use]
+pub fn with_local_host_launch_environment(env: Vec<pc::EnvVar>) -> Vec<pc::EnvVar> {
+    with_host_passthrough(env, |key| std::env::var(key).ok())
+}
+
 /// Launches an ACP CLI as a local child (`env_clear` + only the projected env, so
 /// no ambient leak), piping its stdio into an [`AgentChannel`].
 pub struct SubprocessChannelSource {
@@ -175,7 +187,7 @@ async fn spawn(
         .kill_on_drop(true);
     // Projected model/secret env plus the PATH/HOME allowlist, so `npx`/`node`/the
     // CLI resolve and `npx` finds its cache — everything else stays cleared.
-    let env = with_host_passthrough(launch.env.clone(), |k| std::env::var(k).ok());
+    let env = with_local_host_launch_environment(launch.env.clone());
     let mut planned = pc::Command::new(launch.argv.clone());
     planned.env = env;
     planned.stdio = pc::Stdio::Piped;
@@ -279,6 +291,15 @@ pub trait LaunchResolver: Send + Sync {
     /// same broker installed in its provider.
     fn secret_broker(&self) -> Option<Arc<dyn pc::SecretBroker>> {
         None
+    }
+
+    /// Exact credential realization evidence implemented by this resolver and
+    /// its paired broker. Admission consumes this before process launch; the
+    /// default is empty so a resolver cannot accidentally claim plaintext custody.
+    fn credential_realization_capabilities(
+        &self,
+    ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
+        awaken_runtime_contract::CredentialRealizationCapabilities::default()
     }
 }
 

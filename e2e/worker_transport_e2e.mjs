@@ -12,6 +12,7 @@
 // Run: node e2e/worker_transport_e2e.mjs
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -40,7 +41,33 @@ function threadCommit(runId = 'run-A', threadId = THREAD, text = 'hi from a db-l
     ],
     state: [],
     events: [],
-    waiting: null,
+    resume_ticket: null,
+  };
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value !== null && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) =>
+      `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function commitOperation(commit, runId) {
+  const version = Buffer.from('awaken.thread-commit.v1');
+  const payload = Buffer.from(canonicalJson(commit));
+  const versionLength = Buffer.alloc(8);
+  versionLength.writeBigUInt64LE(BigInt(version.length));
+  const payloadLength = Buffer.alloc(8);
+  payloadLength.writeBigUInt64LE(BigInt(payload.length));
+  const hash = createHash('sha256')
+    .update(versionLength).update(version).update(payloadLength).update(payload).digest('hex');
+  return {
+    operation_id: { run_id: runId, ordinal: 0 },
+    expected_thread_version: 0,
+    payload_hash: `sha256:${hash}`,
+    commit,
   };
 }
 
@@ -73,7 +100,12 @@ async function registerReadyWorker() {
       manifest: {
         manifest_version: 1,
         build_digest: 'worker-transport-e2e',
-        capabilities: ['credential-source/v1', 'host-executor/v1', 'native-runtime'],
+        capabilities: [
+          'credential-source/v1',
+          'host-executor/v1',
+          'native-runtime',
+          'credential-realization.awaken.dev/v1:{"holders":[{"boundary":"worker","trust_domain":"awaken.worker"}],"material_sources":["control_plane_reference"],"realization_kinds":["worker_provider_adapter"],"recipient_bound_envelopes":false}',
+        ],
         zone: null,
         architecture: process.arch,
         sandbox: {
@@ -140,6 +172,19 @@ async function main() {
     assert.ok(claimed.lease.epoch >= 1, `claim carries a fencing epoch: ${claim.text}`);
     pass('dispatch claim binds owner to authenticated worker and returns a fencing epoch');
 
+    // Cause-effect graph for authenticated credential-bearing transport:
+    // C1 current Worker identity + C2 exact realization capability + C3 allowed holder
+    //   -> E1 claim persists the binding and returns the immutable candidate.
+    // C1 + (!C2 || !C3) -> E2 skip/reject before credential materialization.
+    // C4 claim owner/epoch current + C5 canonical operation/hash -> E3 commit once.
+    // !C4 -> E4 unauthorized/stale; repeated C5 -> E5 duplicate receipt, no second fact.
+    //
+    // | Rule | Identity | Capability/holder | Claim | Operation | Result          |
+    // | T1   | current  | admitted          | -     | -         | exact claim     |
+    // | T2   | current  | unsupported       | -     | -         | no claim        |
+    // | T3   | wrong    | admitted          | exact | valid     | unauthorized    |
+    // | T4   | current  | admitted          | exact | valid     | commit once     |
+    // | T5   | current  | admitted          | exact | replay    | duplicate receipt|
     // Re-enqueue the exact durable wire record with one complete, immutable model
     // candidate. Dispatch persists/transports it without interpreting the route or
     // carrying provider key material.
@@ -157,8 +202,14 @@ async function main() {
         scope_id: 'scope-ts-17',
         credential: {
           credential: { id: 'grant-ts-17', revision: 3 },
-          injection: 'reference',
+          material_source: 'control_plane_reference',
           usage: { type: 'provider_adapter' },
+          policy: {
+            allowed_plaintext_holders: [
+              { boundary: 'worker', trust_domain: 'awaken.worker' },
+            ],
+            model_exposure: 'forbidden',
+          },
         },
         endpoint: {
           adapter_kind: 'fixture',
@@ -169,6 +220,9 @@ async function main() {
     };
     granted.activation.snapshot.resolved_spec.model_binding = pinnedCandidate;
     granted.activation.snapshot.resolved_spec.model_candidates = [];
+    granted.inference_plaintext_holder = {
+      boundary: 'worker', trust_domain: 'awaken.worker',
+    };
     granted.placement.required_capabilities = ['credential-source/v1', 'native-runtime'];
     const enqueuedGrant = await postJson('/v1/worker/dispatch/enqueue', { request: granted });
     assert.equal(enqueuedGrant.status, 200, `grant-bearing dispatch enqueued: ${enqueuedGrant.text}`);
@@ -186,6 +240,7 @@ async function main() {
     const grantClaim = await postJson('/v1/worker/dispatch/claim', {});
     assert.equal(grantClaim.status, 200, `grant dispatch claimed: ${grantClaim.text}`);
     const grant = grantClaim.json?.claimed;
+    assert.ok(grant, `credential-compatible Worker claims the exact dispatch: ${grantClaim.text}`);
     assert.deepEqual(
       grant?.request?.activation?.snapshot?.resolved_spec?.model_binding,
       pinnedCandidate,
@@ -201,25 +256,31 @@ async function main() {
 
     // A different authenticated worker cannot commit the claim. The owner-bound
     // request is rejected before thread facts are applied.
+    const commit = threadCommit(
+      grant.lease.run_id,
+      grant.request.activation.thread_id,
+      'claimed commit from authenticated worker',
+    );
     const claimedCommit = {
       claim: {
         run_id: grant.lease.run_id,
         owner: grant.lease.owner,
         epoch: grant.lease.epoch,
       },
-      commit: threadCommit(
-        grant.lease.run_id,
-        grant.request.activation.thread_id,
-        'claimed commit from authenticated worker',
-      ),
+      operation: commitOperation(commit, grant.lease.run_id),
     };
-    const wrongOwner = await postJson('/v1/worker/commit-claimed', claimedCommit, 'worker-thief');
+    const wrongOwner = await postJson(
+      '/v1/worker/commit-claimed',
+      { ...claimedCommit, identity: workerIdentity },
+      'worker-thief',
+    );
     assert.equal(wrongOwner.status, 401, `wrong claim owner rejected: ${wrongOwner.text}`);
     const committedClaim = await postJson('/v1/worker/commit-claimed', claimedCommit);
     assert.equal(committedClaim.status, 200, `current owner/epoch commits: ${committedClaim.text}`);
-    assert.ok(typeof committedClaim.json?.sequence === 'number');
+    assert.ok(typeof committedClaim.json?.commit_sequence === 'number');
     const replay = await postJson('/v1/worker/commit-claimed', claimedCommit);
     assert.equal(replay.status, 200, `claimed commit redelivery accepted: ${replay.text}`);
+    assert.equal(replay.json?.duplicate, true, 'the stable operation id returns a duplicate receipt');
     const committed = await threadMessages(grant.request.activation.thread_id);
     const mine = committed.filter((m) => (m.text ?? '').includes('claimed commit'));
     assert.equal(mine.length, 1, `claimed commit is idempotent: ${JSON.stringify(committed)}`);

@@ -324,6 +324,16 @@ async function main() {
     assert.equal(r.status, 200, `post-publication endpoint mutation: ${JSON.stringify(r.json)}`);
 
     // ---- run a session on the DB-configured model ----------------------------
+    // Cause-effect graph for direct-attempt credential authority:
+    // C1 published candidate has credential + C2 selected holder is admitted
+    // C2 + C3 current local run owns its fence -> E1 compile binding, materialize,
+    // record the receipt, and invoke the exact pinned endpoint.
+    // !C2 or !C3 -> E2 fail closed before provider I/O; no unbound fallback.
+    //
+    // | Rule | Credential | Holder admitted | Ownership | Result       |
+    // | L1   | yes        | yes             | current   | exact invoke |
+    // | L2   | yes        | no              | -         | reject       |
+    // | L3   | yes        | yes             | stale     | reject       |
     const session = await client.beta.sessions.create({
       agent: AGENT, environment_id: 'env_local', betas: BETAS,
     });

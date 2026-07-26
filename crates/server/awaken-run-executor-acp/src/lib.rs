@@ -1324,6 +1324,7 @@ pub use session_home::{DirSessionHome, FsSessionBlobStore, SessionBlobStore};
 pub use subprocess::{
     AcpLaunch, AcpSettings, LaunchResolver, McpInjection, ProjectingChannelSource,
     SubprocessChannelSource, mcp_injection, mcp_injection_from_servers, project_launch,
+    with_local_host_launch_environment,
 };
 
 #[cfg(test)]

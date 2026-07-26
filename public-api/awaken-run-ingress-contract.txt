@@ -1,6 +1,7 @@
 pub mod awaken_run_ingress_contract
 pub use awaken_run_ingress_contract::AssignmentRejection
 pub use awaken_run_ingress_contract::AttemptCredentialBinding
+pub use awaken_run_ingress_contract::AttemptCredentialBindingError
 pub use awaken_run_ingress_contract::CandidateFingerprint
 pub use awaken_run_ingress_contract::CredentialRealizationReceipt
 pub use awaken_run_ingress_contract::CredentialReceiptError
@@ -37,21 +38,11 @@ pub use awaken_run_ingress_contract::place_assignment
 pub use awaken_run_ingress_contract::verify_credential_realization_receipt
 pub mod awaken_run_ingress_contract::dispatch
 pub use awaken_run_ingress_contract::dispatch::AttemptCredentialBinding
+pub use awaken_run_ingress_contract::dispatch::AttemptCredentialBindingError
 pub use awaken_run_ingress_contract::dispatch::CandidateFingerprint
 pub use awaken_run_ingress_contract::dispatch::CredentialRealizationReceipt
 pub use awaken_run_ingress_contract::dispatch::CredentialReceiptError
 pub use awaken_run_ingress_contract::dispatch::verify_credential_realization_receipt
-pub enum awaken_run_ingress_contract::dispatch::AttemptCredentialBindingError
-pub awaken_run_ingress_contract::dispatch::AttemptCredentialBindingError::Admission(awaken_credential_contract::CredentialAdmissionError)
-pub awaken_run_ingress_contract::dispatch::AttemptCredentialBindingError::DuplicateCandidate
-pub awaken_run_ingress_contract::dispatch::AttemptCredentialBindingError::Fingerprint(alloc::string::String)
-pub awaken_run_ingress_contract::dispatch::AttemptCredentialBindingError::InvalidClaimEpoch
-pub awaken_run_ingress_contract::dispatch::AttemptCredentialBindingError::InvalidCredentialUsage
-pub awaken_run_ingress_contract::dispatch::AttemptCredentialBindingError::InvalidWorkerCapabilities(alloc::string::String)
-pub awaken_run_ingress_contract::dispatch::AttemptCredentialBindingError::MissingPlaintextHolder
-pub awaken_run_ingress_contract::dispatch::AttemptCredentialBindingError::UnsupportedRealization
-pub awaken_run_ingress_contract::dispatch::AttemptCredentialBindingError::UnsupportedRealization::backend: alloc::string::String
-pub awaken_run_ingress_contract::dispatch::AttemptCredentialBindingError::UnsupportedRealization::boundary: awaken_credential_contract::PlaintextBoundary
 pub enum awaken_run_ingress_contract::dispatch::CasOutcome
 pub awaken_run_ingress_contract::dispatch::CasOutcome::Applied
 pub awaken_run_ingress_contract::dispatch::CasOutcome::NotFound
@@ -173,8 +164,8 @@ pub trait awaken_run_ingress_contract::dispatch::Outbox: core::marker::Send + co
 pub fn awaken_run_ingress_contract::dispatch::Outbox::relay<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_run_ingress_contract::dispatch::Outbox::stage<'life0, 'async_trait>(&'life0 self, awaken_run_ingress_contract::dispatch::PendingInput) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_run_ingress_contract::dispatch::can_admit_attempt_credentials(&awaken_run_ingress_contract::run_dispatch::RunDispatch, &awaken_credential_contract::CredentialRealizationCapabilities, u64, u64) -> bool
-pub fn awaken_run_ingress_contract::dispatch::compile_attempt_credential_bindings(&awaken_run_ingress_contract::run_dispatch::RunDispatch, &awaken_credential_contract::CredentialRealizationCapabilities, u64, u64) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_run_ingress_contract::dispatch::AttemptCredentialBindingError>
-pub fn awaken_run_ingress_contract::dispatch::worker_credential_realization_capabilities(&awaken_worker_contract::WorkerSnapshot) -> core::result::Result<awaken_credential_contract::CredentialRealizationCapabilities, awaken_run_ingress_contract::dispatch::AttemptCredentialBindingError>
+pub fn awaken_run_ingress_contract::dispatch::compile_attempt_credential_bindings(&awaken_run_ingress_contract::run_dispatch::RunDispatch, &awaken_credential_contract::CredentialRealizationCapabilities, u64, u64) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_runtime_contract::credential::AttemptCredentialBindingError>
+pub fn awaken_run_ingress_contract::dispatch::worker_credential_realization_capabilities(&awaken_worker_contract::WorkerSnapshot) -> core::result::Result<awaken_credential_contract::CredentialRealizationCapabilities, awaken_runtime_contract::credential::AttemptCredentialBindingError>
 pub mod awaken_run_ingress_contract::operational
 pub enum awaken_run_ingress_contract::operational::DispatchOperation
 pub awaken_run_ingress_contract::operational::DispatchOperation::Claimed
@@ -233,17 +224,6 @@ pub awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope::resolved
 pub awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope::workspace_id: alloc::string::String
 impl awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope
 pub fn awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
-pub enum awaken_run_ingress_contract::AttemptCredentialBindingError
-pub awaken_run_ingress_contract::AttemptCredentialBindingError::Admission(awaken_credential_contract::CredentialAdmissionError)
-pub awaken_run_ingress_contract::AttemptCredentialBindingError::DuplicateCandidate
-pub awaken_run_ingress_contract::AttemptCredentialBindingError::Fingerprint(alloc::string::String)
-pub awaken_run_ingress_contract::AttemptCredentialBindingError::InvalidClaimEpoch
-pub awaken_run_ingress_contract::AttemptCredentialBindingError::InvalidCredentialUsage
-pub awaken_run_ingress_contract::AttemptCredentialBindingError::InvalidWorkerCapabilities(alloc::string::String)
-pub awaken_run_ingress_contract::AttemptCredentialBindingError::MissingPlaintextHolder
-pub awaken_run_ingress_contract::AttemptCredentialBindingError::UnsupportedRealization
-pub awaken_run_ingress_contract::AttemptCredentialBindingError::UnsupportedRealization::backend: alloc::string::String
-pub awaken_run_ingress_contract::AttemptCredentialBindingError::UnsupportedRealization::boundary: awaken_credential_contract::PlaintextBoundary
 pub enum awaken_run_ingress_contract::CasOutcome
 pub awaken_run_ingress_contract::CasOutcome::Applied
 pub awaken_run_ingress_contract::CasOutcome::NotFound
@@ -418,5 +398,5 @@ pub fn awaken_run_ingress_contract::Inbox::retract<'life0, 'life1, 'async_trait>
 pub trait awaken_run_ingress_contract::Outbox: core::marker::Send + core::marker::Sync
 pub fn awaken_run_ingress_contract::Outbox::relay<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_run_ingress_contract::Outbox::stage<'life0, 'async_trait>(&'life0 self, awaken_run_ingress_contract::dispatch::PendingInput) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_run_ingress_contract::compile_attempt_credential_bindings(&awaken_run_ingress_contract::run_dispatch::RunDispatch, &awaken_credential_contract::CredentialRealizationCapabilities, u64, u64) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_run_ingress_contract::dispatch::AttemptCredentialBindingError>
-pub fn awaken_run_ingress_contract::worker_credential_realization_capabilities(&awaken_worker_contract::WorkerSnapshot) -> core::result::Result<awaken_credential_contract::CredentialRealizationCapabilities, awaken_run_ingress_contract::dispatch::AttemptCredentialBindingError>
+pub fn awaken_run_ingress_contract::compile_attempt_credential_bindings(&awaken_run_ingress_contract::run_dispatch::RunDispatch, &awaken_credential_contract::CredentialRealizationCapabilities, u64, u64) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_runtime_contract::credential::AttemptCredentialBindingError>
+pub fn awaken_run_ingress_contract::worker_credential_realization_capabilities(&awaken_worker_contract::WorkerSnapshot) -> core::result::Result<awaken_credential_contract::CredentialRealizationCapabilities, awaken_runtime_contract::credential::AttemptCredentialBindingError>

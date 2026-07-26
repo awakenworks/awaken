@@ -742,14 +742,13 @@ const SANDBOXED_FAKE_ACP_SCRIPT: &str = "read _p; net=''; \
     printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'";
 
 /// [`build_acp_router`]'s isolated twin: `acp:*` sessions launch the ACP CLI
-/// inside a bubblewrap (namespace-tier) sandbox via
-/// [`awaken_runtime_host::SandboxChannelSource`], so the agent process is
-/// OS-confined regardless of what it does. Egress follows each session's
-/// frozen Environment projection — a deny-egress session's CLI runs under
-/// `--unshare-net`.
+/// from the Session-owned namespace Environment through the same bound ACP
+/// composition used by production. There is no second per-attempt sandbox.
+/// Egress follows each Session's frozen Environment projection — a deny-egress
+/// session's CLI runs under `--unshare-net`.
 /// `AWAKEN_MODEL_MODE=acp-sandboxed`; the sandbox roots live under
 /// `AWAKEN_SANDBOX_DIR` (a per-process temp dir when unset).
-pub fn build_acp_sandboxed_router() -> Router {
+pub async fn build_acp_sandboxed_router() -> Router {
     // The launch env is the ONLY env projected into the agent command; the probe
     // port (when the e2e sets one) must cross into the sandbox explicitly.
     let mut env = Vec::new();
@@ -771,13 +770,14 @@ pub fn build_acp_sandboxed_router() -> Router {
         .unwrap_or_else(|| {
             std::env::temp_dir().join(format!("awaken-acp-sbx-{}", std::process::id()))
         });
-    let host = SharedHost::new(Arc::new(EchoModel), "awaken");
-    let source = awaken_runtime_host::SandboxChannelSource::new(base, launch)
-        .with_session_projection(host.session_projection_source());
-    let acp = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(Arc::new(
-        source,
-    )));
-    let host = Arc::new(host.with_acp(acp));
+    let host = SharedHost::new(Arc::new(EchoModel), "awaken")
+        .with_store_dir(base)
+        .with_acp_launch_source(
+            awaken_server::relay_hand_executor_factory(),
+            awaken_runtime_host::LaunchSource::Fixed(launch),
+        )
+        .await;
+    let host = Arc::new(host);
     // Mount `/v1/environments` over the same complete Managed state/resource
     // catalog used by every other scenario.
     mount_with_environments(host)

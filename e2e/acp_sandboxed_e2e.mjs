@@ -69,6 +69,17 @@ async function main() {
     await waitForPort(PORT);
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
+    // Cause-effect graph for the single Session Environment authority:
+    // C1 ACP selected -> E1 launch from the Session-owned Environment
+    // C1 + C2 unrestricted -> E2 share host networking
+    // C1 + C3 none -> E3 unshare networking and block host-loopback bypass
+    // !C1 -> E4 native execution still uses the same Session lifecycle
+    //
+    // | Rule | Runtime | Network      | Result                         |
+    // | S1   | ACP     | unrestricted | bound process, probe reachable |
+    // | S2   | ACP     | none         | bound process, probe blocked   |
+    // | S3   | Native  | unrestricted | native turn succeeds           |
+
     // Unrestricted networking: the CLI runs OS-confined but shares the host
     // network namespace — the probe reaches the host loopback listener.
     const openEnv = await client.beta.environments.create({
