@@ -72,6 +72,78 @@ async fn wait_for(cond: impl Fn() -> bool) -> bool {
     cond()
 }
 
+/// Durable cancellation uses the same exact-claim WorkerResolver as ordinary
+/// pool draining; it does not reconstruct a second per-Session worker path.
+#[tokio::test]
+async fn pool_cancellation_resolves_and_drives_the_frozen_claim() {
+    use awaken_agent_contract::agent::run::EndCause;
+
+    struct SleepingWake;
+    #[async_trait]
+    impl WakeSignal for SleepingWake {
+        async fn publish(&self) -> Result<(), DispatchError> {
+            Ok(())
+        }
+        async fn wait(&self) {
+            std::future::pending::<()>().await
+        }
+    }
+
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let worker = worker_over(text_runtime(), store.clone(), commit.clone());
+    let resolver = Arc::new(MapResolver {
+        workers: HashMap::from([("cancel-thread".to_string(), worker)]),
+    });
+    let pool = DispatchPool::spawn_with_wake(
+        store.clone(),
+        Arc::new(SystemClock),
+        "pool",
+        DEFAULT_LEASE_MS,
+        DispatchServiceConfig {
+            poll_interval: Duration::from_secs(3600),
+            ..Default::default()
+        },
+        resolver,
+        1,
+        Arc::new(SleepingWake),
+    );
+    // Close background admission so this test deterministically exercises the
+    // synchronous exact-run command rather than racing a drain task.
+    pool.begin_drain().await;
+
+    // Cause graph: durable row exists -> persist cancel -> exact claim -> common
+    // resolver -> cancellation worker -> fenced terminal settle. Missing row
+    // fails closed without invoking the resolver.
+    //
+    // | Rule | dispatch row | cancel result | durable terminal |
+    // |---|---|---|---|
+    // | C1 | absent | false | absent |
+    // | C2 | queued/frozen activation | true | Cancelled |
+    assert!(!pool.cancel(&RunId("unknown".into())).await.unwrap(), "C1");
+    store
+        .enqueue(RunDispatch::new(activation_on(
+            "cold-cancel",
+            "cancel-thread",
+        )))
+        .await
+        .unwrap();
+
+    assert!(
+        pool.cancel(&RunId("cold-cancel".into())).await.unwrap(),
+        "C2"
+    );
+    assert_eq!(
+        RunStore::get(commit.as_ref(), &RunId("cold-cancel".into()))
+            .expect("C2 terminal")
+            .state,
+        RunState::Ended(EndCause::Cancelled),
+        "C2"
+    );
+    assert_eq!(store.dispatch_count(), 0, "C2 settled");
+    pool.shutdown().await;
+}
+
 /// A resolver that delegates to a real worker map but RECORDS the `agent_id` the
 /// pool forwarded for each claimed run — the seam a cold worker needs so it opens the
 /// session bound to the run's own agent (its published config) rather than the host

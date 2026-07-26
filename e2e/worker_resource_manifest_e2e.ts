@@ -277,7 +277,13 @@ function resourceEnvelope(
   };
 }
 
-function runRequest(seed: any, suffix: string, envelope: any, thread = THREAD): any {
+function runRequest(
+  seed: any,
+  suffix: string,
+  envelope: any,
+  thread = THREAD,
+  skillIds: string[] = [],
+): any {
   const request = structuredClone(seed);
   request.activation.run_id = `${seed.activation.run_id}-${suffix}`;
   request.activation.thread_id = thread;
@@ -291,8 +297,14 @@ function runRequest(seed: any, suffix: string, envelope: any, thread = THREAD): 
       scope_id: WORKSPACE,
       credential: {
         credential: { id: GRANT, revision: GRANT_REVISION },
-        injection: 'worker_reference',
+        material_source: 'worker_reference',
         usage: { type: 'provider_adapter' },
+        policy: {
+          allowed_plaintext_holders: [
+            { boundary: 'worker', trust_domain: 'awaken.worker' },
+          ],
+          model_exposure: 'forbidden',
+        },
       },
       endpoint: {
         adapter_kind: 'fixture',
@@ -302,6 +314,10 @@ function runRequest(seed: any, suffix: string, envelope: any, thread = THREAD): 
     },
   };
   request.activation.snapshot.resolved_spec.model_candidates = [];
+  request.activation.snapshot.resolved_spec.plugin_config.agent.skill_ids = skillIds;
+  request.inference_plaintext_holder = {
+    boundary: 'worker', trust_domain: 'awaken.worker',
+  };
   request.execution_scope = WORKSPACE;
   request.session_resources = envelope;
   request.placement.required_capabilities = [
@@ -413,7 +429,13 @@ async function main(): Promise<void> {
       await post('/v1/worker/dispatch/claim', { identity: seedWorker.identity }, seedWorker.id)
     ).claimed;
     assert.ok(seedClaim, 'seed worker claimed a server-created activation');
-    const first = runRequest(seedClaim.request, 'attach', resourceEnvelope(fileId, WORKSPACE, skill));
+    const first = runRequest(
+      seedClaim.request,
+      'attach',
+      resourceEnvelope(fileId, WORKSPACE, skill),
+      THREAD,
+      [skill.skill_id],
+    );
     await post('/v1/worker/dispatch/enqueue', { request: first }, seedWorker.id);
 
     // The manifest itself causes a placement requirement. A worker without the
@@ -469,7 +491,13 @@ async function main(): Promise<void> {
       throw new Error(`${error instanceof Error ? error.message : error}\nworker output:\n${workerOutput}`);
     });
     await waitForFile(projectedFile, FILE_BYTES);
-    await waitForFile(projectedSkill, SKILL_BINARY);
+    await waitForFile(projectedSkill, SKILL_BINARY).catch((error) => {
+      const sandboxRoot = path.join(workerStorage, 'sandboxes', THREAD);
+      const tree = fs.existsSync(sandboxRoot)
+        ? execFileSync('find', [sandboxRoot, '-maxdepth', '5', '-type', 'f'], { encoding: 'utf8' })
+        : '<missing sandbox>';
+      throw new Error(`${error instanceof Error ? error.message : error}\nfiles:\n${tree}\nworker output:\n${workerOutput}`);
+    });
 
     // An explicit empty successor is semantically meaningful: it must route to a
     // resource-capable worker and remove the projection from the live Session.
@@ -480,7 +508,13 @@ async function main(): Promise<void> {
     // Rebinding uses the same immutable shared File bytes; neither the cell nor
     // worker consults a node-local resource copy or current Agent defaults.
     await enqueueAndAwait(
-      runRequest(seedClaim.request, 'reattach', resourceEnvelope(fileId, WORKSPACE, skill)),
+      runRequest(
+        seedClaim.request,
+        'reattach',
+        resourceEnvelope(fileId, WORKSPACE, skill),
+        THREAD,
+        [skill.skill_id],
+      ),
       seedWorker.id,
     );
     await waitForFile(projectedFile, FILE_BYTES);

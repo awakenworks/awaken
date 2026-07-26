@@ -3,16 +3,16 @@
 //! A sandboxed ACP agent's MCP client must authenticate to a real HTTP MCP server (e.g. the
 //! GitHub MCP) without the raw token ever entering the sandbox. Instead of handing the CLI
 //! the real URL + the secret, [`project_mcp_transport`](crate::mcp::project_mcp_transport) points a
-//! sandboxed server at `http://127.0.0.1:<port>/<thread>/<name>` on this relay. The relay
+//! sandboxed server at an opaque exact-generation capability URL on this relay. The relay
 //! holds the host-side bearer from private exact-generation transport material,
-//! looks it up by `(thread, name)`, strips any workload-supplied `Authorization`,
+//! looks it up by `(session, attachment, generation)`, strips any workload-supplied `Authorization`,
 //! injects the real bearer, and forwards to the real server — so the credential is resolved
 //! **out of the sandbox's address space** (the sandbox only reaches loopback over shared-net).
 //!
-//! A deny-egress (`--unshare-net`) thread cannot reach loopback — but such a thread cannot
-//! reach the real MCP server either, so MCP is moot there. The request body is buffered; the
-//! response is streamed straight through, so an MCP Streamable-HTTP `text/event-stream` reply
-//! is forwarded live rather than stalled.
+//! Admission requires provider-enforced substitution plus a no-bypass network boundary;
+//! loopback reachability alone is never custody evidence. The request body is buffered;
+//! the response is streamed straight through, so an MCP Streamable-HTTP
+//! `text/event-stream` reply is forwarded live rather than stalled.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -67,25 +67,58 @@ impl McpRelay {
 
     /// Install one exact-generation route. Replaying the same generation
     /// replaces only that route; it never changes another generation by name.
+    #[cfg(test)]
     pub(crate) fn set_route(
         &self,
         generation: &awaken_protocol_managed::McpGenerationRef,
         server: &McpTransportMaterial,
     ) {
+        if !self.stage_route(generation, server) {
+            assert!(self.update_staged_route(generation, server));
+        }
+    }
+
+    /// Claim a previously absent exact-generation route during realization
+    /// staging. A concurrent or leaked route is never overwritten with another
+    /// request's material.
+    pub(crate) fn stage_route(
+        &self,
+        generation: &awaken_protocol_managed::McpGenerationRef,
+        server: &McpTransportMaterial,
+    ) -> bool {
         let mut routes = self.routes.lock().unwrap();
-        let route = routes
-            .entry(route_key(generation))
-            .or_insert_with(|| Route {
+        let key = route_key(generation);
+        if routes.contains_key(&key) {
+            return false;
+        }
+        routes.insert(
+            key,
+            Route {
                 url: server.url.clone(),
                 bearer: server.bearer.clone(),
                 capability: uuid::Uuid::new_v4().simple().to_string(),
                 lease_expires_at_unix_ms: generation.lease_expires_at_unix_ms,
-            });
-        // Exact-generation restaging is idempotent and keeps the same virtual
-        // capability, while refreshing only facts already fenced by that key.
+            },
+        );
+        true
+    }
+
+    /// Advance facts for an already-staged exact route without manufacturing a
+    /// missing effect. Publication and renewal must fail closed if staging did
+    /// not create the route through the canonical realizer path.
+    pub(crate) fn update_staged_route(
+        &self,
+        generation: &awaken_protocol_managed::McpGenerationRef,
+        server: &McpTransportMaterial,
+    ) -> bool {
+        let mut routes = self.routes.lock().unwrap();
+        let Some(route) = routes.get_mut(&route_key(generation)) else {
+            return false;
+        };
         route.url = server.url.clone();
         route.bearer = server.bearer.clone();
         route.lease_expires_at_unix_ms = generation.lease_expires_at_unix_ms;
+        true
     }
 
     pub(crate) fn remove_route(&self, generation: &awaken_protocol_managed::McpGenerationRef) {
@@ -152,7 +185,12 @@ async fn forward(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or_default();
-    if route.capability != capability || route.lease_expires_at_unix_ms < now_unix_ms {
+    if route.capability != capability
+        || !awaken_protocol_managed::realization_lease_is_live_at(
+            route.lease_expires_at_unix_ms,
+            now_unix_ms,
+        )
+    {
         return (StatusCode::NOT_FOUND, "unknown relay route").into_response();
     }
     let (parts, body) = req.into_parts();

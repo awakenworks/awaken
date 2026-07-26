@@ -607,31 +607,10 @@ impl SharedHost {
         // isolation decision: the raw bearer never reaches the CLI; every authenticated
         // ACP server uses the Worker-held exact-generation relay. A native run is untouched
         // (its MCP servers are already the in-process tools connected above).
-        // For a sandboxed (α) ACP run with authenticated MCP servers, resolve the α reference
-        // through the host's loopback relay: point each server at the relay and register its
-        // real bearer there, so the sandbox reaches the MCP server via loopback and the token
-        // is injected host-side (never in the sandbox). Started lazily, once per host.
-        let relay = if is_acp && !active_mcp.is_empty() {
-            match self
-                .mcp_relay
-                .get_or_try_init(crate::mcp_relay::McpRelay::start)
-                .await
-            {
-                Ok(r) => {
-                    for projection in &active_mcp {
-                        if let Some(server) = &projection.server {
-                            r.set_route(&projection.generation, server);
-                        }
-                    }
-                    Some(r)
-                }
-                // Projection below rejects authenticated servers when the relay
-                // cannot bind. There is no implicit placeholder/broker fallback.
-                Err(_) => None,
-            }
-        } else {
-            None
-        };
+        // Runtime construction consumes effects staged by the one public MCP
+        // realization lifecycle.  It must not start a relay or recreate routes:
+        // after restart, durable rehydration stages and publishes them first.
+        let relay = self.mcp_relay.get();
         let acp_mcp_servers = if is_acp {
             active_mcp
                 .iter()
@@ -672,6 +651,9 @@ impl SharedHost {
                 acp_executor,
                 self.remote_attempt_executor.clone(),
                 &config.resolved_spec,
+                self.judge_snapshot
+                    .as_ref()
+                    .map(|snapshot| &snapshot.resolved_spec),
             ));
         let attempt_executor = self
             .application_attempt_decorator

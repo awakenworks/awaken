@@ -2,6 +2,16 @@
 // `admin_draft_agent` tool through the real managed protocol to prove flexible
 // SDK-shaped MCP/Skill/Multiagent input exists only at the tool adapter and is
 // normalized into the typed Agent aggregate before persistence/validation.
+// Cause graph: typed MCP/Skill/delegation inputs -> deserialize -> Config
+// validation/persistence. A malformed edge stops before persistence.
+//
+// | Rule | MCP | Skill | roster | Result |
+// |---|---|---|---|---|
+// | T1 | complete typed binding | string + `{id}` | coordinator | persist |
+// | T2 | scalar | - | - | reject |
+// | T3 | malformed credential ref | - | - | reject |
+// | T4 | - | object without `id` | - | reject |
+// | T5 | - | - | unsupported type | reject |
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
@@ -32,10 +42,10 @@ async function main() {
     }
     const transcript = JSON.stringify(events);
     assert.ok(transcript.includes('ADMIN-TYPED-EDGES-DONE'));
-    assert.ok(transcript.includes('mcp_servers entry 0 must be an object'));
-    assert.ok(transcript.includes('mcp_servers entry 0 has an invalid credential'));
-    assert.ok(transcript.includes('skills entry 0 must be an id'));
-    assert.ok(transcript.includes('invalid multiagent roster'));
+    assert.ok(transcript.includes('expected struct AgentMcpServerBinding'));
+    assert.ok(transcript.includes('invalid type: integer'));
+    assert.ok(transcript.includes('data did not match any variant of untagged enum SkillSelection'));
+    assert.ok(transcript.includes('multiagent.type must be `coordinator`'));
     assert.equal(
       (transcript.match(/admin_draft_agent/g) ?? []).length >= 5,
       true,

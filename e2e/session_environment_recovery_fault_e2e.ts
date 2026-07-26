@@ -76,21 +76,35 @@ function sqlite(storage: string, statement: string): string {
 
 function binding(storage: string, sessionId: string): Binding {
   const escaped = sessionId.replaceAll("'", "''");
-  const encoded = sqlite(
+  const aggregate = JSON.parse(sqlite(
     storage,
-    `SELECT environment_binding FROM managed_session WHERE session_id = '${escaped}'`,
-  );
+    `SELECT aggregate_json FROM managed_session WHERE session_id = '${escaped}'`,
+  ));
+  const encoded = aggregate.environment_binding;
   assert.ok(encoded, `Session ${sessionId} has a durable environment binding`);
   return JSON.parse(encoded);
 }
 
 function rewriteBinding(storage: string, sessionId: string, encoded: string): void {
   const id = sessionId.replaceAll("'", "''");
-  const value = encoded.replaceAll("'", "''");
+  const aggregate = JSON.parse(sqlite(
+    storage,
+    `SELECT aggregate_json FROM managed_session WHERE session_id = '${id}'`,
+  ));
+  aggregate.environment_binding = encoded;
+  const value = JSON.stringify(aggregate).replaceAll("'", "''");
+  // Cause/effect graph / decision table for durable corruption injection:
+  // C1=root aggregate exists; C2=environment binding is damaged; C3=legacy
+  // compatibility column differs. C1+C2 must drive recovery regardless of C3:
+  // the aggregate is the sole authority and the old column is never dual-written.
+  //
+  // | Rule | aggregate binding | legacy column | recovery result |
+  // | A1   | valid             | stale/null    | adopt          |
+  // | A2   | corrupt           | any           | fail closed    |
   assert.equal(
     sqlite(
       storage,
-      `UPDATE managed_session SET environment_binding = '${value}' WHERE session_id = '${id}'; SELECT changes();`,
+      `UPDATE managed_session SET aggregate_json = '${value}' WHERE session_id = '${id}'; SELECT changes();`,
     ),
     '1',
   );
@@ -137,6 +151,10 @@ function removeContainers(ids: Iterable<string>): void {
   if (unique.length > 0) spawnSync('docker', ['rm', '-f', ...unique], { stdio: 'ignore' });
 }
 
+function knownContainer(shortId: string, ...sets: Set<string>[]): boolean {
+  return sets.some((set) => [...set].some((id) => id.startsWith(shortId)));
+}
+
 async function main(): Promise<void> {
   if (spawnSync('docker', ['version'], { stdio: 'ignore' }).status !== 0) {
     throw new Error('real Docker is required for Session recovery fault coverage');
@@ -144,6 +162,13 @@ async function main(): Promise<void> {
   ensureImage();
   const storage = mkdtempSync(path.join(tmpdir(), 'awaken-session-recovery-fault-'));
   const binary = buildBrain();
+  const preexistingContainers = new Set(
+    execFileSync(
+      'docker',
+      ['ps', '-q', '--filter', 'label=awaken.sandbox=1', '--filter', `ancestor=${IMAGE}`],
+      { encoding: 'utf8' },
+    ).trim().split(/\s+/).filter(Boolean),
+  );
   let brain = spawnBrain(binary, storage);
   const containers = new Set<string>();
   try {
@@ -191,7 +216,19 @@ async function main(): Promise<void> {
 
     brain = spawnBrain(binary, storage);
     await waitForPort(PORT, 180_000, brain);
-    for (const [name, sessionId] of cases) await expectRestoreFailure(sessionId, name);
+    for (const [name, sessionId] of cases) {
+      await expectRestoreFailure(sessionId, name);
+      const afterFault = execFileSync(
+        'docker',
+        ['ps', '-q', '--filter', 'label=awaken.sandbox=1', '--filter', `ancestor=${IMAGE}`],
+        { encoding: 'utf8' },
+      ).trim().split(/\s+/).filter(Boolean);
+      assert.ok(
+        afterFault.every((containerId) =>
+          knownContainer(containerId, containers, preexistingContainers)),
+        `${name} recovery created an unrelated replacement container: ${afterFault}`,
+      );
+    }
 
     // A corrupt durable identity must not be "recovered" by creating an unrelated
     // replacement container. The original four live containers remain the only
@@ -201,7 +238,10 @@ async function main(): Promise<void> {
       ['ps', '-q', '--filter', 'label=awaken.sandbox=1', '--filter', `ancestor=${IMAGE}`],
       { encoding: 'utf8' },
     ).trim().split(/\s+/).filter(Boolean);
-    assert.ok(live.length <= 4, `restore failures created no replacement containers: ${live}`);
+    assert.ok(
+      live.every((containerId) => knownContainer(containerId, containers, preexistingContainers)),
+      `restore failures created no replacement containers: ${live}`,
+    );
 
     console.log(
       'SESSION ENVIRONMENT RECOVERY FAULT TS API E2E PASS: corrupt, cross-owner, wrong-provider, missing, stopped and deleted bindings fail closed.',

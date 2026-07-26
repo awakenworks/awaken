@@ -2264,7 +2264,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
                     name: "authorization".into(),
                     scheme: Some("Bearer".into()),
                 },
-                CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
+                CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::VirtualOnly),
             )),
             selected_plaintext_holder: Some(holder.clone()),
         }
@@ -2294,6 +2294,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // | H15 | changed target | later lease | renew | - | reject/no mutation |
     // | H16 | exact binding | same lease/new key | renew | - | reject/no mutation |
     // | H17 | non-bearer usage | exact holder/revision | stage | - | reject before materialization |
+    // | H18 | authenticated ACP/Forbidden exposure | exact | stage | - | reject before relay/no lookup |
     let exact_request = request("mcp-exact", "workspace-a", 1);
     let receipt = managed
         .stage_mcp_attachment(exact_request.clone())
@@ -2474,6 +2475,23 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // Deliberately install no credential resolver: the no-bypass failure must mask
     // material-source availability and prove no secret lookup was attempted.
     let acp_managed = crate::ManagedHost::new(acp_host.clone());
+    let mut forbidden = request("mcp-acp-forbidden", "workspace-a", 1);
+    forbidden.credential.as_mut().unwrap().policy.model_exposure = ModelExposurePolicy::Forbidden;
+    assert_eq!(
+        acp_managed
+            .stage_mcp_attachment(forbidden)
+            .await
+            .unwrap_err()
+            .code,
+        "mcp_model_exposure_forbidden",
+        "H18"
+    );
+    assert!(
+        acp_host
+            .mcp_projection(&generation("mcp-acp-forbidden"))
+            .is_none(),
+        "H18"
+    );
     let acp_error = acp_managed
         .stage_mcp_attachment(request("mcp-acp-protected", "workspace-a", 1))
         .await
@@ -2672,20 +2690,23 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
     );
 
     // Cause graph:
-    // exact generation staged --publish--> active/visible --replacement publish-->
+    // exact generation + private route staged --publish--> active/visible --replacement publish-->
     // old draining + new active --old drain--> old route removed.  Both adapter
     // projections consume only `active_mcp_projections`; ACP additionally turns
     // that exact generation into a loopback route without a credential.
     //
     // | Rule | g1 state | g2 state | Native visible | ACP visible | old route |
     // |------|----------|----------|----------------|-------------|-----------|
-    // | P1   | staged   | absent   | none           | none        | absent    |
+    // | P1   | staged   | absent   | none           | none        | staged/private |
     // | P2   | active   | absent   | g1             | g1          | present   |
     // | P3   | active   | staged   | g1             | g1          | present   |
     // | P4   | draining | active   | g2             | g2          | present   |
     // | P5   | removed  | active   | g2             | g2          | absent    |
     host.insert_mcp_projection(projection(1, "secret-one"))
         .unwrap();
+    let staged = host.mcp_projection(&generation(1)).unwrap();
+    relay.set_route(&staged.generation, staged.server.as_ref().unwrap());
+    let staged_route = relay.route_url(&generation(1)).expect("P1 staged route");
     assert!(host.active_mcp_projections("mcp-parity").is_empty(), "P1");
 
     host.publish_mcp_projection(&generation(1)).await.unwrap();
@@ -2695,7 +2716,6 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
         "docs-generation-1",
         "P2"
     );
-    relay.set_route(&visible[0].generation, visible[0].server.as_ref().unwrap());
     let acp = project_mcp_transport(
         visible[0].server.as_ref().unwrap(),
         &visible[0].generation,
@@ -2706,10 +2726,13 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
         McpTransport::Http { url } => url,
         other => panic!("P2 expected HTTP transport, got {other:?}"),
     };
+    assert_eq!(old_route, staged_route, "P2 publish reuses staged effect");
     assert!(old_route.contains("/mcp-parity/mcp-docs/1/"), "P2");
 
     host.insert_mcp_projection(projection(2, "secret-two"))
         .unwrap();
+    let staged = host.mcp_projection(&generation(2)).unwrap();
+    relay.set_route(&staged.generation, staged.server.as_ref().unwrap());
     assert_eq!(
         host.active_mcp_projections("mcp-parity")[0]
             .generation
@@ -2726,7 +2749,6 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
         "docs-generation-2",
         "P4"
     );
-    relay.set_route(&visible[0].generation, visible[0].server.as_ref().unwrap());
     let replacement = project_mcp_transport(
         visible[0].server.as_ref().unwrap(),
         &visible[0].generation,
@@ -2757,6 +2779,92 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
             .status(),
         reqwest::StatusCode::NOT_FOUND,
         "P5"
+    );
+}
+
+/// Relay effects are created only by MCP staging. Publication may expose an
+/// exact staged effect, but must never manufacture the missing route as a
+/// compatibility/recovery path.
+#[tokio::test]
+async fn authenticated_acp_publication_requires_the_exact_staged_relay_route() {
+    use crate::mcp::McpTransportMaterial;
+    use crate::session_slot::{McpGenerationProjection, McpProjectionState};
+    use awaken_protocol_managed::{
+        McpAttachmentId, McpGeneration, McpGenerationRef, McpRealizationReceipt,
+    };
+
+    let generation = McpGenerationRef {
+        session_id: "mcp-stage-authority".into(),
+        attachment_id: McpAttachmentId("mcp-docs".into()),
+        generation: McpGeneration(1),
+        runtime_incarnation: "runtime-1".into(),
+        lease_epoch: 4,
+        lease_expires_at_unix_ms: u64::MAX,
+    };
+    let server = McpTransportMaterial {
+        name: "docs".into(),
+        url: "https://mcp.example.test".into(),
+        bearer: Some(awaken_agent_contract::RedactedString::new("secret")),
+        refresh: None,
+    };
+    let projection = McpGenerationProjection {
+        generation: generation.clone(),
+        realization_id: "realize-1".into(),
+        stage_idempotency_key: "stage-1".into(),
+        renewal_binding_fingerprint: "binding-1".into(),
+        receipt: McpRealizationReceipt {
+            generation: generation.clone(),
+            realization_id: "realize-1".into(),
+            selected_plaintext_holder: None,
+            actual_realization_kind: None,
+            receipt_fingerprint: "receipt-1".into(),
+        },
+        server: Some(server.clone()),
+        // ACP has no in-process MCP connection. This is the stable transport
+        // discriminator used by the private Host projection.
+        native_wiring: None,
+        state: McpProjectionState::Staged,
+    };
+
+    // Cause graph:
+    // authenticated ACP projection + no relay/route -> reject publication;
+    // stage exact private route -> publish exact generation -> active.
+    //
+    // | Rule | relay | exact route | publish | projection state |
+    // |---|---|---|---|---|
+    // | S1 | absent | absent | reject | staged |
+    // | S2 | present | absent | reject | staged |
+    // | S3 | present | present | accept | active |
+    let host = SharedHost::new(Arc::new(OkModel), "stub");
+    host.insert_mcp_projection(projection).unwrap();
+    assert!(
+        host.publish_mcp_projection(&generation).await.is_err(),
+        "S1"
+    );
+    assert!(
+        host.active_mcp_projections(&generation.session_id)
+            .is_empty(),
+        "S1"
+    );
+
+    let relay = crate::mcp_relay::McpRelay::start().await.unwrap();
+    assert!(host.mcp_relay.set(relay.clone()).is_ok(), "S2 setup");
+    assert!(
+        host.publish_mcp_projection(&generation).await.is_err(),
+        "S2"
+    );
+    assert!(
+        host.active_mcp_projections(&generation.session_id)
+            .is_empty(),
+        "S2"
+    );
+
+    relay.set_route(&generation, &server);
+    host.publish_mcp_projection(&generation).await.expect("S3");
+    assert_eq!(
+        host.active_mcp_projections(&generation.session_id).len(),
+        1,
+        "S3"
     );
 }
 
@@ -3778,6 +3886,86 @@ fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope() {
             .required_capabilities
             .contains(awaken_run_ingress::SESSION_RESOURCES_CAPABILITY),
         "mixed local/remote deployments must not expose the manifest to an ineligible worker"
+    );
+}
+
+#[test]
+fn cold_host_inference_holder_follows_the_candidate_backend_decision_table() {
+    // Cause graph: C1=credential-bearing candidate; C2=Native; C3=ACP;
+    // C4=mixed boundaries. The same decision feeds direct and dispatch paths.
+    // | Rule | C1 | C2 | C3 | C4 | result          |
+    // | R1   | F  | -  | -  | F  | no holder       |
+    // | R2   | T  | T  | F  | F  | Worker holder   |
+    // | R3   | T  | F  | T  | F  | Workload holder |
+    // | R4   | T  | T  | T  | T  | reject          |
+    let host = SharedHost::new(Arc::new(OkModel), "host-default");
+    let candidate = |model: &str, backend: &str| {
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
+            awaken_runtime_contract::resolved::ModelBinding::new("provider", model, backend),
+            "provider@1",
+            "route@1",
+            "workspace-a",
+            Some(awaken_runtime_contract::CredentialAccess::new(
+                awaken_runtime_contract::CredentialRef {
+                    id: format!("credential-{model}"),
+                    revision: 1,
+                },
+                awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+                awaken_runtime_contract::CredentialUsage::ProviderAdapter,
+                awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+            )),
+            awaken_runtime_contract::InferenceEndpoint {
+                adapter_kind: "test".into(),
+                base_url: "https://example.invalid".into(),
+                upstream_model: model.into(),
+            },
+        )
+    };
+    let activation = |primary, fallbacks| {
+        let mut snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent")
+            .resolved_model(primary)
+            .build();
+        snapshot.resolved_spec.model_candidates = fallbacks;
+        awaken_runtime_contract::RunActivation::new(
+            awaken_agent_contract::agent::run::Id("run".into()),
+            awaken_agent_contract::agent::thread::Id("cold-thread".into()),
+            snapshot,
+            Vec::new(),
+        )
+    };
+
+    let anonymous = awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+        awaken_runtime_contract::resolved::ModelBinding::new("host", "anonymous", "native"),
+    );
+    assert_eq!(
+        host.inference_plaintext_holder(&activation(anonymous, Vec::new()))
+            .unwrap(),
+        None,
+        "R1"
+    );
+    assert_eq!(
+        host.inference_plaintext_holder(&activation(candidate("native", "native"), Vec::new()))
+            .unwrap()
+            .unwrap()
+            .boundary,
+        awaken_runtime_contract::PlaintextBoundary::Worker,
+        "R2"
+    );
+    assert_eq!(
+        host.inference_plaintext_holder(&activation(candidate("acp", "acp:codex"), Vec::new()))
+            .unwrap()
+            .unwrap()
+            .boundary,
+        awaken_runtime_contract::PlaintextBoundary::Workload,
+        "R3"
+    );
+    assert!(
+        host.inference_plaintext_holder(&activation(
+            candidate("native", "native"),
+            vec![candidate("acp", "acp:codex")],
+        ))
+        .is_err(),
+        "R4"
     );
 }
 

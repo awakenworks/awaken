@@ -404,14 +404,25 @@ pub fn admin_tool_descriptors() -> Vec<ToolDescriptor> {
                                         (permission/state_machine/compact/memory)."
                     },
                     "context_policy": { "type": "object" },
-                    "mcp_servers": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": { "id": { "type": "string" } },
-                            "required": ["id"]
-                        },
-                        "description": "MCP server ids listed in capabilities."
+                      "mcp_servers": {
+                          "type": "array",
+                          "items": {
+                              "type": "object",
+                              "properties": {
+                                  "name": { "type": "string" },
+                                  "url": { "type": "string" },
+                                  "credential": {
+                                      "type": "object",
+                                      "properties": {
+                                          "id": { "type": "string" },
+                                          "revision": { "type": "integer", "minimum": 1 }
+                                      },
+                                      "required": ["id", "revision"]
+                                  }
+                              },
+                              "required": ["name", "url"]
+                          },
+                          "description": "Typed MCP server bindings. `id` is accepted as an alias for `name`."
                     },
                     "skills": {
                         "type": "array",
@@ -781,25 +792,18 @@ impl RawTool for GetPlatformCapabilities {
 /// The flattened full-config input for [`CREATE_DRAFT_TOOL`]. Every field but `id`
 /// and `instructions` is optional; `model` pins a model id (omit → `Auto`).
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct McpServerSelection {
-    id: String,
+#[serde(untagged)]
+enum SkillSelection {
+    Id(String),
+    Reference { id: String },
 }
 
-impl From<McpServerSelection> for AgentMcpServerBinding {
-    fn from(value: McpServerSelection) -> Self {
-        Self {
-            name: value.id,
-            url: String::new(),
-            credential: None,
+impl SkillSelection {
+    fn into_id(self) -> String {
+        match self {
+            Self::Id(id) | Self::Reference { id } => id,
         }
     }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SkillSelection {
-    id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -825,7 +829,7 @@ struct DraftArgs {
     #[serde(default)]
     context_policy: Option<ContextPolicy>,
     #[serde(default)]
-    mcp_servers: Vec<McpServerSelection>,
+    mcp_servers: Vec<AgentMcpServerBinding>,
     #[serde(default)]
     skills: Vec<SkillSelection>,
     #[serde(default)]
@@ -876,8 +880,12 @@ impl RawTool for DraftAgent {
             .unwrap_or(ModelSelection::Auto);
         let plugin_ids = plugin_ids_of(&args.plugin_config);
         let resources = args.resources;
-        let mcp_servers = args.mcp_servers.into_iter().map(Into::into).collect();
-        let skill_ids = args.skills.into_iter().map(|skill| skill.id).collect();
+        let mcp_servers = args.mcp_servers;
+        let skill_ids = args
+            .skills
+            .into_iter()
+            .map(SkillSelection::into_id)
+            .collect();
         let config = AgentConfig {
             id: args.id,
             instructions: args.instructions,
@@ -949,7 +957,7 @@ struct PatchFields {
     #[serde(default)]
     context_policy: Option<ContextPolicy>,
     #[serde(default)]
-    mcp_servers: Option<Vec<McpServerSelection>>,
+    mcp_servers: Option<Vec<AgentMcpServerBinding>>,
     #[serde(default)]
     skills: Option<Vec<SkillSelection>>,
     #[serde(default)]
@@ -1038,10 +1046,10 @@ impl RawTool for PatchAgent {
             config.context_policy = cp;
         }
         if let Some(v) = patch.mcp_servers {
-            config.mcp_servers = v.into_iter().map(Into::into).collect();
+            config.mcp_servers = v;
         }
         if let Some(v) = patch.skills {
-            config.skill_ids = v.into_iter().map(|skill| skill.id).collect();
+            config.skill_ids = v.into_iter().map(SkillSelection::into_id).collect();
         }
         if let Some(v) = patch.multiagent {
             config.multiagent = Some(v);

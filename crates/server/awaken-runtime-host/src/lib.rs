@@ -1405,7 +1405,10 @@ impl awaken_protocol_managed::McpAttachmentRealizer for ManagedHost {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
             .unwrap_or_default();
-        if request.generation.lease_expires_at_unix_ms < now_unix_ms {
+        if !awaken_protocol_managed::realization_lease_is_live_at(
+            request.generation.lease_expires_at_unix_ms,
+            now_unix_ms,
+        ) {
             return Err(RunError::classified(
                 "mcp_stale_ownership",
                 "MCP realization lease has expired",
@@ -1469,6 +1472,15 @@ impl awaken_protocol_managed::McpAttachmentRealizer for ManagedHost {
                             "MCP Runtime supports only canonical Authorization Bearer usage",
                         ));
                     }
+                }
+                if is_acp
+                    && access.policy.model_exposure
+                        != awaken_runtime_contract::ModelExposurePolicy::VirtualOnly
+                {
+                    return Err(RunError::classified(
+                        "mcp_model_exposure_forbidden",
+                        "authenticated ACP MCP requires explicit VirtualOnly authorization for its generation-scoped relay capability",
+                    ));
                 }
                 if is_acp
                     && !self
@@ -1558,6 +1570,31 @@ impl awaken_protocol_managed::McpAttachmentRealizer for ManagedHost {
                     .map_err(to_run_error)?,
             )
         };
+        // Staging is the sole route-creation boundary.  Runtime construction is
+        // a projection reader and must never repair or recreate credential-
+        // bearing effects behind the durable realization protocol's back.
+        let staged_relay = if is_acp && server.bearer.is_some() {
+            let relay = self
+                .host
+                .mcp_relay
+                .get_or_try_init(crate::mcp_relay::McpRelay::start)
+                .await
+                .map_err(|error| {
+                    RunError::classified(
+                        "mcp_relay_unavailable",
+                        format!("could not stage Worker-held MCP route: {error}"),
+                    )
+                })?;
+            if !relay.stage_route(&request.generation, &server) {
+                return Err(RunError::classified(
+                    "mcp_stale_generation",
+                    "MCP generation already has a staged relay route",
+                ));
+            }
+            Some(relay)
+        } else {
+            None
+        };
         let receipt = awaken_protocol_managed::McpRealizationReceipt {
             generation: request.generation.clone(),
             realization_id: request.realization_id.clone(),
@@ -1565,18 +1602,26 @@ impl awaken_protocol_managed::McpAttachmentRealizer for ManagedHost {
             actual_realization_kind,
             receipt_fingerprint: request_fingerprint,
         };
-        self.host
-            .insert_mcp_projection(crate::session_slot::McpGenerationProjection {
-                generation: request.generation,
-                realization_id: request.realization_id,
-                stage_idempotency_key: request.stage_idempotency_key,
-                renewal_binding_fingerprint,
-                receipt: receipt.clone(),
-                server: Some(server),
-                native_wiring,
-                state: crate::session_slot::McpProjectionState::Staged,
-            })
-            .map_err(to_run_error)?;
+        if let Err(error) =
+            self.host
+                .insert_mcp_projection(crate::session_slot::McpGenerationProjection {
+                    generation: request.generation.clone(),
+                    realization_id: request.realization_id,
+                    stage_idempotency_key: request.stage_idempotency_key,
+                    renewal_binding_fingerprint,
+                    receipt: receipt.clone(),
+                    server: Some(server),
+                    native_wiring,
+                    state: crate::session_slot::McpProjectionState::Staged,
+                })
+        {
+            // A route is private and not yet visible, but retaining its bearer
+            // after the exact projection failed to stage would still be a leak.
+            if let Some(relay) = staged_relay {
+                relay.remove_route(&request.generation);
+            }
+            return Err(to_run_error(error));
+        }
         Ok(receipt)
     }
 
@@ -1588,7 +1633,10 @@ impl awaken_protocol_managed::McpAttachmentRealizer for ManagedHost {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
             .unwrap_or_default();
-        if generation.lease_expires_at_unix_ms < now_unix_ms {
+        if !awaken_protocol_managed::realization_lease_is_live_at(
+            generation.lease_expires_at_unix_ms,
+            now_unix_ms,
+        ) {
             return Err(RunError::classified(
                 "mcp_stale_ownership",
                 "MCP publication lease has expired",

@@ -7,7 +7,10 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
+// @ts-ignore -- shared JavaScript harness intentionally serves TS scenarios.
 import { pass, withScenarioServer } from './harness.mjs';
+// @ts-ignore -- shared JavaScript fixture intentionally serves TS scenarios.
+import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38641);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -35,15 +38,15 @@ async function request(
   };
 }
 
-function definition(delegate: string, server: string): Record<string, unknown> {
+function definition(delegate: string, server: string, url: string): Record<string, unknown> {
   return {
     name: 'Typed coordinator',
     system: 'Coordinate only through the published roster.',
-    model: { id: 'config-model' },
+    model: { id: 'management' },
     tools: [],
     mcp_servers: [{
       name: server,
-      url: `https://${server}.example.invalid/mcp`,
+      url,
     }],
     multiagent: { type: 'coordinator', agents: [delegate] },
   };
@@ -57,7 +60,7 @@ async function createSession(client: Anthropic): Promise<any> {
   });
 }
 
-function assertPinned(session: any, delegate: string, server: string): void {
+function assertPinned(session: any, delegate: string, server: string, url: string): void {
   assert.deepEqual(session.agent.multiagent, {
     type: 'coordinator',
     agents: [delegate],
@@ -65,27 +68,41 @@ function assertPinned(session: any, delegate: string, server: string): void {
   assert.deepEqual(session.agent.mcp_servers, [{
     name: server,
     type: 'url',
-    url: `https://${server}.example.invalid/mcp`,
+    url,
   }]);
 }
 
 async function main(): Promise<void> {
-  await withScenarioServer('config', 'instruction', PORT, async (base) => {
+  const fixtureA = await startCalcFixture('unused-a', { allowAnonymous: true });
+  const fixtureB = await startCalcFixture('unused-b', { allowAnonymous: true });
+  try {
+  await withScenarioServer('management', 'mcp', PORT, async (base: string) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
 
-    // Legacy roster spelling is accepted only at the HTTP anti-corruption edge
-    // and immediately projects back as the canonical typed form.
-    const legacy = {
-      ...definition('delegate-a', 'docs-a'),
-      multiagent: { workers: ['delegate-a'] },
-    };
-    assert.equal((await request(base, 'PUT', `/v1/config/agents/${PARENT}`, legacy)).status, 200);
+    // Cause C1: canonical tagged roster -> persist the one typed aggregate.
+    // Cause C2: removed `{workers}` compatibility shape -> reject at the edge;
+    // it must not revive a second authoring vocabulary.
+    //
+    // | Rule | shape | effect |
+    // |---|---|---|
+    // | A1 | `{type:"coordinator", agents}` | canonical draft persisted |
+    // | A2 | `{workers}` | 400, no draft mutation |
+    const canonical = definition('delegate-a', 'docs-a', fixtureA.url);
+    const authoredCanonical = await request(base, 'PUT', `/v1/config/agents/${PARENT}`, canonical);
+    assert.equal(authoredCanonical.status, 200, JSON.stringify(authoredCanonical.body));
     const authored = await request(base, 'GET', `/v1/config/agents/${PARENT}`);
     assert.deepEqual(authored.body.multiagent, {
       type: 'coordinator',
       agents: ['delegate-a'],
     });
-    pass('legacy roster is normalized at the edge; stored projection is canonical');
+    const legacy = await request(base, 'PUT', `/v1/config/agents/${PARENT}`, {
+      ...definition('delegate-b', 'docs-b', fixtureB.url),
+      multiagent: { workers: ['delegate-b'] },
+    });
+    assert.equal(legacy.status, 400, 'A2 rejects the deleted parallel roster shape');
+    const afterLegacy = await request(base, 'GET', `/v1/config/agents/${PARENT}`);
+    assert.deepEqual(afterLegacy.body.multiagent, authored.body.multiagent, 'A2 preserves A1');
+    pass('canonical roster persists; removed workers compatibility fails closed');
 
     // Domain-invalid rosters reach the validation query as structured issues;
     // an invalid union tag fails decoding at the edge.
@@ -98,11 +115,11 @@ async function main(): Promise<void> {
         base,
         'POST',
         `/v1/config/agents/${PARENT}/validate`,
-        { ...definition('delegate-a', 'docs-a'), multiagent },
+        { ...definition('delegate-a', 'docs-a', fixtureA.url), multiagent },
       );
       assert.equal(verdict.status, 200);
       assert.equal(verdict.body.valid, false);
-      assert.equal(verdict.body.issues[0].path, 'multiagent');
+      assert.equal(verdict.body.issues[0].path, 'multiagent', JSON.stringify(verdict.body));
     }
     assert.equal(
       (
@@ -110,7 +127,7 @@ async function main(): Promise<void> {
           base,
           'POST',
           `/v1/config/agents/${PARENT}/validate`,
-          { ...definition('delegate-a', 'docs-a'), multiagent: { type: 'mesh', agents: [] } },
+          { ...definition('delegate-a', 'docs-a', fixtureA.url), multiagent: { type: 'mesh', agents: [] } },
         )
       ).status,
       400,
@@ -125,7 +142,7 @@ async function main(): Promise<void> {
     assert.equal(firstPublication.status, 200);
     assert.ok(firstPublication.body.fingerprint);
     const first = await createSession(client);
-    assertPinned(first, 'delegate-a', 'docs-a');
+    assertPinned(first, 'delegate-a', 'docs-a', fixtureA.url);
 
     // Editing the sole mutable truth does not mutate the installed publication.
     assert.equal(
@@ -134,13 +151,13 @@ async function main(): Promise<void> {
           base,
           'PUT',
           `/v1/config/agents/${PARENT}`,
-          definition('delegate-b', 'docs-b'),
+          definition('delegate-b', 'docs-b', fixtureB.url),
         )
       ).status,
       200,
     );
     const beforeRepublish = await createSession(client);
-    assertPinned(beforeRepublish, 'delegate-a', 'docs-a');
+    assertPinned(beforeRepublish, 'delegate-a', 'docs-a', fixtureA.url);
     pass('draft edits cannot leak into execution before publication');
 
     const secondPublication = await request(
@@ -151,10 +168,10 @@ async function main(): Promise<void> {
     assert.equal(secondPublication.status, 200);
     assert.notEqual(secondPublication.body.fingerprint, firstPublication.body.fingerprint);
     const afterRepublish = await createSession(client);
-    assertPinned(afterRepublish, 'delegate-b', 'docs-b');
+    assertPinned(afterRepublish, 'delegate-b', 'docs-b', fixtureB.url);
 
     const stillPinned = await client.beta.sessions.retrieve(first.id, { betas: BETAS });
-    assertPinned(stillPinned, 'delegate-a', 'docs-a');
+    assertPinned(stillPinned, 'delegate-a', 'docs-a', fixtureA.url);
     pass('republish affects only later Sessions; existing Session remains pinned');
 
     // The removed aggregate API must not quietly become a second authoring path.
@@ -165,6 +182,10 @@ async function main(): Promise<void> {
     );
     pass('legacy MCP aggregate routes are absent');
   });
+  } finally {
+    await fixtureA.close();
+    await fixtureB.close();
+  }
 
   console.log('E2E PASS: typed Agent bindings are the sole mutable truth and Sessions pin publications.');
 }

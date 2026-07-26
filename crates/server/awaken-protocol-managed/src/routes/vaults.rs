@@ -377,7 +377,7 @@ impl VaultState {
                     name: "authorization".into(),
                     scheme: Some("Bearer".into()),
                 },
-                CredentialExecutionPolicy::self_hosted_provider(),
+                CredentialExecutionPolicy::self_hosted_mcp(),
             )
             .await?;
         let revision = access.credential.revision;

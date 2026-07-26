@@ -92,11 +92,18 @@ async function exercisePodmanEnvironment(client, name, sandbox, expectSuccess) {
 }
 
 async function exercisePodmanRootfsMatrix(client) {
+  // Network admission cause/effect graph:
+  // C1=allowlist requested; C2=provider proves no-bypass enforcement.
+  // C1+!C2 -> N1 fail closed. !C1 -> N2 proceed using the selected rootfs.
+  //
+  // | Rule | network request | provider proof | result              |
+  // | N1   | allowlist       | absent         | reject, no fallback |
+  // | N2   | none/default    | n/a            | realize rootfs      |
   await exercisePodmanEnvironment(client, 'host-userland', {
     environment: { kind: 'sandbox' },
     network: { mode: 'allowlist', hosts: ['example.invalid'] },
     limits: { cpu_millis: 1000, memory_bytes: 536870912, pids: 128 },
-  }, true);
+  }, false);
   await exercisePodmanEnvironment(client, 'explicit-image', {
     environment: { kind: 'image', reference: IMAGE },
     network: { mode: 'none' },

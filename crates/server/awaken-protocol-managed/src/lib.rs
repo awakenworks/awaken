@@ -84,8 +84,8 @@ pub use awaken_session_contract::{
     SessionRealizationAction, SessionRealizationControl, SessionRealizationControlFailure,
     SessionRealizationDirective, SessionRealizationDriveError, SessionRealizationLease,
     SessionRealizationTarget, SessionResourceManifest, SessionRevision, StageMcpAttachment,
-    drive_session_realization, repository_transport_credential_usage, resource_plane,
-    stable_fingerprint,
+    drive_session_realization, realization_lease_is_live_at, repository_transport_credential_usage,
+    resource_plane, stable_fingerprint,
 };
 pub use awaken_session_store::SqliteManagedSessionRepository;
 pub use state::{

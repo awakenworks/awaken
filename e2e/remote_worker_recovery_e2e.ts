@@ -258,12 +258,29 @@ function dispatchDatabases(root: string): string[] {
   return databases;
 }
 
+function sqlite(database: string, statement: string): string {
+  // Cause/effect graph: C1=the live Control/Worker owns a concurrent SQLite
+  // transaction; C2=fixture mutation uses the same durable database.
+  // C1+C2 without a busy timeout -> transient SQLITE_BUSY test failure;
+  // C1+C2 with bounded wait -> serialize, or fail after a real 10s deadlock.
+  //
+  // | Rule | concurrent owner | timeout | result                    |
+  // | S1   | no               | any     | execute immediately       |
+  // | S2   | yes              | absent  | flaky SQLITE_BUSY         |
+  // | S3   | yes              | 10s     | wait then execute/fail    |
+  return execFileSync(
+    'sqlite3',
+    ['-cmd', '.timeout 10000', database, statement],
+    { encoding: 'utf8' },
+  ).trim();
+}
+
 function removeEmptyManagedResourceEnvelope(root: string, runId: string): void {
   for (const database of dispatchDatabases(root)) {
-    const encoded = execFileSync('sqlite3', [
+    const encoded = sqlite(
       database,
       `SELECT request FROM runtime_dispatch WHERE run_id = '${runId.replaceAll("'", "''")}'`,
-    ], { encoding: 'utf8' }).trim();
+    );
     if (!encoded) continue;
     const request = JSON.parse(encoded);
     delete request.session_resources;
@@ -272,18 +289,18 @@ function removeEmptyManagedResourceEnvelope(root: string, runId: string): void {
         (capability: string) => capability !== 'session-resources/v1',
       );
     const rewritten = JSON.stringify(request).replaceAll("'", "''");
-    execFileSync('sqlite3', [
+    sqlite(
       database,
       `UPDATE runtime_dispatch SET request = '${rewritten}' ` +
         `WHERE run_id = '${runId.replaceAll("'", "''")}'`,
-    ]);
+    );
   }
 }
 
 function stagePendingInput(root: string, runId: string, ticket: any): void {
   const result = JSON.stringify({ Input: 'resume-after-reclaim' }).replaceAll("'", "''");
   for (const database of dispatchDatabases(root)) {
-    execFileSync('sqlite3', [
+    sqlite(
       database,
       `INSERT INTO runtime_pending ` +
         `(message_id, run_id, thread_id, correlation_id, result, available_at) VALUES (` +
@@ -291,7 +308,7 @@ function stagePendingInput(root: string, runId: string, ticket: any): void {
         `'${String(ticket.thread_id).replaceAll("'", "''")}', ` +
         `'${String(ticket.correlation_id).replaceAll("'", "''")}', '${result}', NULL) ` +
         `ON CONFLICT(message_id) DO NOTHING`,
-    ]);
+    );
   }
 }
 
@@ -365,10 +382,10 @@ async function main(): Promise<void> {
       sleep(10_000).then(async () => {
         const dispatches = await api('GET', `/v1/durable/threads/${thread}/dispatches`);
         const requests = dispatchDatabases(storage).map((database) =>
-          execFileSync('sqlite3', [
+          sqlite(
             database,
             `SELECT request FROM runtime_dispatch WHERE run_id = '${runId.replaceAll("'", "''")}'`,
-          ], { encoding: 'utf8' }).trim(),
+          ),
         );
         throw new Error(
           `Worker A did not attempt Awaiting settle; proxy=${JSON.stringify(proxy.requestCounts())} ` +
@@ -396,10 +413,10 @@ async function main(): Promise<void> {
     const databases = dispatchDatabases(storage);
     assert.ok(databases.length > 0, 'durable dispatch database exists');
     for (const database of databases) {
-      execFileSync('sqlite3', [
+      sqlite(
         database,
         `UPDATE runtime_dispatch SET lease_until = 0 WHERE run_id = '${runId.replaceAll("'", "''")}'`,
-      ]);
+      );
     }
 
     workerB = spawnServer('echo', 0, {
@@ -415,10 +432,10 @@ async function main(): Promise<void> {
     const epochB = Math.max(
       ...databases.map((database) =>
         Number(
-          execFileSync('sqlite3', [
+          sqlite(
             database,
             `SELECT lease_epoch FROM runtime_dispatch WHERE run_id = '${runId.replaceAll("'", "''")}'`,
-          ], { encoding: 'utf8' }).trim() || 0,
+          ) || 0,
         ),
       ),
     );

@@ -570,7 +570,7 @@ async fn run_configured_agent_inner(
     }
     let reader = ctx.reader.clone().expect("checked above");
     let thread_id = ThreadId(thread.to_string());
-    match stable_run_id {
+    let state = match stable_run_id {
         Some(run_id) => {
             runtime
                 .run_to_completion_with_id(&config, run_id, thread, seed, ctx, |_| {
@@ -585,6 +585,19 @@ async fn run_configured_agent_inner(
         }
     }
     .map_err(AgentRunError::Runtime)?;
+    if let RunState::Ended(cause) = &state
+        && !matches!(
+            cause,
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd
+                | awaken_agent_contract::agent::run::EndCause::MaxSteps
+        )
+    {
+        return Err(AgentRunError::Runtime(
+            awaken_runtime_contract::execution::Error::Execution(format!(
+                "auxiliary Agent ended unsuccessfully: {cause:?}"
+            )),
+        ));
+    }
     let text = latest_assistant_text(&reader.committed_messages(&thread_id));
     let usage = usage_from_committed(reader.as_ref(), &thread_id);
     Ok((text, usage))
@@ -970,6 +983,50 @@ mod tests {
                 stop_reason: None,
             })
         }
+    }
+
+    struct RejectedModel;
+
+    #[async_trait::async_trait]
+    impl LlmExecutor for RejectedModel {
+        async fn infer(&self, _request: ChatRequest) -> LlmResult<ChatResponse> {
+            Err(awaken_runtime_contract::llm::Error::Binding(
+                "candidate is outside the frozen set".into(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn auxiliary_terminal_failure_is_not_projected_as_empty_success() {
+        // Cause graph / decision table:
+        // C1=terminal cause is NaturalEnd/MaxSteps; C2=terminal cause is a fault.
+        // | Rule | C1 | C2 | result                                      |
+        // | R1   | T  | F  | return reply/usage                          |
+        // | R2   | F  | T  | return error; caller must retry/fail closed |
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = LocalProvider::new(tmp.path());
+        let catalog = AgentCatalog::new().with_agent(agent("worker", "WORK"));
+        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let context = RuntimeRunContext::new()
+            .with_commit(commit.clone())
+            .with_reader(commit);
+
+        let error = run_configured_agent_with_id(
+            &catalog,
+            AgentRunSandbox::Fresh(&provider),
+            Arc::new(RejectedModel),
+            "worker",
+            "aux/rejected",
+            RunId("aux/rejected/run".into()),
+            vec![user("go")],
+            Vec::new(),
+            context,
+        )
+        .await
+        .expect_err("R2: a terminal inference fault is not an empty successful result");
+
+        assert!(error.to_string().contains("ended unsuccessfully"));
+        assert!(error.to_string().contains("binding_rejected"));
     }
 
     #[tokio::test]

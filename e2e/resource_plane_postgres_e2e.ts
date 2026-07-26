@@ -259,7 +259,7 @@ function managedSessionResources(
 ): Record<string, any> {
   const output = psql(
     container,
-    `SELECT effective_inputs_json FROM managed_session WHERE session_id=${sqlLiteral(sessionId)}`,
+    `SELECT aggregate_json::jsonb->'resources' FROM managed_session WHERE session_id=${sqlLiteral(sessionId)}`,
   );
   assert.notEqual(output, '', `missing durable Session ${sessionId}`);
   return JSON.parse(output);
@@ -272,7 +272,8 @@ function writeManagedSessionResources(
 ): void {
   psql(
     container,
-    `UPDATE managed_session SET effective_inputs_json=${sqlLiteral(JSON.stringify(resources))}::jsonb ` +
+    `UPDATE managed_session SET aggregate_json=jsonb_set(aggregate_json::jsonb, '{resources}', ` +
+      `${sqlLiteral(JSON.stringify(resources))}::jsonb)::text ` +
       `WHERE session_id=${sqlLiteral(sessionId)}`,
   );
 }
@@ -761,7 +762,22 @@ async function main(): Promise<void> {
     assert.equal(extraction.workspace_id, WORKSPACE);
     assert.equal(extraction.memory_store_id, memoryId);
     assert.equal(extraction.memory_config_version, 2);
-    assert.equal(extraction.receipt.mutations.length, 1);
+    // Cause graph / decision table for the frozen extractor candidate:
+    // C1=published candidate is carried exactly; C2=terminal sub-run succeeds.
+    // | Rule | C1 | C2 | result                                      |
+    // | R1   | T  | T  | two extractor calls and one durable mutation |
+    // | R2   | F  | -  | binding_rejected; no completed extraction    |
+    // | R3   | T  | F  | retry/fail closed; no empty success          |
+    assert.equal(
+      extraction.receipt.mutations.length,
+      1,
+      JSON.stringify({ extraction, upstreamRequests: upstream.requests }),
+    );
+    assert.equal(
+      upstream.requests.filter((request) => request.memoryExtractor).length,
+      2,
+      'R1: the exact extractor candidate performs write_memory then its final response',
+    );
     const extractedMemories = await json(
       'GET',
       scoped(WORKSPACE, `memory_stores/${memoryId}/memories`),

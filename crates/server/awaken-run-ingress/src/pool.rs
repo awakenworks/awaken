@@ -90,11 +90,16 @@ pub trait CompletionSink: Send + Sync {
 /// A running pool of drain tasks over one shared dispatch queue.
 pub struct DispatchPool<S> {
     store: Arc<S>,
+    clock: Arc<dyn Clock>,
+    owner: String,
+    lease_ms: u64,
+    resolver: Arc<dyn WorkerResolver<S>>,
     wake: Arc<dyn WakeSignal>,
     shutdown: CancellationToken,
     drains: Vec<JoinHandle<()>>,
     maintenance: JoinHandle<()>,
     renewal: Option<JoinHandle<()>>,
+    completion: Option<Arc<dyn CompletionSink>>,
     admission: Arc<PoolAdmission>,
 }
 
@@ -276,18 +281,23 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
                 store.clone(),
                 clock.clone(),
                 shutdown.clone(),
-                owner,
+                owner.clone(),
                 lease_ms,
                 interval,
             ))
         });
         Self {
             store,
+            clock,
+            owner,
+            lease_ms,
+            resolver,
             wake,
             shutdown,
             drains,
             maintenance,
             renewal,
+            completion,
             admission,
         }
     }
@@ -325,6 +335,43 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
     /// Wake the pool to drain immediately.
     pub async fn notify(&self) {
         let _ = self.wake.publish().await;
+    }
+
+    /// Persist cancellation and drive that exact row through the pool's one
+    /// claim/resolver path. The claimed activation remains authoritative after a
+    /// process restart; no Session config or runtime is reconstructed merely to
+    /// discover its executor.
+    pub async fn cancel(&self, run_id: &RunId) -> Result<bool, Error> {
+        if self.store.cancel(run_id).await?.is_none() {
+            return Ok(false);
+        }
+        // Wake peer/local drains as well as attempting the synchronous exact
+        // claim below. A racing owner is valid; the durable intent remains the
+        // authority and only one claimant can settle its new epoch.
+        let _ = self.wake.publish().await;
+        let now = self.clock.now_ms();
+        let claimed = self
+            .store
+            .claim_run(
+                run_id,
+                &self.owner,
+                self.lease_ms,
+                now,
+                &self.resolver.credential_realization_capabilities(),
+            )
+            .await?;
+        let Some(claimed) = claimed else {
+            // A drain worker may already own the newly fenced cancellation. The
+            // durable intent is accepted and that owner must settle it.
+            return Ok(true);
+        };
+        let worker = self.resolver.worker_for_claimed(&claimed).await?;
+        if let Some((settled_run, state)) = worker.drive_claimed(claimed, now).await?
+            && let Some(sink) = &self.completion
+        {
+            sink.settled(&settled_run, &state);
+        }
+        Ok(true)
     }
 
     /// Begin a graceful drain WITHOUT consuming the pool: cancel the drain tasks so

@@ -1,9 +1,9 @@
 // End-to-end coverage for the aggregated `awaken start` composition.
 //
-// The command adapter owns argument parsing and console distribution discovery;
-// the server adapter owns static delivery while preserving the management API as
-// the fallback. Drive both through the shipped binary so neither adapter is
-// treated as an unobservable implementation detail.
+// The command adapter owns argument parsing and the build owns the one embedded
+// console distribution; the server adapter owns static delivery while preserving
+// the management API as the fallback. Drive both through the shipped binary so
+// neither adapter is treated as an unobservable implementation detail.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -59,7 +59,7 @@ async function main() {
   const help = spawnSync(bin, ['--help'], { encoding: 'utf8' });
   assert.equal(help.status, 0, help.stderr);
   assert.match(help.stdout, /awaken start/);
-  assert.match(help.stdout, /AWAKEN_WEB_DIST/);
+  assert.doesNotMatch(help.stdout, /AWAKEN_WEB_DIST/);
 
   const startHelp = spawnSync(bin, ['start', '--help'], { encoding: 'utf8' });
   assert.equal(startHelp.status, 0, startHelp.stderr);
@@ -70,26 +70,14 @@ async function main() {
   assert.match(badArgs.stderr, /unknown arguments/);
 
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-console-e2e-'));
-  const invalidDist = path.join(temp, 'invalid-dist');
-  fs.mkdirSync(invalidDist);
-  const invalid = spawnSync(bin, ['start'], {
-    encoding: 'utf8',
-    env: { ...process.env, AWAKEN_WEB_DIST: invalidDist },
-  });
-  assert.notEqual(invalid.status, 0);
-  assert.match(invalid.stderr, /does not contain index\.html/);
-
-  const dist = path.join(temp, 'dist');
-  fs.mkdirSync(path.join(dist, 'assets'), { recursive: true });
-  fs.writeFileSync(path.join(dist, 'index.html'), '<!doctype html><title>Awaken Console E2E</title>');
-  fs.writeFileSync(path.join(dist, 'assets', 'probe.txt'), 'console-asset');
-
   let server = spawn(bin, ['start'], {
+    cwd: temp,
     env: {
       ...process.env,
       AWAKEN_HTTP_ADDR: `127.0.0.1:${PORT}`,
       AWAKEN_LOCAL_WORKSPACE_ID: `workspace_console_${process.pid}`,
-      AWAKEN_WEB_DIST: dist,
+      // A legacy override must not revive the removed runtime-discovery path.
+      AWAKEN_WEB_DIST: path.join(temp, 'does-not-exist'),
     },
     stdio: ['ignore', 'inherit', 'inherit'],
   });
@@ -110,15 +98,14 @@ async function main() {
 
     let response = await fetch(`${base}/`);
     assert.equal(response.status, 200);
-    assert.match(await response.text(), /Awaken Console E2E/);
+    assert.match(await response.text(), /Awaken Console/);
 
     response = await fetch(`${base}/w/default/agents/new`);
     assert.equal(response.status, 200);
-    assert.match(await response.text(), /Awaken Console E2E/);
+    assert.match(await response.text(), /Awaken Console/);
 
-    response = await fetch(`${base}/assets/probe.txt`);
-    assert.equal(response.status, 200);
-    assert.equal(await response.text(), 'console-asset');
+    response = await fetch(`${base}/assets/does-not-exist`);
+    assert.equal(response.status, 404);
 
     response = await fetch(`${base}/v1/capabilities`);
     assert.equal(response.status, 200, await response.text());
@@ -127,36 +114,8 @@ async function main() {
     assert.equal(response.status, 404);
 
     console.log(
-      'CONSOLE START TS E2E PASS: command modes fail closed and one process serves the SPA plus the unchanged management API fallback.',
+      'CONSOLE START TS E2E PASS: command modes fail closed and the one embedded SPA source preserves the management API fallback.',
     );
-
-    await stop();
-
-    // Without an explicit dist override, the command searches from its working
-    // directory. Keep this hermetic by providing a tiny project-shaped tree
-    // instead of relying on a previously built repository `web/dist`.
-    const autoRoot = path.join(temp, 'auto-project');
-    const autoWeb = path.join(autoRoot, 'web');
-    const autoDist = path.join(autoWeb, 'dist');
-    fs.mkdirSync(path.join(autoDist, 'assets'), { recursive: true });
-    fs.writeFileSync(path.join(autoWeb, 'package.json'), '{"private":true}');
-    fs.writeFileSync(path.join(autoDist, 'index.html'), '<title>Auto Located Console</title>');
-    const autoPort = PORT + 1;
-    const inherited = { ...process.env };
-    delete inherited.AWAKEN_WEB_DIST;
-    server = spawn(bin, ['start'], {
-      cwd: autoRoot,
-      env: {
-        ...inherited,
-        AWAKEN_HTTP_ADDR: `127.0.0.1:${autoPort}`,
-        AWAKEN_LOCAL_WORKSPACE_ID: `workspace_console_auto_${process.pid}`,
-      },
-      stdio: ['ignore', 'inherit', 'inherit'],
-    });
-    await waitForPort(autoPort);
-    response = await fetch(`http://127.0.0.1:${autoPort}/w/default/overview`);
-    assert.equal(response.status, 200);
-    assert.match(await response.text(), /Auto Located Console/);
   } finally {
     await stop();
     fs.rmSync(temp, { recursive: true, force: true });

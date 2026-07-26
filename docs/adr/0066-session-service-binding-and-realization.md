@@ -551,6 +551,14 @@ Runtime Host implements the port by adapting the private existing `McpRelay`,
 refresh. A process-local MCP runtime is only a projection of durable active
 attachments and never a second desired-state registry.
 
+For an authenticated ACP attachment, `stage_mcp_attachment` is the only route
+creation boundary. Publication may expose or renew that exact staged route and
+drain may revoke it; constructing or rebuilding a Session runtime is a
+read-only projection step and must neither start the relay nor synthesize a
+missing route. After process loss, the durable realization recovery protocol
+must replay the same exact stage and publish phases before Runtime construction.
+This prevents runtime reads from becoming a hidden second realization path.
+
 Every relay route, Runtime descriptor, tool call, receipt, and drain request
 carries `(session_id, attachment_id, generation)`. Replacement receives a new
 route identity; an old route never starts using a new generation's credential.

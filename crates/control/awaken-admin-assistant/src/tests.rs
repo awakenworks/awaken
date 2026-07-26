@@ -391,7 +391,7 @@ async fn draft_agent_round_trips_mcp_skills_multiagent_and_metadata() {
             serde_json::json!({
                 "id": "full",
                 "instructions": "do it all",
-                "mcp_servers": [{ "id": "github" }],
+                "mcp_servers": [{ "id": "github", "url": "https://mcp.example" }],
                 "skills": [{ "id": "greet" }],
                 "multiagent": { "type": "coordinator", "agents": ["a", "b"] },
                 "metadata": { "team": "platform", "tier": "gold" }
@@ -406,7 +406,7 @@ async fn draft_agent_round_trips_mcp_skills_multiagent_and_metadata() {
         vec![
             awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
                 name: "github".into(),
-                url: String::new(),
+                url: "https://mcp.example".into(),
                 credential: None,
             }
         ]

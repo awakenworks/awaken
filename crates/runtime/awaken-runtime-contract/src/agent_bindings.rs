@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 /// One direct HTTP MCP server inherited by Sessions of the published Agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentMcpServerBinding {
+    #[serde(alias = "id")]
     pub name: String,
     pub url: String,
     /// Exact secret-free credential revision frozen into the publication.
