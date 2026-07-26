@@ -2,6 +2,69 @@
 
 use serde_json::{Value, json};
 
+/// Normalize the v1 ProtoJSON `Part` representation at the version ACL. The
+/// authoritative v0.3 DTO remains a strict `kind`-tagged union; legacy fields
+/// never enter that type directly.
+pub(crate) fn normalize_send_params(mut value: Value) -> Result<Value, String> {
+    let message = value
+        .get_mut("message")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| "message must be an object".to_string())?;
+    message
+        .entry("kind".to_string())
+        .or_insert_with(|| json!("message"));
+    if let Some(role) = message.get_mut("role") {
+        match role.as_str() {
+            Some("ROLE_USER") => *role = json!("user"),
+            Some("ROLE_AGENT") => *role = json!("agent"),
+            _ => {}
+        }
+    }
+    let parts = message
+        .get_mut("parts")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "message.parts must be an array".to_string())?;
+    for (index, part) in parts.iter_mut().enumerate() {
+        let object = part
+            .as_object_mut()
+            .ok_or_else(|| format!("message.parts[{index}] must be an object"))?;
+        if object.contains_key("kind") {
+            continue;
+        }
+        let metadata = object.remove("metadata");
+        let normalized = if let Some(text) = object.remove("text") {
+            json!({"kind":"text", "text":text})
+        } else if let Some(data) = object.remove("data") {
+            json!({"kind":"data", "data":data})
+        } else if let Some(bytes) = object.remove("raw") {
+            let mut file = json!({"bytes":bytes});
+            if let Some(mime) = object.remove("mediaType") {
+                file["mimeType"] = mime;
+            }
+            if let Some(name) = object.remove("filename") {
+                file["name"] = name;
+            }
+            json!({"kind":"file", "file":file})
+        } else if let Some(uri) = object.remove("url") {
+            let mut file = json!({"uri":uri});
+            if let Some(mime) = object.remove("mediaType") {
+                file["mimeType"] = mime;
+            }
+            if let Some(name) = object.remove("filename") {
+                file["name"] = name;
+            }
+            json!({"kind":"file", "file":file})
+        } else {
+            return Err(format!("message.parts[{index}] has no supported payload"));
+        };
+        *part = normalized;
+        if let Some(metadata) = metadata {
+            part["metadata"] = metadata;
+        }
+    }
+    Ok(value)
+}
+
 use crate::router::JSONRPC_PATH;
 use crate::types::{
     Artifact, AuthenticationInfo, Part, PushNotificationConfig, StreamResponse, Task,
@@ -88,38 +151,39 @@ pub(crate) fn push_value(
 }
 
 pub(crate) fn stream_value(response: &StreamResponse) -> Value {
-    if let Some(task) = &response.task {
-        json!({ "task": task_value(task) })
-    } else if let Some(message) = &response.message {
-        json!({ "message": message_value(message) })
-    } else if let Some(update) = &response.status_update {
-        let mut event = json!({
-            "taskId": update.task_id,
-            "contextId": update.context_id,
-            "status": status_value(&update.status),
-        });
-        if let Some(metadata) = &update.metadata {
-            event["metadata"] = metadata.clone();
+    match response {
+        StreamResponse::Task(task) => json!({ "task": task_value(task) }),
+        StreamResponse::Message(message) => json!({ "message": message_value(message) }),
+        StreamResponse::StatusUpdate(update) => {
+            let mut event = json!({
+                "taskId": update.task_id,
+                "contextId": update.context_id,
+                "status": status_value(&update.status),
+            });
+            if let Some(metadata) = &update.metadata {
+                event["metadata"] =
+                    serde_json::to_value(metadata).expect("A2A metadata serializes");
+            }
+            json!({ "statusUpdate": event })
         }
-        json!({ "statusUpdate": event })
-    } else if let Some(update) = &response.artifact_update {
-        let mut event = json!({
-            "taskId": update.task_id,
-            "contextId": update.context_id,
-            "artifact": artifact_value(&update.artifact),
-        });
-        if update.append == Some(true) {
-            event["append"] = Value::Bool(true);
+        StreamResponse::ArtifactUpdate(update) => {
+            let mut event = json!({
+                "taskId": update.task_id,
+                "contextId": update.context_id,
+                "artifact": artifact_value(&update.artifact),
+            });
+            if update.append == Some(true) {
+                event["append"] = Value::Bool(true);
+            }
+            if update.last_chunk == Some(true) {
+                event["lastChunk"] = Value::Bool(true);
+            }
+            if let Some(metadata) = &update.metadata {
+                event["metadata"] =
+                    serde_json::to_value(metadata).expect("A2A metadata serializes");
+            }
+            json!({ "artifactUpdate": event })
         }
-        if update.last_chunk == Some(true) {
-            event["lastChunk"] = Value::Bool(true);
-        }
-        if let Some(metadata) = &update.metadata {
-            event["metadata"] = metadata.clone();
-        }
-        json!({ "artifactUpdate": event })
-    } else {
-        Value::Null
     }
 }
 
@@ -179,31 +243,29 @@ fn message_value(message: &crate::types::Message) -> Value {
 }
 
 fn part_value(part: &Part) -> Value {
-    let mut value = if part.kind.as_deref() == Some("data") {
-        part.data
-            .clone()
-            .map(|data| json!({ "data": data, "mediaType": "application/json" }))
-            .unwrap_or(Value::Null)
-    } else if let Some(text) = &part.text {
-        json!({ "text": text, "mediaType": "text/plain" })
-    } else if let Some(file) = &part.file {
-        let mut file_value = if let Some(bytes) = &file.bytes {
-            json!({ "raw": bytes })
-        } else {
-            json!({ "url": file.uri })
-        };
-        if let Some(media_type) = &file.mime_type {
-            file_value["mediaType"] = Value::String(media_type.clone());
+    let mut value = match part {
+        Part::Data { data, .. } => json!({ "data": data, "mediaType": "application/json" }),
+        Part::Text { text, .. } => json!({ "text": text, "mediaType": "text/plain" }),
+        Part::File { file, .. } => {
+            let (mut value, mime_type, name) = match file {
+                crate::types::FilePart::Bytes(file) => {
+                    (json!({ "raw": file.bytes }), &file.mime_type, &file.name)
+                }
+                crate::types::FilePart::Uri(file) => {
+                    (json!({ "url": file.uri }), &file.mime_type, &file.name)
+                }
+            };
+            if let Some(media_type) = mime_type {
+                value["mediaType"] = Value::String(media_type.clone());
+            }
+            if let Some(name) = name {
+                value["filename"] = Value::String(name.clone());
+            }
+            value
         }
-        if let Some(name) = &file.name {
-            file_value["filename"] = Value::String(name.clone());
-        }
-        file_value
-    } else {
-        Value::Null
     };
-    if let Some(metadata) = &part.metadata {
-        value["metadata"] = metadata.clone();
+    if let Some(metadata) = part.metadata() {
+        value["metadata"] = serde_json::to_value(metadata).expect("A2A metadata serializes");
     }
     value
 }
@@ -232,12 +294,9 @@ mod tests {
         // | yes          | yes              | exact data + metadata + mediaType  |
         // | no           | either           | null (invalid internal data part)  |
         let data = json!({"nested":[1, true, null], "literal":"{not encoded}"});
-        let metadata = json!({"trace":"t-1"});
-        let part = Part {
-            kind: Some("data".into()),
-            text: None,
-            data: Some(data.clone()),
-            file: None,
+        let metadata = std::collections::BTreeMap::from([("trace".into(), json!("t-1"))]);
+        let part = Part::Data {
+            data: serde_json::from_value(data.clone()).unwrap(),
             metadata: Some(metadata.clone()),
         };
 
