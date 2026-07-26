@@ -2,7 +2,7 @@
 //!
 //! An **anti-corruption layer** over an opaque agent's protocol stream. It reads
 //! the agent's events off an [`AgentChannel`], projects them into neutral
-//! [`AgentEvent`]s, and commits them through the [`RunFactAppender`] binding seam —
+//! [`AcpProjectedEvent`]s, and commits them through the [`RunFactAppender`] binding seam —
 //! the sole path by which projected truth reaches the runtime store (G13: the
 //! bridge appends, it never owns the commit). The [`Supervisor`] drives one turn
 //! and reaps the process on cancel, mapping the outcome to a [`TerminationReason`].
@@ -93,11 +93,12 @@ impl Default for SupervisePolicy {
     }
 }
 
-/// A neutral, projected agent event. ACP `session/update` variants collapse onto
-/// this small set; the store never sees ACP vocabulary.
+/// A transient ACP projection event. ACP `session/update` variants collapse onto
+/// this small staging set before the executor produces neutral runtime messages;
+/// this type is neither the domain event model nor a persistence contract.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum AgentEvent {
+pub enum AcpProjectedEvent {
     /// Assistant text.
     Message { text: String },
     /// The agent surfaced a tool call to us (the inbound-tool path). `id` is the
@@ -166,7 +167,7 @@ pub enum AppendError {
 #[async_trait]
 pub trait RunFactAppender: Send {
     /// Commit one projected event at `seq` (strictly increasing per run).
-    async fn append(&mut self, seq: u64, event: &AgentEvent) -> Result<(), AppendError>;
+    async fn append(&mut self, seq: u64, event: &AcpProjectedEvent) -> Result<(), AppendError>;
 }
 
 /// A neutral projection of one agent→client permission request: the tool the
@@ -372,7 +373,7 @@ pub enum AcpError {
     /// Channel read/write failed.
     #[error("agent channel io: {0}")]
     Io(String),
-    /// A frame from the agent was not valid JSON / not an `AgentEvent`.
+    /// A frame from the agent was not valid JSON / not an `AcpProjectedEvent`.
     #[error("malformed agent frame: {0}")]
     Frame(String),
     /// The fact appender rejected a projected event.
@@ -489,11 +490,11 @@ impl AcpBridge {
             if trimmed.is_empty() {
                 continue;
             }
-            let event: AgentEvent =
+            let event: AcpProjectedEvent =
                 serde_json::from_str(trimmed).map_err(|e| AcpError::Frame(e.to_string()))?;
             seq += 1;
             sink.append(seq, &event).await?;
-            if let AgentEvent::TurnEnd { reason } = event {
+            if let AcpProjectedEvent::TurnEnd { reason } = event {
                 return Ok(reason);
             }
         }
@@ -615,13 +616,13 @@ mod tests {
     #[derive(Default)]
     struct RecordingSink {
         last: u64,
-        events: Vec<(u64, AgentEvent)>,
+        events: Vec<(u64, AcpProjectedEvent)>,
         fail_at: Option<u64>,
     }
 
     #[async_trait]
     impl RunFactAppender for RecordingSink {
-        async fn append(&mut self, seq: u64, event: &AgentEvent) -> Result<(), AppendError> {
+        async fn append(&mut self, seq: u64, event: &AcpProjectedEvent) -> Result<(), AppendError> {
             if let Some(f) = self.fail_at
                 && seq == f
             {
@@ -701,8 +702,14 @@ mod tests {
         assert_eq!(sink.events.len(), 3);
         assert_eq!(sink.events[0].0, 1);
         assert_eq!(sink.events[2].0, 3);
-        assert!(matches!(sink.events[0].1, AgentEvent::Message { .. }));
-        assert!(matches!(sink.events[1].1, AgentEvent::ToolCall { .. }));
+        assert!(matches!(
+            sink.events[0].1,
+            AcpProjectedEvent::Message { .. }
+        ));
+        assert!(matches!(
+            sink.events[1].1,
+            AcpProjectedEvent::ToolCall { .. }
+        ));
         agent.await.unwrap();
     }
 
@@ -880,13 +887,13 @@ mod tests {
         assert_eq!(back.detail.as_deref(), Some("spawn failed"));
     }
 
-    // ── AgentEvent wire contract ─────────────────────────────────────────────
+    // ── AcpProjectedEvent wire contract ─────────────────────────────────────────────
     //
-    // AgentEvent is the projection contract the newline codec (and the store)
+    // AcpProjectedEvent is the projection contract the newline codec (and the store)
     // depend on: every variant must round-trip, its `#[serde(default)]` fields must
     // tolerate an agent that omits them, and an unknown tag must be a clean error.
 
-    fn round_trip(ev: &AgentEvent) -> AgentEvent {
+    fn round_trip(ev: &AcpProjectedEvent) -> AcpProjectedEvent {
         let json = serde_json::to_string(ev).expect("serializes");
         serde_json::from_str(&json).expect("deserializes")
     }
@@ -894,24 +901,24 @@ mod tests {
     #[tokio::test]
     async fn every_agent_event_variant_round_trips() {
         let events = [
-            AgentEvent::Message { text: "hi".into() },
-            AgentEvent::ToolCall {
+            AcpProjectedEvent::Message { text: "hi".into() },
+            AcpProjectedEvent::ToolCall {
                 id: "call_1".into(),
                 name: "read_file".into(),
                 input: serde_json::json!({ "path": "a" }),
             },
-            AgentEvent::ToolResult {
+            AcpProjectedEvent::ToolResult {
                 id: "call_1".into(),
                 content: "ok".into(),
                 is_error: true,
             },
-            AgentEvent::Usage {
+            AcpProjectedEvent::Usage {
                 prompt_tokens: 10,
                 completion_tokens: 20,
                 cache_read_tokens: 3,
                 cache_creation_tokens: 4,
             },
-            AgentEvent::TurnEnd {
+            AcpProjectedEvent::TurnEnd {
                 reason: TerminationReason::NaturalEnd,
             },
         ];
@@ -923,33 +930,34 @@ mod tests {
     #[tokio::test]
     async fn optional_fields_default_when_the_agent_omits_them() {
         // A tool_call with neither id nor input.
-        let tc: AgentEvent =
+        let tc: AcpProjectedEvent =
             serde_json::from_str(r#"{"type":"tool_call","name":"ls"}"#).expect("tool_call parses");
         assert_eq!(
             tc,
-            AgentEvent::ToolCall {
+            AcpProjectedEvent::ToolCall {
                 id: String::new(),
                 name: "ls".into(),
                 input: serde_json::Value::Null,
             }
         );
         // A tool_result with neither id nor is_error.
-        let tr: AgentEvent = serde_json::from_str(r#"{"type":"tool_result","content":"done"}"#)
-            .expect("tool_result parses");
+        let tr: AcpProjectedEvent =
+            serde_json::from_str(r#"{"type":"tool_result","content":"done"}"#)
+                .expect("tool_result parses");
         assert_eq!(
             tr,
-            AgentEvent::ToolResult {
+            AcpProjectedEvent::ToolResult {
                 id: String::new(),
                 content: "done".into(),
                 is_error: false,
             }
         );
         // A usage frame reporting only some token axes; the rest default to 0.
-        let us: AgentEvent = serde_json::from_str(r#"{"type":"usage","prompt_tokens":7}"#)
+        let us: AcpProjectedEvent = serde_json::from_str(r#"{"type":"usage","prompt_tokens":7}"#)
             .expect("partial usage parses");
         assert_eq!(
             us,
-            AgentEvent::Usage {
+            AcpProjectedEvent::Usage {
                 prompt_tokens: 7,
                 completion_tokens: 0,
                 cache_read_tokens: 0,
@@ -960,7 +968,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unknown_event_tag_is_a_clean_deserialize_error() {
-        let err = serde_json::from_str::<AgentEvent>(r#"{"type":"nope","text":"x"}"#)
+        let err = serde_json::from_str::<AcpProjectedEvent>(r#"{"type":"nope","text":"x"}"#)
             .expect_err("an unknown tag must not parse");
         // The newline codec maps exactly this serde error into AcpError::Frame.
         assert!(err.to_string().contains("nope") || err.is_data());

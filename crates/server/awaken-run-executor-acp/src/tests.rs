@@ -1324,6 +1324,17 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
 async fn a_tool_call_and_its_result_commit_as_neutral_messages() {
     use awaken_agent_contract::agent::content::ContentBlock;
 
+    // Causal graph:
+    // ACP frames -> AcpProjectedEvent staging -> executor ACL -> committed Message.
+    //
+    // Decision table:
+    // | projected input | committed role      | committed block | correlation |
+    // | tool_call       | Assistant           | ToolUse         | ACP id       |
+    // | tool_result     | Tool                | ToolResult       | same ACP id  |
+    // | turn_end        | no extra message    | —                | —            |
+    // This is intentionally a behavior test: success requires a terminal run and
+    // an externally readable neutral transcript, not merely wire deserialization.
+
     // The external agent surfaces a tool call, then reports it completed with output.
     let e = exec(vec![
         r#"{"type":"tool_call","id":"c1","name":"read","input":{"path":"a.txt"}}"#.into(),
