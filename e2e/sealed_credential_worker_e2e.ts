@@ -9,6 +9,17 @@
 // | S3 | F(expired) | - | - | 0 |
 // | S4 | F(recipient) | - | - | 0 |
 // | S5 | T | T | T | 1 + committed reply |
+//
+// Worker-control transport cause graph:
+// C6 ambient egress proxy configured -> default internal client bypasses proxy
+// -> registration/claim/commit reach the configured Control node directly.
+// An explicitly injected HTTP client remains the opt-in proxy/mTLS path.
+//
+// | Rule | Ambient proxy | Client source | Control path |
+// |---|---|---|---|
+// | T1 | F | default | direct |
+// | T2 | T(poisoned in this test) | default | direct |
+// | T3 | T/F | explicit | caller-defined |
 
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -143,7 +154,10 @@ async function main() {
     const providerRef = 'anthropic@1';
     const endpoint = {
       adapter_kind: 'anthropic',
-      base_url: `${upstream.url}/v1/`,
+      api_dialect: 'anthropic_messages',
+      // Keep provider egress independently bypassed while the Control host below
+      // is deliberately exposed to a poisoned ambient proxy.
+      base_url: `${upstream.url.replace('127.0.0.1', 'localhost')}/v1/`,
       upstream_model: 'sealed-model',
     };
     const access = (recipient: string, expiry: number, fingerprint: string) => ({
@@ -222,14 +236,31 @@ async function main() {
         AWAKEN_TEST_CREDENTIAL_REVISION: String(CREDENTIAL_REVISION),
         AWAKEN_TEST_PAYLOAD_FINGERPRINT: PAYLOAD_FINGERPRINT,
         AWAKEN_TEST_PROVIDER_SECRET: PROVIDER_SECRET,
+        HTTP_PROXY: 'http://127.0.0.1:1',
+        http_proxy: 'http://127.0.0.1:1',
+        ALL_PROXY: 'http://127.0.0.1:1',
+        all_proxy: 'http://127.0.0.1:1',
+        NO_PROXY: 'localhost',
+        no_proxy: 'localhost',
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     worker.stdout.on('data', (chunk) => (workerOutput += chunk.toString()));
     worker.stderr.on('data', (chunk) => (workerOutput += chunk.toString()));
     await waitForPort(ADMIN_PORT);
-    const messages = await waitForReply().catch((error) => {
-      throw new Error(`${error}\nworker output:\n${workerOutput}`);
+    const messages = await waitForReply().catch(async (error) => {
+      const committed = await request('GET', `/v1/durable/threads/${THREAD}/messages`);
+      const metrics = await fetch(`http://127.0.0.1:${ADMIN_PORT}/metrics`)
+        .then((response) => response.text())
+        .catch((metricsError) => `unavailable: ${metricsError}`);
+      const relevantMetrics = metrics.split('\n').filter((line) =>
+        line.includes('_count{') || line.includes('_total{'),
+      ).join('\n');
+      throw new Error(
+        `${error}\ncommitted messages: ${committed.text}`
+        + `\nprovider requests: ${JSON.stringify(upstream.requests)}`
+        + `\nworker metrics:\n${relevantMetrics}\nworker output:\n${workerOutput}`,
+      );
     });
     assert.equal(
       messages.filter((message: any) => String(message.text ?? '').includes('FAKE:seed')).length,
