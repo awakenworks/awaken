@@ -14,6 +14,7 @@
 mod agent_config;
 mod application_contribution;
 mod baseline;
+mod defaults;
 pub mod env_registry;
 mod lifecycle;
 mod mcp_attachment;
@@ -32,7 +33,9 @@ pub mod resource_plane {
     pub use awaken_resource_contract::*;
 }
 
-pub use agent_config::{AgentConfigSource, AgentConfigView, AgentMcpServerView};
+pub use agent_config::{
+    AgentConfigSource, AgentConfigView, AgentEnvironmentBindingView, AgentMcpServerView,
+};
 pub use application_contribution::{
     ApplicationSessionContribution, ApplicationSessionContributionFailure,
     ApplicationSessionContributionPort, ApplicationSessionContributionReceipt,
@@ -47,6 +50,7 @@ pub use baseline::{
     SessionCreationFinalizeError, SessionCreationIntent, SessionMcpAuthoringContext,
     SessionNetworkPolicy,
 };
+pub use defaults::{CompiledSessionDefaults, SessionDefaultsCompiler};
 pub use lifecycle::{SessionLifecycleFact, SessionLifecycleSink};
 pub use mcp_attachment::{
     McpAttachmentDraft, McpAttachmentError, McpAttachmentId, McpAttachmentOrigin,

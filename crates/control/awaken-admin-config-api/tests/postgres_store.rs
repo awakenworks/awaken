@@ -141,6 +141,7 @@ async fn postgres_admin_store_serves_every_port() {
     assert!(store.get_agent_inputs("ws", "agent-1").unwrap().is_none());
     let rc = AgentInputConfig {
         agent_id: "agent-1".into(),
+        environment: None,
         inputs: vec![InputBinding {
             binding_id: BindingId::from("memory"),
             target: InputResourceId::MemoryStore(MemoryStoreId::from("memstore-7")),

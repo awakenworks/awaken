@@ -166,6 +166,18 @@ impl EnvironmentState {
         })
     }
 
+    /// Resolve an Agent-published exact Environment revision. The registry never
+    /// substitutes its current revision when the binding is stale.
+    pub async fn snapshot_exact(
+        &self,
+        env_id: &str,
+        revision: u64,
+        runtime: Option<&str>,
+    ) -> Option<awaken_session_contract::EnvironmentSnapshot> {
+        let snapshot = self.snapshot(env_id, runtime).await?;
+        (snapshot.revision.0 == revision).then_some(snapshot)
+    }
+
     /// Create an environment named `name` with the official typed config union and
     /// seed its healthcheck work item — the same
     /// effect as `POST /v1/environments`, exposed so an in-process author (the admin
@@ -787,7 +799,31 @@ mod tests {
             )
             .await
             .expect("official cloud config");
-        assert!(state.snapshot(&id, None).await.is_some());
+        let exact = state.snapshot(&id, None).await.expect("snapshot");
+        assert!(
+            state
+                .snapshot_exact(&id, exact.revision.0, None)
+                .await
+                .is_some(),
+            "exact current revision"
+        );
+        state
+            .envs
+            .update(
+                &id,
+                EnvUpdate {
+                    name: Some("renamed".into()),
+                    ..Default::default()
+                },
+            )
+            .await;
+        assert!(
+            state
+                .snapshot_exact(&id, exact.revision.0, None)
+                .await
+                .is_none(),
+            "a stale binding never substitutes current"
+        );
 
         for (case, config) in [
             (

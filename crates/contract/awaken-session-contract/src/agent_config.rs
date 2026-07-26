@@ -29,6 +29,15 @@ pub struct AgentConfigView {
     /// Resources bound to the published Agent. The runtime mounts these at Session
     /// preparation; protocol projections expose the same effective inputs.
     pub resources: Vec<awaken_resource_contract::InputBinding>,
+    /// Exact Agent-default Environment binding. `None` means callers must supply
+    /// an Environment explicitly; it never means `env_local`.
+    pub environment: Option<AgentEnvironmentBindingView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentEnvironmentBindingView {
+    pub environment_id: String,
+    pub revision: u64,
 }
 
 /// A source of config-plane agent projections. A **port**: the host implements it
