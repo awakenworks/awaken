@@ -408,9 +408,8 @@ async fn resolve_candidates_over_http_lists_the_failover_order() {
         "PUT",
         "/v1/config/inference-profiles/prof",
         Some(json!({
-            "model_id": "primary",
-            "model_fallbacks": ["fallback"],
-            "credential_binding": { "type": "exact", "credential_source_id": cred },
+            "primary": { "target": { "model_id": "primary", "provider_id": "anthropic", "protocol_endpoint_id": "ep1" }, "credential_binding": { "type": "exact", "credential_source_id": cred } },
+            "fallbacks": [{ "target": { "model_id": "fallback", "provider_id": "anthropic", "protocol_endpoint_id": "ep1" }, "credential_binding": { "type": "exact", "credential_source_id": cred } }],
             "disabled_endpoint_ids": []
         })),
     )

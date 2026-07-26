@@ -193,3 +193,70 @@ impl AgentInputBindingRepository for InMemoryAgentInputBindingRepository {
         Ok(configs)
     }
 }
+
+#[cfg(test)]
+mod profile_tenancy_tests {
+    //! Cause graph: C1 same public profile id; C2 different trusted Workspaces;
+    //! C3 rows are written through the Workspace-key helper. E1 both values remain
+    //! independently readable; E2 a Workspace cannot observe the other's value.
+    //!
+    //! Decision table:
+    //! | Rule | C1 | C2 | C3 | Effect |
+    //! | T1   | Y  | Y  | Y  | E1+E2 |
+    //! | T2   | Y  | N  | Y  | ordinary overwrite |
+
+    use awaken_credential_vault::CredentialBinding;
+
+    use super::*;
+    use crate::{ModelTarget, ProfileCandidate, get_workspace_profile, put_workspace_profile};
+
+    fn profile(workspace: &str, model: &str) -> InferenceProfile {
+        InferenceProfile {
+            workspace_id: workspace.into(),
+            primary: ProfileCandidate {
+                target: ModelTarget::unqualified(model),
+                credential_binding: CredentialBinding::None,
+            },
+            fallbacks: Vec::new(),
+            disabled_endpoint_ids: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn t1_common_default_id_is_isolated_by_workspace() {
+        let store = InMemoryProfileStore::new();
+        put_workspace_profile(
+            &store,
+            "workspace-a",
+            "workspace-default",
+            profile("workspace-a", "a"),
+        )
+        .unwrap();
+        put_workspace_profile(
+            &store,
+            "workspace-b",
+            "workspace-default",
+            profile("workspace-b", "b"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            get_workspace_profile(&store, "workspace-a", "workspace-default")
+                .unwrap()
+                .unwrap()
+                .primary
+                .target
+                .model_id,
+            "a"
+        );
+        assert_eq!(
+            get_workspace_profile(&store, "workspace-b", "workspace-default")
+                .unwrap()
+                .unwrap()
+                .primary
+                .target
+                .model_id,
+            "b"
+        );
+    }
+}

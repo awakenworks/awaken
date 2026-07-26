@@ -28,13 +28,13 @@ export interface InputElement {
     binding_id:    string;
     instructions?: null | string;
     mount_path:    string;
-    target:        Target;
+    target:        InputTarget;
     [property: string]: unknown;
 }
 
 export type Access = "read_only" | "read_write";
 
-export interface Target {
+export interface InputTarget {
     id:   string;
     kind: TargetKind;
     [property: string]: unknown;
@@ -376,37 +376,23 @@ export interface EnvironmentProviderProposal {
 
 /**
  * An authored "how to run this model" unit (ADR-0043 `InferenceProfile` /
- * oversight-next `ProviderIdentity`): it names the model, the credential binding
- * (vault-backed, never inline), and any endpoints the operator has toggled off.
- * The resolver reads it — it is never flowed into the runtime.
+ * oversight-next `ProviderIdentity`): it names an exact primary and ordered
+ * fallback candidates, each with a vault-backed (never inline) credential
+ * binding, plus endpoints the operator has toggled off. The resolver reads it —
+ * it is never flowed into the runtime.
  */
 export interface InferenceProfile {
-    /**
-     * The credential-identity axis. `CredentialBinding` is *already* an
-     * [`AxisBinding`] over provider identities — `Exact` is a pin, and
-     * `OneOfCredentialPool` is a pool with failover — so the identity axis needs
-     * no new type here; each resolved model reuses this binding.
-     */
-    credential_binding:     CredentialBindingObject;
     disabled_endpoint_ids?: string[];
     /**
-     * Additional models the resolver falls over to, in order, after `model_id`.
-     * Empty (the default) means a single-model profile — unchanged behavior, and
-     * older stored rows load without the field. Together with `model_id` these
-     * form the [`AxisBinding`] the profile exposes as [`model_axis`].
-     *
-     * [`model_axis`]: InferenceProfile::model_axis
+     * Explicit alternates, tried in authored order. The resolver never appends an
+     * implicit Cloud, BYOK, or local fallback.
      */
-    model_fallbacks?: string[];
+    fallbacks?: PrimaryElement[];
     /**
-     * The pinned / primary model — tried first. Kept as a bare field for wire and
-     * storage compatibility; the ordered model axis is [`model_axis`] (this plus
-     * [`model_fallbacks`]).
-     *
-     * [`model_axis`]: InferenceProfile::model_axis
-     * [`model_fallbacks`]: InferenceProfile::model_fallbacks
+     * Exact preferred offering. Provider and endpoint qualifiers prevent a model
+     * id shared by BYOK and Cloud sources from becoming ambiguous at runtime.
      */
-    model_id: string;
+    primary: PrimaryElement;
     /**
      * Owning workspace, stamped by the trusted configuration edge. Empty only
      * for legacy rows, which scoped APIs treat as unowned.
@@ -416,11 +402,20 @@ export interface InferenceProfile {
 }
 
 /**
- * The credential-identity axis. `CredentialBinding` is *already* an
- * [`AxisBinding`] over provider identities — `Exact` is a pin, and
- * `OneOfCredentialPool` is a pool with failover — so the identity axis needs
- * no new type here; each resolved model reuses this binding.
+ * One explicit step in a profile's failover chain. Binding credentials per
+ * target allows a BYOK primary and Cloud fallback (or the reverse) without ever
+ * guessing which identity may authenticate which provider.
  *
+ * Exact preferred offering. Provider and endpoint qualifiers prevent a model
+ * id shared by BYOK and Cloud sources from becoming ambiguous at runtime.
+ */
+export interface PrimaryElement {
+    credential_binding: CredentialBindingObject;
+    target:             PrimaryTarget;
+    [property: string]: unknown;
+}
+
+/**
  * The "which credential" axis (oversight-next / awaken-management-contract).
  *
  * No credential is needed.
@@ -434,6 +429,17 @@ export interface CredentialBindingObject {
     type:                  Type;
     credential_source_id?: string;
     credential_pool_id?:   string;
+    [property: string]: unknown;
+}
+
+/**
+ * Stable, secret-free identity used to select one catalog offering. `model_id`
+ * alone remains accepted for compatibility only when it resolves uniquely.
+ */
+export interface PrimaryTarget {
+    model_id:              string;
+    protocol_endpoint_id?: null | string;
+    provider_id?:          null | string;
     [property: string]: unknown;
 }
 

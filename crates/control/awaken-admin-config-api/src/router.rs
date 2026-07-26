@@ -8,7 +8,7 @@
 //! speak RFC-9457 problem details ([`ApiError`]); a credential's secret is
 //! write-only (secret-in) and never echoed on a response (secret-free-out).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use awaken_agent_contract::RedactedString;
@@ -16,8 +16,8 @@ use awaken_api_contract::{ApiError, PROBLEM_JSON_CONTENT_TYPE, REQUEST_ID_HEADER
 use awaken_config_resolver::{
     AgentInputBindingRepository, AgentInputConfig, ConfigRepositoryError, InferenceProfile,
     InferenceProfileStore, ModelTarget, ResolveError, ResolvedInference, SourceLookup,
-    cooldown_deadline, resolve_inference, resolve_inference_target, resolve_profile,
-    resolve_profile_candidates,
+    cooldown_deadline, get_workspace_profile, put_workspace_profile, resolve_inference,
+    resolve_inference_target, resolve_profile, resolve_profile_candidates,
 };
 use awaken_credential_vault::repo::{CredentialRepo, enter_credential};
 use awaken_credential_vault::{
@@ -1123,13 +1123,15 @@ async fn resolve_profile_candidates_route(
     Json(request): Json<ResolveProfileRequest>,
 ) -> Result<Json<ResolvedCandidatesView>, Problem> {
     let rid = req_id(&headers);
-    let profile = state
-        .profiles
-        .get(&id)
-        .map_err(|error| config_repository_problem(&error, &rid))?
-        .ok_or_else(|| profile_missing(&id, &rid))?;
     let scoped_workspace = scope.map(|Extension(scope)| scope.0);
     let workspace = scoped_workspace.clone().unwrap_or(request.workspace_id);
+    let profile = if scoped_workspace.is_some() {
+        get_workspace_profile(state.profiles.as_ref(), &workspace, &id)
+    } else {
+        state.profiles.get(&id)
+    }
+    .map_err(|error| config_repository_problem(&error, &rid))?
+    .ok_or_else(|| profile_missing(&id, &rid))?;
     if scoped_workspace.is_some() && profile.workspace_id != workspace {
         return Err(profile_missing(&id, &rid));
     }
@@ -1322,22 +1324,62 @@ async fn put_profile(
     Json(mut profile): Json<InferenceProfile>,
 ) -> Result<Json<InferenceProfile>, Problem> {
     let rid = req_id(&headers);
-    if let Some(Extension(scope)) = scope {
-        if state
-            .profiles
-            .get(&id)
-            .map_err(|error| config_repository_problem(&error, &rid))?
-            .is_some_and(|current| current.workspace_id != scope.0)
-        {
-            return Err(profile_missing(&id, &rid));
-        }
-        profile.workspace_id = scope.0;
+    let scoped_workspace = scope.map(|Extension(scope)| scope.0);
+    if let Some(workspace) = &scoped_workspace {
+        profile.workspace_id.clone_from(workspace);
     }
-    state
-        .profiles
-        .put(id, profile.clone())
-        .map_err(|error| config_repository_problem(&error, &rid))?;
+    validate_profile(&profile).map_err(|detail| {
+        Problem(ApiError::new(
+            422,
+            "invalid_inference_profile",
+            "Invalid inference profile",
+            detail,
+            &rid,
+        ))
+    })?;
+    if let Some(workspace) = &scoped_workspace {
+        put_workspace_profile(state.profiles.as_ref(), workspace, &id, profile.clone())
+    } else {
+        state.profiles.put(id, profile.clone())
+    }
+    .map_err(|error| config_repository_problem(&error, &rid))?;
     Ok(Json(profile))
+}
+
+fn validate_profile(profile: &InferenceProfile) -> Result<(), String> {
+    const MAX_FALLBACKS: usize = 8;
+    if profile.primary.target.model_id.trim().is_empty() {
+        return Err("primary.model_id must not be empty".into());
+    }
+    if profile.fallbacks.len() > MAX_FALLBACKS {
+        return Err(format!(
+            "at most {MAX_FALLBACKS} fallback targets are allowed"
+        ));
+    }
+    let key = |target: &ModelTarget| {
+        (
+            target.model_id.trim().to_owned(),
+            target.provider_id.as_deref().unwrap_or_default().to_owned(),
+            target
+                .protocol_endpoint_id
+                .as_deref()
+                .unwrap_or_default()
+                .to_owned(),
+        )
+    };
+    let mut seen = HashSet::from([key(&profile.primary.target)]);
+    for (index, candidate) in profile.fallbacks.iter().enumerate() {
+        let target = &candidate.target;
+        if target.model_id.trim().is_empty() {
+            return Err(format!("fallbacks[{index}].model_id must not be empty"));
+        }
+        if !seen.insert(key(target)) {
+            return Err(format!(
+                "fallbacks[{index}] duplicates an earlier model target"
+            ));
+        }
+    }
+    Ok(())
 }
 
 async fn get_profile(
@@ -1346,14 +1388,14 @@ async fn get_profile(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<InferenceProfile>, Problem> {
-    let profile = state
-        .profiles
-        .get(&id)
-        .map_err(|error| config_repository_problem(&error, &req_id(&headers)))?
-        .ok_or_else(|| profile_missing(&id, &req_id(&headers)))?;
-    if scope.is_some_and(|Extension(scope)| profile.workspace_id != scope.0) {
-        return Err(profile_missing(&id, &req_id(&headers)));
+    let workspace = scope.map(|Extension(scope)| scope.0);
+    let profile = if let Some(workspace) = &workspace {
+        get_workspace_profile(state.profiles.as_ref(), workspace, &id)
+    } else {
+        state.profiles.get(&id)
     }
+    .map_err(|error| config_repository_problem(&error, &req_id(&headers)))?
+    .ok_or_else(|| profile_missing(&id, &req_id(&headers)))?;
     Ok(Json(profile))
 }
 
@@ -1374,13 +1416,15 @@ async fn resolve_profile_route(
     Json(request): Json<ResolveProfileRequest>,
 ) -> Result<Json<ResolvedInferenceView>, Problem> {
     let rid = req_id(&headers);
-    let profile = state
-        .profiles
-        .get(&id)
-        .map_err(|error| config_repository_problem(&error, &rid))?
-        .ok_or_else(|| profile_missing(&id, &rid))?;
     let scoped_workspace = scope.map(|Extension(scope)| scope.0);
     let workspace = scoped_workspace.clone().unwrap_or(request.workspace_id);
+    let profile = if scoped_workspace.is_some() {
+        get_workspace_profile(state.profiles.as_ref(), &workspace, &id)
+    } else {
+        state.profiles.get(&id)
+    }
+    .map_err(|error| config_repository_problem(&error, &rid))?
+    .ok_or_else(|| profile_missing(&id, &rid))?;
     if scoped_workspace.is_some() && profile.workspace_id != workspace {
         return Err(profile_missing(&id, &rid));
     }

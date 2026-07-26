@@ -34,7 +34,8 @@ pub use reference_stores::{
 };
 pub use stores::{
     AgentInputBindingRepository, AgentInputRepositoryError, ConfigRepositoryError,
-    InferenceProfileStore, WebhookOutboxEvent, WebhookStore, validate_agent_input_revision,
+    InferenceProfileStore, WebhookOutboxEvent, WebhookStore, get_workspace_profile,
+    put_workspace_profile, validate_agent_input_revision, workspace_profile_key,
 };
 pub use telemetry::{RedactionMode, TelemetryCeiling};
 
@@ -91,7 +92,9 @@ pub struct ResolvedInference {
 pub enum ResolveError {
     #[error("no offering for model `{0}` (model reference did not resolve — fail closed)")]
     ModelUnresolved(String),
-    #[error("model `{model_id}` matches multiple offerings ({candidates:?}); select a provider and endpoint")]
+    #[error(
+        "model `{model_id}` matches multiple offerings ({candidates:?}); select a provider and endpoint"
+    )]
     ModelAmbiguous {
         model_id: String,
         candidates: Vec<String>,
@@ -209,10 +212,7 @@ pub async fn resolve_inference_target(
                 candidates: candidates
                     .iter()
                     .map(|offering| {
-                        format!(
-                            "{}/{}",
-                            offering.provider_id, offering.protocol_endpoint_id
-                        )
+                        format!("{}/{}", offering.provider_id, offering.protocol_endpoint_id)
                     })
                     .collect(),
             });
@@ -260,52 +260,130 @@ pub async fn resolve_inference_target(
 }
 
 /// An authored "how to run this model" unit (ADR-0043 `InferenceProfile` /
-/// oversight-next `ProviderIdentity`): it names the model, the credential binding
-/// (vault-backed, never inline), and any endpoints the operator has toggled off.
-/// The resolver reads it — it is never flowed into the runtime.
+/// oversight-next `ProviderIdentity`): it names an exact primary and ordered
+/// fallback candidates, each with a vault-backed (never inline) credential
+/// binding, plus endpoints the operator has toggled off. The resolver reads it —
+/// it is never flowed into the runtime.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(!try_from))]
+#[serde(try_from = "InferenceProfileWire")]
 pub struct InferenceProfile {
     /// Owning workspace, stamped by the trusted configuration edge. Empty only
     /// for legacy rows, which scoped APIs treat as unowned.
     #[serde(default)]
     pub workspace_id: String,
-    /// The pinned / primary model — tried first. Kept as a bare field for wire and
-    /// storage compatibility; the ordered model axis is [`model_axis`] (this plus
-    /// [`model_fallbacks`]).
-    ///
-    /// [`model_axis`]: InferenceProfile::model_axis
-    /// [`model_fallbacks`]: InferenceProfile::model_fallbacks
-    pub model_id: String,
-    /// Additional models the resolver falls over to, in order, after `model_id`.
-    /// Empty (the default) means a single-model profile — unchanged behavior, and
-    /// older stored rows load without the field. Together with `model_id` these
-    /// form the [`AxisBinding`] the profile exposes as [`model_axis`].
-    ///
-    /// [`model_axis`]: InferenceProfile::model_axis
+    /// Exact preferred offering. Provider and endpoint qualifiers prevent a model
+    /// id shared by BYOK and Cloud sources from becoming ambiguous at runtime.
+    pub primary: ProfileCandidate,
+    /// Explicit alternates, tried in authored order. The resolver never appends an
+    /// implicit Cloud, BYOK, or local fallback.
     #[serde(default)]
-    pub model_fallbacks: Vec<String>,
-    /// The credential-identity axis. `CredentialBinding` is *already* an
-    /// [`AxisBinding`] over provider identities — `Exact` is a pin, and
-    /// `OneOfCredentialPool` is a pool with failover — so the identity axis needs
-    /// no new type here; each resolved model reuses this binding.
-    pub credential_binding: CredentialBinding,
+    pub fallbacks: Vec<ProfileCandidate>,
     #[serde(default)]
     pub disabled_endpoint_ids: Vec<String>,
 }
 
-impl InferenceProfile {
-    /// The model axis as an ordered [`AxisBinding`]: a lone `model_id` is a
-    /// [`Pin`](AxisBinding::Pin); `model_id` plus fallbacks is a
-    /// [`Pool`](AxisBinding::Pool) in try-order.
-    #[must_use]
-    pub fn model_axis(&self) -> AxisBinding<String> {
-        if self.model_fallbacks.is_empty() {
-            AxisBinding::Pin(self.model_id.clone())
+/// One explicit step in a profile's failover chain. Binding credentials per
+/// target allows a BYOK primary and Cloud fallback (or the reverse) without ever
+/// guessing which identity may authenticate which provider.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ProfileCandidate {
+    pub target: ModelTarget,
+    pub credential_binding: CredentialBinding,
+}
+
+/// Read compatibility for profile rows authored before structured model targets.
+/// New writes serialize only `primary` / `fallbacks`, keeping the public contract
+/// clear while allowing an in-place upgrade of existing JSON stores.
+#[derive(serde::Deserialize)]
+struct InferenceProfileWire {
+    #[serde(default)]
+    workspace_id: String,
+    #[serde(default)]
+    primary: Option<ProfileCandidateWire>,
+    #[serde(default)]
+    fallbacks: Vec<ProfileCandidateWire>,
+    #[serde(default)]
+    model_id: Option<String>,
+    #[serde(default)]
+    model_fallbacks: Vec<String>,
+    #[serde(default)]
+    credential_binding: Option<CredentialBinding>,
+    #[serde(default)]
+    disabled_endpoint_ids: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum ProfileCandidateWire {
+    Candidate(ProfileCandidate),
+    Target(ModelTarget),
+}
+
+impl ProfileCandidateWire {
+    fn into_candidate(self, legacy_binding: &CredentialBinding) -> ProfileCandidate {
+        match self {
+            Self::Candidate(candidate) => candidate,
+            Self::Target(target) => ProfileCandidate {
+                target,
+                credential_binding: legacy_binding.clone(),
+            },
+        }
+    }
+}
+
+impl TryFrom<InferenceProfileWire> for InferenceProfile {
+    type Error = &'static str;
+
+    fn try_from(wire: InferenceProfileWire) -> Result<Self, Self::Error> {
+        let legacy_binding = wire.credential_binding.unwrap_or(CredentialBinding::None);
+        let primary = wire
+            .primary
+            .map(|candidate| candidate.into_candidate(&legacy_binding))
+            .or_else(|| {
+                wire.model_id.map(|model_id| ProfileCandidate {
+                    target: ModelTarget::unqualified(model_id),
+                    credential_binding: legacy_binding.clone(),
+                })
+            })
+            .ok_or("inference profile requires `primary`")?;
+        let fallbacks = if wire.fallbacks.is_empty() {
+            wire.model_fallbacks
+                .into_iter()
+                .map(|model_id| ProfileCandidate {
+                    target: ModelTarget::unqualified(model_id),
+                    credential_binding: legacy_binding.clone(),
+                })
+                .collect()
         } else {
-            let mut models = Vec::with_capacity(self.model_fallbacks.len() + 1);
-            models.push(self.model_id.clone());
-            models.extend(self.model_fallbacks.iter().cloned());
+            wire.fallbacks
+                .into_iter()
+                .map(|candidate| candidate.into_candidate(&legacy_binding))
+                .collect()
+        };
+        Ok(Self {
+            workspace_id: wire.workspace_id,
+            primary,
+            fallbacks,
+            disabled_endpoint_ids: wire.disabled_endpoint_ids,
+        })
+    }
+}
+
+impl InferenceProfile {
+    /// The candidate axis as an ordered [`AxisBinding`]: a lone primary is a
+    /// [`Pin`](AxisBinding::Pin); primary plus fallbacks is a
+    /// [`Pool`](AxisBinding::Pool) in explicit try-order.
+    #[must_use]
+    pub fn model_axis(&self) -> AxisBinding<ProfileCandidate> {
+        if self.fallbacks.is_empty() {
+            AxisBinding::Pin(self.primary.clone())
+        } else {
+            let mut models = Vec::with_capacity(self.fallbacks.len() + 1);
+            models.push(self.primary.clone());
+            models.extend(self.fallbacks.iter().cloned());
             AxisBinding::Pool(models)
         }
     }
@@ -361,9 +439,9 @@ pub async fn resolve_profile(
 ) -> Result<ResolvedInference, ResolveError> {
     resolve_inference_target(
         catalog,
-        &ModelTarget::unqualified(&profile.model_id),
+        &profile.primary.target,
         &profile.disabled_endpoint_ids,
-        &profile.credential_binding,
+        &profile.primary.credential_binding,
         sources,
         secret_store,
     )
@@ -389,12 +467,12 @@ pub async fn resolve_profile_candidates(
 ) -> Result<Vec<ResolvedInference>, ResolveError> {
     let mut resolved = Vec::new();
     let mut last_err = None;
-    for model_id in profile.model_axis().candidates() {
+    for candidate in profile.model_axis().candidates() {
         match resolve_inference_target(
             catalog,
-            &ModelTarget::unqualified(&model_id),
+            &candidate.target,
             &profile.disabled_endpoint_ids,
-            &profile.credential_binding,
+            &candidate.credential_binding,
             sources,
             secret_store,
         )
@@ -407,9 +485,9 @@ pub async fn resolve_profile_candidates(
     if resolved.is_empty() {
         // Every candidate failed: surface the last reason (fail-closed) rather than
         // an empty success.
-        return Err(
-            last_err.unwrap_or_else(|| ResolveError::ModelUnresolved(profile.model_id.clone()))
-        );
+        return Err(last_err.unwrap_or_else(|| {
+            ResolveError::ModelUnresolved(profile.primary.target.model_id.clone())
+        }));
     }
     Ok(resolved)
 }
@@ -994,24 +1072,56 @@ mod tests {
     fn model_axis_is_a_pin_without_fallbacks_and_a_pool_with_them() {
         let single = InferenceProfile {
             workspace_id: "ws".into(),
-            model_id: "primary".into(),
-            model_fallbacks: Vec::new(),
-            credential_binding: CredentialBinding::None,
+            primary: ProfileCandidate {
+                target: ModelTarget::unqualified("primary"),
+                credential_binding: CredentialBinding::None,
+            },
+            fallbacks: Vec::new(),
             disabled_endpoint_ids: Vec::new(),
         };
-        assert_eq!(single.model_axis(), AxisBinding::Pin("primary".into()));
+        assert_eq!(
+            single.model_axis(),
+            AxisBinding::Pin(ProfileCandidate {
+                target: ModelTarget::unqualified("primary"),
+                credential_binding: CredentialBinding::None,
+            })
+        );
 
         let pooled = InferenceProfile {
             workspace_id: "ws".into(),
-            model_id: "primary".into(),
-            model_fallbacks: vec!["backup1".into(), "backup2".into()],
-            credential_binding: CredentialBinding::None,
+            primary: ProfileCandidate {
+                target: ModelTarget::unqualified("primary"),
+                credential_binding: CredentialBinding::None,
+            },
+            fallbacks: vec![
+                ProfileCandidate {
+                    target: ModelTarget::unqualified("backup1"),
+                    credential_binding: CredentialBinding::None,
+                },
+                ProfileCandidate {
+                    target: ModelTarget::unqualified("backup2"),
+                    credential_binding: CredentialBinding::None,
+                },
+            ],
             disabled_endpoint_ids: Vec::new(),
         };
         // The pinned model leads the pool, then fallbacks in order.
         assert_eq!(
             pooled.model_axis().candidates(),
-            vec!["primary", "backup1", "backup2"]
+            vec![
+                ProfileCandidate {
+                    target: ModelTarget::unqualified("primary"),
+                    credential_binding: CredentialBinding::None,
+                },
+                ProfileCandidate {
+                    target: ModelTarget::unqualified("backup1"),
+                    credential_binding: CredentialBinding::None,
+                },
+                ProfileCandidate {
+                    target: ModelTarget::unqualified("backup2"),
+                    credential_binding: CredentialBinding::None,
+                },
+            ]
         );
     }
 
@@ -1025,8 +1135,14 @@ mod tests {
         // A profile row written before `model_fallbacks` existed still loads.
         let legacy = r#"{"model_id":"m","credential_binding":{"type":"none"}}"#;
         let profile: InferenceProfile = serde_json::from_str(legacy).unwrap();
-        assert!(profile.model_fallbacks.is_empty());
-        assert_eq!(profile.model_axis(), AxisBinding::Pin("m".into()));
+        assert!(profile.fallbacks.is_empty());
+        assert_eq!(
+            profile.model_axis(),
+            AxisBinding::Pin(ProfileCandidate {
+                target: ModelTarget::unqualified("m"),
+                credential_binding: CredentialBinding::None,
+            })
+        );
     }
 
     #[tokio::test]

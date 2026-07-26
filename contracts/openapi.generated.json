@@ -1016,15 +1016,51 @@
           "CredentialSourceId": {
             "description": "Stable id of a [`CredentialSource`].",
             "type": "string"
+          },
+          "ModelTarget": {
+            "description": "Stable, secret-free identity used to select one catalog offering. `model_id`\nalone remains accepted for compatibility only when it resolves uniquely.",
+            "properties": {
+              "model_id": {
+                "type": "string"
+              },
+              "protocol_endpoint_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "provider_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "model_id"
+            ],
+            "type": "object"
+          },
+          "ProfileCandidate": {
+            "description": "One explicit step in a profile's failover chain. Binding credentials per\ntarget allows a BYOK primary and Cloud fallback (or the reverse) without ever\nguessing which identity may authenticate which provider.",
+            "properties": {
+              "credential_binding": {
+                "$ref": "#/$defs/CredentialBinding"
+              },
+              "target": {
+                "$ref": "#/$defs/ModelTarget"
+              }
+            },
+            "required": [
+              "target",
+              "credential_binding"
+            ],
+            "type": "object"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "An authored \"how to run this model\" unit (ADR-0043 `InferenceProfile` /\noversight-next `ProviderIdentity`): it names the model, the credential binding\n(vault-backed, never inline), and any endpoints the operator has toggled off.\nThe resolver reads it — it is never flowed into the runtime.",
+        "description": "An authored \"how to run this model\" unit (ADR-0043 `InferenceProfile` /\noversight-next `ProviderIdentity`): it names an exact primary and ordered\nfallback candidates, each with a vault-backed (never inline) credential\nbinding, plus endpoints the operator has toggled off. The resolver reads it —\nit is never flowed into the runtime.",
         "properties": {
-          "credential_binding": {
-            "$ref": "#/$defs/CredentialBinding",
-            "description": "The credential-identity axis. `CredentialBinding` is *already* an\n[`AxisBinding`] over provider identities — `Exact` is a pin, and\n`OneOfCredentialPool` is a pool with failover — so the identity axis needs\nno new type here; each resolved model reuses this binding."
-          },
           "disabled_endpoint_ids": {
             "default": [],
             "items": {
@@ -1032,17 +1068,17 @@
             },
             "type": "array"
           },
-          "model_fallbacks": {
+          "fallbacks": {
             "default": [],
-            "description": "Additional models the resolver falls over to, in order, after `model_id`.\nEmpty (the default) means a single-model profile — unchanged behavior, and\nolder stored rows load without the field. Together with `model_id` these\nform the [`AxisBinding`] the profile exposes as [`model_axis`].\n\n[`model_axis`]: InferenceProfile::model_axis",
+            "description": "Explicit alternates, tried in authored order. The resolver never appends an\nimplicit Cloud, BYOK, or local fallback.",
             "items": {
-              "type": "string"
+              "$ref": "#/$defs/ProfileCandidate"
             },
             "type": "array"
           },
-          "model_id": {
-            "description": "The pinned / primary model — tried first. Kept as a bare field for wire and\nstorage compatibility; the ordered model axis is [`model_axis`] (this plus\n[`model_fallbacks`]).\n\n[`model_axis`]: InferenceProfile::model_axis\n[`model_fallbacks`]: InferenceProfile::model_fallbacks",
-            "type": "string"
+          "primary": {
+            "$ref": "#/$defs/ProfileCandidate",
+            "description": "Exact preferred offering. Provider and endpoint qualifiers prevent a model\nid shared by BYOK and Cloud sources from becoming ambiguous at runtime."
           },
           "workspace_id": {
             "default": "",
@@ -1051,8 +1087,7 @@
           }
         },
         "required": [
-          "model_id",
-          "credential_binding"
+          "primary"
         ],
         "title": "InferenceProfile",
         "type": "object"

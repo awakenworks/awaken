@@ -1201,7 +1201,8 @@ async fn management_router_over(
                 awaken_server::model_resolver::CatalogModelPublicationResolver::from_repo(
                     catalog.clone(),
                     credentials.clone(),
-                ),
+                )
+                .with_profiles(profiles.clone()),
             ),
             materializer: Some(Arc::new(
                 awaken_server::inference_materializer::CredentialInferenceMaterializer::from_pinned(
@@ -1530,8 +1531,9 @@ fn finish_management_surface(
     // dedicated bearer. This avoids turning the management toolset into an open
     // mutation surface while still making the `awaken` binary the complete adapter.
     flat = flat.merge(mcp_export);
-    // After a successful catalog-mutating write, re-publish the reserved-scope assistant
-    // so its `Auto` model binding picks up the model the operator just added. The layer
+    // After a successful model-resolution input write, re-publish the reserved-scope
+    // assistant so its `Auto` binding picks up the catalog or Workspace default Profile.
+    // The layer
     // sits on the flat surface INSIDE the workspace path rewrite (which rewrites a
     // `/v1/workspaces/{ws}/config/...` request to its flat `/v1/config/...` form BEFORE
     // re-entering this router), so matching the flat shape covers both address forms.
@@ -1544,11 +1546,12 @@ fn finish_management_surface(
                 let path = req.uri().path().to_string();
                 let is_write =
                     method == axum::http::Method::POST || method == axum::http::Method::PUT;
-                let is_catalog = path.contains("/config/offerings")
+                let is_model_resolution_input = path.contains("/config/offerings")
                     || path.contains("/config/providers")
                     || path.contains("/config/endpoints")
-                    || path.contains("/config/model-attributes");
-                let should_reconcile = is_write && is_catalog;
+                    || path.contains("/config/model-attributes")
+                    || path.contains("/config/inference-profiles/");
+                let should_reconcile = is_write && is_model_resolution_input;
                 let resp = next.run(req).await;
                 if should_reconcile && resp.status().is_success() {
                     // Ignore the Result — reconcile is best-effort.

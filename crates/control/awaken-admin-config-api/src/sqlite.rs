@@ -308,16 +308,19 @@ impl WebhookStore for SqliteAdminStore {
 mod tests {
     use super::*;
     use awaken_config_resolver::{
-        BindingId, FileId, InputBinding, InputResourceId, MemoryStoreId, ResourceAccess,
+        BindingId, FileId, InputBinding, InputResourceId, MemoryStoreId, ModelTarget,
+        ProfileCandidate, ResourceAccess,
     };
     use awaken_credential_vault::CredentialBinding;
 
     fn profile(model: &str) -> InferenceProfile {
         InferenceProfile {
             workspace_id: "ws".into(),
-            model_id: model.to_string(),
-            model_fallbacks: Vec::new(),
-            credential_binding: CredentialBinding::None,
+            primary: ProfileCandidate {
+                target: ModelTarget::unqualified(model),
+                credential_binding: CredentialBinding::None,
+            },
+            fallbacks: Vec::new(),
             disabled_endpoint_ids: vec![],
         }
     }
@@ -331,6 +334,8 @@ mod tests {
             InferenceProfileStore::get(&store, "p1")
                 .unwrap()
                 .unwrap()
+                .primary
+                .target
                 .model_id,
             "m1"
         );
@@ -339,6 +344,8 @@ mod tests {
             InferenceProfileStore::get(&store, "p1")
                 .unwrap()
                 .unwrap()
+                .primary
+                .target
                 .model_id,
             "m2"
         );
@@ -441,6 +448,8 @@ mod tests {
             InferenceProfileStore::get(&store, "p1")
                 .unwrap()
                 .unwrap()
+                .primary
+                .target
                 .model_id,
             "m1"
         );

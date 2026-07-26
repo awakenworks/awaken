@@ -4,7 +4,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import Transcript from "../components/session/Transcript";
-import { Button, Card, Modal, Pill, SelectField, Skeleton, TextField, UsageBadges } from "../components/ui";
+import { Button, Card, Modal, Pill, SecretField, SelectField, Skeleton, TextField, UsageBadges } from "../components/ui";
 import { api, ws } from "../lib/api/client";
 import type {
   CatalogSyncResult,
@@ -18,6 +18,7 @@ import type {
   Session,
 } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
+import ModelProfileEditor from "./model-profile-editor";
 
 /** Compact a token count for the catalog list: 200000 → "200k", 1_000_000 → "1M". */
 function fmtTokens(n: number): string {
@@ -444,12 +445,10 @@ export default function ModelsSurface() {
             onChange={(e) => setDraft({ ...draft, maxOutputTokens: e.target.value })}
           />
           {selectedDescriptor?.auth_methods.includes("api_key") && (
-            <TextField
+            <SecretField
               label={app.t("API key (write-only)", "API Key（仅写入）")}
-              type="password"
-              autoComplete="new-password"
-              value={apiKey}
-              onChange={(event) => setApiKey(event.target.value)}
+              hasStored={false}
+              onChange={(intent) => setApiKey(intent.value ?? "")}
             />
           )}
           <Button
@@ -512,6 +511,8 @@ export default function ModelsSurface() {
         </div>
         {syncModels.error instanceof Error && <div className="err">{syncModels.error.message}</div>}
       </Card>
+
+      <ModelProfileEditor offerings={c?.offerings ?? []} credentials={credentials.data ?? []} />
 
       <Card>
         <h2>{app.t("Resolve dry-run", "Resolve 试算")}</h2>

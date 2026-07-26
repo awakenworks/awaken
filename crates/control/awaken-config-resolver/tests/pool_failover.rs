@@ -7,9 +7,16 @@ use std::collections::HashMap;
 
 use awaken_agent_contract::RedactedString;
 use awaken_config_resolver::{
-    InferenceProfile, ResolveError, SourceLookup, resolve_inference, resolve_profile,
-    resolve_profile_candidates,
+    InferenceProfile, ModelTarget, ProfileCandidate, ResolveError, SourceLookup, resolve_inference,
+    resolve_profile, resolve_profile_candidates,
 };
+
+fn profile_candidate(model_id: &str, credential_binding: CredentialBinding) -> ProfileCandidate {
+    ProfileCandidate {
+        target: ModelTarget::unqualified(model_id),
+        credential_binding,
+    }
+}
 use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo, enter_credential};
 use awaken_credential_vault::{
     CredentialBinding, CredentialCreateParams, CredentialKind, CredentialPool, CredentialPoolId,
@@ -271,11 +278,13 @@ async fn profile_skips_a_disabled_endpoint_and_selects_the_next() {
 
     let profile = InferenceProfile {
         workspace_id: "ws".into(),
-        model_id: "claude-opus-4-8".into(),
-        model_fallbacks: Vec::new(),
-        credential_binding: CredentialBinding::Exact {
-            credential_source_id: CredentialSourceId(good.clone()),
-        },
+        primary: profile_candidate(
+            "claude-opus-4-8",
+            CredentialBinding::Exact {
+                credential_source_id: CredentialSourceId(good.clone()),
+            },
+        ),
+        fallbacks: Vec::new(),
         disabled_endpoint_ids: vec!["ep1".into()],
     };
     let resolved = resolve_profile(&dual_endpoint_catalog().await, &profile, &ctx, &store)
@@ -311,11 +320,18 @@ async fn profile_candidates_resolve_the_model_axis_in_order_and_skip_unresolvabl
     // skipped, the fallback still yields a candidate (one bad model ≠ dead profile).
     let profile = InferenceProfile {
         workspace_id: "ws".into(),
-        model_id: "no-such-model".into(),
-        model_fallbacks: vec!["claude-opus-4-8".into()],
-        credential_binding: CredentialBinding::Exact {
-            credential_source_id: CredentialSourceId(good.clone()),
-        },
+        primary: profile_candidate(
+            "no-such-model",
+            CredentialBinding::Exact {
+                credential_source_id: CredentialSourceId(good.clone()),
+            },
+        ),
+        fallbacks: vec![profile_candidate(
+            "claude-opus-4-8",
+            CredentialBinding::Exact {
+                credential_source_id: CredentialSourceId(good.clone()),
+            },
+        )],
         disabled_endpoint_ids: Vec::new(),
     };
     let candidates = resolve_profile_candidates(&cat, &profile, &ctx, &store)
@@ -327,11 +343,18 @@ async fn profile_candidates_resolve_the_model_axis_in_order_and_skip_unresolvabl
     // Every model unresolvable → fail-closed, not an empty Ok.
     let dead = InferenceProfile {
         workspace_id: "ws".into(),
-        model_id: "no-such-model".into(),
-        model_fallbacks: vec!["also-missing".into()],
-        credential_binding: CredentialBinding::Exact {
-            credential_source_id: CredentialSourceId(good.clone()),
-        },
+        primary: profile_candidate(
+            "no-such-model",
+            CredentialBinding::Exact {
+                credential_source_id: CredentialSourceId(good.clone()),
+            },
+        ),
+        fallbacks: vec![profile_candidate(
+            "also-missing",
+            CredentialBinding::Exact {
+                credential_source_id: CredentialSourceId(good.clone()),
+            },
+        )],
         disabled_endpoint_ids: Vec::new(),
     };
     let err = resolve_profile_candidates(&cat, &dead, &ctx, &store)
@@ -402,11 +425,18 @@ async fn profile_candidates_all_resolvable_preserve_axis_order() {
     };
     let profile = InferenceProfile {
         workspace_id: "ws".into(),
-        model_id: "claude-opus-4-8".into(),
-        model_fallbacks: vec!["claude-haiku".into()],
-        credential_binding: CredentialBinding::Exact {
-            credential_source_id: CredentialSourceId(good.clone()),
-        },
+        primary: profile_candidate(
+            "claude-opus-4-8",
+            CredentialBinding::Exact {
+                credential_source_id: CredentialSourceId(good.clone()),
+            },
+        ),
+        fallbacks: vec![profile_candidate(
+            "claude-haiku",
+            CredentialBinding::Exact {
+                credential_source_id: CredentialSourceId(good.clone()),
+            },
+        )],
         disabled_endpoint_ids: Vec::new(),
     };
     let candidates = resolve_profile_candidates(&two_model_catalog().await, &profile, &ctx, &store)
@@ -442,11 +472,18 @@ async fn profile_candidates_mixed_keeps_only_the_resolvable_in_order() {
     };
     let profile = InferenceProfile {
         workspace_id: "ws".into(),
-        model_id: "claude-opus-4-8".into(),
-        model_fallbacks: vec!["no-such-model".into()],
-        credential_binding: CredentialBinding::Exact {
-            credential_source_id: CredentialSourceId(good.clone()),
-        },
+        primary: profile_candidate(
+            "claude-opus-4-8",
+            CredentialBinding::Exact {
+                credential_source_id: CredentialSourceId(good.clone()),
+            },
+        ),
+        fallbacks: vec![profile_candidate(
+            "no-such-model",
+            CredentialBinding::Exact {
+                credential_source_id: CredentialSourceId(good.clone()),
+            },
+        )],
         disabled_endpoint_ids: Vec::new(),
     };
     let candidates = resolve_profile_candidates(&two_model_catalog().await, &profile, &ctx, &store)

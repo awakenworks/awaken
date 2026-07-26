@@ -8,9 +8,14 @@
 use std::sync::Arc;
 
 use awaken_config_resolver::can_consume;
+use awaken_config_resolver::{
+    InferenceProfile, InferenceProfileStore, ModelTarget, ProfileCandidate, get_workspace_profile,
+};
 use awaken_config_store::ModelSelection;
 use awaken_credential_vault::repo::CredentialRepo;
-use awaken_credential_vault::{CredentialKind, CredentialSource, CredentialStatus};
+use awaken_credential_vault::{
+    CredentialBinding, CredentialKind, CredentialSource, CredentialStatus,
+};
 use awaken_model_catalog::repo::CatalogRepo;
 use awaken_model_catalog::{Offering, ProviderCatalog};
 use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
@@ -36,7 +41,11 @@ enum CatalogSource {
 pub struct CatalogModelPublicationResolver {
     source: CatalogSource,
     credentials: Arc<dyn CredentialRepo>,
+    profiles: Option<Arc<dyn InferenceProfileStore>>,
 }
+
+/// The conventional Workspace-level profile consumed by `ModelSelection::Auto`.
+pub const DEFAULT_INFERENCE_PROFILE_ID: &str = "workspace-default";
 
 impl CatalogModelPublicationResolver {
     /// Resolve against a frozen catalog snapshot. This is useful for deterministic
@@ -46,6 +55,7 @@ impl CatalogModelPublicationResolver {
         Self {
             source: CatalogSource::Static(catalog),
             credentials,
+            profiles: None,
         }
     }
 
@@ -55,7 +65,17 @@ impl CatalogModelPublicationResolver {
         Self {
             source: CatalogSource::Live(repo),
             credentials,
+            profiles: None,
         }
+    }
+
+    /// Install the authored Profile read port. An `Auto` Agent then consumes the
+    /// Workspace's `workspace-default` profile when present; pinned Agents remain
+    /// exact overrides and never consult it.
+    #[must_use]
+    pub fn with_profiles(mut self, profiles: Arc<dyn InferenceProfileStore>) -> Self {
+        self.profiles = Some(profiles);
+        self
     }
 
     async fn snapshot(&self) -> Result<ProviderCatalog, PublicationResolutionError> {
@@ -150,6 +170,49 @@ impl CatalogModelPublicationResolver {
         })
     }
 
+    fn offering_for_target<'a>(
+        catalog: &'a ProviderCatalog,
+        target: &ModelTarget,
+        disabled_endpoints: &[String],
+    ) -> Result<&'a Offering, PublicationResolutionError> {
+        let matches = catalog
+            .offerings
+            .iter()
+            .filter(|offering| {
+                offering.status == awaken_model_catalog::OfferingStatus::Active
+                    && offering.model_id == target.model_id
+                    && target
+                        .provider_id
+                        .as_deref()
+                        .is_none_or(|provider| offering.provider_id.as_str() == provider)
+                    && target
+                        .protocol_endpoint_id
+                        .as_deref()
+                        .is_none_or(|endpoint| offering.protocol_endpoint_id.as_str() == endpoint)
+                    && !disabled_endpoints.contains(&offering.protocol_endpoint_id.0)
+            })
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [offering] => Ok(*offering),
+            [] => Err(PublicationResolutionError::CandidateUnavailable {
+                binding: ModelBinding::new(
+                    target.provider_id.as_deref().unwrap_or_default(),
+                    &target.model_id,
+                    "genai",
+                ),
+                reason: "the exact profile offering is not active or published".into(),
+            }),
+            _ => Err(PublicationResolutionError::CandidateUnavailable {
+                binding: ModelBinding::new(
+                    target.provider_id.as_deref().unwrap_or_default(),
+                    &target.model_id,
+                    "genai",
+                ),
+                reason: "the profile target is ambiguous; select provider and endpoint".into(),
+            }),
+        }
+    }
+
     fn credential_for<'a>(
         sources: &'a [CredentialSource],
         offering: &Offering,
@@ -166,10 +229,10 @@ impl CatalogModelPublicationResolver {
 
     fn provider_candidate(
         catalog: &ProviderCatalog,
-        sources: &[CredentialSource],
         workspace: &ScopeId,
         binding: ModelBinding,
         offering: &Offering,
+        credential: Option<&CredentialSource>,
     ) -> Result<ResolvedModelCandidate, PublicationResolutionError> {
         let unavailable = |reason| PublicationResolutionError::CandidateUnavailable {
             binding: binding.clone(),
@@ -188,18 +251,36 @@ impl CatalogModelPublicationResolver {
                     offering.protocol_endpoint_id
                 ))
             })?;
-        let credential = Self::credential_for(sources, offering).ok_or_else(|| {
-            unavailable(format!(
-                "no active persisted credential can consume model {} in Workspace {workspace}",
-                binding.model_ref
-            ))
-        })?;
-        let revision = u64::try_from(credential.version).map_err(|_| {
-            unavailable(format!(
-                "credential {} has a negative version",
-                credential.id.0
-            ))
-        })?;
+        let credential = credential
+            .map(|credential| {
+                let revision = u64::try_from(credential.version).map_err(|_| {
+                    unavailable(format!(
+                        "credential {} has a negative version",
+                        credential.id.0
+                    ))
+                })?;
+                Ok(CredentialAccess::new(
+                    CredentialRef {
+                        id: credential.id.0.clone(),
+                        revision,
+                    },
+                    match credential.kind {
+                        CredentialKind::WorkerLocal => CredentialMaterialSource::WorkerReference,
+                        CredentialKind::Vault | CredentialKind::Oauth => {
+                            CredentialMaterialSource::ControlPlaneReference
+                        }
+                        CredentialKind::Env => {
+                            return Err(unavailable(
+                                "environment credentials cannot be frozen into a publication"
+                                    .into(),
+                            ));
+                        }
+                    },
+                    CredentialUsage::ProviderAdapter,
+                    CredentialExecutionPolicy::self_hosted_provider(),
+                ))
+            })
+            .transpose()?;
         let base_url = endpoint
             .base_url
             .clone()
@@ -209,21 +290,7 @@ impl CatalogModelPublicationResolver {
             format!("{}@{}", offering.provider_id.0, provider.version),
             format!("{}@{}", offering.protocol_endpoint_id.0, endpoint.version),
             workspace.clone(),
-            Some(CredentialAccess::new(
-                CredentialRef {
-                    id: credential.id.0.clone(),
-                    revision,
-                },
-                match credential.kind {
-                    CredentialKind::WorkerLocal => CredentialMaterialSource::WorkerReference,
-                    CredentialKind::Vault | CredentialKind::Oauth => {
-                        CredentialMaterialSource::ControlPlaneReference
-                    }
-                    CredentialKind::Env => unreachable!("environment sources are filtered out"),
-                },
-                CredentialUsage::ProviderAdapter,
-                CredentialExecutionPolicy::self_hosted_provider(),
-            )),
+            credential,
             InferenceEndpoint {
                 adapter_kind: endpoint.dialect.adapter_kind().to_string(),
                 api_dialect: endpoint.dialect.as_str().to_string(),
@@ -244,11 +311,169 @@ impl CatalogModelPublicationResolver {
         binding: ModelBinding,
     ) -> Result<ResolvedModelCandidate, PublicationResolutionError> {
         if let Some(offering) = Self::offering_for(catalog, &binding) {
-            return Self::provider_candidate(catalog, sources, workspace, binding, offering);
+            let credential = Self::credential_for(sources, offering).ok_or_else(|| {
+                PublicationResolutionError::CandidateUnavailable {
+                    binding: binding.clone(),
+                    reason: format!(
+                        "no active persisted credential can consume model {} in Workspace {workspace}",
+                        binding.model_ref
+                    ),
+                }
+            })?;
+            return Self::provider_candidate(
+                catalog,
+                workspace,
+                binding,
+                offering,
+                Some(credential),
+            );
         }
         Err(PublicationResolutionError::CandidateUnavailable {
             reason: format!("model offering {} is not published", binding.model_ref),
             binding,
+        })
+    }
+
+    fn source_for_profile_candidate<'a>(
+        sources: &'a [CredentialSource],
+        offering: &Offering,
+        binding: &CredentialBinding,
+    ) -> Result<Option<&'a CredentialSource>, String> {
+        let eligible = |source: &&CredentialSource| {
+            source.status == CredentialStatus::Active
+                && source.kind != CredentialKind::Env
+                && can_consume(offering.provider_id.as_str(), source)
+        };
+        match binding {
+            CredentialBinding::None => Ok(None),
+            CredentialBinding::Exact {
+                credential_source_id,
+            } => sources
+                .iter()
+                .find(|source| source.id == *credential_source_id)
+                .filter(eligible)
+                .map(Some)
+                .ok_or_else(|| {
+                    format!(
+                        "exact credential {} is absent, inactive, or incompatible with provider {}",
+                        credential_source_id.0, offering.provider_id
+                    )
+                }),
+            CredentialBinding::OneOfCredentialPool { .. } => {
+                Err("credential pool must be resolved through its authored membership".into())
+            }
+        }
+    }
+
+    async fn profile_source<'a>(
+        &self,
+        sources: &'a [CredentialSource],
+        workspace: &ScopeId,
+        offering: &Offering,
+        candidate: &ProfileCandidate,
+    ) -> Result<Option<&'a CredentialSource>, PublicationResolutionError> {
+        if let CredentialBinding::OneOfCredentialPool { credential_pool_id } =
+            &candidate.credential_binding
+        {
+            let pool = self
+                .credentials
+                .get_pool(credential_pool_id)
+                .await
+                .map_err(|error| {
+                    PublicationResolutionError::CredentialInventoryUnavailable(error.to_string())
+                })?;
+            if pool.workspace_id != workspace.as_str() {
+                return Err(PublicationResolutionError::CandidateUnavailable {
+                    binding: Self::binding_of(offering),
+                    reason: "credential pool belongs to another Workspace".into(),
+                });
+            }
+            return pool
+                .selection_order()
+                .into_iter()
+                .filter_map(|member| {
+                    sources
+                        .iter()
+                        .find(|source| source.id == member.credential_source_id)
+                })
+                .find(|source| {
+                    source.status == CredentialStatus::Active
+                        && source.kind != CredentialKind::Env
+                        && can_consume(offering.provider_id.as_str(), source)
+                })
+                .map(Some)
+                .ok_or_else(|| PublicationResolutionError::CandidateUnavailable {
+                    binding: Self::binding_of(offering),
+                    reason: format!(
+                        "credential pool {} has no active compatible member",
+                        credential_pool_id.0
+                    ),
+                });
+        }
+        Self::source_for_profile_candidate(sources, offering, &candidate.credential_binding)
+            .map_err(|reason| PublicationResolutionError::CandidateUnavailable {
+                binding: Self::binding_of(offering),
+                reason,
+            })
+    }
+
+    async fn resolve_profile_models(
+        &self,
+        catalog: &ProviderCatalog,
+        workspace: &ScopeId,
+        profile: &InferenceProfile,
+    ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
+        if profile.workspace_id != workspace.as_str() {
+            return Err(PublicationResolutionError::Invalid(
+                "default inference profile belongs to another Workspace".into(),
+            ));
+        }
+        let authored = std::iter::once(&profile.primary)
+            .chain(profile.fallbacks.iter())
+            .collect::<Vec<_>>();
+        let offerings = authored
+            .iter()
+            .map(|candidate| {
+                Self::offering_for_target(
+                    catalog,
+                    &candidate.target,
+                    &profile.disabled_endpoint_ids,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let needs_inventory = authored
+            .iter()
+            .any(|candidate| !matches!(candidate.credential_binding, CredentialBinding::None));
+        let sources = if needs_inventory {
+            self.credentials
+                .list(workspace.as_str())
+                .await
+                .map_err(|error| {
+                    PublicationResolutionError::CredentialInventoryUnavailable(error.to_string())
+                })?
+        } else {
+            Vec::new()
+        };
+        let mut resolved = Vec::with_capacity(authored.len());
+        for (candidate, offering) in authored.into_iter().zip(offerings) {
+            let credential = self
+                .profile_source(&sources, workspace, offering, candidate)
+                .await?;
+            resolved.push(Self::provider_candidate(
+                catalog,
+                workspace,
+                Self::binding_of(offering),
+                offering,
+                credential,
+            )?);
+        }
+        let primary = resolved.remove(0);
+        let primary_model = primary.binding.model_ref.clone();
+        Ok(ResolvedPublicationModels {
+            primary,
+            candidates: resolved,
+            context_window: catalog.context_window(&primary_model),
+            max_output_tokens: catalog.max_output_tokens(&primary_model),
         })
     }
 }
@@ -262,6 +487,26 @@ impl ModelPublicationResolver for CatalogModelPublicationResolver {
         fallbacks: &[ModelBinding],
     ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
         let catalog = self.snapshot().await?;
+        if selection.is_auto()
+            && let Some(profiles) = &self.profiles
+        {
+            let profile = get_workspace_profile(
+                profiles.as_ref(),
+                workspace.as_str(),
+                DEFAULT_INFERENCE_PROFILE_ID,
+            )
+            .map_err(|error| PublicationResolutionError::Invalid(error.to_string()))?;
+            if let Some(profile) = profile {
+                if !fallbacks.is_empty() {
+                    return Err(PublicationResolutionError::Invalid(
+                        "Auto profile selection cannot be combined with authored fallbacks".into(),
+                    ));
+                }
+                return self
+                    .resolve_profile_models(&catalog, workspace, &profile)
+                    .await;
+            }
+        }
         let (primary_binding, fallback_bindings) =
             Self::selected_bindings(&catalog, selection, fallbacks)?;
         let all_bindings = std::iter::once(&primary_binding)
@@ -296,8 +541,25 @@ impl ModelPublicationResolver for CatalogModelPublicationResolver {
 
 #[cfg(test)]
 mod tests {
+    //! Cause graph for Workspace default-profile publication:
+    //! C1 selection is Auto; C2 `workspace-default` exists; C3 profile belongs to
+    //! the execution Workspace; C4 every target identifies one active Offering;
+    //! C5 each non-None credential binding resolves to an active compatible source.
+    //! E1 use the authored ordered chain; E2 retain legacy catalog Auto; E3 freeze
+    //! the exact per-step credential/route; E4 reject the whole publication.
+    //!
+    //! Decision table:
+    //! | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
+    //! | T1   | Y  | Y  | Y  | Y  | Y  | E1+E3 |
+    //! | T2   | Y  | N  | -  | -  | -  | E2    |
+    //! | T3   | Y  | Y  | N  | -  | -  | E2 (foreign row is absent) |
+    //! | T4   | Y  | Y  | Y  | N  | -  | E4    |
+    //! | T5   | Y  | Y  | Y  | Y  | N  | E4    |
+    //! | T6   | N  | -  | -  | Y  | Y  | pinned override |
+
     use super::*;
     use awaken_agent_contract::RedactedString;
+    use awaken_config_resolver::InMemoryProfileStore;
     use awaken_credential_vault::repo::{InMemoryCredentialRepo, enter_credential};
     use awaken_credential_vault::{CredentialCreateParams, InMemorySecretStore};
     use awaken_model_catalog::{
@@ -365,6 +627,266 @@ mod tests {
         .await
         .unwrap();
         CatalogModelPublicationResolver::new(catalog(models), credentials)
+    }
+
+    #[tokio::test]
+    async fn t1_auto_uses_default_profile_with_exact_order_route_and_credential() {
+        let credentials = Arc::new(InMemoryCredentialRepo::new());
+        let secrets = InMemorySecretStore::new();
+        let primary_credential = enter_credential(
+            CredentialCreateParams {
+                workspace_id: "workspace-a".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("openai".into()),
+                env_key: Some("OPENAI_PRIMARY_KEY".into()),
+                secret: Some(RedactedString::new("primary-secret")),
+                oauth_command: None,
+            },
+            &secrets,
+            credentials.as_ref(),
+        )
+        .await
+        .unwrap();
+        let fallback_credential = enter_credential(
+            CredentialCreateParams {
+                workspace_id: "workspace-a".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("openai".into()),
+                env_key: Some("OPENAI_FALLBACK_KEY".into()),
+                secret: Some(RedactedString::new("fallback-secret")),
+                oauth_command: None,
+            },
+            &secrets,
+            credentials.as_ref(),
+        )
+        .await
+        .unwrap();
+        let mut catalog = catalog(&["primary"]);
+        catalog.endpoints.insert(
+            "ep2".into(),
+            ProtocolEndpoint {
+                id: ProtocolEndpointId::new("ep2"),
+                provider_id: ProviderId::new("openai"),
+                dialect: ApiDialect::OpenAiChat,
+                base_url: Some("https://fallback.openai.invalid/v1".into()),
+                timeout_secs: 30,
+                display_name: "OpenAI fallback".into(),
+                version: 9,
+            },
+        );
+        catalog
+            .offerings
+            .push(offering("fallback", "openai", "ep2"));
+        let profiles = Arc::new(InMemoryProfileStore::new());
+        profiles
+            .put(
+                DEFAULT_INFERENCE_PROFILE_ID.into(),
+                InferenceProfile {
+                    workspace_id: "workspace-a".into(),
+                    primary: ProfileCandidate {
+                        target: ModelTarget {
+                            model_id: "primary".into(),
+                            provider_id: Some("openai".into()),
+                            protocol_endpoint_id: Some("ep1".into()),
+                        },
+                        credential_binding: CredentialBinding::Exact {
+                            credential_source_id: primary_credential.id.clone(),
+                        },
+                    },
+                    fallbacks: vec![ProfileCandidate {
+                        target: ModelTarget {
+                            model_id: "fallback".into(),
+                            provider_id: Some("openai".into()),
+                            protocol_endpoint_id: Some("ep2".into()),
+                        },
+                        credential_binding: CredentialBinding::Exact {
+                            credential_source_id: fallback_credential.id.clone(),
+                        },
+                    }],
+                    disabled_endpoint_ids: Vec::new(),
+                },
+            )
+            .unwrap();
+        let resolver =
+            CatalogModelPublicationResolver::new(catalog, credentials).with_profiles(profiles);
+
+        let resolved = resolver
+            .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
+            .await
+            .unwrap();
+        let pins = std::iter::once(&resolved.primary)
+            .chain(resolved.candidates.iter())
+            .map(|candidate| match &candidate.provisioning {
+                ModelProvisioning::Provider {
+                    route_ref,
+                    credential: Some(credential),
+                    ..
+                } => (
+                    candidate.binding.model_ref.as_str(),
+                    route_ref.as_str(),
+                    credential.credential.id.as_str(),
+                ),
+                _ => panic!("profile candidate must freeze route and credential"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            pins,
+            vec![
+                ("primary", "ep1@4", primary_credential.id.0.as_str()),
+                ("fallback", "ep2@9", fallback_credential.id.0.as_str()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn t3_default_profile_from_another_workspace_is_not_observable() {
+        let resolver = resolver(&["primary"]).await;
+        let profiles = Arc::new(InMemoryProfileStore::new());
+        profiles
+            .put(
+                DEFAULT_INFERENCE_PROFILE_ID.into(),
+                InferenceProfile {
+                    workspace_id: "workspace-b".into(),
+                    primary: ProfileCandidate {
+                        target: ModelTarget {
+                            model_id: "primary".into(),
+                            provider_id: Some("openai".into()),
+                            protocol_endpoint_id: Some("ep1".into()),
+                        },
+                        credential_binding: CredentialBinding::None,
+                    },
+                    fallbacks: Vec::new(),
+                    disabled_endpoint_ids: Vec::new(),
+                },
+            )
+            .unwrap();
+        let resolver = resolver.with_profiles(profiles);
+
+        let resolved = resolver
+            .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
+            .await
+            .unwrap();
+        assert_eq!(resolved.primary.binding.model_ref, "primary");
+        let ModelProvisioning::Provider {
+            credential: Some(_),
+            ..
+        } = resolved.primary.provisioning
+        else {
+            panic!("foreign profile must be ignored in favor of local catalog Auto")
+        };
+    }
+
+    #[tokio::test]
+    async fn t4_disabled_profile_target_rejects_the_publication() {
+        let resolver = resolver(&["primary"]).await;
+        let profiles = Arc::new(InMemoryProfileStore::new());
+        profiles
+            .put(
+                DEFAULT_INFERENCE_PROFILE_ID.into(),
+                InferenceProfile {
+                    workspace_id: "workspace-a".into(),
+                    primary: ProfileCandidate {
+                        target: ModelTarget {
+                            model_id: "primary".into(),
+                            provider_id: Some("openai".into()),
+                            protocol_endpoint_id: Some("ep1".into()),
+                        },
+                        credential_binding: CredentialBinding::None,
+                    },
+                    fallbacks: Vec::new(),
+                    disabled_endpoint_ids: vec!["ep1".into()],
+                },
+            )
+            .unwrap();
+
+        let error = resolver
+            .with_profiles(profiles)
+            .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("not active or published"));
+    }
+
+    #[tokio::test]
+    async fn t5_incompatible_exact_profile_credential_rejects_the_publication() {
+        let credentials = Arc::new(InMemoryCredentialRepo::new());
+        let incompatible = enter_credential(
+            CredentialCreateParams {
+                workspace_id: "workspace-a".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("anthropic".into()),
+                env_key: Some("ANTHROPIC_API_KEY".into()),
+                secret: Some(RedactedString::new("wrong-provider")),
+                oauth_command: None,
+            },
+            &InMemorySecretStore::new(),
+            credentials.as_ref(),
+        )
+        .await
+        .unwrap();
+        let profiles = Arc::new(InMemoryProfileStore::new());
+        profiles
+            .put(
+                DEFAULT_INFERENCE_PROFILE_ID.into(),
+                InferenceProfile {
+                    workspace_id: "workspace-a".into(),
+                    primary: ProfileCandidate {
+                        target: ModelTarget {
+                            model_id: "primary".into(),
+                            provider_id: Some("openai".into()),
+                            protocol_endpoint_id: Some("ep1".into()),
+                        },
+                        credential_binding: CredentialBinding::Exact {
+                            credential_source_id: incompatible.id,
+                        },
+                    },
+                    fallbacks: Vec::new(),
+                    disabled_endpoint_ids: Vec::new(),
+                },
+            )
+            .unwrap();
+
+        let error = CatalogModelPublicationResolver::new(catalog(&["primary"]), credentials)
+            .with_profiles(profiles)
+            .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("incompatible with provider openai")
+        );
+    }
+
+    #[tokio::test]
+    async fn t6_pinned_selection_ignores_the_workspace_default_profile() {
+        let resolver = resolver(&["primary"]).await;
+        let profiles = Arc::new(InMemoryProfileStore::new());
+        profiles
+            .put(
+                DEFAULT_INFERENCE_PROFILE_ID.into(),
+                InferenceProfile {
+                    workspace_id: "workspace-a".into(),
+                    primary: ProfileCandidate {
+                        target: ModelTarget::unqualified("not-published"),
+                        credential_binding: CredentialBinding::None,
+                    },
+                    fallbacks: Vec::new(),
+                    disabled_endpoint_ids: Vec::new(),
+                },
+            )
+            .unwrap();
+
+        let resolved = resolver
+            .with_profiles(profiles)
+            .resolve_models(
+                &ScopeId::from("workspace-a"),
+                &ModelSelection::Pinned(ModelBinding::new("openai", "primary", "genai")),
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(resolved.primary.binding.model_ref, "primary");
     }
 
     #[tokio::test]

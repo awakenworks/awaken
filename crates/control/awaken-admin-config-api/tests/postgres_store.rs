@@ -8,7 +8,8 @@
 use awaken_admin_config_api::PostgresAdminStore;
 use awaken_config_resolver::{
     AgentInputBindingRepository, AgentInputConfig, BindingId, InferenceProfile,
-    InferenceProfileStore, InputBinding, InputResourceId, MemoryStoreId, ResourceAccess,
+    InferenceProfileStore, InputBinding, InputResourceId, MemoryStoreId, ModelTarget,
+    ProfileCandidate, ResourceAccess,
 };
 use awaken_credential_vault::CredentialBinding;
 use awaken_resource_contract::{
@@ -55,9 +56,11 @@ async fn schema_url(schema: &str) -> Option<String> {
 fn profile(model: &str) -> InferenceProfile {
     InferenceProfile {
         workspace_id: "ws".into(),
-        model_id: model.to_string(),
-        model_fallbacks: Vec::new(),
-        credential_binding: CredentialBinding::None,
+        primary: ProfileCandidate {
+            target: ModelTarget::unqualified(model),
+            credential_binding: CredentialBinding::None,
+        },
+        fallbacks: Vec::new(),
         disabled_endpoint_ids: vec![],
     }
 }
@@ -126,6 +129,8 @@ async fn postgres_admin_store_serves_every_port() {
         InferenceProfileStore::get(&store, "p1")
             .unwrap()
             .unwrap()
+            .primary
+            .target
             .model_id,
         "m1"
     );
@@ -134,6 +139,8 @@ async fn postgres_admin_store_serves_every_port() {
         InferenceProfileStore::get(&store, "p1")
             .unwrap()
             .unwrap()
+            .primary
+            .target
             .model_id,
         "m2"
     );
@@ -248,6 +255,8 @@ async fn postgres_admin_rows_survive_a_reconnect() {
         InferenceProfileStore::get(&store, "p1")
             .unwrap()
             .unwrap()
+            .primary
+            .target
             .model_id,
         "m1"
     );

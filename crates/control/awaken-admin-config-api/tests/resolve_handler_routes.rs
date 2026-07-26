@@ -8,6 +8,26 @@
 //!
 //! Every route is exercised through `oneshot` + `http-body-util`, reusing the same
 //! store-injection harness idiom as `router_cases.rs`.
+//!
+//! Profile cause/effect design (executable rules below):
+//! Causes: C1 primary target is exact; C2 ordered fallbacks exist; C3 one target
+//! is unresolvable; C4 all targets are unresolvable; C5 a target is duplicated;
+//! C6 legacy bare-model JSON is loaded; C7 candidates use different providers and
+//! credential bindings.
+//! Effects: E1 canonical structured profile is saved; E2 candidates preserve
+//! authored order; E3 only the bad candidate is skipped; E4 resolution fails
+//! closed; E5 save is rejected; E6 legacy input is rewritten canonically; E7 each
+//! candidate resolves only with its own binding.
+//!
+//! Decision table:
+//! | Rule | C1 | C2 | C3 | C4 | C5 | C6 | C7 | Effect |
+//! | T1   | 1  | 0  | 0  | 0  | 0  | 0  | 0  | E1     |
+//! | T2   | 1  | 1  | 0  | 0  | 0  | 0  | 0  | E1,E2  |
+//! | T3   | 1  | 1  | 1  | 0  | 0  | 0  | 0  | E3     |
+//! | T4   | 0  | 1  | 1  | 1  | 0  | 0  | 0  | E4     |
+//! | T5   | 1  | 1  | 0  | 0  | 1  | 0  | 0  | E5     |
+//! | T6   | 0  | 0  | 0  | 0  | 0  | 1  | 0  | E6     |
+//! | T7   | 1  | 1  | 0  | 0  | 0  | 0  | 1  | E2,E7  |
 
 use std::sync::{Arc, Mutex};
 
@@ -101,6 +121,10 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
 
 /// Author a resolvable model: provider + endpoint (`dialect`) + offering.
 async fn author_model(app: &Router, provider: &str, dialect: &str, model: &str) {
+    author_model_at(app, provider, dialect, model, "ep1").await;
+}
+
+async fn author_model_at(app: &Router, provider: &str, dialect: &str, model: &str, endpoint: &str) {
     let (s, _) = call(
         app,
         "PUT",
@@ -112,9 +136,9 @@ async fn author_model(app: &Router, provider: &str, dialect: &str, model: &str) 
     let (s, _) = call(
         app,
         "PUT",
-        "/v1/config/endpoints/ep1",
+        &format!("/v1/config/endpoints/{endpoint}"),
         Some(json!({
-            "id": "ep1", "provider_id": provider, "dialect": dialect,
+            "id": endpoint, "provider_id": provider, "dialect": dialect,
             "base_url": "https://api.example.com/v1/", "timeout_secs": 300,
             "display_name": "prod", "version": 1
         })),
@@ -127,7 +151,7 @@ async fn author_model(app: &Router, provider: &str, dialect: &str, model: &str) 
         "/v1/config/offerings",
         Some(json!({
             "model_id": model, "provider_id": provider,
-            "protocol_endpoint_id": "ep1", "dialect": dialect, "upstream_model": null
+            "protocol_endpoint_id": endpoint, "dialect": dialect, "upstream_model": null
         })),
     )
     .await;
@@ -252,18 +276,90 @@ async fn put_then_get_profile_round_trips() {
         "PUT",
         "/v1/config/inference-profiles/prof-1",
         Some(json!({
-            "model_id": "claude-opus-4-8",
-            "credential_binding": { "type": "none" }
+            "primary": {
+                "target": { "model_id": "claude-opus-4-8", "provider_id": "anthropic", "protocol_endpoint_id": "ep1" },
+                "credential_binding": { "type": "none" }
+            }
         })),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(put["model_id"], "claude-opus-4-8");
+    assert_eq!(put["primary"]["target"]["model_id"], "claude-opus-4-8");
 
     let (s, got) = call(&h.app, "GET", "/v1/config/inference-profiles/prof-1", None).await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(got["model_id"], "claude-opus-4-8");
-    assert_eq!(got["credential_binding"]["type"], "none");
+    assert_eq!(got["primary"]["target"]["model_id"], "claude-opus-4-8");
+    assert_eq!(got["primary"]["credential_binding"]["type"], "none");
+}
+
+/// T5: duplicates (including the primary) make failover intent ambiguous and are
+/// rejected before persistence. Empty ids and an excessive chain hit the other
+/// validation leaves of the same effect.
+#[tokio::test]
+async fn put_profile_rejects_invalid_fallback_chains() {
+    let h = harness();
+    let duplicate = json!({
+        "primary": { "target": { "model_id": "m", "provider_id": "p", "protocol_endpoint_id": "e" }, "credential_binding": { "type": "none" } },
+        "fallbacks": [{ "target": { "model_id": "m", "provider_id": "p", "protocol_endpoint_id": "e" }, "credential_binding": { "type": "none" } }]
+    });
+    let empty = json!({
+        "primary": { "target": { "model_id": "m", "provider_id": "p", "protocol_endpoint_id": "e" }, "credential_binding": { "type": "none" } },
+        "fallbacks": [{ "target": { "model_id": "   " }, "credential_binding": { "type": "none" } }]
+    });
+    let too_many = json!({
+        "primary": { "target": { "model_id": "m" }, "credential_binding": { "type": "none" } },
+        "fallbacks": (0..9).map(|i| json!({ "target": { "model_id": format!("f{i}") }, "credential_binding": { "type": "none" } })).collect::<Vec<_>>()
+    });
+    for (id, body) in [
+        ("duplicate", duplicate),
+        ("empty", empty),
+        ("long", too_many),
+    ] {
+        let (status, problem) = call(
+            &h.app,
+            "PUT",
+            &format!("/v1/config/inference-profiles/{id}"),
+            Some(body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(problem["code"], "invalid_inference_profile");
+        let (status, _) = call(
+            &h.app,
+            "GET",
+            &format!("/v1/config/inference-profiles/{id}"),
+            None,
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "invalid profile was persisted"
+        );
+    }
+}
+
+/// T6: old persisted/API input is accepted once, then projected using only the
+/// canonical structured contract so clients converge without a bulk migration.
+#[tokio::test]
+async fn legacy_profile_input_is_returned_as_structured_targets() {
+    let h = harness();
+    let (status, profile) = call(
+        &h.app,
+        "PUT",
+        "/v1/config/inference-profiles/legacy",
+        Some(json!({
+            "model_id": "primary",
+            "model_fallbacks": ["fallback"],
+            "credential_binding": { "type": "none" }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(profile["primary"]["target"]["model_id"], "primary");
+    assert_eq!(profile["fallbacks"][0]["target"]["model_id"], "fallback");
+    assert!(profile.get("model_id").is_none());
+    assert!(profile.get("model_fallbacks").is_none());
 }
 
 /// resolve_profile_route (success): a stored profile resolves its *primary* model
@@ -277,8 +373,7 @@ async fn resolve_profile_route_resolves_primary_model() {
         "PUT",
         "/v1/config/inference-profiles/prof-1",
         Some(json!({
-            "model_id": "claude-opus-4-8",
-            "credential_binding": { "type": "none" }
+            "primary": { "target": { "model_id": "claude-opus-4-8", "provider_id": "anthropic", "protocol_endpoint_id": "ep1" }, "credential_binding": { "type": "none" } }
         })),
     )
     .await;
@@ -347,9 +442,8 @@ async fn resolve_candidates_route_returns_ordered_axis() {
         "PUT",
         "/v1/config/inference-profiles/prof-multi",
         Some(json!({
-            "model_id": "claude-opus-4-8",
-            "model_fallbacks": ["claude-haiku-4-8"],
-            "credential_binding": { "type": "none" }
+            "primary": { "target": { "model_id": "claude-opus-4-8", "provider_id": "anthropic", "protocol_endpoint_id": "ep1" }, "credential_binding": { "type": "none" } },
+            "fallbacks": [{ "target": { "model_id": "claude-haiku-4-8", "provider_id": "anthropic", "protocol_endpoint_id": "ep1" }, "credential_binding": { "type": "none" } }]
         })),
     )
     .await;
@@ -370,6 +464,63 @@ async fn resolve_candidates_route_returns_ordered_axis() {
     assert_eq!(candidates[1]["model_id"], "claude-haiku-4-8");
 }
 
+/// T7: a BYOK primary and managed fallback retain separate identities. Reusing
+/// the Anthropic key for OpenAI would fail `can_consume`; the per-step `none`
+/// binding proves the fallback no longer inherits the primary credential.
+#[tokio::test]
+async fn resolve_candidates_use_each_steps_own_credential_binding() {
+    let h = harness();
+    author_model_at(
+        &h.app,
+        "anthropic",
+        "anthropic_messages",
+        "primary-model",
+        "anthropic-ep",
+    )
+    .await;
+    author_model_at(
+        &h.app,
+        "openai",
+        "open_ai_responses",
+        "managed-fallback",
+        "openai-ep",
+    )
+    .await;
+    let credential = enter_vault_cred(&h.app, Some("anthropic"), "sk-primary").await;
+    let (status, _) = call(
+        &h.app,
+        "PUT",
+        "/v1/config/inference-profiles/prof-cross-provider",
+        Some(json!({
+            "primary": {
+                "target": { "model_id": "primary-model", "provider_id": "anthropic", "protocol_endpoint_id": "anthropic-ep" },
+                "credential_binding": { "type": "exact", "credential_source_id": credential }
+            },
+            "fallbacks": [{
+                "target": { "model_id": "managed-fallback", "provider_id": "openai", "protocol_endpoint_id": "openai-ep" },
+                "credential_binding": { "type": "none" }
+            }]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = call(
+        &h.app,
+        "POST",
+        "/v1/config/inference-profiles/prof-cross-provider/resolve-candidates",
+        Some(json!({ "workspace_id": "ws" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let candidates = body["candidates"].as_array().unwrap();
+    assert_eq!(candidates.len(), 2);
+    assert_eq!(candidates[0]["provider_id"], "anthropic");
+    assert_eq!(candidates[0]["credential_present"], true);
+    assert_eq!(candidates[1]["provider_id"], "openai");
+    assert_eq!(candidates[1]["credential_present"], false);
+}
+
 /// resolve_profile_candidates_route (partial resolve is not terminal): an
 /// unresolvable fallback (no offering) is *skipped*, so the primary still yields a
 /// one-element candidate list — one bad model does not sink the profile.
@@ -383,9 +534,8 @@ async fn resolve_candidates_route_skips_unresolvable_fallback() {
         "PUT",
         "/v1/config/inference-profiles/prof-partial",
         Some(json!({
-            "model_id": "claude-opus-4-8",
-            "model_fallbacks": ["ghost-model"],
-            "credential_binding": { "type": "none" }
+            "primary": { "target": { "model_id": "claude-opus-4-8", "provider_id": "anthropic", "protocol_endpoint_id": "ep1" }, "credential_binding": { "type": "none" } },
+            "fallbacks": [{ "target": { "model_id": "ghost-model", "provider_id": "anthropic", "protocol_endpoint_id": "ep1" }, "credential_binding": { "type": "none" } }]
         })),
     )
     .await;
@@ -416,9 +566,8 @@ async fn resolve_candidates_route_all_unresolvable_is_fail_closed_404() {
         "PUT",
         "/v1/config/inference-profiles/prof-dead",
         Some(json!({
-            "model_id": "ghost-primary",
-            "model_fallbacks": ["ghost-fallback"],
-            "credential_binding": { "type": "none" }
+            "primary": { "target": { "model_id": "ghost-primary", "provider_id": "anthropic", "protocol_endpoint_id": "ep1" }, "credential_binding": { "type": "none" } },
+            "fallbacks": [{ "target": { "model_id": "ghost-fallback", "provider_id": "anthropic", "protocol_endpoint_id": "ep1" }, "credential_binding": { "type": "none" } }]
         })),
     )
     .await;
