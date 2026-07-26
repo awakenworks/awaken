@@ -4,9 +4,8 @@
 //! create/archive/delete counts and orderings the generator produces.
 
 use awaken_env_store::InMemoryEnvRegistry;
-use awaken_session_contract::env_registry::EnvRegistry;
+use awaken_session_contract::env_registry::{EnvRegistry, EnvironmentConfig};
 use proptest::prelude::*;
-use serde_json::json;
 
 fn block<F: std::future::Future>(f: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
@@ -20,9 +19,14 @@ fn reg() -> InMemoryEnvRegistry {
 }
 
 async fn make(r: &InMemoryEnvRegistry, name: &str) -> String {
-    r.create(name.into(), String::new(), Default::default(), json!({}))
-        .await
-        .id
+    r.create(
+        name.into(),
+        String::new(),
+        Default::default(),
+        EnvironmentConfig::SelfHosted,
+    )
+    .await
+    .id
 }
 
 proptest! {

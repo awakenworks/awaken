@@ -11,9 +11,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use awaken_session_contract::env_registry::{
-    EnvItem, EnvRegistry, EnvUpdate, EnvironmentRevision, OBJECT_AT,
+    EnvItem, EnvRegistry, EnvUpdate, EnvironmentConfig, EnvironmentRevision, OBJECT_AT,
 };
-use serde_json::Value;
 
 pub struct InMemoryEnvRegistry {
     envs: Mutex<BTreeMap<String, EnvItem>>,
@@ -44,7 +43,7 @@ impl EnvRegistry for InMemoryEnvRegistry {
         description: String,
         metadata: BTreeMap<String, String>,
         scope: Option<String>,
-        config: Value,
+        config: EnvironmentConfig,
     ) -> EnvItem {
         let n = self.seq.fetch_add(1, Ordering::SeqCst);
         let id = format!("env_{n:016}");
@@ -111,7 +110,10 @@ impl EnvRegistry for InMemoryEnvRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+
+    fn config() -> EnvironmentConfig {
+        EnvironmentConfig::SelfHosted
+    }
 
     fn r() -> InMemoryEnvRegistry {
         InMemoryEnvRegistry::new()
@@ -121,12 +123,7 @@ mod tests {
     async fn create_get_list_and_archive() {
         let r = r();
         let e = r
-            .create(
-                "prod".into(),
-                String::new(),
-                BTreeMap::new(),
-                json!({"type":"self_hosted"}),
-            )
+            .create("prod".into(), String::new(), BTreeMap::new(), config())
             .await;
         assert!(r.exists(&e.id).await);
         assert!(e.is_self_hosted());
@@ -150,7 +147,7 @@ mod tests {
             "archive of missing id"
         );
         let e = r
-            .create("prod".into(), String::new(), BTreeMap::new(), json!({}))
+            .create("prod".into(), String::new(), BTreeMap::new(), config())
             .await;
         // Archive is soft: get still returns the (now archived) record.
         assert!(r.archive(&e.id).await.is_some());
@@ -168,7 +165,7 @@ mod tests {
                 "e".into(),
                 String::new(),
                 BTreeMap::from([("keep".into(), "1".into()), ("drop".into(), "2".into())]),
-                json!({}),
+                config(),
             )
             .await;
         let up = r
@@ -194,12 +191,7 @@ mod tests {
     async fn create_delete_is_idempotent() {
         let r = r();
         let closed = r
-            .create(
-                "c".into(),
-                String::new(),
-                BTreeMap::new(),
-                json!({"networking":{"type":"none"}}),
-            )
+            .create("c".into(), String::new(), BTreeMap::new(), config())
             .await;
         assert!(r.exists(&closed.id).await);
         assert!(r.delete(&closed.id).await);

@@ -8,7 +8,6 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EnvironmentConfigParams {
@@ -140,8 +139,7 @@ pub struct Environment {
     pub metadata: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
-    /// `BetaCloudConfig | BetaSelfHostedConfig`.
-    pub config: Value,
+    pub config: awaken_session_contract::env_registry::EnvironmentConfig,
 }
 
 /// `BetaEnvironmentDeleteResponse` — the `DELETE /v1/environments/:id` receipt.

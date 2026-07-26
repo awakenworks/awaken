@@ -3,9 +3,6 @@
 //! the two projections the neutral crate must not name — the `BetaEnvironment` wire
 //! shape and the sandbox `NetworkPolicy` derived from a record's `config`.
 
-use awaken_session_contract::SessionNetworkPolicy;
-use serde_json::Value;
-
 pub use awaken_env_store::InMemoryEnvRegistry;
 use awaken_session_contract::env_registry::OBJECT_AT;
 pub use awaken_session_contract::env_registry::{EnvItem, EnvRegistry, EnvUpdate};
@@ -27,66 +24,5 @@ pub(crate) fn project_env(item: &EnvItem) -> Environment {
         metadata: item.metadata.clone(),
         scope: item.scope.clone(),
         config: item.config.clone(),
-    }
-}
-
-/// Map an environment's `networking` wire config onto the frozen Session policy:
-/// `unrestricted → Unrestricted`, `limited{hosts} → Allowlist`, `none → None`.
-/// Absent networking (incl. `self_hosted`) or an unknown type shares the host
-/// network. The Runtime later projects this fact into its provider request.
-#[must_use]
-pub(crate) fn env_network_policy(config: &Value) -> SessionNetworkPolicy {
-    let Some(net) = config.get("networking") else {
-        return SessionNetworkPolicy::Unrestricted;
-    };
-    match net.get("type").and_then(Value::as_str) {
-        Some("none") => SessionNetworkPolicy::None,
-        Some("limited") => {
-            let hosts = net
-                .get("allowed_hosts")
-                .and_then(Value::as_array)
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|h| h.as_str().map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default();
-            SessionNetworkPolicy::Allowlist { hosts }.normalized()
-        }
-        _ => SessionNetworkPolicy::Unrestricted,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn network_policy_maps_all_wire_types() {
-        // unrestricted → shares host network
-        assert_eq!(
-            env_network_policy(&json!({ "networking": { "type": "unrestricted" } })),
-            SessionNetworkPolicy::Unrestricted
-        );
-        // limited{allowed_hosts} → typed Allowlist, denies under bwrap (fail-closed)
-        assert_eq!(
-            env_network_policy(&json!({
-                "networking": { "type": "limited", "allowed_hosts": ["api.anthropic.com"] }
-            })),
-            SessionNetworkPolicy::Allowlist {
-                hosts: vec!["api.anthropic.com".to_string()],
-            }
-        );
-        // none → no egress
-        assert_eq!(
-            env_network_policy(&json!({ "networking": { "type": "none" } })),
-            SessionNetworkPolicy::None
-        );
-        // absent networking / self_hosted / unknown → Unrestricted (shares host)
-        assert_eq!(
-            env_network_policy(&json!({ "type": "self_hosted" })),
-            SessionNetworkPolicy::Unrestricted
-        );
     }
 }

@@ -10,8 +10,9 @@
 //! here as a contract violation. Postgres joins behind its DB harness.
 
 use awaken_env_store::{InMemoryEnvRegistry, SqliteEnvRegistry};
-use awaken_session_contract::env_registry::{EnvRegistry, EnvUpdate, EnvironmentRevision};
-use serde_json::json;
+use awaken_session_contract::env_registry::{
+    EnvRegistry, EnvUpdate, EnvironmentConfig, EnvironmentRevision,
+};
 
 fn block<F: std::future::Future>(f: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
@@ -21,9 +22,14 @@ fn block<F: std::future::Future>(f: F) -> F::Output {
 }
 
 async fn make<R: EnvRegistry>(r: &R, name: &str) -> String {
-    r.create(name.into(), String::new(), Default::default(), json!({}))
-        .await
-        .id
+    r.create(
+        name.into(),
+        String::new(),
+        Default::default(),
+        EnvironmentConfig::SelfHosted,
+    )
+    .await
+    .id
 }
 
 // ── The port contract, trait-generic over any EnvRegistry backend ────────────────
@@ -94,7 +100,7 @@ async fn revision_decision_table<R: EnvRegistry>(r: &R) {
             "versioned".into(),
             String::new(),
             Default::default(),
-            json!({}),
+            EnvironmentConfig::SelfHosted,
         )
         .await;
     assert_eq!(item.revision, EnvironmentRevision(1), "V1");
@@ -131,7 +137,7 @@ async fn scope_round_trips_and_updates<R: EnvRegistry>(r: &R) {
             String::new(),
             Default::default(),
             Some("organization".into()),
-            json!({"type":"self_hosted"}),
+            EnvironmentConfig::SelfHosted,
         )
         .await;
     assert_eq!(

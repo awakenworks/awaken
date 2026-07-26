@@ -113,7 +113,15 @@ async function main() {
       const namesAfterRejectedCreate = (await drain(
         client.beta.environments.list({ betas: BETAS }),
       )).map((item) => item.name);
-      assert.ok(!namesAfterRejectedCreate.includes('must-not-exist'));
+      for (const rejectedName of [
+        ...rejectedConfigs.map(([name]) => name),
+        'must-not-exist',
+      ]) {
+        assert.ok(
+          !namesAfterRejectedCreate.includes(rejectedName),
+          `${rejectedName} must have no durable Environment/work side effect`,
+        );
+      }
       pass('official Environment config union accepts canonical cases and rejects extensions');
 
       // Awaken sandbox policy is a separate, versioned aggregate. The Environment
