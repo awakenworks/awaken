@@ -435,7 +435,9 @@ impl ManagedState {
             Some(id) => id,
             None => loop {
                 let candidate = format!("sesn_{}", self.session_seq.fetch_add(1, Ordering::SeqCst));
-                if !self.runtime.owns_thread(&candidate).await {
+                if !self.runtime.owns_thread(&candidate).await
+                    && self.sessions_repo.get(&candidate).await.is_none()
+                {
                     break candidate;
                 }
             },

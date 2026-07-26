@@ -1155,6 +1155,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_id_mint_skips_repository_truth_after_restart() {
+        let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
+        create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, sample_persisted("sesn_0")).await;
+        let restarted = ManagedState::new(EndSessionRecorder::default()).with_session_repo(repo);
+        let created = restarted
+            .create_session(bare_create_params(), None)
+            .await
+            .expect("mint after restart");
+        assert_eq!(created.id, "sesn_1");
+    }
+
+    #[tokio::test]
     async fn ensure_session_retries_and_commits_a_crash_interrupted_activation() {
         let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
         let mut pending = sample_persisted("sesn_pending");
