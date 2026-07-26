@@ -22,6 +22,7 @@ fn session() -> PersistedSession {
         revision: awaken_session_contract::env_registry::EnvironmentRevision(1),
         config_fingerprint: awaken_session_contract::EnvironmentFingerprint("env-1".into()),
         sandbox: serde_json::json!({}),
+        packages: Default::default(),
         network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
         credential_realization: awaken_credential_contract::CredentialRealizationProfile {
             inference_holder: holder.clone(),
@@ -42,6 +43,7 @@ fn session() -> PersistedSession {
                     runtime: None,
                     application: None,
                     delegate_ids: Vec::new(),
+                    toolsets: Vec::new(),
                     mounts: Vec::new(),
                     env: Vec::new(),
                     prompts: Vec::new(),

@@ -29,6 +29,7 @@ async fn gemini_on_vertex_with_oauth_bearer() {
             model_ref: model,
             backend_ref: "genai".into(),
         },
+        inference: Default::default(),
         messages: vec![ChatMessage {
             role: Role::User,
             content: vec![ContentBlock::text(

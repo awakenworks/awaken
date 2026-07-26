@@ -19,9 +19,8 @@ fn app() -> Router {
     #[async_trait::async_trait]
     impl DeploymentSessionLauncher for Launcher {
         async fn launch(&self, request: DeploymentLaunch) -> DeploymentLaunchOutcome {
-            DeploymentLaunchOutcome {
-                session_id: Some(format!("sesn_for_{}", request.deployment_id)),
-                error: None,
+            DeploymentLaunchOutcome::Created {
+                session_id: format!("sesn_for_{}", request.deployment_id),
             }
         }
     }
@@ -94,7 +93,7 @@ async fn deployment_lifecycle_and_runs() {
     assert_eq!(d["agent"]["version"], 1);
     assert_eq!(d["vault_ids"][0], "vlt_1");
     let id = d["id"].as_str().unwrap().to_string();
-    assert!(id.starts_with("deploy_"));
+    assert!(id.starts_with("depl_"));
 
     // Update name.
     let (s, up) = call(
@@ -124,7 +123,7 @@ async fn deployment_lifecycle_and_runs() {
     assert!(run["error"].is_null());
     assert_eq!(run["session_id"], format!("sesn_for_{id}"));
     let run_id = run["id"].as_str().unwrap().to_string();
-    assert!(run_id.starts_with("deprun_"));
+    assert!(run_id.starts_with("drun_"));
 
     // Retrieve + list runs (filtered by deployment).
     let (s, got_run) = call(&app, "GET", &format!("/v1/deployment_runs/{run_id}"), None).await;
@@ -152,8 +151,10 @@ async fn deployment_lifecycle_and_runs() {
     let (_, arch) = call(&app, "POST", &format!("/v1/deployments/{id}/archive"), None).await;
     assert!(arch["archived_at"].is_string());
 
-    // List deployments.
+    // Archived rows are hidden by default and opt-in through the SDK filter.
     let (_, page) = call(&app, "GET", "/v1/deployments", None).await;
+    assert!(page["data"].as_array().unwrap().is_empty());
+    let (_, page) = call(&app, "GET", "/v1/deployments?include_archived=true", None).await;
     assert_eq!(page["data"].as_array().unwrap()[0]["id"], id);
 }
 

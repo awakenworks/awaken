@@ -17,6 +17,7 @@ fn plan(cmd: &[&str]) -> ContainerPlan {
         image: "awaken-bb:1".into(),
         command: cmd.iter().map(|s| s.to_string()).collect(),
         env: Vec::new(),
+        packages: Default::default(),
         binds: Vec::new(),
         outputs_volume: "/mnt/session/outputs".into(),
         network: NetworkMode::Open,

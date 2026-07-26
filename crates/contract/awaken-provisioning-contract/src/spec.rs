@@ -9,7 +9,8 @@ use std::sync::Arc;
 use crate::sandbox::IsolationClass;
 use crate::sandbox::{SandboxError, SecretBroker};
 use crate::vocab::{
-    EnvValue, EnvVar, EnvVisibility, MountRequirement, NetworkPolicy, ResourceLimits,
+    EnvValue, EnvVar, EnvVisibility, MountRequirement, NetworkPolicy, PackageRequirements,
+    ResourceLimits,
 };
 
 /// How a process's standard streams are wired.
@@ -329,6 +330,9 @@ pub struct SandboxSpec {
     /// Base env applied to every process launched in the sandbox.
     #[serde(default)]
     pub env: Vec<EnvVar>,
+    /// Frozen package inputs realized by the provider before workload launch.
+    #[serde(default)]
+    pub packages: PackageRequirements,
     pub network: NetworkPolicy,
     /// Sandbox-absolute directory the agent writes artifacts to (e.g.
     /// `/mnt/session/outputs`).
@@ -548,6 +552,7 @@ mod sandbox_override_tests {
             isolation: IsolationClass::Workdir,
             mounts: Vec::new(),
             env: Vec::new(),
+            packages: Default::default(),
             network: NetworkPolicy::Unrestricted,
             outputs_path: "/outputs".into(),
             limits: ResourceLimits::default(),

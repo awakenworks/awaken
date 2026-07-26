@@ -1372,6 +1372,7 @@ mod runtime_session_store_tests {
                     revision: EnvironmentRevision(1),
                     config_fingerprint: EnvironmentFingerprint("env-local".into()),
                     sandbox: serde_json::json!({}),
+                    packages: Default::default(),
                     network: SessionNetworkPolicy::Unrestricted,
                     credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
                         inference_holder: awaken_runtime_contract::PlaintextHolder::new(
@@ -1393,6 +1394,7 @@ mod runtime_session_store_tests {
                 runtime: None,
                 mcp_authoring: Default::default(),
                 delegate_ids: Vec::new(),
+                toolsets: Vec::new(),
                 mounts: Vec::new(),
                 env: Vec::new(),
                 prompts: Vec::new(),

@@ -30,6 +30,8 @@ pub struct FrozenSessionProjection {
     pub revision: SessionRevision,
     pub baseline: SessionBaseline,
     pub resources: ResolvedSessionResources,
+    #[serde(default)]
+    pub toolsets: Vec<awaken_agent_contract::ToolsetPolicy>,
     pub mcp: Vec<SessionMcpAttachment>,
 }
 

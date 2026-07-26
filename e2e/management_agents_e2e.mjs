@@ -62,6 +62,16 @@ async function main() {
       assert.equal(updated.name, 'assistant-2');
       pass('beta.agents.update -> version bumped to 2');
 
+      const historical = await client.beta.agents.retrieve(agent.id, {
+        version: 1,
+        betas: BETAS,
+      });
+      assert.equal(historical.name, 'assistant', 'version query returns immutable revision 1');
+      await assert.rejects(
+        () => client.beta.agents.retrieve(agent.id, { version: 999, betas: BETAS }),
+        (error) => error.status === 404,
+      );
+
       // A stale version conflicts.
       await assert.rejects(
         () => client.beta.agents.update(agent.id, { version: 1, name: 'nope', betas: BETAS }),
@@ -69,9 +79,33 @@ async function main() {
       );
       pass('beta.agents.update(stale version) -> 409');
 
+      // [SDK:resources/beta/agents/versions.d.ts]
+      // Causal graph:
+      // create/update commits immutable revisions -> versions.list orders the
+      // complete history -> PagePromise follows cursors; archive appends one
+      // terminal revision; an unknown aggregate produces no fabricated history.
+      //
+      // Decision table:
+      // | Rule | Agent | Mutations       | limit | Effect |
+      // | V1   | exists| create + update | none  | exact revisions 1,2 |
+      // | V2   | exists| create + update | 1     | SDK follows cursor; same 1,2 |
+      // | V3   | exists| then archive    | 1     | immutable 1,2 + archived 3 |
+      // | V4   | missing| none           | any   | 404; no history |
       const versions = await drain(client.beta.agents.versions.list(agent.id, { betas: BETAS }));
-      assert.deepEqual(versions.map((v) => v.version), [1, 2]);
-      pass(`beta.agents.versions.list -> ${versions.length} versions`);
+      assert.deepEqual(versions.map((v) => [v.version, v.name]), [
+        [1, 'assistant'],
+        [2, 'assistant-2'],
+      ], 'V1: update appends and does not rewrite the original revision');
+      const pagedVersions = await drain(client.beta.agents.versions.list(agent.id, {
+        limit: 1,
+        betas: BETAS,
+      }));
+      assert.deepEqual(
+        pagedVersions.map((v) => v.version),
+        [1, 2],
+        'V2: official SDK PagePromise consumes every version page in order',
+      );
+      pass(`beta.agents.versions.list -> ${versions.length} immutable versions + cursor traversal`);
 
       const ids = (await drain(client.beta.agents.list({ betas: BETAS }))).map((a) => a.id);
       assert.ok(ids.includes(agent.id));
@@ -79,48 +113,129 @@ async function main() {
 
       const archived = await client.beta.agents.archive(agent.id, { betas: BETAS });
       assert.ok(archived.archived_at, 'archived agent carries archived_at');
+      const archivedVersions = await drain(client.beta.agents.versions.list(agent.id, {
+        limit: 1,
+        betas: BETAS,
+      }));
+      assert.deepEqual(archivedVersions.map((v) => v.version), [1, 2, 3], 'V3');
+      assert.equal(archivedVersions[0].archived_at, null, 'V3 old revision remains live history');
+      assert.equal(archivedVersions[1].archived_at, null, 'V3 update revision remains unchanged');
+      assert.ok(archivedVersions[2].archived_at, 'V3 terminal revision records archive');
       pass('beta.agents.archive -> archived_at set');
 
+      const activeOnly = await drain(client.beta.agents.list({ betas: BETAS }));
+      assert.ok(!activeOnly.some((candidate) => candidate.id === agent.id));
+      const withArchived = await drain(client.beta.agents.list({
+        include_archived: true,
+        betas: BETAS,
+      }));
+      assert.ok(withArchived.some((candidate) => candidate.id === agent.id));
+      const exactCreated = await drain(client.beta.agents.list({
+        'created_at[gte]': agent.created_at,
+        'created_at[lte]': agent.created_at,
+        include_archived: true,
+        betas: BETAS,
+      }));
+      assert.ok(exactCreated.some((candidate) => candidate.id === agent.id));
+      assert.deepEqual(await drain(client.beta.agents.list({
+        'created_at[gte]': '9999-01-01T00:00:00Z',
+        include_archived: true,
+        betas: BETAS,
+      })), []);
+      assert.deepEqual(await drain(client.beta.agents.list({
+        'created_at[lte]': '2000-01-01T00:00:00Z',
+        include_archived: true,
+        betas: BETAS,
+      })), []);
+
+      // [SDK:resources/beta/agents/agents.d.ts]
       // Cause/effect graph:
       // official tagged SDK unions -> Managed admission -> config normalization
-      // -> Agent projection. Unknown tags/fields fail before persistence.
+      // -> Agent projection. Updates distinguish omission, null, and value;
+      // unknown tags/fields fail before persistence.
       //
       // Decision table:
-      // | composite input                        | result |
-      // | URL MCP/custom skill/custom tools      | 200 + typed projection |
-      // | unknown/misspelled union member        | 400, no Agent created  |
-      // | update multiagent:null                 | preserve current value |
+      // | composite input                         | result |
+      // | model speed + bare/tagged effort        | exact revision + execution controls |
+      // | URL MCP/custom skill/custom tools       | 200 + typed projection |
+      // | unknown/misspelled union member         | 400, no Agent created  |
+      // | MCP declaration/toolset not bijective   | 400, no revision       |
+      // | duplicate/unknown toolset member        | 400, no revision       |
+      // | update field omitted                    | preserve current value |
+      // | nullable update field = null            | clear exact field/bag  |
+      // | metadata value = null                   | delete only that key   |
+      // | update version omitted                  | unconditional CAS write|
+      // | list archived/time partition            | filter before paging   |
       const rich = await json(baseUrl, 'POST', '/v1/agents', {
         name: 'rich-agent',
-        model: { id: 'claude-sonnet-5', speed: 'fast' },
+        model: { id: 'claude-sonnet-5', speed: 'fast', effort: 'xhigh' },
         description: 'all mutable fields',
         system: 'rich system',
         metadata: { team: 'platform' },
         mcp_servers: [{ name: 'docs', type: 'url', url: 'https://example.invalid/mcp' }],
         skills: [{ type: 'custom', skill_id: 'skill-a' }],
-        tools: ['bash', 'glob', 'read'].map((name) => ({
-          type: 'custom',
-          name,
-          description: `${name} tool`,
-          input_schema: { type: 'object', properties: {} },
-        })),
+        tools: [
+          {
+            type: 'agent_toolset_20260401',
+            configs: [{
+              name: 'write',
+              enabled: false,
+              permission_policy: { type: 'always_allow' },
+            }],
+            default_config: { enabled: true, permission_policy: { type: 'always_ask' } },
+          },
+          {
+            type: 'mcp_toolset',
+            mcp_server_name: 'docs',
+            default_config: { enabled: true, permission_policy: { type: 'always_ask' } },
+          },
+          ...['bash', 'glob', 'read'].map((name) => ({
+            type: 'custom',
+            name,
+            description: `${name} tool`,
+            input_schema: { type: 'object', properties: {} },
+          })),
+        ],
         multiagent: { type: 'coordinator', agents: ['researcher'] },
       });
       assert.equal(rich.status, 200, JSON.stringify(rich.body));
+      assert.deepEqual(rich.body.model, {
+        id: 'claude-sonnet-5',
+        speed: 'fast',
+        effort: { type: 'xhigh' },
+      });
       assert.deepEqual(
         rich.body.tools,
-        ['bash', 'glob', 'read'].map((name) => ({
-          type: 'custom',
-          name,
-          description: `${name} tool`,
-          input_schema: { type: 'object', properties: {} },
-        })),
+        [
+          {
+            type: 'agent_toolset_20260401',
+            configs: [{
+              name: 'write',
+              enabled: false,
+              permission_policy: { type: 'always_allow' },
+            }],
+            default_config: { enabled: true, permission_policy: { type: 'always_ask' } },
+          },
+          {
+            type: 'mcp_toolset',
+            mcp_server_name: 'docs',
+            configs: [],
+            default_config: { enabled: true, permission_policy: { type: 'always_ask' } },
+          },
+          ...['bash', 'glob', 'read'].map((name) => ({
+            type: 'custom',
+            name,
+            description: `${name} tool`,
+            input_schema: { type: 'object', properties: {} },
+          })),
+        ],
         'create preserves the complete client-tool behavior contract',
       );
       assert.deepEqual(rich.body.multiagent, { type: 'coordinator', agents: ['researcher'] });
 
       const richUpdated = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}`, {
         version: rich.body.version,
+        model: { id: 'claude-sonnet-5', speed: 'standard', effort: { type: 'low' } },
         description: 'replaced',
         system: 'replaced system',
         metadata: { team: 'runtime' },
@@ -137,6 +252,11 @@ async function main() {
       assert.equal(richUpdated.status, 200, JSON.stringify(richUpdated.body));
       assert.equal(richUpdated.body.description, 'replaced');
       assert.equal(richUpdated.body.system, 'replaced system');
+      assert.deepEqual(richUpdated.body.model, {
+        id: 'claude-sonnet-5',
+        speed: 'standard',
+        effort: { type: 'low' },
+      });
       assert.deepEqual(richUpdated.body.metadata, { team: 'runtime' });
       assert.deepEqual(richUpdated.body.mcp_servers, []);
       assert.deepEqual(richUpdated.body.skills, []);
@@ -148,21 +268,91 @@ async function main() {
       }], 'replacement preserves the complete client-tool behavior contract');
       assert.deepEqual(
         richUpdated.body.multiagent,
-        { type: 'coordinator', agents: ['researcher'] },
+        null,
+        'explicit null clears the coordinator topology',
       );
 
-      for (const invalid of [
-        { skills: [{ type: 'mystery', skill_id: 'skill-a' }] },
-        { mcp_servers: [{ type: 'url', name: 'docs', uri: 'https://wrong-field.test' }] },
-        { tools: [{ type: 'mcp_toolset', mcp_server: 'docs' }] },
+      const cleared = await client.beta.agents.update(rich.body.id, {
+        description: null,
+        system: null,
+        metadata: { team: null, retained: 'yes' },
+        mcp_servers: null,
+        skills: null,
+        tools: null,
+        multiagent: null,
+        betas: BETAS,
+      });
+      assert.equal(cleared.version, richUpdated.body.version + 1);
+      assert.equal(cleared.description, null);
+      assert.equal(cleared.system, null);
+      assert.deepEqual(cleared.metadata, { retained: 'yes' });
+      assert.deepEqual(cleared.mcp_servers, []);
+      assert.deepEqual(cleared.skills, []);
+      assert.deepEqual(cleared.tools, []);
+      assert.equal(cleared.multiagent, null);
+      assert.deepEqual(
+        cleared.model,
+        richUpdated.body.model,
+        'omitting model preserves the exact resolved inference controls',
+      );
+      const richV2 = await client.beta.agents.retrieve(rich.body.id, {
+        version: richUpdated.body.version,
+        betas: BETAS,
+      });
+      assert.equal(richV2.description, 'replaced', 'later null clear does not rewrite history');
+      assert.deepEqual(richV2.metadata, { team: 'runtime' });
+
+      const countBeforeRejectedCreates = (await drain(client.beta.agents.list({
+        include_archived: true,
+        betas: BETAS,
+      }))).length;
+      for (const [name, invalid] of [
+        ['invalid-skill-tag', { skills: [{ type: 'mystery', skill_id: 'skill-a' }] }],
+        ['invalid-mcp-field', { mcp_servers: [{ type: 'url', name: 'docs', uri: 'https://wrong-field.test' }] }],
+        ['invalid-toolset-field', { tools: [{ type: 'mcp_toolset', mcp_server: 'docs' }] }],
+        ['unpaired-mcp-server', {
+          mcp_servers: [{ name: 'docs', type: 'url', url: 'https://example.invalid/mcp' }],
+        }],
+        ['undeclared-mcp-toolset', {
+          tools: [{ type: 'mcp_toolset', mcp_server_name: 'docs' }],
+        }],
+        ['duplicate-agent-toolset', {
+          tools: [
+            { type: 'agent_toolset_20260401' },
+            { type: 'agent_toolset_20260401' },
+          ],
+        }],
+        ['unknown-agent-tool', {
+          tools: [{
+            type: 'agent_toolset_20260401',
+            configs: [{ name: 'not_a_tool', enabled: true }],
+          }],
+        }],
       ]) {
         const rejected = await json(baseUrl, 'POST', '/v1/agents', {
-          name: 'must-not-persist',
+          name,
           model: 'claude-sonnet-5',
           ...invalid,
         });
         assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
       }
+      assert.equal(
+        (await drain(client.beta.agents.list({ include_archived: true, betas: BETAS }))).length,
+        countBeforeRejectedCreates,
+        'rejected admission has no Agent persistence side effect',
+      );
+
+      const rejectedRevision = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}`, {
+        version: cleared.version,
+        mcp_servers: [{ name: 'docs', type: 'url', url: 'https://example.invalid/mcp' }],
+        tools: [],
+      });
+      assert.equal(rejectedRevision.status, 400, JSON.stringify(rejectedRevision.body));
+      assert.equal(
+        (await client.beta.agents.retrieve(rich.body.id, { betas: BETAS })).version,
+        cleared.version,
+        'rejected update creates no revision',
+      );
 
       const richArchived = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}/archive`);
       assert.equal(richArchived.status, 200);
@@ -185,15 +375,23 @@ async function main() {
       ]) {
         assert.equal((await json(baseUrl, method, route, body)).status, 404, route);
       }
+      await assert.rejects(
+        () => drain(client.beta.agents.versions.list('agent_missing', {
+          limit: 1,
+          betas: BETAS,
+        })),
+        (error) => error.status === 404,
+        'V4',
+      );
 
-      const firstPage = await json(baseUrl, 'GET', '/v1/agents?limit=1');
+      const firstPage = await json(baseUrl, 'GET', '/v1/agents?limit=1&include_archived=true');
       assert.equal(firstPage.status, 200);
       assert.equal(firstPage.body.data.length, 1);
       assert.equal(firstPage.body.has_more, true);
       const secondPage = await json(
         baseUrl,
         'GET',
-        `/v1/agents?limit=10&page=${encodeURIComponent(firstPage.body.next_page)}`,
+        `/v1/agents?limit=10&include_archived=true&page=${encodeURIComponent(firstPage.body.next_page)}`,
       );
       assert.equal(secondPage.status, 200);
       assert.ok(secondPage.body.data.length >= 1);

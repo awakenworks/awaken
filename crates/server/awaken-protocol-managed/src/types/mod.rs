@@ -43,5 +43,5 @@ pub mod session;
 pub mod user_profile;
 pub mod vault;
 
-pub use page::{Page, PageQuery, paginate};
+pub use page::{Page, PageQuery, paginate, paginate_by};
 pub use session::*;

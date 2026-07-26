@@ -5,17 +5,14 @@ use super::application::{ManagedMcpCandidate, initial_mcp_candidates};
 use super::*;
 
 pub(super) fn typed_mcp_servers(
-    values: Vec<serde_json::Value>,
-) -> Result<Vec<crate::types::agent::UrlMcpServer>, StateError> {
+    values: Vec<awaken_session_contract::VisibleMcpServer>,
+) -> Vec<crate::types::agent::UrlMcpServer> {
     values
         .into_iter()
-        .enumerate()
-        .map(|(index, value)| {
-            serde_json::from_value(value).map_err(|error| {
-                StateError::Run(RunError::internal(format!(
-                    "persisted_session_projection_invalid: agent.mcp_servers[{index}]: {error}"
-                )))
-            })
+        .map(|server| crate::types::agent::UrlMcpServer {
+            name: server.name,
+            url: server.url,
+            kind: crate::types::agent::UrlMcpServerKind::Url,
         })
         .collect()
 }
@@ -114,7 +111,7 @@ impl ManagedState {
     /// Every mutation crosses this seam, so realization, update, archive, and
     /// recovery cannot each invent a second cache-synchronization path.
     fn refresh_cached_projection(&self, persisted: &PersistedSession) -> Result<(), StateError> {
-        let mcp_servers = typed_mcp_servers(persisted.visible_mcp_servers())?;
+        let mcp_servers = typed_mcp_servers(persisted.visible_mcp_servers());
         let mut sessions = self.sessions.lock().unwrap();
         let Some(record) = sessions.get_mut(&persisted.session_id) else {
             return Ok(());
@@ -636,21 +633,30 @@ impl ManagedState {
             .clone()
             .or_else(|| agent_environment.map(|binding| binding.environment_id.clone()))
             .unwrap_or_else(|| "env_local".to_string());
+        let mcp_targets = mcp_drafts
+            .iter()
+            .map(|draft| draft.target.clone())
+            .collect::<Vec<_>>();
         let environment = match self.environments.as_ref() {
             Some(environments) => {
                 let snapshot = match (req.environment_id.as_ref(), agent_environment) {
                     (None, Some(binding)) => {
                         environments
-                            .snapshot_exact(
+                            .snapshot_exact_for_session(
                                 &binding.environment_id,
                                 binding.revision,
                                 req.awaken_runtime(),
+                                &mcp_targets,
                             )
                             .await
                     }
                     _ => {
                         environments
-                            .snapshot(&environment_id, req.awaken_runtime())
+                            .snapshot_for_session(
+                                &environment_id,
+                                req.awaken_runtime(),
+                                &mcp_targets,
+                            )
                             .await
                     }
                 };
@@ -700,6 +706,20 @@ impl ManagedState {
             project::validate_custom_tool(tool)
                 .map_err(|msg| StateError::Run(RunError::bad_request(msg)))?;
         }
+        let inherited_toolsets = config_view
+            .as_ref()
+            .filter(|view| !view.toolsets.is_empty())
+            .map(|view| view.toolsets.clone())
+            .unwrap_or_else(|| project::toolset_policies(&project::agent_tools(&caps)));
+        let effective_toolsets = match &req.agent {
+            AgentRef::Object(reference) => reference
+                .tools
+                .as_ref()
+                .map(|tools| project::toolset_policies(tools.as_deref().unwrap_or_default()))
+                .unwrap_or(inherited_toolsets),
+            AgentRef::Id(_) => inherited_toolsets,
+        };
+        let initial_agent_toolsets = project::resolved_toolsets(&effective_toolsets);
         let resolved_model = selected_model
             .clone()
             .unwrap_or_else(|| ModelConfig::new(self.runtime.model()));
@@ -714,6 +734,7 @@ impl ManagedState {
                 model: resolved_model.id.clone(),
                 runtime: req.awaken_runtime().map(str::to_string),
                 delegate_ids: delegate_ids.clone(),
+                toolsets: effective_toolsets,
                 mounts: Vec::new(),
                 env: Vec::new(),
                 prompts: Vec::new(),
@@ -745,7 +766,7 @@ impl ManagedState {
             baseline: awaken_session_contract::SessionBaselineState::Preparing(creation_intent),
             title: req.title.clone(),
             metadata: req.metadata.clone(),
-            agent_tools: Vec::new(),
+            agent_tools: initial_agent_toolsets,
             environment_binding: None,
             mcp: Default::default(),
             resources: Default::default(),
@@ -775,7 +796,11 @@ impl ManagedState {
         }
         let deployment_id = req.metadata.get("awaken.deployment_id").cloned();
         let session_tools = if let Some(view) = &config_view {
-            let mut tools = project::agent_tools(&caps);
+            let mut tools = if view.toolsets.is_empty() {
+                project::agent_tools(&caps)
+            } else {
+                project::resolved_toolsets(&view.toolsets)
+            };
             let client_tools = project::agent_client_tools(&view.client_tools)
                 .map_err(|error| StateError::Run(RunError::bad_request(error)))?;
             tools.retain(|candidate| match candidate {
@@ -805,7 +830,7 @@ impl ManagedState {
                 system: config_view.as_ref().and_then(|view| view.system.clone()),
                 tools: session_tools,
                 // Echo the accepted servers in the SDK's `{name, type:"url", url}` shape.
-                mcp_servers: typed_mcp_servers(persisted.visible_mcp_servers())?,
+                mcp_servers: typed_mcp_servers(persisted.visible_mcp_servers()),
                 skills: config_view.as_ref().map_or_else(
                     || project::agent_skills(&caps),
                     |view| {
@@ -856,7 +881,7 @@ impl ManagedState {
                         "cannot clear tools while skills are configured",
                     )));
                 }
-                session.agent.tools = tools.clone().unwrap_or_default();
+                session.agent.tools = project::resolved_tools(tools.as_deref().unwrap_or_default());
             }
             if let Some(skills) = &override_ref.skills {
                 session.agent.skills = skills.clone().unwrap_or_default();
@@ -1248,7 +1273,7 @@ impl ManagedState {
                             p.environment_id().to_string(),
                         )
                     });
-                let mcp_servers = typed_mcp_servers(p.visible_mcp_servers())?;
+                let mcp_servers = typed_mcp_servers(p.visible_mcp_servers());
                 (
                     agent_id,
                     model,
@@ -1359,6 +1384,7 @@ impl ManagedState {
                             workspace_id: owner_scope.clone(),
                             agent_id: baseline.agent_id.clone(),
                             delegate_ids: baseline.delegate_ids.clone(),
+                            toolsets: Some(project::toolset_policies(&session.agent_tools)),
                             resources: session.resources.active.clone(),
                             model: Some(baseline.model.clone()),
                             runtime: baseline.runtime.clone(),

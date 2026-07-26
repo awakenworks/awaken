@@ -149,6 +149,7 @@ async fn full_chain_live_model_call() {
             model_ref: resolved.triple.model_id.clone(),
             backend_ref: "genai".to_string(),
         },
+        inference: Default::default(),
         messages: vec![ChatMessage {
             role: Role::User,
             content: vec![ContentBlock::text("Reply with the single word: pong")],

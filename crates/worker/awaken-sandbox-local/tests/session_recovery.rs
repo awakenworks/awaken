@@ -48,6 +48,7 @@ fn spec(tier: Tier, scope: &str) -> pc::SandboxSpec {
         },
         mounts: Vec::new(),
         env: Vec::new(),
+        packages: Default::default(),
         network: pc::NetworkPolicy::Unrestricted,
         outputs_path: "/mnt/session/outputs".into(),
         limits: Default::default(),

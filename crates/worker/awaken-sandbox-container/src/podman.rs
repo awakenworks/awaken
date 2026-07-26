@@ -172,6 +172,7 @@ pub struct PodmanRuntime {
     /// Podman labels are immutable; successfully renewed/adopted containers are
     /// protected from this incarnation's crash reaper through this ownership set.
     adopted: std::sync::Mutex<std::collections::HashSet<String>>,
+    package_builds: tokio::sync::Mutex<()>,
 }
 
 impl PodmanRuntime {
@@ -185,6 +186,7 @@ impl PodmanRuntime {
             exec: Arc::new(OsCommandExec),
             owner_id: crate::runtime_owner_id(),
             adopted: std::sync::Mutex::new(std::collections::HashSet::new()),
+            package_builds: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -197,6 +199,7 @@ impl PodmanRuntime {
             exec,
             owner_id: crate::runtime_owner_id(),
             adopted: std::sync::Mutex::new(std::collections::HashSet::new()),
+            package_builds: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -319,6 +322,58 @@ impl PodmanRuntime {
 impl ContainerRuntime for PodmanRuntime {
     fn enforces_network_none(&self) -> bool {
         true
+    }
+
+    fn supports_package_provisioning(&self) -> bool {
+        true
+    }
+
+    async fn prepare_package_image(
+        &self,
+        base_image: &str,
+        packages: &pc::PackageRequirements,
+    ) -> Result<String, RuntimeError> {
+        if packages.is_empty() {
+            return Ok(base_image.to_string());
+        }
+        let _build_guard = self.package_builds.lock().await;
+        let base_identity = self
+            .run(&[
+                "image".into(),
+                "inspect".into(),
+                "--format".into(),
+                "{{.Id}}".into(),
+                base_image.into(),
+            ])
+            .await?;
+        if base_identity.is_empty() {
+            return Err(backend("podman returned an empty base-image identity"));
+        }
+        let dockerfile = crate::package_containerfile(&base_identity, packages)?;
+        let fingerprint = blake3::hash(dockerfile.as_bytes()).to_hex();
+        let image = format!("localhost/awaken-packages:{fingerprint}");
+        if self
+            .run(&["image".into(), "exists".into(), image.clone()])
+            .await
+            .is_ok()
+        {
+            return Ok(image);
+        }
+        let mut guard = None;
+        let root =
+            crate::staging_dir(&mut guard, &format!("package-{fingerprint}")).map_err(backend)?;
+        let containerfile = root.join("Containerfile");
+        std::fs::write(&containerfile, dockerfile).map_err(backend)?;
+        self.run(&[
+            "build".into(),
+            "--tag".into(),
+            image.clone(),
+            "--file".into(),
+            containerfile.to_string_lossy().into_owned(),
+            root.to_string_lossy().into_owned(),
+        ])
+        .await?;
+        Ok(image)
     }
 
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {
@@ -684,6 +739,7 @@ mod tests {
             image: "img:latest".into(),
             command: vec!["/agent".into()],
             env: vec![],
+            packages: Default::default(),
             binds: vec![],
             outputs_volume: "/out".into(),
             network: NetworkMode::None,
@@ -720,6 +776,118 @@ mod tests {
     async fn ping_succeeds_when_the_binary_responds() {
         let (rt, _) = runtime_with(9000, |_| ok("x86_64"));
         assert!(rt.ping().await.is_ok());
+    }
+
+    /// Podman package-image cause graph:
+    /// mutable base reference -> exact local image ID; exact ID + exact package
+    /// requirements -> content-addressed Containerfile/tag -> cache probe.
+    /// Cache miss builds exactly once; cache hit performs no build. A workload
+    /// container is never created by this operation.
+    ///
+    /// | Rule | base inspect | cache | observable behavior |
+    /// |---|---|---|---|
+    /// | P1 | exact ID | miss | build once FROM exact ID; return derived ref |
+    /// | P2 | exact ID | hit | return derived ref without a build |
+    /// | P3 | missing/empty | n/a | fail before cache probe/build |
+    #[tokio::test]
+    async fn package_requirements_build_one_content_addressed_image_on_cache_miss() {
+        let captured = Arc::new(Mutex::new(None::<String>));
+        let captured_build = captured.clone();
+        let (rt, fake) = runtime_with(9000, move |args| {
+            match (
+                args.first().map(String::as_str),
+                args.get(1).map(String::as_str),
+            ) {
+                (Some("image"), Some("inspect")) => ok("sha256:exact-base"),
+                (Some("image"), Some("exists")) => err("not found"),
+                (Some("build"), _) => {
+                    let file = args
+                        .iter()
+                        .position(|arg| arg == "--file")
+                        .and_then(|index| args.get(index + 1))
+                        .expect("build carries Containerfile");
+                    *captured_build.lock().unwrap() = Some(
+                        std::fs::read_to_string(file).expect("Containerfile exists during build"),
+                    );
+                    ok("")
+                }
+                other => panic!("unexpected podman command: {other:?}"),
+            }
+        });
+        let requirements = pc::PackageRequirements {
+            managers: [("pip".into(), vec!["httpx==0.28.0".into()])]
+                .into_iter()
+                .collect(),
+        };
+        let image = rt
+            .prepare_package_image("python:3.13", &requirements)
+            .await
+            .expect("cache miss builds");
+        assert!(image.starts_with("localhost/awaken-packages:"));
+        let calls = fake.calls.lock().unwrap();
+        assert_eq!(calls.len(), 3, "P1: inspect, cache probe, then build");
+        assert_eq!(&calls[0][..2], &["image", "inspect"]);
+        assert_eq!(&calls[1][..2], &["image", "exists"]);
+        assert_eq!(calls[2].first().map(String::as_str), Some("build"));
+        let file = captured.lock().unwrap().clone().unwrap();
+        assert!(file.starts_with("FROM sha256:exact-base\n"), "P1: {file}");
+        assert!(file.contains(r#"RUN ["/usr/bin/env","pip","install","httpx==0.28.0"]"#));
+    }
+
+    #[tokio::test]
+    async fn package_image_cache_hit_does_not_build_or_create_a_workload() {
+        let (rt, fake) = runtime_with(9000, |args| {
+            match (
+                args.first().map(String::as_str),
+                args.get(1).map(String::as_str),
+            ) {
+                (Some("image"), Some("inspect")) => ok("sha256:exact-base"),
+                (Some("image"), Some("exists")) => ok(""),
+                other => panic!("P2 forbids build/run calls: {other:?}"),
+            }
+        });
+        let requirements = pc::PackageRequirements {
+            managers: [("pip".into(), vec!["httpx==0.28.0".into()])]
+                .into_iter()
+                .collect(),
+        };
+
+        let image = rt
+            .prepare_package_image("python:3.13", &requirements)
+            .await
+            .expect("P2 cache hit");
+
+        assert!(image.starts_with("localhost/awaken-packages:"));
+        let calls = fake.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2, "P2: inspect and cache probe only");
+        assert_eq!(&calls[0][..2], &["image", "inspect"]);
+        assert_eq!(&calls[1][..2], &["image", "exists"]);
+    }
+
+    #[tokio::test]
+    async fn missing_base_identity_fails_before_cache_or_build_side_effects() {
+        let (rt, fake) = runtime_with(9000, |args| {
+            match (
+                args.first().map(String::as_str),
+                args.get(1).map(String::as_str),
+            ) {
+                (Some("image"), Some("inspect")) => ok(""),
+                other => panic!("P3 forbids cache/build calls: {other:?}"),
+            }
+        });
+        let requirements = pc::PackageRequirements {
+            managers: [("pip".into(), vec!["httpx==0.28.0".into()])]
+                .into_iter()
+                .collect(),
+        };
+
+        let error = rt
+            .prepare_package_image("missing:latest", &requirements)
+            .await
+            .expect_err("P3 empty identity fails closed");
+
+        assert!(error.to_string().contains("empty base-image identity"));
+        assert_eq!(fake.calls.lock().unwrap().len(), 1, "P3: inspect only");
     }
 
     #[tokio::test]

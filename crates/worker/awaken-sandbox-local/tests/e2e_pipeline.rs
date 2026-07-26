@@ -49,6 +49,7 @@ async fn declared() -> (pc::EnvironmentDecl, pc::SandboxSpec, Arc<InMemoryFileSt
             },
             visibility: pc::EnvVisibility::Process,
         }],
+        packages: Default::default(),
         network: pc::NetworkPolicy::Unrestricted,
         outputs_path: "/mnt/session/outputs".into(),
         limits: Default::default(),

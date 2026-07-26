@@ -80,6 +80,7 @@ pub(crate) fn agent_run_sandbox_spec(thread: &str) -> pc::SandboxSpec {
         isolation: pc::IsolationClass::Workdir,
         mounts: Vec::new(),
         env: Vec::new(),
+        packages: Default::default(),
         network: pc::NetworkPolicy::Unrestricted,
         outputs_path: OUTPUTS_PATH.to_string(),
         limits: pc::ResourceLimits::default(),
@@ -154,6 +155,15 @@ impl SharedHost {
             })
             .flatten()
             .unwrap_or(pc::NetworkPolicy::Unrestricted);
+        let packages = self
+            .session_slots
+            .read(thread, |slot| {
+                slot.environment_projection
+                    .as_ref()
+                    .map(|environment| environment.packages.clone())
+            })
+            .flatten()
+            .unwrap_or_default();
         // Workdir can enforce the same deny-all intent only for spawned tools via
         // its `deny_egress` wrapper; it must not advertise an OS network-isolation
         // requirement that its provider deliberately does not claim. Stronger
@@ -170,6 +180,7 @@ impl SharedHost {
             isolation: pc::IsolationClass::Workdir,
             mounts,
             env: self.thread_session_env(thread),
+            packages,
             network,
             outputs_path: OUTPUTS_PATH.to_string(),
             limits: pc::ResourceLimits::default(),
@@ -684,6 +695,7 @@ mod provisioning_registry_tests {
                     "environment-1".into(),
                 ),
                 sandbox: serde_json::json!({}),
+                packages: Default::default(),
                 network: awaken_protocol_managed::SessionNetworkPolicy::None,
                 credential_realization:
                     awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),

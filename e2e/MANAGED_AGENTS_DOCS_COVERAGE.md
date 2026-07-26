@@ -127,10 +127,23 @@ These are real coverage gaps: awaken implements the behavior, no e2e asserts it.
    ordering is covered by `managed_real_thinking_e2e.mjs` with a thinking-capable
    provider; generic reconnect/replay is covered by `managed_reconnect_real_e2e.mjs`.
    The combined thinking-specific no-replay assertion remains provider-gated.
-7. **Deployment run failure taxonomy + auto-pause/auto-archive** (`environment_archived_error`,
-   `agent_archived_error`, `session_rate_limited_error`; `has_error` run filter).
-8. **`limited` networking sub-flags** — `allow_mcp_servers` / `allow_package_managers`
-   (default `false`); only `allowed_hosts` is exercised.
+7. ~~**Deployment run failure taxonomy + auto-pause**~~ — closed across
+   `management_deployments_e2e.mjs` and `management_deployment_schedule_e2e.mjs`:
+   the exact tagged run-error union replaces the former free-form/fixed-null field;
+   `session_id`/`error` is a structural XOR; manual persistent and scheduled
+   transient failures retain an active deployment, while a scheduled persistent
+   failure appends the failed run and auto-pauses with the exact matching reason.
+   Typed deployment/run list queries cover error, trigger, lifecycle, agent, RFC3339
+   time, archive and pagination partitions. Cron matching now uses the declared IANA
+   timezone and exposes five ordered future occurrences for active/paused schedules,
+   clearing them on archive.
+8. ~~**`limited` networking sub-flags**~~ — closed across
+   `management_environments_e2e.mjs` and the Rust `session_egress` behavior suite:
+   omitted/null defaults are false, update omission preserves exact aggregate state,
+   MCP access expands only the Session's normalized declared targets, package-manager
+   access expands the one canonical registry policy, and disabled/empty inputs add no
+   ambient fallback host. The resulting policy is frozen into `SessionInit`; providers
+   without no-bypass allowlist enforcement continue to reject it fail-closed.
 9. ~~**Worker lease-reclaim**~~ — `management_environments_e2e.mjs` proves the
     `reclaim_older_than_ms=0` HTTP boundary and `awaken-work-store` proves the same
     requested age against SQLite durable state.
@@ -163,7 +176,7 @@ assert against absent features.
 | **Dreams** (`/v1/dreams`, `dreaming-2026-04-21` header, create/poll/cancel/archive) | Not implemented — research preview | no `dreams`/`Dream` route or type in `crates/` |
 | **`agent-memory-2026-07-22` endpoint header + two-header 400 conflict** | Not implemented — awaken keys memory-store endpoints off the same managed beta | no `agent-memory-2026-07-22` string in `crates/` |
 | **`system.message` 1–1000 content-item boundary + `model_does_not_support_mid_conversation_system` 400** | Not implemented — accept/reject-before-first-turn is covered; no item-count or model-capability gate | no count validation in `routes/`/`types/session.rs` |
-| **Cloud env `packages` provisioning** (pip/npm/apt/cargo/gem/go, version pinning) | Out of scope — Anthropic-managed cloud sandbox only; awaken's sandbox does not parameterize packages | `managed_environment_e2e.mjs:9` concedes this by design |
+| **Cloud env `packages` provisioning** (pip/npm/apt/cargo/gem/go, version pinning) | Implemented through the one neutral Sandbox provisioning seam. Podman resolves the selected base image to its exact local ID, builds/reuses a content-addressed derived image, and the real workload observes the installed effect. Providers without package provisioning reject before workload creation; there is no fallback. | Admission/update semantics: `management_environments_e2e.mjs`; real success/fail-closed behavior: `managed_container_agent_e2e.mjs`; provider/cache side effects: `awaken-sandbox-container` cause-table tests |
 | **Rate limits** (300 create/min, 1200 read/min; 1,000-scheduled-deployment cap; 10s jitter) | Out of scope — org/infra-level policy, not modeled in the core wire | no per-org rate-limit middleware in `protocol-managed` |
 | **100k tool-output / oversized-block spill to file (preview + path)** | Partial / deferred — tracked open item **C11**; compaction covers token/message windows, not single-block spill | 6 compaction suites are window-only |
 

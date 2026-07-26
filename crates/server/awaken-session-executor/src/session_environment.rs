@@ -691,6 +691,7 @@ mod tests {
             isolation: IsolationClass::Workdir,
             mounts: Vec::new(),
             env: Vec::new(),
+            packages: Default::default(),
             network: NetworkPolicy::Unrestricted,
             outputs_path: "/outputs".into(),
             limits: ResourceLimits::default(),

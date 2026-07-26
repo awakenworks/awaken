@@ -28,6 +28,7 @@ fn binding(model: &str) -> ModelBinding {
 fn maps_roles_and_tools_onto_genai_request() {
     let request = ChatRequest {
         model_binding: binding("gpt-4o-mini"),
+        inference: Default::default(),
         messages: vec![
             ChatMessage {
                 role: Role::System,
@@ -65,6 +66,7 @@ fn tool_result_maps_to_a_genai_tool_message() {
     // "tool_call_ids did not have response messages". Regression for that bug.
     let request = ChatRequest {
         model_binding: binding("gpt-4o-mini"),
+        inference: Default::default(),
         messages: vec![ChatMessage {
             role: Role::Tool,
             content: vec![ContentBlock::tool_result(
@@ -84,6 +86,7 @@ fn tool_result_maps_to_a_genai_tool_message() {
 fn image_block_maps_to_a_binary_part() {
     let request = ChatRequest {
         model_binding: binding("gpt-4o-mini"),
+        inference: Default::default(),
         messages: vec![ChatMessage {
             role: Role::User,
             content: vec![
@@ -107,6 +110,7 @@ fn image_block_maps_to_a_binary_part() {
 fn omits_tools_when_none_are_visible() {
     let request = ChatRequest {
         model_binding: binding("m"),
+        inference: Default::default(),
         messages: vec![ChatMessage {
             role: Role::User,
             content: vec![ContentBlock::text("hi")],
@@ -229,6 +233,7 @@ fn assistant_tool_use_block_maps_to_a_genai_tool_call() {
     // own call and a strict provider rejects the follow-up tool result.
     let request = ChatRequest {
         model_binding: binding("gpt-4o-mini"),
+        inference: Default::default(),
         messages: vec![ChatMessage {
             role: Role::Assistant,
             content: vec![ContentBlock::tool_use(
@@ -269,6 +274,7 @@ fn image_url_infers_content_type_from_extension() {
     ] {
         let request = ChatRequest {
             model_binding: binding("m"),
+            inference: Default::default(),
             messages: vec![ChatMessage {
                 role: Role::User,
                 content: vec![ContentBlock::image_url(url)],

@@ -70,6 +70,7 @@ async fn full_lifecycle_harvests_memory_collects_outputs_then_shreds_and_reaps()
             },
         ],
         env: Vec::new(),
+        packages: Default::default(),
         network: pc::NetworkPolicy::Unrestricted,
         outputs_path: "/mnt/session/outputs".into(),
         limits: pc::ResourceLimits::default(),

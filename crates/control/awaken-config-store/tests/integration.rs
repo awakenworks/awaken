@@ -50,6 +50,7 @@ fn agent_config() -> AgentConfig {
         max_steps: 8,
         delegation_limits: Default::default(),
         model_binding: awaken_config_store::ModelSelection::pinned("p", "m", "b"),
+        inference: Default::default(),
         tool_ids: vec!["echo".to_string()],
         model_candidates: Vec::new(),
         plugin_ids: Vec::new(),
@@ -276,6 +277,7 @@ fn scoped_agent(id: &str) -> AgentConfig {
         max_steps: 8,
         delegation_limits: Default::default(),
         model_binding: ModelSelection::pinned("p", "m", "b"),
+        inference: Default::default(),
         tool_ids: Vec::new(),
         ..Default::default()
     }
@@ -379,6 +381,7 @@ fn agent_with(id: &str, instructions: &str) -> AgentConfig {
         max_steps: 8,
         delegation_limits: Default::default(),
         model_binding: ModelSelection::pinned("p", "m", "b"),
+        inference: Default::default(),
         tool_ids: Vec::new(),
         ..Default::default()
     }

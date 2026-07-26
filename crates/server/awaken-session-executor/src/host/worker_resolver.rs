@@ -544,6 +544,7 @@ mod tests {
                             "env-fingerprint".into(),
                         ),
                         sandbox: serde_json::json!({}),
+                        packages: Default::default(),
                         network: awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
                         credential_realization:
                             awaken_runtime_contract::CredentialRealizationProfile {
@@ -563,6 +564,7 @@ mod tests {
                         ),
                     ),
                     delegate_ids: Vec::new(),
+                    toolsets: Vec::new(),
                     mounts: input.mounts,
                     env: input.env,
                     prompts: input.prompts,
@@ -593,6 +595,7 @@ mod tests {
                 baseline,
                 resources: Default::default(),
                 mcp,
+                toolsets: Vec::new(),
             };
             *self.projection.lock().unwrap() = Some(projection.clone());
             let lease = awaken_protocol_managed::SessionRealizationLease {

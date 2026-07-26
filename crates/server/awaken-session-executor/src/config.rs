@@ -123,28 +123,82 @@ pub(crate) fn effective_ruleset(
     }
 }
 
-/// The thread's authorization gate, built from [`effective_ruleset`].
-pub(crate) fn server_gate_with(
+fn toolset_permission_rules(
+    toolsets: &[awaken_runtime_contract::agent_bindings::ToolsetPolicy],
+) -> Vec<PermissionRule> {
+    use awaken_runtime_contract::agent_bindings::{ToolPermissionRequirement, ToolsetSource};
+    let behavior = |enabled: bool, permission: ToolPermissionRequirement| {
+        if !enabled {
+            ToolPermissionBehavior::Deny
+        } else {
+            match permission {
+                ToolPermissionRequirement::AlwaysAllow => ToolPermissionBehavior::Allow,
+                ToolPermissionRequirement::AlwaysAsk => ToolPermissionBehavior::RequireConfirmation,
+            }
+        }
+    };
+    let rule =
+        |pattern: String, policy: awaken_runtime_contract::agent_bindings::ToolExecutionPolicy| {
+            PermissionRule::new(
+                ToolCallPattern::parse(&pattern).expect("typed toolset produces a valid pattern"),
+                behavior(policy.enabled, policy.permission),
+            )
+        };
+    let mut rules = Vec::new();
+    for toolset in toolsets {
+        match &toolset.source {
+            ToolsetSource::Agent => rules.extend(
+                toolset
+                    .overrides
+                    .iter()
+                    .map(|entry| rule(entry.name.clone(), entry.policy)),
+            ),
+            ToolsetSource::Mcp { server_name } => {
+                rules.push(rule(format!("mcp__{server_name}__*"), toolset.default));
+                rules.extend(toolset.overrides.iter().map(|entry| {
+                    rule(format!("mcp__{server_name}__{}", entry.name), entry.policy)
+                }));
+            }
+        }
+    }
+    rules
+}
+
+pub(crate) fn effective_ruleset_with_toolsets(
     authored: Option<PermissionRuleset>,
     extra_allowed: &[String],
+    toolsets: &[awaken_runtime_contract::agent_bindings::ToolsetPolicy],
+) -> PermissionRuleset {
+    let mut resolved = effective_ruleset(authored, extra_allowed);
+    // Put exact toolset rules first so they are authoritative over the built-in
+    // baseline on equal specificity. Compile rejects a second authored permission
+    // section when toolsets exist.
+    let mut rules = toolset_permission_rules(toolsets);
+    rules.extend(resolved.rules);
+    resolved.rules = rules;
+    resolved
+}
+
+pub(crate) fn server_gate_with_toolsets(
+    authored: Option<PermissionRuleset>,
+    extra_allowed: &[String],
+    toolsets: &[awaken_runtime_contract::agent_bindings::ToolsetPolicy],
 ) -> Arc<dyn awaken_runtime_contract::permission::ToolGateHook> {
-    Arc::new(PermissionGate::new(server_permission_policy(
+    Arc::new(PermissionGate::new(server_permission_policy_with_toolsets(
         authored,
         extra_allowed,
+        toolsets,
     )))
 }
 
-/// The policy behind the native gate, shared with ACP so both runtimes reach the
-/// same authorization decision before a tool effect. The gate remains the native
-/// projection; ACP adapts this neutral policy to `session/request_permission`.
-pub(crate) fn server_permission_policy(
+pub(crate) fn server_permission_policy_with_toolsets(
     authored: Option<PermissionRuleset>,
     extra_allowed: &[String],
+    toolsets: &[awaken_runtime_contract::agent_bindings::ToolsetPolicy],
 ) -> Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy> {
-    Arc::new(RuleBasedToolPermissionPolicy::new(effective_ruleset(
-        authored,
-        extra_allowed,
-    )))
+    Arc::new(RuleBasedToolPermissionPolicy::new(
+        effective_ruleset_with_toolsets(authored, extra_allowed, toolsets),
+    ))
 }
 
 fn hand_tool_descriptors() -> Vec<ToolDescriptor> {
@@ -453,6 +507,72 @@ mod tests {
         assert_eq!(
             merged.decide("Bash", &serde_json::json!({ "command": "rm -rf" })),
             ToolPermissionBehavior::Deny // deny is absolute, even over the author's allow
+        );
+    }
+
+    #[test]
+    fn toolset_policy_controls_execution_gate_behavior() {
+        // Cause graph: normalized exact toolset policy -> permission rules at
+        // runtime construction -> gate decision before RawTool invocation.
+        // Visibility is tested at request assembly; this table proves execution
+        // behavior and therefore prevents a data-only projection from passing.
+        //
+        // Decision table:
+        // | tool                         | enabled | permission   | gate result |
+        // | read                         | false   | allow        | deny        |
+        // | write                        | true    | ask          | ask         |
+        // | mcp__docs__search            | true    | ask          | ask         |
+        // | mcp__docs__fetch (default)   | true    | allow        | allow       |
+        use awaken_runtime_contract::agent_bindings::{
+            ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+            ToolsetSource,
+        };
+        let policy = |enabled, permission| ToolExecutionPolicy {
+            enabled,
+            permission,
+        };
+        let toolsets = vec![
+            ToolsetPolicy {
+                source: ToolsetSource::Agent,
+                default: ToolExecutionPolicy::default(),
+                overrides: vec![
+                    ToolPolicyOverride {
+                        name: "read".into(),
+                        policy: policy(false, ToolPermissionRequirement::AlwaysAllow),
+                    },
+                    ToolPolicyOverride {
+                        name: "write".into(),
+                        policy: policy(true, ToolPermissionRequirement::AlwaysAsk),
+                    },
+                ],
+            },
+            ToolsetPolicy {
+                source: ToolsetSource::Mcp {
+                    server_name: "docs".into(),
+                },
+                default: ToolExecutionPolicy::default(),
+                overrides: vec![ToolPolicyOverride {
+                    name: "search".into(),
+                    policy: policy(true, ToolPermissionRequirement::AlwaysAsk),
+                }],
+            },
+        ];
+        let rules = effective_ruleset_with_toolsets(None, &[], &toolsets);
+        assert_eq!(
+            rules.decide("read", &serde_json::json!({})),
+            ToolPermissionBehavior::Deny
+        );
+        assert_eq!(
+            rules.decide("write", &serde_json::json!({})),
+            ToolPermissionBehavior::RequireConfirmation
+        );
+        assert_eq!(
+            rules.decide("mcp__docs__search", &serde_json::json!({})),
+            ToolPermissionBehavior::RequireConfirmation
+        );
+        assert_eq!(
+            rules.decide("mcp__docs__fetch", &serde_json::json!({})),
+            ToolPermissionBehavior::Allow
         );
     }
 

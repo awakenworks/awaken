@@ -11,17 +11,18 @@ use awaken_config_service::{ConfigPlane, RESERVED_ADMIN_SCOPE};
 use awaken_config_store::{
     AgentConfig, AgentConfigRevision, ConfigWrite, ModelSelection, MultiagentConfig,
 };
-use awaken_protocol_managed::types::ModelConfig;
 use awaken_protocol_managed::types::agent::{
-    Agent, AgentCreateParams, AgentSkill, AgentTool, AgentUpdateParams, CustomToolInputSchema,
-    MultiagentConfig as WireMultiagent, MultiagentRosterEntry, ToolDefaultConfig, UrlMcpServer,
+    Agent, AgentCreateParams, AgentListParams, AgentSkill, AgentTool, AgentUpdateParams,
+    CustomToolInputSchema, MultiagentConfig as WireMultiagent, MultiagentRosterEntry, UrlMcpServer,
     UrlMcpServerKind,
 };
+use awaken_protocol_managed::types::{ModelConfig, ModelEffort, ModelSpeed};
 use awaken_protocol_managed::{ManagedAgentError, ManagedAgentRepository};
 use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
+use awaken_runtime_contract::agent_bindings::{InferenceOptions, InferenceSpeed, ReasoningEffort};
+use awaken_runtime_contract::agent_bindings::{ToolsetPolicy, ToolsetSource};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_tenancy::ScopeId;
-use serde_json::json;
 use sha2::{Digest, Sha256};
 
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
@@ -119,14 +120,6 @@ impl ConfigPlaneManagedAgentRepository {
     }
 }
 
-fn tool_id(tool: &AgentTool) -> Option<String> {
-    match tool {
-        AgentTool::AgentToolset20260401 { .. } => Some("agent_toolset_20260401".into()),
-        AgentTool::McpToolset { .. } => None,
-        AgentTool::Custom { .. } => None,
-    }
-}
-
 fn client_tools(tools: &[AgentTool]) -> Vec<ToolDescriptor> {
     tools
         .iter()
@@ -186,14 +179,17 @@ fn config_from_create(
     params: AgentCreateParams,
 ) -> Result<AgentConfig, ManagedAgentError> {
     let model = params.model.into_config();
+    let inference = inference_from_wire(model.speed, model.effort.map(|value| value.resolved()));
     let multiagent = params.multiagent.map(|value| typed_multiagent(&id, value));
-    Ok(AgentConfig {
+    let config = AgentConfig {
         id,
         instructions: params.system.unwrap_or_default(),
         max_steps: 8,
         delegation_limits: Default::default(),
         model_binding: ModelSelection::pinned("", model.id, ""),
-        tool_ids: params.tools.iter().filter_map(tool_id).collect(),
+        inference,
+        tool_ids: Vec::new(),
+        toolsets: awaken_protocol_managed::project::toolset_policies(&params.tools),
         client_tools: client_tools(&params.tools),
         plugin_ids: Vec::new(),
         plugin_config: BTreeMap::new(),
@@ -210,31 +206,128 @@ fn config_from_create(
         tool_overrides: Vec::new(),
         recovery_policies: BTreeMap::new(),
         compaction: None,
-    })
+    };
+    validate_managed_tool_bindings(&config)?;
+    Ok(config)
 }
 
-fn wire_tools(ids: &[String], client_tools: &[ToolDescriptor]) -> Vec<AgentTool> {
-    let mut tools = ids
+fn validate_managed_tool_bindings(config: &AgentConfig) -> Result<(), ManagedAgentError> {
+    if config.mcp_servers.len() > 20 {
+        return Err(ManagedAgentError::Invalid(
+            "mcp_servers supports at most 20 entries".into(),
+        ));
+    }
+    let server_names = config
+        .mcp_servers
         .iter()
-        .map(|id| {
-            if id == "agent_toolset_20260401" {
-                AgentTool::AgentToolset20260401 {
-                    configs: Vec::new(),
-                    default_config: Some(ToolDefaultConfig {
-                        enabled: Some(true),
-                        permission_policy: None,
-                    }),
+        .map(|server| server.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    if server_names.len() != config.mcp_servers.len() {
+        return Err(ManagedAgentError::Invalid(
+            "mcp_servers names must be unique".into(),
+        ));
+    }
+    let mut sources = std::collections::BTreeSet::new();
+    let mut referenced_mcp = std::collections::BTreeSet::new();
+    for toolset in &config.toolsets {
+        let source = match &toolset.source {
+            ToolsetSource::Agent => "agent".to_string(),
+            ToolsetSource::Mcp { server_name } => {
+                if !server_names.contains(server_name.as_str()) {
+                    return Err(ManagedAgentError::Invalid(format!(
+                        "mcp_toolset references undeclared server `{server_name}`"
+                    )));
                 }
-            } else {
-                AgentTool::Custom {
-                    name: id.clone(),
-                    description: format!("Client-executed tool `{id}`"),
-                    input_schema: CustomToolInputSchema::from_value(json!({"type":"object"}))
-                        .expect("object schema"),
-                }
+                referenced_mcp.insert(server_name.as_str());
+                format!("mcp:{server_name}")
             }
-        })
-        .collect::<Vec<_>>();
+        };
+        if !sources.insert(source.clone()) {
+            return Err(ManagedAgentError::Invalid(format!(
+                "toolset source `{source}` is duplicated"
+            )));
+        }
+        let mut names = std::collections::BTreeSet::new();
+        for entry in &toolset.overrides {
+            if entry.name.is_empty() || !names.insert(entry.name.as_str()) {
+                return Err(ManagedAgentError::Invalid(format!(
+                    "tool config name {:?} is empty or duplicated",
+                    entry.name
+                )));
+            }
+            if toolset.source == ToolsetSource::Agent
+                && !awaken_protocol_managed::project::is_agent_toolset_member(&entry.name)
+            {
+                return Err(ManagedAgentError::Invalid(format!(
+                    "unknown agent tool `{}`",
+                    entry.name
+                )));
+            }
+        }
+    }
+    if referenced_mcp != server_names {
+        let missing = server_names
+            .difference(&referenced_mcp)
+            .copied()
+            .collect::<Vec<_>>();
+        return Err(ManagedAgentError::Invalid(format!(
+            "every MCP server must have one mcp_toolset; missing {missing:?}"
+        )));
+    }
+    let declared_count = config.client_tools.len()
+        + config
+            .toolsets
+            .iter()
+            .map(|toolset| match toolset.source {
+                ToolsetSource::Agent => {
+                    awaken_protocol_managed::project::AGENT_TOOLSET_TOOL_IDS.len()
+                }
+                ToolsetSource::Mcp { .. } => toolset.overrides.len(),
+            })
+            .sum::<usize>();
+    if declared_count > 128 {
+        return Err(ManagedAgentError::Invalid(
+            "tools supports at most 128 declared entries".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn inference_from_wire(speed: Option<ModelSpeed>, effort: Option<ModelEffort>) -> InferenceOptions {
+    InferenceOptions {
+        speed: speed.map(|value| match value {
+            ModelSpeed::Standard => InferenceSpeed::Standard,
+            ModelSpeed::Fast => InferenceSpeed::Fast,
+        }),
+        effort: effort.map(|value| match value {
+            ModelEffort::Low => ReasoningEffort::Low,
+            ModelEffort::Medium => ReasoningEffort::Medium,
+            ModelEffort::High => ReasoningEffort::High,
+            ModelEffort::Xhigh => ReasoningEffort::Xhigh,
+            ModelEffort::Max => ReasoningEffort::Max,
+        }),
+    }
+}
+
+fn model_config(model: String, inference: InferenceOptions) -> ModelConfig {
+    ModelConfig {
+        id: model,
+        speed: inference.speed.map(|value| match value {
+            InferenceSpeed::Standard => ModelSpeed::Standard,
+            InferenceSpeed::Fast => ModelSpeed::Fast,
+        }),
+        effort: inference.effort.map(|value| match value {
+            ReasoningEffort::Low => ModelEffort::Low,
+            ReasoningEffort::Medium => ModelEffort::Medium,
+            ReasoningEffort::High => ModelEffort::High,
+            ReasoningEffort::Xhigh => ModelEffort::Xhigh,
+            ReasoningEffort::Max => ModelEffort::Max,
+        }),
+    }
+}
+
+fn wire_tools(toolsets: &[ToolsetPolicy], client_tools: &[ToolDescriptor]) -> Vec<AgentTool> {
+    let mut tools = awaken_protocol_managed::project::resolved_toolsets(toolsets);
     tools.extend(client_tools.iter().map(|tool| {
         AgentTool::Custom {
             name: tool.id.clone(),
@@ -254,7 +347,7 @@ fn project(revision: AgentConfigRevision) -> Agent {
         .resolved()
         .map(|binding| binding.model_ref.clone())
         .unwrap_or_default();
-    let tools = wire_tools(&config.tool_ids, &config.client_tools);
+    let tools = wire_tools(&config.toolsets, &config.client_tools);
     Agent {
         id: id.clone(),
         object_type: "agent",
@@ -263,7 +356,7 @@ fn project(revision: AgentConfigRevision) -> Agent {
         updated_at: OBJECT_AT.to_string(),
         name: config.name.unwrap_or(id),
         description: config.description,
-        model: ModelConfig::new(model),
+        model: model_config(model, config.inference),
         system: (!config.instructions.is_empty()).then_some(config.instructions),
         metadata: config.metadata,
         mcp_servers: config
@@ -326,14 +419,31 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         }
     }
 
-    async fn retrieve(&self, workspace_id: &str, id: &str) -> Result<Agent, ManagedAgentError> {
+    async fn retrieve(
+        &self,
+        workspace_id: &str,
+        id: &str,
+        version: Option<u64>,
+    ) -> Result<Agent, ManagedAgentError> {
+        if let Some(version) = version {
+            return self
+                .versions(workspace_id, id)
+                .await?
+                .into_iter()
+                .find(|revision| revision.version == version)
+                .ok_or(ManagedAgentError::NotFound);
+        }
         self.versioned_for_read(workspace_id, id)
             .await?
             .map(|revision| self.project_current(workspace_id, revision))
             .ok_or(ManagedAgentError::NotFound)
     }
 
-    async fn list(&self, workspace_id: &str) -> Result<Vec<Agent>, ManagedAgentError> {
+    async fn list(
+        &self,
+        workspace_id: &str,
+        params: &AgentListParams,
+    ) -> Result<Vec<Agent>, ManagedAgentError> {
         if workspace_id == RESERVED_ADMIN_SCOPE {
             return Ok(Vec::new());
         }
@@ -351,7 +461,22 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
                 .await
                 .map_err(ManagedAgentError::Storage)?
                 .ok_or_else(|| ManagedAgentError::Storage("listed Agent disappeared".into()))?;
-            agents.push(self.project_current(workspace_id, versioned));
+            let agent = self.project_current(workspace_id, versioned);
+            if !params.include_archived && agent.archived_at.is_some() {
+                continue;
+            }
+            if params
+                .created_at_gte
+                .as_deref()
+                .is_some_and(|lower| agent.created_at.as_str() < lower)
+                || params
+                    .created_at_lte
+                    .as_deref()
+                    .is_some_and(|upper| agent.created_at.as_str() > upper)
+            {
+                continue;
+            }
+            agents.push(agent);
         }
         Ok(agents)
     }
@@ -372,10 +497,14 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             .await
             .map_err(ManagedAgentError::Storage)?
             .ok_or(ManagedAgentError::NotFound)?;
-        if current.revision != params.version {
+        if params
+            .version
+            .is_some_and(|version| current.revision != version)
+        {
             return Err(ManagedAgentError::Conflict(format!(
                 "version mismatch: expected {}, got {}",
-                current.revision, params.version
+                current.revision,
+                params.version.unwrap_or_default()
             )));
         }
         if current.config.archived_at.is_some() {
@@ -388,30 +517,50 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             config.name = Some(name);
         }
         if let Some(model) = params.model {
-            config.model_binding = ModelSelection::pinned("", model.into_config().id, "");
+            let model = model.into_config();
+            config.inference =
+                inference_from_wire(model.speed, model.effort.map(|value| value.resolved()));
+            config.model_binding = ModelSelection::pinned("", model.id, "");
         }
         if let Some(description) = params.description {
-            config.description = Some(description);
+            config.description = description;
         }
         if let Some(system) = params.system {
-            config.instructions = system;
+            config.instructions = system.unwrap_or_default();
         }
         if let Some(metadata) = params.metadata {
-            config.metadata = metadata;
+            match metadata {
+                None => config.metadata.clear(),
+                Some(patch) => {
+                    for (key, value) in patch {
+                        match value {
+                            Some(value) => {
+                                config.metadata.insert(key, value);
+                            }
+                            None => {
+                                config.metadata.remove(&key);
+                            }
+                        }
+                    }
+                }
+            }
         }
         if let Some(mcp_servers) = params.mcp_servers {
-            config.mcp_servers = typed_mcp_servers(mcp_servers);
+            config.mcp_servers = typed_mcp_servers(mcp_servers.unwrap_or_default());
         }
         if let Some(skills) = params.skills {
-            config.skill_ids = typed_skill_ids(skills);
+            config.skill_ids = typed_skill_ids(skills.unwrap_or_default());
         }
         if let Some(tools) = params.tools {
-            config.tool_ids = tools.iter().filter_map(tool_id).collect();
+            let tools = tools.unwrap_or_default();
+            config.tool_ids.clear();
+            config.toolsets = awaken_protocol_managed::project::toolset_policies(&tools);
             config.client_tools = client_tools(&tools);
         }
         if let Some(multiagent) = params.multiagent {
-            config.multiagent = Some(typed_multiagent(id, multiagent));
+            config.multiagent = multiagent.map(|multiagent| typed_multiagent(id, multiagent));
         }
+        validate_managed_tool_bindings(&config)?;
         match self
             .plane
             .put_if_revision(&scope, &config, current.revision)
@@ -508,6 +657,7 @@ mod tests {
     use awaken_config_store::{ModelSelection, SqliteConfigStore};
     use awaken_protocol_managed::types::agent::{AgentCreateParams, AgentUpdateParams, ModelInput};
     use awaken_runtime_contract::resolved::ModelBinding;
+    use serde_json::json;
 
     use super::*;
 
@@ -557,14 +707,20 @@ mod tests {
                 }))
                 .unwrap(),
             ],
-            tools: Vec::new(),
+            tools: vec![
+                serde_json::from_value(json!({
+                    "type": "mcp_toolset",
+                    "mcp_server_name": "docs"
+                }))
+                .unwrap(),
+            ],
             multiagent: None,
         }
     }
 
     fn update_params(version: u64) -> AgentUpdateParams {
         AgentUpdateParams {
-            version,
+            version: Some(version),
             name: Some("renamed".into()),
             model: None,
             description: None,
@@ -645,7 +801,7 @@ mod tests {
 
         let repository =
             ConfigPlaneManagedAgentRepository::new(plane(path.to_str().unwrap()), "workspace-a");
-        let current = repository.retrieve("workspace-a", &id).await.unwrap();
+        let current = repository.retrieve("workspace-a", &id, None).await.unwrap();
         assert_eq!(current.name, "renamed");
         assert_eq!(current.version, 2);
         let versions = repository.versions("workspace-a", &id).await.unwrap();
@@ -653,13 +809,74 @@ mod tests {
         assert_eq!(versions[0].name, "assistant");
         assert_eq!(versions[1].name, "renamed");
         assert!(matches!(
-            repository.retrieve("workspace-b", &id).await,
+            repository.retrieve("workspace-b", &id, None).await,
             Err(ManagedAgentError::NotFound)
         ));
         assert!(matches!(
             repository.versions("workspace-b", &id).await,
             Err(ManagedAgentError::NotFound)
         ));
+    }
+
+    #[tokio::test]
+    async fn model_controls_survive_revision_restart_and_enter_the_executable_snapshot() {
+        // Causal graph:
+        // tagged/bare Managed model controls -> typed authoring revision
+        // -> publication snapshot -> runtime inference controls.
+        //
+        // Decision table:
+        // | create controls       | persisted response | executable snapshot |
+        // | fast + {type:xhigh}   | exact typed values | exact typed values   |
+        // | repository restart    | values preserved   | republished values   |
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.sqlite");
+        let id = {
+            let plane = plane(path.to_str().unwrap());
+            let repository = ConfigPlaneManagedAgentRepository::new(plane.clone(), "workspace-a");
+            let mut params = create_params("controlled");
+            params.model = serde_json::from_value(json!({
+                "id": "claude-opus-4-8",
+                "speed": "fast",
+                "effort": {"type": "xhigh"}
+            }))
+            .unwrap();
+            let created = repository.create("workspace-a", params).await.unwrap();
+            assert_eq!(created.model.speed, Some(ModelSpeed::Fast));
+            assert_eq!(created.model.effort, Some(ModelEffort::Xhigh));
+            let installed = plane
+                .service()
+                .installed_in("workspace-a", &created.id)
+                .expect("create publishes an executable revision");
+            assert_eq!(
+                installed.resolved_spec.plugin_config.inference,
+                InferenceOptions {
+                    speed: Some(InferenceSpeed::Fast),
+                    effort: Some(ReasoningEffort::Xhigh),
+                }
+            );
+            created.id
+        };
+
+        let plane = plane(path.to_str().unwrap());
+        let repository = ConfigPlaneManagedAgentRepository::new(plane.clone(), "workspace-a");
+        let restored = repository.retrieve("workspace-a", &id, None).await.unwrap();
+        assert_eq!(restored.model.speed, Some(ModelSpeed::Fast));
+        assert_eq!(restored.model.effort, Some(ModelEffort::Xhigh));
+        plane
+            .publish(&ScopeId::from("workspace-a"), &id)
+            .await
+            .expect("reconciliation republishes the restored authoring revision");
+        let installed = plane
+            .service()
+            .installed_in("workspace-a", &id)
+            .expect("restart restores the same executable publication");
+        assert_eq!(
+            installed.resolved_spec.plugin_config.inference,
+            InferenceOptions {
+                speed: Some(InferenceSpeed::Fast),
+                effort: Some(ReasoningEffort::Xhigh),
+            }
+        );
     }
 
     #[tokio::test]
@@ -688,6 +905,7 @@ mod tests {
             .retrieve(
                 "workspace-a",
                 awaken_admin_assistant::ADMIN_ASSISTANT_AGENT_ID,
+                None,
             )
             .await
             .unwrap();
@@ -699,7 +917,8 @@ mod tests {
             repository
                 .retrieve(
                     "workspace-b",
-                    awaken_admin_assistant::ADMIN_ASSISTANT_AGENT_ID
+                    awaken_admin_assistant::ADMIN_ASSISTANT_AGENT_ID,
+                    None,
                 )
                 .await,
             Err(ManagedAgentError::NotFound)

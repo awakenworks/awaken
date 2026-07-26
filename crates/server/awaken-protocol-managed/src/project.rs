@@ -73,10 +73,10 @@ fn first_forbidden_schema_key(v: &serde_json::Value) -> Option<&'static str> {
     }
 }
 
-/// The canonical tools the versioned agent toolset bundles. A built-in tool the host
-/// does *not* register is disabled in `configs`; a registered tool that requires
-/// confirmation carries an `always_ask` permission policy.
-const AGENT_TOOLSET_TOOLS: [&str; 8] = [
+/// The official Managed Agents wire owns this versioned membership. Neutral
+/// contracts carry only resolved names and policies; they never own concrete
+/// builtin identities.
+pub const AGENT_TOOLSET_TOOL_IDS: [&str; 8] = [
     "bash",
     "read",
     "write",
@@ -87,14 +87,181 @@ const AGENT_TOOLSET_TOOLS: [&str; 8] = [
     "web_search",
 ];
 
+#[must_use]
+pub fn is_agent_toolset_member(name: &str) -> bool {
+    AGENT_TOOLSET_TOOL_IDS.contains(&name)
+}
+
+/// Normalize wire toolset params into the single neutral execution policy.
+pub fn toolset_policies(
+    tools: &[crate::types::agent::AgentTool],
+) -> Vec<awaken_agent_contract::ToolsetPolicy> {
+    use crate::types::agent::{AgentTool, PermissionPolicy};
+    use awaken_agent_contract::{
+        ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+        ToolsetSource,
+    };
+
+    let permission =
+        |value: Option<PermissionPolicy>| match value.unwrap_or(PermissionPolicy::AlwaysAllow) {
+            PermissionPolicy::AlwaysAllow => ToolPermissionRequirement::AlwaysAllow,
+            PermissionPolicy::AlwaysAsk => ToolPermissionRequirement::AlwaysAsk,
+        };
+    tools
+        .iter()
+        .filter_map(|tool| {
+            let (source, configs, default_config) = match tool {
+                AgentTool::AgentToolset20260401 {
+                    configs,
+                    default_config,
+                } => (ToolsetSource::Agent, configs, default_config.as_ref()),
+                AgentTool::McpToolset {
+                    mcp_server_name,
+                    configs,
+                    default_config,
+                } => (
+                    ToolsetSource::Mcp {
+                        server_name: mcp_server_name.clone(),
+                    },
+                    configs,
+                    default_config.as_ref(),
+                ),
+                AgentTool::Custom { .. } => return None,
+            };
+            let default = ToolExecutionPolicy {
+                enabled: default_config
+                    .and_then(|value| value.enabled)
+                    .unwrap_or(true),
+                permission: permission(default_config.and_then(|value| value.permission_policy)),
+            };
+            let overrides = match &source {
+                ToolsetSource::Agent => {
+                    let mut resolved = AGENT_TOOLSET_TOOL_IDS
+                        .into_iter()
+                        .map(|name| {
+                            let config = configs.iter().find(|config| config.name == name);
+                            ToolPolicyOverride {
+                                name: name.to_string(),
+                                policy: ToolExecutionPolicy {
+                                    enabled: config
+                                        .and_then(|value| value.enabled)
+                                        .unwrap_or(default.enabled),
+                                    permission: config
+                                        .and_then(|value| value.permission_policy)
+                                        .map(|value| permission(Some(value)))
+                                        .unwrap_or(default.permission),
+                                },
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    // Preserve unknown names until the Managed aggregate rejects
+                    // them; normalization must never erase invalid input before
+                    // admission validation observes it.
+                    resolved.extend(configs.iter().filter_map(|config| {
+                        (!is_agent_toolset_member(&config.name)).then(|| ToolPolicyOverride {
+                            name: config.name.clone(),
+                            policy: ToolExecutionPolicy {
+                                enabled: config.enabled.unwrap_or(default.enabled),
+                                permission: config
+                                    .permission_policy
+                                    .map(|value| permission(Some(value)))
+                                    .unwrap_or(default.permission),
+                            },
+                        })
+                    }));
+                    resolved
+                }
+                ToolsetSource::Mcp { .. } => configs
+                    .iter()
+                    .map(|config| ToolPolicyOverride {
+                        name: config.name.clone(),
+                        policy: ToolExecutionPolicy {
+                            enabled: config.enabled.unwrap_or(default.enabled),
+                            permission: config
+                                .permission_policy
+                                .map(|value| permission(Some(value)))
+                                .unwrap_or(default.permission),
+                        },
+                    })
+                    .collect(),
+            };
+            Some(ToolsetPolicy {
+                source,
+                default,
+                overrides,
+            })
+        })
+        .collect()
+}
+
+/// Canonical wire projection for already-resolved toolset policies. Both the
+/// Agent registry and Session snapshots call this function; neither fabricates
+/// defaults independently.
+pub fn resolved_toolsets(
+    policies: &[awaken_agent_contract::ToolsetPolicy],
+) -> Vec<crate::types::agent::AgentTool> {
+    use crate::types::agent::{AgentTool, PermissionPolicy, ToolConfig, ToolDefaultConfig};
+    use awaken_agent_contract::{ToolPermissionRequirement, ToolsetSource};
+
+    let permission = |value| match value {
+        ToolPermissionRequirement::AlwaysAllow => PermissionPolicy::AlwaysAllow,
+        ToolPermissionRequirement::AlwaysAsk => PermissionPolicy::AlwaysAsk,
+    };
+    policies
+        .iter()
+        .map(|policy| {
+            let configs = policy
+                .overrides
+                .iter()
+                .filter(|entry| entry.policy != policy.default)
+                .map(|entry| ToolConfig {
+                    name: entry.name.clone(),
+                    enabled: Some(entry.policy.enabled),
+                    permission_policy: Some(permission(entry.policy.permission)),
+                })
+                .collect();
+            let default_config = Some(ToolDefaultConfig {
+                enabled: Some(policy.default.enabled),
+                permission_policy: Some(permission(policy.default.permission)),
+            });
+            match &policy.source {
+                ToolsetSource::Agent => AgentTool::AgentToolset20260401 {
+                    configs,
+                    default_config,
+                },
+                ToolsetSource::Mcp { server_name } => AgentTool::McpToolset {
+                    mcp_server_name: server_name.clone(),
+                    configs,
+                    default_config,
+                },
+            }
+        })
+        .collect()
+}
+
+/// Resolve nullable toolset fields while preserving custom tool definitions.
+pub fn resolved_tools(
+    tools: &[crate::types::agent::AgentTool],
+) -> Vec<crate::types::agent::AgentTool> {
+    let mut resolved = resolved_toolsets(&toolset_policies(tools));
+    resolved.extend(tools.iter().filter_map(|tool| match tool {
+        crate::types::agent::AgentTool::Custom { .. } => Some(tool.clone()),
+        crate::types::agent::AgentTool::AgentToolset20260401 { .. }
+        | crate::types::agent::AgentTool::McpToolset { .. } => None,
+    }));
+    resolved
+}
+
 /// Project the agent's tool surface onto the public `agent.tools` array. The built-in
 /// tools fold into a single `agent_toolset_20260401` reference (never per-tool
 /// definitions) with `configs` that disable the toolset tools the host does not
 /// register and mark the confirmation-gated ones `always_ask`; each client tool
 /// becomes a `custom` tool definition.
 pub fn agent_tools(caps: &AgentCapabilities) -> Vec<crate::types::agent::AgentTool> {
-    use crate::types::agent::{
-        AgentTool, CustomToolInputSchema, PermissionPolicy, ToolConfig, ToolDefaultConfig,
+    use crate::types::agent::{AgentTool, CustomToolInputSchema};
+    use awaken_agent_contract::{
+        ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+        ToolsetSource,
     };
     let mut tools = Vec::new();
     if !caps.builtin_tools.is_empty() {
@@ -102,18 +269,22 @@ pub fn agent_tools(caps: &AgentCapabilities) -> Vec<crate::types::agent::AgentTo
         // `BetaManagedAgentsAgentToolConfig` requires all of {name, enabled,
         // permission_policy}. Only deviations from `default_config` are listed;
         // an auto-allowed registered tool matches the default and is omitted.
-        let mut configs = Vec::new();
-        for name in AGENT_TOOLSET_TOOLS {
+        let mut overrides = Vec::new();
+        for name in AGENT_TOOLSET_TOOL_IDS {
             match caps.builtin_tools.iter().find(|t| t.name == name) {
-                None => configs.push(ToolConfig {
+                None => overrides.push(ToolPolicyOverride {
                     name: name.to_string(),
-                    enabled: Some(false),
-                    permission_policy: Some(PermissionPolicy::AlwaysAllow),
+                    policy: ToolExecutionPolicy {
+                        enabled: false,
+                        permission: ToolPermissionRequirement::AlwaysAllow,
+                    },
                 }),
-                Some(tool) if tool.ask => configs.push(ToolConfig {
+                Some(tool) if tool.ask => overrides.push(ToolPolicyOverride {
                     name: name.to_string(),
-                    enabled: Some(true),
-                    permission_policy: Some(PermissionPolicy::AlwaysAsk),
+                    policy: ToolExecutionPolicy {
+                        enabled: true,
+                        permission: ToolPermissionRequirement::AlwaysAsk,
+                    },
                 }),
                 Some(_) => {} // registered + auto-allowed → matches default_config
             }
@@ -121,13 +292,12 @@ pub fn agent_tools(caps: &AgentCapabilities) -> Vec<crate::types::agent::AgentTo
         // `configs` and `default_config` are both required on the toolset object.
         // `default_config` is the resolved baseline every non-overridden tool
         // inherits: enabled and auto-allowed.
-        tools.push(AgentTool::AgentToolset20260401 {
-            configs,
-            default_config: Some(ToolDefaultConfig {
-                enabled: Some(true),
-                permission_policy: Some(PermissionPolicy::AlwaysAllow),
-            }),
-        });
+        let policy = ToolsetPolicy {
+            source: ToolsetSource::Agent,
+            default: ToolExecutionPolicy::default(),
+            overrides,
+        };
+        tools.extend(resolved_toolsets(&[policy]));
     }
     for tool in &caps.custom_tools {
         let input_schema = CustomToolInputSchema::from_value(tool.input_schema.clone())
