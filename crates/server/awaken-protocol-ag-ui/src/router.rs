@@ -136,7 +136,10 @@ async fn run(rt: Runtime, input: RunAgentInput, agent_id: Option<String>) -> Res
         None => HashSet::new(),
     };
 
-    let processed = process(input, agent_id, &known_ids);
+    let processed = match process(input, agent_id, &known_ids) {
+        Ok(processed) => processed,
+        Err(error) => return sse_response(vec![AgUiEvent::error(error.to_string())]),
+    };
     let thread = processed.thread_id.clone();
     let run_id = processed.run_id.clone();
 

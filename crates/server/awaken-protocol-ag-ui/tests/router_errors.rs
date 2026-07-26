@@ -267,6 +267,117 @@ async fn a_non_matching_tool_result_cannot_resume_the_awaiting_tool() {
     );
 }
 
+/// Unsupported-input admission behavior:
+///
+/// ```text
+/// supported text/image + no unsupported run extension -> runtime.run -> terminal
+/// unsupported media                                  -> RUN_ERROR  -> no runtime call
+/// non-empty unimplemented run extension              -> RUN_ERROR  -> no runtime call
+/// ```
+///
+/// | content | tools | state/props/resume | runtime called | result    |
+/// |---------|-------|--------------------|----------------|-----------|
+/// | text    | empty | empty              | yes            | terminal  |
+/// | audio   | empty | empty              | no             | RUN_ERROR |
+/// | text    | set   | empty              | no             | RUN_ERROR |
+///
+/// This deliberately tests effects. Parsing an official SDK shape must never be
+/// mistaken for support when the runtime cannot honor its semantics.
+struct AdmissionRecordingRuntime {
+    ran: Arc<AtomicBool>,
+}
+
+#[async_trait::async_trait]
+impl ProtocolRuntime for AdmissionRecordingRuntime {
+    async fn run(
+        &self,
+        _thread: &str,
+        _agent: Option<String>,
+        _messages: Vec<Message>,
+    ) -> Result<StepOutcome, DriverError> {
+        self.ran.store(true, Ordering::SeqCst);
+        Ok(StepOutcome::default())
+    }
+
+    async fn resume(
+        &self,
+        _thread: &str,
+        _tool_use_id: &str,
+        _resume: Resume,
+    ) -> Result<StepOutcome, DriverError> {
+        unreachable!("unsupported fresh input must fail before resume")
+    }
+
+    async fn pending(&self, _thread: &str) -> Option<Pending> {
+        None
+    }
+
+    async fn history(&self, _thread: &str) -> Vec<Message> {
+        Vec::new()
+    }
+
+    fn model(&self) -> String {
+        "test".into()
+    }
+}
+
+async fn assert_admission_rejected_without_run(body: Value) {
+    let ran = Arc::new(AtomicBool::new(false));
+    let app = awaken_protocol_ag_ui::router::router(Arc::new(AdmissionRecordingRuntime {
+        ran: ran.clone(),
+    }));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ag-ui")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let text = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(text.contains("RUN_ERROR"), "{text}");
+    assert!(!text.contains("RUN_FINISHED"), "{text}");
+    assert!(
+        !ran.load(Ordering::SeqCst),
+        "rejected input must not invoke runtime.run"
+    );
+}
+
+#[tokio::test]
+async fn unsupported_audio_fails_before_runtime_execution() {
+    assert_admission_rejected_without_run(json!({
+        "threadId": "t1",
+        "runId": "r1",
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "audio",
+                "source": { "type": "url", "value": "https://example.test/a.wav" }
+            }]
+        }]
+    }))
+    .await;
+}
+
+#[tokio::test]
+async fn unimplemented_per_run_tools_fail_before_runtime_execution() {
+    assert_admission_rejected_without_run(json!({
+        "threadId": "t1",
+        "runId": "r1",
+        "messages": [{ "role": "user", "content": "go" }],
+        "tools": [{
+            "name": "lookup",
+            "description": "Look up a value",
+            "parameters": { "type": "object" }
+        }]
+    }))
+    .await;
+}
+
 #[tokio::test]
 async fn the_scoped_agent_route_streams_a_fresh_turn() {
     let app = awaken_protocol_ag_ui::router::router(Arc::new(NoAwaitingRuntime));
