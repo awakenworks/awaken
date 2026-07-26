@@ -177,6 +177,14 @@ async fn environment_config_admission_follows_the_official_union_decision_table(
         assert_eq!(status, StatusCode::BAD_REQUEST, "{rule}");
     }
 
+    let (status, page) = call(&app, "GET", "/v1/environments", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        page["data"],
+        json!([]),
+        "A3-A5 fail before persisting an Environment or seeding work"
+    );
+
     let (status, cloud) = call(
         &app,
         "POST",

@@ -8,9 +8,10 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
-use awaken_session_contract::env_registry::{EnvItem, EnvRegistry, EnvUpdate, EnvironmentRevision};
+use awaken_session_contract::env_registry::{
+    EnvItem, EnvRegistry, EnvUpdate, EnvironmentConfig, EnvironmentRevision,
+};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
-use serde_json::Value;
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgRow};
 
@@ -62,7 +63,7 @@ fn metadata_str(m: &BTreeMap<String, String>) -> String {
     serde_json::to_string(m).expect("env metadata serializes")
 }
 
-fn config_str(c: &Value) -> String {
+fn config_str(c: &EnvironmentConfig) -> String {
     serde_json::to_string(c).expect("env config serializes")
 }
 
@@ -83,7 +84,7 @@ fn decode(
         description,
         metadata: serde_json::from_str(metadata_json).unwrap_or_default(),
         scope,
-        config: serde_json::from_str(config_json).unwrap_or(Value::Null),
+        config: serde_json::from_str(config_json).expect("valid typed Environment config"),
         archived_at,
     }
 }
@@ -162,7 +163,7 @@ impl EnvRegistry for SqliteEnvRegistry {
         description: String,
         metadata: BTreeMap<String, String>,
         scope: Option<String>,
-        config: Value,
+        config: EnvironmentConfig,
     ) -> EnvItem {
         let mut guard = self.conn.lock().expect("env registry mutex poisoned");
         let tx = guard
@@ -322,7 +323,7 @@ impl EnvRegistry for PostgresEnvRegistry {
         description: String,
         metadata: BTreeMap<String, String>,
         scope: Option<String>,
-        config: Value,
+        config: EnvironmentConfig,
     ) -> EnvItem {
         let mut tx = self.pool.begin().await.expect("begin");
         let next: i64 =
@@ -453,7 +454,10 @@ impl EnvRegistry for PostgresEnvRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+
+    fn config() -> EnvironmentConfig {
+        EnvironmentConfig::SelfHosted
+    }
 
     fn r() -> SqliteEnvRegistry {
         SqliteEnvRegistry::open_in_memory().unwrap()
@@ -463,12 +467,7 @@ mod tests {
     async fn create_get_list_archive_survive_the_store() {
         let r = r();
         let e = r
-            .create(
-                "prod".into(),
-                "d".into(),
-                BTreeMap::new(),
-                json!({"type":"self_hosted"}),
-            )
+            .create("prod".into(), "d".into(), BTreeMap::new(), config())
             .await;
         assert!(e.is_self_hosted());
         let got = r.get(&e.id).await.expect("get");
@@ -490,7 +489,7 @@ mod tests {
                 "e".into(),
                 String::new(),
                 BTreeMap::from([("keep".into(), "1".into()), ("drop".into(), "2".into())]),
-                json!({"networking":{"type":"none"}}),
+                config(),
             )
             .await;
         let up = r
@@ -508,20 +507,14 @@ mod tests {
         assert!(up.metadata.contains_key("keep"));
         assert!(!up.metadata.contains_key("drop"), "null deletes");
         // config preserved through the round-trip
-        assert_eq!(
-            up.config
-                .pointer("/networking/type")
-                .and_then(|v| v.as_str()),
-            Some("none"),
-            "config round-trips"
-        );
+        assert_eq!(up.config, config(), "config round-trips");
     }
 
     #[tokio::test]
     async fn delete_reports_existence() {
         let r = r();
         let e = r
-            .create("e".into(), String::new(), BTreeMap::new(), json!({}))
+            .create("e".into(), String::new(), BTreeMap::new(), config())
             .await;
         assert!(r.exists(&e.id).await);
         assert!(r.delete(&e.id).await);
@@ -536,7 +529,7 @@ mod tests {
         let path = dir.join("env.db");
         let r = SqliteEnvRegistry::open(path.to_str().unwrap()).expect("open file db");
         let e = r
-            .create("e".into(), String::new(), BTreeMap::new(), json!({}))
+            .create("e".into(), String::new(), BTreeMap::new(), config())
             .await;
         assert!(r.exists(&e.id).await);
         std::fs::remove_dir_all(&dir).ok();
@@ -544,7 +537,7 @@ mod tests {
             && let Ok(r) = PostgresEnvRegistry::connect(&url).await
         {
             let e = r
-                .create("c".into(), String::new(), BTreeMap::new(), json!({}))
+                .create("c".into(), String::new(), BTreeMap::new(), config())
                 .await;
             assert!(r.exists(&e.id).await);
             r.delete(&e.id).await;
@@ -585,12 +578,7 @@ mod tests {
         let r = PostgresEnvRegistry::with_pool(pool).await.expect("store");
 
         let e = r
-            .create(
-                "prod".into(),
-                "d".into(),
-                BTreeMap::new(),
-                json!({"networking":{"type":"none"}}),
-            )
+            .create("prod".into(), "d".into(), BTreeMap::new(), config())
             .await;
         assert!(r.exists(&e.id).await);
         assert_eq!(r.get(&e.id).await.expect("get").name, "prod");
@@ -607,13 +595,7 @@ mod tests {
             .await
             .expect("update");
         assert_eq!(up.name, "renamed");
-        assert_eq!(
-            up.config
-                .pointer("/networking/type")
-                .and_then(|v| v.as_str()),
-            Some("none"),
-            "config round-trips"
-        );
+        assert_eq!(up.config, config(), "config round-trips");
         assert_eq!(up.metadata.get("t").map(String::as_str), Some("x"));
         r.archive(&e.id).await.expect("archive");
         assert!(
