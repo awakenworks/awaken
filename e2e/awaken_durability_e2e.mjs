@@ -10,7 +10,7 @@
 // Not ported: standalone's boot-seeded two-key banner and its `/v1/sessions -> 401`
 // assertion were specific to standalone's in-memory EnforceEngine guard. `awaken`
 // Serve is open (key-resolved tenancy, no session-level 401) unless
-// AWAKEN_MGMT_IAM=embedded; that authz stack has its own coverage and is out of
+// typed `identity_mode = "self-managed"`; that authz stack has its own coverage and is out of
 // scope here.
 //
 // Run: (from e2e/)  npm install && node awaken_durability_e2e.mjs
@@ -74,7 +74,7 @@ async function req(base, method, uri, body) {
 }
 
 // Author provider/endpoint/offering + credential and publish the agent bound to the
-// model. Persists into the durable stores under AWAKEN_MGMT_DIR, so it survives the
+// model. Persists into the durable stores under typed data_dir, so it survives the
 // restart and the model still resolves on boot 2.
 async function authorModel(base, upstream) {
   let r = await req(base, 'PUT', '/v1/config/providers/anthropic', {

@@ -32,24 +32,24 @@
 
 | D# | 轴 | 选择器 | 等价类(值) | 默认 |
 |---|---|---|---|---|
-| D1 | 进程角色 | `AWAKEN_ROLE` | serve/coordinator/all-in-one · worker · hand | serve |
-| D2 | 提交/存储后端 | `AWAKEN_STORE` | sqlite · fs · postgres | sqlite |
-| D3 | 数据面存储目录 | `AWAKEN_STORAGE_DIR` | 路径(durable) · 未设(in-mem) | 未设 |
-| D4 | 派工队列后端 | `AWAKEN_DISPATCH_BACKEND`(+`AWAKEN_DATABASE_URL`) | sqlite · postgres | sqlite |
-| D5 | 持久 ingress | `AWAKEN_INGRESS` | durable · 未设(direct) | direct |
-| D6 | 跨节点唤醒 | `AWAKEN_DISPATCH_WAKE`(+`_CHANNEL`) | pg-notify · nats · 未设(local+poll) | local |
-| D7 | NATS broker | `AWAKEN_NATS_URL`(+`--features nats`) | url · 未设 | 未设 |
-| D8 | 本地 drain 池 | `AWAKEN_SERVER_RUN_LOCAL_POOL`(负 `AWAKEN_DISABLE_LOCAL_POOL`) | true · false(coordinator) | true |
-| D9 | 派工租约 owner | `AWAKEN_DISPATCH_OWNER` | 字符串(每副本唯一) | `<host>-<pid>` |
-| D10 | 管理面持久化 | `AWAKEN_MGMT_DIR`/`AWAKEN_DEPLOYMENT_DATA_DIR` | 目录(durable sqlite) · 未设(in-mem) | in-mem |
-| D11 | 分组件存储 | `AWAKEN_<COMPONENT>_DB`(`ControlStoreConfig`) | 每库 sqlite 路径 · 共享 pg url | `<dir>/<name>.db` |
-| D12 | 封印密钥 | `AWAKEN_MGMT_SEAL_KEY`/`_FILE` | 64-hex 32B · 未设 | durable 时必需 |
-| D13 | 嵌入式 IAM | `AWAKEN_MGMT_IAM` | embedded · 未设(open) | open |
-| D14 | 拆分 admin 端口 | `AWAKEN_SERVER_ADMIN_LISTEN` | addr · 未设(合并) | 合并 |
-| D15 | 沙箱隔离级 | `AWAKEN_SANDBOX_TIER`(`SandboxTier::from_env_str`) | local/none · namespace(bwrap) · docker · podman · k8s | namespace |
-| D16 | 容器镜像 | `AWAKEN_CONTAINER_IMAGE`(+`container-*` feature) | ref · 未设 | 未设(容器级必需) |
-| D17 | bwrap 缺失降级 | `AWAKEN_SANDBOX_ALLOW_LOCAL_FALLBACK` | 1(降级) · 未设(fail-closed) | fail-closed |
-| D18 | ACP CLI 源 | `AWAKEN_ACP_CLIS` 解析为同一 `AcpWorkerProfile`，同时驱动 worker capability 与精确启动路由；`AWAKEN_ACP_CLI` 为单值兼容输入；snapshot `acp:<cli>` 必须匹配；固定 argv 仅显式 dev/test composition | cli-id 集合 · 可选 default · snapshot binding · 皆无(native) | 皆无 |
+| D1 | 进程角色 | CLI subcommand + typed `mode` | serve/coordinator/all-in-one · worker · hand | serve |
+| D2 | 提交/存储后端 | `store` | sqlite · fs · postgres | sqlite |
+| D3 | 数据面存储目录 | `storage_dir` | 路径(durable) · 未设(in-mem) | 未设 |
+| D4 | 派工队列后端 | `dispatch_backend` + `database_url` | sqlite · postgres | sqlite |
+| D5 | 持久 ingress | `durable` | true · false(direct) | false |
+| D6 | 跨节点唤醒 | `dispatch_wake` + `dispatch_wake_channel` | pg-notify · nats · local+poll | local |
+| D7 | NATS broker | `nats_url`(+`--features nats`) | url · 未设 | 未设 |
+| D8 | 本地 drain 池 | `server_run_local_pool` | true · false(coordinator) | true |
+| D9 | 派工租约 owner | `dispatch_owner` | 字符串(每副本唯一) | `<host>-<pid>` |
+| D10 | 管理面持久化 | `data_dir` | 目录(durable sqlite) | 标准配置目录下 data |
+| D11 | 分组件存储 | typed `*_db` / `*_database_url` | 每库 sqlite 路径 · 共享 pg url | `<data_dir>/<name>.db` |
+| D12 | 封印密钥 | `control_seal_key` / `control_seal_key_file` | 64-hex 32B · 未设 | server mode 必需 |
+| D13 | 嵌入式 IAM | `identity_mode` | self-managed · open | open |
+| D14 | 拆分 admin 端口 | `server_admin_listen` | addr · 未设(合并) | 合并 |
+| D15 | 沙箱隔离级 | `sandbox_tier` | local/none · namespace(bwrap) · docker · podman · k8s | namespace |
+| D16 | 容器镜像 | `container_image`(+`container-*` feature) | ref · 未设 | 未设(容器级必需) |
+| D17 | bwrap 缺失降级 | `sandbox_allow_local_fallback` | true(降级) · false(fail-closed) | fail-closed |
+| D18 | ACP CLI 源 | typed `acp` profile 解析为同一 `AcpWorkerProfile`，同时驱动 Worker capability 与精确启动路由；snapshot `acp:<cli>` 必须匹配 | cli-id 集合 · 可选 default · snapshot binding · 皆无(native) | 皆无 |
 | D19 | Hand 拓扑 | brain 侧:`AWAKEN_REMOTE_HAND_UNIX`(C5 colocated) · `AWAKEN_REMOTE_HAND`(direct) · `AWAKEN_REMOTE_HAND_LISTEN`(reverse) · `AWAKEN_REMOTE_HAND_NATS`+`_SUBJECT`(relay);sandbox 侧 `awaken-sandbox hand --unix/--listen/--dial/--nats` | 四拓扑之一 | — |
 | D20 | 每会话出口 | 会话 environment networking → `NetworkPolicy::None/Unrestricted` | deny · allow | allow |
 | D21 | Worker 上游 & 秘密 | `AWAKEN_UPSTREAM_URL`/`AWAKEN_WORKER_SERVE_URL`;`AWAKEN_WORKER_GATEWAY_ONLY` | 本地凭证 · gateway-only(secretless) | 本地凭证 |
@@ -63,12 +63,12 @@
 
 ### 约束格(E/I/O/R,全部 fail-closed,锚定代码)
 
-- **R1** Worker(D1=worker)⇒ `AWAKEN_WORKER_SERVE_URL`/`UPSTREAM_URL`(否则拒启,`config.rs::validate`)。
+- **R1** Worker(D1=worker)⇒ typed Worker upstream/serve URL(否则拒启,`config.rs::validate`)。
 - **R2** Coordinator(D8=false)⇒ postgres 派工队列(否则无 drainer,config.rs:180)。
-- **R3** 持久控制面(D10 set)⇒ 封印密钥 D12(`mgmt_seal_key_from_env` 未设/双设/畸形均 panic)。
+- **R3** server mode ⇒ 封印密钥 D12(未设/双设/畸形均在 bind 前拒绝)。
 - **R4** 嵌入式 IAM(D13=embedded)⇒ D10 set(token 落 `<dir>/iam.sqlite`;其他值 panic)。
-- **R5** 持久 ingress(D5=durable)⇒ 持久队列:`AWAKEN_STORAGE_DIR` **或** D4=postgres **或**注入 store。**pg 提交 store(D2=postgres)不满足派工队列**(`a_postgres_commit_store_does_not_satisfy_the_dispatch_queue`)。
-- **R6** D4=postgres / D2=postgres ⇒ `AWAKEN_DATABASE_URL` + 启动 init。
+- **R5** 持久 ingress(D5=durable)⇒ 持久队列:`storage_dir` **或** D4=postgres **或**注入 store。**pg 提交 store(D2=postgres)不满足派工队列**。
+- **R6** D4=postgres / D2=postgres ⇒ typed `database_url` + 启动 init。
 - **R7** pg-notify(D6)**共享 pg store 的库**,仅当 D4=postgres 有意义。
 - **R8** nats wake(D6=nats)⇒ `AWAKEN_NATS_URL` + `--features nats`(否则硬启动错,绝不静默 poll)。
 - **R9** 容器级(D15∈{docker,podman,k8s})⇒ 匹配 `container-*` feature + D16 镜像;**k8s ⇒ `AWAKEN_K8S_AGENT_ADDR`**。
@@ -504,7 +504,7 @@ MCP:           F77/F79 → E4(工具注入) ; F78 → 工具列表 version bump
 
 - **N7b**(`--features container-k8s` 构建下 k8s tier 缺 `AWAKEN_K8S_AGENT_ADDR` 报错):错误在连集群前返回,无需集群,但需重编 kube 依赖。机制同 N6 模式;k8s pids fail-closed 已由 `awaken-sandbox-container` 的 `a_pids_limit_is_flagged_unenforceable_on_k8s_so_create_fails_closed`(M8/T55)单测覆盖。运行:`cargo test -p awaken-sandbox-container --features container-k8s`。
 - **N10 / F55**(k3d 活集群:封闭 pod 无反向 hand 不可达 / k8s pids create 级 fail-closed):需 `deploy/k3d/*.yaml` + 活集群。正向拓扑已由 `e2e/k3d/topology_e2e.sh`(reverse `--dial`)覆盖;负向为集群测。运行:`bash e2e/k3d/<scenario>_e2e.sh`(需 `k3d cluster create`)。
-- **F35/F34/F41 pg 分布式**、**S5–S9 postgres 场景**:需 `AWAKEN_DATABASE_URL` 活 Postgres,现有 `durable_pg_*`/`durable_soak_*` + `deploy/k3d/*postgres*.yaml` 覆盖,pg 限的存储/派工单测在无 DSN 时静默早返回(非跳过声明,已在 M10/M11 文档标注)。
+- **F35/F34/F41 pg 分布式**、**S5–S9 postgres 场景**:需 typed `database_url` 指向活 Postgres,现有 `durable_pg_*`/`durable_soak_*` + `deploy/k3d/*postgres*.yaml` 覆盖,pg 限的存储/派工单测在无 DSN 时静默早返回(非跳过声明,已在 M10/M11 文档标注)。
 
 **未发现 fail-open 代码 bug**:所有安全敏感 fail-closed 分支在代码中均存在,仅部分欠测;唯一结构性欠测(M6 `RequireApproval` 因无注入 seam 不可达)已通过抽出 `collapse_session_decision` 纯函数修复并钉住。
 7. **与单模块设计的关系**:本份的 F→E 边在跨越模块;每条 F 内部的分支细节(为何 await、为何 fail-closed)由 `cause-effect-graph-test-design.md` 的 112 因/110 果单测护住。两层合起来 = 单元判定表(内部正确)+ e2e 矩阵(集成 × 部署正确)。

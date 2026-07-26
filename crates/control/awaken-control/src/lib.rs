@@ -195,7 +195,7 @@ pub struct ControlRouterInput {
     pub global_tools: Vec<ToolDescriptor>,
     /// The org id stamped on webhook deliveries (`AWAKEN_ORG_ID`).
     pub org_id: Option<String>,
-    /// The embedded IAM guard, when enabled (`AWAKEN_MGMT_IAM=embedded`).
+    /// The embedded IAM guard, when enabled by typed deployment identity mode.
     pub iam: Option<Arc<ManagementAuthz>>,
     /// Awaken Cloud identity adapter. Mutually exclusive with `iam`.
     pub remote_iam: Option<Arc<RemoteManagementAuthz>>,

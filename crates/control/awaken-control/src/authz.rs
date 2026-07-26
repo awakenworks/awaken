@@ -3,15 +3,15 @@
 //!
 //! # Trust model
 //!
-//! Opt-in via `AWAKEN_MGMT_IAM=embedded` (requires `AWAKEN_MGMT_DIR`); the
-//! default — the variable unset — is today's open single-machine behavior,
-//! byte-identical. When enabled, every management route demands a bearer
+//! Typed deployment `identity_mode = "self-managed"` installs this guard;
+//! `identity_mode = "open"` is the explicit local-machine mode. When enabled,
+//! every management route demands a bearer
 //! credential in the Awaken `sk-awaken-<prefix>.<secret>` shape (`sk-ant-` is
 //! accepted as a legacy alias during the deprecation window) — either
 //! `Authorization: Bearer …` or the SDK's `x-api-key` header). Secrets are
 //! argon2id-hashed at rest by `awaken-iam-core`; the cleartext exists only in
 //! the mint response and — for the bootstrap admin token — in
-//! `<AWAKEN_MGMT_DIR>/admin-token` (mode 0600).
+//! `<data_dir>/admin-token` (mode 0600).
 //!
 //! **Bootstrap contract.** On first boot over an empty token directory a
 //! single `admin`-role token is minted for the service principal
@@ -583,11 +583,10 @@ pub fn embedded_iam_for_tenant(
     org_id: &str,
     workspace_id: &str,
 ) -> Arc<ManagementAuthz> {
-    std::fs::create_dir_all(dir).expect("create AWAKEN_MGMT_DIR for embedded IAM");
+    std::fs::create_dir_all(dir).expect("create typed data_dir for embedded IAM");
     let db_path = dir.join("iam.sqlite");
     import_legacy_layout(&db_path);
-    let backend =
-        SqliteBackend::open_path(&db_path).expect("open iam.sqlite under AWAKEN_MGMT_DIR");
+    let backend = SqliteBackend::open_path(&db_path).expect("open iam.sqlite under typed data_dir");
     let store = sqlite_migrated_store(backend, "iam").expect("migrate iam.sqlite");
 
     // Durable role catalog (idempotent upsert of the preset roles) — the PAP

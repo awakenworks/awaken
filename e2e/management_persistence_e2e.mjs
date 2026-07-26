@@ -1,6 +1,6 @@
 // Restart-persistence e2e for the durable management plane (ADR-0043): spawn
-// awaken-server in `management` mode with AWAKEN_MGMT_DIR + a fixed
-// AWAKEN_MGMT_SEAL_KEY, author config through `/v1/config/*` AND enter an
+// awaken-server in `management` mode with a fixed typed data_dir + seal key,
+// author config through `/v1/config/*` AND enter an
 // `mcp_oauth` credential through the official Anthropic SDK's vault front door
 // (`beta.vaults.*`), kill the process, respawn it over the same dir/key, and
 // assert exactly the documented persistence contract:
@@ -20,13 +20,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import { deploymentEnv, spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = 38195;
 const CALC_TOKEN = 'calc-persist-bearer-token'; // awaken-allow: secret
-// 64 hex chars = the 32-byte AEAD key AWAKEN_MGMT_SEAL_KEY requires.
+// 64 hex chars = the 32-byte AEAD key typed control_seal_key requires.
 const SEAL_KEY = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
 
 async function req(base, method, uri, body) {
@@ -48,7 +48,7 @@ async function listEvents(client, sessionId) {
 
 async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-mgmt-e2e-'));
-  const env = { AWAKEN_MGMT_DIR: dir, AWAKEN_MGMT_SEAL_KEY: SEAL_KEY };
+  const env = deploymentEnv(dir, { controlSealKey: SEAL_KEY });
   const fixture = await startCalcFixture(CALC_TOKEN);
   const upstream = await startUpstream('mcp');
   let server = null;
@@ -74,7 +74,7 @@ async function main() {
       protocol_endpoint_id: 'ep1', dialect: 'anthropic_messages', upstream_model: null,
     });
     assert.equal(r.status, 200);
-    pass('authored provider/endpoint/offering under AWAKEN_MGMT_DIR');
+    pass('authored provider/endpoint/offering under the typed data_dir');
 
     // A vault `mcp_oauth` credential through the OFFICIAL SDK: the wire vault
     // bookkeeping is host-ephemeral, but the domain row + sealed access token
@@ -135,7 +135,7 @@ async function main() {
     ({ server, baseUrl: base } = spawnServer('management', PORT, { ...env, ...realServerEnv('mcp', upstream, { mode: 'management' }) }));
     await waitForPort(PORT);
     const client2 = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
-    pass('server killed and respawned on the same port with the same AWAKEN_MGMT_DIR/key');
+    pass('server killed and respawned on the same port with the same typed data_dir/key');
 
     // The vault WIRE object is host-ephemeral: gone after the restart (correct).
     const gone = await client2.beta.vaults

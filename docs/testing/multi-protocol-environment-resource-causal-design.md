@@ -589,3 +589,19 @@ store-specific API or a second Environment realization path. The changed-line
 gate retains only audited pre-bind/composition or corrupt-store branches that no
 served TypeScript request can deterministically select; every stale historical
 waiver was removed.
+
+## Phase 28: remove the retired management configuration track
+
+| Rule | Typed deployment HOME | Retired management env | Restart | Expected |
+|---|---|---|---|---|
+| C1 | exact A | absent | A → A | all control/session state survives |
+| C2 | exact A | poison value | A → A | poison has no reader and no effect |
+| C3 | A → B | absent | restart | B cannot silently consume A |
+
+Three restart E2E fixtures had continued to pass ignored `AWAKEN_MGMT_*` values
+while persistence was actually owned by the harness's typed config HOME. They
+now call the single `deploymentEnv` fixture explicitly. The unused legacy
+seal-key source resolver, its re-export, and its compatibility-only tests were
+deleted; current source and test-design documentation now name typed deployment
+fields only. This removes a false second configuration path rather than keeping
+two inputs synchronized.

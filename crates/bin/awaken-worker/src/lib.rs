@@ -723,7 +723,7 @@ impl WorkerLifecycle {
 /// 1. Inject the registered identity-bearing HTTP dispatch transport, so the
 ///    Worker drains the Control queue instead of a local one.
 /// 2. Open the shared credential vault + secret store
-///    the same way the Serve composition does — durable under `AWAKEN_MGMT_DIR`
+///    the same way the Serve composition does — durable under typed `data_dir`
 ///    (Option A shared-DB) or in-memory.
 /// 3. Build a [`CredentialInferenceMaterializer`] over those stores, so each drained
 ///    run consumes only its snapshot-pinned inference access.
