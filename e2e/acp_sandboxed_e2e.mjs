@@ -2,7 +2,8 @@
 // CLI INSIDE a bubblewrap namespace sandbox (`AWAKEN_MODEL_MODE=acp-sandboxed`),
 // and the session's environment networking policy is enforced by the OS. The
 // fake agent probes a listener on the HOST loopback and reports what it saw:
-// an `unrestricted` environment's CLI reaches it (`net=UP`); a `none` policy
+// an `unrestricted` environment's CLI reaches it (`net=UP`); an empty official
+// `limited` allow-list
 // launches under `bwrap --unshare-net`, where even the host loopback is
 // unreachable (`net=DOWN`). Self-skips when bwrap/userns is unavailable.
 //
@@ -72,12 +73,12 @@ async function main() {
     // Cause-effect graph for the single Session Environment authority:
     // C1 ACP selected -> E1 launch from the Session-owned Environment
     // C1 + C2 unrestricted -> E2 share host networking
-    // C1 + C3 none -> E3 unshare networking and block host-loopback bypass
+    // C1 + C3 empty limited allow-list -> E3 unshare networking and block host-loopback bypass
     // !C1 -> E4 native execution still uses the same Session lifecycle
     //
     // | Rule | Runtime | Network      | Result                         |
     // | S1   | ACP     | unrestricted | bound process, probe reachable |
-    // | S2   | ACP     | none         | bound process, probe blocked   |
+    // | S2   | ACP     | limited []   | bound process, probe blocked   |
     // | S3   | Native  | unrestricted | native turn succeeds           |
 
     // Unrestricted networking: the CLI runs OS-confined but shares the host
@@ -94,11 +95,11 @@ async function main() {
     );
     pass('acp session runs the CLI inside bwrap; unrestricted networking shares the host net');
 
-    // Networking `none`: the same CLI launches under `--unshare-net` — an empty
+    // Empty `limited` networking: the same CLI launches under `--unshare-net` — an empty
     // network namespace where the host loopback does not exist.
     const isoEnv = await client.beta.environments.create({
       name: `sbx-iso-${PORT}`,
-      config: { type: 'cloud', networking: { type: 'none' } },
+      config: { type: 'cloud', networking: { type: 'limited', allowed_hosts: [] } },
       betas: BETAS,
     });
     texts = await acpReply(client, isoEnv.id, 'hello');
@@ -106,7 +107,7 @@ async function main() {
       texts.some((t) => t.includes('acp-runtime reply net=DOWN')),
       `deny-egress environment must confine the CLI, got ${JSON.stringify(texts)}`,
     );
-    pass('networking policy `none` OS-confines the ACP CLI: no route even to host loopback');
+    pass('empty limited network policy OS-confines the ACP CLI: no route even to host loopback');
 
     // Selection still holds: a native session on the same server runs the model.
     const native = await client.beta.sessions.create({
