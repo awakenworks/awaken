@@ -58,6 +58,29 @@ impl ApplicationSessionPlan {
         self
     }
 
+    /// Restrict the Session network policy using the existing neutral
+    /// provisioning vocabulary. The Managed anti-corruption boundary converts
+    /// it into a frozen Session fact and remains the sole owner of safe
+    /// intersection with the Control-authored Environment policy.
+    #[must_use]
+    pub fn with_network_restriction(
+        mut self,
+        restriction: awaken_provisioning_contract::NetworkPolicy,
+    ) -> Self {
+        self.network_restriction = Some(match restriction {
+            awaken_provisioning_contract::NetworkPolicy::Unrestricted => {
+                awaken_protocol_managed::SessionNetworkPolicy::Unrestricted
+            }
+            awaken_provisioning_contract::NetworkPolicy::Allowlist { hosts } => {
+                awaken_protocol_managed::SessionNetworkPolicy::Allowlist { hosts }
+            }
+            awaken_provisioning_contract::NetworkPolicy::None => {
+                awaken_protocol_managed::SessionNetworkPolicy::None
+            }
+        });
+        self
+    }
+
     fn into_contribution(
         self,
         session_id: String,
@@ -654,4 +677,47 @@ fn validate_baseline_projection(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod network_policy_tests {
+    use super::*;
+
+    /// Cause graph: each neutral provisioning policy has exactly one Session
+    /// representation; no value is widened or interpreted by the Worker
+    /// application. The Managed baseline compiler remains the next authority.
+    ///
+    /// | Rule | Provisioning input | Session contribution fact |
+    /// | N1 | Unrestricted | Unrestricted |
+    /// | N2 | Allowlist(a,b) | Allowlist(a,b), byte-faithful |
+    /// | N3 | None | None |
+    #[test]
+    fn application_network_policy_mapping_is_total_and_lossless() {
+        let cases = [
+            (
+                awaken_provisioning_contract::NetworkPolicy::Unrestricted,
+                awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+            ),
+            (
+                awaken_provisioning_contract::NetworkPolicy::Allowlist {
+                    hosts: vec!["A.example".into(), "b.example".into()],
+                },
+                awaken_protocol_managed::SessionNetworkPolicy::Allowlist {
+                    hosts: vec!["A.example".into(), "b.example".into()],
+                },
+            ),
+            (
+                awaken_provisioning_contract::NetworkPolicy::None,
+                awaken_protocol_managed::SessionNetworkPolicy::None,
+            ),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                ApplicationSessionPlan::empty("network-policy")
+                    .with_network_restriction(input)
+                    .network_restriction,
+                Some(expected),
+            );
+        }
+    }
 }
