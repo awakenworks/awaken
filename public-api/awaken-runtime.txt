@@ -21,6 +21,7 @@ pub struct awaken_runtime::LlmRetryPolicy
 pub awaken_runtime::LlmRetryPolicy::backoff_base_ms: u64
 pub awaken_runtime::LlmRetryPolicy::max_retries: usize
 pub awaken_runtime::LlmRetryPolicy::overloaded_backoff_base_ms: u64
+pub awaken_runtime::LlmRetryPolicy::rate_limited_backoff_base_ms: u64
 impl core::default::Default for awaken_runtime::LlmRetryPolicy
 pub fn awaken_runtime::LlmRetryPolicy::default() -> Self
 pub struct awaken_runtime::PermissionGate

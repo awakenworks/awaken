@@ -32,6 +32,7 @@ fn fast_retries(max_retries: usize) -> LlmRetryPolicy {
         max_retries,
         backoff_base_ms: 1,
         overloaded_backoff_base_ms: 1,
+        rate_limited_backoff_base_ms: 1,
     }
 }
 

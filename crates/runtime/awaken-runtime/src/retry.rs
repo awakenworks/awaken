@@ -11,8 +11,13 @@ use std::time::Duration;
 use awaken_runtime_contract::llm::Error;
 use awaken_runtime_contract::resilience::Classify;
 
-/// Backoff never exceeds this, regardless of attempt count.
+/// Generic and overload backoff never exceeds this, regardless of attempt count.
 const MAX_BACKOFF_MS: u64 = 8_000;
+
+/// A provider-capacity window can be substantially longer than a transport
+/// blip.  Keep the 429 lane bounded, but let it cross a common one-minute
+/// request window when no structured `Retry-After` survives the provider SDK.
+const MAX_RATE_LIMIT_BACKOFF_MS: u64 = 60_000;
 
 /// A server `Retry-After` longer than the computed backoff is adopted verbatim,
 /// but never beyond this cap.
@@ -29,6 +34,10 @@ pub struct LlmRetryPolicy {
     /// Backoff base when the provider reports overload — deliberately longer,
     /// since hammering an overloaded provider extends the outage.
     pub overloaded_backoff_base_ms: u64,
+    /// Backoff base for a provider rate limit. This is deliberately longer than
+    /// generic and overload pacing because free and shared model tiers commonly
+    /// enforce minute-scale request windows.
+    pub rate_limited_backoff_base_ms: u64,
 }
 
 impl Default for LlmRetryPolicy {
@@ -37,6 +46,7 @@ impl Default for LlmRetryPolicy {
             max_retries: 2,
             backoff_base_ms: 500,
             overloaded_backoff_base_ms: 2_000,
+            rate_limited_backoff_base_ms: 30_000,
         }
     }
 }
@@ -46,13 +56,14 @@ impl LlmRetryPolicy {
     /// exponential backoff for the error class, or the server's `Retry-After`
     /// when that is longer (adopted verbatim, capped at [`MAX_RETRY_AFTER`]).
     pub(crate) fn delay_before_retry(&self, err: &Error, retry: usize) -> Duration {
-        let base = match err {
-            Error::Overloaded { .. } => self.overloaded_backoff_base_ms,
-            _ => self.backoff_base_ms,
+        let (base, cap) = match err {
+            Error::RateLimited { .. } => {
+                (self.rate_limited_backoff_base_ms, MAX_RATE_LIMIT_BACKOFF_MS)
+            }
+            Error::Overloaded { .. } => (self.overloaded_backoff_base_ms, MAX_BACKOFF_MS),
+            _ => (self.backoff_base_ms, MAX_BACKOFF_MS),
         };
-        let exp = base
-            .saturating_mul(1u64 << retry.min(32) as u32)
-            .min(MAX_BACKOFF_MS);
+        let exp = base.saturating_mul(1u64 << retry.min(32) as u32).min(cap);
         let backoff = jitter_backoff(exp);
         // The retry-after hint via the unified failure Disposition (E3-1): for a
         // retryable error this is exactly `err.retry_after()` — a Quota signal
@@ -141,6 +152,38 @@ mod tests {
         let policy = LlmRetryPolicy::default();
         let ms = policy.delay_before_retry(&overloaded(None), 0).as_millis() as u64;
         assert!((1_000..=2_000).contains(&ms), "{ms}ms outside [1000, 2000]");
+    }
+
+    #[test]
+    fn error_class_selects_the_causal_backoff_lane() {
+        let policy = LlmRetryPolicy::default();
+        let generic = policy.delay_before_retry(&Error::Provider("500".into()), 0);
+        let overloaded = policy.delay_before_retry(&overloaded(None), 0);
+        let rate_limited = policy.delay_before_retry(
+            &Error::RateLimited {
+                message: "429".into(),
+                retry_after: None,
+            },
+            0,
+        );
+
+        assert!((250..=500).contains(&(generic.as_millis() as u64)));
+        assert!((1_000..=2_000).contains(&(overloaded.as_millis() as u64)));
+        assert!((15_000..=30_000).contains(&(rate_limited.as_millis() as u64)));
+    }
+
+    #[test]
+    fn rate_limit_backoff_can_cross_a_minute_window_but_remains_bounded() {
+        let policy = LlmRetryPolicy::default();
+        let err = Error::RateLimited {
+            message: "429".into(),
+            retry_after: None,
+        };
+        let second = policy.delay_before_retry(&err, 1);
+        let saturated = policy.delay_before_retry(&err, 200);
+
+        assert!((30_000..=60_000).contains(&(second.as_millis() as u64)));
+        assert!(saturated <= std::time::Duration::from_millis(MAX_RATE_LIMIT_BACKOFF_MS));
     }
 
     #[test]

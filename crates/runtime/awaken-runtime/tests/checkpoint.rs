@@ -101,6 +101,7 @@ async fn drive(
             max_retries: 1,
             backoff_base_ms: 0,
             overloaded_backoff_base_ms: 0,
+            rate_limited_backoff_base_ms: 0,
         });
     let fingerprint = CatalogFingerprint("catalog-a".to_string());
 
