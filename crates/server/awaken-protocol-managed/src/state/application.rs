@@ -405,7 +405,7 @@ mod tests {
             baseline: awaken_session_contract::SessionBaselineState::Preparing(intent),
             title: None,
             metadata: Default::default(),
-            agent_tools: None,
+            agent_tools: Vec::new(),
             environment_binding: None,
             mcp: Default::default(),
             resources: Default::default(),

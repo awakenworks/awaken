@@ -1134,7 +1134,7 @@ mod tests {
             )),
             title: Some("My session".to_string()),
             metadata,
-            agent_tools: None,
+            agent_tools: Vec::new(),
             environment_binding: None,
             mcp: SessionMcpAttachmentSet::from_initial(
                 vec![McpAttachmentDraft {

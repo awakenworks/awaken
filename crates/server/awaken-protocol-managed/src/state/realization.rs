@@ -926,7 +926,7 @@ mod tests {
             baseline: SessionBaselineState::Frozen(baseline),
             title: None,
             metadata: Default::default(),
-            agent_tools: None,
+            agent_tools: Vec::new(),
             environment_binding: None,
             mcp,
             resources,

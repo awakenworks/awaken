@@ -164,7 +164,7 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
         baseline: SessionBaselineState::Frozen(baseline),
         title: row.title,
         metadata: serde_json::from_str(&row.metadata_json)?,
-        agent_tools: None,
+        agent_tools: Vec::new(),
         environment_binding: row.environment_binding,
         mcp,
         resources,
