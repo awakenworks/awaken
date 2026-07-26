@@ -148,7 +148,7 @@ async fn acp_sandboxed_factory_also_mounts_the_environments_surface() {
     // The sandboxed-ACP factory shares the environments merge (a session's networking
     // policy must reach the sandbox launch), so `/v1/environments` is present here too.
     assert_eq!(
-        get_status(build_acp_sandboxed_router(), "/v1/environments").await,
+        get_status(build_acp_sandboxed_router().await, "/v1/environments").await,
         StatusCode::OK,
     );
 }

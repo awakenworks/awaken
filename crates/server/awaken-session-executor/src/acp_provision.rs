@@ -105,6 +105,28 @@ impl LaunchResolver for PublishedAcpLaunchResolver {
     ) -> Option<std::sync::Arc<dyn awaken_provisioning_contract::SecretBroker>> {
         Some(std::sync::Arc::new(self.credentials.clone()))
     }
+
+    fn credential_realization_capabilities(
+        &self,
+    ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
+        let (material_sources, recipient_bound_envelopes) =
+            self.credentials.material_source_capabilities();
+        awaken_runtime_contract::CredentialRealizationCapabilities {
+            holders: [awaken_runtime_contract::PlaintextHolder::new(
+                awaken_runtime_contract::PlaintextBoundary::Workload,
+                awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
+            )]
+            .into_iter()
+            .collect(),
+            material_sources,
+            realization_kinds: [
+                awaken_runtime_contract::CredentialRealizationKind::ProcessSecretEnvironment,
+            ]
+            .into_iter()
+            .collect(),
+            recipient_bound_envelopes,
+        }
+    }
 }
 
 #[cfg(test)]

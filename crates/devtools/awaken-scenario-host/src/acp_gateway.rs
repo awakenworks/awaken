@@ -92,4 +92,28 @@ impl awaken_run_executor_acp::LaunchResolver for ScenarioEnvAcpModel {
     fn secret_broker(&self) -> Option<Arc<dyn awaken_run_executor_acp::SecretBroker>> {
         Some(Arc::new(ScenarioEnvSecretBroker))
     }
+
+    fn credential_realization_capabilities(
+        &self,
+    ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
+        awaken_runtime_contract::CredentialRealizationCapabilities {
+            holders: [awaken_runtime_contract::PlaintextHolder::new(
+                awaken_runtime_contract::PlaintextBoundary::Workload,
+                awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
+            )]
+            .into_iter()
+            .collect(),
+            material_sources: [
+                awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+            ]
+            .into_iter()
+            .collect(),
+            realization_kinds: [
+                awaken_runtime_contract::CredentialRealizationKind::ProcessSecretEnvironment,
+            ]
+            .into_iter()
+            .collect(),
+            recipient_bound_envelopes: false,
+        }
+    }
 }

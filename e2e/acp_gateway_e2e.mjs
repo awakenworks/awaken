@@ -44,6 +44,15 @@ async function main() {
     await withScenarioServer('acp-gateway', 'echo', 38195, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
+      // Cause-effect graph:
+      // C1 projected resolver returns endpoint + opaque process-secret reference
+      // C2 its broker resolves that exact reference at spawn
+      // C1 + C2 -> E1 bound ACP process gets gateway URL + lease capability
+      // C1 + !C2 -> E2 launch fails closed (never fall back to host env/plaintext)
+      //
+      // | Rule | Requirement | Broker | Result                         |
+      // | G1   | present     | exact  | gateway + lease injected       |
+      // | G2   | present     | absent | launch rejected, no fallback   |
       const acp = await client.beta.sessions.create({
         // Select the exact adapter row this scenario serves. A different `acp:*`
         // binding must fail closed instead of being silently executed by this worker.

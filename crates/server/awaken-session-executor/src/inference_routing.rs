@@ -115,6 +115,14 @@ impl InferenceRouting {
         self.materializer.clone()
     }
 
+    pub(crate) fn credential_realization_capabilities(&self) -> CredentialRealizationCapabilities {
+        self.materializer
+            .as_ref()
+            .map_or_else(CredentialRealizationCapabilities::default, |materializer| {
+                materializer.credential_realization_capabilities()
+            })
+    }
+
     /// Bind `model_ref` to `thread` (R2/R5), staged before its first turn.
     /// Re-registering replaces the binding (the per-turn override re-stages).
     pub(crate) fn register(&self, thread: &str, model_ref: impl Into<String>) {

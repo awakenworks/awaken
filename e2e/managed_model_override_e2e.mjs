@@ -14,12 +14,15 @@
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import { withScenarioServer, pass } from './harness.mjs';
+import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT) || 38166;
 
 async function main() {
-  await withScenarioServer('management', 'mcp', PORT, async (base) => {
+  const fixture = await startCalcFixture('unused-anonymous-token', { allowAnonymous: true }); // awaken-allow: secret
+  try {
+    await withScenarioServer('management', 'mcp', PORT, async (base) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
 
     // ── plain reference: the session echoes the host default model, version 1 ────
@@ -81,6 +84,17 @@ async function main() {
     assert.deepEqual(cleared.agent.skills, []);
     pass('create-time null/empty override fields clear only the session');
 
+    // Cause-effect graph for create-time MCP replacement:
+    // C1 override omitted -> E1 inherit Agent declarations
+    // C1 present + C2 empty -> E2 clear Agent declarations
+    // C1 present + !C2 + C3 referenced by toolset -> E3 replace and realize
+    // C1 present + !C2 + !C3 -> E4 reject the dangling declaration
+    //
+    // | Rule | Override | Empty | Referenced | Result  |
+    // | M1   | omitted  | -     | -          | inherit |
+    // | M2   | present  | yes   | -          | clear   |
+    // | M3   | present  | no    | yes        | replace |
+    // | M4   | present  | no    | no         | reject  |
     const mcpFiltered = await client.beta.sessions.create({
       agent: {
         id: 'assistant',
@@ -91,7 +105,7 @@ async function main() {
           default_config: { enabled: false },
           configs: [{ name: 'add', enabled: true }],
         }],
-        mcp_servers: [{ type: 'url', name: 'calc', url: 'http://127.0.0.1:1/mcp' }],
+        mcp_servers: [{ type: 'url', name: 'calc', url: fixture.url }],
       },
       betas: BETAS,
     });
@@ -99,9 +113,9 @@ async function main() {
     assert.equal(mcpFiltered.agent.tools[0].mcp_server_name, 'calc');
     assert.equal(mcpFiltered.agent.tools[0].default_config.enabled, false);
     assert.deepEqual(mcpFiltered.agent.mcp_servers, [{
-      type: 'url', name: 'calc', url: 'http://127.0.0.1:1/mcp',
+      type: 'url', name: 'calc', url: fixture.url,
     }]);
-    pass('mcp_toolset allowlist projects with its declared MCP server');
+    pass('M3: mcp_toolset allowlist replaces and realizes its declared MCP server');
 
     await assert.rejects(
       () => client.beta.sessions.create({
@@ -115,7 +129,7 @@ async function main() {
       }),
       (err) => err.status === 400,
     );
-    pass('unreferenced MCP server is rejected 400');
+    pass('M4: unreferenced MCP server is rejected 400');
 
     // ── model: null is a clear — rejected, a session always needs a model ────────
     // Raw POST: the not-clearable rule is a wire-level constraint, so drive it past
@@ -132,7 +146,10 @@ async function main() {
     assert.equal(body.type, 'error', 'error envelope shape');
     assert.equal(body.error.type, 'invalid_request_error', 'invalid_request_error type');
     pass('model: null (clear) is rejected 400 — a session always needs a model');
-  });
+    });
+  } finally {
+    await fixture.close();
+  }
 
   console.log('E2E PASS: session model axis (official agent.model + agent_with_overrides).');
   process.exitCode = 0;

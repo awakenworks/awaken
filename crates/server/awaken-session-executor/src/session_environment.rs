@@ -39,6 +39,12 @@ pub(crate) trait AgentSandbox: Send + Sync {
 
     fn config_home(&self) -> String;
 
+    /// Jail-relative/interior path used to materialize the config home. This is
+    /// distinct from [`Self::config_home`] on the Workdir tier, where the child
+    /// sees an absolute host path but the file writer accepts only a logical
+    /// path below the Session root.
+    fn config_home_logical(&self) -> String;
+
     /// Workspace path understood by the ACP agent inside this environment.
     ///
     /// This is the host-realized absolute root for Workdir and the stable interior
@@ -359,13 +365,25 @@ impl AgentSandbox for SessionEnvironment {
 
     fn config_home(&self) -> String {
         match self {
-            Self::Container { .. } => "/acp-config".to_string(),
+            // A bound container is already running and its root filesystem may
+            // be read-only. Late ACP config therefore lives in the one writable,
+            // Session-owned workspace rather than the creation-time /acp-config
+            // mount used by the legacy one-shot source.
+            Self::Container { .. } => "/workspace/.acp-config".to_string(),
             Self::Namespace(_) => "/workspace/.acp-config".to_string(),
             Self::Workdir(sandbox) => sandbox
                 .workspace_path()
                 .join(".acp-config")
                 .to_string_lossy()
                 .into_owned(),
+        }
+    }
+
+    fn config_home_logical(&self) -> String {
+        match self {
+            Self::Container { .. } => "/workspace/.acp-config".to_string(),
+            Self::Namespace(_) => "/workspace/.acp-config".to_string(),
+            Self::Workdir(_) => ".acp-config".to_string(),
         }
     }
 
@@ -760,7 +778,18 @@ mod tests {
         );
         assert_eq!(environment.handle().provider_kind, "container");
         assert!(AgentSandbox::is_container(&environment));
-        assert_eq!(AgentSandbox::config_home(&environment), "/acp-config");
+        // Config-home placement decision table:
+        // C1=environment already exists; C2=root may be read-only; C3=workspace
+        // is the provider's writable Session boundary. C1+C2+C3 requires both
+        // the exposed and materialization paths to stay under /workspace.
+        assert_eq!(
+            AgentSandbox::config_home(&environment),
+            "/workspace/.acp-config"
+        );
+        assert_eq!(
+            AgentSandbox::config_home_logical(&environment),
+            "/workspace/.acp-config"
+        );
 
         AgentSandbox::materialize_inline(&environment, "/workspace/direct.bin", b"direct")
             .await
