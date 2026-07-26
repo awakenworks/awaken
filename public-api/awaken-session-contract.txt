@@ -444,6 +444,7 @@ impl awaken_session_contract::PersistedSession
 pub fn awaken_session_contract::PersistedSession::agent_id(&self) -> core::option::Option<&str>
 pub fn awaken_session_contract::PersistedSession::environment_id(&self) -> &str
 pub fn awaken_session_contract::PersistedSession::frozen_baseline(&self) -> core::option::Option<&awaken_session_contract::SessionBaseline>
+pub fn awaken_session_contract::PersistedSession::is_terminal(&self) -> bool
 pub fn awaken_session_contract::PersistedSession::model(&self) -> core::option::Option<&str>
 pub fn awaken_session_contract::PersistedSession::visible_mcp_servers(&self) -> alloc::vec::Vec<serde_json::value::Value>
 pub struct awaken_session_contract::ResolvedInput
