@@ -82,6 +82,17 @@ pub struct PersistedSession {
 }
 
 impl PersistedSession {
+    /// Whether the root Session lifecycle forbids every new realization effect.
+    /// Keep this classification on the aggregate so API rehydration, MCP recovery,
+    /// and later reconcilers cannot grow different terminal-status lists.
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self.status.as_str(),
+            "terminated" | "deleted" | "activation_failed"
+        )
+    }
+
     #[must_use]
     pub fn frozen_baseline(&self) -> Option<&crate::SessionBaseline> {
         match &self.baseline {
@@ -420,6 +431,31 @@ mod mutation_tests {
             realization: None,
             status: "idle".into(),
             archived_at: None,
+        }
+    }
+
+    /// Cause graph: lifecycle fact -> terminal classification -> realization
+    /// eligibility. Decision table:
+    ///
+    /// | Rule | status | Terminal |
+    /// |---|---|---|
+    /// | L1 | preparing | false |
+    /// | L2 | idle | false |
+    /// | L3 | terminated | true |
+    /// | L4 | deleted | true |
+    /// | L5 | activation_failed | true |
+    #[test]
+    fn terminal_lifecycle_classification_follows_the_decision_table() {
+        for (rule, status, terminal) in [
+            ("L1", "preparing", false),
+            ("L2", "idle", false),
+            ("L3", "terminated", true),
+            ("L4", "deleted", true),
+            ("L5", "activation_failed", true),
+        ] {
+            let mut value = session("session-1", SessionRevision(1));
+            value.status = status.into();
+            assert_eq!(value.is_terminal(), terminal, "{rule}");
         }
     }
 

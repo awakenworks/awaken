@@ -7,15 +7,17 @@
 //   C4 = the exact realization generation is staged/activated/acknowledged
 //   C5 = the coordinator-only cell enqueues without a local claim loop
 //   C6 = authenticated remote settle wakes the foreground request from committed truth
+//   C7 = continuing Worker authority remains provable at the next heartbeat
 //
 // Decision table:
-//   C1 C2 C3 C4 C5 C6 | result
-//    1  1  1  1  1  1 | prompt visible; foreground returns; Session becomes idle
-//    0  *  *  *  1  * | worker transport rejects the request (worker_transport)
-//    1  1  0  *  1  * | no runtime projection / no successful turn
-//    1  1  1  0  1  * | realization fails closed / no successful turn
-//    1  1  1  1  0  * | local-pool topology uses the same dispatch (durable suites)
-//    1  1  1  1  1  0 | committed state remains authoritative; no fabricated success
+//   C1 C2 C3 C4 C5 C6 C7 | result
+//    1  1  1  1  1  1  1 | prompt visible; foreground returns; Session becomes idle
+//    0  *  *  *  1  *  * | worker transport rejects the request (worker_transport)
+//    1  1  0  *  1  *  * | no runtime projection / no successful turn
+//    1  1  1  0  1  *  * | realization fails closed / no successful turn
+//    1  1  1  1  0  *  * | local-pool topology uses the same dispatch (durable suites)
+//    1  1  1  1  1  0  * | committed state remains authoritative; no fabricated success
+//    1  1  1  1  1  1  0 | heartbeat fails closed; local Session projection is revoked
 
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -26,6 +28,8 @@ import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 // @ts-expect-error The shared E2E harness is intentionally JavaScript.
 import { spawnServer, stopServer, waitForPort } from './harness.mjs';
+// @ts-expect-error The shared MCP fixture is intentionally JavaScript.
+import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 39851);
@@ -85,11 +89,13 @@ async function waitForProjection(client: Anthropic, sessionId: string): Promise<
 
 async function main(): Promise<void> {
   const storage = mkdtempSync(path.join(tmpdir(), 'awaken-application-session-'));
+  const mcp = await startCalcFixture(undefined, { allowAnonymous: true });
   const cell = spawnServer('echo', PORT, {
     AWAKEN_INGRESS: 'durable',
     AWAKEN_STORAGE_DIR: storage,
     AWAKEN_SERVER_RUN_LOCAL_POOL: 'false',
   }).server;
+  let cellStopped = false;
   let worker: ChildProcessWithoutNullStreams | undefined;
   let workerOutput = '';
   try {
@@ -109,6 +115,7 @@ async function main(): Promise<void> {
         ...process.env,
         AWAKEN_UPSTREAM_URL: BASE,
         AWAKEN_WORKER_ID: `application-session-worker-${process.pid}`,
+        AWAKEN_TEST_MCP_URL: mcp.url,
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -141,11 +148,37 @@ async function main(): Promise<void> {
     );
     const realized = await client.beta.sessions.retrieve(session.id, { betas: BETAS });
     assert.equal(realized.status, 'idle', 'realization acknowledgement projects durable idle state');
+    assert.deepEqual(
+      realized.agent.mcp_servers,
+      [{ name: 'application-calc', type: 'url', url: mcp.url }],
+      'the application MCP input uses the same durable attachment projection',
+    );
+    assert.ok(
+      mcp.calls.some((call: any) => call.method === 'initialize')
+      && mcp.calls.some((call: any) => call.method === 'tools/list'),
+      'the remote Worker stages and publishes the anonymous MCP generation',
+    );
     assert.equal(runningWorker.exitCode, null, `Worker stayed authoritative: ${workerOutput}`);
+
+    await stopServer(cell);
+    cellStopped = true;
+    const authorityDeadline = Date.now() + 15_000;
+    while (
+      Date.now() < authorityDeadline
+      && !workerOutput.includes('worker heartbeat cannot prove continuing authority')
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.match(
+      workerOutput,
+      /worker heartbeat cannot prove continuing authority/,
+      'C7 loss of Control authority closes claims and revokes the local Session projection',
+    );
     console.log('APPLICATION SESSION WORKER TS E2E PASS: factory -> claim-fenced contribution -> exact realization -> prompt-visible model turn.');
   } finally {
     if (worker) await stopServer(worker);
-    await stopServer(cell);
+    if (!cellStopped) await stopServer(cell);
+    await mcp.close();
     rmSync(storage, { recursive: true, force: true });
   }
 }

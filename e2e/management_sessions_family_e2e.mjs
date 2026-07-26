@@ -6,6 +6,17 @@
 // missing so any wire-shape drift surfaces as an SDK decode error.
 //
 // Run: (from e2e/)  node management_sessions_family_e2e.mjs
+//
+// Root-update cause graph:
+//   C1 Session absent -> U1 404, no effect
+//   C2 fields equal current values + no command key -> U2 semantic no-op
+//   C3 metadata key carries null -> U3 delete key + one update event
+//
+// | Rule | Session | semantic delta | key | Effect |
+// |---|---|---|---|---|
+// | U1 | absent | any | none | 404 |
+// | U2 | present | none | none | same ETag, no event |
+// | U3 | present | delete metadata | none | new ETag, key absent, one event |
 
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
@@ -46,6 +57,38 @@ async function main() {
       assert.equal(updatedEv.title, 'my session');
       assert.equal(updatedEv.metadata.team, 'core');
       pass('session.updated on the event stream');
+
+      await assert.rejects(
+        () => client.beta.sessions.update('sesn_missing', { title: 'never', betas: BETAS }),
+        (err) => err.status === 404,
+        'U1 an absent aggregate is rejected',
+      );
+
+      const beforeNoop = await client.beta.sessions
+        .retrieve(session.id, { betas: BETAS })
+        .withResponse();
+      const beforeNoopEtag = beforeNoop.response.headers.get('etag');
+      assert.ok(beforeNoopEtag, 'retrieve exposes the root revision');
+      const beforeNoopEvents = (await drain(
+        client.beta.sessions.events.list(session.id, { betas: BETAS }),
+      )).filter((event) => event.type === 'session.updated').length;
+      const noOp = await client.beta.sessions
+        .update(session.id, { title: 'my session', metadata: { team: 'core' }, betas: BETAS })
+        .withResponse();
+      assert.equal(noOp.response.headers.get('etag'), beforeNoopEtag, 'U2 preserves revision');
+      assert.equal(
+        (await drain(client.beta.sessions.events.list(session.id, { betas: BETAS })))
+          .filter((event) => event.type === 'session.updated').length,
+        beforeNoopEvents,
+        'U2 emits no domain event',
+      );
+
+      const removedMetadata = await client.beta.sessions
+        .update(session.id, { metadata: { team: null }, betas: BETAS })
+        .withResponse();
+      assert.notEqual(removedMetadata.response.headers.get('etag'), beforeNoopEtag, 'U3 advances revision');
+      assert.equal(removedMetadata.data.metadata.team, undefined, 'U3 deletes the metadata key');
+      pass('U1-U3 root update decision table rejects absence and distinguishes no-op from deletion');
 
       // -- mid-session agent update gate ------------------------------------
       // Only tools and MCP servers are mutable. Arrays are full replacements;

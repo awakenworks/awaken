@@ -7,6 +7,8 @@
 //   C3 Idempotency-Key seen with another hash -> E3 conflict, no effect
 //   C4 If-Match differs from root revision -> E4 conflict, no effect
 //   C5 desired set empty -> E5 drain/remove, empty projection
+//   C6 new key but desired set already converged -> E6 receipt-only root CAS, no domain effect
+//   C7 two names resolve to one canonical target -> E7 reject before effect
 //
 // Decision table:
 // | Rule | desired | key       | If-Match | Effect |
@@ -16,6 +18,8 @@
 // | H4   | remove  | new       | stale    | 409, B remains active |
 // | H5   | empty   | new       | current  | drain B, project empty |
 // | H6   | add A   | new       | current  | new A generation and call A |
+// | H7   | same A  | new       | current  | receipt ETag only, no event/I/O |
+// | H8   | duplicate target | new | current | 400, A remains active |
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
@@ -149,6 +153,42 @@ async function main(): Promise<void> {
       await send(client, sessionId, 'add 8 1');
       assert.equal(fixtureA.calls.filter((call: any) => call.method === 'tools/call').length, 2);
       assert.equal(fixtureB.calls.filter((call: any) => call.method === 'tools/call').length, 1);
+
+      const addedEtag = etag(added.response);
+      const beforeConvergedIo = fixtureA.calls.length;
+      const beforeConvergedEvents = (await events(client, sessionId)).filter(
+        (event) => event.type === 'session.updated',
+      ).length;
+      const converged = await update(client, sessionId, [serverA], {
+        'Idempotency-Key': 'same-a-new-command',
+        'If-Match': addedEtag,
+      });
+      const convergedEtag = etag(converged.response);
+      assert.notEqual(convergedEtag, addedEtag, 'H7 atomically records the new command receipt');
+      assert.equal(fixtureA.calls.length, beforeConvergedIo, 'H7 performs no MCP I/O');
+      assert.equal(
+        (await events(client, sessionId)).filter((event) => event.type === 'session.updated').length,
+        beforeConvergedEvents,
+        'H7 emits no update event',
+      );
+      pass('H7 an already-converged desired set records only its command receipt');
+
+      const duplicateTarget = { name: 'calc-alias', type: 'url' as const, url: fixtureA.url };
+      await assert.rejects(
+        update(client, sessionId, [serverA, duplicateTarget], {
+          'Idempotency-Key': 'duplicate-canonical-target',
+          'If-Match': convergedEtag,
+        }),
+        (error: any) => error?.status === 400,
+        'H8 rejects two logical names for one canonical MCP target',
+      );
+      assert.deepEqual(
+        (await client.beta.sessions.retrieve(sessionId, { betas: BETAS })).agent.mcp_servers,
+        [serverA],
+        'H8 leaves the converged aggregate visible',
+      );
+      assert.equal(fixtureA.calls.length, beforeConvergedIo, 'H8 performs no MCP I/O');
+      pass('H8 duplicate canonical targets fail before aggregate or Runtime effects');
 
       const serialized = JSON.stringify({ added: added.data, events: await events(client, sessionId) });
       assert.ok(!serialized.includes(TOKEN_A) && !serialized.includes(TOKEN_B), 'state/events remain secret-free');

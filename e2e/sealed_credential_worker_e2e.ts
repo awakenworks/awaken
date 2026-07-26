@@ -16,7 +16,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+// @ts-ignore -- the shared JavaScript harness intentionally serves TS scenarios.
 import { spawnServer, stopServer, waitForPort } from './harness.mjs';
+// @ts-ignore -- the shared JavaScript fixture intentionally serves TS scenarios.
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
