@@ -557,7 +557,7 @@ mod tests {
     async fn agent_card_parses_the_card() {
         let transport = MockTransport {
             seen: Mutex::new(Vec::new()),
-            reply: r#"{"name":"assistant","description":"Awaken agent","version":"0.0.0","protocolVersion":"1.0","capabilities":{"streaming":false,"pushNotifications":false}}"#
+            reply: r#"{"name":"assistant","description":"Awaken agent","version":"0.0.0","protocolVersion":"1.0","url":"https://agent.example/a2a","capabilities":{"streaming":false,"pushNotifications":false},"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],"skills":[]}"#
                 .into(),
         };
         let card = agent_card(&transport).await.unwrap();

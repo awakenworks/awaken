@@ -291,7 +291,7 @@ mod tests {
         let transport = Arc::new(MockTransport {
             seen: Mutex::new(Vec::new()),
             status: 200,
-            reply: r#"{"name":"researcher","description":"a remote agent","version":"1.2.3","protocolVersion":"1.0","capabilities":{"streaming":false,"pushNotifications":false}}"#
+            reply: r#"{"name":"researcher","description":"a remote agent","version":"1.2.3","protocolVersion":"1.0","url":"https://agent.example/a2a","capabilities":{"streaming":false,"pushNotifications":false},"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],"skills":[]}"#
                 .to_string(),
         });
         let delegate = A2aRemoteAgent::new(transport.clone());

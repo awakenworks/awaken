@@ -483,16 +483,21 @@ impl ErrorResponse {
 
 /// The public agent discovery card served at the well-known card path.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentCard {
     pub name: String,
     pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documentation_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_url: Option<String>,
     pub version: String,
     pub protocol_version: String,
-    /// The absolute service endpoint an A2A client posts to. Required by the
-    /// official SDKs to resolve where to send; omitted only in unit fixtures.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub url: Option<String>,
+    pub provider: Option<AgentProvider>,
+    /// The absolute service endpoint an A2A client posts to. Required by the
+    /// official SDKs to resolve where to send.
+    pub url: String,
     /// The transport the `url` speaks. `JSONRPC` is the canonical A2A binding the
     /// SDK clients default to.
     #[serde(
@@ -504,11 +509,8 @@ pub struct AgentCard {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub additional_interfaces: Vec<AgentInterface>,
     pub capabilities: AgentCapabilities,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub default_input_modes: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub default_output_modes: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<AgentSkill>,
     /// Named security schemes a client may use to authenticate (A2A
     /// `securitySchemes`, OpenAPI 3 style). Declaration only — enforcement is
@@ -519,6 +521,8 @@ pub struct AgentCard {
     /// AND within one map; values are the scopes required of that scheme.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub security: Vec<BTreeMap<String, Vec<String>>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signatures: Vec<AgentCardSignature>,
     /// Whether `agent/getAuthenticatedExtendedCard` serves a richer card.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_authenticated_extended_card: Option<bool>,
@@ -526,6 +530,7 @@ pub struct AgentCard {
 
 /// An additional A2A v0.3 transport exposed by the same agent.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct AgentInterface {
     pub url: String,
     pub transport: String,
@@ -534,7 +539,7 @@ pub struct AgentInterface {
 /// One way a client can authenticate, per the A2A spec's OpenAPI 3–derived
 /// security schemes. The `type` field is the wire discriminator.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type")]
+#[serde(tag = "type", deny_unknown_fields)]
 pub enum SecurityScheme {
     /// A static key in a header, query parameter, or cookie.
     #[serde(rename = "apiKey", rename_all = "camelCase")]
@@ -591,7 +596,7 @@ pub enum ApiKeyLocation {
 
 /// The OAuth 2.0 flows a scheme supports (each optional, at least one set).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OAuthFlows {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authorization_code: Option<AuthorizationCodeFlow>,
@@ -605,7 +610,7 @@ pub struct OAuthFlows {
 
 /// Authorization-code flow (with PKCE, per the A2A spec's guidance).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AuthorizationCodeFlow {
     pub authorization_url: String,
     pub token_url: String,
@@ -618,7 +623,7 @@ pub struct AuthorizationCodeFlow {
 
 /// Client-credentials (machine-to-machine) flow.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ClientCredentialsFlow {
     pub token_url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -629,7 +634,7 @@ pub struct ClientCredentialsFlow {
 
 /// Implicit flow (legacy browser clients).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ImplicitFlow {
     pub authorization_url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -640,7 +645,7 @@ pub struct ImplicitFlow {
 
 /// Resource-owner password flow (legacy).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PasswordFlow {
     pub token_url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -651,21 +656,62 @@ pub struct PasswordFlow {
 
 /// Feature flags advertised in the card.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentCapabilities {
     #[serde(default)]
     pub streaming: bool,
     #[serde(default)]
     pub push_notifications: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extensions: Vec<AgentExtension>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_transition_history: Option<bool>,
 }
 
 /// One advertised skill.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentSkill {
     pub id: String,
     pub name: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub description: String,
     pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub examples: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_modes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub output_modes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub security: Vec<BTreeMap<String, Vec<String>>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AgentProvider {
+    pub organization: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentExtension {
+    pub uri: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<BTreeMap<String, Value>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AgentCardSignature {
+    pub protected: String,
+    pub signature: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<BTreeMap<String, Value>>,
 }
 
 #[cfg(test)]
@@ -898,24 +944,35 @@ mod tests {
         let card = AgentCard {
             name: "assistant".into(),
             description: "Awaken agent".into(),
+            documentation_url: None,
+            icon_url: None,
             version: "0.0.0".into(),
             protocol_version: "1.0".into(),
-            url: Some("http://localhost/v1/a2a".into()),
+            provider: None,
+            url: "http://localhost/v1/a2a".into(),
             preferred_transport: Some("JSONRPC".into()),
             additional_interfaces: Vec::new(),
             capabilities: AgentCapabilities {
                 streaming: false,
                 push_notifications: false,
+                extensions: Vec::new(),
+                state_transition_history: None,
             },
             default_input_modes: vec!["text/plain".into()],
             default_output_modes: vec!["text/plain".into()],
             skills: vec![AgentSkill {
                 id: "chat".into(),
                 name: "Chat".into(),
+                description: "Chat".into(),
                 tags: vec!["chat".into()],
+                examples: Vec::new(),
+                input_modes: Vec::new(),
+                output_modes: Vec::new(),
+                security: Vec::new(),
             }],
             security_schemes: BTreeMap::new(),
             security: Vec::new(),
+            signatures: Vec::new(),
             supports_authenticated_extended_card: None,
         };
         let value = serde_json::to_value(&card).unwrap();

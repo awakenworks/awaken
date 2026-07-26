@@ -70,7 +70,7 @@ fn extended_card_response(rt: &A2aState, headers: &HeaderMap) -> Response {
 
 fn card_at(rt: &A2aState, origin: &str) -> AgentCard {
     let mut card = agent_card(&rt.runtime.model());
-    card.url = Some(format!("{origin}{JSONRPC_PATH}"));
+    card.url = format!("{origin}{JSONRPC_PATH}");
     card.additional_interfaces = vec![AgentInterface {
         url: origin.to_string(),
         transport: "HTTP+JSON".into(),
@@ -84,24 +84,35 @@ pub fn agent_card(model: &str) -> AgentCard {
     AgentCard {
         name: "assistant".to_string(),
         description: format!("Awaken agent over model `{model}`"),
+        documentation_url: None,
+        icon_url: None,
         version: env!("CARGO_PKG_VERSION").to_string(),
         protocol_version: "0.3.0".to_string(),
-        url: None,
+        provider: None,
+        url: String::new(),
         preferred_transport: Some("JSONRPC".to_string()),
         additional_interfaces: Vec::new(),
         capabilities: AgentCapabilities {
             streaming: true,
             push_notifications: true,
+            extensions: Vec::new(),
+            state_transition_history: None,
         },
         default_input_modes: vec!["text/plain".to_string()],
         default_output_modes: vec!["text/plain".to_string()],
         skills: vec![AgentSkill {
             id: "chat".to_string(),
             name: "Chat".to_string(),
+            description: "General conversational assistance".to_string(),
             tags: vec!["chat".to_string()],
+            examples: Vec::new(),
+            input_modes: Vec::new(),
+            output_modes: Vec::new(),
+            security: Vec::new(),
         }],
         security_schemes: Default::default(),
         security: Vec::new(),
+        signatures: Vec::new(),
         supports_authenticated_extended_card: Some(true),
     }
 }

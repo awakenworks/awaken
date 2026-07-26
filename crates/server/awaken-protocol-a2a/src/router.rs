@@ -1559,7 +1559,7 @@ async fn jsonrpc(
                 rpc_ok(id, v1_agent_card_value(&rt.runtime.model(), &origin))
             } else {
                 let mut card = agent_card(&rt.runtime.model());
-                card.url = Some(format!("{origin}{JSONRPC_PATH}"));
+                card.url = format!("{origin}{JSONRPC_PATH}");
                 rpc_ok(id, card)
             }
         }
