@@ -56,12 +56,7 @@ impl SharedHost {
     /// installation. Composition roots call this once and pass the value to every
     /// resource adapter they assemble.
     pub fn provision_local_workspace() -> String {
-        let deployment = crate::deployment_config::DeploymentConfig::from_env();
-        let fallback = std::env::var("AWAKEN_MGMT_DIR")
-            .ok()
-            .filter(|dir| !dir.trim().is_empty())
-            .map(PathBuf::from);
-        resolve_local_workspace(deployment.storage_dir.as_deref().or(fallback.as_deref()))
+        resolve_local_workspace(None)
     }
 
     /// Explicit-root variant for embedders/tests that do not configure through
@@ -77,7 +72,7 @@ impl SharedHost {
             llm,
             model_ref.into(),
             None,
-            crate::deployment_config::DeploymentConfig::from_env(),
+            crate::deployment_config::DeploymentConfig::ephemeral(),
         )
     }
 
@@ -140,7 +135,7 @@ impl SharedHost {
             llm,
             model_ref.into(),
             Some(resources),
-            crate::deployment_config::DeploymentConfig::from_env(),
+            crate::deployment_config::DeploymentConfig::ephemeral(),
         )
     }
 

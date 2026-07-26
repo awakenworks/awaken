@@ -5,7 +5,8 @@
 //! CLI a worker can host, but never supplies provider execution facts.
 
 use awaken_run_executor_acp::{
-    AcpCli, ConfigHome, LaunchResolver, OpenError, ProcessSecretRequirement, ResolvedModel,
+    AcpCli, ConfigHome, CredentialArtifactRequirement, LaunchResolver, OpenError,
+    ProcessSecretRequirement, ResolvedModel,
 };
 #[cfg(test)]
 use awaken_runtime_contract::CredentialRealizationKind;
@@ -50,7 +51,12 @@ impl PublishedAcpLaunchResolver {
                     "model {model_ref} is outside the publication-pinned candidate set"
                 ))
             })?;
-        let ModelProvisioning::Provider { endpoint, .. } = &candidate.provisioning else {
+        let ModelProvisioning::Provider {
+            endpoint,
+            credential,
+            ..
+        } = &candidate.provisioning
+        else {
             return Err(OpenError(format!(
                 "published model {model_ref} has no provider endpoint"
             )));
@@ -61,29 +67,51 @@ impl PublishedAcpLaunchResolver {
                 "published model {model_ref} has incomplete endpoint coordinates"
             )));
         }
-        let process_secret = self
+        let artifact_reference = self
             .credentials
-            .plan_claimed_process_secret(candidate, context)
-            .map_err(OpenError)?
-            .map(ProcessSecretRequirement::new);
+            .plan_claimed_credential_artifact(candidate, context, self.cli.id)
+            .map_err(OpenError)?;
+        let credential_artifact = artifact_reference.map(|reference| {
+            CredentialArtifactRequirement::new(
+                reference,
+                crate::credential_artifact::relative_path(self.cli.id)
+                    .expect("only registered artifact codecs issue references"),
+            )
+        });
+        let process_secret = if credential_artifact.is_some() {
+            None
+        } else {
+            self.credentials
+                .plan_claimed_process_secret(candidate, context)
+                .map_err(OpenError)?
+                .map(ProcessSecretRequirement::new)
+        };
+        if credential.is_some() && credential_artifact.is_none() && process_secret.is_none() {
+            return Err(OpenError(
+                "credential_realization_kind_unsupported: selected ACP credential cannot be provisioned"
+                    .into(),
+            ));
+        }
         Ok(ResolvedModel {
             base_url: endpoint.base_url,
             model: endpoint.upstream_model,
             process_secret,
+            credential_artifact,
         })
     }
 
-    /// Open the thread's config home and return it as the CLI's `config_home_env`.
-    /// An open failure yields no env rather than aborting — the CLI then falls back
-    /// to its own default home (degraded, not broken).
-    fn config_home_env(&self, thread_id: &str) -> Vec<(String, String)> {
-        match ConfigHome::open(self.store_dir.as_deref(), thread_id) {
-            Ok(home) => vec![(
-                self.cli.config_home_env.to_string(),
-                home.root().display().to_string(),
-            )],
-            Err(_) => Vec::new(),
-        }
+    /// Open the exact thread config home. Failure is terminal: allowing the CLI
+    /// to discover its default home would bypass claim-pinned configuration.
+    fn config_home_env(&self, thread_id: &str) -> Result<Vec<(String, String)>, OpenError> {
+        let home = ConfigHome::open(self.store_dir.as_deref(), thread_id)
+            .map_err(|error| OpenError(format!("local_config_home_unavailable: {error}")))?;
+        let Some(config_home_env) = self.cli.config_home_env else {
+            return Ok(Vec::new());
+        };
+        Ok(vec![(
+            config_home_env.to_string(),
+            home.root().display().to_string(),
+        )])
     }
 }
 
@@ -96,7 +124,7 @@ impl LaunchResolver for PublishedAcpLaunchResolver {
         self.resolve_model(activation, context)
     }
 
-    fn extra_env(&self, activation: &RunActivation) -> Vec<(String, String)> {
+    fn extra_env(&self, activation: &RunActivation) -> Result<Vec<(String, String)>, OpenError> {
         self.config_home_env(&activation.thread_id.0)
     }
 
@@ -121,6 +149,7 @@ impl LaunchResolver for PublishedAcpLaunchResolver {
             material_sources,
             realization_kinds: [
                 awaken_runtime_contract::CredentialRealizationKind::ProcessSecretEnvironment,
+                awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
             ]
             .into_iter()
             .collect(),
@@ -631,11 +660,30 @@ mod tests {
                 Arc::new(InMemorySecretStore::new()),
             ),
         );
-        let env = r.config_home_env("thr_x");
+        let env = r.config_home_env("thr_x").unwrap();
         assert_eq!(env.len(), 1);
         assert_eq!(env[0].0, "CLAUDE_CONFIG_DIR");
         assert!(std::path::Path::new(&env[0].1).is_dir());
         assert!(env[0].1.contains("thr_x"));
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn config_home_failure_is_terminal_and_never_uses_the_default_home() {
+        let base = std::env::temp_dir().join(format!("awaken-aclr-invalid-{}", std::process::id()));
+        let _ = std::fs::remove_file(&base);
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::write(&base, b"not a directory").unwrap();
+        let resolver = PublishedAcpLaunchResolver::new(
+            claude(),
+            Some(base.clone()),
+            crate::PinnedCredentialMaterializer::new(
+                Arc::new(InMemoryCredentialRepo::new()),
+                Arc::new(InMemorySecretStore::new()),
+            ),
+        );
+        let error = resolver.config_home_env("thr_x").unwrap_err();
+        assert!(error.0.starts_with("local_config_home_unavailable:"));
+        let _ = std::fs::remove_file(base);
     }
 }

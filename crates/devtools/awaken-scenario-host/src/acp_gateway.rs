@@ -86,6 +86,7 @@ impl awaken_run_executor_acp::LaunchResolver for ScenarioEnvAcpModel {
             process_secret: Some(awaken_run_executor_acp::ProcessSecretRequirement::new(
                 "scenario-env://acp-credential",
             )),
+            credential_artifact: None,
         })
     }
 

@@ -23,6 +23,7 @@ mod commit_ingest;
 mod compact;
 mod config;
 mod container_environment;
+mod credential_artifact;
 mod credential_materializer;
 mod data_subject_api;
 mod delegate;
@@ -100,10 +101,7 @@ pub use crate::application::{
 };
 pub use crate::commit_backend::init_shared_postgres_commit;
 pub use crate::credential_materializer::PinnedCredentialMaterializer;
-pub use crate::dispatch_backend::{
-    ensure_durable_backend, init_shared_postgres_dispatch,
-    init_shared_postgres_dispatch_with_config,
-};
+pub use crate::dispatch_backend::init_shared_postgres_dispatch_with_config;
 pub use crate::host::{
     AttemptExecutorDecorator, HostResume, ResourcePlanePorts, SharedHost,
     self_hosted_inference_holder,
@@ -669,7 +667,13 @@ impl ManagedHost {
                                         "repository `{repository_id}` credential: {error}"
                                     ))
                                 })?
-                                .material,
+                                .material
+                                .into_bearer()
+                                .map_err(|error| {
+                                    RunError::bad_request(format!(
+                                        "repository `{repository_id}` credential: {error}"
+                                    ))
+                                })?,
                         )
                     }
                     (None, None) => None,
@@ -1543,7 +1547,14 @@ impl awaken_protocol_managed::McpAttachmentRealizer for ManagedHost {
                             ),
                         )
                     })?
-                    .material;
+                    .material
+                    .into_bearer()
+                    .map_err(|error| {
+                        RunError::classified(
+                            "mcp_credential_material_kind_mismatch",
+                            error.to_string(),
+                        )
+                    })?;
                 let refresh = access.refresh.as_ref().map(|refresh| {
                     crate::mcp::McpRefreshMaterial::new(refresh.clone(), injector.secret_store())
                 });

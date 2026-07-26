@@ -23,6 +23,45 @@ pub struct CredentialRef {
     pub revision: u64,
 }
 
+/// Worker-local state observed for one exact non-secret credential revision.
+/// This is execution evidence, never credential selection or secret material.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialObservationState {
+    Available,
+    LoginRequired,
+    Expired,
+    Invalid,
+    Disabled,
+}
+
+/// A point-in-time Worker observation used by placement and diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct CredentialObservation {
+    pub credential: CredentialRef,
+    pub state: CredentialObservationState,
+    pub observed_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason_code: Option<String>,
+}
+
+impl CredentialObservation {
+    #[must_use]
+    pub fn available(credential: CredentialRef, observed_at_ms: u64) -> Self {
+        Self {
+            credential,
+            state: CredentialObservationState::Available,
+            observed_at_ms,
+            reason_code: None,
+        }
+    }
+
+    #[must_use]
+    pub fn is_available_for(&self, credential: &CredentialRef) -> bool {
+        self.state == CredentialObservationState::Available && &self.credential == credential
+    }
+}
+
 /// The trusted adapter from which exact credential material may be resolved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -276,6 +315,15 @@ pub struct CredentialRefreshAccess {
     pub client_secret_ref: Option<String>,
     pub refresh_token_ref: String,
     pub access_token_ref: String,
+    /// Provider account/workspace required by externally managed OAuth drivers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    /// Optional provider plan/tenant classification passed only to the driver.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_plan: Option<String>,
+    /// Known access-token expiry. `None` delegates expiry detection to the driver.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_unix_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -307,6 +355,9 @@ impl CredentialRefreshAccess {
             client_secret_ref,
             refresh_token_ref,
             access_token_ref,
+            account_id: None,
+            account_plan: None,
+            expires_at_unix_ms: None,
             scope,
             resource,
         };
@@ -325,9 +376,26 @@ impl CredentialRefreshAccess {
             &self.client_secret_ref,
             &self.refresh_token_ref,
             &self.access_token_ref,
+            &self.account_id,
+            &self.account_plan,
+            self.expires_at_unix_ms,
             &self.scope,
             &self.resource,
         ))
+    }
+
+    #[must_use]
+    pub fn with_provider_metadata(
+        mut self,
+        account_id: Option<String>,
+        account_plan: Option<String>,
+        expires_at_unix_ms: Option<u64>,
+    ) -> Self {
+        self.account_id = account_id;
+        self.account_plan = account_plan;
+        self.expires_at_unix_ms = expires_at_unix_ms;
+        self.configuration_fingerprint = self.expected_configuration_fingerprint();
+        self
     }
 
     #[must_use]
@@ -673,12 +741,53 @@ pub enum CredentialAdmissionError {
     RefreshConfigurationMismatch,
 }
 
+/// Exact OAuth token set owned by a provider driver. Refresh tokens never enter
+/// snapshots, observations, receipts, logs, or generic process configuration.
+#[derive(Debug)]
+pub struct OAuthCredentialMaterial {
+    pub access_token: RedactedString,
+    pub refresh_token: RedactedString,
+    pub expires_at_unix_ms: Option<u64>,
+    pub account_id: Option<String>,
+    pub account_plan: Option<String>,
+}
+
+/// Material shape returned by the sole exact resolver port. Provider drivers
+/// consume OAuth as a bundle; legacy bearer consumers can only accept `Bearer`.
+#[derive(Debug)]
+pub enum CredentialMaterial {
+    Bearer(RedactedString),
+    OAuth(OAuthCredentialMaterial),
+}
+
+impl CredentialMaterial {
+    #[must_use]
+    pub fn bearer(value: RedactedString) -> Self {
+        Self::Bearer(value)
+    }
+
+    #[must_use]
+    pub fn access_token(&self) -> &RedactedString {
+        match self {
+            Self::Bearer(value) => value,
+            Self::OAuth(bundle) => &bundle.access_token,
+        }
+    }
+
+    pub fn into_bearer(self) -> Result<RedactedString, CredentialMaterialError> {
+        match self {
+            Self::Bearer(value) => Ok(value),
+            Self::OAuth(_) => Err(CredentialMaterialError::MaterialKindMismatch),
+        }
+    }
+}
+
 /// Material returned only to the exact selected holder by a resolver adapter.
 #[derive(Debug)]
 pub struct ResolvedCredentialMaterial {
     pub credential: CredentialRef,
     pub holder: PlaintextHolder,
-    pub material: RedactedString,
+    pub material: CredentialMaterial,
 }
 
 /// Exact non-secret execution binding supplied to the material-source adapter.
@@ -737,6 +846,18 @@ pub enum CredentialMaterialError {
     PayloadMismatch,
     #[error("credential material resolver returned another credential or holder")]
     ResolverMismatch,
+    #[error("credential material kind is unsupported by the selected driver")]
+    MaterialKindMismatch,
+    #[error("credential login is required")]
+    LoginRequired,
+    #[error("credential is expired")]
+    Expired,
+    #[error("credential is invalid")]
+    Invalid,
+    #[error("credential is disabled")]
+    Disabled,
+    #[error("local credential probe failed")]
+    ProbeFailed,
 }
 
 /// Sole neutral source port for an already-selected exact credential access.
@@ -750,6 +871,14 @@ pub trait CredentialMaterialResolver: Send + Sync {
     /// Whether this adapter validates and opens recipient-bound envelope claims.
     fn supports_recipient_bound_envelopes(&self) -> bool {
         false
+    }
+
+    /// Current non-secret observations for exact Worker-local revisions owned by
+    /// this resolver. Control-plane resolvers return an empty set.
+    async fn credential_observations(
+        &self,
+    ) -> Result<BTreeSet<CredentialObservation>, CredentialMaterialError> {
+        Ok(BTreeSet::new())
     }
 
     async fn resolve_exact(
