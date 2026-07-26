@@ -768,7 +768,8 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
     assert_eq!(spec.env.len(), 1);
     assert_eq!(
         spec.network,
-        awaken_provisioning_contract::NetworkPolicy::None
+        awaken_provisioning_contract::NetworkPolicy::Unrestricted,
+        "the default Workdir provider lowers unsupported network admission"
     );
     assert_eq!(
         host.thread_session_prompts("flow-thread"),
@@ -1829,7 +1830,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
 /// | N2 | Allowlist | conflicting None | exact Allowlist | T |
 /// | N3 | None | conflicting Unrestricted | None | T |
 #[tokio::test]
-async fn frozen_environment_network_follows_the_decision_table() {
+async fn frozen_environment_network_follows_the_provider_decision_table() {
     use awaken_protocol_managed::{SessionInit, SessionRuntime};
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let managed = managed_with_resource_source(host.clone());
@@ -1854,16 +1855,14 @@ async fn frozen_environment_network_follows_the_decision_table() {
                 hosts: vec!["api.example".into()],
             },
             serde_json::json!({"network": {"mode": "none"}}),
-            awaken_provisioning_contract::NetworkPolicy::Allowlist {
-                hosts: vec!["api.example".into()],
-            },
+            awaken_provisioning_contract::NetworkPolicy::Unrestricted,
             true,
         ),
         (
             "N3",
             awaken_protocol_managed::SessionNetworkPolicy::None,
             serde_json::json!({"network": {"mode": "unrestricted"}}),
-            awaken_provisioning_contract::NetworkPolicy::None,
+            awaken_provisioning_contract::NetworkPolicy::Unrestricted,
             true,
         ),
     ];
@@ -1893,6 +1892,8 @@ async fn frozen_environment_network_follows_the_decision_table() {
 /// The frozen Environment reaches the sandbox spec through one projection. Isolation
 /// and limits come from the network-free sandbox blob, while the distinct network fact
 /// remains authoritative even if a retained blob contains a conflicting legacy field.
+/// The default Workdir provider lowers unsupported network admission and carries the
+/// same restriction through its existing deny-egress wrapper.
 #[tokio::test]
 async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
     use awaken_protocol_managed::{SessionInit, SessionRuntime};
@@ -1928,10 +1929,16 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
     );
     assert_eq!(
         spec.network,
-        NetworkPolicy::Allowlist {
-            hosts: vec!["api.github.com".into()]
-        },
-        "env allowlist supersedes the default unrestricted network"
+        NetworkPolicy::Unrestricted,
+        "Workdir does not claim strict allowlist enforcement"
+    );
+    assert_eq!(
+        spec.extra
+            .as_ref()
+            .and_then(|extra| extra.get("deny_egress"))
+            .and_then(serde_json::Value::as_bool),
+        Some(true),
+        "the frozen restriction still reaches the Workdir deny wrapper"
     );
     assert_eq!(spec.limits.cpu_millis, Some(2000));
     assert_eq!(spec.limits.memory_bytes, Some(4_294_967_296));
