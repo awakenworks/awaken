@@ -10,7 +10,7 @@
 //!
 //! Projection and the [`RunFactAppender`] contract are identical to the newline
 //! stand-in ([`crate::AcpBridge`]) — a `session/update` becomes the same
-//! [`AgentEvent`], so nothing downstream (the store, the executor) sees ACP
+//! [`AcpProjectedEvent`], so nothing downstream (the store, the executor) sees ACP
 //! vocabulary. A `session/request_permission` is decided by the injected
 //! [`crate::PermissionResolver`] (the neutral `ToolPermissionPolicy` behind an executor
 //! adapter) and projected back onto the agent's own allow/reject option. We
@@ -67,9 +67,9 @@ fn to_acp_mcp_servers(
 
 use crate::real_acp::{project_update, termination_from_stop_reason};
 use crate::{
-    AcpError, AcpLaunchEvent, AcpLaunchStage, AgentEvent, AllowAll, LaunchSink, PermissionAsk,
-    PermissionResolver, PermissionVerdict, RunFactAppender, TerminationReason, TurnConfig,
-    notify_launch,
+    AcpError, AcpLaunchEvent, AcpLaunchStage, AcpProjectedEvent, AllowAll, LaunchSink,
+    PermissionAsk, PermissionResolver, PermissionVerdict, RunFactAppender, TerminationReason,
+    TurnConfig, notify_launch,
 };
 
 const JSONRPC: &str = "2.0";
@@ -371,7 +371,7 @@ pub async fn run_turn_with_config(
         seq += 1;
         sink.append(
             seq,
-            &AgentEvent::Usage {
+            &AcpProjectedEvent::Usage {
                 prompt_tokens: usage.input_tokens,
                 completion_tokens: usage.output_tokens,
                 cache_read_tokens: usage.cached_read_tokens.unwrap_or(0),
@@ -383,7 +383,8 @@ pub async fn run_turn_with_config(
 
     let reason = termination_from_stop_reason(response.stop_reason);
     seq += 1;
-    sink.append(seq, &AgentEvent::TurnEnd { reason }).await?;
+    sink.append(seq, &AcpProjectedEvent::TurnEnd { reason })
+        .await?;
     Ok(reason)
 }
 
@@ -479,7 +480,7 @@ async fn project_notification(
         // recognized banner fails the turn closed with the classified failure
         // (RateLimited → Error) instead of landing as an ordinary assistant
         // message. Any other text still projects normally below.
-        if let AgentEvent::Message { text } = &event
+        if let AcpProjectedEvent::Message { text } = &event
             && let Some(failure) = crate::streamed_hard_limit(text)
         {
             return Err(AcpError::HardLimit(failure));
@@ -640,12 +641,12 @@ mod tests {
     #[derive(Default)]
     struct RecordingSink {
         last: u64,
-        events: Vec<(u64, AgentEvent)>,
+        events: Vec<(u64, AcpProjectedEvent)>,
     }
 
     #[async_trait]
     impl RunFactAppender for RecordingSink {
-        async fn append(&mut self, seq: u64, event: &AgentEvent) -> Result<(), AppendError> {
+        async fn append(&mut self, seq: u64, event: &AcpProjectedEvent) -> Result<(), AppendError> {
             if seq <= self.last {
                 return Err(AppendError::NonMonotonic {
                     got: seq,
@@ -834,11 +835,11 @@ mod tests {
         // One projected message + the synthetic TurnEnd, in seq order.
         assert!(matches!(
             &sink.events[0].1,
-            AgentEvent::Message { text } if text == "hello from acp"
+            AcpProjectedEvent::Message { text } if text == "hello from acp"
         ));
         assert!(matches!(
             sink.events.last().unwrap().1,
-            AgentEvent::TurnEnd {
+            AcpProjectedEvent::TurnEnd {
                 reason: TerminationReason::NaturalEnd
             }
         ));
@@ -863,7 +864,7 @@ mod tests {
             .events
             .iter()
             .filter_map(|(_, e)| match e {
-                AgentEvent::Message { text } => Some(text.clone()),
+                AcpProjectedEvent::Message { text } => Some(text.clone()),
                 _ => None,
             })
             .collect();
@@ -914,7 +915,9 @@ mod tests {
             .events
             .iter()
             .find_map(|(_, e)| match e {
-                AgentEvent::ToolCall { name, input, .. } => Some((name.clone(), input.clone())),
+                AcpProjectedEvent::ToolCall { name, input, .. } => {
+                    Some((name.clone(), input.clone()))
+                }
                 _ => None,
             })
             .expect("a tool call was projected");
@@ -1412,7 +1415,7 @@ mod tests {
             .events
             .iter()
             .find_map(|(_, e)| match e {
-                AgentEvent::Usage {
+                AcpProjectedEvent::Usage {
                     prompt_tokens,
                     completion_tokens,
                     cache_read_tokens,
@@ -1572,22 +1575,22 @@ mod tests {
         assert_eq!(reason, TerminationReason::NaturalEnd);
 
         // Exact ordered projection, including the synthetic terminal TurnEnd.
-        let shape: Vec<AgentEvent> = sink.events.iter().map(|(_, e)| e.clone()).collect();
+        let shape: Vec<AcpProjectedEvent> = sink.events.iter().map(|(_, e)| e.clone()).collect();
         assert_eq!(
             shape,
             vec![
-                AgentEvent::Message {
+                AcpProjectedEvent::Message {
                     text: "Hello ".into()
                 },
-                AgentEvent::ToolCall {
+                AcpProjectedEvent::ToolCall {
                     id: "c1".into(),
                     name: "read".into(),
                     input: serde_json::json!({ "path": "a.txt" }),
                 },
-                AgentEvent::Message {
+                AcpProjectedEvent::Message {
                     text: "world".into()
                 },
-                AgentEvent::TurnEnd {
+                AcpProjectedEvent::TurnEnd {
                     reason: TerminationReason::NaturalEnd,
                 },
             ],
@@ -1659,7 +1662,7 @@ mod tests {
         assert!(
             sink.events.iter().any(|(_, e)| matches!(
                 e,
-                AgentEvent::Message { text } if text == "past the stale id"
+                AcpProjectedEvent::Message { text } if text == "past the stale id"
             )),
             "the message after the stale id still projected: {:?}",
             sink.events
@@ -1711,7 +1714,7 @@ mod tests {
         assert!(
             !sink.events.iter().any(|(_, e)| matches!(
                 e,
-                AgentEvent::Message { text } if text == banner
+                AcpProjectedEvent::Message { text } if text == banner
             )),
             "the banner is not projected as plain assistant text: {:?}",
             sink.events

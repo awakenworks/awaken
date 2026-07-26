@@ -1,7 +1,7 @@
 //! Official ACP codec projection (ADR-0041 Slice 3, `real-acp` feature).
 //!
 //! The anti-corruption layer's core: map the official `agent-client-protocol`
-//! `SessionUpdate` / `StopReason` onto this crate's neutral [`AgentEvent`] /
+//! `SessionUpdate` / `StopReason` onto this crate's staging [`AcpProjectedEvent`] /
 //! [`TerminationReason`]. Substituting this for the newline-JSON stand-in leaves the
 //! projection + [`crate::RunFactAppender`] contract unchanged — the store never sees
 //! ACP vocabulary. Pure data mapping, so it is unit-tested without a live agent.
@@ -10,18 +10,18 @@ use agent_client_protocol::{
     ContentBlock, SessionUpdate, StopReason, ToolCallContent, ToolCallStatus,
 };
 
-use crate::{AgentEvent, TerminationReason};
+use crate::{AcpProjectedEvent, TerminationReason};
 
-/// Project one ACP `SessionUpdate` into a neutral [`AgentEvent`]. Returns `None` for
+/// Project one ACP `SessionUpdate` into an [`AcpProjectedEvent`]. Returns `None` for
 /// updates with no runtime projection (thoughts, plans, mode/config updates, user
 /// input echoes, and non-terminal tool-call progress).
 #[must_use]
-pub fn project_update(update: &SessionUpdate) -> Option<AgentEvent> {
+pub fn project_update(update: &SessionUpdate) -> Option<AcpProjectedEvent> {
     match update {
         SessionUpdate::AgentMessageChunk(chunk) => {
-            text_of(&chunk.content).map(|text| AgentEvent::Message { text })
+            text_of(&chunk.content).map(|text| AcpProjectedEvent::Message { text })
         }
-        SessionUpdate::ToolCall(tool_call) => Some(AgentEvent::ToolCall {
+        SessionUpdate::ToolCall(tool_call) => Some(AcpProjectedEvent::ToolCall {
             id: tool_call.tool_call_id.0.to_string(),
             name: tool_call.title.clone(),
             // Carry the tool's raw arguments through the ACL (the model's request).
@@ -50,14 +50,14 @@ pub fn project_update(update: &SessionUpdate) -> Option<AgentEvent> {
                 .as_ref()
                 .map(|blocks| text_of_tool_content(blocks))
                 .unwrap_or_default();
-            Some(AgentEvent::ToolResult {
+            Some(AcpProjectedEvent::ToolResult {
                 id: update.tool_call_id.0.to_string(),
                 content,
                 is_error,
             })
         }
         // Thoughts, plans, mode/config/session-info and user echoes have no runtime
-        // AgentEvent projection.
+        // AcpProjectedEvent projection.
         _ => None,
     }
 }
@@ -104,7 +104,7 @@ mod tests {
         let update = SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::from("hi")));
         assert_eq!(
             project_update(&update),
-            Some(AgentEvent::Message { text: "hi".into() })
+            Some(AcpProjectedEvent::Message { text: "hi".into() })
         );
     }
 
@@ -119,7 +119,7 @@ mod tests {
         let update = SessionUpdate::ToolCall(ToolCall::new("call-7", "read"));
         assert_eq!(
             project_update(&update),
-            Some(AgentEvent::ToolCall {
+            Some(AcpProjectedEvent::ToolCall {
                 id: "call-7".into(),
                 name: "read".into(),
                 input: serde_json::Value::Null,
@@ -135,7 +135,7 @@ mod tests {
         let update = SessionUpdate::ToolCallUpdate(ToolCallUpdate::new("call-7", fields));
         assert_eq!(
             project_update(&update),
-            Some(AgentEvent::ToolResult {
+            Some(AcpProjectedEvent::ToolResult {
                 id: "call-7".into(),
                 content: "file body".into(),
                 is_error: false,
@@ -151,7 +151,7 @@ mod tests {
         let update = SessionUpdate::ToolCallUpdate(ToolCallUpdate::new("call-9", fields));
         assert_eq!(
             project_update(&update),
-            Some(AgentEvent::ToolResult {
+            Some(AcpProjectedEvent::ToolResult {
                 id: "call-9".into(),
                 content: "boom".into(),
                 is_error: true,
@@ -175,7 +175,7 @@ mod tests {
         let update = SessionUpdate::ToolCallUpdate(ToolCallUpdate::new("call-1", fields));
         assert_eq!(
             project_update(&update),
-            Some(AgentEvent::ToolResult {
+            Some(AcpProjectedEvent::ToolResult {
                 id: "call-1".into(),
                 content: String::new(),
                 is_error: false,
