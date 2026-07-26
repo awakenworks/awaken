@@ -2,7 +2,8 @@
 //
 // These are boot-time operator errors, so the observable contract is that the
 // server exits before listening and names the missing build capability. This
-// drives the same `with_acp_from_env` composition root used by production.
+// drives the scenario adapter with an explicitly selected Session environment;
+// production resolves the equivalent tier from typed deployment configuration.
 
 import assert from 'node:assert/strict';
 import { execSync, spawn } from 'node:child_process';
@@ -41,7 +42,7 @@ async function expectBootFailure(binary: string, tier: string, marker: string, p
       AWAKEN_HTTP_ADDR: `127.0.0.1:${port}`,
       AWAKEN_MODEL_MODE: 'acp-container',
       AWAKEN_ACP_ARGV: 'node -e process.exit(0)',
-      AWAKEN_SANDBOX_TIER: tier,
+      SESSION_ENVIRONMENT_TIER: tier,
       AWAKEN_CONTAINER_IMAGE: 'unused-for-missing-feature-check',
     },
     stdio: ['ignore', 'pipe', 'pipe'],

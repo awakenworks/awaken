@@ -366,3 +366,17 @@ scenario DeploymentConfig::ephemeral
 The fixture decorates the canonical ephemeral Host with the existing workspace
 path adapter. It neither launches production with an implicit missing config nor
 adds a volatile Skill store, preserving one owner per Resource kind.
+
+## Phase 16: container provider feature admission
+
+| Rule | Session tier | Compiled provider | Expected |
+|---|---|---|---|
+| C1 | Docker | none | boot fails before listen |
+| C2 | Podman | none | boot fails before listen |
+| C3 | Kubernetes | none | boot fails before listen |
+| C4 | Podman/Kubernetes | Docker only | exact missing feature error |
+
+The test-only fixed ACP launch selects `SESSION_ENVIRONMENT_TIER`; production
+selects the equivalent tier only from typed deployment configuration. Removed
+production `AWAKEN_SANDBOX_TIER` input cannot silently select or downgrade a
+provider.
