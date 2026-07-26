@@ -114,8 +114,9 @@ pub struct ManagedState {
     resource_catalog: Option<Arc<dyn awaken_resource_contract::ResourceCatalog>>,
     resource_purge_scheduler: Option<Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>>,
     sessions: Mutex<HashMap<String, SessionRecord>>,
-    /// Serializes manifest mutations so runtime projection and durable aggregate
-    /// updates cannot lose a concurrent resources.add/update/delete operation.
+    /// Serializes process-local external resource operations. Durable mutation
+    /// authority is the repository root CAS; this lock remains until every
+    /// resource command carries its expected revision through external IO.
     resource_mutations: tokio::sync::Mutex<()>,
     /// The aspect-layer session→owner index (ADR-0051): the [`ScopeId`] that
     /// created each session, keyed by the tenancy-agnostic session id. It is NOT
@@ -193,6 +194,11 @@ pub enum StateError {
     /// maps it to 409 `invalid_request_error`.
     #[error("session is archived and is read-only")]
     Archived,
+    /// The root Session revision changed while a command was being compiled.
+    /// Callers re-read and retry the complete command; stale snapshots are never
+    /// merged or written back.
+    #[error("session changed concurrently; read the latest revision and retry")]
+    Conflict,
     /// A session create named a vault that does not exist (`vault_ids`); the
     /// router maps it to the standard 404 envelope naming the vault id.
     #[error("vault `{0}` not found")]
@@ -538,14 +544,33 @@ mod tests {
         }
     }
 
-    /// `DELETE /v1/sessions/{id}` reaches the host's terminal sandbox disposal
-    /// (`end_session`) for the session's main thread — the wiring that stops a
-    /// deleted session's sandbox from leaking.
+    // Delete finalization tests are generated from this causal graph:
+    //
+    // C1 terminal CAS committed ──> E1 public reads are NotFound
+    //                         └───> C2 external cleanup attempted
+    // C2 cleanup succeeds ────────> E2 durable row becomes a tombstone
+    // C2 cleanup fails ───────────> E3 hidden cleanup row remains pending
+    // E3 + C3 later retry succeeds -> E2
+    //
+    // Decision table ("cleanup" includes sandbox and Repository cleanup):
+    //
+    // | Rule | C1 | C2 | C3 | E1 | E2 | E3 |
+    // |------|----|----|----|----|----|----|
+    // | D1   | T  | T  | -  | T  | T  | F  |
+    // | D2   | T  | F  | F  | T  | F  | T  |
+    // | D3   | T  | F  | T  | T  | T  | F  |
+    //
+    // D1, D2 and D3 respectively generate the success, failure, and restart
+    // recovery tests below. No test invents a second cleanup implementation.
+
+    /// D1: `DELETE /v1/sessions/{id}` reaches the host's terminal sandbox
+    /// disposal and converges the hidden durable row to a tombstone.
     #[tokio::test]
     async fn delete_session_disposes_the_host_sandbox() {
         let rt = EndSessionRecorder::default();
         let ended = rt.ended.clone();
-        let state = ManagedState::new(rt);
+        let repo = Arc::new(ephemeral_session_repo());
+        let state = ManagedState::new(rt).with_session_repo(repo.clone());
         let id = state
             .create_session(bare_create_params(), None)
             .await
@@ -554,8 +579,12 @@ mod tests {
         state.delete_session(&id).await.expect("delete");
         assert_eq!(
             *ended.lock().unwrap(),
-            vec![id],
+            vec![id.clone()],
             "delete tears down the session's sandbox via end_session"
+        );
+        assert!(
+            repo.get(&id).await.is_none(),
+            "successful cleanup converges to a tombstone"
         );
     }
 
@@ -667,7 +696,7 @@ mod tests {
         }
     }
 
-    /// A sandbox teardown failure at delete is swallowed (best-effort): the delete is
+    /// D2: a sandbox teardown failure at delete is swallowed (best-effort): the delete is
     /// terminal, so the session is still removed and reads 404 afterwards — a dispose
     /// error must never leave a "deleted" session alive.
     #[tokio::test]
@@ -717,6 +746,7 @@ mod tests {
         metadata.insert("team".to_string(), "research".to_string());
         PersistedSession {
             session_id: id.to_string(),
+            revision: Default::default(),
             agent_id: "coder".to_string(),
             model: "kimi-k2".to_string(),
             title: Some("My session".to_string()),
@@ -745,6 +775,87 @@ mod tests {
                 instructions: None,
             }],
             skills: None,
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum ApplicationCasRule {
+        Apply,
+        Replay,
+        Stale,
+    }
+
+    #[tokio::test]
+    async fn application_root_cas_decision_table() {
+        // Cause-effect graph:
+        // C1 payload/key already committed -> E1 replay the committed revision.
+        // !C1 + C2 expected root revision is current -> E2 apply once.
+        // !C1 + !C2 -> E3 conflict; the stale snapshot is never merged.
+        //
+        // | Rule | C1 same receipt | C2 current revision | Effect |
+        // |------|-----------------|---------------------|--------|
+        // | A1   | F               | T                   | apply  |
+        // | A2   | T               | -                   | replay |
+        // | A3   | F               | F                   | 409    |
+        //
+        // The rows generate the cases below against the real SQLite adapter and
+        // the one application command compiler, not a duplicate fake algorithm.
+        for (index, rule) in [
+            ApplicationCasRule::Apply,
+            ApplicationCasRule::Replay,
+            ApplicationCasRule::Stale,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = format!("sesn_application_cas_{index}");
+            let repo = Arc::new(ephemeral_session_repo());
+            repo.save_owned("workspace-a", sample_persisted(&id)).await;
+            let stale = repo.get(&id).await.unwrap();
+            let state = ManagedState::new(RehydrateFake::default()).with_session_repo(repo.clone());
+            let applied = state
+                .commit_session_snapshot(
+                    "workspace-a",
+                    stale.clone(),
+                    "decision-table-first",
+                    Vec::new(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                applied.revision,
+                awaken_session_contract::SessionRevision(2)
+            );
+
+            match rule {
+                ApplicationCasRule::Apply => {}
+                ApplicationCasRule::Replay => {
+                    let replayed = state
+                        .commit_session_snapshot(
+                            "workspace-a",
+                            stale,
+                            "decision-table-first",
+                            Vec::new(),
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(replayed.revision, applied.revision);
+                }
+                ApplicationCasRule::Stale => {
+                    assert!(matches!(
+                        state
+                            .commit_session_snapshot(
+                                "workspace-a",
+                                stale,
+                                "decision-table-stale",
+                                Vec::new(),
+                            )
+                            .await,
+                        Err(StateError::Conflict)
+                    ));
+                    assert_eq!(repo.get(&id).await.unwrap().revision, applied.revision);
+                }
+            }
         }
     }
 
@@ -898,11 +1009,9 @@ mod tests {
 
         let restarted = ManagedState::new(RehydrateFake::default()).with_session_repo(repo.clone());
         assert_eq!(restarted.reconcile_resource_activations().await, 1);
-        let durable = repo.get("sesn_deleted").await.unwrap();
-        assert_eq!(durable.status, "deleted");
-        assert_eq!(
-            durable.resources.activations[0].state,
-            awaken_session_contract::ActivationState::Released
+        assert!(
+            repo.get("sesn_deleted").await.is_none(),
+            "D3: a successful retry converges the hidden cleanup row to a tombstone"
         );
         assert!(repo.pending_resource_sessions().await.is_empty());
     }

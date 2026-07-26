@@ -10,7 +10,7 @@
 //! here as a contract violation. Postgres joins behind its DB harness.
 
 use awaken_env_store::{InMemoryEnvRegistry, SqliteEnvRegistry};
-use awaken_session_contract::env_registry::EnvRegistry;
+use awaken_session_contract::env_registry::{EnvRegistry, EnvUpdate, EnvironmentRevision};
 use serde_json::json;
 
 fn block<F: std::future::Future>(f: F) -> F::Output {
@@ -76,11 +76,60 @@ async fn delete_idempotent<R: EnvRegistry>(r: &R) {
     assert!(r.get(&id).await.is_none());
 }
 
+async fn revision_decision_table<R: EnvRegistry>(r: &R) {
+    // Cause-effect graph:
+    // C1 create -> E1 revision 1; C2 authored update -> E2 increment once;
+    // C3 first archive -> E3 increment once; C4 repeated archive -> E4 replay.
+    // Missing targets produce no record and therefore no invented revision.
+    //
+    // | Rule | Trigger          | Exists | Already archived | Revision/result |
+    // |------|------------------|--------|------------------|-----------------|
+    // | V1   | create           | -      | -                | 1               |
+    // | V2   | update           | T      | F                | 2               |
+    // | V3   | archive          | T      | F                | 3               |
+    // | V4   | archive replay   | T      | T                | 3               |
+    // | V5   | update missing   | F      | -                | None            |
+    let item = r
+        .create(
+            "versioned".into(),
+            String::new(),
+            Default::default(),
+            json!({}),
+        )
+        .await;
+    assert_eq!(item.revision, EnvironmentRevision(1), "V1");
+    let item = r
+        .update(
+            &item.id,
+            EnvUpdate {
+                name: Some("versioned-2".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("V2 update");
+    assert_eq!(item.revision, EnvironmentRevision(2), "V2");
+    let item = r.archive(&item.id).await.expect("V3 archive");
+    assert_eq!(item.revision, EnvironmentRevision(3), "V3");
+    assert_eq!(
+        r.archive(&item.id).await.unwrap().revision,
+        EnvironmentRevision(3),
+        "V4"
+    );
+    assert!(
+        r.update("env_missing", EnvUpdate::default())
+            .await
+            .is_none(),
+        "V5"
+    );
+}
+
 async fn run_suite<R: EnvRegistry>(fresh: impl Fn() -> R) {
     unique_ids(&fresh()).await;
     archive_soft_delete_hard(&fresh()).await;
     missing_id_fails_closed(&fresh()).await;
     delete_idempotent(&fresh()).await;
+    revision_decision_table(&fresh()).await;
 }
 
 // ── Backend rows: each must pass the identical suite ─────────────────────────────

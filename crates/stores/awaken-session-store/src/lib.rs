@@ -17,8 +17,10 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use awaken_session_contract::{
-    ManagedSessionRepository, PersistedSession, PersistedSessionRuntime, ResolvedSessionResources,
-    ScopedPersistedSession, SessionLifecycleFact, SessionResourceState,
+    IdempotencyRecord, ManagedSessionRepository, PersistedSession, PersistedSessionRuntime,
+    ResolvedSessionResources, ScopedPersistedSession, SessionLifecycleFact, SessionMutation,
+    SessionMutationPayload, SessionMutationResult, SessionRepositoryError, SessionResourceState,
+    SessionRevision,
 };
 
 mod extraction;
@@ -105,6 +107,30 @@ fn session_bundle() -> Result<MigrationBundle, MigrationError> {
                 "managed session secret-free runtime initialization pin",
                 "ALTER TABLE {prefix}_session ADD COLUMN runtime_json TEXT NOT NULL DEFAULT '{\"mcp_servers\":[],\"runtime\":null,\"deny_egress\":false,\"sandbox\":null}'",
             )?,
+            Migration::new(
+                10,
+                "managed session root optimistic-concurrency revision",
+                "ALTER TABLE {prefix}_session ADD COLUMN revision BIGINT NOT NULL DEFAULT 1",
+            )?,
+            Migration::new(
+                11,
+                "managed session idempotency receipts",
+                "CREATE TABLE {prefix}_session_idempotency (\
+                    session_id TEXT NOT NULL, \
+                    idempotency_key TEXT NOT NULL, \
+                    payload_hash TEXT NOT NULL, \
+                    committed_revision BIGINT NOT NULL, \
+                    PRIMARY KEY (session_id, idempotency_key))",
+            )?,
+            Migration::new(
+                12,
+                "managed session durable delete tombstones",
+                "CREATE TABLE {prefix}_session_tombstone (\
+                    session_id TEXT PRIMARY KEY, \
+                    scope_id TEXT NOT NULL, \
+                    deleted_revision BIGINT NOT NULL, \
+                    deleted_at TEXT NOT NULL)",
+            )?,
         ],
     )
 }
@@ -134,6 +160,16 @@ fn lifecycle_str(fact: &SessionLifecycleFact) -> String {
         "timestamp": fact.timestamp,
     })
     .to_string()
+}
+
+fn db_revision(revision: SessionRevision) -> Result<i64, SessionRepositoryError> {
+    i64::try_from(revision.0).map_err(|_| {
+        SessionRepositoryError::InvalidMutation("Session revision exceeds i64 storage".into())
+    })
+}
+
+fn storage(error: impl std::fmt::Display) -> SessionRepositoryError {
+    SessionRepositoryError::Storage(error.to_string())
 }
 
 fn decode_lifecycle(data: &str) -> Result<SessionLifecycleFact, serde_json::Error> {
@@ -166,6 +202,7 @@ struct EncodedSessionRow {
     effective_inputs_json: String,
     status: String,
     archived_at: Option<String>,
+    revision: i64,
 }
 
 fn decode_resource_state(data: &str) -> Result<SessionResourceState, serde_json::Error> {
@@ -180,6 +217,9 @@ fn decode_resource_state(data: &str) -> Result<SessionResourceState, serde_json:
 fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_json::Error> {
     Ok(PersistedSession {
         session_id: row.session_id,
+        revision: SessionRevision(
+            u64::try_from(row.revision).expect("managed Session revision is non-negative"),
+        ),
         agent_id: row.agent_id,
         model: row.model,
         title: row.title,
@@ -226,99 +266,253 @@ impl SqliteManagedSessionRepository {
 
 #[async_trait]
 impl ManagedSessionRepository for SqliteManagedSessionRepository {
-    async fn save_owned(&self, owner_scope: &str, session: PersistedSession) {
-        let metadata_json = metadata_str(&session);
-        let mcp_json = mcp_str(&session);
-        let effective_inputs_json = effective_inputs_str(&session);
-        let runtime_json = runtime_str(&session);
-        let conn = self.conn.lock().expect("session store mutex poisoned");
-        conn.execute(
-            "INSERT INTO managed_session
-                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, scope_id, status, archived_at, effective_inputs_json, environment_binding, runtime_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-             ON CONFLICT(session_id) DO UPDATE SET
-                agent_id = excluded.agent_id,
-                model = excluded.model,
-                title = excluded.title,
-                metadata_json = excluded.metadata_json,
-                environment_id = excluded.environment_id,
-                mcp_json = excluded.mcp_json,
-                scope_id = excluded.scope_id,
-                status = excluded.status,
-                archived_at = excluded.archived_at,
-                effective_inputs_json = excluded.effective_inputs_json,
-                environment_binding = excluded.environment_binding,
-                runtime_json = excluded.runtime_json",
-            params![
-                session.session_id,
-                session.agent_id,
-                session.model,
-                session.title,
-                metadata_json,
-                session.environment_id,
-                mcp_json,
-                owner_scope,
-                session.status,
-                session.archived_at,
-                effective_inputs_json,
-                session.environment_binding,
-                runtime_json,
-            ],
-        )
-        .expect("persist managed session");
-    }
-
-    async fn save_owned_with_lifecycle(
+    async fn create(
         &self,
         owner_scope: &str,
-        session: PersistedSession,
-        fact: SessionLifecycleFact,
-    ) {
-        let metadata_json = metadata_str(&session);
-        let mcp_json = mcp_str(&session);
-        let effective_inputs_json = effective_inputs_str(&session);
-        let runtime_json = runtime_str(&session);
-        let fact_id = fact.id.clone();
-        let fact_json = lifecycle_str(&fact);
-        let mut conn = self.conn.lock().expect("session store mutex poisoned");
-        let tx = conn
-            .transaction()
-            .expect("begin session lifecycle transaction");
+        mut session: PersistedSession,
+        idempotency: IdempotencyRecord,
+        lifecycle_facts: Vec<SessionLifecycleFact>,
+    ) -> Result<SessionRevision, SessionRepositoryError> {
+        if session.session_id.trim().is_empty()
+            || idempotency.key.trim().is_empty()
+            || idempotency.payload_hash.trim().is_empty()
+            || session.revision != SessionRevision(0)
+            || lifecycle_facts
+                .iter()
+                .any(|fact| fact.session_id != session.session_id)
+        {
+            return Err(SessionRepositoryError::InvalidMutation(
+                "invalid Session create command".into(),
+            ));
+        }
+        let mut conn = self.conn.lock().map_err(storage)?;
+        let tx = conn.transaction().map_err(storage)?;
+        if let Some((stored_hash, committed_revision)) = tx
+            .query_row(
+                "SELECT payload_hash, committed_revision FROM managed_session_idempotency
+                 WHERE session_id = ?1 AND idempotency_key = ?2",
+                params![session.session_id, idempotency.key],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()
+            .map_err(storage)?
+        {
+            if stored_hash != idempotency.payload_hash {
+                return Err(SessionRepositoryError::IdempotencyMismatch);
+            }
+            return u64::try_from(committed_revision)
+                .map(SessionRevision)
+                .map_err(|_| storage("negative committed Session revision"));
+        }
+        let tombstoned = tx
+            .query_row(
+                "SELECT 1 FROM managed_session_tombstone WHERE session_id = ?1",
+                params![session.session_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(storage)?
+            .is_some();
+        if tombstoned {
+            return Err(SessionRepositoryError::Tombstoned);
+        }
+        let new_revision = SessionRevision(1);
+        session.revision = new_revision;
+        let inserted = tx
+            .execute(
+                "INSERT OR IGNORE INTO managed_session
+                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json,
+                 scope_id, status, archived_at, effective_inputs_json, environment_binding,
+                 runtime_json, revision)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                params![
+                    session.session_id,
+                    session.agent_id,
+                    session.model,
+                    session.title,
+                    metadata_str(&session),
+                    session.environment_id,
+                    mcp_str(&session),
+                    owner_scope,
+                    session.status,
+                    session.archived_at,
+                    effective_inputs_str(&session),
+                    session.environment_binding,
+                    runtime_str(&session),
+                    db_revision(new_revision)?,
+                ],
+            )
+            .map_err(storage)?;
+        if inserted != 1 {
+            return Err(SessionRepositoryError::AlreadyExists);
+        }
         tx.execute(
-            "INSERT INTO managed_session
-                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, scope_id, status, archived_at, effective_inputs_json, environment_binding, runtime_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-             ON CONFLICT(session_id) DO UPDATE SET
-                agent_id = excluded.agent_id, model = excluded.model, title = excluded.title,
-                metadata_json = excluded.metadata_json, environment_id = excluded.environment_id,
-                mcp_json = excluded.mcp_json, scope_id = excluded.scope_id,
-                status = excluded.status, archived_at = excluded.archived_at,
-                effective_inputs_json = excluded.effective_inputs_json,
-                environment_binding = excluded.environment_binding,
-                runtime_json = excluded.runtime_json",
+            "INSERT INTO managed_session_idempotency
+                (session_id, idempotency_key, payload_hash, committed_revision)
+             VALUES (?1, ?2, ?3, ?4)",
             params![
                 session.session_id,
-                session.agent_id,
-                session.model,
-                session.title,
-                metadata_json,
-                session.environment_id,
-                mcp_json,
-                owner_scope,
-                session.status,
-                session.archived_at,
-                effective_inputs_json,
-                session.environment_binding,
-                runtime_json,
+                idempotency.key,
+                idempotency.payload_hash,
+                db_revision(new_revision)?,
             ],
         )
-        .expect("persist managed session in lifecycle transaction");
+        .map_err(storage)?;
+        for fact in lifecycle_facts {
+            tx.execute(
+                "INSERT OR IGNORE INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)",
+                params![fact.id, lifecycle_str(&fact)],
+            )
+            .map_err(storage)?;
+        }
+        tx.commit().map_err(storage)?;
+        Ok(new_revision)
+    }
+
+    async fn commit_mutation(
+        &self,
+        owner_scope: &str,
+        mutation: SessionMutation,
+    ) -> Result<SessionMutationResult, SessionRepositoryError> {
+        let next = mutation
+            .validate()
+            .map_err(|error| SessionRepositoryError::InvalidMutation(error.to_string()))?;
+        let session_id = mutation.payload.session_id().to_string();
+        let mut conn = self.conn.lock().map_err(storage)?;
+        let tx = conn.transaction().map_err(storage)?;
+        if let Some((stored_hash, committed_revision)) = tx
+            .query_row(
+                "SELECT payload_hash, committed_revision FROM managed_session_idempotency
+                 WHERE session_id = ?1 AND idempotency_key = ?2",
+                params![session_id, mutation.idempotency.key],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()
+            .map_err(storage)?
+        {
+            if stored_hash != mutation.idempotency.payload_hash {
+                return Ok(SessionMutationResult::IdempotencyMismatch);
+            }
+            let committed_revision = SessionRevision(
+                u64::try_from(committed_revision)
+                    .map_err(|_| storage("negative committed Session revision"))?,
+            );
+            return Ok(SessionMutationResult::Replayed {
+                new_revision: committed_revision,
+            });
+        }
+        let current = tx
+            .query_row(
+                "SELECT revision, scope_id FROM managed_session WHERE session_id = ?1",
+                params![session_id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(storage)?;
+        let Some((current_revision, current_owner)) = current else {
+            let tombstone_revision = tx
+                .query_row(
+                    "SELECT deleted_revision FROM managed_session_tombstone WHERE session_id = ?1",
+                    params![session_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()
+                .map_err(storage)?
+                .unwrap_or_default();
+            return Ok(SessionMutationResult::Conflict {
+                current_revision: SessionRevision(
+                    u64::try_from(tombstone_revision).unwrap_or_default(),
+                ),
+            });
+        };
+        let current_revision = SessionRevision(
+            u64::try_from(current_revision)
+                .map_err(|_| storage("negative managed Session revision"))?,
+        );
+        if current_owner != owner_scope || current_revision != mutation.expected_revision {
+            return Ok(SessionMutationResult::Conflict { current_revision });
+        }
+        match &mutation.payload {
+            SessionMutationPayload::Replace(replacement) => {
+                let mut replacement = replacement.clone();
+                replacement.revision = next;
+                let affected = tx
+                    .execute(
+                        "UPDATE managed_session SET
+                        agent_id = ?2, model = ?3, title = ?4, metadata_json = ?5,
+                        environment_id = ?6, mcp_json = ?7, status = ?8, archived_at = ?9,
+                        effective_inputs_json = ?10, environment_binding = ?11,
+                        runtime_json = ?12, revision = ?13
+                     WHERE session_id = ?1 AND scope_id = ?14 AND revision = ?15",
+                        params![
+                            replacement.session_id,
+                            replacement.agent_id,
+                            replacement.model,
+                            replacement.title,
+                            metadata_str(&replacement),
+                            replacement.environment_id,
+                            mcp_str(&replacement),
+                            replacement.status,
+                            replacement.archived_at,
+                            effective_inputs_str(&replacement),
+                            replacement.environment_binding,
+                            runtime_str(&replacement),
+                            db_revision(next)?,
+                            owner_scope,
+                            db_revision(current_revision)?,
+                        ],
+                    )
+                    .map_err(storage)?;
+                if affected != 1 {
+                    return Ok(SessionMutationResult::Conflict { current_revision });
+                }
+            }
+            SessionMutationPayload::Delete(tombstone) => {
+                let affected = tx
+                    .execute(
+                        "DELETE FROM managed_session
+                         WHERE session_id = ?1 AND scope_id = ?2 AND revision = ?3",
+                        params![session_id, owner_scope, db_revision(current_revision)?],
+                    )
+                    .map_err(storage)?;
+                if affected != 1 {
+                    return Ok(SessionMutationResult::Conflict { current_revision });
+                }
+                tx.execute(
+                    "INSERT INTO managed_session_tombstone
+                        (session_id, scope_id, deleted_revision, deleted_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        tombstone.session_id,
+                        owner_scope,
+                        db_revision(tombstone.deleted_revision)?,
+                        tombstone.deleted_at,
+                    ],
+                )
+                .map_err(storage)?;
+            }
+        }
         tx.execute(
-            "INSERT OR IGNORE INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)",
-            params![fact_id, fact_json],
+            "INSERT INTO managed_session_idempotency
+                (session_id, idempotency_key, payload_hash, committed_revision)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                session_id,
+                mutation.idempotency.key,
+                mutation.idempotency.payload_hash,
+                db_revision(next)?,
+            ],
         )
-        .expect("persist lifecycle fact in session transaction");
-        tx.commit().expect("commit session lifecycle transaction");
+        .map_err(storage)?;
+        for fact in mutation.lifecycle_facts {
+            tx.execute(
+                "INSERT OR IGNORE INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)",
+                params![fact.id, lifecycle_str(&fact)],
+            )
+            .map_err(storage)?;
+        }
+        tx.commit().map_err(storage)?;
+        Ok(SessionMutationResult::Applied { new_revision: next })
     }
 
     async fn append_lifecycle(&self, fact: SessionLifecycleFact) {
@@ -331,49 +525,6 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 params![fact.id, data],
             )
             .expect("append session lifecycle fact");
-    }
-
-    async fn archive_with_lifecycle(
-        &self,
-        session_id: &str,
-        archived_at: &str,
-        fact: SessionLifecycleFact,
-    ) {
-        let data = lifecycle_str(&fact);
-        let mut conn = self.conn.lock().expect("session store mutex poisoned");
-        let tx = conn
-            .transaction()
-            .expect("begin archive lifecycle transaction");
-        tx.execute(
-            "UPDATE managed_session SET status = 'terminated', archived_at = ?2 WHERE session_id = ?1",
-            params![session_id, archived_at],
-        )
-        .expect("archive managed session");
-        tx.execute(
-            "INSERT OR IGNORE INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)",
-            params![fact.id, data],
-        )
-        .expect("persist archive lifecycle fact");
-        tx.commit().expect("commit archive lifecycle transaction");
-    }
-
-    async fn delete_with_lifecycle(&self, session_id: &str, fact: SessionLifecycleFact) {
-        let data = lifecycle_str(&fact);
-        let mut conn = self.conn.lock().expect("session store mutex poisoned");
-        let tx = conn
-            .transaction()
-            .expect("begin delete lifecycle transaction");
-        tx.execute(
-            "UPDATE managed_session SET status = 'deleted' WHERE session_id = ?1",
-            params![session_id],
-        )
-        .expect("delete managed session");
-        tx.execute(
-            "INSERT OR IGNORE INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)",
-            params![fact.id, data],
-        )
-        .expect("persist delete lifecycle fact");
-        tx.commit().expect("commit delete lifecycle transaction");
     }
 
     async fn pending_lifecycle(&self) -> Vec<SessionLifecycleFact> {
@@ -405,7 +556,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         let conn = self.conn.lock().expect("session store mutex poisoned");
         let raw = conn
             .query_row(
-                "SELECT agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at, effective_inputs_json, environment_binding, runtime_json
+                "SELECT agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at, effective_inputs_json, environment_binding, runtime_json, revision
                  FROM managed_session WHERE session_id = ?1",
                 params![session_id],
                 |row| {
@@ -421,6 +572,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                         row.get::<_, String>(8)?,
                         row.get::<_, Option<String>>(9)?,
                         row.get::<_, String>(10)?,
+                        row.get::<_, i64>(11)?,
                     ))
                 },
             )
@@ -438,6 +590,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
             effective_inputs_json,
             environment_binding,
             runtime_json,
+            revision,
         ) = raw;
         Some(
             decode(EncodedSessionRow {
@@ -453,6 +606,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 runtime_json,
                 status,
                 archived_at,
+                revision,
             })
             .expect("decode managed session"),
         )
@@ -462,7 +616,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         let conn = self.conn.lock().expect("session store mutex poisoned");
         let mut statement = conn
             .prepare(
-                "SELECT scope_id, session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at, effective_inputs_json, environment_binding, runtime_json
+                "SELECT scope_id, session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at, effective_inputs_json, environment_binding, runtime_json, revision
                  FROM managed_session ORDER BY session_id",
             )
             .expect("prepare pending Session resource activations");
@@ -483,6 +637,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                         effective_inputs_json: row.get(10)?,
                         environment_binding: row.get(11)?,
                         runtime_json: row.get(12)?,
+                        revision: row.get(13)?,
                     },
                 ))
             })
@@ -496,7 +651,8 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
             })
             .filter(|record| {
                 let session = &record.session;
-                session.resources.needs_reconciliation()
+                session.status == "deleted"
+                    || session.resources.needs_reconciliation()
                     || (session.status != "idle" && session.resources.has_active())
             })
             .collect()
@@ -511,18 +667,6 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         )
         .optional()
         .expect("read managed session owner")
-    }
-
-    async fn bind_environment(&self, session_id: &str, binding: &str) -> bool {
-        self.conn
-            .lock()
-            .expect("session store mutex poisoned")
-            .execute(
-                "UPDATE managed_session SET environment_binding = ?2 WHERE session_id = ?1",
-                params![session_id, binding],
-            )
-            .expect("bind managed session environment")
-            > 0
     }
 }
 
@@ -554,64 +698,63 @@ impl PostgresManagedSessionRepository {
 
 #[async_trait]
 impl ManagedSessionRepository for PostgresManagedSessionRepository {
-    async fn save_owned(&self, owner_scope: &str, session: PersistedSession) {
-        sqlx::query(
-            "INSERT INTO managed_session \
-                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, scope_id, status, archived_at, effective_inputs_json, environment_binding, runtime_json) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
-             ON CONFLICT (session_id) DO UPDATE SET \
-                agent_id = excluded.agent_id, \
-                model = excluded.model, \
-                title = excluded.title, \
-                metadata_json = excluded.metadata_json, \
-                environment_id = excluded.environment_id, \
-                mcp_json = excluded.mcp_json, \
-                scope_id = excluded.scope_id, status = excluded.status, archived_at = excluded.archived_at, \
-                effective_inputs_json = excluded.effective_inputs_json, \
-                environment_binding = excluded.environment_binding, \
-                runtime_json = excluded.runtime_json",
-        )
-        .bind(&session.session_id)
-        .bind(&session.agent_id)
-        .bind(&session.model)
-        .bind(&session.title)
-        .bind(metadata_str(&session))
-        .bind(&session.environment_id)
-        .bind(mcp_str(&session))
-        .bind(owner_scope)
-        .bind(&session.status)
-        .bind(&session.archived_at)
-        .bind(effective_inputs_str(&session))
-        .bind(&session.environment_binding)
-        .bind(runtime_str(&session))
-        .execute(&self.pool)
-        .await
-        .expect("persist managed session");
-    }
-
-    async fn save_owned_with_lifecycle(
+    async fn create(
         &self,
         owner_scope: &str,
-        session: PersistedSession,
-        fact: SessionLifecycleFact,
-    ) {
-        let mut tx = self
-            .pool
-            .begin()
+        mut session: PersistedSession,
+        idempotency: IdempotencyRecord,
+        lifecycle_facts: Vec<SessionLifecycleFact>,
+    ) -> Result<SessionRevision, SessionRepositoryError> {
+        if session.session_id.trim().is_empty()
+            || idempotency.key.trim().is_empty()
+            || idempotency.payload_hash.trim().is_empty()
+            || session.revision != SessionRevision(0)
+            || lifecycle_facts
+                .iter()
+                .any(|fact| fact.session_id != session.session_id)
+        {
+            return Err(SessionRepositoryError::InvalidMutation(
+                "invalid Session create command".into(),
+            ));
+        }
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        if let Some(row) = sqlx::query(
+            "SELECT payload_hash, committed_revision FROM managed_session_idempotency
+             WHERE session_id = $1 AND idempotency_key = $2",
+        )
+        .bind(&session.session_id)
+        .bind(&idempotency.key)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage)?
+        {
+            let stored_hash: String = row.get("payload_hash");
+            if stored_hash != idempotency.payload_hash {
+                return Err(SessionRepositoryError::IdempotencyMismatch);
+            }
+            let committed_revision: i64 = row.get("committed_revision");
+            return u64::try_from(committed_revision)
+                .map(SessionRevision)
+                .map_err(|_| storage("negative committed Session revision"));
+        }
+        if sqlx::query("SELECT 1 FROM managed_session_tombstone WHERE session_id = $1")
+            .bind(&session.session_id)
+            .fetch_optional(&mut *tx)
             .await
-            .expect("begin session lifecycle transaction");
-        sqlx::query(
+            .map_err(storage)?
+            .is_some()
+        {
+            return Err(SessionRepositoryError::Tombstoned);
+        }
+        let new_revision = SessionRevision(1);
+        session.revision = new_revision;
+        let inserted = sqlx::query(
             "INSERT INTO managed_session
-                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, scope_id, status, archived_at, effective_inputs_json, environment_binding, runtime_json)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-             ON CONFLICT (session_id) DO UPDATE SET
-                agent_id = excluded.agent_id, model = excluded.model, title = excluded.title,
-                metadata_json = excluded.metadata_json, environment_id = excluded.environment_id,
-                mcp_json = excluded.mcp_json, scope_id = excluded.scope_id,
-                status = excluded.status, archived_at = excluded.archived_at,
-                effective_inputs_json = excluded.effective_inputs_json,
-                environment_binding = excluded.environment_binding,
-                runtime_json = excluded.runtime_json",
+                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json,
+                 scope_id, status, archived_at, effective_inputs_json, environment_binding,
+                 runtime_json, revision)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+             ON CONFLICT (session_id) DO NOTHING",
         )
         .bind(&session.session_id)
         .bind(&session.agent_id)
@@ -626,21 +769,190 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         .bind(effective_inputs_str(&session))
         .bind(&session.environment_binding)
         .bind(runtime_str(&session))
+        .bind(db_revision(new_revision)?)
         .execute(&mut *tx)
         .await
-        .expect("persist managed session in lifecycle transaction");
+        .map_err(storage)?
+        .rows_affected();
+        if inserted != 1 {
+            return Err(SessionRepositoryError::AlreadyExists);
+        }
         sqlx::query(
-            "INSERT INTO managed_lifecycle_outbox (fact_id, data) VALUES ($1, $2)
-             ON CONFLICT (fact_id) DO NOTHING",
+            "INSERT INTO managed_session_idempotency
+                (session_id, idempotency_key, payload_hash, committed_revision)
+             VALUES ($1, $2, $3, $4)",
         )
-        .bind(&fact.id)
-        .bind(lifecycle_str(&fact))
+        .bind(&session.session_id)
+        .bind(&idempotency.key)
+        .bind(&idempotency.payload_hash)
+        .bind(db_revision(new_revision)?)
         .execute(&mut *tx)
         .await
-        .expect("persist lifecycle fact in session transaction");
-        tx.commit()
+        .map_err(storage)?;
+        for fact in lifecycle_facts {
+            sqlx::query(
+                "INSERT INTO managed_lifecycle_outbox (fact_id, data) VALUES ($1, $2)
+                 ON CONFLICT (fact_id) DO NOTHING",
+            )
+            .bind(&fact.id)
+            .bind(lifecycle_str(&fact))
+            .execute(&mut *tx)
             .await
-            .expect("commit session lifecycle transaction");
+            .map_err(storage)?;
+        }
+        tx.commit().await.map_err(storage)?;
+        Ok(new_revision)
+    }
+
+    async fn commit_mutation(
+        &self,
+        owner_scope: &str,
+        mutation: SessionMutation,
+    ) -> Result<SessionMutationResult, SessionRepositoryError> {
+        let next = mutation
+            .validate()
+            .map_err(|error| SessionRepositoryError::InvalidMutation(error.to_string()))?;
+        let session_id = mutation.payload.session_id().to_string();
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        if let Some(row) = sqlx::query(
+            "SELECT payload_hash, committed_revision FROM managed_session_idempotency
+             WHERE session_id = $1 AND idempotency_key = $2",
+        )
+        .bind(&session_id)
+        .bind(&mutation.idempotency.key)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage)?
+        {
+            let stored_hash: String = row.get("payload_hash");
+            if stored_hash != mutation.idempotency.payload_hash {
+                return Ok(SessionMutationResult::IdempotencyMismatch);
+            }
+            let committed_revision: i64 = row.get("committed_revision");
+            return Ok(SessionMutationResult::Replayed {
+                new_revision: SessionRevision(
+                    u64::try_from(committed_revision)
+                        .map_err(|_| storage("negative committed Session revision"))?,
+                ),
+            });
+        }
+        let current = sqlx::query(
+            "SELECT revision, scope_id FROM managed_session WHERE session_id = $1 FOR UPDATE",
+        )
+        .bind(&session_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage)?;
+        let Some(current) = current else {
+            let tombstone = sqlx::query(
+                "SELECT deleted_revision FROM managed_session_tombstone WHERE session_id = $1",
+            )
+            .bind(&session_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(storage)?;
+            let revision = tombstone.map_or(0, |row| row.get::<i64, _>("deleted_revision"));
+            return Ok(SessionMutationResult::Conflict {
+                current_revision: SessionRevision(u64::try_from(revision).unwrap_or_default()),
+            });
+        };
+        let current_revision = SessionRevision(
+            u64::try_from(current.get::<i64, _>("revision"))
+                .map_err(|_| storage("negative managed Session revision"))?,
+        );
+        let current_owner: String = current.get("scope_id");
+        if current_owner != owner_scope || current_revision != mutation.expected_revision {
+            return Ok(SessionMutationResult::Conflict { current_revision });
+        }
+        match &mutation.payload {
+            SessionMutationPayload::Replace(replacement) => {
+                let mut replacement = replacement.clone();
+                replacement.revision = next;
+                let affected = sqlx::query(
+                    "UPDATE managed_session SET
+                        agent_id = $2, model = $3, title = $4, metadata_json = $5,
+                        environment_id = $6, mcp_json = $7, status = $8, archived_at = $9,
+                        effective_inputs_json = $10, environment_binding = $11,
+                        runtime_json = $12, revision = $13
+                     WHERE session_id = $1 AND scope_id = $14 AND revision = $15",
+                )
+                .bind(&replacement.session_id)
+                .bind(&replacement.agent_id)
+                .bind(&replacement.model)
+                .bind(&replacement.title)
+                .bind(metadata_str(&replacement))
+                .bind(&replacement.environment_id)
+                .bind(mcp_str(&replacement))
+                .bind(&replacement.status)
+                .bind(&replacement.archived_at)
+                .bind(effective_inputs_str(&replacement))
+                .bind(&replacement.environment_binding)
+                .bind(runtime_str(&replacement))
+                .bind(db_revision(next)?)
+                .bind(owner_scope)
+                .bind(db_revision(current_revision)?)
+                .execute(&mut *tx)
+                .await
+                .map_err(storage)?
+                .rows_affected();
+                if affected != 1 {
+                    return Ok(SessionMutationResult::Conflict { current_revision });
+                }
+            }
+            SessionMutationPayload::Delete(tombstone) => {
+                let affected = sqlx::query(
+                    "DELETE FROM managed_session
+                     WHERE session_id = $1 AND scope_id = $2 AND revision = $3",
+                )
+                .bind(&session_id)
+                .bind(owner_scope)
+                .bind(db_revision(current_revision)?)
+                .execute(&mut *tx)
+                .await
+                .map_err(storage)?
+                .rows_affected();
+                if affected != 1 {
+                    return Ok(SessionMutationResult::Conflict { current_revision });
+                }
+                sqlx::query(
+                    "INSERT INTO managed_session_tombstone
+                        (session_id, scope_id, deleted_revision, deleted_at)
+                     VALUES ($1, $2, $3, $4)",
+                )
+                .bind(&tombstone.session_id)
+                .bind(owner_scope)
+                .bind(db_revision(tombstone.deleted_revision)?)
+                .bind(&tombstone.deleted_at)
+                .execute(&mut *tx)
+                .await
+                .map_err(storage)?;
+            }
+        }
+        sqlx::query(
+            "INSERT INTO managed_session_idempotency
+                (session_id, idempotency_key, payload_hash, committed_revision)
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(&session_id)
+        .bind(&mutation.idempotency.key)
+        .bind(&mutation.idempotency.payload_hash)
+        .bind(db_revision(next)?)
+        .execute(&mut *tx)
+        .await
+        .map_err(storage)?;
+        for fact in mutation.lifecycle_facts {
+            sqlx::query(
+                "INSERT INTO managed_lifecycle_outbox (fact_id, data) VALUES ($1, $2)
+                 ON CONFLICT (fact_id) DO NOTHING",
+            )
+            .bind(&fact.id)
+            .bind(lifecycle_str(&fact))
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+        }
+        tx.commit().await.map_err(storage)?;
+        Ok(SessionMutationResult::Applied { new_revision: next })
     }
 
     async fn append_lifecycle(&self, fact: SessionLifecycleFact) {
@@ -653,64 +965,6 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         .execute(&self.pool)
         .await
         .expect("append session lifecycle fact");
-    }
-
-    async fn archive_with_lifecycle(
-        &self,
-        session_id: &str,
-        archived_at: &str,
-        fact: SessionLifecycleFact,
-    ) {
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .expect("begin archive lifecycle transaction");
-        sqlx::query(
-            "UPDATE managed_session SET status = 'terminated', archived_at = $2 WHERE session_id = $1",
-        )
-        .bind(session_id)
-        .bind(archived_at)
-        .execute(&mut *tx)
-        .await
-        .expect("archive managed session");
-        sqlx::query(
-            "INSERT INTO managed_lifecycle_outbox (fact_id, data) VALUES ($1, $2)
-             ON CONFLICT (fact_id) DO NOTHING",
-        )
-        .bind(&fact.id)
-        .bind(lifecycle_str(&fact))
-        .execute(&mut *tx)
-        .await
-        .expect("persist archive lifecycle fact");
-        tx.commit()
-            .await
-            .expect("commit archive lifecycle transaction");
-    }
-
-    async fn delete_with_lifecycle(&self, session_id: &str, fact: SessionLifecycleFact) {
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .expect("begin delete lifecycle transaction");
-        sqlx::query("UPDATE managed_session SET status = 'deleted' WHERE session_id = $1")
-            .bind(session_id)
-            .execute(&mut *tx)
-            .await
-            .expect("delete managed session");
-        sqlx::query(
-            "INSERT INTO managed_lifecycle_outbox (fact_id, data) VALUES ($1, $2)
-             ON CONFLICT (fact_id) DO NOTHING",
-        )
-        .bind(&fact.id)
-        .bind(lifecycle_str(&fact))
-        .execute(&mut *tx)
-        .await
-        .expect("persist delete lifecycle fact");
-        tx.commit()
-            .await
-            .expect("commit delete lifecycle transaction");
     }
 
     async fn pending_lifecycle(&self) -> Vec<SessionLifecycleFact> {
@@ -736,7 +990,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
 
     async fn get(&self, session_id: &str) -> Option<PersistedSession> {
         let row = sqlx::query(
-            "SELECT agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at, effective_inputs_json, environment_binding, runtime_json \
+            "SELECT agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at, effective_inputs_json, environment_binding, runtime_json, revision \
              FROM managed_session WHERE session_id = $1",
         )
         .bind(session_id)
@@ -760,6 +1014,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
                 runtime_json: row.get("runtime_json"),
                 status: row.get("status"),
                 archived_at: row.get("archived_at"),
+                revision: row.get("revision"),
             })
             .expect("decode managed session"),
         )
@@ -767,7 +1022,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
 
     async fn pending_resource_sessions(&self) -> Vec<ScopedPersistedSession> {
         sqlx::query(
-            "SELECT scope_id, session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at, effective_inputs_json, environment_binding, runtime_json \
+            "SELECT scope_id, session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at, effective_inputs_json, environment_binding, runtime_json, revision \
              FROM managed_session ORDER BY session_id",
         )
         .fetch_all(&self.pool)
@@ -789,12 +1044,14 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
                 effective_inputs_json: row.get("effective_inputs_json"),
                 environment_binding: row.get("environment_binding"),
                 runtime_json: row.get("runtime_json"),
+                revision: row.get("revision"),
             })
             .expect("decode managed session"),
         })
         .filter(|record| {
             let session = &record.session;
-            session.resources.needs_reconciliation()
+            session.status == "deleted"
+                || session.resources.needs_reconciliation()
                 || (session.status != "idle" && session.resources.has_active())
         })
         .collect()
@@ -807,17 +1064,6 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
             .await
             .expect("read managed session owner")?;
         Some(row.get("scope_id"))
-    }
-
-    async fn bind_environment(&self, session_id: &str, binding: &str) -> bool {
-        sqlx::query("UPDATE managed_session SET environment_binding = $2 WHERE session_id = $1")
-            .bind(session_id)
-            .bind(binding)
-            .execute(&self.pool)
-            .await
-            .expect("bind managed session environment")
-            .rows_affected()
-            > 0
     }
 }
 
@@ -832,6 +1078,7 @@ mod tests {
         metadata.insert("team".to_string(), "research".to_string());
         PersistedSession {
             session_id: id.to_string(),
+            revision: Default::default(),
             agent_id: "coder".to_string(),
             model: "kimi-k2".to_string(),
             title: Some("My session".to_string()),
@@ -1018,7 +1265,7 @@ mod tests {
             fact("deleted", "sesn_terminal", "session.deleted"),
         )
         .await;
-        assert_eq!(repo.get("sesn_terminal").await.unwrap().status, "deleted");
+        assert!(repo.get("sesn_terminal").await.is_none());
         assert_eq!(repo.pending_lifecycle().await[0].id, "deleted");
     }
 
@@ -1032,15 +1279,15 @@ mod tests {
         {
             let repo = SqliteManagedSessionRepository::open(&path).unwrap();
             repo.save(sample("sesn_1")).await;
-            assert_eq!(repo.get("sesn_1").await, Some(sample("sesn_1")));
+            let mut expected = sample("sesn_1");
+            expected.revision = SessionRevision(1);
+            assert_eq!(repo.get("sesn_1").await, Some(expected));
         }
         // Second process: a fresh repo over the same file restores the row.
         let reopened = SqliteManagedSessionRepository::open(&path).unwrap();
-        assert_eq!(
-            reopened.get("sesn_1").await,
-            Some(sample("sesn_1")),
-            "the session config survives a restart"
-        );
+        let mut expected = sample("sesn_1");
+        expected.revision = SessionRevision(1);
+        assert_eq!(reopened.get("sesn_1").await, Some(expected));
         assert!(reopened.get("sesn_missing").await.is_none());
     }
 
@@ -1081,6 +1328,7 @@ mod tests {
         let mut updated = sample("sesn_1");
         updated.title = Some("Renamed".to_string());
         repo.save(updated.clone()).await;
+        updated.revision = SessionRevision(2);
         assert_eq!(
             repo.get("sesn_1").await,
             Some(updated),
@@ -1174,12 +1422,15 @@ mod tests {
             .expect("store");
 
         repo.save(sample("sesn_1")).await;
-        assert_eq!(repo.get("sesn_1").await, Some(sample("sesn_1")));
+        let mut created = sample("sesn_1");
+        created.revision = SessionRevision(1);
+        assert_eq!(repo.get("sesn_1").await, Some(created));
         assert!(repo.get("sesn_missing").await.is_none());
 
         let mut updated = sample("sesn_1");
         updated.title = None; // exercises the nullable title column
         repo.save(updated.clone()).await;
+        updated.revision = SessionRevision(2);
         assert_eq!(repo.get("sesn_1").await, Some(updated));
 
         repo.save_owned_with_lifecycle(
