@@ -124,11 +124,11 @@ export function ensureProductionBuilt() {
 export function spawnProduction(
   dataDir,
   port,
-  { workspace, controlSealKey, extraEnv = {}, stderr = 'inherit' } = {},
+  { workspace, controlSealKey, databases = {}, extraEnv = {}, stderr = 'inherit' } = {},
 ) {
   const env = {
     ...process.env,
-    ...deploymentEnv(dataDir, { controlSealKey }),
+    ...deploymentEnv(dataDir, { controlSealKey, databases }),
     ...extraEnv,
   };
   if (workspace) env.AWAKEN_SCENARIO_WORKSPACE = workspace;

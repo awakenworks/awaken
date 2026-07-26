@@ -476,3 +476,24 @@ The durability fixture now reuses the production build, typed deployment, port,
 and shutdown harness. The retired management/storage environment variables and
 its parallel process fixture are deleted; `data_dir` is the sole persistence
 authority across both process lifetimes.
+
+## Phase 22: typed per-component control-store topology
+
+```text
+one typed deployment file
+  -> default data_dir owns admin + Session stores
+  -> exact catalog/credential/config fields select independent stores
+  -> model publication resolves across those store boundaries
+```
+
+| Rule | Store field | Configured path | Expected owner |
+|---|---|---|---|
+| T1 | catalog_db | external A | catalog only at A |
+| T2 | credential_db | nested external B | credential only at B |
+| T3 | config_db | external C | Agent publication only at C |
+| T4 | admin_db / sessions_db absent | data_dir | default typed deployment root |
+| T5 | removed per-component environment variables | any inherited value | no topology effect |
+
+`spawnProduction` accepts the same database map already owned by
+`deploymentEnv`; per-component tests no longer duplicate binary discovery,
+process shutdown, port precedence, or a legacy environment-variable topology.
