@@ -151,3 +151,22 @@ The Cartesian decision table contains `2 × 2 × 2 × 3 = 24` rows. Every row mu
 produce an agent message containing its unique marker, preserve the selected
 Environment id, and preserve the Resource cardinality. There is no protocol-specific
 configuration input, resolver, or expected-result branch.
+
+## Phase 7: durable composition and restart
+
+```text
+typed deployment with storage root
+    -> one durable ResourcePlane + Host constructor
+    -> stable local Workspace id + Session repository + thread store
+    -> restart reconstructs the same owner and exact Session baseline
+```
+
+| Storage | Restart | Session row | Owner scope | Expected |
+|---|---:|---:|---:|---|
+| absent | no | process-local | process-local | normal ephemeral turn |
+| present | no | durable | persisted | normal durable turn |
+| present | yes | durable | same persisted id | rehydrate and resume |
+
+Constructing an ephemeral Host and adding storage afterward is forbidden: it mints
+a process-specific owner before durability exists and creates a second resource
+composition path.

@@ -57,10 +57,29 @@ fn mount(host: Arc<SharedHost>) -> Router {
 }
 
 fn resource_host(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> SharedHost {
-    SharedHost::new(llm, model_ref).with_resource_lifecycle(Arc::new(
-        awaken_resource_store::SqliteResourceStore::in_memory()
-            .expect("open scenario resource lifecycle sqlite"),
-    ))
+    resource_host_with_deployment(
+        llm,
+        model_ref,
+        awaken_runtime_host::DeploymentConfig::ephemeral(),
+    )
+}
+
+fn resource_host_with_deployment(
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: impl Into<String>,
+    deployment: awaken_runtime_host::DeploymentConfig,
+) -> SharedHost {
+    let Some(storage_dir) = deployment.storage_dir.clone() else {
+        return SharedHost::new(llm, model_ref).with_resource_lifecycle(Arc::new(
+            awaken_resource_store::SqliteResourceStore::in_memory()
+                .expect("open scenario resource lifecycle sqlite"),
+        ));
+    };
+    let resources = awaken_server::embedded_resource_plane(&storage_dir);
+    let host =
+        SharedHost::new_with_resource_plane_and_deployment(llm, model_ref, resources, deployment);
+    awaken_server::install_platform_memory_data_plane(&host);
+    host
 }
 
 /// Scenario composition with the Environment API and the same Resource Catalog,
@@ -810,7 +829,6 @@ pub async fn build_acp_container_router() -> Router {
         .unwrap_or_else(|| {
             std::env::temp_dir().join(format!("awaken-acp-container-{}", std::process::id()))
         });
-    let resources = awaken_server::embedded_resource_plane(&storage_dir);
     let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
     deployment.storage_dir = Some(storage_dir.clone());
     deployment.sandbox_dir = Some(
@@ -824,13 +842,7 @@ pub async fn build_acp_container_router() -> Router {
         Ok(other) => panic!("unsupported scenario Session environment tier: {other}"),
     };
     deployment.sandbox_tier_explicit = true;
-    let host = SharedHost::new_with_resource_plane_and_deployment(
-        Arc::new(EchoModel),
-        "awaken",
-        resources,
-        deployment,
-    );
-    awaken_server::install_platform_memory_data_plane(&host);
+    let host = resource_host_with_deployment(Arc::new(EchoModel), "awaken", deployment);
     let argv = std::env::var("AWAKEN_ACP_ARGV")
         .expect("container scenario requires AWAKEN_ACP_ARGV")
         .split_whitespace()
@@ -963,7 +975,16 @@ pub fn build_real_router() -> Router {
         .or_else(|_| std::env::var("KIMI_MODEL"))
         .unwrap_or_else(|_| default_anthropic_compatible_model(&base).to_string());
     let executor = GenaiExecutor::anthropic_compatible(base, key);
-    build_router(Arc::new(executor), model)
+    let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
+    deployment.storage_dir = std::env::var("AWAKEN_STORAGE_DIR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(std::path::PathBuf::from);
+    mount(Arc::new(resource_host_with_deployment(
+        Arc::new(executor),
+        model,
+        deployment,
+    )))
 }
 
 /// A server backed by **Gemini on Vertex AI**, authenticated by an OAuth2 Bearer
