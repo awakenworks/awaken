@@ -351,6 +351,45 @@ impl ManagedState {
         // sink for webhook/usage stamping, but NEVER stored on the core session.
         workspace_id: Option<String>,
     ) -> Result<Session, StateError> {
+        self.create_session_with_identity(req, workspace_id, None)
+            .await
+    }
+
+    /// Create the Control-owned half of an externally dispatched application
+    /// Session under the dispatcher's exact durable thread identity.
+    ///
+    /// Only application-contribution Sessions may cross this embedding seam:
+    /// their Runtime projection is realized by the claim-owning Worker, while
+    /// this aggregate remains the sole author of the frozen baseline and
+    /// realization generations. Ordinary public Session creation continues to
+    /// mint its own identity through [`Self::create_session`].
+    pub async fn create_application_session(
+        &self,
+        session_id: impl Into<String>,
+        req: SessionCreateParams,
+        workspace_id: Option<String>,
+    ) -> Result<Session, StateError> {
+        let session_id = session_id.into();
+        if session_id.trim().is_empty() {
+            return Err(StateError::Run(RunError::bad_request(
+                "application Session id is empty",
+            )));
+        }
+        if !req.application_contribution_required {
+            return Err(StateError::Run(RunError::bad_request(
+                "externally identified Session requires an application contribution",
+            )));
+        }
+        self.create_session_with_identity(req, workspace_id, Some(session_id))
+            .await
+    }
+
+    async fn create_session_with_identity(
+        &self,
+        req: SessionCreateParams,
+        workspace_id: Option<String>,
+        explicit_id: Option<String>,
+    ) -> Result<Session, StateError> {
         self.check_bind(&req)?;
         // Mint an id no durable thread already owns: a fresh process restarts
         // the sequence at 0, but the store dir may hold committed truth from a
@@ -358,11 +397,14 @@ impl ManagedState {
         // old transcript onto a NEW session, so skip forward instead — the
         // rehydration path (`ensure_session`) remains the only way to reattach
         // to an existing thread, and it is keyed by the caller's explicit id.
-        let id = loop {
-            let candidate = format!("sesn_{}", self.session_seq.fetch_add(1, Ordering::SeqCst));
-            if !self.runtime.owns_thread(&candidate).await {
-                break candidate;
-            }
+        let id = match explicit_id {
+            Some(id) => id,
+            None => loop {
+                let candidate = format!("sesn_{}", self.session_seq.fetch_add(1, Ordering::SeqCst));
+                if !self.runtime.owns_thread(&candidate).await {
+                    break candidate;
+                }
+            },
         };
         let agent_id = req.agent.id().to_string();
         let owner_scope = workspace_id
