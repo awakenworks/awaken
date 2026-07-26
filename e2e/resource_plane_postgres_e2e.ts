@@ -11,6 +11,7 @@ import path from 'node:path';
 import { execFileSync, execSync, spawn, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
+import { deploymentEnv } from './harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38436);
@@ -76,27 +77,18 @@ function binary(): string {
 }
 
 function start(bin: string, directory: string, databaseUrl: string): ChildProcess {
-  const inherited = { ...process.env };
-  delete inherited.AWAKEN_DATABASE_URL;
-  delete inherited.AWAKEN_RUNTIME_DISPATCH_DATABASE_URL;
-  delete inherited.AWAKEN_STORE;
-  delete inherited.AWAKEN_DISPATCH_BACKEND;
-  return spawn(bin, {
+  return spawn(bin, ['serve', '--port', String(PORT)], {
     env: {
-      ...inherited,
-      AWAKEN_HTTP_ADDR: `127.0.0.1:${PORT}`,
+      ...process.env,
+      ...deploymentEnv(directory, {
+        controlSealKey: '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
+        databases: {
+          resource_database_url: databaseUrl,
+          sessions_db: databaseUrl,
+          admin_db: databaseUrl,
+        },
+      }),
       AWAKEN_SCENARIO_WORKSPACE: WORKSPACE,
-      AWAKEN_STORAGE_DIR: directory,
-      AWAKEN_DEPLOYMENT_DATA_DIR: directory,
-      AWAKEN_CONTROL_SEAL_KEY: '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
-      AWAKEN_RESOURCE_DATABASE_URL: databaseUrl,
-      // Session application work (including durable extraction intents) is an
-      // independent persistence axis; select it explicitly instead of deriving
-      // it from the resource backend.
-      AWAKEN_SESSIONS_DB: databaseUrl,
-      // MemoryStore definitions and Agent resource bindings are configuration
-      // plane facts. They are shared separately from resource content and IAM.
-      AWAKEN_ADMIN_DB: databaseUrl,
     },
     stdio: ['ignore', 'ignore', 'inherit'],
   });
@@ -894,13 +886,20 @@ async function main(): Promise<void> {
       { type: 'github_repository', url: repository, mount_path: '/workspace/repository' },
     );
     assert.equal(repositoryResource.status, 200, JSON.stringify(repositoryResource.body));
-    const updatedRepository = await json(
+    const rawCredentialUpdate = await json(
       'POST',
       scoped(WORKSPACE, `sessions/${session.body.id}/resources/${repositoryResource.body.id}`),
       {
         mount_path: '/workspace/repository-updated',
         authorization_token: 'repository-rotated-token', // awaken-allow: secret
       },
+    );
+    assert.equal(rawCredentialUpdate.status, 400, JSON.stringify(rawCredentialUpdate.body));
+    assert.match(JSON.stringify(rawCredentialUpdate.body), /raw_repository_credentials_unsupported/u);
+    const updatedRepository = await json(
+      'POST',
+      scoped(WORKSPACE, `sessions/${session.body.id}/resources/${repositoryResource.body.id}`),
+      { mount_path: '/workspace/repository-updated' },
     );
     assert.equal(updatedRepository.status, 200, JSON.stringify(updatedRepository.body));
     assert.equal(updatedRepository.body.mount_path, '/workspace/repository-updated');
