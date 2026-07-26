@@ -35,6 +35,8 @@ use crate::publication::{
 use crate::tool_catalog::RESERVED_ADMIN_SCOPE;
 use crate::tool_catalog::ToolCatalogSource;
 
+mod publication_projection;
+
 /// The config domain service: validate, store, publish, and expose the installed
 /// published executable snapshot per agent.
 ///
@@ -592,6 +594,10 @@ impl ConfigPlane {
 pub fn config_router(plane: ConfigPlane) -> Router {
     Router::new()
         .route("/v1/config/agents", get(list_configs))
+        .route(
+            "/v1/config/publications/{fingerprint}",
+            get(publication_projection::get),
+        )
         .route("/v1/config/agents/{id}/validate", post(validate))
         .route("/v1/config/agents/{id}/publish", post(publish))
         .route("/v1/config/agents/{id}", get(get_config).put(put_config))
@@ -600,7 +606,7 @@ pub fn config_router(plane: ConfigPlane) -> Router {
 
 /// The request's owner scope, stamped by the workspace-path rewrite
 /// (`WorkspaceScope`) or the seeded [`DEFAULT_SCOPE`] for a flat/single-tenant call.
-fn request_scope(ext: Option<Extension<awaken_tenancy::WorkspaceScope>>) -> ScopeId {
+pub(crate) fn request_scope(ext: Option<Extension<awaken_tenancy::WorkspaceScope>>) -> ScopeId {
     ext.map(|Extension(w)| ScopeId::from(w.0))
         .unwrap_or_else(|| ScopeId::from(DEFAULT_SCOPE))
 }
@@ -821,7 +827,7 @@ mod resource_prompt_tests {
         ScopeId::from(id)
     }
 
-    fn agent_config(id: &str) -> AgentConfig {
+    pub(super) fn agent_config(id: &str) -> AgentConfig {
         AgentConfig {
             id: id.to_string(),
             instructions: "be helpful".to_string(),
@@ -882,7 +888,7 @@ mod resource_prompt_tests {
         }
     }
 
-    fn test_service() -> ConfigService {
+    pub(super) fn test_service() -> ConfigService {
         ConfigService::new(Arc::new(FakeResolver))
     }
 
@@ -1154,7 +1160,7 @@ mod resource_prompt_tests {
         }
     }
 
-    fn failing_scoped_plane() -> ConfigPlane {
+    pub(super) fn failing_scoped_plane() -> ConfigPlane {
         ConfigPlane::new(
             Arc::new(test_service()),
             Arc::new(FailingScopedRegistry),
