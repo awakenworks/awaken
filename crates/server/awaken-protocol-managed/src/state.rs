@@ -97,7 +97,11 @@ impl SessionRecord {
 
 /// The adapter's in-memory session store plus the runtime port.
 pub struct ManagedState {
-    runtime: Box<dyn SessionRuntime>,
+    runtime: Arc<dyn SessionRuntime>,
+    /// Sole external realization port for initial and hot MCP generations.
+    /// Desired state remains in the Session aggregate; this adapter owns only
+    /// stage/publish/drain effects and their secret-free receipts.
+    mcp_realizer: Arc<dyn awaken_session_contract::McpAttachmentRealizer>,
     /// The vault surface, when the server mounts one (ADR-0043 Phase 3): a
     /// session's `mcp_servers` are bound to vault credentials through it at
     /// creation. `None` means every binding resolves to no credential.
@@ -219,12 +223,34 @@ pub enum StateError {
 
 impl ManagedState {
     pub fn new(runtime: impl SessionRuntime + 'static) -> Self {
+        Self::from_ports(
+            Arc::new(runtime),
+            Arc::new(UnsupportedMcpAttachmentRealizer),
+        )
+    }
+
+    /// Compose one object that implements both independent application ports.
+    /// The shared `Arc` preserves one adapter instance without merging the
+    /// Session turn lifecycle with MCP attachment realization.
+    pub fn new_with_mcp<R>(runtime: R) -> Self
+    where
+        R: SessionRuntime + awaken_session_contract::McpAttachmentRealizer + 'static,
+    {
+        let runtime = Arc::new(runtime);
+        Self::from_ports(runtime.clone(), runtime)
+    }
+
+    fn from_ports(
+        runtime: Arc<dyn SessionRuntime>,
+        mcp_realizer: Arc<dyn awaken_session_contract::McpAttachmentRealizer>,
+    ) -> Self {
         let started_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
             .unwrap_or_default();
         Self {
-            runtime: Box::new(runtime),
+            runtime,
+            mcp_realizer,
             vaults: None,
             environments: None,
             config_source: None,
@@ -363,6 +389,13 @@ impl ManagedState {
     }
 }
 
+/// Private fail-closed null adapter for applications that do not enable MCP
+/// attachment commands. It is composition policy, not part of the public port.
+struct UnsupportedMcpAttachmentRealizer;
+
+#[async_trait::async_trait]
+impl awaken_session_contract::McpAttachmentRealizer for UnsupportedMcpAttachmentRealizer {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,8 +438,8 @@ mod tests {
         String,
         Option<String>,
         usize,
-        bool,
-        Option<serde_json::Value>,
+        awaken_session_contract::SessionNetworkPolicy,
+        serde_json::Value,
     );
 
     /// A runtime that reports a non-empty committed transcript, so a session can
@@ -435,46 +468,9 @@ mod tests {
                 thread.to_string(),
                 init.runtime,
                 0,
-                init.deny_egress,
-                init.sandbox,
+                init.environment.network,
+                init.environment.sandbox,
             ));
-            Ok(())
-        }
-
-        async fn stage_mcp_attachment(
-            &self,
-            request: awaken_session_contract::StageMcpAttachment,
-        ) -> Result<awaken_session_contract::McpRealizationReceipt, RunError> {
-            if let Some(restored) = self
-                .restored_runtimes
-                .lock()
-                .unwrap()
-                .iter_mut()
-                .find(|restored| restored.0 == request.generation.session_id)
-            {
-                restored.2 += 1;
-            }
-            let receipt_fingerprint = request.fingerprint();
-            Ok(awaken_session_contract::McpRealizationReceipt {
-                generation: request.generation,
-                realization_id: request.realization_id,
-                selected_plaintext_holder: request.selected_plaintext_holder,
-                actual_realization_kind: None,
-                receipt_fingerprint,
-            })
-        }
-
-        async fn publish_mcp_generation(
-            &self,
-            _generation: awaken_session_contract::McpGenerationRef,
-        ) -> Result<(), RunError> {
-            Ok(())
-        }
-
-        async fn drain_mcp_generation(
-            &self,
-            _generation: awaken_session_contract::McpGenerationRef,
-        ) -> Result<(), RunError> {
             Ok(())
         }
 
@@ -552,6 +548,46 @@ mod tests {
                 workspace_id.to_string(),
                 inputs.clone(),
             ));
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl awaken_session_contract::McpAttachmentRealizer for RehydrateFake {
+        async fn stage_mcp_attachment(
+            &self,
+            request: awaken_session_contract::StageMcpAttachment,
+        ) -> Result<awaken_session_contract::McpRealizationReceipt, RunError> {
+            if let Some(restored) = self
+                .restored_runtimes
+                .lock()
+                .unwrap()
+                .iter_mut()
+                .find(|restored| restored.0 == request.generation.session_id)
+            {
+                restored.2 += 1;
+            }
+            let receipt_fingerprint = request.fingerprint();
+            Ok(awaken_session_contract::McpRealizationReceipt {
+                generation: request.generation,
+                realization_id: request.realization_id,
+                selected_plaintext_holder: request.selected_plaintext_holder,
+                actual_realization_kind: None,
+                receipt_fingerprint,
+            })
+        }
+
+        async fn publish_mcp_generation(
+            &self,
+            _generation: awaken_session_contract::McpGenerationRef,
+        ) -> Result<(), RunError> {
+            Ok(())
+        }
+
+        async fn drain_mcp_generation(
+            &self,
+            _generation: awaken_session_contract::McpGenerationRef,
+        ) -> Result<(), RunError> {
             Ok(())
         }
     }
@@ -919,7 +955,8 @@ mod tests {
             let repo = Arc::new(ephemeral_session_repo());
             create_session_fixture(repo.as_ref(), "workspace-a", sample_persisted(&id)).await;
             let stale = repo.get(&id).await.unwrap();
-            let state = ManagedState::new(RehydrateFake::default()).with_session_repo(repo.clone());
+            let state = ManagedState::new_with_mcp(RehydrateFake::default())
+                .with_session_repo(repo.clone());
             let applied = state
                 .commit_session_snapshot(
                     "workspace-a",
@@ -976,7 +1013,7 @@ mod tests {
         // |---|---|---|
         // | T1 | Some(including empty) | exact durable value |
         // | T2 | None | Runtime default |
-        let state = ManagedState::new(RehydrateFake::default());
+        let state = ManagedState::new_with_mcp(RehydrateFake::default());
         let mut persisted = sample_persisted("sesn_1");
         persisted.agent_tools = Some(vec![serde_json::json!({"name": "durable-tool"})]);
         let session = state.rehydrated_session("sesn_1", Some(persisted));
@@ -1004,7 +1041,7 @@ mod tests {
 
     #[test]
     fn rehydrated_session_falls_back_without_persisted_config() {
-        let state = ManagedState::new(RehydrateFake::default());
+        let state = ManagedState::new_with_mcp(RehydrateFake::default());
         let session = state.rehydrated_session("sesn_1", None);
         assert_eq!(session.agent.id, "assistant");
         assert_eq!(session.agent.model.id, "host-default-model");
@@ -1027,7 +1064,7 @@ mod tests {
         let restored_environments = runtime.restored_environments.clone();
         let restored_runtimes = runtime.restored_runtimes.clone();
         let order = runtime.order.clone();
-        let restarted = ManagedState::new(runtime).with_session_repo(repo.clone());
+        let restarted = ManagedState::new_with_mcp(runtime).with_session_repo(repo.clone());
         restarted.ensure_session("sesn_1").await.expect("rehydrate");
         let session = restarted
             .get_session("sesn_1")
@@ -1060,8 +1097,8 @@ mod tests {
                 "sesn_1".to_string(),
                 Some("acp:custom".to_string()),
                 1,
-                true,
-                Some(serde_json::json!({"isolation": "namespace"})),
+                awaken_session_contract::SessionNetworkPolicy::None,
+                serde_json::json!({"isolation": "namespace"}),
             )],
             "the complete secret-free runtime pin is restored"
         );
@@ -1098,7 +1135,7 @@ mod tests {
 
         let runtime = RehydrateFake::default();
         let restored = runtime.restored.clone();
-        let restarted = ManagedState::new(runtime).with_session_repo(repo.clone());
+        let restarted = ManagedState::new_with_mcp(runtime).with_session_repo(repo.clone());
         restarted
             .ensure_session("sesn_pending")
             .await
@@ -1125,7 +1162,8 @@ mod tests {
         deleted.resources.begin_release().unwrap();
         create_session_fixture(repo.as_ref(), "workspace-a", deleted).await;
 
-        let restarted = ManagedState::new(RehydrateFake::default()).with_session_repo(repo.clone());
+        let restarted =
+            ManagedState::new_with_mcp(RehydrateFake::default()).with_session_repo(repo.clone());
         assert_eq!(restarted.reconcile_resource_activations().await, 1);
         assert!(
             repo.get("sesn_deleted").await.is_none(),
@@ -1138,7 +1176,7 @@ mod tests {
     async fn live_input_mutations_survive_restart_without_changing_resource_identity() {
         let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
         let catalog = Arc::new(ephemeral_resource_catalog());
-        let state = ManagedState::new(RehydrateFake::default())
+        let state = ManagedState::new_with_mcp(RehydrateFake::default())
             .with_session_repo(repo.clone())
             .with_resource_catalog(catalog.clone());
         let id = state
@@ -1181,7 +1219,7 @@ mod tests {
             1
         );
 
-        let restarted = ManagedState::new(RehydrateFake::default())
+        let restarted = ManagedState::new_with_mcp(RehydrateFake::default())
             .with_session_repo(repo.clone())
             .with_resource_catalog(catalog.clone());
         restarted.ensure_session(&id).await.expect("rehydrate");
@@ -1204,7 +1242,7 @@ mod tests {
                 .all(|activation| activation.state
                     != awaken_session_contract::ActivationState::Active)
         );
-        let second_restart = ManagedState::new(RehydrateFake::default())
+        let second_restart = ManagedState::new_with_mcp(RehydrateFake::default())
             .with_session_repo(repo)
             .with_resource_catalog(catalog);
         second_restart
@@ -1222,7 +1260,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_broadcasts_session_deleted_then_removes_the_record() {
-        let state = ManagedState::new(RehydrateFake::default());
+        let state = ManagedState::new_with_mcp(RehydrateFake::default());
         let id = state
             .create_session(bare_create_params(), None)
             .await

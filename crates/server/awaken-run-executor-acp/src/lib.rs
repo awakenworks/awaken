@@ -172,6 +172,11 @@ pub struct AcpRunExecutor {
     /// Recovers a local-dir CLI's session across directories/machines. Defaults to
     /// no-op (local config home as-is); a host wires a durable, cross-machine one.
     session_home: Arc<dyn SessionHomeProvider>,
+    /// Exact per-Session MCP projection supplied by the Runtime Host. `None` leaves
+    /// standalone/source-owned compatibility behavior intact; `Some`, including an
+    /// empty set, replaces it so a retained Agent plugin snapshot cannot become a
+    /// second MCP authority.
+    session_mcp_servers: Option<Vec<awaken_protocol_acp::SessionMcpServer>>,
 }
 
 impl AcpRunExecutor {
@@ -191,6 +196,7 @@ impl AcpRunExecutor {
             permission: Arc::new(AllowAll),
             session_mode: None,
             session_home: Arc::new(NoSessionHome),
+            session_mcp_servers: None,
         }
     }
 
@@ -214,12 +220,25 @@ impl AcpRunExecutor {
         self
     }
 
-    /// Fork this executor's immutable launch/supervision configuration for one
-    /// Session while binding that Session's resolved permission policy. Static and
-    /// dynamically-bound ACP sources therefore share the same per-agent authority
-    /// without mutating a process-global executor or racing concurrent Sessions.
+    /// Fork this executor for one Session while binding its permission policy and
+    /// exact, already-mediated MCP routes. This is the sole typed override for a
+    /// static source; it replaces any retained source/plugin projection rather than
+    /// merging two authorities.
+    ///
+    /// Cause-effect graph and decision table:
+    /// `Host projection present -> replace source projection -> route-only ACP wire`;
+    /// `absent -> preserve standalone source behavior`.
+    ///
+    /// | Rule | Host projection | Source projection | Effective |
+    /// |---|---|---|---|
+    /// | S1 | absent | any | source |
+    /// | S2 | present (including empty) | any | exact Host set |
     #[must_use]
-    pub fn for_permission_policy(&self, policy: Arc<dyn ToolPermissionPolicy>) -> Self {
+    pub fn for_session(
+        &self,
+        policy: Arc<dyn ToolPermissionPolicy>,
+        mcp_servers: &[McpServerConfig],
+    ) -> Self {
         Self {
             source: self.source.clone(),
             policy: self.policy,
@@ -227,6 +246,18 @@ impl AcpRunExecutor {
             permission: Arc::new(NeutralPermissionResolver { policy }),
             session_mode: self.session_mode.clone(),
             session_home: self.session_home.clone(),
+            session_mcp_servers: Some(
+                mcp_servers
+                    .iter()
+                    .map(subprocess::to_session_mcp_server)
+                    .collect(),
+            ),
+        }
+    }
+
+    fn apply_session_mcp_projection(&self, session: &mut AgentSession) {
+        if let Some(servers) = &self.session_mcp_servers {
+            session.mcp_session_servers.clone_from(servers);
         }
     }
 
@@ -522,6 +553,7 @@ impl AcpRunExecutor {
                 return finish_failure(&context, &activation, &failure).await;
             }
         };
+        self.apply_session_mcp_projection(&mut session);
 
         // ADR-0054 P4: drive turns in a boundary loop. After each turn the shared
         // `evaluate_boundary` drains any live-inbox steer; queued input becomes the
@@ -678,6 +710,7 @@ impl AcpRunExecutor {
                             return finish_failure(&context, &activation, &failure).await;
                         }
                     };
+                    self.apply_session_mcp_projection(&mut session);
                     continue;
                 }
                 Err(AcpError::PermissionAwait {
@@ -814,6 +847,7 @@ impl AcpRunExecutor {
                             return Ok(state);
                         }
                     };
+                    self.apply_session_mcp_projection(&mut session);
                 }
                 // Operator pause (ADR-0054 P5/U2): commit any in-flight steer that
                 // rode out with the await, then await durably on a no-tool awaiting
@@ -1279,7 +1313,7 @@ mod config_home;
 mod session_home;
 mod subprocess;
 pub use acp_cli::{
-    AcpCli, McpCredential, McpDelivery, McpInterface, McpServerConfig, McpTransport, ModelDelivery,
+    AcpCli, McpDelivery, McpInterface, McpServerConfig, McpTransport, ModelDelivery,
     ProcessSecretRequirement, ResolvedModel, SessionKey, SessionPersistence, acp_cli,
     is_dynamic_install, known_acp_clis,
 };

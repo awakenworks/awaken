@@ -212,31 +212,23 @@ async fn spawn(
     })
 }
 
-/// Map a neutral [`crate::McpServerConfig`] onto the protocol's `session/new` shape: the
-/// α/β credential becomes an `Authorization: Bearer …` header (α: a broker reference the
-/// gateway resolves; β: a raw secret on a trusted launch — the trust decision is made
-/// upstream by the host's projection). Pure, so the mapping is unit-testable.
-fn to_session_mcp_server(cfg: &crate::McpServerConfig) -> awaken_protocol_acp::SessionMcpServer {
-    use crate::{McpCredential, McpTransport};
+/// Map one already-mediated endpoint onto the protocol's `session/new` shape.
+/// Authentication is always absent: the Runtime Host owns credential realization
+/// before this protocol adapter receives the route.
+pub(crate) fn to_session_mcp_server(
+    cfg: &crate::McpServerConfig,
+) -> awaken_protocol_acp::SessionMcpServer {
+    use crate::McpTransport;
     let (command, args, url) = match &cfg.transport {
         McpTransport::Stdio { command, args } => (Some(command.clone()), args.clone(), None),
         McpTransport::Http { url } => (None, Vec::new(), Some(url.clone())),
-    };
-    let auth = match &cfg.credential {
-        McpCredential::Reference { reference } => {
-            Some(("Authorization".to_string(), format!("Bearer {reference}")))
-        }
-        McpCredential::TrustedInline { secret } => {
-            Some(("Authorization".to_string(), format!("Bearer {secret}")))
-        }
-        McpCredential::None => None,
     };
     awaken_protocol_acp::SessionMcpServer {
         name: cfg.name.clone(),
         command,
         args,
         url,
-        auth,
+        auth: None,
     }
 }
 
@@ -400,17 +392,13 @@ pub struct McpInjection {
     pub config_file: Option<(String, String)>,
 }
 
-/// Project `plugin_config`'s declared MCP servers for `cli`. `sandboxed` fail-closes on
-/// a β [`TrustedInline`](crate::McpCredential::TrustedInline) credential — a raw secret
-/// must never enter an isolated launch; only broker references (α) are sandbox-safe
-/// (G3/D-R2). The unsandboxed trusted-launch path passes `false`.
+/// Project `plugin_config`'s declared secret-free MCP routes for `cli`.
 pub fn mcp_injection(
     cli: &AcpCli,
     plugin_config: &BTreeMap<String, serde_json::Value>,
-    sandboxed: bool,
 ) -> std::result::Result<McpInjection, OpenError> {
     let servers = AcpSettings::from_plugin_config(plugin_config).mcp_servers;
-    mcp_injection_from_servers(cli, &servers, sandboxed)
+    mcp_injection_from_servers(cli, &servers)
 }
 
 /// Project an already-decoded, host-staged MCP set. Session execution uses this
@@ -418,19 +406,7 @@ pub fn mcp_injection(
 pub fn mcp_injection_from_servers(
     cli: &AcpCli,
     servers: &[crate::McpServerConfig],
-    sandboxed: bool,
 ) -> std::result::Result<McpInjection, OpenError> {
-    if sandboxed {
-        for s in servers {
-            if !s.is_sandbox_safe() {
-                return Err(OpenError(format!(
-                    "MCP server `{}` carries an inline secret; only a broker reference is \
-                     sandbox-safe",
-                    s.name
-                )));
-            }
-        }
-    }
     if servers.is_empty() {
         return Ok(McpInjection::default());
     }
@@ -489,8 +465,7 @@ mod mcp_wiring_tests {
             serde_json::json!({
                 "mcp_servers": [{
                     "name": "github",
-                    "transport": { "kind": "stdio", "command": "npx", "args": ["-y", "@mcp/github"] },
-                    "credential": { "auth": "reference", "reference": "broker://gh" }
+                    "transport": { "kind": "stdio", "command": "npx", "args": ["-y", "@mcp/github"] }
                 }]
             }),
         );
@@ -500,12 +475,12 @@ mod mcp_wiring_tests {
     #[test]
     fn mcp_delivery_reads_the_config_plane_and_projects_to_the_cli() {
         let pc = plugin_config_with_mcp();
-        // codex (ConfigFileToml) → a config.toml carrying the server + a secretless ref.
+        // codex (ConfigFileToml) → a secret-free config.toml carrying the route.
         match mcp_delivery(acp_cli("codex").unwrap(), &pc) {
             Some(McpDelivery::ConfigFile { path, contents }) => {
                 assert_eq!(path, "config.toml");
                 assert!(contents.contains("[mcp_servers.github]"));
-                assert!(contents.contains("broker://gh"));
+                assert!(!contents.to_ascii_lowercase().contains("credential"));
             }
             other => panic!("codex should deliver a config file, got {other:?}"),
         }
@@ -520,57 +495,41 @@ mod mcp_wiring_tests {
     }
 
     #[test]
-    fn to_session_mcp_server_maps_transport_and_carries_the_credential_as_a_bearer() {
-        use crate::{McpCredential, McpServerConfig, McpTransport};
-        // α reference over stdio → command/args pass through, ref becomes a bearer header.
-        let alpha = to_session_mcp_server(&McpServerConfig {
-            name: "github".into(),
-            transport: McpTransport::Stdio {
-                command: "npx".into(),
-                args: vec!["-y".into(), "@mcp/github".into()],
-            },
-            credential: McpCredential::Reference {
-                reference: "broker://gh".into(),
-            },
-        });
-        assert_eq!(alpha.name, "github");
-        assert_eq!(alpha.command.as_deref(), Some("npx"));
-        assert_eq!(
-            alpha.args,
-            vec!["-y".to_string(), "@mcp/github".to_string()]
-        );
-        assert!(alpha.url.is_none());
-        assert_eq!(
-            alpha.auth,
-            Some(("Authorization".into(), "Bearer broker://gh".into()))
-        );
+    fn session_mcp_projection_follows_the_transport_decision_table() {
+        use crate::{McpServerConfig, McpTransport};
 
-        // β trusted-inline over http → url set, raw secret becomes the bearer.
-        let beta = to_session_mcp_server(&McpServerConfig {
-            name: "internal".into(),
-            transport: McpTransport::Http {
-                url: "https://mcp.internal/sse".into(),
+        // Cause-effect graph:
+        // C1 transport is Stdio xor HTTP (O constraint)
+        //  -> E1 project only that transport's fields
+        //  -> E2 auth is always absent.
+        //
+        // | Rule | C1 | command | URL | auth |
+        // |---|---|---|---|---|
+        // | P1 | Stdio | exact | none | none |
+        // | P2 | HTTP | none | exact | none |
+        let rules = [
+            McpServerConfig {
+                name: "github".into(),
+                transport: McpTransport::Stdio {
+                    command: "npx".into(),
+                    args: vec!["-y".into(), "@mcp/github".into()],
+                },
             },
-            credential: McpCredential::TrustedInline {
-                secret: "sk-raw".into(),
+            McpServerConfig {
+                name: "open".into(),
+                transport: McpTransport::Http {
+                    url: "https://mcp.open/sse".into(),
+                },
             },
-        });
-        assert!(beta.command.is_none());
-        assert_eq!(beta.url.as_deref(), Some("https://mcp.internal/sse"));
-        assert_eq!(
-            beta.auth,
-            Some(("Authorization".into(), "Bearer sk-raw".into()))
-        );
-
-        // no credential → no auth header.
-        let none = to_session_mcp_server(&McpServerConfig {
-            name: "open".into(),
-            transport: McpTransport::Http {
-                url: "https://mcp.open/sse".into(),
-            },
-            credential: McpCredential::None,
-        });
-        assert!(none.auth.is_none());
+        ];
+        let stdio = to_session_mcp_server(&rules[0]);
+        assert_eq!(stdio.command.as_deref(), Some("npx"), "P1");
+        assert!(stdio.url.is_none(), "P1");
+        assert!(stdio.auth.is_none(), "P1");
+        let http = to_session_mcp_server(&rules[1]);
+        assert!(http.command.is_none(), "P2");
+        assert_eq!(http.url.as_deref(), Some("https://mcp.open/sse"), "P2");
+        assert!(http.auth.is_none(), "P2");
     }
 
     #[test]
@@ -590,7 +549,7 @@ mod mcp_wiring_tests {
 
         let written = std::fs::read_to_string(dir.join("config.toml")).unwrap();
         assert!(written.contains("[mcp_servers.github]"));
-        assert!(written.contains("broker://gh"));
+        assert!(!written.to_ascii_lowercase().contains("credential"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -813,10 +772,8 @@ mod tests {
             cli,
             &mcp_pc(serde_json::json!([{
                 "name": "gh",
-                "transport": { "kind": "http", "url": "https://mcp" },
-                "credential": { "auth": "reference", "reference": "broker://tok" }
+                "transport": { "kind": "http", "url": "https://mcp" }
             }])),
-            true,
         )
         .unwrap();
         assert_eq!(proj.session_servers.len(), 1);
@@ -835,7 +792,6 @@ mod tests {
                 "transport": { "kind": "http", "url": "https://mcp" },
                 "credential": { "auth": "reference", "reference": "broker://tok" }
             }])),
-            true,
         )
         .unwrap();
         assert!(proj.session_servers.is_empty());
@@ -848,29 +804,25 @@ mod tests {
     }
 
     #[test]
-    fn mcp_injection_fails_closed_on_an_inline_secret_when_sandboxed() {
-        // A β TrustedInline credential is a raw secret — rejected for a sandboxed launch,
-        // accepted for a trusted (unsandboxed) one.
+    fn retained_inline_credential_field_is_ignored_by_the_only_projection() {
+        // Serde remains tolerant of a retained snapshot field, but the removed
+        // credential path cannot project it into ACP.
         let cli = crate::acp_cli("claude").unwrap();
         let pc = mcp_pc(serde_json::json!([{
             "name": "gh",
             "transport": { "kind": "http", "url": "https://mcp" },
             "credential": { "auth": "trusted_inline", "secret": "sk-raw" }
         }]));
-        assert!(
-            mcp_injection(cli, &pc, true).is_err(),
-            "sandboxed must reject inline secret"
-        );
-        assert!(
-            mcp_injection(cli, &pc, false).is_ok(),
-            "trusted launch may use it"
-        );
+        let projection = mcp_injection(cli, &pc).expect("legacy field is ignored");
+        assert_eq!(projection.session_servers.len(), 1);
+        assert!(projection.session_servers[0].auth.is_none());
+        assert!(!format!("{projection:?}").contains("sk-raw"));
     }
 
     #[test]
     fn mcp_injection_is_empty_when_none_declared() {
         let cli = crate::acp_cli("claude").unwrap();
-        let proj = mcp_injection(cli, &BTreeMap::new(), true).unwrap();
+        let proj = mcp_injection(cli, &BTreeMap::new()).unwrap();
         assert_eq!(proj, McpInjection::default());
     }
 

@@ -20,7 +20,11 @@ impl SessionNetworkPolicy {
         !matches!(self, Self::Unrestricted)
     }
 
-    fn canonicalized(&self) -> Self {
+    /// Canonical form used at every persistence/realization boundary. Host names
+    /// are trimmed, lower-cased and deduplicated; an empty allowlist is exactly
+    /// `None`, not a second spelling of closed networking.
+    #[must_use]
+    pub fn normalized(&self) -> Self {
         match self {
             Self::Unrestricted => Self::Unrestricted,
             Self::None => Self::None,
@@ -48,7 +52,7 @@ impl SessionNetworkPolicy {
     pub fn safe_intersection(&self, other: &Self) -> Self {
         match (self, other) {
             (Self::None, _) | (_, Self::None) => Self::None,
-            (Self::Unrestricted, policy) | (policy, Self::Unrestricted) => policy.canonicalized(),
+            (Self::Unrestricted, policy) | (policy, Self::Unrestricted) => policy.normalized(),
             (Self::Allowlist { hosts: left }, Self::Allowlist { hosts: right }) => {
                 let right = right
                     .iter()

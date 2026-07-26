@@ -11,6 +11,23 @@ fn native_credential_profile() -> awaken_runtime_contract::CredentialRealization
     awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native()
 }
 
+fn session_environment(
+    network: awaken_protocol_managed::SessionNetworkPolicy,
+    sandbox: serde_json::Value,
+) -> awaken_protocol_managed::EnvironmentSnapshot {
+    let config_fingerprint = awaken_protocol_managed::EnvironmentFingerprint(
+        awaken_protocol_managed::stable_fingerprint(&(network.clone(), sandbox.clone())),
+    );
+    awaken_protocol_managed::EnvironmentSnapshot {
+        environment_id: "test-environment".into(),
+        revision: awaken_protocol_managed::EnvironmentRevision(1),
+        config_fingerprint,
+        sandbox,
+        network,
+        credential_realization: native_credential_profile(),
+    }
+}
+
 fn resource_catalog() -> Arc<awaken_admin_config_api::SqliteAdminStore> {
     Arc::new(
         awaken_admin_config_api::SqliteAdminStore::open_in_memory()
@@ -715,7 +732,10 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
     let spec = host.sandbox_spec("flow-thread");
     assert_eq!(spec.mounts.len(), 1);
     assert_eq!(spec.env.len(), 1);
-    assert!(host.thread_egress().denies("flow-thread"));
+    assert_eq!(
+        spec.network,
+        awaken_provisioning_contract::NetworkPolicy::None
+    );
     assert_eq!(
         host.thread_resource_prompts("flow-thread"),
         vec!["Use the bound Flow project."]
@@ -1171,9 +1191,10 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
             ),
             model: None,
             runtime: None,
-            credential_realization: native_credential_profile(),
-            deny_egress: false,
-            sandbox: None,
+            environment: session_environment(
+                awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+                serde_json::json!({}),
+            ),
         };
         if let Some(input) = init.resources.inputs.first_mut()
             && let ResolvedInputSource::MemoryStore { config, .. } = &mut input.source
@@ -1690,28 +1711,24 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     );
 }
 
-/// The environment's egress policy reaches the sandbox: a `deny_egress` SessionInit
-/// stages the thread so its rebuilt sandbox spec denies network egress; an
-/// unrestricted one leaves the host network shared.
+/// Cause-effect graph for the sole Environment projection:
+///
+/// C1 exact frozen network fact is Unrestricted / Allowlist / None (O constraint)
+///  -> C2 install one Environment fingerprint
+///  -> C3 ignore any retained `sandbox.network` field
+///  -> E1 Native spec carries the exact frozen network
+///  -> E2 Workdir convenience flag exists iff E1 is restricted.
+///
+/// | Rule | C1 | sandbox.network | E1 | E2 deny flag |
+/// |---|---|---|---|---|
+/// | N1 | Unrestricted | none | Unrestricted | F |
+/// | N2 | Allowlist | conflicting None | exact Allowlist | T |
+/// | N3 | None | conflicting Unrestricted | None | T |
 #[tokio::test]
-async fn prepare_session_stages_egress_into_the_sandbox_spec() {
+async fn frozen_environment_network_follows_the_decision_table() {
     use awaken_protocol_managed::{SessionInit, SessionRuntime};
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let managed = managed_with_resource_source(host.clone());
-    let init = |deny: bool| SessionInit {
-        workspace_id: host.local_workspace().into(),
-        agent_id: "a".into(),
-        delegate_ids: Vec::new(),
-        resources: Default::default(),
-        model: None,
-        runtime: None,
-        credential_realization: native_credential_profile(),
-        deny_egress: deny,
-        sandbox: None,
-    };
-
-    // Egress denial rides the Workdir spec's opaque `extra` (a bwrap convenience,
-    // not admission-gated network isolation this tier cannot enforce).
     let denies = |spec: awaken_provisioning_contract::SandboxSpec| {
         spec.extra
             .as_ref()
@@ -1719,27 +1736,59 @@ async fn prepare_session_stages_egress_into_the_sandbox_spec() {
             .and_then(|v| v.as_bool())
             .unwrap_or(false)
     };
-
-    managed.prepare_session("t-deny", init(true)).await.unwrap();
-    assert!(
-        denies(host.sandbox_spec("t-deny")),
-        "a deny_egress session stages into the sandbox spec"
-    );
-
-    managed
-        .prepare_session("t-open", init(false))
-        .await
-        .unwrap();
-    assert!(
-        !denies(host.sandbox_spec("t-open")),
-        "an unrestricted session keeps the host network"
-    );
+    let rules = [
+        (
+            "N1",
+            awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+            serde_json::json!({}),
+            awaken_provisioning_contract::NetworkPolicy::Unrestricted,
+            false,
+        ),
+        (
+            "N2",
+            awaken_protocol_managed::SessionNetworkPolicy::Allowlist {
+                hosts: vec!["api.example".into()],
+            },
+            serde_json::json!({"network": {"mode": "none"}}),
+            awaken_provisioning_contract::NetworkPolicy::Allowlist {
+                hosts: vec!["api.example".into()],
+            },
+            true,
+        ),
+        (
+            "N3",
+            awaken_protocol_managed::SessionNetworkPolicy::None,
+            serde_json::json!({"network": {"mode": "unrestricted"}}),
+            awaken_provisioning_contract::NetworkPolicy::None,
+            true,
+        ),
+    ];
+    for (id, network, sandbox, expected_network, expected_denial) in rules {
+        let thread = format!("environment-{id}");
+        managed
+            .prepare_session(
+                &thread,
+                SessionInit {
+                    workspace_id: host.local_workspace().into(),
+                    agent_id: "a".into(),
+                    delegate_ids: Vec::new(),
+                    resources: Default::default(),
+                    model: None,
+                    runtime: None,
+                    environment: session_environment(network, sandbox),
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{id}: {error}"));
+        let spec = host.sandbox_spec(&thread);
+        assert_eq!(spec.network, expected_network, "{id}");
+        assert_eq!(denies(spec), expected_denial, "{id}");
+    }
 }
 
-/// The environment's `config.sandbox` overlay reaches the sandbox spec: a session whose
-/// `SessionInit.sandbox` sets isolation/network/limits stages the thread so its rebuilt
-/// spec reflects them (superseding the hardcoded Workdir/Unrestricted defaults). This is
-/// the S4 chain end: env config → SessionInit → prepare_session → sandbox_spec.
+/// The frozen Environment reaches the sandbox spec through one projection. Isolation
+/// and limits come from the network-free sandbox blob, while the distinct network fact
+/// remains authoritative even if a retained blob contains a conflicting legacy field.
 #[tokio::test]
 async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
     use awaken_protocol_managed::{SessionInit, SessionRuntime};
@@ -1747,7 +1796,6 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let managed = crate::ManagedHost::new(host.clone());
 
-    // The session carries the raw `config.sandbox` blob (the host parses it).
     let init = SessionInit {
         workspace_id: "ws".into(),
         agent_id: "a".into(),
@@ -1755,13 +1803,16 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
         resources: Default::default(),
         model: None,
         runtime: None,
-        credential_realization: native_credential_profile(),
-        deny_egress: false,
-        sandbox: Some(serde_json::json!({
+        environment: session_environment(
+            awaken_protocol_managed::SessionNetworkPolicy::Allowlist {
+                hosts: vec!["api.github.com".into()],
+            },
+            serde_json::json!({
             "isolation": "namespace",
-            "network": { "mode": "allowlist", "hosts": ["api.github.com"] },
+            "network": { "mode": "unrestricted" },
             "limits": { "cpu_millis": 2000, "memory_bytes": 4294967296u64 }
-        })),
+            }),
+        ),
     };
     managed.prepare_session("t-sb", init).await.unwrap();
 
@@ -1789,9 +1840,10 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
         resources: Default::default(),
         model: None,
         runtime: None,
-        credential_realization: native_credential_profile(),
-        deny_egress: false,
-        sandbox: None,
+        environment: session_environment(
+            awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+            serde_json::json!({}),
+        ),
     };
     managed.prepare_session("t-bare", bare).await.unwrap();
     assert_eq!(
@@ -1837,9 +1889,10 @@ async fn prepare_session_mounts_an_effective_memory_resource() {
         ),
         model: None,
         runtime: None,
-        credential_realization: native_credential_profile(),
-        deny_egress: false,
-        sandbox: None,
+        environment: session_environment(
+            awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+            serde_json::json!({}),
+        ),
     };
 
     // An effective Session input mounts without an authoring repository on the host.
@@ -2028,9 +2081,10 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
                 ]),
                 model: None,
                 runtime: None,
-                credential_realization: native_credential_profile(),
-                deny_egress: false,
-                sandbox: None,
+                environment: session_environment(
+                    awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+                    serde_json::json!({}),
+                ),
             },
         )
         .await
@@ -2155,7 +2209,7 @@ async fn file_activation_enforces_workspace_ownership_without_iam_policy_logic()
 
 #[tokio::test]
 async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_revision() {
-    use awaken_protocol_managed::SessionRuntime;
+    use awaken_protocol_managed::McpAttachmentRealizer;
     use awaken_runtime_contract::{
         CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
         CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
@@ -2190,7 +2244,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         generation: awaken_protocol_managed::McpGeneration(1),
         runtime_incarnation: "runtime-1".into(),
         lease_epoch: 1,
-        lease_expires_at_unix_ms: u64::MAX,
+        lease_expires_at_unix_ms: u64::MAX - 1,
     };
     let request = |session: &str, workspace: &str, revision: u64| {
         awaken_protocol_managed::StageMcpAttachment {
@@ -2236,6 +2290,10 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // | H11 | exact | exact | drain unknown | - | idempotent no-op |
     // | H12 | exact | exact | authenticated ACP/no no-bypass | - | reject before resolver |
     // | H13 | - | - | anonymous ACP | no | staged without bearer |
+    // | H14 | exact immutable binding | later lease | renew | publish | same generation/material, extended fence |
+    // | H15 | changed target | later lease | renew | - | reject/no mutation |
+    // | H16 | exact binding | same lease/new key | renew | - | reject/no mutation |
+    // | H17 | non-bearer usage | exact holder/revision | stage | - | reject before materialization |
     let exact_request = request("mcp-exact", "workspace-a", 1);
     let receipt = managed
         .stage_mcp_attachment(exact_request.clone())
@@ -2277,23 +2335,92 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         .await
         .unwrap_err();
     assert_eq!(foreign_error.code, "mcp_credential_revision_mismatch", "H5");
+
+    let mut unsupported_usage = request("mcp-usage", "workspace-a", 1);
+    unsupported_usage.credential.as_mut().unwrap().usage = CredentialUsage::QueryParameter {
+        name: "token".into(),
+    };
+    assert_eq!(
+        managed
+            .stage_mcp_attachment(unsupported_usage)
+            .await
+            .unwrap_err()
+            .code,
+        "mcp_credential_usage_unsupported",
+        "H17"
+    );
+    assert!(
+        host.mcp_projection(&generation("mcp-usage")).is_none(),
+        "H17"
+    );
+
+    let mut conflicting_renewal = request("mcp-exact", "workspace-a", 1);
+    conflicting_renewal.generation.lease_expires_at_unix_ms = u64::MAX;
+    conflicting_renewal.stage_idempotency_key = "renew-conflicting".into();
+    conflicting_renewal.target =
+        awaken_protocol_managed::McpTarget::parse_http("https://other.example.test/mcp").unwrap();
+    assert_eq!(
+        managed
+            .stage_mcp_attachment(conflicting_renewal)
+            .await
+            .unwrap_err()
+            .code,
+        "mcp_stale_generation",
+        "H15"
+    );
+    let mut non_increasing = request("mcp-exact", "workspace-a", 1);
+    non_increasing.stage_idempotency_key = "renew-without-extension".into();
+    assert_eq!(
+        managed
+            .stage_mcp_attachment(non_increasing)
+            .await
+            .unwrap_err()
+            .code,
+        "mcp_stale_generation",
+        "H16"
+    );
+    let mut renewal = request("mcp-exact", "workspace-a", 1);
+    renewal.generation.lease_expires_at_unix_ms = u64::MAX;
+    renewal.stage_idempotency_key = "renew-exact".into();
+    let renewed_generation = renewal.generation.clone();
+    let renewed = managed
+        .stage_mcp_attachment(renewal)
+        .await
+        .expect("H14 stage");
+    assert_eq!(renewed.generation, renewed_generation, "H14");
     managed
-        .drain_mcp_generation(generation("mcp-exact"))
+        .publish_mcp_generation(renewed_generation.clone())
+        .await
+        .expect("H14 publish");
+    let projection = host
+        .mcp_projection(&renewed_generation)
+        .expect("H14 projection");
+    assert_eq!(
+        projection
+            .server
+            .as_ref()
+            .and_then(|server| server.bearer.as_ref())
+            .map(|secret| secret.expose_secret()),
+        Some("published-mcp-token"),
+        "H14 retained material"
+    );
+    managed
+        .drain_mcp_generation(renewed_generation.clone())
         .await
         .expect("H6");
     assert!(host.active_mcp_projections("mcp-exact").is_empty(), "H6");
-    let drained = host.mcp_projection(&generation("mcp-exact")).unwrap();
+    let drained = host.mcp_projection(&renewed_generation).unwrap();
     assert!(
         drained.server.is_none() && drained.native_wiring.is_none(),
         "H6"
     );
     managed
-        .drain_mcp_generation(generation("mcp-exact"))
+        .drain_mcp_generation(renewed_generation.clone())
         .await
         .expect("H7");
     assert!(
         managed
-            .publish_mcp_generation(generation("mcp-exact"))
+            .publish_mcp_generation(renewed_generation)
             .await
             .is_err(),
         "H8"
@@ -2375,6 +2502,123 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     );
 }
 
+/// Public-realizer selection cause graph:
+///
+/// C1 an external realizer is installed -> every MCP lifecycle effect is sent
+/// to it. C2 that realizer rejects staging -> the error is terminal and the
+/// local Host projection remains untouched. Without C1, the canonical local
+/// Host realizer remains the sole implementation.
+///
+/// | Rule | external | external stage | Expected path | Local fallback |
+/// |---|---|---|---|---|
+/// | R1 | yes | success | external stage/publish/drain | never |
+/// | R2 | yes | failure | exact external error | never |
+#[tokio::test]
+async fn injected_mcp_realizer_is_exclusive_and_fails_without_local_fallback() {
+    use awaken_protocol_managed::{
+        McpAttachmentId, McpAttachmentRealizer, McpGeneration, McpGenerationRef,
+        McpRealizationReceipt, McpTarget, StageMcpAttachment,
+    };
+
+    #[derive(Default)]
+    struct RecordingRealizer {
+        calls: std::sync::Mutex<Vec<&'static str>>,
+        fail_stage: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl McpAttachmentRealizer for RecordingRealizer {
+        async fn stage_mcp_attachment(
+            &self,
+            request: StageMcpAttachment,
+        ) -> Result<McpRealizationReceipt, awaken_protocol_managed::RunError> {
+            self.calls.lock().unwrap().push("stage");
+            if self.fail_stage.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(awaken_protocol_managed::RunError::classified(
+                    "external_stage_rejected",
+                    "external realizer rejected stage",
+                ));
+            }
+            let receipt_fingerprint = request.fingerprint();
+            Ok(McpRealizationReceipt {
+                generation: request.generation,
+                realization_id: request.realization_id,
+                selected_plaintext_holder: request.selected_plaintext_holder,
+                actual_realization_kind: None,
+                receipt_fingerprint,
+            })
+        }
+
+        async fn publish_mcp_generation(
+            &self,
+            _generation: McpGenerationRef,
+        ) -> Result<(), awaken_protocol_managed::RunError> {
+            self.calls.lock().unwrap().push("publish");
+            Ok(())
+        }
+
+        async fn drain_mcp_generation(
+            &self,
+            _generation: McpGenerationRef,
+        ) -> Result<(), awaken_protocol_managed::RunError> {
+            self.calls.lock().unwrap().push("drain");
+            Ok(())
+        }
+    }
+
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let external = Arc::new(RecordingRealizer::default());
+    let managed =
+        crate::ManagedHost::new(host.clone()).with_mcp_attachment_realizer(external.clone());
+    drop(managed);
+    let generation = McpGenerationRef {
+        session_id: "external-mcp".into(),
+        attachment_id: McpAttachmentId("docs".into()),
+        generation: McpGeneration(1),
+        runtime_incarnation: "runtime-1".into(),
+        lease_epoch: 1,
+        lease_expires_at_unix_ms: u64::MAX,
+    };
+    let request = StageMcpAttachment {
+        workspace_id: "workspace-a".into(),
+        generation: generation.clone(),
+        realization_id: "realization-1".into(),
+        stage_idempotency_key: "stage-1".into(),
+        name: "docs".into(),
+        target: McpTarget::parse_http("https://mcp.example.test/sse").unwrap(),
+        credential: None,
+        selected_plaintext_holder: None,
+    };
+
+    host.stage_dispatched_mcp(request.clone())
+        .await
+        .expect("R1");
+    host.publish_dispatched_mcp(generation.clone())
+        .await
+        .expect("R1");
+    host.drain_dispatched_mcp(generation.clone())
+        .await
+        .expect("R1");
+    assert_eq!(
+        *external.calls.lock().unwrap(),
+        ["stage", "publish", "drain"]
+    );
+    assert!(
+        host.mcp_projection(&generation).is_none(),
+        "R1 no local path"
+    );
+
+    external
+        .fail_stage
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let error = host
+        .stage_dispatched_mcp(request)
+        .await
+        .expect_err("R2 external rejection is terminal");
+    assert_eq!(error.code, "external_stage_rejected");
+    assert!(host.mcp_projection(&generation).is_none(), "R2 no fallback");
+}
+
 /// Native and ACP are projections of the same exact durable generation.  This
 /// test deliberately drives the Host projection state directly: transport
 /// differences may change how a visible generation is consumed, but may never
@@ -2386,7 +2630,7 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
     use awaken_protocol_managed::{
         McpAttachmentId, McpGeneration, McpGenerationRef, McpRealizationReceipt,
     };
-    use awaken_run_executor_acp::{McpCredential, McpTransport};
+    use awaken_run_executor_acp::McpTransport;
 
     let host = SharedHost::new(Arc::new(OkModel), "stub");
     let generation = |number: u64| McpGenerationRef {
@@ -2401,6 +2645,7 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
         generation: generation(number),
         realization_id: format!("realize-{number}"),
         stage_idempotency_key: format!("stage-{number}"),
+        renewal_binding_fingerprint: format!("binding-{number}"),
         receipt: McpRealizationReceipt {
             generation: generation(number),
             realization_id: format!("realize-{number}"),
@@ -2457,12 +2702,11 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
         Some(&relay),
     )
     .unwrap();
-    assert!(matches!(acp.credential, McpCredential::None), "P2");
     let old_route = match acp.transport {
         McpTransport::Http { url } => url,
         other => panic!("P2 expected HTTP transport, got {other:?}"),
     };
-    assert!(old_route.ends_with("/mcp-parity/mcp-docs/1"), "P2");
+    assert!(old_route.contains("/mcp-parity/mcp-docs/1/"), "P2");
 
     host.insert_mcp_projection(projection(2, "secret-two"))
         .unwrap();
@@ -2493,7 +2737,7 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
         McpTransport::Http { url } => url,
         other => panic!("P4 expected HTTP transport, got {other:?}"),
     };
-    assert!(new_route.ends_with("/mcp-parity/mcp-docs/2"), "P4");
+    assert!(new_route.contains("/mcp-parity/mcp-docs/2/"), "P4");
     assert_ne!(old_route, new_route, "P4");
 
     host.drain_mcp_projection(&generation(1)).await.unwrap();
@@ -2513,6 +2757,74 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
             .status(),
         reqwest::StatusCode::NOT_FOUND,
         "P5"
+    );
+}
+
+#[tokio::test]
+async fn worker_authority_loss_revokes_every_session_projection() {
+    use crate::mcp::{McpTransportMaterial, McpWiring};
+    use crate::session_slot::{McpGenerationProjection, McpProjectionState};
+    use awaken_protocol_managed::{
+        McpAttachmentId, McpGeneration, McpGenerationRef, McpRealizationReceipt,
+    };
+
+    // Cause graph: unprovable Worker authority -> enumerate the canonical
+    // process-local Session projections -> terminal Host disposal -> route,
+    // material, and slot absent. Repeating the fence is idempotent.
+    //
+    // | Rule | Authority | Live projections | Effect |
+    // |---|---|---|---|
+    // | A1 | lost/unprovable | one | dispose + revoke route + remove slot |
+    // | A2 | lost/unprovable | none | zero/no-op |
+    let host = SharedHost::new(Arc::new(OkModel), "stub");
+    let generation = McpGenerationRef {
+        session_id: "authority-loss".into(),
+        attachment_id: McpAttachmentId("mcp-docs".into()),
+        generation: McpGeneration(1),
+        runtime_incarnation: "worker-a/boot-1".into(),
+        lease_epoch: 3,
+        lease_expires_at_unix_ms: u64::MAX,
+    };
+    let server = McpTransportMaterial {
+        name: "docs".into(),
+        url: "https://mcp.example.test".into(),
+        bearer: Some(awaken_agent_contract::RedactedString::new("secret")),
+        refresh: None,
+    };
+    host.insert_mcp_projection(McpGenerationProjection {
+        generation: generation.clone(),
+        realization_id: "realize-1".into(),
+        stage_idempotency_key: "stage-1".into(),
+        renewal_binding_fingerprint: "binding-1".into(),
+        receipt: McpRealizationReceipt {
+            generation: generation.clone(),
+            realization_id: "realize-1".into(),
+            selected_plaintext_holder: None,
+            actual_realization_kind: None,
+            receipt_fingerprint: "receipt-1".into(),
+        },
+        server: Some(server.clone()),
+        native_wiring: Some(McpWiring::empty()),
+        state: McpProjectionState::Staged,
+    })
+    .unwrap();
+    host.publish_mcp_projection(&generation).await.unwrap();
+    let relay = crate::mcp_relay::McpRelay::start().await.unwrap();
+    relay.set_route(&generation, &server);
+    assert!(host.mcp_relay.set(relay.clone()).is_ok(), "A1 setup");
+    assert!(relay.route_url(&generation).is_some(), "A1 setup");
+
+    assert_eq!(
+        host.revoke_all_session_realizations().await.unwrap(),
+        1,
+        "A1"
+    );
+    assert!(!host.session_slots.contains("authority-loss"), "A1");
+    assert!(relay.route_url(&generation).is_none(), "A1");
+    assert_eq!(
+        host.revoke_all_session_realizations().await.unwrap(),
+        0,
+        "A2"
     );
 }
 
@@ -2558,9 +2870,10 @@ async fn a_github_repository_resource_does_not_create_a_parallel_mcp_projection(
                 ),
                 model: None,
                 runtime: None,
-                credential_realization: native_credential_profile(),
-                deny_egress: false,
-                sandbox: None,
+                environment: session_environment(
+                    awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+                    serde_json::json!({}),
+                ),
             },
         )
         .await
@@ -2883,9 +3196,10 @@ async fn repository_credential_realization_follows_the_decision_table() {
                     resources,
                     model: None,
                     runtime: None,
-                    credential_realization: native_credential_profile(),
-                    deny_egress: false,
-                    sandbox: None,
+                    environment: session_environment(
+                        awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+                        serde_json::json!({}),
+                    ),
                 },
             )
             .await;
@@ -2950,9 +3264,10 @@ async fn rotating_a_github_repository_token_re_keys_only_the_clone() {
                 ),
                 model: None,
                 runtime: None,
-                credential_realization: native_credential_profile(),
-                deny_egress: false,
-                sandbox: None,
+                environment: session_environment(
+                    awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+                    serde_json::json!({}),
+                ),
             },
         )
         .await
@@ -3022,9 +3337,10 @@ fn bare_session(agent: &str, workspace: &str) -> awaken_protocol_managed::Sessio
         resources: Default::default(),
         model: None,
         runtime: None,
-        credential_realization: native_credential_profile(),
-        deny_egress: false,
-        sandbox: None,
+        environment: session_environment(
+            awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+            serde_json::json!({}),
+        ),
     }
 }
 
@@ -3950,7 +4266,14 @@ async fn end_session_disposes_the_threads_sandbox() {
     host.register_thread_memory("t-end", None);
     host.register_thread_resources("t-end", crate::provisioning::StagedResources::default());
     host.register_thread_model("t-end", "private-model");
-    host.register_thread_egress("t-end", true);
+    host.install_environment_projection(
+        "t-end",
+        &session_environment(
+            awaken_protocol_managed::SessionNetworkPolicy::None,
+            serde_json::json!({}),
+        ),
+    )
+    .expect("freeze terminal-test Environment");
 
     // End the session at the terminal edge.
     managed.end_session("t-end").await.expect("end_session");
@@ -3977,7 +4300,10 @@ async fn end_session_disposes_the_threads_sandbox() {
     assert!(host.registered_thread_workspace("t-end").is_none());
     assert!(!host.session_slots.contains("t-end"));
     assert!(host.inference_routing.override_for("t-end").is_none());
-    assert!(!host.thread_egress().denies("t-end"));
+    assert_eq!(
+        host.sandbox_spec("t-end").network,
+        awaken_provisioning_contract::NetworkPolicy::Unrestricted
+    );
 
     // Idempotent: ending an already-ended or never-created session is a clean no-op.
     managed

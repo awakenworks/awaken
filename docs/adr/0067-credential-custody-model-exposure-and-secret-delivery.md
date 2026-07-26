@@ -195,11 +195,24 @@ struct SealedCredentialEnvelopeRef {
     payload_fingerprint: Fingerprint,
 }
 
+struct CredentialMaterialBinding {
+    workspace_id: String,
+    target_use_fingerprint: Fingerprint,
+}
+
+struct CredentialMaterialRequest<'a> {
+    access: &'a CredentialAccess,
+    selected_holder: &'a PlaintextHolder,
+    binding: &'a CredentialMaterialBinding,
+}
+
 trait CredentialMaterialResolver {
+    fn supported_material_sources(&self) -> Set<CredentialMaterialSource>;
+    fn supports_recipient_bound_envelopes(&self) -> bool;
+
     async fn resolve_exact(
         &self,
-        access: &CredentialAccess,
-        selected_holder: &PlaintextHolder,
+        request: CredentialMaterialRequest<'_>,
     ) -> Result<ResolvedCredentialMaterial, CredentialMaterialError>;
 }
 ```
@@ -213,6 +226,11 @@ This refines the existing `CredentialInjectionKind` rather than adding a paralle
 | `WorkerReference` | `material_source = WorkerReference`, no envelope |
 | `SealedEnvelope` | explicit source plus recipient-bound `CredentialEnvelope` |
 | `Direct` | compatibility decode only; rejected for new secret-free publication |
+
+Legacy `Direct` provenance is durable compatibility state, not a transient decode
+hint. Serialization and queue/database round trips preserve it so a legacy value
+cannot be washed into an apparently valid unsealed Control reference before
+admission. Every later claim and execution boundary continues to reject it.
 
 `CredentialUsage` remains authoritative for `ProviderAdapter`, HTTP header/query,
 client certificate, environment variable, and file semantics. MCP, Model, and
@@ -244,12 +262,26 @@ target/use fingerprint, and expiry before opening or forwarding it. Only that
 recipient may open it. The envelope does not authorize the recipient: the same
 holder must appear in the allowed set and be selected by the execution pin.
 
+`CredentialMaterialBinding` is computed at the authoritative consumer edge from
+the trusted Workspace plus the canonical Model endpoint, MCP target, or
+Repository id/config together with the existing `CredentialUsage`. This closes
+the target/replay information gap without putting Model, MCP, or Repository
+types in the Credential context. Admission additionally requires explicit
+recipient-bound-envelope capability evidence; a material source alone cannot
+claim that the installed adapter can validate sealed claims.
+
 `CredentialMaterialResolver` is the sole neutral material-source port. A Control
 reference adapter, Worker-private adapter, or recipient-bound envelope adapter
 may implement it, but all consume the same exact access and holder selection.
 The port cannot enumerate credentials, choose another revision or holder, or
 return material to a boundary different from the selected holder. Hosted Vault,
 IAM, gateway, and transport types remain outside the contract.
+
+The self-hosted `PinnedCredentialMaterializer` deterministically handles an
+unsealed Control reference locally and delegates a Worker reference or any
+envelope to at most one explicitly installed resolver. A failed delegate never
+falls back to the local Vault. Worker assembly reuses this same materializer for
+Native inference, ACP process secrets, MCP, and Repository realization.
 
 The realization mechanism is an execution result, not another published policy.
 A secret-free receipt may record the selected holder and actual mechanism, such
@@ -331,6 +363,12 @@ allowed holder. Failure within an epoch never changes it. A stale epoch cannot
 materialize or commit a receipt. Native and ACP projections for one attempt
 consume the same binding.
 
+Broad queue selection evaluates credential admission with the requester's exact
+capability evidence before mutating a row. A credential-incompatible row is
+skipped so it cannot poison later admissible work; policy-ranked broad selection
+uses the same rule. An exact run claim still returns the admission error rather
+than disguising an invalid named request as absence.
+
 ### D6: MCP persists only a derived selection for its generation
 
 An exact MCP attachment carries its published/normalized `CredentialAccess` and,
@@ -352,6 +390,33 @@ Worker plaintext only when:
 - ownership, lease, replacement, removal, and termination revoke the route;
 - secret-leak tests prove the Sandbox receives no real credential.
 
+The first MCP slice accepts only the authoring compiler's canonical
+`CredentialUsage::HttpHeader { name: Authorization, scheme: Bearer }`. Runtime
+validates this persisted usage before materialization. Query parameters,
+arbitrary headers, client certificates, provider adapters, environment variables,
+and files fail as unsupported instead of being silently reinterpreted as a
+bearer. Supporting another MCP authentication form requires extending the same
+usage-driven adapter and its decision table, not adding protocol-local fields.
+
+The local relay projects an opaque, randomly generated route capability rather
+than a predictable `(session, attachment, generation)` URL. The private route
+record binds that capability to one exact target and generation and caps it by
+the Session realization lease. Every forwarded request rechecks both capability
+and expiry; wrong, expired, replaced, removed, and terminal routes return the
+same not-found result without attempting the upstream request. Exact restaging
+of the same generation preserves the capability for idempotent recovery, while
+a new generation receives a new value. The capability is live projection state,
+never Session desired state, a receipt, an event, or a log field.
+
+The route does not own its lease lifecycle. One canonical Session realization
+driver renews the exact active generation under the same owner incarnation and
+epoch, and publication refreshes the private route expiry while preserving its
+capability. Target, credential pin, holder, or generation changes are rejected
+as conflicts rather than treated as renewal. Local supervision and signed
+Worker heartbeat invoke this same protocol. Unprovable Worker authority stops
+claims and terminally disposes every local Session projection, including relay
+routes and their material.
+
 `EnvVisibility::EgressOnly` is only a delivery hint. It proves nothing unless the
 selected provider supports substitution and the network policy prevents bypass.
 
@@ -361,6 +426,15 @@ selected provider supports substitution and the network policy prevents bypass.
 primitives. A Sandbox provider may execute an already-selected process-secret or
 secret-file requirement through `EnvValue::Secret`, `MountSource::Secret`, and
 `SecretBroker`.
+
+The public Worker composition installs a downstream implementation through the
+existing `ContainerEnvironmentProvider` seam. Its `SandboxCapabilities`,
+create/adopt lifecycle, and broker installation are reused by the standard
+manifest and Runtime Host; no credential-specific provider port is introduced.
+`secret_egress_substitution && enforced_network_allowlist` is one shared
+conjunctive custody predicate. Either fact alone is insufficient, and the
+standard manifest must not publish `WorkerRelay` evidence without both plus an
+installed exact credential materializer.
 
 It must not enumerate credentials, select a revision, authorize a trust domain,
 select an MCP target, or own relay/gateway lifecycle. Network realization remains

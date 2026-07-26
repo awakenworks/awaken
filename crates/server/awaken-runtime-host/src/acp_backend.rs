@@ -78,7 +78,7 @@ impl AcpBackend {
     ) -> Arc<AcpRunExecutor> {
         match &self.source {
             AcpExecutorSource::Static(executor) => {
-                Arc::new(executor.for_permission_policy(permission))
+                Arc::new(executor.for_session(permission, &mcp_servers))
             }
             AcpExecutorSource::Bound {
                 launch,
@@ -267,6 +267,9 @@ impl crate::host::SharedHost {
         hand_factory: Arc<dyn crate::HandExecutorFactory>,
         source: crate::LaunchSource,
     ) -> Self {
+        if self.session_provider_explicit {
+            return self.with_bound_acp(source, None);
+        }
         let dep = self.deployment.clone();
         let base = acp_sandbox_base(&dep);
         // Probe the OS-native sandbox once. A bwrap-less host degrades to unsandboxed local

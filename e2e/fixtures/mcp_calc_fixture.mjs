@@ -51,6 +51,8 @@ import http from 'node:http';
 ///                   this server-only value. This lets live-model tests prove a
 ///                   real tool call without accepting an answer the model could
 ///                   derive from the prompt itself.
+///   allowAnonymous  when true, requests without Authorization are accepted;
+///                   an explicitly supplied wrong bearer is still rejected.
 export function startCalcFixture(token, options = {}) {
   const {
     expiredInitial = false,
@@ -59,6 +61,7 @@ export function startCalcFixture(token, options = {}) {
     rotateRefreshTo = null,
     clientAuth = null,
     opaqueResult = null,
+    allowAnonymous = false,
   } = options;
 
   // Undo application/x-www-form-urlencoded encoding ('+' is a space).
@@ -134,7 +137,8 @@ export function startCalcFixture(token, options = {}) {
     // POST-routed `requests`); the transport's background GET SSE probe is
     // not a JSON-RPC request.
     if (req.method === 'POST') tokenRequests[bearer] = (tokenRequests[bearer] ?? 0) + 1;
-    if (!validTokens.has(bearer) || !req.headers.authorization?.startsWith('Bearer ')) {
+    const anonymous = allowAnonymous && req.headers.authorization == null;
+    if (!anonymous && (!validTokens.has(bearer) || !req.headers.authorization?.startsWith('Bearer '))) {
       state.unauthorized += 1;
       res.writeHead(401, { 'WWW-Authenticate': 'Bearer resource_metadata="none"' });
       res.end();

@@ -13,7 +13,9 @@ pub use awaken_runtime_contract::CredentialAccess
 pub use awaken_runtime_contract::CredentialAdmissionError
 pub use awaken_runtime_contract::CredentialEnvelope
 pub use awaken_runtime_contract::CredentialExecutionPolicy
+pub use awaken_runtime_contract::CredentialMaterialBinding
 pub use awaken_runtime_contract::CredentialMaterialError
+pub use awaken_runtime_contract::CredentialMaterialRequest
 pub use awaken_runtime_contract::CredentialMaterialResolver
 pub use awaken_runtime_contract::CredentialMaterialSource
 pub use awaken_runtime_contract::CredentialRealizationCapabilities

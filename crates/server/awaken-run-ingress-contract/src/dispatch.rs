@@ -133,6 +133,20 @@ pub fn compile_attempt_credential_bindings(
     Ok(bindings)
 }
 
+/// Read-only eligibility check for a scheduler selecting among multiple rows.
+/// Exact claim still calls [`compile_attempt_credential_bindings`] and returns
+/// the concrete failure; a broad selector skips a row this Worker cannot admit
+/// so it cannot poison unrelated runnable work.
+#[must_use]
+pub fn can_admit_attempt_credentials(
+    request: &RunDispatch,
+    installed: &CredentialRealizationCapabilities,
+    claim_epoch: u64,
+    now_unix_ms: u64,
+) -> bool {
+    compile_attempt_credential_bindings(request, installed, claim_epoch, now_unix_ms).is_ok()
+}
+
 /// A durable-store failure. Commit-time agent truth uses the commit coordinator's
 /// own error; this is only the dispatch queue's own storage failure.
 #[derive(Debug, thiserror::Error)]
@@ -971,6 +985,7 @@ mod tests {
             holders: BTreeSet::from([selected_holder.clone()]),
             material_sources: BTreeSet::from([CredentialMaterialSource::ControlPlaneReference]),
             realization_kinds: BTreeSet::from([realization]),
+            recipient_bound_envelopes: true,
         }
     }
 

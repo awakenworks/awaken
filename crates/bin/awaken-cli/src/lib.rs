@@ -1012,6 +1012,10 @@ async fn management_router_over(
     // resolves an environment's networking policy (egress on/off) at creation.
     let env_state = environments;
 
+    let credential_materializer = awaken_runtime_host::PinnedCredentialMaterializer::new(
+        credentials.clone(),
+        secrets.clone(),
+    );
     let model_wiring = match model_composition {
         ManagementModelComposition::PublishedProviders => ManagementModelWiring {
             executor: Arc::new(awaken_server::no_model::NoModelConfiguredExecutor),
@@ -1023,9 +1027,8 @@ async fn management_router_over(
                 ),
             ),
             materializer: Some(Arc::new(
-                awaken_server::inference_materializer::CredentialInferenceMaterializer::new(
-                    credentials.clone(),
-                    secrets.clone(),
+                awaken_server::inference_materializer::CredentialInferenceMaterializer::from_pinned(
+                    credential_materializer.clone(),
                 ),
             )),
         },
@@ -1208,10 +1211,7 @@ async fn management_router_over(
     let host_builder = host_builder
         .with_acp_from_deployment(
             awaken_server::relay_hand_executor_factory(),
-            Some(awaken_runtime_host::PinnedCredentialMaterializer::new(
-                credentials.clone(),
-                secrets.clone(),
-            )),
+            Some(credential_materializer.clone()),
         )
         .await;
     // Last-mile backend wiring the management plane does not assemble itself, injected
@@ -1262,10 +1262,10 @@ async fn management_router_over(
         }
     });
     let managed_state = Arc::new(
-        ManagedState::new(
+        ManagedState::new_with_mcp(
             ManagedHost::new(host.clone())
                 .with_resource_validator(resource_catalog.clone())
-                .with_credentials(credentials, secrets),
+                .with_credential_materializer(credential_materializer),
         )
         .with_vaults(vault_state)
         .with_environments(env_state)
@@ -1289,6 +1289,7 @@ async fn management_router_over(
     if reconciled_mcp_attachments > 0 {
         eprintln!("reconciled {reconciled_mcp_attachments} durable Session MCP projection(s)");
     }
+    let _ = managed_state.spawn_realization_lease_supervisor();
     deployment_state.bind_launcher(managed_state.clone());
     // Drive cron Deployments in production. The state mints due runs and launches
     // them through the exact same Session port as the manual `/run` action.

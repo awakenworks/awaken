@@ -308,6 +308,10 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
             post(application_contribution),
         )
         .route(
+            "/v1/worker/session/realization/begin",
+            post(begin_session_realization),
+        )
+        .route(
             "/v1/worker/session/realization/activate",
             post(activate_session_realization),
         )
@@ -449,6 +453,7 @@ async fn application_contribution(
                     owner: request.identity.worker_id.clone(),
                     runtime_incarnation: request.identity.lease_owner(),
                     lease_expires_at_unix_ms: realization_expiry,
+                    renew_existing_lease: false,
                 },
             })
             .await
@@ -494,6 +499,40 @@ fn application_session_control(
         .application_session_control
         .as_ref()
         .ok_or_else(|| HostError::internal("application Session control is not configured"))
+}
+
+async fn begin_session_realization(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<SessionRealizationReq<awaken_protocol_managed::BeginSessionRealization>>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        verify_worker_identity(&worker, &request.identity)?;
+        let authority = claim_authority(&service, &worker, Some(&request.identity), false).await?;
+        let registry_expiry = authority
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.expires_at_ms)
+            .unwrap_or(u64::MAX);
+        let target = &request.command.target;
+        if !target.renew_existing_lease
+            || target.owner != request.identity.worker_id
+            || target.runtime_incarnation != request.identity.lease_owner()
+            || target.lease_expires_at_unix_ms <= authority.now_ms
+            || target.lease_expires_at_unix_ms > registry_expiry
+        {
+            return Err(HostError::bad_request(
+                "Session realization renewal exceeds authenticated Worker authority",
+            ));
+        }
+        let realization = application_session_control(&service)?
+            .begin_session_realization(request.command)
+            .await
+            .map_err(|error| HostError::bad_request(error.to_string()))?;
+        Ok(json!({ "realization": realization }))
+    }
+    .await;
+    respond(result)
 }
 
 async fn activate_session_realization(

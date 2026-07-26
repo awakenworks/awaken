@@ -201,12 +201,11 @@ async fn official_worker_header_and_heartbeat_cas_are_wired() {
     assert_eq!(status, StatusCode::PRECONDITION_FAILED);
 }
 
-/// `deny_egress` reflects the environment's networking policy: a `limited` or `none`
-/// policy denies egress (bwrap enforces on/off only — an allowlist is not honorable
-/// locally, so it fails closed), while `unrestricted`, absent networking, and an
-/// unknown environment share the host network.
+/// The sole snapshot compiler normalizes all networking wire shapes. In
+/// particular, an empty limited allowlist is exactly `None`, not a parallel
+/// spelling that would demand an unsupported allowlist provider.
 #[tokio::test]
-async fn deny_egress_reflects_the_networking_policy() {
+async fn snapshot_normalizes_the_networking_policy() {
     let state = Arc::new(EnvironmentState::new());
     let app = environments_router(state.clone());
     async fn make(app: &Router, cfg: Value) -> String {
@@ -226,28 +225,31 @@ async fn deny_egress_reflects_the_networking_policy() {
         json!({ "type": "cloud", "networking": { "type": "limited" } }),
     )
     .await;
-    assert!(state.deny_egress(&limited).await, "limited → egress denied");
+    assert_eq!(
+        state.snapshot(&limited, None).await.unwrap().network,
+        awaken_protocol_managed::SessionNetworkPolicy::None,
+        "empty limited allowlist canonicalizes to no network"
+    );
 
     let unrestricted = make(
         &app,
         json!({ "type": "cloud", "networking": { "type": "unrestricted" } }),
     )
     .await;
-    assert!(
-        !state.deny_egress(&unrestricted).await,
-        "unrestricted → host network"
+    assert_eq!(
+        state.snapshot(&unrestricted, None).await.unwrap().network,
+        awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+        "unrestricted keeps host network"
     );
 
     let self_hosted = make(&app, json!({ "type": "self_hosted" })).await;
-    assert!(
-        !state.deny_egress(&self_hosted).await,
-        "no networking → host network"
+    assert_eq!(
+        state.snapshot(&self_hosted, None).await.unwrap().network,
+        awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+        "absent networking keeps host network"
     );
 
-    assert!(
-        !state.deny_egress("env_nonexistent").await,
-        "unknown env → host network"
-    );
+    assert!(state.snapshot("env_nonexistent", None).await.is_none());
 }
 
 #[tokio::test]

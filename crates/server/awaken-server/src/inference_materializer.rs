@@ -61,12 +61,17 @@ impl LlmExecutor for PinnedModelExecutor {
 
 impl CredentialInferenceMaterializer {
     pub fn new(credentials: Arc<dyn CredentialRepo>, secrets: Arc<dyn SecretStore>) -> Self {
-        Self {
-            credentials: awaken_runtime_host::PinnedCredentialMaterializer::new(
-                credentials,
-                secrets,
-            ),
-        }
+        Self::from_pinned(awaken_runtime_host::PinnedCredentialMaterializer::new(
+            credentials,
+            secrets,
+        ))
+    }
+
+    /// Reuse the one exact credential materializer installed for inference,
+    /// ACP, MCP and Repository realization on a Worker.
+    #[must_use]
+    pub fn from_pinned(credentials: awaken_runtime_host::PinnedCredentialMaterializer) -> Self {
+        Self { credentials }
     }
 
     async fn materialize_secret(
@@ -179,6 +184,8 @@ impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
     fn credential_realization_capabilities(
         &self,
     ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
+        let (material_sources, recipient_bound_envelopes) =
+            self.credentials.material_source_capabilities();
         awaken_runtime_contract::CredentialRealizationCapabilities {
             holders: [awaken_runtime_contract::PlaintextHolder::new(
                 awaken_runtime_contract::PlaintextBoundary::Worker,
@@ -186,16 +193,13 @@ impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
             )]
             .into_iter()
             .collect(),
-            material_sources: [
-                awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
-            ]
-            .into_iter()
-            .collect(),
+            material_sources,
             realization_kinds: [
                 awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
             ]
             .into_iter()
             .collect(),
+            recipient_bound_envelopes,
         }
     }
 

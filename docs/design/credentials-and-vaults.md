@@ -240,11 +240,13 @@ than rewriting a wire-only projection. Model and Repository remain in their own
 aggregates. There is no generic `ServiceDefinition`, inference Service
 projection, or public Service realizer in the first slice.
 
-A Worker-local relay is the first mediated MCP adapter. A future downstream
-deployment may return a gateway endpoint and opaque lease only after a concrete
-second implementation justifies extracting a public `McpAttachmentRealizer`
-from the Session boundary. Awaken never imports downstream gateway, route, IAM,
-or Vault-backend types. The Session's frozen `EnvironmentSnapshot.network` is
+A Worker-local relay is the default mediated MCP adapter. The public
+`McpAttachmentRealizer` Session port is also injectable by a downstream
+deployment that returns a gateway endpoint and opaque lease. Injection replaces
+the local adapter for the exact stage/publish/drain path; an injected failure
+never falls back to local materialization. The relay remains a private Runtime
+Host implementation detail, and Awaken never imports downstream gateway, route,
+IAM, or Vault-backend types. The Session's frozen `EnvironmentSnapshot.network` is
 authoritative: adding or replacing MCP may change a route behind an already
 admitted stable endpoint, but may not expand the live Sandbox allowlist. Direct
 access outside that policy fails closed and requires explicit Environment
@@ -252,8 +254,13 @@ migration.
 
 The existing `SecretBroker` remains the one file materialization/write-back
 port. It is not widened into a network proxy. A separate neutral
-`CredentialMaterialResolver` consumes only exact `CredentialAccess`, selected
-holder, and sealed payload reference; it cannot enumerate or select. Exact
+`CredentialMaterialResolver` consumes one exact request containing
+`CredentialAccess`, selected holder, trusted Workspace, and a canonical
+target/use fingerprint; it cannot enumerate or select. Its capability evidence
+separately declares material sources and recipient-bound envelope support. The
+canonical Worker materializer handles unsealed Control references locally and
+delegates Worker references or envelopes to one installed resolver without
+fallback. Exact
 `CredentialRefreshAccess` preserves OAuth refresh/reseal without URL or
 current-Vault rediscovery. Target binding, streaming lifecycle, and
 sandbox-facing MCP route projection remain Runtime Host adapter
@@ -276,6 +283,27 @@ Model exposure is orthogonal and initially closed to `Forbidden` and
 expiring, and substituted at the Worker/platform boundary. Real material in an
 ACP process environment can coexist with `Forbidden` model exposure.
 
+The Worker MCP relay uses that same scoped-capability shape internally: an ACP
+Sandbox receives only a randomly generated exact-generation route URL. The
+private route binds target and real material, checks lease expiry on every call,
+and is removed by replacement/drain/terminal cleanup. Predictable route URLs and
+post-expiry forwarding are rejected; the capability is not persisted or emitted
+in receipts/events. This proves the mediated transport primitive but does not by
+itself authorize model exposure—`VirtualOnly` must still be explicit on the
+published access policy.
+
+`McpRelay` is a private Runtime Host effect adapter, not a public security or
+Session abstraction. `McpAttachmentRealizer` is the only public MCP effect port,
+and local/remote adapters share the same Session realization phase driver. Lease
+renewal is issued by that driver under the existing owner/incarnation/epoch;
+successful publication updates the route expiry without changing its synthetic
+capability. Worker heartbeat or renewal authority loss invokes terminal Host
+disposal for all local Session projections. The relay cannot self-renew, retain
+material after authority loss, or become a second attachment registry.
+The implemented MCP adapter consumes only canonical Authorization Bearer usage
+and verifies that exact `CredentialUsage` before opening material; it never
+coerces another published usage into bearer authentication.
+
 `CredentialAccess` and existing `CredentialUsage` are extended with a material
 source, optional recipient-bound sealed payload reference, one exact material
 resolver, optional exact OAuth refresh/reseal access, and execution policy; no
@@ -288,6 +316,12 @@ execution's `AttemptCredentialBinding` atomically with Worker/lease epoch. All
 three paths use the same exact material resolver. Runtime cannot open a bare
 Repository Vault source id or perform a second source/revision selection. The
 binding stores the planned mechanism; a secret-free receipt stores the actual mechanism.
+Legacy `Direct` provenance survives serialization and durable queue/database
+round trips, so compatibility decoding cannot launder it into an admissible
+Control reference. Broad Worker selection preflights the same authoritative
+credential admission kernel and skips an incompatible row; an exact claim keeps
+the explicit error. This prevents one incompatible high-priority row from
+blocking later valid work without creating a second selection policy.
 `ResolvedModelCandidate` remains the only Model access authority, and Session
 `vault_ids` never override it. Automatic LLM Vault authoring is deferred until a
 separate proposal defines its application service, transaction/saga,

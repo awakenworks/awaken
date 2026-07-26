@@ -106,7 +106,7 @@ projection *across* contexts is architecture to keep.
 | 1 | Selection axis | `AxisBinding` semantics: Pin/Pool + `SelectionPolicy` + `AvailabilityLedger` | model axis (`ModelSelection`+`model_fallbacks`) and credential axis (`CredentialBinding` + the resolver's default vendor-pool derivation) are two instances of one shape | `Auto` collapses to Pin at publish; the default derivation expands to a Pool at resolve. No fourth shape may be added |
 | 2 | Executor axis | one concept, three context forms | `AgentKind` (authoring) ⇌ `backend_ref` (published language) ⇌ `Backend` (runtime ACL) → `DispatchRunExecutor` routing | projection + parse, round-trip tested; `LaunchSource` cli-match re-asserts it at worker open |
 | 3 | Model speech | `Offering.dialect` is the *only* dialect source | `ApiDialect` (wire protocol), `ModelDelivery` (dialect projected onto env keys), a resolver-side CLI-id→dialect table (executor stays dialect-unaware), vendor (`provider_id`, ⊥ dialect) | check A joins ②↔③-dialect; check B joins vendor↔credential; `ResolvedModel` is the runtime terminal form |
-| 4 | Credential lifecycle | declare → select → materialize → inject | `CredentialSource` (secret-free row) → family 1 selection → `materialize`/`RedactedString`/lease → three exits (model client / ACP env-last / transport header); `McpCredential` α/β = sandbox-trust grading of the inject stage | selection collapses to ONE path (`resolve_credential`); `config_executor` inline `.find` retired |
+| 4 | Credential lifecycle | declare → select → materialize → realize at the permitted boundary | `CredentialSource` (secret-free row) → family 1 selection → pinned realization → model client, process-secret broker, or mediated transport; ADR 67 removes the former ACP `McpCredential` reference/inline exits | selection collapses to ONE path (`resolve_credential`); ACP receives no MCP credential channel; `config_executor` inline `.find` retired |
 | 5 | External dependency auth | ONE declare table: `CredentialSource` keyed by *counterparty* (vendor slug or endpoint origin); optional refinements `McpServerDef` (referenced) / `InferenceProfile` (model override) | plane-local MCP projections stay (runtime plugin, ACP `McpDelivery`/`SessionMcpServer`, managed wire); the two overlapping protocol-managed shapes collapse to one | declare → select → materialize → inject (only the exit differs per kind) |
 | 6 | Session continuity (ACP) | intent × mechanism × facility | intent = `SessionReuse`/`session_mode`/`compact_window` (config); mechanism = `SessionPersistence`/`ModelSwitch::Relaunch` (catalog row); facility = `ConfigHome`/`SessionHome` (host) | `Warm ∧ LocalDir` → restore/harvest; `Gateway` → skip |
 | 7 | Placement | intent → plan → registry → executor trait object | Hand (`HandRequirement`→`ConnectionPlan`→`PlacementEntry`→`RemoteToolExecutor`) and ACP sandbox (`SandboxTier`→`LaunchSource`→channel sources) are two instances of one pattern | placement NEVER enters the snapshot; kernel sees only the trait object |
@@ -411,8 +411,9 @@ AgentChannel>`). What is NOT yet shared is the *isolation-spawn* layer: ACP's
 `SandboxChannelSource` spawns under a bwrap/container tier, while Hand's
 `ChannelFactory` does a raw dial with no isolation. The family-7 reuse is to route
 a *sandboxed* Hand spawn through the same tier factory that backs
-`AgentChannelSource` (and `ThreadEgress`, already shared by the native bash-jail
-and the ACP sandbox, extends to it). But the **protocol
+`AgentChannelSource` (the later ADR-0066 consolidation exposes the frozen
+Environment through one `SessionRuntimeProjectionSource` shared by Native and
+ACP, and that projection extends to it). But the **protocol
 ports** stay three: `AgentChannelSource` (ACP session) / `ChannelFactory`
 (hand-wire channel) / `Transport` (A2A HTTP) return three different things for
 three call sites; one unifying trait would erase the type distinction that makes

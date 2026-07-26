@@ -8,8 +8,8 @@
 use async_trait::async_trait;
 
 use crate::{
-    FrozenSessionProjection, McpGenerationRef, McpRealizationReceipt, SessionRealizationLease,
-    StageMcpAttachment,
+    FrozenSessionProjection, McpAttachmentRealizer, McpGenerationRef, McpRealizationReceipt,
+    RunError, SessionRealizationLease, StageMcpAttachment,
 };
 
 /// Opaque Runtime assignment selected outside the Session domain. Worker and
@@ -20,6 +20,11 @@ pub struct SessionRealizationTarget {
     pub owner: String,
     pub runtime_incarnation: String,
     pub lease_expires_at_unix_ms: u64,
+    /// Explicitly extend an existing lease for the same owner/incarnation.
+    /// Ordinary create/hot-update commands leave this false, so a later wall
+    /// clock alone cannot turn unrelated realization work into a renewal.
+    #[serde(default)]
+    pub renew_existing_lease: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -124,6 +129,154 @@ pub trait SessionRealizationControl: Send + Sync {
         &self,
         command: FailSessionRealization,
     ) -> Result<(), SessionRealizationControlFailure>;
+}
+
+/// Topology-specific projection installation used by the one realization
+/// driver. Local Managed execution lowers the frozen projection to
+/// `SessionRuntime::prepare_session`; a remote Worker installs the same frozen
+/// facts into its Host. It owns no lifecycle transition or desired state.
+#[async_trait]
+pub trait SessionProjectionSynchronizer: Send + Sync {
+    async fn synchronize_session_projection(
+        &self,
+        session_id: &str,
+        projection: &FrozenSessionProjection,
+        lease: &SessionRealizationLease,
+        prepare_session: bool,
+    ) -> Result<(), RunError>;
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SessionRealizationDriveError {
+    #[error(transparent)]
+    Effect(#[from] RunError),
+    #[error(transparent)]
+    Control(#[from] SessionRealizationControlFailure),
+    #[error("Session realization phase protocol did not converge")]
+    DidNotConverge,
+}
+
+/// Canonical Stage → Activate → Publish/Drain → Acknowledge driver.
+///
+/// Local and remote topology adapters share this algorithm. They may differ in
+/// how a frozen projection is installed and how MCP effects are transported,
+/// but cannot acquire a second ordering, cleanup, receipt, or failure path.
+pub async fn drive_session_realization(
+    session_id: &str,
+    control: &dyn SessionRealizationControl,
+    synchronizer: &dyn SessionProjectionSynchronizer,
+    mcp: &dyn McpAttachmentRealizer,
+    mut directive: SessionRealizationDirective,
+) -> Result<(), SessionRealizationDriveError> {
+    for _ in 0..4 {
+        let prepare_session = match &directive.action {
+            SessionRealizationAction::Stage {
+                prepare_session, ..
+            } => *prepare_session,
+            SessionRealizationAction::Publish { .. } | SessionRealizationAction::Complete => false,
+        };
+        if let Err(error) = synchronizer
+            .synchronize_session_projection(
+                session_id,
+                &directive.projection,
+                &directive.lease,
+                prepare_session,
+            )
+            .await
+        {
+            let _ = control
+                .fail_session_realization(FailSessionRealization {
+                    session_id: session_id.to_string(),
+                    lease: directive.lease,
+                    reason: error.to_string(),
+                })
+                .await;
+            return Err(error.into());
+        }
+        match directive.action.clone() {
+            SessionRealizationAction::Stage {
+                prepare_session: _,
+                mcp_stages,
+            } => {
+                let mut receipts = Vec::with_capacity(mcp_stages.len());
+                let effect = async {
+                    for request in mcp_stages {
+                        let receipt = mcp.stage_mcp_attachment(request.clone()).await?;
+                        receipt.verify(&request).map_err(|_| {
+                            RunError::classified(
+                                "mcp_receipt_mismatch",
+                                "Runtime returned a receipt for another MCP realization",
+                            )
+                        })?;
+                        receipts.push(receipt);
+                    }
+                    Ok::<(), RunError>(())
+                }
+                .await;
+                if let Err(error) = effect {
+                    for receipt in &receipts {
+                        let _ = mcp.drain_mcp_generation(receipt.generation.clone()).await;
+                    }
+                    let _ = control
+                        .fail_session_realization(FailSessionRealization {
+                            session_id: session_id.to_string(),
+                            lease: directive.lease,
+                            reason: error.to_string(),
+                        })
+                        .await;
+                    return Err(error.into());
+                }
+                directive = match control
+                    .activate_session_realization(ActivateSessionRealization {
+                        session_id: session_id.to_string(),
+                        lease: directive.lease,
+                        mcp_receipts: receipts.clone(),
+                    })
+                    .await
+                {
+                    Ok(next) => next,
+                    Err(error) => {
+                        for receipt in receipts {
+                            let _ = mcp.drain_mcp_generation(receipt.generation).await;
+                        }
+                        return Err(error.into());
+                    }
+                };
+            }
+            SessionRealizationAction::Publish { publish, drain } => {
+                let effect = async {
+                    for generation in &publish {
+                        mcp.publish_mcp_generation(generation.clone()).await?;
+                    }
+                    for generation in &drain {
+                        mcp.drain_mcp_generation(generation.clone()).await?;
+                    }
+                    Ok::<(), RunError>(())
+                }
+                .await;
+                if let Err(error) = effect {
+                    let _ = control
+                        .fail_session_realization(FailSessionRealization {
+                            session_id: session_id.to_string(),
+                            lease: directive.lease,
+                            reason: error.to_string(),
+                        })
+                        .await;
+                    return Err(error.into());
+                }
+                directive = control
+                    .acknowledge_session_realization(AcknowledgeSessionRealization {
+                        session_id: session_id.to_string(),
+                        lease: directive.lease,
+                        published: publish,
+                        drained: drain,
+                    })
+                    .await?;
+            }
+            SessionRealizationAction::Complete => return Ok(()),
+        }
+    }
+    Err(SessionRealizationDriveError::DidNotConverge)
 }
 
 /// One application service is installed behind Worker transport. This

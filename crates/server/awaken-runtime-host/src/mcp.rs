@@ -40,19 +40,24 @@ pub(crate) struct McpTransportMaterial {
 }
 
 /// Project private Worker material to ACP configuration. A real bearer is never
-/// projected inline: ACP receives an exact-generation loopback route or an
-/// unresolved opaque reference and the Worker retains plaintext.
+/// projected inline: ACP receives an exact-generation loopback route and the
+/// Worker retains plaintext.
 pub(crate) fn project_mcp_transport(
     prepared: &McpTransportMaterial,
     generation: &awaken_protocol_managed::McpGenerationRef,
     relay: Option<&crate::mcp_relay::McpRelay>,
 ) -> Result<awaken_run_executor_acp::McpServerConfig, HostError> {
-    use awaken_run_executor_acp::{McpCredential, McpServerConfig, McpTransport};
-    let (url, credential) = match (&prepared.bearer, relay) {
-        // α RESOLVED: a sandboxed run dials the host's loopback relay, which injects the real
+    use awaken_run_executor_acp::{McpServerConfig, McpTransport};
+    let url = match (&prepared.bearer, relay) {
+        // A sandboxed run dials the host's loopback relay, which injects the real
         // bearer out of the sandbox's address space — the sandbox itself holds no credential.
-        (Some(_), Some(relay)) => (relay.route_url(generation), McpCredential::None),
-        // There is no installed ACP-side resolver for a bare reference. Returning
+        (Some(_), Some(relay)) => relay.route_url(generation).ok_or_else(|| {
+            HostError::internal(format!(
+                "authenticated MCP generation {}:{} has no staged relay capability",
+                generation.attachment_id.0, generation.generation.0
+            ))
+        })?,
+        // There is no ACP-side credential resolver. Returning
         // the original URL plus a placeholder would report false success and send
         // an unusable bearer to the target. Fail closed until an explicit mediated
         // endpoint has actually been realized.
@@ -62,12 +67,11 @@ pub(crate) fn project_mcp_transport(
                 generation.attachment_id.0, generation.generation.0
             )));
         }
-        (None, _) => (prepared.url.clone(), McpCredential::None),
+        (None, _) => prepared.url.clone(),
     };
     Ok(McpServerConfig {
         name: prepared.name.clone(),
         transport: McpTransport::Http { url },
-        credential,
     })
 }
 
@@ -341,6 +345,50 @@ impl crate::SharedHost {
         })
     }
 
+    /// Extend one already-active exact generation without reopening credential
+    /// material or reconnecting MCP. The immutable realization binding must be
+    /// identical and only the expiry/idempotency attempt may advance.
+    pub(crate) fn renew_mcp_projection(
+        &self,
+        request: &awaken_protocol_managed::StageMcpAttachment,
+    ) -> Result<Option<awaken_protocol_managed::McpRealizationReceipt>, HostError> {
+        let binding = request.renewal_binding_fingerprint();
+        self.session_slots
+            .update(&request.generation.session_id, |slot| {
+                let Some(projection) = slot.mcp.iter_mut().find(|projection| {
+                    projection.generation.session_id == request.generation.session_id
+                        && projection.generation.attachment_id == request.generation.attachment_id
+                        && projection.generation.generation == request.generation.generation
+                        && projection.generation.runtime_incarnation
+                            == request.generation.runtime_incarnation
+                        && projection.generation.lease_epoch == request.generation.lease_epoch
+                }) else {
+                    return Ok(None);
+                };
+                if projection.state != crate::session_slot::McpProjectionState::Active
+                    || projection.realization_id != request.realization_id
+                    || projection.renewal_binding_fingerprint != binding
+                    || request.generation.lease_expires_at_unix_ms
+                        <= projection.generation.lease_expires_at_unix_ms
+                {
+                    return Err(HostError::internal(
+                        "MCP lease renewal conflicts with the active realization",
+                    ));
+                }
+                let receipt = awaken_protocol_managed::McpRealizationReceipt {
+                    generation: request.generation.clone(),
+                    realization_id: request.realization_id.clone(),
+                    selected_plaintext_holder: request.selected_plaintext_holder.clone(),
+                    actual_realization_kind: projection.receipt.actual_realization_kind,
+                    receipt_fingerprint: request.fingerprint(),
+                };
+                projection.generation = request.generation.clone();
+                projection.stage_idempotency_key = request.stage_idempotency_key.clone();
+                projection.receipt = receipt.clone();
+                Ok(Some(receipt))
+            })
+    }
+
     pub(crate) async fn publish_mcp_projection(
         &self,
         generation: &awaken_protocol_managed::McpGenerationRef,
@@ -374,7 +422,19 @@ impl crate::SharedHost {
             }
         });
         match changed {
-            Some(result) => result.map(|_| ()),
+            Some(result) => {
+                result?;
+                if let Some(relay) = self.mcp_relay.get()
+                    && let Some(projection) = self.mcp_projection(generation)
+                    && let Some(server) = &projection.server
+                {
+                    // Exact-generation renewal updates the existing private
+                    // capability in place; generation replacement receives a
+                    // distinct route key/capability.
+                    relay.set_route(generation, server);
+                }
+                Ok(())
+            }
             None => Err(HostError::internal("unknown MCP Session projection")),
         }
     }
@@ -461,10 +521,9 @@ pub(crate) async fn connect_materialized(
 }
 
 #[cfg(test)]
-mod alpha_beta_tests {
+mod acp_projection_tests {
     use super::*;
     use awaken_agent_contract::RedactedString;
-    use awaken_run_executor_acp::McpCredential;
 
     fn prepared(bearer: Option<&str>) -> McpTransportMaterial {
         McpTransportMaterial {
@@ -493,17 +552,12 @@ mod alpha_beta_tests {
         // Without a live relay, fail closed: this process has no alternate
         // reference resolver and may not report a non-functional projection.
         assert!(project_mcp_transport(&p, &generation, None).is_err());
-        // No bearer → None.
-        assert!(matches!(
-            project_mcp_transport(&prepared(None), &generation, None)
-                .unwrap()
-                .credential,
-            McpCredential::None
-        ));
+        // Anonymous access remains a direct secret-free route.
+        assert!(project_mcp_transport(&prepared(None), &generation, None).is_ok());
     }
 
     #[tokio::test]
-    async fn a_relay_resolves_alpha_to_a_loopback_url_with_no_sandbox_credential() {
+    async fn a_relay_projects_a_loopback_url_with_no_sandbox_credential() {
         let relay = crate::mcp_relay::McpRelay::start().await.unwrap();
         let p = prepared(Some("sk-RAW-SECRET"));
         let generation = generation();
@@ -511,8 +565,7 @@ mod alpha_beta_tests {
         // Sandboxed + relay: the projected server dials the relay (loopback), holds NO
         // credential (the relay injects the real bearer host-side), never the raw secret.
         let s = project_mcp_transport(&p, &generation, Some(&relay)).unwrap();
-        assert!(matches!(s.credential, McpCredential::None));
-        assert!(s.is_sandbox_safe());
+        assert!(!format!("{s:?}").contains("sk-RAW-SECRET"));
         let url = match &s.transport {
             awaken_run_executor_acp::McpTransport::Http { url } => url.clone(),
             other => panic!("expected http transport, got {other:?}"),
@@ -522,7 +575,11 @@ mod alpha_beta_tests {
             "dials the loopback relay: {url}"
         );
         assert!(
-            url.ends_with("/t1/mcp-gh/3"),
+            url.contains("/t1/mcp-gh/3/")
+                && url
+                    .rsplit('/')
+                    .next()
+                    .is_some_and(|token| token.len() == 32),
             "routed by exact generation: {url}"
         );
         assert!(!serde_json::to_string(&s).unwrap().contains("sk-RAW-SECRET"));

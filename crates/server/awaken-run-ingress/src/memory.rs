@@ -21,8 +21,8 @@ use crate::dispatch::{
     AttemptCredentialBinding, CasOutcome, Claimed, CommitEpochGuard, CredentialRealizationReceipt,
     DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue, DispatchState,
     DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim, SettleOutcome,
-    SubmitOptions, compile_attempt_credential_bindings, installed_worker_credential_capabilities,
-    verify_credential_realization_receipt,
+    SubmitOptions, can_admit_attempt_credentials, compile_attempt_credential_bindings,
+    installed_worker_credential_capabilities, verify_credential_realization_receipt,
 };
 use crate::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
@@ -708,9 +708,10 @@ impl DispatchQueue for MemoryDispatchStore {
     ) -> Result<Option<Claimed>, DispatchError> {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
+        let capabilities = installed_worker_credential_capabilities(worker)?;
         let Some(run_id) = select_where(&state, now_ms, |row| {
             row.cancellation_requested
-                || can_assign(
+                || (can_assign(
                     worker,
                     &row.request.placement,
                     row.assignment.as_ref(),
@@ -718,6 +719,9 @@ impl DispatchQueue for MemoryDispatchStore {
                     now_ms,
                 )
                 .is_ok()
+                    && row.lease_epoch.checked_add(1).is_some_and(|epoch| {
+                        can_admit_attempt_credentials(&row.request, &capabilities, epoch, now_ms)
+                    }))
         }) else {
             return Ok(None);
         };
@@ -728,7 +732,7 @@ impl DispatchQueue for MemoryDispatchStore {
             lease_ms,
             now_ms,
             Some(worker),
-            &installed_worker_credential_capabilities(worker)?,
+            &capabilities,
         )
     }
 
@@ -743,6 +747,7 @@ impl DispatchQueue for MemoryDispatchStore {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         let mut policy_error = None;
+        let capabilities = installed_worker_credential_capabilities(requester)?;
         let run_id = select_where(&state, now_ms, |row| {
             if row.cancellation_requested {
                 return true;
@@ -759,7 +764,17 @@ impl DispatchQueue for MemoryDispatchStore {
                     now_ms,
                 },
             ) {
-                Ok(selected) => selected,
+                Ok(selected) => {
+                    selected
+                        && row.lease_epoch.checked_add(1).is_some_and(|epoch| {
+                            can_admit_attempt_credentials(
+                                &row.request,
+                                &capabilities,
+                                epoch,
+                                now_ms,
+                            )
+                        })
+                }
                 Err(error) => {
                     policy_error = Some(error);
                     false
@@ -779,7 +794,7 @@ impl DispatchQueue for MemoryDispatchStore {
             lease_ms,
             now_ms,
             Some(requester),
-            &installed_worker_credential_capabilities(requester)?,
+            &capabilities,
         )
     }
 

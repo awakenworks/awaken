@@ -5,7 +5,7 @@
 //! the real URL + the secret, [`project_mcp_transport`](crate::mcp::project_mcp_transport) points a
 //! sandboxed server at `http://127.0.0.1:<port>/<thread>/<name>` on this relay. The relay
 //! holds the host-side bearer from private exact-generation transport material,
-//! looks it up by `(thread, name)`, strips the placeholder `Authorization` the sandbox sent,
+//! looks it up by `(thread, name)`, strips any workload-supplied `Authorization`,
 //! injects the real bearer, and forwards to the real server — so the credential is resolved
 //! **out of the sandbox's address space** (the sandbox only reaches loopback over shared-net).
 //!
@@ -30,6 +30,10 @@ use crate::mcp::McpTransportMaterial;
 struct Route {
     url: String,
     bearer: Option<awaken_agent_contract::RedactedString>,
+    /// Opaque sandbox-held capability. It is scoped by the surrounding route
+    /// key and never persisted as Session desired state.
+    capability: String,
+    lease_expires_at_unix_ms: u64,
 }
 
 type RouteKey = (String, String, u64);
@@ -51,7 +55,7 @@ impl McpRelay {
         let addr = listener.local_addr()?;
         let app = axum::Router::new()
             .route(
-                "/{session}/{attachment}/{generation}",
+                "/{session}/{attachment}/{generation}/{capability}",
                 axum::routing::any(forward),
             )
             .with_state(routes.clone());
@@ -68,13 +72,20 @@ impl McpRelay {
         generation: &awaken_protocol_managed::McpGenerationRef,
         server: &McpTransportMaterial,
     ) {
-        self.routes.lock().unwrap().insert(
-            route_key(generation),
-            Route {
+        let mut routes = self.routes.lock().unwrap();
+        let route = routes
+            .entry(route_key(generation))
+            .or_insert_with(|| Route {
                 url: server.url.clone(),
                 bearer: server.bearer.clone(),
-            },
-        );
+                capability: uuid::Uuid::new_v4().simple().to_string(),
+                lease_expires_at_unix_ms: generation.lease_expires_at_unix_ms,
+            });
+        // Exact-generation restaging is idempotent and keeps the same virtual
+        // capability, while refreshing only facts already fenced by that key.
+        route.url = server.url.clone();
+        route.bearer = server.bearer.clone();
+        route.lease_expires_at_unix_ms = generation.lease_expires_at_unix_ms;
     }
 
     pub(crate) fn remove_route(&self, generation: &awaken_protocol_managed::McpGenerationRef) {
@@ -94,11 +105,22 @@ impl McpRelay {
     pub(crate) fn route_url(
         &self,
         generation: &awaken_protocol_managed::McpGenerationRef,
-    ) -> String {
-        format!(
-            "http://{}/{}/{}/{}",
-            self.addr, generation.session_id, generation.attachment_id.0, generation.generation.0
-        )
+    ) -> Option<String> {
+        let capability = self
+            .routes
+            .lock()
+            .expect("MCP relay routes mutex poisoned")
+            .get(&route_key(generation))?
+            .capability
+            .clone();
+        Some(format!(
+            "http://{}/{}/{}/{}/{}",
+            self.addr,
+            generation.session_id,
+            generation.attachment_id.0,
+            generation.generation.0,
+            capability
+        ))
     }
 }
 
@@ -111,11 +133,11 @@ fn route_key(generation: &awaken_protocol_managed::McpGenerationRef) -> RouteKey
 }
 
 /// Forward one MCP request to its real server with the host-held bearer injected. The
-/// sandbox's placeholder `Authorization` is dropped; all other headers + the body pass
+/// workload-supplied `Authorization` is dropped; all other headers + the body pass
 /// through. An unknown route or an upstream error fails closed (never opens unauthenticated).
 async fn forward(
     State(routes): State<Routes>,
-    Path((session, attachment, generation)): Path<(String, String, u64)>,
+    Path((session, attachment, generation, capability)): Path<(String, String, u64, String)>,
     req: Request,
 ) -> Response {
     let Some(route) = routes
@@ -126,6 +148,13 @@ async fn forward(
     else {
         return (StatusCode::NOT_FOUND, "unknown relay route").into_response();
     };
+    let now_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or_default();
+    if route.capability != capability || route.lease_expires_at_unix_ms < now_unix_ms {
+        return (StatusCode::NOT_FOUND, "unknown relay route").into_response();
+    }
     let (parts, body) = req.into_parts();
     let bytes = match axum::body::to_bytes(body, usize::MAX).await {
         Ok(b) => b,
@@ -137,7 +166,7 @@ async fn forward(
         .unwrap_or(reqwest::Method::POST);
     let client = reqwest::Client::new();
     let mut rb = client.request(method, &route.url).body(bytes.to_vec());
-    // Pass every header EXCEPT the sandbox's placeholder Authorization and the loopback Host.
+    // Pass every header EXCEPT workload-supplied Authorization and the loopback Host.
     for (k, v) in parts.headers.iter() {
         if k == header::AUTHORIZATION || k == header::HOST {
             continue;
@@ -195,7 +224,7 @@ mod tests {
     }
 
     /// A fake upstream MCP server that echoes back the `Authorization` header it received, so
-    /// the test can prove the relay injected the real bearer (and dropped the placeholder).
+    /// the test can prove the relay injected the real bearer.
     async fn fake_upstream() -> SocketAddr {
         async fn echo_auth(req: Request) -> Response {
             let auth = req
@@ -239,7 +268,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn relay_injects_the_real_bearer_and_drops_the_sandbox_placeholder() {
+    async fn relay_injects_the_real_bearer_and_drops_workload_authorization() {
         let upstream = fake_upstream().await;
         let relay = McpRelay::start().await.unwrap();
         let generation = generation("t1", "mcp-github", 1);
@@ -255,8 +284,9 @@ mod tests {
             },
         );
 
-        // Dial the relay as the sandboxed CLI would: the placeholder α reference as the bearer.
-        let url = relay.route_url(&generation);
+        // A compromised client may try to override the route credential. The relay must
+        // strip it and inject only the generation-scoped material it owns.
+        let url = relay.route_url(&generation).unwrap();
         let body = reqwest::Client::new()
             .post(&url)
             .bearer_auth("session-mcp:github:repo")
@@ -267,11 +297,11 @@ mod tests {
             .await
             .unwrap();
 
-        // The upstream saw the REAL bearer, never the sandbox's placeholder reference.
+        // The upstream saw the real bearer, never the workload-supplied value.
         assert_eq!(body, "Bearer ghp_real_secret");
         assert!(
             !body.contains("session-mcp"),
-            "placeholder must not reach upstream: {body}"
+            "workload authorization must not reach upstream: {body}"
         );
     }
 
@@ -299,10 +329,8 @@ mod tests {
         let client = reqwest::Client::new();
         let old_generation = generation("session", "mcp-github", 1);
         let new_generation = generation("session", "mcp-github", 2);
-        let old_route = relay.route_url(&old_generation);
-        let new_route = relay.route_url(&new_generation);
-
         relay.set_route(&old_generation, &server("old-secret"));
+        let old_route = relay.route_url(&old_generation).unwrap();
         let first = client
             .post(&old_route)
             .send()
@@ -314,6 +342,7 @@ mod tests {
         assert_eq!(first, "Bearer old-secret");
 
         relay.set_route(&new_generation, &server("new-secret"));
+        let new_route = relay.route_url(&new_generation).unwrap();
         let second = client
             .post(&new_route)
             .send()
@@ -339,6 +368,79 @@ mod tests {
         assert_eq!(replacement_still_active, "Bearer new-secret");
     }
 
+    /// Virtual route-capability cause graph: an exact generation route is usable
+    /// only when C1 the opaque capability matches and C2 its Session lease is
+    /// live. Exact restaging preserves the capability for idempotent recovery;
+    /// another generation receives a different capability. Drain is covered by
+    /// R3 above and remains the explicit revocation edge.
+    ///
+    /// | Rule | capability | lease | action | Effect |
+    /// |---|---|---|---|---|
+    /// | V1 | exact | live | call | forward |
+    /// | V2 | wrong | live | call | 404/no forward |
+    /// | V3 | exact | expired | call | 404/no forward |
+    /// | V4 | exact | live | restage same generation | same capability |
+    /// | V5 | other generation | live | stage | distinct capability |
+    #[tokio::test]
+    async fn route_capability_is_generation_scoped_expiring_and_idempotent() {
+        let upstream = fake_upstream().await;
+        let relay = McpRelay::start().await.unwrap();
+        let server = McpTransportMaterial {
+            name: "github".into(),
+            url: format!("http://{upstream}/"),
+            bearer: Some(awaken_agent_contract::RedactedString::from(
+                "route-secret".to_string(),
+            )),
+            refresh: None,
+        };
+        let mut live = generation("session-cap", "mcp-github", 1);
+        live.lease_expires_at_unix_ms = u64::MAX - 1;
+        relay.set_route(&live, &server);
+        let live_url = relay.route_url(&live).unwrap();
+        let client = reqwest::Client::new();
+        let forwarded = client.post(&live_url).send().await.unwrap();
+        assert_eq!(forwarded.status(), reqwest::StatusCode::OK, "V1");
+
+        let mut wrong = live_url.rsplit_once('/').unwrap().0.to_string();
+        wrong.push_str("/wrong-capability");
+        let denied = client.post(wrong).send().await.unwrap();
+        assert_eq!(denied.status(), reqwest::StatusCode::NOT_FOUND, "V2");
+
+        let mut renewed = live.clone();
+        renewed.lease_expires_at_unix_ms = u64::MAX;
+        relay.set_route(&renewed, &server);
+        assert_eq!(
+            relay.route_url(&renewed).as_deref(),
+            Some(live_url.as_str()),
+            "V4"
+        );
+        assert_eq!(
+            relay
+                .routes
+                .lock()
+                .unwrap()
+                .get(&route_key(&renewed))
+                .unwrap()
+                .lease_expires_at_unix_ms,
+            u64::MAX,
+            "V4 extended expiry"
+        );
+
+        let mut expired = generation("session-expired", "mcp-github", 1);
+        expired.lease_expires_at_unix_ms = 0;
+        relay.set_route(&expired, &server);
+        let expired_call = client
+            .post(relay.route_url(&expired).unwrap())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(expired_call.status(), reqwest::StatusCode::NOT_FOUND, "V3");
+
+        let next = generation("session-cap", "mcp-github", 2);
+        relay.set_route(&next, &server);
+        assert_ne!(relay.route_url(&next), Some(live_url), "V5");
+    }
+
     // Protocol-flow decision row: when R1 holds, initialize, tools/list and
     // tools/call must all traverse the same authenticated route; any missing
     // injection yields upstream 401 and no successful tool result.
@@ -362,7 +464,7 @@ mod tests {
 
         // This is the sandbox-side client: it receives the loopback route and no
         // credential at all. The relay alone owns and injects the real bearer.
-        let transport = HttpTransportBuilder::new(relay.route_url(&generation))
+        let transport = HttpTransportBuilder::new(relay.route_url(&generation).unwrap())
             .credential(Credential::None)
             .connect()
             .await
@@ -435,7 +537,7 @@ mod tests {
             },
         );
         let resp = reqwest::Client::new()
-            .post(relay.route_url(&generation))
+            .post(relay.route_url(&generation).unwrap())
             .send()
             .await
             .unwrap();
@@ -455,8 +557,8 @@ mod tests {
 
     /// Live end-to-end against the REAL GitHub MCP (`api.githubcopilot.com/mcp/`), gated on
     /// `AWAKEN_GITHUB_MCP_TOKEN` (a fine-grained PAT / installation token) — self-skips
-    /// otherwise. Proves the full Managed-Agents path: the sandbox would send the α placeholder
-    /// as its bearer; the relay injects the real token, so GitHub MCP authenticates the call.
+    /// otherwise. Proves the Managed path: the workload sends no credential and the relay
+    /// injects the real token, so GitHub MCP authenticates the call.
     #[tokio::test]
     async fn relay_reaches_the_real_github_mcp_when_a_token_is_present() {
         let Ok(token) = std::env::var("AWAKEN_GITHUB_MCP_TOKEN") else {
@@ -476,7 +578,7 @@ mod tests {
                 refresh: None,
             },
         );
-        // An MCP `initialize` handshake through the relay, carrying only the α placeholder.
+        // An MCP `initialize` handshake through the relay without a workload credential.
         let body = serde_json::json!({
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
             "params": {
@@ -486,16 +588,15 @@ mod tests {
             }
         });
         let resp = reqwest::Client::new()
-            .post(relay.route_url(&generation))
+            .post(relay.route_url(&generation).unwrap())
             .header("content-type", "application/json")
             .header("accept", "application/json, text/event-stream")
-            .bearer_auth("session-mcp:github")
             .json(&body)
             .send()
             .await
             .expect("relay forwards to the real GitHub MCP");
         // A bad/absent token 401s at GitHub — so not-401 proves the relay injected the real
-        // credential out of the sandbox's address space and GitHub accepted it.
+        // credential outside the sandbox's address space and GitHub accepted it.
         assert_ne!(
             resp.status(),
             reqwest::StatusCode::UNAUTHORIZED,
@@ -512,9 +613,12 @@ mod tests {
     #[tokio::test]
     async fn relay_fails_closed_on_an_unknown_route() {
         let relay = McpRelay::start().await.unwrap();
-        let generation = generation("t-unknown", "mcp-nope", 1);
+        let unknown = format!(
+            "http://{}/t-unknown/mcp-nope/1/not-a-route-capability",
+            relay.addr
+        );
         let status = reqwest::Client::new()
-            .post(relay.route_url(&generation))
+            .post(unknown)
             .send()
             .await
             .unwrap()

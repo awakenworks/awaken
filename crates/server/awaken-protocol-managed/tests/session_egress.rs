@@ -1,8 +1,7 @@
 //! `POST /v1/sessions` resolves the session's `environment_id` to its networking
-//! policy and stages it as `SessionInit.deny_egress`: a session on a `limited`
+//! policy and stages the exact `EnvironmentSnapshot`: a session on a `limited`
 //! environment denies egress, one on `unrestricted` (or an unknown env) keeps the
-//! host network. Sessions and environments share one `EnvironmentState`, the way the
-//! management assembly wires them.
+//! host network. No coarse boolean becomes a second policy authority.
 
 use std::sync::{Arc, Mutex};
 
@@ -18,15 +17,15 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-/// Records each `prepare_session`'s resolved `deny_egress`.
+/// Records each `prepare_session`'s exact frozen network policy.
 struct CapturingFake {
-    egress: Arc<Mutex<Vec<bool>>>,
+    egress: Arc<Mutex<Vec<awaken_protocol_managed::SessionNetworkPolicy>>>,
 }
 
 #[async_trait::async_trait]
 impl SessionRuntime for CapturingFake {
     async fn prepare_session(&self, _thread: &str, init: SessionInit) -> Result<(), RunError> {
-        self.egress.lock().unwrap().push(init.deny_egress);
+        self.egress.lock().unwrap().push(init.environment.network);
         Ok(())
     }
     async fn run(
@@ -88,7 +87,7 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
 }
 
 #[tokio::test]
-async fn session_resolves_environment_networking_into_deny_egress() {
+async fn session_carries_the_exact_frozen_environment_network() {
     let env_state = Arc::new(EnvironmentState::new());
     let egress = Arc::new(Mutex::new(Vec::new()));
     let managed = Arc::new(
@@ -109,7 +108,7 @@ async fn session_resolves_environment_networking_into_deny_egress() {
     .await;
     let limited_id = limited["id"].as_str().unwrap().to_string();
 
-    // A session on it stages deny_egress = true.
+    // A session on it stages the exact closed policy.
     let (s, _) = call(
         &app,
         "POST",
@@ -118,9 +117,12 @@ async fn session_resolves_environment_networking_into_deny_egress() {
     )
     .await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(egress.lock().unwrap().last().copied(), Some(true));
+    assert_eq!(
+        egress.lock().unwrap().last(),
+        Some(&awaken_protocol_managed::SessionNetworkPolicy::None)
+    );
 
-    // An unrestricted environment → deny_egress = false.
+    // An unrestricted environment keeps the exact open policy.
     let (_, open) = call(
         &app,
         "POST",
@@ -136,9 +138,15 @@ async fn session_resolves_environment_networking_into_deny_egress() {
         Some(json!({ "agent": "a", "environment_id": open_id })),
     )
     .await;
-    assert_eq!(egress.lock().unwrap().last().copied(), Some(false));
+    assert_eq!(
+        egress.lock().unwrap().last(),
+        Some(&awaken_protocol_managed::SessionNetworkPolicy::Unrestricted)
+    );
 
     // An omitted/unknown environment defaults to host network.
     call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" }))).await;
-    assert_eq!(egress.lock().unwrap().last().copied(), Some(false));
+    assert_eq!(
+        egress.lock().unwrap().last(),
+        Some(&awaken_protocol_managed::SessionNetworkPolicy::Unrestricted)
+    );
 }

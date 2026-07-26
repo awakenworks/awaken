@@ -235,7 +235,7 @@ fn local_managed_state_over(
     if let Some(repo) = &session_repo {
         host.install_memory_extraction_repository(repo.clone());
     }
-    let managed = ManagedState::new(
+    let managed = ManagedState::new_with_mcp(
         ManagedHost::new(host)
             .with_resource_validator(catalog.clone())
             .with_credentials(credentials, secrets),
@@ -245,10 +245,12 @@ fn local_managed_state_over(
         None => managed,
     };
     let managed = managed.with_vaults(vaults).with_resource_catalog(catalog);
-    Arc::new(match environments {
+    let managed = Arc::new(match environments {
         Some(environments) => managed.with_environments(environments),
         None => managed,
-    })
+    });
+    let _ = managed.spawn_realization_lease_supervisor();
+    managed
 }
 
 /// The deployment role this process runs as — the single role axis, selected by

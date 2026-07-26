@@ -1767,8 +1767,8 @@ impl LaunchResolver for ConfigHomeAt {
 /// End to end through the real launch path: a run that declares an MCP server on its ACP
 /// plugin config (what the host's `overlay_acp_mcp` produces) makes `open()` write the
 /// codex `config.toml` into the config home before it spawns — proving the whole
-/// host→plugin_config→config-file chain, secretlessly (α: a broker reference, never a raw
-/// secret). Uses a cheap spawnable command so no real CLI/creds are needed.
+/// host→plugin_config→config-file chain. The file contains only the mediated route;
+/// credential material and references remain outside the ACP process contract.
 #[tokio::test]
 #[cfg(unix)]
 async fn open_writes_the_codex_mcp_config_into_the_config_home() {
@@ -1794,8 +1794,7 @@ async fn open_writes_the_codex_mcp_config_into_the_config_home() {
         serde_json::json!({
             "mcp_servers": [{
                 "name": "github",
-                "transport": { "kind": "http", "url": "https://mcp.gh" },
-                "credential": { "auth": "reference", "reference": "broker://gh" }
+                "transport": { "kind": "http", "url": "http://127.0.0.1/session/t1/mcp/github/1" }
             }]
         }),
     );
@@ -1812,20 +1811,18 @@ async fn open_writes_the_codex_mcp_config_into_the_config_home() {
         written.contains("[mcp_servers.github]"),
         "server section present: {written}"
     );
-    assert!(written.contains("broker://gh"), "α reference present");
     assert!(
-        !written.contains("\"secret\""),
-        "no raw inline secret (α is secretless)"
+        !written.to_ascii_lowercase().contains("credential")
+            && !written.to_ascii_lowercase().contains("authorization"),
+        "ACP config contains no credential channel: {written}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A fake ACP agent (JSON-RPC, shell builtins only) that reports whether the
-/// `session/new` request it received carried our MCP server and, if so, whether the
-/// bearer was the α broker reference (secretless) — echoed as its agent message. It
-/// captures the raw `session/new` line (`id:2`) and, on the prompt (`id:3`), classifies
-/// it: `saw-github` if the server name crossed, `alpha-ref` if `broker://gh` (the α
-/// reference) is the bearer. So the test asserts the D5 wire (plugin_config →
+/// A fake ACP agent (JSON-RPC, shell builtins only) reports whether `session/new`
+/// carried the MCP server and whether a forbidden credential marker leaked. It
+/// classifies the request as `saw-github` plus either `noauth` or `credential-leaked`.
+/// Thus the test asserts the D5 wire (plugin_config →
 /// `to_session_mcp_server` → `to_acp_mcp_servers` → `session/new`) actually reached the CLI.
 #[cfg(all(feature = "real-acp", unix))]
 const FAKE_ACP_MCP_ECHO_SCRIPT: &str = "while IFS= read -r line; do \
@@ -1834,7 +1831,7 @@ const FAKE_ACP_MCP_ECHO_SCRIPT: &str = "while IFS= read -r line; do \
         *'\"id\":2'*) SN=\"$line\"; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s1\"}}';; \
         *'\"id\":3'*) \
           M=none; case \"$SN\" in *github*) M=saw-github;; esac; \
-          A=noauth; case \"$SN\" in *'broker://gh'*) A=alpha-ref;; esac; \
+          A=noauth; case \"$SN\" in *'broker://'*) A=credential-leaked;; *'sk-trusted'*) A=credential-leaked;; *'authorization'*) A=credential-leaked;; esac; \
           printf '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"mcp %s %s\"}}}}\\n' \"$M\" \"$A\"; \
           printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'; \
           exit 0;; \
@@ -1845,8 +1842,8 @@ const FAKE_ACP_MCP_ECHO_SCRIPT: &str = "while IFS= read -r line; do \
 /// its ACP plugin config (what the host's `overlay_acp_mcp` produces for an `AcpSession`
 /// CLI) makes `open()` stage it as a session server and `drive()` inject it into the
 /// `session/new` request — the D5 seam. The fake agent echoes that it saw the server and
-/// that the bearer is the α broker reference (secretless), proving the whole
-/// host→plugin_config→session/new chain without a raw secret. Gated on `real-acp`: only
+/// that no credential channel is present, proving the whole
+/// host→plugin_config→session/new chain is route-only. Gated on `real-acp`: only
 /// the official codec serializes `mcpServers` into `session/new`.
 #[cfg(feature = "real-acp")]
 #[tokio::test]
@@ -1872,8 +1869,7 @@ async fn open_and_drive_inject_the_mcp_server_into_session_new_for_an_acp_sessio
         serde_json::json!({
             "mcp_servers": [{
                 "name": "github",
-                "transport": { "kind": "http", "url": "https://mcp.gh" },
-                "credential": { "auth": "reference", "reference": "broker://gh" }
+                "transport": { "kind": "http", "url": "http://127.0.0.1/session/t1/mcp/github/1" }
             }]
         }),
     );
@@ -1888,27 +1884,23 @@ async fn open_and_drive_inject_the_mcp_server_into_session_new_for_an_acp_sessio
     let commits = coord.commits.lock().unwrap();
     let reply = commits[0].messages.last().unwrap().text_content();
     assert_eq!(
-        reply, "mcp saw-github alpha-ref",
-        "session/new carried the MCP server with the α broker reference as its bearer, got {reply:?}",
+        reply, "mcp saw-github noauth",
+        "session/new must carry the mediated MCP route without a credential, got {reply:?}",
     );
 }
 
-/// The β (trusted-inline) counterpart of the α test: a trusted-local host projects the
-/// staged MCP server with the raw bearer inline (what `overlay_acp_mcp(..., trusted=true)`
-/// produces), and `session/new` carries that secret to the CLI. The fake agent reports the
-/// bearer it received so the test asserts β delivers the raw token (never a reference).
+/// Retained snapshots may still contain the deleted credential field. Decode compatibility
+/// must not revive that path: the ACP launch receives only the mediated route.
 #[cfg(feature = "real-acp")]
 #[tokio::test]
 #[cfg(unix)]
-async fn open_and_drive_inject_a_trusted_inline_mcp_credential_into_session_new() {
-    // A JSON-RPC echo agent: classifies the `session/new` bearer as `beta-inline` when it
-    // saw the raw secret `sk-trusted`, else `no-secret`.
-    const BETA_ECHO: &str = "while IFS= read -r line; do \
+async fn retained_inline_mcp_credential_is_ignored_before_session_new() {
+    const LEGACY_ECHO: &str = "while IFS= read -r line; do \
           case \"$line\" in \
             *'\"id\":1'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}';; \
             *'\"id\":2'*) SN=\"$line\"; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s1\"}}';; \
             *'\"id\":3'*) \
-              A=no-secret; case \"$SN\" in *sk-trusted*) A=beta-inline;; esac; \
+              A=no-secret; case \"$SN\" in *sk-trusted*) A=credential-leaked;; esac; \
               printf '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"mcp %s\"}}}}\\n' \"$A\"; \
               printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'; \
               exit 0;; \
@@ -1916,7 +1908,7 @@ async fn open_and_drive_inject_a_trusted_inline_mcp_credential_into_session_new(
         done";
     let mut cli = *acp_cli("claude").expect("claude in the catalog");
     cli.command = "/bin/sh";
-    cli.args = &["-c", BETA_ECHO];
+    cli.args = &["-c", LEGACY_ECHO];
     let source = Arc::new(ProjectingChannelSource::new(
         cli,
         Arc::new(FixedModel(ResolvedModel {
@@ -1949,8 +1941,8 @@ async fn open_and_drive_inject_a_trusted_inline_mcp_credential_into_session_new(
         .unwrap()
         .text_content();
     assert_eq!(
-        reply, "mcp beta-inline",
-        "β hands the trusted-local CLI the raw bearer inline on session/new, got {reply:?}",
+        reply, "mcp no-secret",
+        "retained credential fields must not reach session/new, got {reply:?}",
     );
 }
 

@@ -614,15 +614,15 @@ const FAKE_ACP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_acp::A
 /// name crossed, `host-relay` if the URL points at the per-session loopback relay. The
 /// managed-API e2e can therefore assert the whole D6→D5 chain (session `mcp_servers` →
 /// staged → host relay → `session/new`) without exposing authorization material to the
-/// external ACP process. `alpha-ref` remains observable for the explicit relay-start
-/// fallback.
+/// external ACP process. Any retained `session-mcp:` credential marker is classified as
+/// a leak so the E2E cannot accidentally bless the deleted fallback.
 const FAKE_ACP_MCP_ECHO_SCRIPT: &str = "while IFS= read -r line; do \
       case \"$line\" in \
         *'\"id\":1'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}';; \
         *'\"id\":2'*) SN=\"$line\"; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s1\"}}';; \
         *'\"id\":3'*) \
           N=noname; case \"$SN\" in *calc*) N=saw-calc;; esac; \
-          A=noref; case \"$SN\" in *'http://127.0.0.1:'*) A=host-relay;; *'session-mcp:'*) A=alpha-ref;; esac; \
+          A=noref; case \"$SN\" in *'/sesn_'*) A=host-relay;; *'session-mcp:'*) A=credential-leaked;; esac; \
           printf '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"mcp %s %s\"}}}}\\n' \"$N\" \"$A\"; \
           printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'; \
           exit 0;; \
@@ -745,9 +745,8 @@ const SANDBOXED_FAKE_ACP_SCRIPT: &str = "read _p; net=''; \
 /// inside a bubblewrap (namespace-tier) sandbox via
 /// [`awaken_runtime_host::SandboxChannelSource`], so the agent process is
 /// OS-confined regardless of what it does. Egress follows each session's
-/// environment networking policy through the host's shared
-/// [`awaken_runtime_host::ThreadEgress`] registrations — a deny-egress
-/// session's CLI runs under `--unshare-net`.
+/// frozen Environment projection — a deny-egress session's CLI runs under
+/// `--unshare-net`.
 /// `AWAKEN_MODEL_MODE=acp-sandboxed`; the sandbox roots live under
 /// `AWAKEN_SANDBOX_DIR` (a per-process temp dir when unset).
 pub fn build_acp_sandboxed_router() -> Router {
@@ -774,7 +773,7 @@ pub fn build_acp_sandboxed_router() -> Router {
         });
     let host = SharedHost::new(Arc::new(EchoModel), "awaken");
     let source = awaken_runtime_host::SandboxChannelSource::new(base, launch)
-        .with_thread_egress(host.thread_egress());
+        .with_session_projection(host.session_projection_source());
     let acp = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(Arc::new(
         source,
     )));

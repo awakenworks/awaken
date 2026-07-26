@@ -142,6 +142,15 @@ impl WorkerControlClient {
             .await
     }
 
+    pub async fn begin_session_realization(
+        &self,
+        identity: &WorkerIdentity,
+        command: awaken_protocol_managed::BeginSessionRealization,
+    ) -> Result<awaken_protocol_managed::SessionRealizationDirective, String> {
+        self.realization_phase("/v1/worker/session/realization/begin", identity, command)
+            .await
+    }
+
     pub async fn acknowledge_session_realization(
         &self,
         identity: &WorkerIdentity,

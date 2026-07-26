@@ -212,6 +212,7 @@ impl SharedHost {
             session_provider: crate::session_environment::SessionEnvironmentProvider::workdir(
                 sandbox_root.clone(),
             ),
+            session_provider_explicit: false,
             judge_snapshot: None,
             client_tools: HashSet::new(),
             local_workspace: local_workspace.clone(),
@@ -237,8 +238,6 @@ impl SharedHost {
             agent_publications: None,
             mcp_relay: tokio::sync::OnceCell::new(),
             dispatch_session_runtime: std::sync::RwLock::new(None),
-            thread_egress: crate::sandbox_source::ThreadEgress::from_slots(session_slots.clone()),
-            thread_sandbox: crate::sandbox_source::ThreadSandbox::from_slots(session_slots),
             file_store,
             resource_lifecycle,
             memory_stores,
@@ -642,6 +641,33 @@ impl SharedHost {
         self
     }
 
+    /// Install the already-composed provider that owns every Session container
+    /// environment on this Host.
+    ///
+    /// This is the public composition seam for downstream providers. The Host
+    /// continues to own Session routing and lifecycle; the provider supplies only
+    /// its enforceable Sandbox capabilities and create/adopt implementation. A
+    /// caller that also installs a [`awaken_provisioning_contract::SecretBroker`]
+    /// must do so after selecting the provider so there is one broker installation
+    /// on the authoritative environment path.
+    #[must_use]
+    pub fn with_session_container_provider(
+        mut self,
+        provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
+        hand_factory: Arc<dyn crate::HandExecutorFactory>,
+    ) -> Self {
+        self.session_provider = crate::session_environment::SessionEnvironmentProvider::container(
+            provider,
+            Vec::new(),
+            hand_factory,
+        );
+        self.session_provider_explicit = true;
+        if let Some(mounter) = self.memory_mounter() {
+            self.session_provider.install_memory_mounter(mounter);
+        }
+        self
+    }
+
     /// Bind `model_ref` to `thread` (R2/R5), staged before its first turn.
     pub fn register_thread_model(&self, thread: &str, model_ref: impl Into<String>) {
         self.inference_routing.register(thread, model_ref);
@@ -653,57 +679,22 @@ impl SharedHost {
             .update(thread, |slot| slot.delegates = delegates);
     }
 
-    /// Project the frozen Environment credential decision for durable dispatch.
-    pub fn register_thread_credential_realization(
-        &self,
-        thread: &str,
-        profile: awaken_runtime_contract::CredentialRealizationProfile,
-    ) {
-        self.session_slots
-            .update(thread, |slot| slot.credential_realization = Some(profile));
-    }
-
     pub(crate) fn thread_credential_realization(
         &self,
         thread: &str,
     ) -> Option<awaken_runtime_contract::CredentialRealizationProfile> {
         self.session_slots
-            .read(thread, |slot| slot.credential_realization.clone())
+            .read(thread, |slot| {
+                slot.environment_projection
+                    .as_ref()
+                    .map(|environment| environment.credential_realization.clone())
+            })
             .flatten()
     }
 
     pub(crate) fn thread_delegate_ids(&self, thread: &str) -> Option<Vec<String>> {
         self.session_slots
             .read(thread, |slot| slot.delegates.clone())
-    }
-
-    /// Deny network egress for `thread`'s sandbox (from its environment's networking
-    /// policy), staged before its first turn and consumed by `sandbox_spec` (and by a
-    /// sandboxed ACP channel source wired via [`SharedHost::thread_egress`]).
-    pub fn register_thread_egress(&self, thread: &str, deny: bool) {
-        self.thread_egress.set(thread, deny);
-    }
-
-    /// The shared per-thread egress-registration handle, for wiring a
-    /// [`crate::SandboxChannelSource`] before `with_acp` consumes the builder.
-    pub fn thread_egress(&self) -> crate::sandbox_source::ThreadEgress {
-        self.thread_egress.clone()
-    }
-
-    /// Stage `thread`'s environment sandbox overlay (isolation/network/limits), from its
-    /// `config.sandbox`, consumed by `sandbox_spec` and a sandboxed ACP channel source.
-    pub fn register_thread_sandbox(
-        &self,
-        thread: &str,
-        over: awaken_provisioning_contract::SandboxOverride,
-    ) {
-        self.thread_sandbox.set(thread, over);
-    }
-
-    /// The shared per-thread sandbox-override handle, for wiring a sandboxed/container
-    /// ACP channel source (like [`Self::thread_egress`]) before the builder is consumed.
-    pub fn thread_sandbox(&self) -> crate::sandbox_source::ThreadSandbox {
-        self.thread_sandbox.clone()
     }
 
     /// The model id echoed by adapters in their session/agent objects.

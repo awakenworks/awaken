@@ -311,6 +311,8 @@ application projection. The public router accepts only a versioned
 WorkerNodeBuilder::new(upstream)
     .with_deployment_config(deployment)
     .with_credential_stores(credentials, secrets)
+    .with_external_credential_resolver(sealed_material_resolver)
+    .with_session_container_provider("provider-id", provider)
     .with_application_factory(factory)
     .with_application_gate(gate)
     .with_resource_plane(WorkerResourcePlane::new(resources, validator))
@@ -323,7 +325,12 @@ WorkerNodeBuilder::new(upstream)
 `with_standard_manifest` is the sole standard capability projection. At
 `build()` it derives the immutable manifest from the deployment, installed
 inference materializer, resource plane and its repository credential support,
-ACP profile, and explicit application capabilities. A special deployment may
+ACP profile, optional externally installed Session container provider, and
+explicit application capabilities. An installed provider is authoritative for
+its backend id and enforceable Sandbox capabilities; deployment inference is
+used only when no provider was injected. Secret substitution and enforced
+no-bypass networking must both be present before the same derivation can publish
+Worker-relay credential evidence. A special deployment may
 instead select `with_manifest(explicit_manifest)`; selecting both sources fails
 closed rather than depending on call order. The process adapters parse
 environment-driven deployment and manifest metadata once before installing
@@ -810,7 +817,7 @@ helpers and CLI parsing do not belong here.
 | `ClaimedCommitService` | application service | authenticated, fenced, versioned, idempotent commit orchestration | directory, dispatch, coordinator resolver, authenticator | `SharedHost` construction or product projection | embedding system cannot use its coordinator; stale owner writes | G1/G13; dependency-injection and stale-epoch tests |
 | `ThreadCoordinatorResolver` | boundary port | coordinator selection for the addressed Thread/cell | configured commit backend | placement, auth, or application cache | request commits through a different authority | same-source and multi-node tests |
 | `WorkerNode` | public component | Worker lifecycle from registration through drain | control client, recovery client, commit client, executor | product envelope or Control database | every application rewrites lifecycle and diverges | G5/G6; lifecycle state-machine suite |
-| `WorkerNodeBuilder` | assembly API | validated Worker dependency assembly, mutually exclusive explicit/standard manifest selection, and one post-registration application factory | typed deployment, materializers/resources, application capabilities/factory | complete executor/environment replacement, process environment parsing, hidden global stores, or a second capability derivation | application duplicates Worker/router lifecycle or advertises capabilities absent from the installed topology | construction, manifest-source, capability-derivation, and registered-context lifecycle tests |
+| `WorkerNodeBuilder` | assembly API | validated Worker dependency assembly, mutually exclusive explicit/standard manifest selection, one optional existing Session container-provider seam, and one post-registration application factory | typed deployment, materializers/resources/provider, application capabilities/factory | credential-specific provider port, process environment parsing, hidden global stores, or a second capability derivation | application duplicates Worker/router lifecycle or advertises capabilities absent from the installed topology | construction, manifest-source, provider-evidence decision table, capability-derivation, and registered-context lifecycle tests |
 | `RegisteredWorkerContext` | immutable assembly value | one allocated Worker incarnation plus its identity-bound request transport | `RegisteredWorker`, `WorkerUpstream` | mutable liveness truth, product ACL, or a second credential | application uses an unsigned/stale identity or parallel trust path | signed transport and registration-order tests |
 | `RegisteredWorkerApplication` | immutable assembly value | the one provisioner/decorator pair installed after registration | registered context and neutral Host ports | Worker lifecycle or a second execution router | application hooks are assembled under different identities | registered-context lifecycle tests |
 | `ApplicationSessionProvisioner` | Worker application port | produce one claim-bound, secret-free neutral plan | activation and neutral ownership verifier | Sandbox creation, Session cache, product persistence, materialized credential, or a second environment plan | Native and ACP receive different inputs or a stale claim contributes effects | application-input ordering, fingerprint, and stale-claim tests |
@@ -823,7 +830,7 @@ helpers and CLI parsing do not belong here.
 | `McpAttachmentNormalizer` *(target)* | Managed anti-corruption/domain service | deterministic Agent/Session/application MCP precedence, canonical target, exact credential revision, usage, policy, and payload fingerprint | published Agent binding, compatibility Vault input, secret-free application input | plaintext, Host lookup, realization, or durable state | different ingress paths select different credentials or silently merge collisions | target G42; normalization table, ambiguity, revision, and fingerprint tests |
 | `SessionMutation` / root-CAS repository operation *(target)* | Session repository contract | one atomic expected-revision replace/tombstone update of aggregate, idempotency receipt, and lifecycle/outbox facts | `ManagedSessionRepository`, SQLite/Postgres adapters | direct field updates, authorization policy, or per-subaggregate commit authority | Resource/MCP/environment writes overwrite each other, delete loses receipts, or response loss duplicates a command | target G42; shared store conformance, delete replay, and two-Control conflict tests |
 | `SessionRealizationLease` / `McpRealizationClaim` *(target)* | Session application state | fence continuing Session projection by opaque Runtime owner/incarnation/epoch independently of a transient Run claim | Session repository; local Host or registered Worker adapter supplies the owner mapping | Run business ownership, Worker protocol vocabulary, credential choice, or live connection | an expired/replaced Host/Worker stages or publishes a generation | target G42; local/remote replacement/expiry/restage/orphan tests |
-| MCP stage/publish/drain methods on `SessionRuntime` *(target)* | Session application port | one local-or-remote port for invisible exact-generation staging, post-CAS safe-boundary publication, and idempotent drain | durable generation, Session realization lease, existing relay/transport/Runtime refresh | desired-state persistence, credential selection, or generation fallback | a staged route leaks before commit or an old call reaches replacement credentials | target G42; local/remote parity, stage-crash, stale-CAS disposal, replacement, and stale-call tests |
+| `McpAttachmentRealizer` | Session application port | one injectable local-or-downstream port for invisible exact-generation staging, post-CAS safe-boundary publication, and idempotent drain | durable generation, Session realization lease, private relay/transport/Runtime refresh | desired-state persistence, credential selection, `SessionRuntime` duplication, or error fallback | a staged route leaks before commit, an injected failure falls back locally, or an old call reaches replacement credentials | G42; local/external selection, no-fallback, stage-crash, stale-CAS disposal, replacement, and stale-call tests |
 | `CredentialExecutionPolicy` *(target)* | published value object | exact allowed plaintext-holder trust domains plus `Forbidden`/`VirtualOnly` exposure | existing `CredentialAccess` and `CredentialUsage` | authorization grant, holder ordering/fallback, secret bytes, or protocol-specific duplication | an adapter treats a different trust domain as automatically stronger | target G43; allowed-set, serialization, exposure, and no-fallback tests |
 | `PlaintextHolder` *(target)* | credential value object | one exact Workload/Worker/Platform boundary plus opaque trust-domain identity | publication policy and Environment/adapter admission | IAM role/principal, global strength rank, or delivery mechanism | plaintext moves to an unauthorized deployment boundary | target G43; trust-domain mismatch and capability-conformance tests |
 | `CredentialRealizationProfile` *(target)* | Environment/deployment execution value | exact inference, MCP, and Resource holders requested by trusted composition and frozen into Session/attempt execution | Environment definition and installed adapter/provider facts | credential policy, runtime ranking, fallback, or secret material | a runtime iterates allowed holders or changes boundary after failure | target G43; deterministic profile, unsupported-holder, and retry-pin tests |
@@ -854,6 +861,10 @@ Worker-to-Control transport; only Control finalizes the baseline and generation
 `SessionRealizationLease` fences local/remote stage/publish/drain projection.
 Managed networking, legacy Sandbox networking, and `deny_egress` normalize once
 by safe intersection into the baseline `NetworkPolicy`.
+Runtime carries the resulting `EnvironmentSnapshot` intact through `SessionInit`;
+Native and ACP consume one `SessionRuntimeProjectionSource`. The former
+`ThreadEgress`/`ThreadSandbox` registries and their late setters have been
+removed.
 
 Accepted ADR-0067 extends existing `CredentialAccess`/`CredentialUsage` with a
 material source, recipient-bound sealed payload reference, exact resolver,

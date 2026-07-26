@@ -104,15 +104,17 @@ pub use crate::dispatch_backend::{ensure_durable_backend, init_shared_postgres_d
 pub use crate::host::{AttemptExecutorDecorator, HostResume, ResourcePlanePorts, SharedHost};
 pub use crate::postgres_migration_lock::PostgresMigrationLock;
 pub use crate::worker_control_client::WorkerControlClient;
-// The sandboxed ACP channel source (bwrap-confined agent launch) and the shared
-// per-thread egress handle a composition root wires it with.
+pub use awaken_protocol_managed::McpAttachmentRealizer;
+pub use awaken_sandbox_container::{ContainerEnvironment, ContainerEnvironmentProvider};
+// The sandboxed ACP channel source and the sole Session projection handle a
+// composition root wires it with.
 pub use crate::data_subject_api::{consent_router, erasure_router, install_capture_sink};
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::memory_store_api::memory_stores_router_with_catalog;
 pub use crate::redact::PiiRedactor;
 pub use crate::sandbox_source::{
     AcpLaunchRegistry, AcpSandboxBindings, BoundLocalChannelSource, LaunchSource,
-    SandboxChannelSource, ThreadEgress, ThreadResources, ThreadSandbox, build_acp_channel_source,
+    SandboxChannelSource, SessionRuntimeProjectionSource, build_acp_channel_source,
     resolve_sandbox_tier,
 };
 pub use crate::skills::SkillForkPlacement;
@@ -277,10 +279,12 @@ fn to_step_outcome(result: RunResult) -> Result<StepOutcome, RunError> {
 /// The Managed Agents `SessionRuntime` port implemented over the shared host.
 /// Holds only an `Arc<SharedHost>` plus runtime-side materialization ports, so it
 /// composes with any other adapter bound to the same host.
+#[derive(Clone)]
 pub struct ManagedHost {
     host: Arc<SharedHost>,
     credentials: Option<PinnedCredentialMaterializer>,
     resource_validator: Option<Arc<dyn awaken_resource_contract::ResourceBindingValidator>>,
+    mcp_realizer: Option<Arc<dyn awaken_protocol_managed::McpAttachmentRealizer>>,
 }
 
 /// Weak, cloneable Worker-side adapter over the same configured Managed
@@ -292,6 +296,7 @@ pub(crate) struct DispatchSessionRuntime {
     host: std::sync::Weak<SharedHost>,
     credentials: Option<PinnedCredentialMaterializer>,
     resource_validator: Option<Arc<dyn awaken_resource_contract::ResourceBindingValidator>>,
+    mcp_realizer: Option<Arc<dyn awaken_protocol_managed::McpAttachmentRealizer>>,
 }
 
 impl DispatchSessionRuntime {
@@ -304,6 +309,7 @@ impl DispatchSessionRuntime {
             host,
             credentials: self.credentials.clone(),
             resource_validator: self.resource_validator.clone(),
+            mcp_realizer: None,
         })
     }
 
@@ -340,21 +346,48 @@ impl DispatchSessionRuntime {
         &self,
         request: awaken_protocol_managed::StageMcpAttachment,
     ) -> Result<awaken_protocol_managed::McpRealizationReceipt, RunError> {
-        SessionRuntime::stage_mcp_attachment(&self.managed()?, request).await
+        match &self.mcp_realizer {
+            Some(realizer) => realizer.stage_mcp_attachment(request).await,
+            None => {
+                awaken_protocol_managed::McpAttachmentRealizer::stage_mcp_attachment(
+                    &self.managed()?,
+                    request,
+                )
+                .await
+            }
+        }
     }
 
     async fn publish_mcp(
         &self,
         generation: awaken_protocol_managed::McpGenerationRef,
     ) -> Result<(), RunError> {
-        SessionRuntime::publish_mcp_generation(&self.managed()?, generation).await
+        match &self.mcp_realizer {
+            Some(realizer) => realizer.publish_mcp_generation(generation).await,
+            None => {
+                awaken_protocol_managed::McpAttachmentRealizer::publish_mcp_generation(
+                    &self.managed()?,
+                    generation,
+                )
+                .await
+            }
+        }
     }
 
     async fn drain_mcp(
         &self,
         generation: awaken_protocol_managed::McpGenerationRef,
     ) -> Result<(), RunError> {
-        SessionRuntime::drain_mcp_generation(&self.managed()?, generation).await
+        match &self.mcp_realizer {
+            Some(realizer) => realizer.drain_mcp_generation(generation).await,
+            None => {
+                awaken_protocol_managed::McpAttachmentRealizer::drain_mcp_generation(
+                    &self.managed()?,
+                    generation,
+                )
+                .await
+            }
+        }
     }
 }
 
@@ -440,6 +473,7 @@ impl ManagedHost {
             host,
             credentials: None,
             resource_validator: None,
+            mcp_realizer: None,
         };
         managed.refresh_dispatch_session_runtime();
         managed
@@ -454,6 +488,7 @@ impl ManagedHost {
             host: Arc::downgrade(&self.host),
             credentials: self.credentials.clone(),
             resource_validator: self.resource_validator.clone(),
+            mcp_realizer: self.mcp_realizer.clone(),
         });
     }
 
@@ -620,6 +655,7 @@ impl ManagedHost {
                                     &pin.selected_plaintext_holder,
                                     awaken_runtime_contract::CredentialRealizationKind::WorkerRelay,
                                     workspace,
+                                    &(repository_id, config.version),
                                 )
                                 .await
                                 .map_err(|error| {
@@ -830,11 +866,35 @@ impl ManagedHost {
     /// and Repository realization.
     #[must_use]
     pub fn with_credentials(
-        mut self,
+        self,
         credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
         secrets: Arc<dyn awaken_credential_vault::SecretStore>,
     ) -> Self {
-        self.credentials = Some(PinnedCredentialMaterializer::new(credentials, secrets));
+        self.with_credential_materializer(PinnedCredentialMaterializer::new(credentials, secrets))
+    }
+
+    /// Reuse the composition root's canonical exact materializer for MCP and
+    /// Repository realization instead of constructing a peer over the same stores.
+    #[must_use]
+    pub fn with_credential_materializer(
+        mut self,
+        materializer: PinnedCredentialMaterializer,
+    ) -> Self {
+        self.credentials = Some(materializer);
+        self.refresh_dispatch_session_runtime();
+        self
+    }
+
+    /// Replace the local Host MCP realization adapter with one downstream
+    /// implementation of the same exact-generation Session port. This is the
+    /// sole injection seam used by durable Worker commands; desired state and
+    /// credential selection remain outside the implementation.
+    #[must_use]
+    pub fn with_mcp_attachment_realizer(
+        mut self,
+        realizer: Arc<dyn awaken_protocol_managed::McpAttachmentRealizer>,
+    ) -> Self {
+        self.mcp_realizer = Some(realizer);
         self.refresh_dispatch_session_runtime();
         self
     }
@@ -1220,209 +1280,6 @@ impl SessionRuntime for ManagedHost {
         Ok(())
     }
 
-    async fn stage_mcp_attachment(
-        &self,
-        request: awaken_protocol_managed::StageMcpAttachment,
-    ) -> Result<awaken_protocol_managed::McpRealizationReceipt, RunError> {
-        use awaken_runtime_contract::{
-            CredentialMaterialSource, CredentialRealizationCapabilities, CredentialRealizationKind,
-            PlaintextBoundary,
-        };
-        use std::collections::BTreeSet;
-
-        if request.workspace_id.trim().is_empty()
-            || request.generation.session_id.trim().is_empty()
-            || request.realization_id.trim().is_empty()
-            || request.stage_idempotency_key.trim().is_empty()
-            || request.name.trim().is_empty()
-            || request.target.url.trim().is_empty()
-        {
-            return Err(RunError::bad_request(
-                "MCP realization request is incomplete",
-            ));
-        }
-        let now_unix_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-            .unwrap_or_default();
-        if request.generation.lease_expires_at_unix_ms < now_unix_ms {
-            return Err(RunError::classified(
-                "mcp_stale_ownership",
-                "MCP realization lease has expired",
-            ));
-        }
-        let request_fingerprint = request.fingerprint();
-        if let Some(existing) = self.host.mcp_projection(&request.generation) {
-            if existing.realization_id == request.realization_id
-                && existing.stage_idempotency_key == request.stage_idempotency_key
-                && existing.receipt.receipt_fingerprint == request_fingerprint
-                && existing.state != crate::session_slot::McpProjectionState::Removed
-            {
-                return Ok(existing.receipt);
-            }
-            return Err(RunError::classified(
-                "mcp_stale_generation",
-                "MCP generation is already bound to another realization",
-            ));
-        }
-
-        let is_acp = self
-            .host
-            .acp
-            .as_ref()
-            .and_then(|acp| acp.adapter_for(&request.generation.session_id))
-            .is_some_and(|adapter| {
-                awaken_runtime_contract::resolved::Backend::from_ref(&adapter).is_acp()
-            });
-
-        let (bearer, refresh, actual_realization_kind) = match (
-            request.credential.as_ref(),
-            request.selected_plaintext_holder.as_ref(),
-        ) {
-            (None, None) => (None, None, None),
-            (Some(access), Some(holder)) => {
-                if holder.boundary != PlaintextBoundary::Worker {
-                    return Err(RunError::classified(
-                        "mcp_holder_unsupported",
-                        "MCP Runtime supports only the Worker-held relay boundary",
-                    ));
-                }
-                if is_acp
-                    && !self
-                        .host
-                        .session_provider
-                        .capabilities()
-                        .enforced_network_allowlist
-                {
-                    return Err(RunError::classified(
-                        "mcp_holder_unsupported",
-                        "authenticated ACP MCP requires provider-enforced no-bypass networking before Worker relay materialization",
-                    ));
-                }
-                access
-                    .admit(
-                        holder,
-                        CredentialRealizationKind::WorkerRelay,
-                        &CredentialRealizationCapabilities {
-                            holders: BTreeSet::from([holder.clone()]),
-                            material_sources: BTreeSet::from([
-                                CredentialMaterialSource::ControlPlaneReference,
-                            ]),
-                            realization_kinds: BTreeSet::from([
-                                CredentialRealizationKind::WorkerRelay,
-                            ]),
-                        },
-                        now_unix_ms,
-                    )
-                    .map_err(|error| {
-                        RunError::classified("mcp_credential_admission", error.to_string())
-                    })?;
-                let injector = self.credentials.as_ref().ok_or_else(|| {
-                    RunError::classified(
-                        "mcp_material_source_unavailable",
-                        "MCP credential requires a configured material resolver",
-                    )
-                })?;
-                let bearer = injector
-                    .resolve_for_workspace(
-                        access,
-                        holder,
-                        CredentialRealizationKind::WorkerRelay,
-                        &request.workspace_id,
-                    )
-                    .await
-                    .map_err(|error| {
-                        RunError::classified(
-                            "mcp_credential_revision_mismatch",
-                            format!(
-                                "mcp server `{}` credential could not be resolved exactly: {error}",
-                                request.name
-                            ),
-                        )
-                    })?
-                    .material;
-                let refresh = access.refresh.as_ref().map(|refresh| {
-                    crate::mcp::McpRefreshMaterial::new(refresh.clone(), injector.secret_store())
-                });
-                (
-                    Some(bearer),
-                    refresh,
-                    Some(CredentialRealizationKind::WorkerRelay),
-                )
-            }
-            _ => {
-                return Err(RunError::classified(
-                    "mcp_credential_binding_invalid",
-                    "MCP credential and selected plaintext holder must be present together",
-                ));
-            }
-        };
-        let server = crate::mcp::McpTransportMaterial {
-            name: request.name,
-            url: request.target.url,
-            bearer,
-            refresh,
-        };
-        let native_wiring = if is_acp {
-            None
-        } else {
-            Some(
-                crate::mcp::connect_materialized(std::slice::from_ref(&server))
-                    .await
-                    .map_err(to_run_error)?,
-            )
-        };
-        let receipt = awaken_protocol_managed::McpRealizationReceipt {
-            generation: request.generation.clone(),
-            realization_id: request.realization_id.clone(),
-            selected_plaintext_holder: request.selected_plaintext_holder,
-            actual_realization_kind,
-            receipt_fingerprint: request_fingerprint,
-        };
-        self.host
-            .insert_mcp_projection(crate::session_slot::McpGenerationProjection {
-                generation: request.generation,
-                realization_id: request.realization_id,
-                stage_idempotency_key: request.stage_idempotency_key,
-                receipt: receipt.clone(),
-                server: Some(server),
-                native_wiring,
-                state: crate::session_slot::McpProjectionState::Staged,
-            })
-            .map_err(to_run_error)?;
-        Ok(receipt)
-    }
-
-    async fn publish_mcp_generation(
-        &self,
-        generation: awaken_protocol_managed::McpGenerationRef,
-    ) -> Result<(), RunError> {
-        let now_unix_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-            .unwrap_or_default();
-        if generation.lease_expires_at_unix_ms < now_unix_ms {
-            return Err(RunError::classified(
-                "mcp_stale_ownership",
-                "MCP publication lease has expired",
-            ));
-        }
-        self.host
-            .publish_mcp_projection(&generation)
-            .await
-            .map_err(to_run_error)
-    }
-
-    async fn drain_mcp_generation(
-        &self,
-        generation: awaken_protocol_managed::McpGenerationRef,
-    ) -> Result<(), RunError> {
-        self.host
-            .drain_mcp_projection(&generation)
-            .await
-            .map_err(to_run_error)
-    }
-
     async fn prepare_session(
         &self,
         thread: &str,
@@ -1438,26 +1295,10 @@ impl SessionRuntime for ManagedHost {
             self.host.register_thread_runtime(thread, runtime);
         }
         self.host
-            .register_thread_credential_realization(thread, init.credential_realization.clone());
+            .install_environment_projection(thread, &init.environment)
+            .map_err(to_run_error)?;
         self.host
             .register_thread_delegates(thread, init.delegate_ids.clone());
-        // Stage the session's network-egress policy (from its environment): the first
-        // turn's sandbox runs `bash` under `bwrap --unshare-net` when egress is denied.
-        if init.deny_egress {
-            self.host.register_thread_egress(thread, true);
-        }
-        // Stage the session's environment sandbox overlay: parse the raw `config.sandbox`
-        // blob into a provisioning `SandboxOverride` HERE (the host owns the provisioning
-        // contract; the neutral `SessionInit` carries only the blob). Consumed by
-        // `sandbox_spec` (native jail) and the sandboxed ACP channel source, so a
-        // UI-authored sandbox shapes both. A malformed blob contributes nothing.
-        if let Some(over) = init
-            .sandbox
-            .as_ref()
-            .and_then(awaken_provisioning_contract::SandboxOverride::from_config_value)
-        {
-            self.host.register_thread_sandbox(thread, over);
-        }
         // Stage only the already-resolved manifest. Runtime never reads the Agent
         // binding repository or composes defaults again.
         self.stage_resource_manifest(thread, &init.workspace_id, &init.resources)
@@ -1535,6 +1376,238 @@ impl SessionRuntime for ManagedHost {
             capabilities.delegates = delegate_ids;
         }
         capabilities
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_protocol_managed::McpAttachmentRealizer for ManagedHost {
+    async fn stage_mcp_attachment(
+        &self,
+        request: awaken_protocol_managed::StageMcpAttachment,
+    ) -> Result<awaken_protocol_managed::McpRealizationReceipt, RunError> {
+        use awaken_runtime_contract::{
+            CredentialRealizationCapabilities, CredentialRealizationKind, PlaintextBoundary,
+        };
+        use std::collections::BTreeSet;
+
+        if request.workspace_id.trim().is_empty()
+            || request.generation.session_id.trim().is_empty()
+            || request.realization_id.trim().is_empty()
+            || request.stage_idempotency_key.trim().is_empty()
+            || request.name.trim().is_empty()
+            || request.target.url.trim().is_empty()
+        {
+            return Err(RunError::bad_request(
+                "MCP realization request is incomplete",
+            ));
+        }
+        let now_unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or_default();
+        if request.generation.lease_expires_at_unix_ms < now_unix_ms {
+            return Err(RunError::classified(
+                "mcp_stale_ownership",
+                "MCP realization lease has expired",
+            ));
+        }
+        let request_fingerprint = request.fingerprint();
+        if let Some(existing) = self.host.mcp_projection(&request.generation) {
+            if existing.realization_id == request.realization_id
+                && existing.stage_idempotency_key == request.stage_idempotency_key
+                && existing.receipt.receipt_fingerprint == request_fingerprint
+                && existing.state != crate::session_slot::McpProjectionState::Removed
+            {
+                return Ok(existing.receipt);
+            }
+            return Err(RunError::classified(
+                "mcp_stale_generation",
+                "MCP generation is already bound to another realization",
+            ));
+        }
+        match self.host.renew_mcp_projection(&request) {
+            Ok(Some(receipt)) => return Ok(receipt),
+            Ok(None) => {}
+            Err(error) => {
+                return Err(RunError::classified(
+                    "mcp_stale_generation",
+                    error.to_string(),
+                ));
+            }
+        }
+
+        let is_acp = self
+            .host
+            .acp
+            .as_ref()
+            .and_then(|acp| acp.adapter_for(&request.generation.session_id))
+            .is_some_and(|adapter| {
+                awaken_runtime_contract::resolved::Backend::from_ref(&adapter).is_acp()
+            });
+
+        let (bearer, refresh, actual_realization_kind) = match (
+            request.credential.as_ref(),
+            request.selected_plaintext_holder.as_ref(),
+        ) {
+            (None, None) => (None, None, None),
+            (Some(access), Some(holder)) => {
+                if holder.boundary != PlaintextBoundary::Worker {
+                    return Err(RunError::classified(
+                        "mcp_holder_unsupported",
+                        "MCP Runtime supports only the Worker-held relay boundary",
+                    ));
+                }
+                match &access.usage {
+                    awaken_runtime_contract::CredentialUsage::HttpHeader { name, scheme }
+                        if name.eq_ignore_ascii_case("authorization")
+                            && scheme
+                                .as_deref()
+                                .is_some_and(|scheme| scheme.eq_ignore_ascii_case("bearer")) => {}
+                    _ => {
+                        return Err(RunError::classified(
+                            "mcp_credential_usage_unsupported",
+                            "MCP Runtime supports only canonical Authorization Bearer usage",
+                        ));
+                    }
+                }
+                if is_acp
+                    && !self
+                        .host
+                        .session_provider
+                        .capabilities()
+                        .supports_secret_egress_without_bypass()
+                {
+                    return Err(RunError::classified(
+                        "mcp_holder_unsupported",
+                        "authenticated ACP MCP requires provider-enforced secret substitution and no-bypass networking before Worker relay materialization",
+                    ));
+                }
+                let injector = self.credentials.as_ref().ok_or_else(|| {
+                    RunError::classified(
+                        "mcp_material_source_unavailable",
+                        "MCP credential requires a configured material resolver",
+                    )
+                })?;
+                let (material_sources, recipient_bound_envelopes) =
+                    injector.material_source_capabilities();
+                access
+                    .admit(
+                        holder,
+                        CredentialRealizationKind::WorkerRelay,
+                        &CredentialRealizationCapabilities {
+                            holders: BTreeSet::from([holder.clone()]),
+                            material_sources,
+                            realization_kinds: BTreeSet::from([
+                                CredentialRealizationKind::WorkerRelay,
+                            ]),
+                            recipient_bound_envelopes,
+                        },
+                        now_unix_ms,
+                    )
+                    .map_err(|error| {
+                        RunError::classified("mcp_credential_admission", error.to_string())
+                    })?;
+                let bearer = injector
+                    .resolve_for_workspace(
+                        access,
+                        holder,
+                        CredentialRealizationKind::WorkerRelay,
+                        &request.workspace_id,
+                        &(&request.name, &request.target),
+                    )
+                    .await
+                    .map_err(|error| {
+                        RunError::classified(
+                            "mcp_credential_revision_mismatch",
+                            format!(
+                                "mcp server `{}` credential could not be resolved exactly: {error}",
+                                request.name
+                            ),
+                        )
+                    })?
+                    .material;
+                let refresh = access.refresh.as_ref().map(|refresh| {
+                    crate::mcp::McpRefreshMaterial::new(refresh.clone(), injector.secret_store())
+                });
+                (
+                    Some(bearer),
+                    refresh,
+                    Some(CredentialRealizationKind::WorkerRelay),
+                )
+            }
+            _ => {
+                return Err(RunError::classified(
+                    "mcp_credential_binding_invalid",
+                    "MCP credential and selected plaintext holder must be present together",
+                ));
+            }
+        };
+        let renewal_binding_fingerprint = request.renewal_binding_fingerprint();
+        let server = crate::mcp::McpTransportMaterial {
+            name: request.name,
+            url: request.target.url,
+            bearer,
+            refresh,
+        };
+        let native_wiring = if is_acp {
+            None
+        } else {
+            Some(
+                crate::mcp::connect_materialized(std::slice::from_ref(&server))
+                    .await
+                    .map_err(to_run_error)?,
+            )
+        };
+        let receipt = awaken_protocol_managed::McpRealizationReceipt {
+            generation: request.generation.clone(),
+            realization_id: request.realization_id.clone(),
+            selected_plaintext_holder: request.selected_plaintext_holder,
+            actual_realization_kind,
+            receipt_fingerprint: request_fingerprint,
+        };
+        self.host
+            .insert_mcp_projection(crate::session_slot::McpGenerationProjection {
+                generation: request.generation,
+                realization_id: request.realization_id,
+                stage_idempotency_key: request.stage_idempotency_key,
+                renewal_binding_fingerprint,
+                receipt: receipt.clone(),
+                server: Some(server),
+                native_wiring,
+                state: crate::session_slot::McpProjectionState::Staged,
+            })
+            .map_err(to_run_error)?;
+        Ok(receipt)
+    }
+
+    async fn publish_mcp_generation(
+        &self,
+        generation: awaken_protocol_managed::McpGenerationRef,
+    ) -> Result<(), RunError> {
+        let now_unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or_default();
+        if generation.lease_expires_at_unix_ms < now_unix_ms {
+            return Err(RunError::classified(
+                "mcp_stale_ownership",
+                "MCP publication lease has expired",
+            ));
+        }
+        self.host
+            .publish_mcp_projection(&generation)
+            .await
+            .map_err(to_run_error)
+    }
+
+    async fn drain_mcp_generation(
+        &self,
+        generation: awaken_protocol_managed::McpGenerationRef,
+    ) -> Result<(), RunError> {
+        self.host
+            .drain_mcp_projection(&generation)
+            .await
+            .map_err(to_run_error)
     }
 }
 

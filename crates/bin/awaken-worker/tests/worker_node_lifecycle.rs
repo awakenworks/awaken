@@ -15,6 +15,49 @@ fn manifest() -> WorkerManifest {
     }
 }
 
+struct ExternalSessionProvider;
+
+#[async_trait::async_trait]
+impl awaken_runtime_host::ContainerEnvironmentProvider for ExternalSessionProvider {
+    fn sandbox_capabilities(&self) -> awaken_provisioning_contract::SandboxCapabilities {
+        awaken_provisioning_contract::SandboxCapabilities {
+            isolation: awaken_provisioning_contract::IsolationClass::Container,
+            tool_transparent: true,
+            path_fidelity: true,
+            enforced_readonly: true,
+            network_isolation: true,
+            enforced_network_allowlist: true,
+            secret_egress_substitution: true,
+            resource_limits: true,
+            custom_rootfs: true,
+        }
+    }
+
+    async fn create_environment(
+        &self,
+        _spec: &awaken_provisioning_contract::SandboxSpec,
+    ) -> Result<
+        Arc<dyn awaken_runtime_host::ContainerEnvironment>,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        Err(awaken_provisioning_contract::SandboxError::new(
+            "manifest-only fixture",
+        ))
+    }
+
+    async fn adopt_environment(
+        &self,
+        _handle: &awaken_provisioning_contract::SandboxHandle,
+    ) -> Result<
+        Arc<dyn awaken_runtime_host::ContainerEnvironment>,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        Err(awaken_provisioning_contract::SandboxError::new(
+            "manifest-only fixture",
+        ))
+    }
+}
+
 #[test]
 fn builder_rejects_incomplete_or_invalid_topology() {
     let missing = WorkerNodeBuilder::new(WorkerUpstream::new("http://control"))
@@ -77,6 +120,30 @@ fn standard_manifest_is_derived_from_builder_topology() {
             .contains("application:test/v1")
     );
     assert!(worker.manifest().capabilities.contains("acp:codex"));
+}
+
+#[test]
+fn standard_manifest_uses_the_installed_session_provider_as_authority() {
+    let worker = WorkerNodeBuilder::new(WorkerUpstream::new("http://control"))
+        .with_session_container_provider("external-secure", Arc::new(ExternalSessionProvider))
+        .with_standard_manifest(Default::default())
+        .build()
+        .expect("external provider is a complete standard topology");
+
+    assert_eq!(
+        worker.manifest().sandbox_backends,
+        std::collections::BTreeSet::from(["external-secure".to_string()])
+    );
+    assert!(worker.manifest().sandbox.secret_egress_substitution);
+    assert!(worker.manifest().sandbox.enforced_network_allowlist);
+
+    let empty_backend = WorkerNodeBuilder::new(WorkerUpstream::new("http://control"))
+        .with_session_container_provider(" ", Arc::new(ExternalSessionProvider))
+        .with_standard_manifest(Default::default())
+        .build()
+        .err()
+        .expect("provider identity is required");
+    assert!(empty_backend.to_string().contains("backend"));
 }
 
 #[test]

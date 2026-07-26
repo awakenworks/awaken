@@ -103,6 +103,7 @@ fn credential_dispatch(
             realization_kinds: [CredentialRealizationKind::WorkerProviderAdapter]
                 .into_iter()
                 .collect(),
+            recipient_bound_envelopes: false,
         },
     )
 }

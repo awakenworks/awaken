@@ -1126,10 +1126,9 @@ impl ManagedState {
             ),
             None => None,
         };
-        if persisted
-            .as_ref()
-            .is_some_and(|session| session.status == "deleted")
-        {
+        if persisted.as_ref().is_some_and(|session| {
+            matches!(session.status.as_str(), "deleted" | "activation_failed")
+        }) {
             return Err(StateError::NotFound);
         }
         if let Some(session) = persisted.clone() {
@@ -1152,12 +1151,7 @@ impl ManagedState {
                         resources: session.resources.active.clone(),
                         model: Some(baseline.model.clone()),
                         runtime: baseline.runtime.clone(),
-                        credential_realization: baseline.environment.credential_realization.clone(),
-                        deny_egress: !matches!(
-                            baseline.environment.network,
-                            awaken_session_contract::SessionNetworkPolicy::Unrestricted
-                        ),
-                        sandbox: Some(baseline.environment.sandbox.clone()),
+                        environment: baseline.environment.clone(),
                     },
                 )
                 .await
@@ -1172,7 +1166,7 @@ impl ManagedState {
             }
         }
         let messages = self.runtime.committed_messages(id).await;
-        if messages.is_empty() {
+        if messages.is_empty() && persisted.is_none() {
             return Err(StateError::NotFound);
         }
         let events: Vec<Event> = project_messages(&messages, None)

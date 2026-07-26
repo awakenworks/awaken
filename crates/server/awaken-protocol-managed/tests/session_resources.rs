@@ -190,34 +190,6 @@ impl SessionRuntime for AcceptingFake {
         self.prepared.lock().unwrap().push(init);
         Ok(())
     }
-    async fn stage_mcp_attachment(
-        &self,
-        request: awaken_session_contract::StageMcpAttachment,
-    ) -> Result<awaken_session_contract::McpRealizationReceipt, RunError> {
-        self.staged.lock().unwrap().push(request.clone());
-        let receipt_fingerprint = request.fingerprint();
-        Ok(awaken_session_contract::McpRealizationReceipt {
-            generation: request.generation,
-            realization_id: request.realization_id,
-            selected_plaintext_holder: request.selected_plaintext_holder,
-            actual_realization_kind: Some(
-                awaken_credential_contract::CredentialRealizationKind::WorkerRelay,
-            ),
-            receipt_fingerprint,
-        })
-    }
-    async fn publish_mcp_generation(
-        &self,
-        _generation: awaken_session_contract::McpGenerationRef,
-    ) -> Result<(), RunError> {
-        Ok(())
-    }
-    async fn drain_mcp_generation(
-        &self,
-        _generation: awaken_session_contract::McpGenerationRef,
-    ) -> Result<(), RunError> {
-        Ok(())
-    }
     fn capabilities_for(&self, _thread: &str) -> awaken_protocol_managed::AgentCapabilities {
         awaken_protocol_managed::AgentCapabilities {
             delegates: self
@@ -301,6 +273,40 @@ impl SessionRuntime for AcceptingFake {
     }
 }
 
+#[async_trait::async_trait]
+impl awaken_protocol_managed::McpAttachmentRealizer for AcceptingFake {
+    async fn stage_mcp_attachment(
+        &self,
+        request: awaken_session_contract::StageMcpAttachment,
+    ) -> Result<awaken_session_contract::McpRealizationReceipt, RunError> {
+        self.staged.lock().unwrap().push(request.clone());
+        let receipt_fingerprint = request.fingerprint();
+        Ok(awaken_session_contract::McpRealizationReceipt {
+            generation: request.generation,
+            realization_id: request.realization_id,
+            selected_plaintext_holder: request.selected_plaintext_holder,
+            actual_realization_kind: Some(
+                awaken_credential_contract::CredentialRealizationKind::WorkerRelay,
+            ),
+            receipt_fingerprint,
+        })
+    }
+
+    async fn publish_mcp_generation(
+        &self,
+        _generation: awaken_session_contract::McpGenerationRef,
+    ) -> Result<(), RunError> {
+        Ok(())
+    }
+
+    async fn drain_mcp_generation(
+        &self,
+        _generation: awaken_session_contract::McpGenerationRef,
+    ) -> Result<(), RunError> {
+        Ok(())
+    }
+}
+
 async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
     let mut b = Request::builder().method(method).uri(uri);
     let body = match body {
@@ -329,7 +335,7 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
     let repo = std::sync::Arc::new(
         SqliteManagedSessionRepository::open_in_memory().expect("session repository"),
     );
-    let state = ManagedState::new(runtime)
+    let state = ManagedState::new_with_mcp(runtime)
         .with_config_source(std::sync::Arc::new(AgentWithIntegrations))
         .with_session_repo(repo.clone());
     let app = router(std::sync::Arc::new(state));
@@ -424,7 +430,7 @@ async fn create_rejects_different_names_for_one_canonical_mcp_target_before_inse
     let repo = std::sync::Arc::new(
         SqliteManagedSessionRepository::open_in_memory().expect("session repository"),
     );
-    let state = ManagedState::new(runtime)
+    let state = ManagedState::new_with_mcp(runtime)
         .with_config_source(std::sync::Arc::new(AgentWithIntegrations))
         .with_session_repo(repo.clone());
     let app = router(std::sync::Arc::new(state));
@@ -696,7 +702,7 @@ async fn repository_token_is_sealed_before_the_effective_manifest() {
             );
             assert_eq!(
                 credential.selected_plaintext_holder,
-                calls[0].credential_realization.resource_holder
+                calls[0].environment.credential_realization.resource_holder
             );
             assert_eq!(
                 credential.access.policy.model_exposure,
@@ -928,6 +934,7 @@ async fn retained_repository_rows_migrate_through_the_one_pin_compiler() {
             owner: lease.owner.clone(),
             runtime_incarnation: lease.runtime_incarnation.clone(),
             lease_expires_at_unix_ms: lease.expires_at_unix_ms,
+            renew_existing_lease: false,
         },
     };
 

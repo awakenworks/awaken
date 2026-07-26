@@ -117,28 +117,15 @@ pub struct ApplicationSessionControlReceipt {
 /// application service. Contribution and realization phases cannot be wired to
 /// different authorities.
 #[async_trait::async_trait]
-pub trait ApplicationSessionControlClient: Send + Sync {
+pub trait ApplicationSessionControlClient:
+    awaken_protocol_managed::SessionRealizationControl + Send + Sync
+{
     async fn contribute(
         &self,
         session_id: &str,
         claim: &RunClaim,
         plan: ApplicationSessionPlan,
     ) -> Result<ApplicationSessionControlReceipt, ApplicationSessionError>;
-
-    async fn activate(
-        &self,
-        command: awaken_protocol_managed::ActivateSessionRealization,
-    ) -> Result<awaken_protocol_managed::SessionRealizationDirective, ApplicationSessionError>;
-
-    async fn acknowledge(
-        &self,
-        command: awaken_protocol_managed::AcknowledgeSessionRealization,
-    ) -> Result<awaken_protocol_managed::SessionRealizationDirective, ApplicationSessionError>;
-
-    async fn fail(
-        &self,
-        command: awaken_protocol_managed::FailSessionRealization,
-    ) -> Result<(), ApplicationSessionError>;
 }
 
 /// Standard client using the same registered identity-bound Worker transport as
@@ -169,39 +156,136 @@ impl ApplicationSessionControlClient for WorkerControlApplicationSessionClient {
             .await
             .map_err(ApplicationSessionError::new)
     }
+}
 
-    async fn activate(
+#[async_trait::async_trait]
+impl awaken_protocol_managed::SessionRealizationControl for WorkerControlApplicationSessionClient {
+    async fn begin_session_realization(
+        &self,
+        command: awaken_protocol_managed::BeginSessionRealization,
+    ) -> Result<
+        awaken_protocol_managed::SessionRealizationDirective,
+        awaken_protocol_managed::SessionRealizationControlFailure,
+    > {
+        self.control
+            .begin_session_realization(&self.identity, command)
+            .await
+            .map_err(awaken_protocol_managed::SessionRealizationControlFailure::Unavailable)
+    }
+
+    async fn activate_session_realization(
         &self,
         command: awaken_protocol_managed::ActivateSessionRealization,
-    ) -> Result<awaken_protocol_managed::SessionRealizationDirective, ApplicationSessionError> {
+    ) -> Result<
+        awaken_protocol_managed::SessionRealizationDirective,
+        awaken_protocol_managed::SessionRealizationControlFailure,
+    > {
         self.control
             .activate_session_realization(&self.identity, command)
             .await
-            .map_err(ApplicationSessionError::new)
+            .map_err(awaken_protocol_managed::SessionRealizationControlFailure::Unavailable)
     }
 
-    async fn acknowledge(
+    async fn acknowledge_session_realization(
         &self,
         command: awaken_protocol_managed::AcknowledgeSessionRealization,
-    ) -> Result<awaken_protocol_managed::SessionRealizationDirective, ApplicationSessionError> {
+    ) -> Result<
+        awaken_protocol_managed::SessionRealizationDirective,
+        awaken_protocol_managed::SessionRealizationControlFailure,
+    > {
         self.control
             .acknowledge_session_realization(&self.identity, command)
             .await
-            .map_err(ApplicationSessionError::new)
+            .map_err(awaken_protocol_managed::SessionRealizationControlFailure::Unavailable)
     }
 
-    async fn fail(
+    async fn fail_session_realization(
         &self,
         command: awaken_protocol_managed::FailSessionRealization,
-    ) -> Result<(), ApplicationSessionError> {
+    ) -> Result<(), awaken_protocol_managed::SessionRealizationControlFailure> {
         self.control
             .fail_session_realization(&self.identity, command)
             .await
-            .map_err(ApplicationSessionError::new)
+            .map_err(awaken_protocol_managed::SessionRealizationControlFailure::Unavailable)
     }
 }
 
 impl crate::SharedHost {
+    pub(crate) fn install_session_realization_lease(
+        &self,
+        session_id: &str,
+        lease: awaken_protocol_managed::SessionRealizationLease,
+    ) {
+        self.session_slots
+            .update(session_id, |slot| slot.realization_lease = Some(lease));
+    }
+
+    /// Renew every active MCP projection approaching expiry through the same
+    /// Control phase protocol used for initial creation and hot replacement.
+    /// One failure aborts the batch so a Worker heartbeat cannot claim healthy
+    /// custody while any owned route lost its authority.
+    pub async fn renew_due_session_realizations(
+        &self,
+        renew_before_unix_ms: u64,
+        requested_expiry_unix_ms: u64,
+    ) -> Result<usize, crate::HostError> {
+        let due = self
+            .session_slots
+            .realization_leases()
+            .into_iter()
+            .filter(|(_, lease)| lease.expires_at_unix_ms <= renew_before_unix_ms)
+            .collect::<Vec<_>>();
+        if due.is_empty() {
+            return Ok(0);
+        }
+        let control = self.application_session_control.as_ref().ok_or_else(|| {
+            crate::HostError::internal(
+                "active application Session projection has no Control renewal client",
+            )
+        })?;
+        for (session_id, lease) in &due {
+            let directive = control
+                .begin_session_realization(awaken_protocol_managed::BeginSessionRealization {
+                    session_id: session_id.clone(),
+                    target: awaken_protocol_managed::SessionRealizationTarget {
+                        owner: lease.owner.clone(),
+                        runtime_incarnation: lease.runtime_incarnation.clone(),
+                        lease_expires_at_unix_ms: requested_expiry_unix_ms,
+                        renew_existing_lease: true,
+                    },
+                })
+                .await
+                .map_err(|error| crate::HostError::internal(error.to_string()))?;
+            crate::host::HostWorkerResolver::realize_application_session(
+                self, control, session_id, directive,
+            )
+            .await
+            .map_err(|error| crate::HostError::internal(error.to_string()))?;
+        }
+        Ok(due.len())
+    }
+
+    /// Revoke every process-local Session projection after Worker authority is
+    /// no longer provable. Visibility is removed and environments/routes are
+    /// disposed through the same terminal Host path; no credential-bearing
+    /// projection remains available while Control ownership is unknown.
+    pub async fn revoke_all_session_realizations(&self) -> Result<usize, crate::HostError> {
+        let session_ids = self.session_slots.session_ids();
+        let mut revoked = 0;
+        let mut first_error = None;
+        for session_id in session_ids {
+            match self.end_session(&session_id).await {
+                Ok(()) => revoked += 1,
+                Err(error) if first_error.is_none() => first_error = Some(error),
+                Err(_) => {}
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(revoked),
+        }
+    }
+
     pub(crate) async fn install_frozen_session_projection(
         &self,
         thread: &str,
@@ -217,11 +301,13 @@ impl crate::SharedHost {
                 "application contribution returned a baseline without its durable receipt",
             ));
         }
-        if !projection.mcp.is_empty() {
-            return Err(crate::HostError::internal(
-                "remote initial MCP realization is not installed",
-            ));
-        }
+        let has_mcp_projection = projection.mcp.iter().any(|attachment| {
+            !matches!(
+                attachment.state,
+                awaken_protocol_managed::McpAttachmentState::Removed
+                    | awaken_protocol_managed::McpAttachmentState::Failed
+            )
+        });
         let baseline = decode_baseline_projection(&projection.baseline)?;
 
         if let Some(existing) = self
@@ -229,13 +315,15 @@ impl crate::SharedHost {
             .read(thread, |slot| slot.baseline.clone())
             .flatten()
         {
-            return if existing.fingerprint == baseline.fingerprint {
-                Ok(())
-            } else {
-                Err(crate::HostError::internal(format!(
+            if existing.fingerprint != baseline.fingerprint {
+                return Err(crate::HostError::internal(format!(
                     "thread {thread} is already bound to a different frozen Session baseline"
-                )))
-            };
+                )));
+            }
+            self.session_slots.update(thread, |slot| {
+                slot.has_mcp_projection = has_mcp_projection;
+            });
+            return Ok(());
         }
 
         let occupied = self.session_slots.read(thread, |slot| {
@@ -261,31 +349,42 @@ impl crate::SharedHost {
                 .await
                 .map_err(|error| crate::HostError::internal(error.to_string()))?;
         }
-        self.session_slots
-            .update(thread, |slot| slot.baseline = Some(baseline));
+        self.session_slots.update(thread, |slot| {
+            slot.baseline = Some(baseline);
+            slot.has_mcp_projection = has_mcp_projection;
+        });
+        self.install_environment_projection(thread, &projection.baseline.environment)?;
         self.register_thread_workspace(thread, &projection.workspace_id);
         self.register_thread_model(thread, &projection.baseline.model);
         if let Some(runtime) = &projection.baseline.runtime {
             self.register_thread_runtime(thread, runtime);
         }
         self.register_thread_delegates(thread, projection.baseline.delegate_ids);
-        self.register_thread_credential_realization(
-            thread,
-            projection
-                .baseline
-                .environment
-                .credential_realization
-                .clone(),
-        );
-        self.register_thread_egress(
-            thread,
-            projection.baseline.environment.network.is_restricted(),
-        );
-        if let Some(sandbox) = awaken_provisioning_contract::SandboxOverride::from_config_value(
-            &projection.baseline.environment.sandbox,
-        ) {
-            self.register_thread_sandbox(thread, sandbox);
+        Ok(())
+    }
+
+    pub(crate) fn install_environment_projection(
+        &self,
+        thread: &str,
+        environment: &awaken_protocol_managed::EnvironmentSnapshot,
+    ) -> Result<(), crate::HostError> {
+        let projection = decode_environment_projection(environment);
+        if let Some(existing) = self
+            .session_slots
+            .read(thread, |slot| slot.environment_projection.clone())
+            .flatten()
+        {
+            return if existing.fingerprint == projection.fingerprint {
+                Ok(())
+            } else {
+                Err(crate::HostError::internal(format!(
+                    "thread {thread} is already bound to a different frozen Environment"
+                )))
+            };
         }
+        self.session_slots.update(thread, |slot| {
+            slot.environment_projection = Some(projection)
+        });
         Ok(())
     }
 
@@ -358,7 +457,18 @@ fn decode_baseline_projection(
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let network = match &baseline.environment.network {
+    Ok(crate::session_slot::FrozenBaselineRuntimeProjection {
+        fingerprint: baseline.fingerprint.clone(),
+        mounts,
+        env,
+        prompts: baseline.prompts.clone(),
+    })
+}
+
+fn decode_environment_projection(
+    environment: &awaken_protocol_managed::EnvironmentSnapshot,
+) -> crate::session_slot::FrozenEnvironmentRuntimeProjection {
+    let network = match &environment.network {
         awaken_protocol_managed::SessionNetworkPolicy::Unrestricted => {
             awaken_provisioning_contract::NetworkPolicy::Unrestricted
         }
@@ -371,13 +481,21 @@ fn decode_baseline_projection(
             awaken_provisioning_contract::NetworkPolicy::None
         }
     };
-    Ok(crate::session_slot::FrozenBaselineRuntimeProjection {
-        fingerprint: baseline.fingerprint.clone(),
-        mounts,
-        env,
-        prompts: baseline.prompts.clone(),
+    let sandbox =
+        awaken_provisioning_contract::SandboxOverride::from_config_value(&environment.sandbox)
+            .and_then(|mut sandbox| {
+                // EnvironmentSnapshot.network is the sole reachability authority. Old
+                // retained blobs may still contain the pre-normalization sandbox.network
+                // field; ignoring it is fail-stable and prevents a late widening override.
+                sandbox.network = None;
+                (!sandbox.is_empty()).then_some(sandbox)
+            });
+    crate::session_slot::FrozenEnvironmentRuntimeProjection {
+        fingerprint: environment.config_fingerprint.clone(),
         network,
-    })
+        sandbox,
+        credential_realization: environment.credential_realization.clone(),
+    }
 }
 
 fn validate_baseline_projection(

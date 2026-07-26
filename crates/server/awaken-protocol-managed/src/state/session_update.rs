@@ -52,7 +52,7 @@ impl ManagedState {
         &self,
         id: &str,
         command: SessionUpdateCommand,
-    ) -> Result<Session, StateError> {
+    ) -> Result<(Session, awaken_session_contract::SessionRevision), StateError> {
         let request_hash = awaken_session_contract::stable_fingerprint(&(
             &command.title,
             &command.metadata,
@@ -77,7 +77,7 @@ impl ManagedState {
             if receipt.payload_hash != record.payload_hash {
                 return Err(StateError::IdempotencyMismatch);
             }
-            return self.get_session(id);
+            return Ok((self.get_session(id)?, receipt.committed_revision));
         }
 
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
@@ -101,7 +101,7 @@ impl ManagedState {
         id: &str,
         command: &SessionUpdateCommand,
         command_record: Option<awaken_session_contract::IdempotencyRecord>,
-    ) -> Result<Session, StateError> {
+    ) -> Result<(Session, awaken_session_contract::SessionRevision), StateError> {
         {
             let sessions = self.sessions.lock().unwrap();
             let record = sessions.get(id).ok_or(StateError::NotFound)?;
@@ -130,6 +130,7 @@ impl ManagedState {
         let initial_title = persisted.title.clone();
         let initial_metadata = persisted.metadata.clone();
         let initial_tools = persisted.agent_tools.clone();
+        let command_receipt_key = command_record.as_ref().map(|record| record.key.clone());
         let mut mcp_changed = false;
         let mcp_in_request = command.mcp_servers.is_some();
         if let Some(wire_servers) = command.mcp_servers.clone() {
@@ -259,8 +260,26 @@ impl ManagedState {
                 }
             };
         }
+        let response_revision = if command_applied {
+            persisted.revision
+        } else {
+            let key = command_receipt_key.as_deref().ok_or_else(|| {
+                StateError::Run(RunError::internal(
+                    "replayed Session update has no idempotency key",
+                ))
+            })?;
+            self.sessions_repo
+                .idempotency_receipt(id, key)
+                .await
+                .ok_or_else(|| {
+                    StateError::Run(RunError::internal(
+                        "replayed Session update has no idempotency receipt",
+                    ))
+                })?
+                .committed_revision
+        };
         if !semantic_changed || !command_applied {
-            return self.get_session(id);
+            return Ok((self.get_session(id)?, response_revision));
         }
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
@@ -285,6 +304,6 @@ impl ManagedState {
             },
             processed_at: Some(PROCESSED_AT.to_string()),
         });
-        Ok(record.session_projection())
+        Ok((record.session_projection(), response_revision))
     }
 }

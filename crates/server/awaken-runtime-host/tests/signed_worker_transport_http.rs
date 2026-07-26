@@ -30,6 +30,7 @@ struct RecordingApplicationContributions {
     activations: Mutex<usize>,
     acknowledgements: Mutex<usize>,
     failures: Mutex<usize>,
+    begins: Mutex<Vec<awaken_protocol_managed::BeginSessionRealization>>,
 }
 
 #[async_trait::async_trait]
@@ -108,6 +109,7 @@ impl awaken_protocol_managed::SessionRealizationControl for RecordingApplication
         awaken_protocol_managed::SessionRealizationDirective,
         awaken_protocol_managed::SessionRealizationControlFailure,
     > {
+        self.begins.lock().unwrap().push(command.clone());
         let projection = self
             .projection
             .lock()
@@ -431,6 +433,9 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // | T7 | exact/live | Session lease expired | - | reject before control |
     // | T8 | exact/live | Session lease exact | - | acknowledge reaches same control |
     // | T9 | exact/live | Session lease exact | - | failure reaches same control |
+    // | T10 | exact/live | explicit renewal within registry lease | - | begin reaches control |
+    // | T11 | exact/live | implicit/non-renew begin | - | reject before control |
+    // | T12 | exact/live | renewal beyond registry lease | - | reject before control |
     let client = WorkerControlClient::new(upstream.clone());
     let contribution = awaken_protocol_managed::ApplicationSessionContribution {
         session_id: "signed-thread".into(),
@@ -474,6 +479,39 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         "T2/T3"
     );
     let realization_lease = receipt.realization.lease.clone();
+    let renewal = awaken_protocol_managed::BeginSessionRealization {
+        session_id: "signed-thread".into(),
+        target: awaken_protocol_managed::SessionRealizationTarget {
+            owner: registered.snapshot.identity.worker_id.clone(),
+            runtime_incarnation: registered.snapshot.identity.lease_owner(),
+            lease_expires_at_unix_ms: realization_lease.expires_at_unix_ms,
+            renew_existing_lease: true,
+        },
+    };
+    client
+        .begin_session_realization(&registered.snapshot.identity, renewal.clone())
+        .await
+        .expect("T10");
+    assert_eq!(contributions.begins.lock().unwrap().len(), 2, "T10");
+    let mut implicit = renewal.clone();
+    implicit.target.renew_existing_lease = false;
+    assert!(
+        client
+            .begin_session_realization(&registered.snapshot.identity, implicit)
+            .await
+            .is_err(),
+        "T11"
+    );
+    let mut excessive = renewal;
+    excessive.target.lease_expires_at_unix_ms = u64::MAX;
+    assert!(
+        client
+            .begin_session_realization(&registered.snapshot.identity, excessive)
+            .await
+            .is_err(),
+        "T12"
+    );
+    assert_eq!(contributions.begins.lock().unwrap().len(), 2, "T11/T12");
     client
         .activate_session_realization(
             &registered.snapshot.identity,

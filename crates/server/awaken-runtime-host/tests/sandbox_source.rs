@@ -13,17 +13,59 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_protocol_managed::{
+    EnvironmentFingerprint, EnvironmentRevision, EnvironmentSnapshot, SessionInit,
+    SessionNetworkPolicy, SessionRuntime,
+};
 use awaken_run_executor_acp::AgentChannelSource;
 use awaken_run_executor_acp::{AcpLaunch, AcpRunExecutor};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
+use awaken_runtime_contract::llm::{
+    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
+};
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_runtime_host::{SandboxChannelSource, ThreadEgress};
+use awaken_runtime_host::{ManagedHost, SandboxChannelSource, SharedHost};
 use awaken_store_inmem::MemoryCommitCoordinator;
+
+struct UnusedModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for UnusedModel {
+    async fn infer(&self, _request: ChatRequest) -> LlmResult<ChatResponse> {
+        Ok(ChatResponse {
+            output: AssistantOutput::text("unused"),
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
+fn session_init(network: SessionNetworkPolicy) -> SessionInit {
+    let config_fingerprint =
+        EnvironmentFingerprint(awaken_protocol_managed::stable_fingerprint(&network));
+    SessionInit {
+        workspace_id: "workspace".into(),
+        agent_id: "agent".into(),
+        delegate_ids: Vec::new(),
+        resources: Default::default(),
+        model: None,
+        runtime: Some("acp:test".into()),
+        environment: EnvironmentSnapshot {
+            environment_id: "environment".into(),
+            revision: EnvironmentRevision(1),
+            config_fingerprint,
+            sandbox: serde_json::json!({}),
+            network,
+            credential_realization:
+                awaken_runtime_contract::CredentialRealizationProfile::self_hosted_acp(),
+        },
+    }
+}
 
 async fn bwrap_available() -> bool {
     use std::process::Stdio;
@@ -154,10 +196,19 @@ async fn deny_egress_confines_the_sandboxed_agent_network() {
         ],
         vec![("PROBE_PORT".to_string(), port.to_string())],
     );
-    let egress = ThreadEgress::new();
-    egress.set("iso", true); // the session's networking policy denies egress
+    let host = Arc::new(SharedHost::new(Arc::new(UnusedModel), "unused"));
+    let managed = ManagedHost::new(host.clone());
+    managed
+        .prepare_session("iso", session_init(SessionNetworkPolicy::None))
+        .await
+        .expect("freeze denied Environment");
+    managed
+        .prepare_session("open", session_init(SessionNetworkPolicy::Unrestricted))
+        .await
+        .expect("freeze open Environment");
     let source = Arc::new(
-        SandboxChannelSource::new(sandbox_base("egress"), launch).with_thread_egress(egress),
+        SandboxChannelSource::new(sandbox_base("egress"), launch)
+            .with_session_projection(host.session_projection_source()),
     );
 
     // Deny-egress thread: the OS gives the agent an empty network namespace.

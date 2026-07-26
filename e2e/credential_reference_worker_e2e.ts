@@ -153,8 +153,14 @@ async function main(): Promise<void> {
         scope_id: 'fixture-workspace',
         credential: {
           credential: { id: GRANT, revision: GRANT_REVISION },
-          injection: 'worker_reference',
+          material_source: 'worker_reference',
           usage: { type: 'provider_adapter' },
+          policy: {
+            allowed_plaintext_holders: [
+              { boundary: 'worker', trust_domain: 'awaken.worker' },
+            ],
+            model_exposure: 'forbidden',
+          },
         },
         endpoint: {
           adapter_kind: 'fixture',
@@ -164,6 +170,9 @@ async function main(): Promise<void> {
       },
     };
     request.activation.snapshot.resolved_spec.model_candidates = [];
+    request.inference_plaintext_holder = {
+      boundary: 'worker', trust_domain: 'awaken.worker',
+    };
     request.placement.required_capabilities = ['worker-local-credentials/v1', 'native-runtime'];
     request.placement.required_credentials = [{ source_id: GRANT, revision: GRANT_REVISION }];
     await post('/v1/worker/dispatch/enqueue', { request }, 'seed-worker');

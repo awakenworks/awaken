@@ -21,8 +21,8 @@ use crate::dispatch::{
     AttemptCredentialBinding, CasOutcome, Claimed, CommitEpochGuard, CredentialRealizationReceipt,
     DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue, DispatchState,
     DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim, SettleOutcome,
-    SubmitOptions, compile_attempt_credential_bindings, installed_worker_credential_capabilities,
-    verify_credential_realization_receipt,
+    SubmitOptions, can_admit_attempt_credentials, compile_attempt_credential_bindings,
+    installed_worker_credential_capabilities, verify_credential_realization_receipt,
 };
 use crate::dispatch_schema::dispatch_bundle;
 use crate::{
@@ -567,7 +567,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(reject)?;
             let sql = format!(
-                "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.cancel_requested FROM {p}_dispatch d WHERE \
+                "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d WHERE \
                  (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < ?1) OR \
                  (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS (SELECT 1 FROM {p}_pending pe \
                    WHERE pe.run_id = d.run_id AND (pe.available_at IS NULL OR pe.available_at <= ?1)) \
@@ -577,6 +577,7 @@ impl DispatchQueue for SqliteDispatchStore {
                  ORDER BY CASE WHEN d.cancel_requested = 1 THEN 0 WHEN d.status = 'running' THEN 1 WHEN d.status = 'awaiting' THEN 2 ELSE 3 END, \
                           d.priority DESC, d.created_at"
             );
+            let capabilities = installed_worker_credential_capabilities(&worker)?;
             let selected = {
                 let mut stmt = tx.prepare(&sql).map_err(reject)?;
                 let rows = stmt
@@ -587,27 +588,42 @@ impl DispatchQueue for SqliteDispatchStore {
                             row.get::<_, Option<String>>(2)?,
                             row.get::<_, Option<String>>(3)?,
                             row.get::<_, i64>(4)? != 0,
+                            row.get::<_, i64>(5)?.max(0) as u64,
                         ))
                     })
                     .map_err(reject)?;
                 let mut selected = None;
                 for row in rows {
-                    let (run_id, request_json, sandbox, previous_json, cancellation_requested) =
-                        row.map_err(reject)?;
+                    let (
+                        run_id,
+                        request_json,
+                        sandbox,
+                        previous_json,
+                        cancellation_requested,
+                        lease_epoch,
+                    ) = row.map_err(reject)?;
                     let request: RunDispatch =
                         serde_json::from_str(&request_json).map_err(json_err)?;
                     let previous: Option<WorkerAssignment> = previous_json
                         .map(|value| serde_json::from_str(&value).map_err(json_err))
                         .transpose()?;
                     if cancellation_requested
-                        || can_assign(
-                        &worker,
-                        &request.placement,
-                        previous.as_ref(),
-                        sandbox.is_some(),
-                        now_ms,
+                        || (can_assign(
+                            &worker,
+                            &request.placement,
+                            previous.as_ref(),
+                            sandbox.is_some(),
+                            now_ms,
                         )
                         .is_ok()
+                            && lease_epoch.checked_add(1).is_some_and(|epoch| {
+                                can_admit_attempt_credentials(
+                                    &request,
+                                    &capabilities,
+                                    epoch,
+                                    now_ms,
+                                )
+                            }))
                     {
                         selected = Some(run_id);
                         break;
@@ -626,7 +642,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 lease_ms,
                 now_ms,
                 Some(&worker),
-                &installed_worker_credential_capabilities(&worker)?,
+                &capabilities,
             )?;
             tx.commit().map_err(reject)?;
             Ok(claimed)
@@ -648,7 +664,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(reject)?;
             let sql = format!(
-                "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.status, d.cancel_requested FROM {p}_dispatch d WHERE \
+                "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.status, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d WHERE \
                  (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < ?1) OR \
                  (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS (SELECT 1 FROM {p}_pending pe \
                    WHERE pe.run_id = d.run_id AND (pe.available_at IS NULL OR pe.available_at <= ?1)) \
@@ -658,6 +674,7 @@ impl DispatchQueue for SqliteDispatchStore {
                  ORDER BY CASE WHEN d.cancel_requested = 1 THEN 0 WHEN d.status = 'running' THEN 1 WHEN d.status = 'awaiting' THEN 2 ELSE 3 END, \
                           d.priority DESC, d.created_at"
             );
+            let capabilities = installed_worker_credential_capabilities(&requester)?;
             let selected = {
                 let mut stmt = tx.prepare(&sql).map_err(reject)?;
                 let rows = stmt
@@ -669,31 +686,46 @@ impl DispatchQueue for SqliteDispatchStore {
                             row.get::<_, Option<String>>(3)?,
                             row.get::<_, String>(4)?,
                             row.get::<_, i64>(5)? != 0,
+                            row.get::<_, i64>(6)?.max(0) as u64,
                         ))
                     })
                     .map_err(reject)?;
                 let mut selected = None;
                 for row in rows {
-                    let (run_id, request_json, sandbox, previous_json, status, cancellation_requested) =
-                        row.map_err(reject)?;
+                    let (
+                        run_id,
+                        request_json,
+                        sandbox,
+                        previous_json,
+                        status,
+                        cancellation_requested,
+                        lease_epoch,
+                    ) = row.map_err(reject)?;
                     let request: RunDispatch =
                         serde_json::from_str(&request_json).map_err(json_err)?;
                     let previous: Option<WorkerAssignment> = previous_json
                         .map(|value| serde_json::from_str(&value).map_err(json_err))
                         .transpose()?;
                     if cancellation_requested
-                        || policy_selects_requester(
-                        &request,
-                        policy.as_ref(),
-                        DispatchPlacement {
-                            recovered: status == "running",
-                            previous: previous.as_ref(),
-                            sandbox_bound: sandbox.is_some(),
-                            requester: &requester.identity,
-                            workers: &workers,
-                            now_ms,
-                        },
-                        )?
+                        || (policy_selects_requester(
+                            &request,
+                            policy.as_ref(),
+                            DispatchPlacement {
+                                recovered: status == "running",
+                                previous: previous.as_ref(),
+                                sandbox_bound: sandbox.is_some(),
+                                requester: &requester.identity,
+                                workers: &workers,
+                                now_ms,
+                            },
+                        )? && lease_epoch.checked_add(1).is_some_and(|epoch| {
+                            can_admit_attempt_credentials(
+                                &request,
+                                &capabilities,
+                                epoch,
+                                now_ms,
+                            )
+                        }))
                     {
                         selected = Some(run_id);
                         break;
@@ -711,7 +743,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 lease_ms,
                 now_ms,
                 Some(&requester),
-                &installed_worker_credential_capabilities(&requester)?,
+                &capabilities,
             )?;
             tx.commit().map_err(reject)?;
             Ok(claimed)

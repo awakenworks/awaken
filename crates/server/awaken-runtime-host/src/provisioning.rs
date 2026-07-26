@@ -137,15 +137,20 @@ impl SharedHost {
         // Egress denial is a Workdir-tier bwrap convenience (not admission-gated
         // network isolation, which this tier cannot enforce), so it rides `extra`.
         let extra = self
-            .thread_egress
-            .denies(thread)
+            .session_slots
+            .read(thread, |slot| {
+                slot.environment_projection
+                    .as_ref()
+                    .is_some_and(|environment| environment.network.is_restricted())
+            })
+            .unwrap_or(false)
             .then(|| serde_json::json!({ "deny_egress": true }));
         let network = self
             .session_slots
             .read(thread, |slot| {
-                slot.baseline
+                slot.environment_projection
                     .as_ref()
-                    .map(|baseline| baseline.network.clone())
+                    .map(|environment| environment.network.clone())
             })
             .flatten()
             .unwrap_or(pc::NetworkPolicy::Unrestricted);
@@ -160,19 +165,26 @@ impl SharedHost {
             lease_ttl_secs: None,
             extra,
         };
-        // Overlay the session environment's `config.sandbox` (isolation/network/limits),
-        // so a UI-authored sandbox shapes the native bash-tool jail too — the SAME
-        // override the ACP channel source applies (shared `thread_sandbox` handle).
-        self.thread_sandbox.apply(thread, base)
+        // Apply only the network-free Sandbox requirement from the same frozen
+        // Environment projection ACP consumes. Reachability remains the distinct
+        // `network` fact above; retained sandbox.network fields were discarded.
+        self.session_slots
+            .read(thread, |slot| {
+                slot.environment_projection
+                    .as_ref()
+                    .and_then(|environment| environment.sandbox.clone())
+            })
+            .flatten()
+            .map_or(base.clone(), |sandbox| sandbox.apply(base))
     }
 
-    /// A shared clone of the thread-resources registry (like [`Self::thread_egress`]),
-    /// so a sandboxed ACP channel source reads the SAME staged mounts the native
-    /// `sandbox_spec` does and carries them into the bwrap/container sandbox. `pub` so a
-    /// composition root (e.g. a scenario host wiring a container-tier ACP source) can
-    /// pass it to [`crate::build_acp_channel_source`], symmetric with `thread_egress`.
-    pub fn thread_resources_handle(&self) -> crate::sandbox_source::ThreadResources {
-        crate::sandbox_source::ThreadResources::new(self.session_slots.clone())
+    /// The one read-only process projection source shared by Native and ACP
+    /// provisioning. It exposes frozen Environment plus staged Session inputs,
+    /// never an independently mutable network or Sandbox registry.
+    pub fn session_projection_source(
+        &self,
+    ) -> crate::sandbox_source::SessionRuntimeProjectionSource {
+        crate::sandbox_source::SessionRuntimeProjectionSource::new(self.session_slots.clone())
     }
 
     /// Stage a thread's resources (mounts + prompt fragments); consumed by
@@ -653,7 +665,21 @@ mod provisioning_registry_tests {
         assert!(!denies(&bare));
         assert!(bare.mounts.is_empty());
 
-        host.register_thread_egress("t", true);
+        host.install_environment_projection(
+            "t",
+            &awaken_protocol_managed::EnvironmentSnapshot {
+                environment_id: "environment".into(),
+                revision: awaken_protocol_managed::EnvironmentRevision(1),
+                config_fingerprint: awaken_protocol_managed::EnvironmentFingerprint(
+                    "environment-1".into(),
+                ),
+                sandbox: serde_json::json!({}),
+                network: awaken_protocol_managed::SessionNetworkPolicy::None,
+                credential_realization:
+                    awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
+            },
+        )
+        .expect("freeze test Environment");
         host.register_thread_resources(
             "t",
             StagedResources {

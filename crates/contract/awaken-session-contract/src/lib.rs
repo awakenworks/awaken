@@ -66,14 +66,15 @@ pub use resource_activation::{
 };
 pub use session::{
     AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
-    LiveInboxSnapshot, OutcomeIteration, OutcomeReport, Pending, RunError, RunErrorKind,
-    SessionInit, SessionRuntime, SessionUsage, StepOutcome, ToolPermissionDecision,
+    LiveInboxSnapshot, McpAttachmentRealizer, OutcomeIteration, OutcomeReport, Pending, RunError,
+    RunErrorKind, SessionInit, SessionRuntime, SessionUsage, StepOutcome, ToolPermissionDecision,
 };
 pub use session_realization::{
     AcknowledgeSessionRealization, ActivateSessionRealization, ApplicationSessionControl,
-    BeginSessionRealization, FailSessionRealization, SessionRealizationAction,
-    SessionRealizationControl, SessionRealizationControlFailure, SessionRealizationDirective,
-    SessionRealizationTarget,
+    BeginSessionRealization, FailSessionRealization, SessionProjectionSynchronizer,
+    SessionRealizationAction, SessionRealizationControl, SessionRealizationControlFailure,
+    SessionRealizationDirective, SessionRealizationDriveError, SessionRealizationTarget,
+    drive_session_realization,
 };
 pub use session_repo::{
     IdempotencyRecord, ManagedSessionRepository, PersistedSession, ScopedPersistedSession,

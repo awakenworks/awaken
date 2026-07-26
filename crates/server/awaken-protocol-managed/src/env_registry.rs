@@ -50,7 +50,7 @@ pub(crate) fn env_network_policy(config: &Value) -> SessionNetworkPolicy {
                         .collect()
                 })
                 .unwrap_or_default();
-            SessionNetworkPolicy::Allowlist { hosts }
+            SessionNetworkPolicy::Allowlist { hosts }.normalized()
         }
         _ => SessionNetworkPolicy::Unrestricted,
     }

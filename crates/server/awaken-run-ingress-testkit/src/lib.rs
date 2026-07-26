@@ -17,8 +17,8 @@ use awaken_run_ingress_contract::operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalFeed, LeaseLossReason,
 };
 use awaken_run_ingress_contract::{
-    PlacementRequirements, WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerCredentialRevision,
-    WorkerIdentity, WorkerManifest, WorkerSnapshot, WorkerState,
+    LeastLoadedPolicy, PlacementRequirements, WORKER_LOCAL_CREDENTIALS_CAPABILITY,
+    WorkerCredentialRevision, WorkerIdentity, WorkerManifest, WorkerSnapshot, WorkerState,
 };
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
@@ -110,10 +110,100 @@ pub async fn assert_dispatch_conformance_with_clock(
     }
     exact_claim_recovery_and_fencing(store, namespace, clock).await;
     attempt_credentials_are_atomic_and_epoch_fenced(store, namespace, capabilities).await;
+    incompatible_credentials_do_not_poison_broad_claims(store, namespace).await;
     parent_mediated_commands_are_atomic(store, namespace, clock).await;
     current_claim_guard_is_exact(store, namespace, capabilities, clock).await;
     sandbox_binding_survives_recovery(store, namespace, capabilities, clock).await;
     completion_is_atomic_and_prevents_resurrection(store, namespace, capabilities, clock).await;
+}
+
+/// Broad-claim credential admission cause graph:
+///
+/// C1 row is placement-compatible -> C2 credential attempt is admissible
+///  ├─ F -> E1 broad selection skips this row and evaluates the next row
+///  └─ T -> E2 broad selection claims it atomically.
+/// An exact claim names one row, so C2 false remains an explicit error.
+///
+/// | Rule | Claim | First row C1 | First row C2 | Later valid row | Result |
+/// |---|---|---|---|---|---|
+/// | Q1 | broad | T | F | T | claim later valid row |
+/// | Q2 | exact invalid | T | F | - | admission error |
+/// | Q3 | policy broad | T | F | T | claim later valid row |
+async fn incompatible_credentials_do_not_poison_broad_claims(store: &dyn DispatchQueue, ns: &str) {
+    let holder = PlaintextHolder::new(
+        PlaintextBoundary::Worker,
+        awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+    );
+    let incompatible_holder = PlaintextHolder::new(PlaintextBoundary::Worker, "other-worker");
+    let mut invalid =
+        credential_dispatch(ns, "poison-invalid", "poison-invalid", &incompatible_holder);
+    invalid.placement = PlacementRequirements::remote_required();
+    let mut valid = credential_dispatch(ns, "poison-valid", "poison-valid", &holder);
+    valid.placement = PlacementRequirements::remote_required();
+    store
+        .enqueue_with(
+            invalid.clone(),
+            SubmitOptions {
+                priority: 100,
+                ..SubmitOptions::default()
+            },
+        )
+        .await
+        .expect("Q1 enqueue incompatible row");
+    store
+        .enqueue(valid.clone())
+        .await
+        .expect("Q1 enqueue valid row");
+    let worker = credential_worker(ns, &holder, true);
+    let claimed = store
+        .claim_compatible(&worker, LEASE_MS, 50_000)
+        .await
+        .expect("Q1 broad claim")
+        .expect("Q1 later valid row is claimable");
+    assert_eq!(claimed.request.run_id(), valid.run_id(), "Q1");
+    store
+        .settle(
+            &claimed.lease.run_id,
+            claimed.lease.epoch,
+            DispatchOutcome::Done,
+            &[],
+        )
+        .await
+        .expect("Q1 settle valid row");
+    assert!(
+        store
+            .claim_run_compatible(invalid.run_id(), &worker, LEASE_MS, 50_002)
+            .await
+            .is_err(),
+        "Q2 exact claim preserves the admission failure"
+    );
+    let mut placed = credential_dispatch(ns, "poison-placed", "poison-placed", &holder);
+    placed.placement = PlacementRequirements::remote_required();
+    store
+        .enqueue(placed.clone())
+        .await
+        .expect("Q3 enqueue valid row");
+    let claimed = store
+        .claim_placed(
+            &worker,
+            vec![worker.clone()],
+            std::sync::Arc::new(LeastLoadedPolicy),
+            LEASE_MS,
+            50_003,
+        )
+        .await
+        .expect("Q3 policy broad claim")
+        .expect("Q3 later valid row is claimable");
+    assert_eq!(claimed.request.run_id(), placed.run_id(), "Q3");
+    store
+        .settle(
+            &claimed.lease.run_id,
+            claimed.lease.epoch,
+            DispatchOutcome::Done,
+            &[],
+        )
+        .await
+        .expect("Q3 settle valid row");
 }
 
 /// Claim-credential cause-effect graph:
@@ -1233,6 +1323,7 @@ fn credential_worker(ns: &str, holder: &PlaintextHolder, capable: bool) -> Worke
             realization_kinds: [CredentialRealizationKind::WorkerProviderAdapter]
                 .into_iter()
                 .collect(),
+            recipient_bound_envelopes: false,
         };
         manifest.capabilities.insert(
             realization

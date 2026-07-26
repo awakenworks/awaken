@@ -3,6 +3,54 @@
 
 use super::*;
 
+struct WorkerProjectionSynchronizer<'a>(&'a SharedHost);
+
+#[async_trait::async_trait]
+impl awaken_protocol_managed::SessionProjectionSynchronizer for WorkerProjectionSynchronizer<'_> {
+    async fn synchronize_session_projection(
+        &self,
+        session_id: &str,
+        projection: &awaken_protocol_managed::FrozenSessionProjection,
+        lease: &awaken_protocol_managed::SessionRealizationLease,
+        _prepare_session: bool,
+    ) -> Result<(), awaken_protocol_managed::RunError> {
+        self.0
+            .install_frozen_session_projection(session_id, projection.clone())
+            .await
+            .map_err(|error| awaken_protocol_managed::RunError::internal(error.to_string()))?;
+        self.0
+            .install_session_realization_lease(session_id, lease.clone());
+        Ok(())
+    }
+}
+
+struct WorkerMcpEffects<'a>(&'a SharedHost);
+
+#[async_trait::async_trait]
+impl awaken_protocol_managed::McpAttachmentRealizer for WorkerMcpEffects<'_> {
+    async fn stage_mcp_attachment(
+        &self,
+        request: awaken_protocol_managed::StageMcpAttachment,
+    ) -> Result<awaken_protocol_managed::McpRealizationReceipt, awaken_protocol_managed::RunError>
+    {
+        self.0.stage_dispatched_mcp(request).await
+    }
+
+    async fn publish_mcp_generation(
+        &self,
+        generation: awaken_protocol_managed::McpGenerationRef,
+    ) -> Result<(), awaken_protocol_managed::RunError> {
+        self.0.publish_dispatched_mcp(generation).await
+    }
+
+    async fn drain_mcp_generation(
+        &self,
+        generation: awaken_protocol_managed::McpGenerationRef,
+    ) -> Result<(), awaken_protocol_managed::RunError> {
+        self.0.drain_dispatched_mcp(generation).await
+    }
+}
+
 async fn adopt_bound_sandbox(
     host: &SharedHost,
     encoded: Option<&str>,
@@ -41,95 +89,21 @@ impl HostWorkerResolver {
             .ok_or_else(|| Self::execution_error("host dropped; pool idling"))
     }
 
-    async fn realize_application_session(
+    pub(crate) async fn realize_application_session(
         host: &SharedHost,
         control: &Arc<dyn crate::ApplicationSessionControlClient>,
         session_id: &str,
-        mut directive: awaken_protocol_managed::SessionRealizationDirective,
+        directive: awaken_protocol_managed::SessionRealizationDirective,
     ) -> Result<(), awaken_run_ingress::Error> {
-        for _ in 0..4 {
-            host.install_frozen_session_projection(session_id, directive.projection.clone())
-                .await
-                .map_err(|error| Self::execution_error(error.to_string()))?;
-            match directive.action.clone() {
-                awaken_protocol_managed::SessionRealizationAction::Stage {
-                    prepare_session: _,
-                    mcp_stages,
-                } => {
-                    let mut receipts = Vec::with_capacity(mcp_stages.len());
-                    for request in mcp_stages {
-                        match host.stage_dispatched_mcp(request).await {
-                            Ok(receipt) => receipts.push(receipt),
-                            Err(error) => {
-                                for receipt in &receipts {
-                                    let _ =
-                                        host.drain_dispatched_mcp(receipt.generation.clone()).await;
-                                }
-                                let _ = control
-                                    .fail(awaken_protocol_managed::FailSessionRealization {
-                                        session_id: session_id.to_string(),
-                                        lease: directive.lease,
-                                        reason: error.to_string(),
-                                    })
-                                    .await;
-                                return Err(Self::execution_error(error.to_string()));
-                            }
-                        }
-                    }
-                    directive = match control
-                        .activate(awaken_protocol_managed::ActivateSessionRealization {
-                            session_id: session_id.to_string(),
-                            lease: directive.lease,
-                            mcp_receipts: receipts.clone(),
-                        })
-                        .await
-                    {
-                        Ok(next) => next,
-                        Err(error) => {
-                            for receipt in receipts {
-                                let _ = host.drain_dispatched_mcp(receipt.generation).await;
-                            }
-                            return Err(Self::execution_error(error.to_string()));
-                        }
-                    };
-                }
-                awaken_protocol_managed::SessionRealizationAction::Publish { publish, drain } => {
-                    let external_result = async {
-                        for generation in &publish {
-                            host.publish_dispatched_mcp(generation.clone()).await?;
-                        }
-                        for generation in &drain {
-                            host.drain_dispatched_mcp(generation.clone()).await?;
-                        }
-                        Ok::<(), awaken_protocol_managed::RunError>(())
-                    }
-                    .await;
-                    if let Err(error) = external_result {
-                        let _ = control
-                            .fail(awaken_protocol_managed::FailSessionRealization {
-                                session_id: session_id.to_string(),
-                                lease: directive.lease,
-                                reason: error.to_string(),
-                            })
-                            .await;
-                        return Err(Self::execution_error(error.to_string()));
-                    }
-                    directive = control
-                        .acknowledge(awaken_protocol_managed::AcknowledgeSessionRealization {
-                            session_id: session_id.to_string(),
-                            lease: directive.lease,
-                            published: publish,
-                            drained: drain,
-                        })
-                        .await
-                        .map_err(|error| Self::execution_error(error.to_string()))?;
-                }
-                awaken_protocol_managed::SessionRealizationAction::Complete => return Ok(()),
-            }
-        }
-        Err(Self::execution_error(
-            "Session realization protocol did not converge",
-        ))
+        awaken_protocol_managed::drive_session_realization(
+            session_id,
+            control.as_ref(),
+            &WorkerProjectionSynchronizer(host),
+            &WorkerMcpEffects(host),
+            directive,
+        )
+        .await
+        .map_err(|error| Self::execution_error(error.to_string()))
     }
 
     async fn resolve(
@@ -465,6 +439,53 @@ mod tests {
         calls: Arc<AtomicUsize>,
         phases: Arc<std::sync::Mutex<Vec<&'static str>>>,
         projection: Arc<std::sync::Mutex<Option<awaken_protocol_managed::FrozenSessionProjection>>>,
+        mcp_stage: Option<awaken_protocol_managed::StageMcpAttachment>,
+    }
+
+    #[derive(Default)]
+    struct RecordingMcpRealizer {
+        calls: std::sync::Mutex<Vec<&'static str>>,
+        fail_stage: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_protocol_managed::McpAttachmentRealizer for RecordingMcpRealizer {
+        async fn stage_mcp_attachment(
+            &self,
+            request: awaken_protocol_managed::StageMcpAttachment,
+        ) -> Result<awaken_protocol_managed::McpRealizationReceipt, awaken_protocol_managed::RunError>
+        {
+            self.calls.lock().unwrap().push("stage");
+            if self.fail_stage.load(Ordering::SeqCst) {
+                return Err(awaken_protocol_managed::RunError::classified(
+                    "test_mcp_stage_failed",
+                    "test MCP stage failed",
+                ));
+            }
+            Ok(awaken_protocol_managed::McpRealizationReceipt {
+                receipt_fingerprint: request.fingerprint(),
+                generation: request.generation,
+                realization_id: request.realization_id,
+                selected_plaintext_holder: request.selected_plaintext_holder,
+                actual_realization_kind: None,
+            })
+        }
+
+        async fn publish_mcp_generation(
+            &self,
+            _generation: awaken_protocol_managed::McpGenerationRef,
+        ) -> Result<(), awaken_protocol_managed::RunError> {
+            self.calls.lock().unwrap().push("publish");
+            Ok(())
+        }
+
+        async fn drain_mcp_generation(
+            &self,
+            _generation: awaken_protocol_managed::McpGenerationRef,
+        ) -> Result<(), awaken_protocol_managed::RunError> {
+            self.calls.lock().unwrap().push("drain");
+            Ok(())
+        }
     }
 
     #[async_trait::async_trait]
@@ -522,19 +543,41 @@ mod tests {
                     prompts: input.prompts,
                 },
             );
+            let mcp = self.mcp_stage.as_ref().map_or_else(Vec::new, |stage| {
+                vec![
+                    serde_json::from_value(serde_json::json!({
+                        "attachment_id": stage.generation.attachment_id,
+                        "name": stage.name,
+                        "generation": stage.generation.generation,
+                        "target": stage.target,
+                        "origin": "application",
+                        "credential": stage.credential,
+                        "selected_plaintext_holder": stage.selected_plaintext_holder,
+                        "state": "realizing",
+                        "publication_acknowledged": false,
+                        "realization": null,
+                        "attempts": 1,
+                        "last_error": null
+                    }))
+                    .expect("test MCP projection"),
+                ]
+            });
             let projection = awaken_protocol_managed::FrozenSessionProjection {
                 workspace_id: "workspace".into(),
                 revision: awaken_protocol_managed::SessionRevision(2),
                 baseline,
                 resources: Default::default(),
-                mcp: Vec::new(),
+                mcp,
             };
             *self.projection.lock().unwrap() = Some(projection.clone());
             let lease = awaken_protocol_managed::SessionRealizationLease {
                 owner: "worker-a".into(),
                 runtime_incarnation: "worker-a".into(),
                 epoch: 1,
-                expires_at_unix_ms: u64::MAX,
+                expires_at_unix_ms: self
+                    .mcp_stage
+                    .as_ref()
+                    .map_or(u64::MAX, |stage| stage.generation.lease_expires_at_unix_ms),
             };
             Ok(crate::ApplicationSessionControlReceipt {
                 contribution: awaken_protocol_managed::ApplicationSessionContributionReceipt {
@@ -546,18 +589,57 @@ mod tests {
                     lease,
                     action: awaken_protocol_managed::SessionRealizationAction::Stage {
                         prepare_session: true,
-                        mcp_stages: Vec::new(),
+                        mcp_stages: self.mcp_stage.clone().into_iter().collect(),
                     },
                 },
             })
         }
+    }
 
-        async fn activate(
+    #[async_trait::async_trait]
+    impl awaken_protocol_managed::SessionRealizationControl for RecordingContributor {
+        async fn begin_session_realization(
+            &self,
+            command: awaken_protocol_managed::BeginSessionRealization,
+        ) -> Result<
+            awaken_protocol_managed::SessionRealizationDirective,
+            awaken_protocol_managed::SessionRealizationControlFailure,
+        > {
+            self.phases.lock().unwrap().push("begin");
+            let projection = self
+                .projection
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or(awaken_protocol_managed::SessionRealizationControlFailure::NotReady)?;
+            let mut stage = self
+                .mcp_stage
+                .clone()
+                .ok_or(awaken_protocol_managed::SessionRealizationControlFailure::NotReady)?;
+            stage.generation.lease_expires_at_unix_ms = command.target.lease_expires_at_unix_ms;
+            stage.stage_idempotency_key =
+                format!("renew:{}", command.target.lease_expires_at_unix_ms);
+            Ok(awaken_protocol_managed::SessionRealizationDirective {
+                projection,
+                lease: awaken_protocol_managed::SessionRealizationLease {
+                    owner: command.target.owner,
+                    runtime_incarnation: command.target.runtime_incarnation,
+                    epoch: 1,
+                    expires_at_unix_ms: command.target.lease_expires_at_unix_ms,
+                },
+                action: awaken_protocol_managed::SessionRealizationAction::Stage {
+                    prepare_session: false,
+                    mcp_stages: vec![stage],
+                },
+            })
+        }
+
+        async fn activate_session_realization(
             &self,
             command: awaken_protocol_managed::ActivateSessionRealization,
         ) -> Result<
             awaken_protocol_managed::SessionRealizationDirective,
-            crate::ApplicationSessionError,
+            awaken_protocol_managed::SessionRealizationControlFailure,
         > {
             self.phases.lock().unwrap().push("activate");
             Ok(awaken_protocol_managed::SessionRealizationDirective {
@@ -569,18 +651,22 @@ mod tests {
                     .expect("contribution projection"),
                 lease: command.lease,
                 action: awaken_protocol_managed::SessionRealizationAction::Publish {
-                    publish: Vec::new(),
+                    publish: command
+                        .mcp_receipts
+                        .into_iter()
+                        .map(|receipt| receipt.generation)
+                        .collect(),
                     drain: Vec::new(),
                 },
             })
         }
 
-        async fn acknowledge(
+        async fn acknowledge_session_realization(
             &self,
             command: awaken_protocol_managed::AcknowledgeSessionRealization,
         ) -> Result<
             awaken_protocol_managed::SessionRealizationDirective,
-            crate::ApplicationSessionError,
+            awaken_protocol_managed::SessionRealizationControlFailure,
         > {
             self.phases.lock().unwrap().push("acknowledge");
             Ok(awaken_protocol_managed::SessionRealizationDirective {
@@ -595,10 +681,10 @@ mod tests {
             })
         }
 
-        async fn fail(
+        async fn fail_session_realization(
             &self,
             _command: awaken_protocol_managed::FailSessionRealization,
-        ) -> Result<(), crate::ApplicationSessionError> {
+        ) -> Result<(), awaken_protocol_managed::SessionRealizationControlFailure> {
             self.phases.lock().unwrap().push("fail");
             Ok(())
         }
@@ -637,7 +723,15 @@ mod tests {
         // | W1 | T | success | installed | receipt then environment |
         // | W2 | T | success | missing | reject before environment |
         // | W3 | F | - | any | reject before provisioner |
-        for (rule, install_contributor) in [("W1", true), ("W2", false)] {
+        // | W4 | T | success + initial MCP | installed | stage/activate/publish/ack |
+        // | W5 | T | initial MCP stage fails | installed | fail; no publish/environment |
+        // | W6 | T | active MCP lease due | installed | same canonical driver renews generation |
+        for (rule, install_contributor, with_initial_mcp, fail_mcp_stage) in [
+            ("W1", true, false, false),
+            ("W2", false, false, false),
+            ("W4", true, true, false),
+            ("W5", true, true, true),
+        ] {
             let storage = tempfile::tempdir().expect("storage");
             let dispatch = Arc::new(
                 awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory()
@@ -653,16 +747,52 @@ mod tests {
                 .with_application_session_provisioner(Arc::new(CountingProvisioner {
                     calls: calls.clone(),
                 }));
+            let mcp_realizer = Arc::new(RecordingMcpRealizer::default());
+            mcp_realizer
+                .fail_stage
+                .store(fail_mcp_stage, Ordering::SeqCst);
+            let initial_mcp_expiry = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64
+                + 1_000;
+            let mcp_stage = with_initial_mcp.then(|| {
+                let generation = awaken_protocol_managed::McpGenerationRef {
+                    session_id: format!("thread-application-{rule}"),
+                    attachment_id: awaken_protocol_managed::McpAttachmentId("mcp-docs".into()),
+                    generation: awaken_protocol_managed::McpGeneration(1),
+                    runtime_incarnation: "worker-a".into(),
+                    lease_epoch: 1,
+                    lease_expires_at_unix_ms: initial_mcp_expiry,
+                };
+                awaken_protocol_managed::StageMcpAttachment {
+                    workspace_id: "workspace".into(),
+                    generation,
+                    realization_id: "realize-docs-1".into(),
+                    stage_idempotency_key: "stage-docs-1".into(),
+                    name: "docs".into(),
+                    target: awaken_protocol_managed::McpTarget::parse_http(
+                        "https://mcp.example.test/sse",
+                    )
+                    .unwrap(),
+                    credential: None,
+                    selected_plaintext_holder: None,
+                }
+            });
             let host = if install_contributor {
                 host.with_application_session_control(Arc::new(RecordingContributor {
                     calls: contribution_calls.clone(),
                     phases: phases.clone(),
                     projection,
+                    mcp_stage,
                 }))
             } else {
                 host
             };
             let host = Arc::new(host);
+            let managed = crate::ManagedHost::new(host.clone())
+                .with_mcp_attachment_realizer(mcp_realizer.clone());
+            drop(managed);
             let thread = format!("thread-application-{rule}");
             let run = format!("run-application-{rule}");
             dispatch
@@ -682,22 +812,61 @@ mod tests {
             };
             let result = resolver.worker_for_claimed(&claimed).await;
 
+            if rule == "W4" {
+                assert_eq!(
+                    host.renew_due_session_realizations(
+                        initial_mcp_expiry,
+                        initial_mcp_expiry + 1_000,
+                    )
+                    .await
+                    .expect("W6"),
+                    1,
+                    "W6"
+                );
+            }
+
             assert_eq!(calls.load(Ordering::SeqCst), 1, "{rule}");
             assert_eq!(
                 contribution_calls.load(Ordering::SeqCst),
                 usize::from(install_contributor),
                 "{rule}"
             );
-            assert_eq!(result.is_ok(), install_contributor, "{rule}");
-            let expected_phases: &[&str] = if install_contributor {
+            let succeeds = install_contributor && !fail_mcp_stage;
+            assert_eq!(result.is_ok(), succeeds, "{rule}");
+            let expected_phases: &[&str] = if fail_mcp_stage {
+                &["contribute", "fail"]
+            } else if rule == "W4" {
+                &[
+                    "contribute",
+                    "activate",
+                    "acknowledge",
+                    "begin",
+                    "activate",
+                    "acknowledge",
+                ]
+            } else if install_contributor {
                 &["contribute", "activate", "acknowledge"]
             } else {
                 &[]
             };
             assert_eq!(phases.lock().unwrap().as_slice(), expected_phases, "{rule}");
+            let expected_mcp: &[&str] = if fail_mcp_stage {
+                &["stage"]
+            } else if rule == "W4" {
+                &["stage", "publish", "stage", "publish"]
+            } else if with_initial_mcp {
+                &["stage", "publish"]
+            } else {
+                &[]
+            };
+            assert_eq!(
+                mcp_realizer.calls.lock().unwrap().as_slice(),
+                expected_mcp,
+                "{rule}"
+            );
             assert_eq!(
                 host.session_environment(&thread).await.is_some(),
-                install_contributor,
+                succeeds,
                 "{rule}"
             );
         }
