@@ -9,7 +9,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use serde_json::Value;
 
-use crate::types::{AiSdkChatRequest, ToolDecisionPart, UIMessage, UIPart};
+use crate::types::{AiSdkChatRequest, UIMessage, UIMessagePart};
 
 static THREAD_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -101,23 +101,23 @@ fn convert_new_messages(messages: &[UIMessage], known_ids: &HashSet<String>) -> 
 /// text; `file` parts with an image media type become an image block (inline
 /// `data:` base64 preferred, else a remote URL). Non-content parts (`tool-*`,
 /// `step-start`, reasoning) are dropped — they are not user-visible input.
-fn blocks_of(parts: &[Value]) -> Vec<ContentBlock> {
+fn blocks_of(parts: &[UIMessagePart]) -> Vec<ContentBlock> {
     parts.iter().filter_map(part_to_block).collect()
 }
 
-fn part_to_block(part: &Value) -> Option<ContentBlock> {
-    match serde_json::from_value::<UIPart>(part.clone()).ok()? {
-        UIPart::Text { text } => (!text.is_empty()).then(|| ContentBlock::text(text)),
-        UIPart::File { media_type, url } => {
+fn part_to_block(part: &UIMessagePart) -> Option<ContentBlock> {
+    match part {
+        UIMessagePart::Text { text } => (!text.is_empty()).then(|| ContentBlock::text(text)),
+        UIMessagePart::File { media_type, url } => {
             if !media_type.starts_with("image/") {
                 return None;
             }
             Some(match parse_data_uri(&url) {
                 Some((mime, data)) => ContentBlock::image_base64(mime, data),
-                None => ContentBlock::image_url(url),
+                None => ContentBlock::image_url(url.clone()),
             })
         }
-        UIPart::Other => None,
+        UIMessagePart::Tool(_) | UIMessagePart::Other { .. } => None,
     }
 }
 
@@ -135,27 +135,31 @@ fn extract_decisions(messages: &[UIMessage]) -> Vec<Decision> {
     let mut decisions = Vec::new();
     for message in messages.iter().filter(|m| m.role == "assistant") {
         for part in &message.parts {
-            let Ok(tool) = serde_json::from_value::<ToolDecisionPart>(part.clone()) else {
+            let UIMessagePart::Tool(tool) = part else {
                 continue;
             };
             // Only assistant `tool-*` parts carry decisions; a provider-executed
             // part is history, not a fresh decision.
-            if !tool.kind.starts_with("tool-") || tool.provider_executed {
+            if tool.provider_executed {
                 continue;
             }
-            let (Some(state), Some(tool_call_id)) = (tool.state.as_deref(), tool.tool_call_id)
+            let (Some(state), Some(tool_call_id)) =
+                (tool.state.as_deref(), tool.tool_call_id.clone())
             else {
                 continue;
             };
             let kind = match state {
-                "output-available" => DecisionKind::Output(tool.output.unwrap_or(Value::Null)),
+                "output-available" => {
+                    DecisionKind::Output(tool.output.clone().unwrap_or(Value::Null))
+                }
                 "output-error" => DecisionKind::Error(
                     tool.error_text
+                        .clone()
                         .unwrap_or_else(|| "tool execution error".to_string()),
                 ),
                 "output-denied" => DecisionKind::Denied,
                 "approval-responded" => {
-                    if tool.approval.map(|a| a.approved).unwrap_or(false) {
+                    if tool.approval.as_ref().map(|a| a.approved).unwrap_or(false) {
                         DecisionKind::Approved
                     } else {
                         DecisionKind::Denied
@@ -188,7 +192,10 @@ mod tests {
         UIMessage {
             id: Some(id.to_string()),
             role: role.to_string(),
-            parts,
+            parts: parts
+                .into_iter()
+                .map(|part| serde_json::from_value(part).expect("valid UI part fixture"))
+                .collect(),
         }
     }
 
