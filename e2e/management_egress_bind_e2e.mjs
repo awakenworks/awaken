@@ -21,21 +21,24 @@ async function main() {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
 
       // -- environment networking policy → session binds (egress resolved) -----
-      for (const net of ['unrestricted', 'none', 'limited']) {
-        const networking =
-          net === 'limited'
-            ? { type: 'limited', allowed_hosts: ['api.anthropic.com'] }
-            : { type: net };
+      const networkCases = [
+        ['unrestricted', { type: 'unrestricted' }],
+        ['deny-all', { type: 'limited', allowed_hosts: [], allow_mcp_servers: false, allow_package_managers: false }],
+        ['allow-list', { type: 'limited', allowed_hosts: ['api.anthropic.com'], allow_mcp_servers: false, allow_package_managers: false }],
+      ];
+      for (const [policy, networking] of networkCases) {
         const env = await client.beta.environments.create({
-          name: `net-${net}`,
-          config: { type: 'self_hosted', networking },
+          name: `net-${policy}`,
+          // Networking belongs to the official cloud Environment variant.
+          // Self-hosted placement is deliberately configuration-free.
+          config: { type: 'cloud', networking },
           betas: BETAS,
         });
         const got = await client.beta.environments.retrieve(env.id, { betas: BETAS });
-        assert.equal(
-          got.config.networking.type,
-          net,
-          `env networking round-trips (${net})`,
+        assert.deepEqual(
+          got.config.networking,
+          networking,
+          `env networking round-trips (${policy})`,
         );
         // The create resolves the environment's networking into deny_egress via
         // the neutral NetworkPolicy — a session that binds proves the mapping ran.
@@ -47,7 +50,7 @@ async function main() {
         assert.equal(
           session.environment_id,
           env.id,
-          `session pins the ${net} environment`,
+          `session pins the ${policy} environment`,
         );
       }
       pass('environment networking resolves through the neutral NetworkPolicy at session bind');
