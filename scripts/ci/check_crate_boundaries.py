@@ -27,6 +27,16 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # zeroize backs RedactedString's zero-on-drop (ADR-0043); a leaf crypto-hygiene
     # primitive, not a model/provider SDK.
     "awaken-agent-contract": {"serde", "serde_json", "thiserror", "async-trait", "tokio", "zeroize"},
+    # Cross-context, secret-free credential execution values and the exact
+    # material-resolution port (ADR-0067). Vault/storage and runtime adapters
+    # depend inward on this leaf; the leaf names neither implementation.
+    "awaken-credential-contract": {
+        "awaken-agent-contract",
+        "async-trait",
+        "serde",
+        "serde_json",
+        "thiserror",
+    },
     # The "judgment" half of access control: authenticate + authorize over the
     # shared in-memory iam engine (the durable iam-server store is wired by the
     # composition root, not named here).
@@ -101,6 +111,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # only; names no wire, store, or plane. Ports move here incrementally.
     "awaken-session-contract": {
         "awaken-agent-contract",
+        "awaken-credential-contract",
         # Session resolution consumes only the resources-plane identity/config
         # port. Authorization remains an edge/PDP concern.
         "awaken-resource-contract",
@@ -310,6 +321,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     },
     "awaken-runtime-contract": {
         "awaken-agent-contract",
+        "awaken-credential-contract",
         # ADR-0062's published provider candidate carries one opaque owner pin
         # for credential integrity checks. This is data only: runtime receives
         # no WorkspaceScope, scope graph, repository selection, or IAM ability.
@@ -852,6 +864,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # it constructs no runtime. It is a product adapter, not a neutral crate.
     "awaken-protocol-managed": {
         "awaken-agent-contract",
+        "awaken-credential-contract",
         # The neutral session-runtime ports + vocab extracted to a contract/ leaf; this
         # adapter defines the wire DTOs + encoder over them and re-exports each moved
         # port via a shim until consumers flip to the contract directly.

@@ -96,17 +96,17 @@ impl EnvironmentState {
         };
         let acp = runtime.is_some_and(|value| value.starts_with("acp:"));
         let holder = if acp {
-            awaken_session_contract::SessionPlaintextHolder {
-                boundary: awaken_session_contract::SessionPlaintextBoundary::Workload,
-                trust_domain: "awaken.workload.acp".into(),
-            }
+            awaken_credential_contract::PlaintextHolder::new(
+                awaken_credential_contract::PlaintextBoundary::Workload,
+                "awaken.workload.acp",
+            )
         } else {
-            awaken_session_contract::SessionPlaintextHolder {
-                boundary: awaken_session_contract::SessionPlaintextBoundary::Worker,
-                trust_domain: "awaken.worker".into(),
-            }
+            awaken_credential_contract::PlaintextHolder::new(
+                awaken_credential_contract::PlaintextBoundary::Worker,
+                "awaken.worker",
+            )
         };
-        let credential_realization = awaken_session_contract::SessionCredentialRealizationProfile {
+        let credential_realization = awaken_credential_contract::CredentialRealizationProfile {
             inference_holder: holder.clone(),
             mcp_holder: holder,
         };
@@ -601,7 +601,7 @@ mod tests {
         );
         assert_eq!(
             native.credential_realization.mcp_holder.boundary,
-            awaken_session_contract::SessionPlaintextBoundary::Worker,
+            awaken_credential_contract::PlaintextBoundary::Worker,
             "S1"
         );
         let acp = state
@@ -610,7 +610,7 @@ mod tests {
             .expect("S2");
         assert_eq!(
             acp.credential_realization.mcp_holder.boundary,
-            awaken_session_contract::SessionPlaintextBoundary::Workload,
+            awaken_credential_contract::PlaintextBoundary::Workload,
             "S2"
         );
         state

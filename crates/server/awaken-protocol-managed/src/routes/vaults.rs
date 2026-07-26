@@ -49,13 +49,14 @@ use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
+use crate::mcp_normalizer::normalize_mcp_server_url;
 use crate::routes::{ManagedJson, WorkspaceScope};
 use crate::types::vault::{
-    Credential, CredentialAuth, CredentialCreateParams, CredentialNetworking, CredentialUpdateAuth,
-    CredentialUpdateParams, CredentialValidation, CredentialValidationStatus, DeletedCredential,
-    DeletedVault, ListQuery, McpOauthRefreshResponse, McpProbeResult, TokenEndpointAuthParams,
-    TokenEndpointAuthResponse, TokenEndpointAuthUpdate, Vault, VaultCreateParams,
-    VaultUpdateParams,
+    Credential, CredentialAuth, CredentialCreateParams, CredentialCreateWire, CredentialNetworking,
+    CredentialUpdateAuth, CredentialUpdateParams, CredentialValidation, CredentialValidationStatus,
+    DeletedCredential, DeletedVault, ListQuery, McpOauthRefreshResponse, McpProbeResult,
+    TokenEndpointAuthParams, TokenEndpointAuthResponse, TokenEndpointAuthUpdate, Vault,
+    VaultCreateParams, VaultUpdateParams,
 };
 use crate::types::{ErrorResponse, Page, PageQuery, paginate};
 
@@ -131,6 +132,14 @@ enum AuthRecord {
     },
 }
 
+fn auth_mcp_server_url(auth: &AuthRecord) -> Option<&str> {
+    match auth {
+        AuthRecord::StaticBearer { mcp_server_url }
+        | AuthRecord::McpOauth { mcp_server_url, .. } => Some(mcp_server_url),
+        AuthRecord::EnvironmentVariable { .. } => None,
+    }
+}
+
 /// Stored refresh configuration for an `mcp_oauth` credential: the secret-free
 /// projection plus the refs the sealed refresh token (and, for a confidential
 /// client, the sealed client secret) live under, which
@@ -197,13 +206,16 @@ impl VaultState {
         self
     }
 
-    /// Whether `id` names an existing vault. Consumer: `ManagedState::create_session`,
-    /// which fails a create closed (404, naming the vault id) when a
-    /// `vault_ids` entry names no vault — instead of silently binding nothing
-    /// and only surfacing a 401 at the first turn.
+    /// Whether `id` names an active vault that may be attached to a new Session.
+    /// Archived vaults remain retrievable for audit but are not executable.
     #[must_use]
     pub fn has_vault(&self, id: &str) -> bool {
-        self.inner.lock().unwrap().vaults.contains_key(id)
+        self.inner
+            .lock()
+            .unwrap()
+            .vaults
+            .get(id)
+            .is_some_and(|vault| vault.archived_at.is_none())
     }
 
     /// Seal a write-only compatibility token and return only its neutral source
@@ -247,13 +259,10 @@ impl VaultState {
             .map(|c| c.source_id.clone())
     }
 
-    /// The vault→MCP binding seam (SDK model: a credential binds to an MCP server
-    /// by `mcp_server_url`; a session binds to vaults by `vault_ids`). Scan the
-    /// given vaults for an `mcp_oauth` credential whose server URL equals `url`
-    /// (exact string match) and return its neutral domain source id — the
-    /// session-ingress slice hands that to the resolver, never the wire id.
-    /// Env-var and `static_bearer` credentials never match. On ties the lowest
-    /// wire id (earliest created) wins, so the pick is deterministic.
+    /// The vault→MCP binding seam. Scan active vaults in caller-supplied order
+    /// for an active `mcp_oauth` or `static_bearer` credential whose normalized
+    /// server URL equals `url`. Vault order is the precedence contract; id order
+    /// is only a defensive tie-breaker inside one vault.
     #[must_use]
     pub fn mcp_credential_source_for_url(
         &self,
@@ -261,15 +270,32 @@ impl VaultState {
         url: &str,
     ) -> Option<CredentialSourceId> {
         let store = self.inner.lock().unwrap();
-        store
-            .credentials
-            .iter()
-            .filter(|(_, c)| vault_ids.contains(&c.vault_id))
-            .filter(|(_, c)| {
-                matches!(&c.auth, AuthRecord::McpOauth { mcp_server_url, .. } if mcp_server_url == url)
-            })
-            .min_by(|(a, _), (b, _)| a.cmp(b))
-            .map(|(_, c)| c.source_id.clone())
+        let requested = normalize_mcp_server_url(url)?;
+        for vault_id in vault_ids {
+            let vault_is_active = store
+                .vaults
+                .get(vault_id)
+                .is_some_and(|vault| vault.archived_at.is_none());
+            if !vault_is_active {
+                continue;
+            }
+            if let Some((_, credential)) = store
+                .credentials
+                .iter()
+                .filter(|(_, credential)| {
+                    credential.vault_id == *vault_id && credential.archived_at.is_none()
+                })
+                .filter(|(_, credential)| {
+                    auth_mcp_server_url(&credential.auth)
+                        .and_then(normalize_mcp_server_url)
+                        .is_some_and(|candidate| candidate == requested)
+                })
+                .min_by(|(left, _), (right, _)| left.cmp(right))
+            {
+                return Some(credential.source_id.clone());
+            }
+        }
+        None
     }
 
     /// The stored refresh configuration of the `mcp_oauth` credential backing
@@ -524,8 +550,9 @@ async fn create_credential(
     State(state): State<Arc<VaultState>>,
     scope: Option<Extension<WorkspaceScope>>,
     Path(vault_id): Path<String>,
-    ManagedJson(params): ManagedJson<CredentialCreateParams>,
+    ManagedJson(params): ManagedJson<CredentialCreateWire>,
 ) -> Result<(StatusCode, Json<Credential>), WireError> {
+    let params = params.into_params();
     // The vault id is a wire-side container id, not an authorization scope. The
     // platform-resolved workspace stamped at the composition edge owns the durable
     // credential row. Standalone embeddings that omit that edge use the documented
@@ -535,30 +562,47 @@ async fn create_credential(
         |Extension(scope)| scope.0,
     );
     // Enforce the vault exists and the per-vault constraints up front. The 20-cap
-    // spans all credential types; the duplicate-name check only applies among
-    // env-var credentials (static_bearer / mcp_oauth have no secret_name to
-    // collide on — the SDK allows several credentials against one server).
+    // spans all credential types. Active env-var names are unique keys; MCP URLs
+    // are validated here but may have multiple credentials, with deterministic
+    // selection performed only by the Session binding normalizer.
     {
         let store = state.inner.lock().unwrap();
         if !store.vaults.contains_key(&vault_id) {
             return Err(not_found("vault"));
         }
-        let in_vault = store
+        let in_vault: Vec<&CredentialRecord> = store
             .credentials
             .values()
-            .filter(|c| c.vault_id == vault_id);
-        if in_vault.clone().count() >= MAX_CREDENTIALS_PER_VAULT {
+            .filter(|c| c.vault_id == vault_id)
+            .collect();
+        if in_vault.len() >= MAX_CREDENTIALS_PER_VAULT {
             return Err(bad_request("vault credential limit reached (max 20)"));
         }
-        if let CredentialCreateParams::EnvironmentVariable { secret_name, .. } = &params {
-            let dup = in_vault.clone().any(|c| {
-                matches!(&c.auth, AuthRecord::EnvironmentVariable { secret_name: existing, .. }
-                    if existing == secret_name)
-            });
-            if dup {
-                return Err(bad_request(format!(
-                    "credential key `{secret_name}` already exists in this vault"
-                )));
+        match &params {
+            CredentialCreateParams::EnvironmentVariable { secret_name, .. } => {
+                let duplicate = in_vault.iter().any(|credential| {
+                    credential.archived_at.is_none()
+                        && matches!(
+                            &credential.auth,
+                            AuthRecord::EnvironmentVariable {
+                                secret_name: existing,
+                                ..
+                            } if existing == secret_name
+                        )
+                });
+                if duplicate {
+                    return Err(bad_request(format!(
+                        "credential key `{secret_name}` already exists in this vault"
+                    )));
+                }
+            }
+            CredentialCreateParams::StaticBearer { mcp_server_url, .. }
+            | CredentialCreateParams::McpOauth { mcp_server_url, .. } => {
+                if normalize_mcp_server_url(mcp_server_url).is_none() {
+                    return Err(bad_request(
+                        "mcp_server_url must be an absolute HTTP(S) URL",
+                    ));
+                }
             }
         }
     }

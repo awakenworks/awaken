@@ -40,6 +40,7 @@ pub mod types;
 /// with an in-memory default; durable (sqlite/postgres) backends fold in behind it.
 pub mod cron;
 pub mod env_registry;
+mod mcp_normalizer;
 mod preview;
 mod state;
 /// The self-hosted environment work queue as a port ([`work_queue::WorkQueue`]),

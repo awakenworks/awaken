@@ -8,6 +8,7 @@ license.workspace = true
 # Agent-domain vocabulary in the port signatures (e.g. `RedactedString` on the MCP
 # probe). A contract/ leaf itself — dependencies point inward.
 awaken-agent-contract.workspace = true
+awaken-credential-contract.workspace = true
 # Secret-free resources-plane identity/configuration port used once while a
 # Session freezes its effective inputs. It contains no IAM policy or principal.
 awaken-resource-contract.workspace = true
