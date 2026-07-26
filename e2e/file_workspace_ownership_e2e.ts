@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { pass, spawnServer, stopServer, waitForPort } from './harness.mjs';
+import { deploymentEnv, pass, spawnServer, stopServer, waitForPort } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38216);
 const SEAL_KEY = 'ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100';
@@ -58,13 +58,12 @@ async function upload(base: string, token: string, bytes: string): Promise<strin
 
 async function main(): Promise<void> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-file-owners-'));
-  const { server, baseUrl } = spawnServer('management', PORT, {
-    AWAKEN_MGMT_DIR: dir,
-    AWAKEN_STORAGE_DIR: path.join(dir, 'runtime'),
-    AWAKEN_MGMT_SEAL_KEY: SEAL_KEY,
-    AWAKEN_MGMT_IAM: 'embedded',
-    AWAKEN_IAM_WORKSPACES: `${WS_A},${WS_B}`,
+  const env = deploymentEnv(dir, {
+    identityMode: 'self-managed',
+    iamWorkspaces: [WS_A, WS_B],
+    controlSealKey: SEAL_KEY,
   });
+  const { server, baseUrl } = spawnServer('management', PORT, env);
   try {
     await waitForPort(PORT, 180_000, server);
     const bootstrap = fs.readFileSync(path.join(dir, 'admin-token'), 'utf8').trim();

@@ -29,6 +29,22 @@ fs.writeFileSync(
 );
 process.on('exit', () => fs.rmSync(E2E_HOME_ROOT, { recursive: true, force: true }));
 
+// Create the standard, typed deployment input for a scenario that needs its own
+// durable control-plane root. Tests must not resurrect the removed AWAKEN_MGMT_*
+// configuration path. HOME remains OS metadata; the product reads the one
+// authoritative ~/.awaken/config.toml below.
+export function deploymentEnv(dataDir, { identityMode, iamWorkspaces = [], controlSealKey } = {}) {
+  const home = path.join(dataDir, 'e2e-home');
+  const configDir = path.join(home, '.awaken');
+  fs.mkdirSync(configDir, { recursive: true });
+  const lines = [`data_dir = ${JSON.stringify(dataDir)}`];
+  if (identityMode) lines.push(`identity_mode = ${JSON.stringify(identityMode)}`);
+  if (iamWorkspaces.length > 0) lines.push(`iam_workspaces = ${JSON.stringify(iamWorkspaces)}`);
+  if (controlSealKey) lines.push(`control_seal_key = ${JSON.stringify(controlSealKey)}`);
+  fs.writeFileSync(path.join(configDir, 'config.toml'), `${lines.join('\n')}\n`);
+  return { HOME: home };
+}
+
 // Build the server once, up front, and resolve its binary path. We spawn the
 // binary directly (not `cargo run`) so each server is a single process the
 // harness can kill cleanly — a `cargo run` wrapper would leave the real server
