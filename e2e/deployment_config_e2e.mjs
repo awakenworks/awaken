@@ -1,274 +1,137 @@
-// Deployment config gate (P4) + serve admin-port split (P2), end-to-end against the
-// REAL aggregated `awaken` binary (not the scenario-host stub): the composition
-// root's boot-time config validation and the split admin surface.
-//
-// Covers awaken-cli `config.rs` + `main.rs` (the config gate) and `brain_admin.rs`
-// (the split admin router) through a real process, complementing the Rust unit tests.
-//
-// Run: node e2e/deployment_config_e2e.mjs
+// Typed deployment gate + split admin surface against the real `awaken` binary.
+// Product environment variables are deliberately poisoned: only the explicit or
+// standard config.toml and command presentation overrides may affect deployment.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
-import { spawn, execSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { pass } from './harness.mjs';
+import { spawn } from 'node:child_process';
+import {
+  deploymentEnv,
+  ensureProductionBuilt,
+  pass,
+  stopServer,
+  waitForPort,
+} from './harness.mjs';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const BASE_PORT = Number(process.env.E2E_PORT ?? 38431);
+const SEAL_KEY = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
 
-// Resolve (building if needed) the aggregated `awaken` binary, honoring
-// CARGO_TARGET_DIR so this attributes coverage under coverage.sh's instrumented build.
-function awakenBin() {
-  const out = execSync('cargo build --quiet --message-format=json -p awaken-cli --bin awaken', {
-    cwd: ROOT,
-    maxBuffer: 64 * 1024 * 1024,
-  }).toString();
-  for (const line of out.split('\n')) {
-    if (!line.trim()) continue;
-    let msg;
-    try {
-      msg = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (msg.executable && msg.target?.name === 'awaken') return msg.executable;
-  }
-  throw new Error('could not resolve the awaken binary path');
+function configPath(env) {
+  return path.join(env.HOME, '.awaken', 'config.toml');
 }
 
-function freePort() {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.listen(0, '127.0.0.1', () => {
-      const { port } = srv.address();
-      srv.close(() => resolve(port));
-    });
-    srv.on('error', reject);
-  });
-}
-
-function waitForPort(port, timeoutMs = 30_000) {
-  const deadline = Date.now() + timeoutMs;
-  return new Promise((resolve, reject) => {
-    const attempt = () => {
-      const sock = net.createConnection({ port, host: '127.0.0.1' });
-      sock.once('connect', () => {
-        sock.destroy();
-        resolve();
-      });
-      sock.once('error', () => {
-        sock.destroy();
-        if (Date.now() > deadline) reject(new Error(`nothing listening on ${port}`));
-        else setTimeout(attempt, 150);
-      });
-    };
-    attempt();
-  });
-}
-
-// Run the binary to completion (expecting it to exit on its own), capturing stderr.
-// `unset` names env vars to DELETE from the inherited environment — an empty string is
-// NOT the same as unset (the binary reads some vars via `std::env::var`, which sees "" as
-// present), so a negative test that needs a var genuinely absent must delete it.
-function runToExit(bin, env, { timeoutMs = 20_000, unset = [] } = {}) {
-  const merged = { ...process.env, ...env };
-  for (const key of unset) delete merged[key];
+function runToExit(bin, args, env, timeoutMs = 20_000) {
   return new Promise((resolve) => {
-    const child = spawn(bin, { env: merged, stdio: ['ignore', 'pipe', 'pipe'] });
-    let stderr = '';
-    child.stdout.on('data', (c) => (stderr += c.toString()));
-    child.stderr.on('data', (c) => (stderr += c.toString()));
+    const child = spawn(bin, args, {
+      env: { ...process.env, ...env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '';
+    child.stdout.on('data', (chunk) => (output += chunk.toString()));
+    child.stderr.on('data', (chunk) => (output += chunk.toString()));
     const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
-    child.on('exit', (code) => {
+    child.once('exit', (code, signal) => {
       clearTimeout(timer);
-      resolve({ code, stderr });
+      resolve({ code, signal, output });
     });
   });
+}
+
+async function rejected(bin, fields, expected) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-config-reject-'));
+  try {
+    const env = deploymentEnv(root, { fields });
+    const result = await runToExit(bin, ['serve', '--config', configPath(env)], env);
+    assert.notEqual(result.code, 0, `configuration unexpectedly booted: ${result.output}`);
+    assert.match(result.output, expected);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 }
 
 async function main() {
-  const bin = awakenBin();
+  const bin = ensureProductionBuilt();
 
-  // ── 1. The config gate REFUSES a contradictory deployment ────────────────
-  // A worker role with no server URL cannot drain anything → fail closed at boot.
-  const worker = await runToExit(bin, {
-    AWAKEN_ROLE: 'worker',
-    AWAKEN_WORKER_SERVE_URL: '',
-    AWAKEN_UPSTREAM_URL: '',
-  });
-  assert.notEqual(worker.code, 0, `a server-URL-less worker must refuse to boot (got ${worker.code})`);
-  assert.ok(
-    worker.stderr.includes('AWAKEN_WORKER_SERVE_URL'),
-    `the refusal names the missing key: ${worker.stderr}`,
-  );
-  pass('the config gate refuses a worker with no server URL');
+  const worker = await runToExit(bin, ['worker', '--config', '/tmp/not-read-without-server.toml'], {});
+  assert.notEqual(worker.code, 0);
+  assert.match(worker.output, /worker requires --server/u);
+  pass('worker role requires an exact typed worker_server');
 
-  // A coordinator (no local pool) with no shared queue is also refused.
-  const coord = await runToExit(bin, {
-    AWAKEN_ROLE: 'serve',
-    AWAKEN_SERVER_RUN_LOCAL_POOL: 'false',
-    AWAKEN_RUNTIME_DISPATCH_DATABASE_URL: '',
-    AWAKEN_DATABASE_URL: '',
-  });
-  assert.notEqual(coord.code, 0, 'a pool-less coordinator with no shared queue must refuse to boot');
-  assert.ok(
-    coord.stderr.includes('shared Postgres dispatch queue'),
-    `the refusal explains the missing queue: ${coord.stderr}`,
-  );
-  pass('the config gate refuses a coordinator with no shared queue');
+  await rejected(bin, { run_local_pool: false }, /run_local_pool=false requires runtime_database_url/u);
+  pass('pool-less coordinator requires a typed shared dispatch store');
 
-  // N5: a 'durable' ingress on the default in-memory SQLite queue (no AWAKEN_STORAGE_DIR,
-  // no Postgres dispatch backend) would silently drop every queued/crashed/dead-lettered/
-  // scheduled run on restart → the serve role refuses to boot (no-data-loss guard).
-  const durableVolatile = await runToExit(
+  await rejected(bin, { resource_database_url: '/tmp/resources.sqlite' }, /must be postgres:\/\//u);
+  pass('resource plane rejects a second embedded database path');
+
+  await rejected(
     bin,
-    { AWAKEN_ROLE: 'serve', AWAKEN_INGRESS: 'durable' },
-    // deliberately NO persistent queue: no storage dir, no postgres dispatch backend.
-    { unset: ['AWAKEN_STORAGE_DIR', 'AWAKEN_DISPATCH_BACKEND', 'AWAKEN_DATABASE_URL', 'AWAKEN_MGMT_DIR'] },
+    { runtime_database_url: 'postgres://127.0.0.1:1/never-connect' },
+    /requires resource_database_url and admin_db/u,
   );
-  assert.notEqual(
-    durableVolatile.code,
-    0,
-    'a durable ingress on a volatile queue must refuse to boot',
-  );
-  assert.ok(
-    durableVolatile.stderr.includes('persistent dispatch queue'),
-    `the refusal explains the volatile-queue hazard: ${durableVolatile.stderr}`,
-  );
-  pass('the config gate refuses a durable ingress on a volatile (in-memory) queue');
+  pass('shared runtime rejects split local resource ownership before connecting');
 
-  // N4: self-managed IAM persists bearer tokens below AWAKEN_DEPLOYMENT_DATA_DIR; an
-  // in-memory data directory would evaporate on restart (every admin locked out or, worse,
-  // re-bootstrapped). Selecting embedded IAM without the canonical deployment data root
-  // fails closed at store assembly rather than silently running an ephemeral IAM.
-  const iamNoDir = await runToExit(
-    bin,
-    { AWAKEN_ROLE: 'serve', AWAKEN_MGMT_IAM: 'embedded' },
-    { unset: ['AWAKEN_MGMT_DIR', 'AWAKEN_DEPLOYMENT_DATA_DIR'] },
-  );
-  assert.notEqual(iamNoDir.code, 0, 'embedded IAM without a data dir must refuse to boot');
-  assert.ok(
-    iamNoDir.stderr.includes('self-managed IAM requires AWAKEN_DEPLOYMENT_DATA_DIR'),
-    `the refusal names the missing dir: ${iamNoDir.stderr}`,
-  );
-  pass('the config gate refuses embedded IAM with no data dir (would run an ephemeral token store)');
-
-  // Resource storage is one independently resolved backend family. Embedded mode
-  // is selected by the deployment directory itself; a second SQLite/path-shaped
-  // resource setting is ambiguous and must not silently split File/Memory/Skill
-  // data from lifecycle/reference/fence state.
-  const resourceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-resource-config-e2e-'));
+  // Environment values name contradictory roles, roots, ports, stores, and
+  // credentials. `config --json` must still report only typed file values.
+  const isolationRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-config-isolation-'));
   try {
-    const invalidResourceBackend = await runToExit(bin, {
-      AWAKEN_ROLE: 'serve',
-      AWAKEN_DEPLOYMENT_DATA_DIR: resourceDir,
-      AWAKEN_CONTROL_SEAL_KEY: '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
-      AWAKEN_RESOURCE_DATABASE_URL: `${resourceDir}/resources.sqlite`,
+    const env = deploymentEnv(isolationRoot, {
+      fields: { bind: `127.0.0.1:${BASE_PORT}`, role: 'serve', run_local_pool: true },
     });
-    assert.notEqual(invalidResourceBackend.code, 0);
-    assert.match(invalidResourceBackend.stderr, /must be a postgres:\/\/ URL/u);
-    pass('resource backend rejects a second embedded path instead of splitting the plane');
-
-    // Transitional inference from the runtime Postgres DSN still chooses the one
-    // shared resource backend, but a local admin/resource catalog would make
-    // cross-node references inconsistent. Refuse before attempting any database
-    // connection, and tell the operator which explicit resource/catalog keys to set.
-    const splitSharedPlane = await runToExit(
-      bin,
-      {
-        AWAKEN_ROLE: 'serve',
-        AWAKEN_DEPLOYMENT_DATA_DIR: resourceDir,
-        AWAKEN_CONTROL_SEAL_KEY: '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
-        AWAKEN_RUNTIME_DISPATCH_DATABASE_URL: 'postgres://127.0.0.1:1/never-connect',
-      },
-      { unset: ['AWAKEN_RESOURCE_DATABASE_URL', 'AWAKEN_ADMIN_DB'] },
-    );
-    assert.notEqual(splitSharedPlane.code, 0);
-    assert.match(splitSharedPlane.stderr, /AWAKEN_RESOURCE_DATABASE_URL explicitly/u);
-    assert.match(splitSharedPlane.stderr, /AWAKEN_ADMIN_DB/u);
-    pass('shared runtime refuses a local resource catalog before opening adapters');
+    Object.assign(env, {
+      AWAKEN_ROLE: 'worker',
+      AWAKEN_HTTP_ADDR: '127.0.0.1:1',
+      AWAKEN_DEPLOYMENT_DATA_DIR: '/tmp/forbidden-awaken-data',
+      AWAKEN_RUNTIME_DISPATCH_DATABASE_URL: 'postgres://forbidden',
+      AWAKEN_CONTROL_SEAL_KEY: 'forbidden',
+    });
+    const result = await runToExit(bin, ['config', '--json', '--config', configPath(env)], env);
+    assert.equal(result.code, 0, result.output);
+    const report = JSON.parse(result.output);
+    assert.equal(report.role, 'serve');
+    assert.equal(report.bind, `127.0.0.1:${BASE_PORT}`);
+    assert.equal(report.data_dir, isolationRoot);
+    assert.equal(report.runtime_dispatch_backend, 'sqlite');
+    assert.ok(!result.output.includes('forbidden'));
+    pass('deployment environment poisoning cannot alter typed configuration');
   } finally {
-    fs.rmSync(resourceDir, { recursive: true, force: true });
+    fs.rmSync(isolationRoot, { recursive: true, force: true });
   }
 
-  // ── 2. Legacy env names still read, with a deprecation warning ───────────
-  // A worker with the LEGACY upstream name boots past the gate (valid config) but
-  // warns; we only need to see the warning, so point it at an unused URL and kill it.
-  {
-    const httpPort = await freePort();
-    const child = spawn(bin, {
-      env: {
-        ...process.env,
-        AWAKEN_ROLE: 'worker',
-        AWAKEN_UPSTREAM_URL: `http://127.0.0.1:${httpPort}`,
-        AWAKEN_INGRESS: 'durable',
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let out = '';
-    child.stdout.on('data', (c) => (out += c.toString()));
-    child.stderr.on('data', (c) => (out += c.toString()));
-    const exited = new Promise((resolve) => child.once('exit', resolve));
-    // Give it a moment to print the deprecation + config summary, then stop it.
-    await new Promise((r) => setTimeout(r, 2500));
-    if (child.exitCode === null) child.kill('SIGINT');
-    await exited;
-    assert.ok(
-      out.includes('deprecated') && out.includes('AWAKEN_UPSTREAM_URL'),
-      `a legacy env name warns: ${out}`,
-    );
-    pass('a legacy env name (AWAKEN_UPSTREAM_URL) still reads and warns');
-  }
-
-  // ── 3. Serve admin-port split (P2): probes/drain on a SEPARATE port ───────
-  const httpPort = await freePort();
-  const adminPort = await freePort();
-  const serve = spawn(bin, {
-    env: {
-      ...process.env,
-      AWAKEN_HTTP_ADDR: `127.0.0.1:${httpPort}`,
-      AWAKEN_SERVER_ADMIN_LISTEN: `127.0.0.1:${adminPort}`,
-      AWAKEN_MODEL_MODE: 'echo',
+  const serveRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-admin-split-'));
+  const httpPort = BASE_PORT + 1;
+  const adminPort = BASE_PORT + 2;
+  const env = deploymentEnv(serveRoot, {
+    controlSealKey: SEAL_KEY,
+    fields: {
+      bind: `127.0.0.1:${httpPort}`,
+      admin_listen: `127.0.0.1:${adminPort}`,
     },
-    stdio: ['ignore', 'inherit', 'inherit'],
+  });
+  const serve = spawn(bin, ['serve', '--config', configPath(env)], {
+    env: { ...process.env, ...env, AWAKEN_HTTP_ADDR: '127.0.0.1:1' },
+    stdio: ['ignore', 'ignore', 'inherit'],
   });
   try {
-    await waitForPort(adminPort);
+    await waitForPort(adminPort, 60_000, serve);
+    await waitForPort(httpPort, 60_000, serve);
     const admin = `http://127.0.0.1:${adminPort}`;
-    // The business port must NOT serve the admin routes (they live on the admin
-    // port): a probe there is anything but a 200 "ready" (404 unrouted, or an auth
-    // rejection — either way not the admin surface).
-    await waitForPort(httpPort);
-    const bizReadyz = await fetch(`http://127.0.0.1:${httpPort}/readyz`).then((r) => r.status);
-    assert.notEqual(bizReadyz, 200, 'the business port does not serve admin /readyz (it is split off)');
-
-    // The admin port serves readiness, metrics, and drain.
-    const ready = await fetch(`${admin}/readyz`);
-    assert.equal(ready.status, 200, 'admin /readyz is 200 before draining');
-
-    const metrics = await fetch(`${admin}/metrics`).then((r) => r.text());
-    assert.ok(metrics.includes('awaken_brain_'), `admin /metrics exposes the brain gauges: ${metrics}`);
-
-    const drained = await fetch(`${admin}/admin/drain`, { method: 'POST' });
-    assert.equal(drained.status, 200, 'POST /admin/drain succeeds');
-
-    const afterDrain = await fetch(`${admin}/readyz`);
-    assert.equal(afterDrain.status, 503, 'admin /readyz flips to 503 after drain');
-    pass('the serve admin surface splits onto its own port (readyz/metrics/drain)');
+    assert.notEqual(await fetch(`http://127.0.0.1:${httpPort}/readyz`).then((r) => r.status), 200);
+    assert.equal((await fetch(`${admin}/readyz`)).status, 200);
+    assert.match(await fetch(`${admin}/metrics`).then((r) => r.text()), /awaken_brain_/u);
+    assert.equal((await fetch(`${admin}/admin/drain`, { method: 'POST' })).status, 200);
+    assert.equal((await fetch(`${admin}/readyz`)).status, 503);
+    pass('typed admin_listen splits readiness, metrics, and drain from business traffic');
   } finally {
-    if (serve.exitCode === null) {
-      const exited = new Promise((resolve) => serve.once('exit', resolve));
-      serve.kill('SIGINT');
-      await exited;
-    }
+    await stopServer(serve);
+    fs.rmSync(serveRoot, { recursive: true, force: true });
   }
 
-  console.log('E2E PASS: deployment config gate refuses bad shapes, warns on legacy names, and the admin surface splits onto its own port.');
+  console.log('E2E PASS: typed deployment is fail-closed, environment-independent, and preserves the split admin surface.');
 }
 
-main().catch((err) => {
-  console.error('E2E FAIL:', err);
+main().catch((error) => {
+  console.error('E2E FAIL:', error);
   process.exitCode = 1;
 });
