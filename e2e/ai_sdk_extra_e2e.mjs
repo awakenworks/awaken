@@ -67,6 +67,36 @@ async function main() {
     assert.ok(streamedText(plain.text).includes('Echo: PLAIN-CHAT'), 'plain chat streamed the reply');
     pass('plain /chat route streamed a reply (chat)');
 
+    // Causal graph:
+    // UI part JSON -> typed UIMessagePart admission -> neutral content ACL -> model.
+    //
+    // Decision table:
+    // | part                         | admission | neutral prompt | history mutation |
+    // | data-<dynamic> + valid text  | accept    | text only      | one legal turn   |
+    // | text with numeric text       | reject    | none           | none             |
+    const dynamic = await postStream('/v1/ai-sdk/chat', JSON.stringify({
+      threadId: 'aiparts-dynamic',
+      messages: [{
+        id: 'dynamic-1',
+        role: 'user',
+        parts: [
+          { type: 'data-weather', data: { marker: 'must-not-enter-prompt' } },
+          { type: 'text', text: 'VISIBLE-DYNAMIC-TEXT' },
+        ],
+      }],
+    }));
+    assert.ok(streamedText(dynamic.text).includes('VISIBLE-DYNAMIC-TEXT'));
+    assert.ok(!streamedText(dynamic.text).includes('must-not-enter-prompt'));
+
+    const malformedPart = await postStream('/v1/ai-sdk/chat', JSON.stringify({
+      threadId: 'aiparts-invalid',
+      messages: [{ id: 'invalid-1', role: 'user', parts: [{ type: 'text', text: 7 }] }],
+    }));
+    assert.ok(malformedPart.text.toLowerCase().includes('error'), 'known malformed part fails admission');
+    const invalidHistory = await (await fetch(`${BASE}/v1/ai-sdk/threads/aiparts-invalid/messages`)).json();
+    assert.deepEqual(invalidHistory.items, [], 'rejected UI parts cause no committed turn');
+    pass('typed UI-part admission preserves dynamic isolation and rejects malformed known parts');
+
     // Malformed body → the JSON extractor fails closed with an error stream, not a
     // panic; the UI stream carries an error event.
     const bad = await fetch(`${BASE}/v1/ai-sdk/chat`, {
