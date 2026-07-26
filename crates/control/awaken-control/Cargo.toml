@@ -41,7 +41,7 @@ awaken-iam-host = { workspace = true }
 awaken-webhook-managed = { workspace = true }
 awaken-agent-contract = { workspace = true }
 awaken-runtime-contract = { workspace = true }
-# The embedded IAM token/binding rows persist under <AWAKEN_MGMT_DIR>/iam.sqlite.
+# The embedded IAM token/binding rows persist under typed <data_dir>/iam.sqlite.
 rusqlite = { version = "0.32", features = ["bundled"] }
 async-trait.workspace = true
 serde.workspace = true

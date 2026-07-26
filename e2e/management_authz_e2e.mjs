@@ -1,6 +1,6 @@
 // Embedded-IAM e2e for the management plane (ADR-0042/0043 P1): spawn
-// awaken-server in `management` mode with AWAKEN_MGMT_DIR +
-// AWAKEN_MGMT_SEAL_KEY + AWAKEN_MGMT_IAM=embedded, read the bootstrap admin
+// awaken-server in `management` mode with typed data_dir, control_seal_key, and
+// identity_mode=self-managed; read the bootstrap admin
 // token the server wrote to `<dir>/admin-token` (mode 0600), and assert the
 // gate end to end over real HTTP:
 //
@@ -20,7 +20,7 @@
 //     token (old 401s, new keeps working), and a further restart persists
 //     both facts.
 //
-// Every other e2e runs WITHOUT the AWAKEN_MGMT_IAM env var and stays open.
+// Other E2E fixtures default to the typed open identity mode.
 //
 // Run: (from e2e/)  npm install && node management_authz_e2e.mjs
 
@@ -33,7 +33,7 @@ import { deploymentEnv, spawnServer, stopServer, waitForPort, pass, startUpstrea
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = 38197;
-// 64 hex chars = the 32-byte AEAD key AWAKEN_MGMT_SEAL_KEY requires.
+// 64 hex chars = the 32-byte AEAD key typed control_seal_key requires.
 const SEAL_KEY = 'ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100';
 
 async function req(base, method, uri, body, token) {

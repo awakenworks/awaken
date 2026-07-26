@@ -1,5 +1,5 @@
 //! Restart persistence for the durable management plane (ADR-0043): a router
-//! built over `AWAKEN_MGMT_DIR`-style SQLite stores is dropped and rebuilt over
+//! built over typed `data_dir` SQLite stores is dropped and rebuilt over
 //! the same directory + key, and everything authored through HTTP — catalog,
 //! credential (sealed secret), pool, inference profile, MCP server def, agent
 //! MCP binding — reads back and still *resolves* (the credential materializes

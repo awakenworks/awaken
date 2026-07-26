@@ -626,7 +626,7 @@ async fn minted_tokens_survive_a_restart_over_the_same_directory() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn without_the_guard_the_management_plane_stays_open() {
-    // Regression pin: the default (AWAKEN_MGMT_IAM unset ⇒ no guard) is
+    // Regression pin: typed open identity mode has no guard and is
     // byte-identical to the pre-IAM behavior — no token, everything works.
     let dir = tempfile::tempdir().unwrap();
     let app = build_durable_management_router(dir.path(), &KEY).await;

@@ -1,7 +1,7 @@
 // Durable-deployment persistence + lifecycle for the self-hosted environment
 // registry + work queue (the unify-work-lease durable backends). Spawn
-// awaken-server in `management` mode over a fixed AWAKEN_MGMT_DIR (SQLite
-// backends), drive the official Anthropic SDK, and assert:
+// awaken-server in `management` mode over one fixed typed deployment data_dir
+// (SQLite backends), drive the official Anthropic SDK, and assert:
 //
 //   1. Enqueue semantics: creating a self-hosted environment seeds a `healthcheck`
 //      work item; creating a session ON that environment enqueues one `session`
@@ -21,7 +21,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import { deploymentEnv, spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT ?? 38294);
@@ -45,7 +45,7 @@ const kinds = (work) => work.map((w) => w.data.type).sort();
 
 async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-envwork-e2e-'));
-  const env = { AWAKEN_MGMT_DIR: dir, AWAKEN_MGMT_SEAL_KEY: SEAL_KEY };
+  const env = deploymentEnv(dir, { controlSealKey: SEAL_KEY });
   const upstream = await startUpstream('echo');
   let server = null;
   try {
@@ -110,7 +110,7 @@ async function main() {
     server = boot_b.server;
     await waitForPort(PORT);
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: boot_b.baseUrl });
-    pass('server killed and respawned on the same AWAKEN_MGMT_DIR (SQLite backends)');
+    pass('server killed and respawned on the same typed data_dir (SQLite backends)');
 
     // ---- the environment registry survived, with the mutation -------------
     const after = await client.beta.environments.retrieve(created.id, { betas: BETAS });

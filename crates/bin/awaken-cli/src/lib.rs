@@ -369,7 +369,7 @@ fn management_stores_for_runtime_storage(
 /// Open the control-plane stores per the [`ControlStoreConfig`](awaken_control::ControlStoreConfig)
 /// — each component on its own database (SQLite file or shared Postgres). This
 /// is the one durable store assembly: each store independently honors its
-/// `AWAKEN_<COMPONENT>_DB` override, so a
+/// typed per-component database binding, so a
 /// separate control / server process can share the same per-component databases
 /// (Option A, shared-DB).
 async fn open_management_stores(
@@ -863,7 +863,7 @@ pub async fn build_durable_management_router(dir: &std::path::Path, key: &[u8; 3
 }
 
 /// [`build_durable_management_router`] with the embedded IAM guard enabled — the
-/// env-free equivalent of `AWAKEN_MGMT_IAM=embedded`. Returns the
+/// typed self-managed identity composition. Returns the
 /// [`ManagementAuthz`] handle too so a test (or an embedding) can mint further
 /// workspace tokens against the same policy state.
 pub async fn build_secured_management_router(
