@@ -33,10 +33,11 @@ A third integration mode, **self-managed IAM**, remains supported through
 explicit deployment configuration. It is an operator feature documented only on
 awakenworks.com; local product copy and onboarding do not promote it.
 
-`AWAKEN_IDENTITY_MODE` accepts `no-login`, `awaken-cloud`, and `self-managed`.
-Legacy `AWAKEN_MGMT_IAM=embedded` remains an alias during migration. Cloud mode
-fails closed when no cached/explicit login credential or JWKS trust root is
-available. Self-managed mode requires a durable management directory.
+The typed deployment field `identity_mode` accepts `no-login`, `awaken-cloud`,
+and `self-managed`. Retired process-environment aliases do not participate in
+deployment resolution. Cloud mode fails closed when no cached/explicit login
+credential or JWKS trust root is available. Self-managed mode requires a durable
+management directory.
 
 An API key is a credential, not a permission model. Authentication resolves a
 principal and credential constraints; the PDP still evaluates principal,
@@ -73,9 +74,9 @@ PDP verifies it against the active profile. Project routes submit
 `ScopeRef::Project`; they are not silently reduced to Workspace scope.
 
 The PAP activates immutable profile revisions atomically and supports rollback.
-Embedded and remote deployments consume the same profile/snapshot format. An
-environment variable may select a profile or IAM endpoint, but cannot redefine
-individual action/scope rules.
+Embedded and remote deployments consume the same profile/snapshot format. Typed
+deployment configuration may select a profile or IAM endpoint, but cannot
+redefine individual action/scope rules.
 
 This paragraph is the cross-repository completion contract, not a claim that the
 currently pinned IAM wire API already implements it. Today
@@ -227,5 +228,8 @@ subject + exact Workspace + action -> IAM decision
 
 Server mode rejects an inline service token, a missing token file, and dual
 inline/file configuration before serving. Management never mounts a Flow token
-or an IAM signing key, and Runtime/resource stores remain unaware of this
-deployment credential.
+or an IAM signing key. The `awaken management` process mounts only the existing
+authoring/control router; it does not mount Session, protocol, Run ingress,
+Worker transport, or local dispatch routes and therefore cannot become a second
+Runtime authority beside a hosted Coordinator. Runtime/resource stores remain
+unaware of the deployment credential.

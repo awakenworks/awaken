@@ -141,6 +141,7 @@ struct AssemblyOverrides {
     deployment: Option<awaken_runtime_host::DeploymentConfig>,
     org_id: Option<String>,
     mcp_bearer_token: Option<String>,
+    management_only: bool,
 }
 
 type IdentityWiring = (
@@ -654,6 +655,44 @@ pub async fn build_management_router_with_deployment(
             deployment: Some(deployment.runtime.clone()),
             org_id: Some(deployment.org_id.clone()),
             mcp_bearer_token: deployment.mcp_bearer_token.clone(),
+            management_only: false,
+        },
+        None,
+    )
+    .await)
+}
+
+/// Canonical hosted authoring/control assembly. It reuses the same stores,
+/// resolver, IAM PEP and routes as the full local product, but deliberately
+/// omits every Session/Run/protocol/Worker data-plane route.
+pub async fn build_control_router_with_deployment(
+    deployment: &config::ResolvedDeployment,
+    key: &[u8; 32],
+) -> Result<Router, String> {
+    let (iam, remote_iam) = identity_wiring(
+        deployment.identity_mode,
+        Some(&deployment.data_dir),
+        &deployment.org_id,
+        &deployment.iam_workspaces,
+        &deployment.cloud_iam,
+    )?;
+    let stores = open_management_stores(
+        deployment.control.clone(),
+        deployment.resources.clone(),
+        deployment.data_dir.clone(),
+        key,
+    )
+    .await?;
+    Ok(management_router_over(
+        stores,
+        iam,
+        remote_iam,
+        ManagementModelComposition::PublishedProviders,
+        AssemblyOverrides {
+            deployment: None,
+            org_id: Some(deployment.org_id.clone()),
+            mcp_bearer_token: deployment.mcp_bearer_token.clone(),
+            management_only: true,
         },
         None,
     )
@@ -711,6 +750,7 @@ async fn build_management_router_with_composition(
             deployment: Some(deployment.runtime),
             org_id: Some(deployment.org_id),
             mcp_bearer_token: deployment.mcp_bearer_token,
+            management_only: false,
         },
         None,
     )
@@ -911,6 +951,7 @@ async fn management_router_over(
     // serves external-CLI sessions.
     customize_host: Option<Box<dyn FnOnce(SharedHost) -> SharedHost + Send>>,
 ) -> Router {
+    let management_only = assembly.management_only;
     let deployment = assembly.deployment;
     let org_id = assembly.org_id.unwrap_or_else(local_org_id);
     let mcp_bearer_token = assembly.mcp_bearer_token;
@@ -1157,6 +1198,10 @@ async fn management_router_over(
         application_access: application_access.clone(),
     });
 
+    if management_only {
+        return finish_management_surface(mgmt, mcp_export, reconciler, platform_workspace);
+    }
+
     // The data plane: the host runs the server model, resolves a session's agent to
     // its installed config, and carries the management tool executables so the
     // reserved-scope assistant can call them. It shares the SAME skill store and
@@ -1313,7 +1358,16 @@ async fn management_router_over(
             awaken_control::authz::cloud_resource_guard,
         ));
     }
-    let mut flat = data.merge(mgmt);
+    let flat = data.merge(mgmt);
+    finish_management_surface(flat, mcp_export, reconciler, platform_workspace)
+}
+
+fn finish_management_surface(
+    mut flat: Router,
+    mcp_export: Router,
+    reconciler: Arc<awaken_runtime_host::ConfigServiceReconciler>,
+    platform_workspace: String,
+) -> Router {
     // Serving tools to an external MCP client is disabled until an operator sets a
     // dedicated bearer. This avoids turning the management toolset into an open
     // mutation surface while still making the `awaken` binary the complete adapter.
@@ -1512,5 +1566,53 @@ mod runtime_session_store_tests {
             .expect_err("an exact provider selection cannot drift to the host executor");
 
         assert!(error.to_string().contains("cannot publish model"));
+    }
+}
+
+#[cfg(test)]
+mod management_only_surface_tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt as _;
+
+    use super::*;
+
+    /// Cause/effect decision table:
+    ///
+    /// | management-only | route owner | expected |
+    /// | --- | --- | --- |
+    /// | yes | authoring/control | mounted |
+    /// | yes | Session/runtime data plane | absent |
+    #[tokio::test]
+    async fn management_only_mounts_control_and_omits_runtime_authority() {
+        let app = management_router_over(
+            in_memory_management_stores(),
+            None,
+            None,
+            ManagementModelComposition::PublishedProviders,
+            AssemblyOverrides {
+                management_only: true,
+                ..Default::default()
+            },
+            None,
+        )
+        .await;
+
+        let control = app
+            .clone()
+            .oneshot(
+                Request::get("/v1/config/catalog")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(control.status(), StatusCode::OK);
+
+        let session = app
+            .oneshot(Request::get("/v1/sessions").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(session.status(), StatusCode::NOT_FOUND);
     }
 }

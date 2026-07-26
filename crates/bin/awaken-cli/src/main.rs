@@ -97,12 +97,17 @@ async fn run(command: console::Command) -> Result<(), String> {
             awaken_observability::shutdown();
             result
         }
-        console::Command::Start(args) => serve(args, Presentation::Interactive).await,
-        console::Command::Serve(args) => serve(args, Presentation::Headless).await,
+        console::Command::Start(args) => serve(args, Presentation::Interactive, false).await,
+        console::Command::Serve(args) => serve(args, Presentation::Headless, false).await,
+        console::Command::Management(args) => serve(args, Presentation::Headless, true).await,
     }
 }
 
-async fn serve(args: console::StartArgs, presentation: Presentation) -> Result<(), String> {
+async fn serve(
+    args: console::StartArgs,
+    presentation: Presentation,
+    management_only: bool,
+) -> Result<(), String> {
     let deployment = ResolvedDeployment::load(ConfigOverrides {
         config_path: args.config_path,
         role: Some(Role::Serve),
@@ -111,15 +116,20 @@ async fn serve(args: console::StartArgs, presentation: Presentation) -> Result<(
         no_browser: args.no_browser.then_some(true),
         ..Default::default()
     })?;
+    if management_only && deployment.mode != awaken_cli::config::OperatingMode::Server {
+        return Err("`awaken management` requires mode = \"server\" in config.toml".to_owned());
+    }
     warn_deprecations(&deployment);
     deployment.ensure_data_layout()?;
     let seal_key = deployment.seal_key.load_or_create()?;
-    if let Some(error) = deployment.runtime.durable_needs_persistence_error(false) {
+    if !management_only
+        && let Some(error) = deployment.runtime.durable_needs_persistence_error(false)
+    {
         return Err(error.to_owned());
     }
 
     awaken_observability::init();
-    let result = serve_resolved(deployment, seal_key, presentation).await;
+    let result = serve_resolved(deployment, seal_key, presentation, management_only).await;
     awaken_observability::shutdown();
     result
 }
@@ -128,10 +138,11 @@ async fn serve_resolved(
     deployment: ResolvedDeployment,
     seal_key: [u8; 32],
     presentation: Presentation,
+    management_only: bool,
 ) -> Result<(), String> {
-    let postgres_startup = deployment.runtime.dispatch_backend
-        == awaken_runtime_host::DispatchBackend::Postgres
-        || deployment.runtime.store == awaken_runtime_host::StoreKind::Postgres;
+    let postgres_startup = !management_only
+        && (deployment.runtime.dispatch_backend == awaken_runtime_host::DispatchBackend::Postgres
+            || deployment.runtime.store == awaken_runtime_host::StoreKind::Postgres);
     let migration_lock = if postgres_startup {
         let url = deployment.runtime.database_url.as_deref().ok_or_else(|| {
             "a Postgres runtime requires runtime.database_url in the deployment config".to_owned()
@@ -145,7 +156,9 @@ async fn serve_resolved(
         None
     };
 
-    if deployment.runtime.dispatch_backend == awaken_runtime_host::DispatchBackend::Postgres {
+    if !management_only
+        && deployment.runtime.dispatch_backend == awaken_runtime_host::DispatchBackend::Postgres
+    {
         let url = deployment
             .runtime
             .database_url
@@ -158,7 +171,7 @@ async fn serve_resolved(
             .await
             .map_err(|error| format!("initialize Postgres worker registry: {error}"))?;
     }
-    if deployment.runtime.store == awaken_runtime_host::StoreKind::Postgres {
+    if !management_only && deployment.runtime.store == awaken_runtime_host::StoreKind::Postgres {
         let url = deployment
             .runtime
             .database_url
@@ -169,7 +182,11 @@ async fn serve_resolved(
             .map_err(|error| format!("initialize Postgres commit store: {error}"))?;
     }
 
-    let app = awaken_cli::build_management_router_with_deployment(&deployment, &seal_key).await?;
+    let app = if management_only {
+        awaken_cli::build_control_router_with_deployment(&deployment, &seal_key).await?
+    } else {
+        awaken_cli::build_management_router_with_deployment(&deployment, &seal_key).await?
+    };
     if let Some(lock) = migration_lock {
         lock.release()
             .await

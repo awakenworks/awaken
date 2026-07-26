@@ -19,6 +19,7 @@ pub(crate) struct StartArgs {
 pub(crate) enum Command {
     Start(StartArgs),
     Serve(StartArgs),
+    Management(StartArgs),
     Worker {
         server: String,
         config_path: Option<std::path::PathBuf>,
@@ -42,6 +43,8 @@ pub(crate) fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Comma
         "start" => parse_start_args(&args).map(Command::Start),
         "serve" if args.iter().any(|arg| is_help(arg)) => Ok(Command::Help),
         "serve" => parse_start_args(&args).map(Command::Serve),
+        "management" if args.iter().any(|arg| is_help(arg)) => Ok(Command::Help),
+        "management" => parse_start_args(&args).map(Command::Management),
         "worker" => parse_worker_args(&args),
         "config" => parse_config_args(&args),
         "version" | "-V" | "--version" if args.is_empty() => Ok(Command::Version),
@@ -172,7 +175,7 @@ fn is_help(value: &str) -> bool {
 
 pub(crate) fn print_help() {
     println!(
-        "Awaken\n\nUSAGE:\n    awaken [COMMAND] [OPTIONS]\n\nRunning `awaken` without a command is the same as `awaken start`.\n\nCOMMANDS:\n    start                 Start locally, print readiness, and open the browser\n    serve                 Start headless for service managers\n    worker --server URL   Join an Awaken server as a worker\n    config [--json]       Print effective, redacted configuration\n    version               Print the installed version\n\nOPTIONS:\n    --config PATH         Read typed configuration from PATH\n    --port PORT           Override the listen port\n    --data-dir PATH       Override the persistent data root (default ~/.awaken)\n    --no-browser          Do not open a browser\n    -h, --help            Print this help\n\nConfiguration sources: --config PATH or ~/.awaken/config.toml, then defaults."
+        "Awaken\n\nUSAGE:\n    awaken [COMMAND] [OPTIONS]\n\nRunning `awaken` without a command is the same as `awaken start`.\n\nCOMMANDS:\n    start                 Start locally, print readiness, and open the browser\n    serve                 Start headless for service managers\n    management            Start only the authoring/control surface (server mode)\n    worker --server URL   Join an Awaken server as a worker\n    config [--json]       Print effective, redacted configuration\n    version               Print the installed version\n\nOPTIONS:\n    --config PATH         Read typed configuration from PATH\n    --port PORT           Override the listen port\n    --data-dir PATH       Override the persistent data root (default ~/.awaken)\n    --no-browser          Do not open a browser\n    -h, --help            Print this help\n\nConfiguration sources: --config PATH or ~/.awaken/config.toml, then defaults."
     );
 }
 
@@ -248,6 +251,10 @@ mod tests {
         assert_eq!(
             parse_args(["serve".into()]).unwrap(),
             Command::Serve(StartArgs::default())
+        );
+        assert_eq!(
+            parse_args(["management".into()]).unwrap(),
+            Command::Management(StartArgs::default())
         );
         assert_eq!(parse_args(["--help".into()]).unwrap(), Command::Help);
         assert_eq!(
