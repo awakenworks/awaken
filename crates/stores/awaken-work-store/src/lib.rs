@@ -425,6 +425,20 @@ impl PostgresWorkQueue {
         })
     }
 
+    pub async fn connect_existing(url: &str) -> Result<Self, String> {
+        let pool = PgPool::connect(url).await.map_err(|e| e.to_string())?;
+        let bundle = work_bundle().map_err(|e| e.to_string())?;
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+            .map_err(|e| e.to_string())?
+            .verify_bundle(&bundle)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(Self {
+            pool,
+            book: LeaseBook::default(),
+        })
+    }
+
     async fn insert(&self, env_id: &str, data_type: &str, session_id: Option<&str>) -> String {
         let mut tx = self.pool.begin().await.expect("begin");
         // Serialize the portable MAX(seq)+1 allocator. This is infrequent control

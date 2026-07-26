@@ -232,3 +232,23 @@ authoring/control router; it does not mount Session, protocol, Run ingress,
 Worker transport, or local dispatch routes and therefore cannot become a second
 Runtime authority beside a hosted Coordinator. Runtime/resource stores remain
 unaware of the deployment credential.
+
+Managed PostgreSQL schema changes have one operational writer. The explicit
+`awaken database migrate` command applies the existing scoped bundles; a
+server-mode `awaken management` process opens the same bundle-specific stores
+in verification mode and performs no DDL. Local SQLite `awaken start` continues
+to migrate on open so a new local install stays zero-configuration.
+
+```text
+deployment migration Job -> scoped migration run_bundle -> ledger + DDL
+application Pod          -> scoped migration verify_bundle -> serve or fail
+```
+
+| Mode/caller | Schema | Decision |
+|---|---|---|
+| local `start` | absent/pending | apply embedded SQLite migrations and start |
+| migration command | absent/pending | apply PostgreSQL bundles idempotently |
+| migration command | current | no-op success |
+| server `management` | absent/pending | fail closed without DDL |
+| server `management` | current | start control-only surface |
+| either | checksum drift/unknown version | fail closed |
