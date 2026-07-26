@@ -4,13 +4,21 @@
 // admission, and sandbox realization used by an installed CLI. Gemini exercises
 // process-secret projection; Codex proves a bearer-only publication cannot bypass
 // its typed credential-artifact driver. No scenario-host composition is involved.
+//
+// Fixture launch cause graph: host OS -> native PATH delimiter + executable
+// wrapper -> ACP JSON-RPC fixture starts -> durable run settles.
+//
+// | Rule | Host | PATH delimiter | Fixture wrapper | Result |
+// |---|---|---|---|---|
+// | L1 | Unix | `:` | `#!/bin/sh` | ACP turn |
+// | L2 | Windows | `;` | native fixture `.exe` | ACP turn |
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { execSync, spawn } from 'node:child_process';
+import { execFileSync, execSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
@@ -45,6 +53,16 @@ function awakenBin() {
 
 function installGeminiFixture() {
   fs.mkdirSync(BIN_DIR, { recursive: true });
+  if (process.platform === 'win32') {
+    const gemini = path.join(BIN_DIR, 'gemini.exe');
+    execFileSync('rustc', [
+      '--edition=2024',
+      path.join(ROOT, 'e2e', 'fixtures', 'acp_projected_windows_fixture.rs'),
+      '-o', gemini,
+    ]);
+    fs.copyFileSync(gemini, path.join(BIN_DIR, 'npx.exe'));
+    return;
+  }
   const fixture = path.join(BIN_DIR, 'gemini');
   fs.writeFileSync(fixture, `#!/bin/sh
 while IFS= read -r line; do
@@ -79,14 +97,14 @@ function start(binary, cli) {
   return spawn(binary, ['serve', '--config', configPath], {
     env: {
       ...environment,
-      PATH: `${BIN_DIR}:${environment.PATH ?? ''}`,
+      PATH: `${BIN_DIR}${path.delimiter}${environment.PATH ?? ''}`,
       // These ambient values are deliberately wrong. The launched CLI must receive
       // only the endpoint, upstream model, and credential revision published below.
       GOOGLE_GEMINI_BASE_URL: 'http://ambient-gemini.invalid/v1',
       GEMINI_API_KEY: 'ambient-gemini-must-not-win', // awaken-allow: secret (fixture)
       GEMINI_MODEL: 'environment-fallback-must-not-win',
     },
-    stdio: ['ignore', 'ignore', 'inherit'],
+    stdio: ['ignore', 'inherit', 'inherit'],
   });
 }
 
