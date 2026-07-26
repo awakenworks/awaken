@@ -74,6 +74,9 @@ pub fn compile_candidate_credential_bindings(
             (Backend::Acp { .. }, PlaintextBoundary::Worker) => {
                 CredentialRealizationKind::WorkerRelay
             }
+            (Backend::Native, PlaintextBoundary::Platform) => {
+                CredentialRealizationKind::PlatformProviderAdapter
+            }
             (Backend::Native | Backend::Acp { .. } | Backend::Remote { .. }, boundary) => {
                 return Err(AttemptCredentialBindingError::UnsupportedRealization {
                     boundary,
