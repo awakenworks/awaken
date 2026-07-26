@@ -141,6 +141,7 @@ struct AssemblyOverrides {
     deployment: Option<awaken_session_executor::DeploymentConfig>,
     org_id: Option<String>,
     mcp_bearer_token: Option<String>,
+    management_only: bool,
 }
 
 type IdentityWiring = (
@@ -227,6 +228,12 @@ struct ResourcePlaneStores {
     skills: Arc<dyn awaken_skill_store::SkillStore>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PostgresSchemaMode {
+    Migrate,
+    Verify,
+}
+
 impl ResourcePlaneStores {
     fn ephemeral() -> Self {
         Self {
@@ -251,31 +258,56 @@ impl ResourcePlaneStores {
         }
     }
 
-    async fn open(backend: config::ResourcePlaneStoreBackend) -> Result<Self, String> {
+    async fn open(
+        backend: config::ResourcePlaneStoreBackend,
+        postgres_schema: PostgresSchemaMode,
+    ) -> Result<Self, String> {
         match backend {
             config::ResourcePlaneStoreBackend::Embedded(root) => Ok(Self::embedded(&root)),
-            config::ResourcePlaneStoreBackend::Postgres(url) => Ok(Self {
-                lifecycle: Arc::new(
-                    awaken_resource_store::PostgresResourceStore::connect(&url)
-                        .await
-                        .map_err(|error| format!("connect resource lifecycle Postgres: {error}"))?,
-                ),
-                files: Arc::new(
-                    awaken_file_store::postgres::PgFileStore::connect(&url)
-                        .await
-                        .map_err(|error| format!("connect resource file Postgres: {error}"))?,
-                ),
-                memory: Arc::new(
-                    awaken_memory_store::PostgresMemoryRepository::connect(&url)
-                        .await
-                        .map_err(|error| format!("connect resource memory Postgres: {error}"))?,
-                ),
-                skills: Arc::new(
-                    awaken_skill_store::PgSkillStore::connect(&url)
-                        .await
-                        .map_err(|error| format!("connect resource skill Postgres: {error}"))?,
-                ),
-            }),
+            config::ResourcePlaneStoreBackend::Postgres(url) => {
+                let lifecycle = match postgres_schema {
+                    PostgresSchemaMode::Migrate => {
+                        awaken_resource_store::PostgresResourceStore::connect(&url).await
+                    }
+                    PostgresSchemaMode::Verify => {
+                        awaken_resource_store::PostgresResourceStore::connect_existing(&url).await
+                    }
+                }
+                .map_err(|error| format!("connect resource lifecycle Postgres: {error}"))?;
+                let files = match postgres_schema {
+                    PostgresSchemaMode::Migrate => {
+                        awaken_file_store::postgres::PgFileStore::connect(&url).await
+                    }
+                    PostgresSchemaMode::Verify => {
+                        awaken_file_store::postgres::PgFileStore::connect_existing(&url).await
+                    }
+                }
+                .map_err(|error| format!("connect resource file Postgres: {error}"))?;
+                let memory = match postgres_schema {
+                    PostgresSchemaMode::Migrate => {
+                        awaken_memory_store::PostgresMemoryRepository::connect(&url).await
+                    }
+                    PostgresSchemaMode::Verify => {
+                        awaken_memory_store::PostgresMemoryRepository::connect_existing(&url).await
+                    }
+                }
+                .map_err(|error| format!("connect resource memory Postgres: {error}"))?;
+                let skills = match postgres_schema {
+                    PostgresSchemaMode::Migrate => {
+                        awaken_skill_store::PgSkillStore::connect(&url).await
+                    }
+                    PostgresSchemaMode::Verify => {
+                        awaken_skill_store::PgSkillStore::connect_existing(&url).await
+                    }
+                }
+                .map_err(|error| format!("connect resource skill Postgres: {error}"))?;
+                Ok(Self {
+                    lifecycle: Arc::new(lifecycle),
+                    files: Arc::new(files),
+                    memory: Arc::new(memory),
+                    skills: Arc::new(skills),
+                })
+            }
         }
     }
 }
@@ -374,9 +406,10 @@ fn management_stores_for_runtime_storage(
 /// (Option A, shared-DB).
 async fn open_management_stores(
     cfg: awaken_control::ControlStoreConfig,
-    resource_backend: config::ResourcePlaneStoreBackend,
+    resource_plane: ResourcePlaneStores,
     workspace_root: std::path::PathBuf,
     key: &[u8; 32],
+    postgres_schema: PostgresSchemaMode,
 ) -> Result<ManagementStores, String> {
     use awaken_control::StoreBackend;
 
@@ -396,8 +429,6 @@ async fn open_management_stores(
     }
     let path = |p: &std::path::Path| p.to_string_lossy().into_owned();
 
-    let resource_plane = ResourcePlaneStores::open(resource_backend).await?;
-
     ensure_parent(&cfg.catalog)?;
     let catalog: Arc<dyn awaken_model_catalog::repo::CatalogRepo> = match &cfg.catalog {
         StoreBackend::Sqlite(p) => Arc::new(
@@ -405,9 +436,15 @@ async fn open_management_stores(
                 .map_err(|error| format!("open catalog SQLite {}: {error}", p.display()))?,
         ),
         StoreBackend::Postgres(url) => Arc::new(
-            awaken_model_catalog::PostgresCatalogRepo::connect(url)
-                .await
-                .map_err(|error| format!("connect catalog Postgres: {error}"))?,
+            match postgres_schema {
+                PostgresSchemaMode::Migrate => {
+                    awaken_model_catalog::PostgresCatalogRepo::connect(url).await
+                }
+                PostgresSchemaMode::Verify => {
+                    awaken_model_catalog::PostgresCatalogRepo::connect_existing(url).await
+                }
+            }
+            .map_err(|error| format!("connect catalog Postgres: {error}"))?,
         ),
     };
 
@@ -436,16 +473,20 @@ async fn open_management_stores(
             )
         }
         StoreBackend::Postgres(url) => {
-            let creds = Arc::new(
-                awaken_credential_vault::PostgresCredentialRepo::connect(url)
-                    .await
-                    .map_err(|error| format!("connect credential Postgres: {error}"))?,
-            );
-            let blobs = awaken_credential_vault::PostgresSealedBlobStore::connect(url)
-                .await
-                .map_err(|error| format!("connect sealed credential Postgres: {error}"))?;
+            let (creds, blobs) = match postgres_schema {
+                PostgresSchemaMode::Migrate => {
+                    awaken_credential_vault::postgres::connect_migrated_pair(url)
+                        .await
+                        .map_err(|error| format!("connect credential Postgres: {error}"))?
+                }
+                PostgresSchemaMode::Verify => {
+                    awaken_credential_vault::postgres::connect_existing_pair(url)
+                        .await
+                        .map_err(|error| format!("connect credential Postgres: {error}"))?
+                }
+            };
             (
-                creds,
+                Arc::new(creds),
                 Arc::new(awaken_credential_vault::SealedAeadSecretStore::over(
                     key,
                     Arc::new(blobs),
@@ -478,16 +519,23 @@ async fn open_management_stores(
             // must run off the async worker thread to avoid a nested-runtime panic.
             let url = url.clone();
             let admin = Arc::new(
-                tokio::task::spawn_blocking(move || {
-                    awaken_admin_config_api::PostgresAdminStore::connect(&url)
+                tokio::task::spawn_blocking(move || match postgres_schema {
+                    PostgresSchemaMode::Migrate => {
+                        awaken_admin_config_api::PostgresAdminStore::connect(&url)
+                    }
+                    PostgresSchemaMode::Verify => {
+                        awaken_admin_config_api::PostgresAdminStore::connect_existing(&url)
+                    }
                 })
                 .await
                 .map_err(|error| format!("join admin Postgres connection: {error}"))?
                 .map_err(|error| format!("connect admin Postgres: {error}"))?,
             );
-            admin
-                .migrate_legacy_memory_stores()
-                .map_err(|error| format!("migrate legacy MemoryStore rows: {error}"))?;
+            if postgres_schema == PostgresSchemaMode::Migrate {
+                admin
+                    .migrate_legacy_memory_stores()
+                    .map_err(|error| format!("migrate legacy MemoryStore rows: {error}"))?;
+            }
             admin_profiles = admin.clone();
             admin_resources = admin.clone();
             admin_catalog = admin.clone();
@@ -509,9 +557,16 @@ async fn open_management_stores(
         }
         StoreBackend::Postgres(url) => {
             let repository = Arc::new(
-                awaken_session_executor::PostgresManagedSessionRepository::connect(url)
-                    .await
-                    .map_err(|error| format!("connect sessions Postgres: {error}"))?,
+                match postgres_schema {
+                    PostgresSchemaMode::Migrate => {
+                        awaken_session_executor::PostgresManagedSessionRepository::connect(url).await
+                    }
+                    PostgresSchemaMode::Verify => {
+                        awaken_session_executor::PostgresManagedSessionRepository::connect_existing(url)
+                            .await
+                    }
+                }
+                .map_err(|error| format!("connect sessions Postgres: {error}"))?,
             );
             (repository.clone(), repository)
         }
@@ -524,9 +579,15 @@ async fn open_management_stores(
                 .map_err(|error| format!("open config SQLite {}: {error}", p.display()))?,
         ),
         StoreBackend::Postgres(url) => Arc::new(
-            awaken_config_store::PostgresConfigStore::connect(url)
-                .await
-                .map_err(|error| format!("connect config Postgres: {error}"))?,
+            match postgres_schema {
+                PostgresSchemaMode::Migrate => {
+                    awaken_config_store::PostgresConfigStore::connect(url).await
+                }
+                PostgresSchemaMode::Verify => {
+                    awaken_config_store::PostgresConfigStore::connect_existing(url).await
+                }
+            }
+            .map_err(|error| format!("connect config Postgres: {error}"))?,
         ),
     };
 
@@ -555,25 +616,41 @@ async fn open_management_stores(
                 .map_err(|error| format!("open sandbox policies SQLite: {error}"))?,
             )),
         ),
-        StoreBackend::Postgres(url) => Arc::new(
-            EnvironmentState::with_stores(
-                Arc::new(
-                    awaken_session_executor::PostgresEnvRegistry::connect(url)
+        StoreBackend::Postgres(url) => {
+            let environments = match postgres_schema {
+                PostgresSchemaMode::Migrate => {
+                    awaken_session_executor::PostgresEnvRegistry::connect(url).await
+                }
+                PostgresSchemaMode::Verify => {
+                    awaken_session_executor::PostgresEnvRegistry::connect_existing(url).await
+                }
+            }
+            .map_err(|error| format!("connect environments Postgres: {error}"))?;
+            let work = match postgres_schema {
+                PostgresSchemaMode::Migrate => {
+                    awaken_session_executor::PostgresWorkQueue::connect(url).await
+                }
+                PostgresSchemaMode::Verify => {
+                    awaken_session_executor::PostgresWorkQueue::connect_existing(url).await
+                }
+            }
+            .map_err(|error| format!("connect work queue Postgres: {error}"))?;
+            let sandbox_policies = match postgres_schema {
+                PostgresSchemaMode::Migrate => {
+                    awaken_sandbox_policy_store::PostgresSandboxExecutionPolicyStore::connect(url)
                         .await
-                        .map_err(|error| format!("connect environments Postgres: {error}"))?,
-                ),
-                Arc::new(
-                    awaken_session_executor::PostgresWorkQueue::connect(url)
+                }
+                PostgresSchemaMode::Verify => {
+                    awaken_sandbox_policy_store::PostgresSandboxExecutionPolicyStore::connect_existing(url)
                         .await
-                        .map_err(|error| format!("connect work queue Postgres: {error}"))?,
-                ),
+                }
+            }
+            .map_err(|error| format!("connect sandbox policies Postgres: {error}"))?;
+            Arc::new(
+                EnvironmentState::with_stores(Arc::new(environments), Arc::new(work))
+                    .with_sandbox_policies(Arc::new(sandbox_policies)),
             )
-            .with_sandbox_policies(Arc::new(
-                awaken_sandbox_policy_store::PostgresSandboxExecutionPolicyStore::connect(url)
-                    .await
-                    .map_err(|error| format!("connect sandbox policies Postgres: {error}"))?,
-            )),
-        ),
+        }
     };
 
     Ok(ManagementStores {
@@ -598,11 +675,17 @@ async fn open_local_management_stores(
     dir: &std::path::Path,
     key: &[u8; 32],
 ) -> Result<ManagementStores, String> {
+    let resource_plane = ResourcePlaneStores::open(
+        config::ResourcePlaneStoreBackend::Embedded(dir.to_path_buf()),
+        PostgresSchemaMode::Migrate,
+    )
+    .await?;
     open_management_stores(
         awaken_control::ControlStoreConfig::local(dir),
-        config::ResourcePlaneStoreBackend::Embedded(dir.to_path_buf()),
+        resource_plane,
         dir.to_path_buf(),
         key,
+        PostgresSchemaMode::Migrate,
     )
     .await
 }
@@ -638,11 +721,18 @@ pub async fn build_management_router_with_deployment(
         &deployment.iam_workspaces,
         &deployment.cloud_iam,
     )?;
+    let postgres_schema = match deployment.mode {
+        config::OperatingMode::Local => PostgresSchemaMode::Migrate,
+        config::OperatingMode::Server => PostgresSchemaMode::Verify,
+    };
+    let resource_plane =
+        ResourcePlaneStores::open(deployment.resources.clone(), postgres_schema).await?;
     let stores = open_management_stores(
         deployment.control.clone(),
-        deployment.resources.clone(),
+        resource_plane,
         deployment.data_dir.clone(),
         key,
+        postgres_schema,
     )
     .await?;
     Ok(management_router_over(
@@ -654,10 +744,73 @@ pub async fn build_management_router_with_deployment(
             deployment: Some(deployment.runtime.clone()),
             org_id: Some(deployment.org_id.clone()),
             mcp_bearer_token: deployment.mcp_bearer_token.clone(),
+            management_only: false,
         },
         None,
     )
     .await)
+}
+
+/// Canonical hosted authoring/control assembly. It reuses the same stores,
+/// resolver, IAM PEP and routes as the full local product, but deliberately
+/// omits every Session/Run/protocol/Worker data-plane route.
+pub async fn build_control_router_with_deployment(
+    deployment: &config::ResolvedDeployment,
+    key: &[u8; 32],
+) -> Result<Router, String> {
+    let (iam, remote_iam) = identity_wiring(
+        deployment.identity_mode,
+        Some(&deployment.data_dir),
+        &deployment.org_id,
+        &deployment.iam_workspaces,
+        &deployment.cloud_iam,
+    )?;
+    let stores = open_management_stores(
+        deployment.control.clone(),
+        // Hosted Management exposes no File/Memory/Skill routes. These ports
+        // satisfy shared control-plane collaborators without acquiring a second
+        // durable resource-plane authority.
+        ResourcePlaneStores::ephemeral(),
+        deployment.data_dir.clone(),
+        key,
+        PostgresSchemaMode::Verify,
+    )
+    .await?;
+    Ok(management_router_over(
+        stores,
+        iam,
+        remote_iam,
+        ManagementModelComposition::PublishedProviders,
+        AssemblyOverrides {
+            deployment: None,
+            org_id: Some(deployment.org_id.clone()),
+            mcp_bearer_token: deployment.mcp_bearer_token.clone(),
+            management_only: true,
+        },
+        None,
+    )
+    .await)
+}
+
+/// Explicit deployment migration phase for every management-owned store.
+/// Local SQLite startup retains its existing auto-migration behavior; managed
+/// PostgreSQL deployments invoke this command before starting application Pods.
+pub async fn migrate_management_schema_with_deployment(
+    deployment: &config::ResolvedDeployment,
+    key: &[u8; 32],
+) -> Result<(), String> {
+    let resource_plane =
+        ResourcePlaneStores::open(deployment.resources.clone(), PostgresSchemaMode::Migrate)
+            .await?;
+    open_management_stores(
+        deployment.control.clone(),
+        resource_plane,
+        deployment.data_dir.clone(),
+        key,
+        PostgresSchemaMode::Migrate,
+    )
+    .await
+    .map(drop)
 }
 
 /// Build the real env-selected management surface with one explicit in-process
@@ -694,11 +847,19 @@ async fn build_management_router_with_composition(
         &deployment.cloud_iam,
     )
     .unwrap_or_else(|error| panic!("identity configuration: {error}"));
+    let postgres_schema = match deployment.mode {
+        config::OperatingMode::Local => PostgresSchemaMode::Migrate,
+        config::OperatingMode::Server => PostgresSchemaMode::Verify,
+    };
+    let resource_plane = ResourcePlaneStores::open(deployment.resources.clone(), postgres_schema)
+        .await
+        .unwrap_or_else(|error| panic!("open resource stores: {error}"));
     let stores = open_management_stores(
         deployment.control.clone(),
-        deployment.resources.clone(),
+        resource_plane,
         deployment.data_dir.clone(),
         &key,
+        postgres_schema,
     )
     .await
     .unwrap_or_else(|error| panic!("open management stores: {error}"));
@@ -711,6 +872,7 @@ async fn build_management_router_with_composition(
             deployment: Some(deployment.runtime),
             org_id: Some(deployment.org_id),
             mcp_bearer_token: deployment.mcp_bearer_token,
+            management_only: false,
         },
         None,
     )
@@ -744,6 +906,14 @@ fn identity_wiring(
 fn awaken_cloud_authz(
     config: &config::CloudIamConfig,
 ) -> Result<Arc<RemoteManagementAuthz>, String> {
+    if let Some(path) = &config.service_token_file {
+        return RemoteManagementAuthz::connect_with_projected_service_token(
+            config.base_url.clone(),
+            config.audience.clone(),
+            config.issuer.clone(),
+            path.clone(),
+        );
+    }
     let user_token = config
         .access_token
         .clone()
@@ -903,6 +1073,7 @@ async fn management_router_over(
     // serves external-CLI sessions.
     customize_host: Option<Box<dyn FnOnce(SharedHost) -> SharedHost + Send>>,
 ) -> Router {
+    let management_only = assembly.management_only;
     let deployment = assembly.deployment;
     let org_id = assembly.org_id.unwrap_or_else(local_org_id);
     let mcp_bearer_token = assembly.mcp_bearer_token;
@@ -1149,6 +1320,10 @@ async fn management_router_over(
         application_access: application_access.clone(),
     });
 
+    if management_only {
+        return finish_management_surface(mgmt, mcp_export, reconciler, platform_workspace);
+    }
+
     // The data plane: the host runs the server model, resolves a session's agent to
     // its installed config, and carries the management tool executables so the
     // reserved-scope assistant can call them. It shares the SAME skill store and
@@ -1305,7 +1480,16 @@ async fn management_router_over(
             awaken_control::authz::cloud_resource_guard,
         ));
     }
-    let mut flat = data.merge(mgmt);
+    let flat = data.merge(mgmt);
+    finish_management_surface(flat, mcp_export, reconciler, platform_workspace)
+}
+
+fn finish_management_surface(
+    mut flat: Router,
+    mcp_export: Router,
+    reconciler: Arc<awaken_session_executor::ConfigServiceReconciler>,
+    platform_workspace: String,
+) -> Router {
     // Serving tools to an external MCP client is disabled until an operator sets a
     // dedicated bearer. This avoids turning the management toolset into an open
     // mutation surface while still making the `awaken` binary the complete adapter.
@@ -1504,5 +1688,53 @@ mod runtime_session_store_tests {
             .expect_err("an exact provider selection cannot drift to the host executor");
 
         assert!(error.to_string().contains("cannot publish model"));
+    }
+}
+
+#[cfg(test)]
+mod management_only_surface_tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt as _;
+
+    use super::*;
+
+    /// Cause/effect decision table:
+    ///
+    /// | management-only | route owner | expected |
+    /// | --- | --- | --- |
+    /// | yes | authoring/control | mounted |
+    /// | yes | Session/runtime data plane | absent |
+    #[tokio::test]
+    async fn management_only_mounts_control_and_omits_runtime_authority() {
+        let app = management_router_over(
+            in_memory_management_stores(),
+            None,
+            None,
+            ManagementModelComposition::PublishedProviders,
+            AssemblyOverrides {
+                management_only: true,
+                ..Default::default()
+            },
+            None,
+        )
+        .await;
+
+        let control = app
+            .clone()
+            .oneshot(
+                Request::get("/v1/config/catalog")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(control.status(), StatusCode::OK);
+
+        let session = app
+            .oneshot(Request::get("/v1/sessions").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(session.status(), StatusCode::NOT_FOUND);
     }
 }

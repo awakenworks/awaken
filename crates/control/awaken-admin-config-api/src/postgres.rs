@@ -41,6 +41,8 @@ pub enum StoreError {
     Connect(String),
     #[error("migrate: {0}")]
     Migrate(String),
+    #[error("schema: {0}")]
+    Schema(String),
 }
 
 /// Drive a future to completion on `handle`'s runtime, from a fresh OS thread so
@@ -76,6 +78,15 @@ impl PostgresAdminStore {
     /// Connect and apply the admin migrations under the `admin` namespace. Sync so
     /// it composes with the sync ports; the pool lives on this store's own runtime.
     pub fn connect(url: &str) -> Result<Self, StoreError> {
+        Self::connect_with_mode(url, true)
+    }
+
+    /// Connect to an already-migrated admin schema without executing DDL.
+    pub fn connect_existing(url: &str) -> Result<Self, StoreError> {
+        Self::connect_with_mode(url, false)
+    }
+
+    fn connect_with_mode(url: &str, migrate_schema: bool) -> Result<Self, StoreError> {
         let rt = Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()
@@ -87,7 +98,19 @@ impl PostgresAdminStore {
             let pool = PgPool::connect(&url)
                 .await
                 .map_err(|err| StoreError::Connect(err.to_string()))?;
-            migrate(&pool).await?;
+            if migrate_schema {
+                migrate(&pool).await?;
+            } else {
+                let bundle = admin_bundle().map_err(|err| StoreError::Schema(err.to_string()))?;
+                awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
+                    pool.clone(),
+                    NS,
+                )
+                .map_err(|err| StoreError::Schema(err.to_string()))?
+                .verify_bundle(&bundle)
+                .await
+                .map_err(|err| StoreError::Schema(err.to_string()))?;
+            }
             Ok::<_, StoreError>(pool)
         })?;
         Ok(Self {

@@ -656,6 +656,18 @@ impl PostgresManagedSessionRepository {
             .map_err(|e| e.to_string())?;
         Ok(Self { pool })
     }
+
+    /// Connect to a schema migrated by an operational command without DDL.
+    pub async fn connect_existing(url: &str) -> Result<Self, String> {
+        let pool = PgPool::connect(url).await.map_err(|e| e.to_string())?;
+        let bundle = session_bundle().map_err(|e| e.to_string())?;
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+            .map_err(|e| e.to_string())?
+            .verify_bundle(&bundle)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(Self { pool })
+    }
 }
 
 #[async_trait]

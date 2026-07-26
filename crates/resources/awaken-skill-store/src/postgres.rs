@@ -53,6 +53,14 @@ impl PgSkillStore {
         Ok(store)
     }
 
+    /// Connect to an already-migrated schema without executing DDL.
+    pub async fn connect_existing(url: &str) -> Result<Self, PgStoreError> {
+        PgPool::connect(url)
+            .await
+            .map(Self::with_pool)
+            .map_err(|error| PgStoreError::Connect(error.to_string()))
+    }
+
     /// Wrap an existing pool **without migrating**. Call [`Self::ensure_schema`],
     /// or let a unified migration pipeline own the `skill_store` scope so this
     /// store reuses the caller's single database instead of a parallel schema.
