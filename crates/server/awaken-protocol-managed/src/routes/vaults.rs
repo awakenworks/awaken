@@ -49,7 +49,6 @@ use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
-use crate::mcp_normalizer::normalize_mcp_server_url;
 use crate::routes::{ManagedJson, WorkspaceScope};
 use crate::types::vault::{
     Credential, CredentialAuth, CredentialCreateParams, CredentialCreateWire, CredentialNetworking,
@@ -270,7 +269,7 @@ impl VaultState {
         url: &str,
     ) -> Option<CredentialSourceId> {
         let store = self.inner.lock().unwrap();
-        let requested = normalize_mcp_server_url(url)?;
+        let requested = awaken_session_contract::McpTarget::identity(url).ok()?;
         for vault_id in vault_ids {
             let vault_is_active = store
                 .vaults
@@ -287,7 +286,7 @@ impl VaultState {
                 })
                 .filter(|(_, credential)| {
                     auth_mcp_server_url(&credential.auth)
-                        .and_then(normalize_mcp_server_url)
+                        .and_then(|url| awaken_session_contract::McpTarget::identity(url).ok())
                         .is_some_and(|candidate| candidate == requested)
                 })
                 .min_by(|(left, _), (right, _)| left.cmp(right))
@@ -677,7 +676,7 @@ async fn create_credential(
             }
             CredentialCreateParams::StaticBearer { mcp_server_url, .. }
             | CredentialCreateParams::McpOauth { mcp_server_url, .. } => {
-                if normalize_mcp_server_url(mcp_server_url).is_none() {
+                if awaken_session_contract::McpTarget::identity(mcp_server_url).is_err() {
                     return Err(bad_request(
                         "mcp_server_url must be an absolute HTTP(S) URL",
                     ));

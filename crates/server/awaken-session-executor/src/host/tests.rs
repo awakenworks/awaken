@@ -602,38 +602,89 @@ async fn host_application_decorator_wraps_the_complete_session_boundary() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
-#[test]
-fn application_session_plan_joins_the_authoritative_session_slot() {
+#[tokio::test]
+async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
     use awaken_provisioning_contract::{
         EnvValue, EnvVar, EnvVisibility, MountAccess, MountLifetime, MountRequirement, MountSource,
     };
 
-    let host = SharedHost::new(Arc::new(MemoryHostModel), "stub");
-    let mut plan = crate::ApplicationSessionPlan::empty("flow-snapshot:sha256:one");
-    plan.mounts.push(MountRequirement {
-        mount_id: "flow-workspace".into(),
-        source: MountSource::Inline {
-            contents: "project".into(),
-        },
-        mount_path: "/workspace/project.txt".into(),
-        access: MountAccess::ReadOnly,
-        lifetime: MountLifetime::PerRun,
-        required: true,
-    });
-    plan.env.push(EnvVar {
-        name: "FLOW_PROJECT".into(),
-        value: EnvValue::Inline {
-            value: "project-a".into(),
-        },
-        visibility: EnvVisibility::Process,
-    });
-    plan.prompts.push("Use the bound Flow project.".into());
-    plan.deny_egress = true;
+    fn projection(prompt: &str) -> awaken_protocol_managed::FrozenSessionProjection {
+        let mount = MountRequirement {
+            mount_id: "flow-workspace".into(),
+            source: MountSource::Inline {
+                contents: "project".into(),
+            },
+            mount_path: "/workspace/project.txt".into(),
+            access: MountAccess::ReadOnly,
+            lifetime: MountLifetime::PerRun,
+            required: true,
+        };
+        let env = EnvVar {
+            name: "FLOW_PROJECT".into(),
+            value: EnvValue::Inline {
+                value: "project-a".into(),
+            },
+            visibility: EnvVisibility::Process,
+        };
+        let holder = awaken_runtime_contract::PlaintextHolder::new(
+            awaken_runtime_contract::PlaintextBoundary::Worker,
+            "test.worker",
+        );
+        let input = awaken_protocol_managed::ApplicationSessionInput {
+            mounts: vec![serde_json::to_value(&mount).unwrap()],
+            env: vec![serde_json::to_value(&env).unwrap()],
+            prompts: vec![prompt.into()],
+            mcp_inputs: Vec::new(),
+            network_restriction: Some(awaken_protocol_managed::SessionNetworkPolicy::None),
+        };
+        let baseline = awaken_protocol_managed::SessionBaseline::compile(
+            awaken_protocol_managed::SessionBaselineInputs {
+                environment: awaken_protocol_managed::EnvironmentSnapshot {
+                    environment_id: "env".into(),
+                    revision: awaken_protocol_managed::EnvironmentRevision(1),
+                    config_fingerprint: awaken_protocol_managed::EnvironmentFingerprint(
+                        "env-fingerprint".into(),
+                    ),
+                    sandbox: serde_json::json!({}),
+                    network: awaken_protocol_managed::SessionNetworkPolicy::None,
+                    credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
+                        inference_holder: holder.clone(),
+                        mcp_holder: holder,
+                    },
+                },
+                mcp_authoring: Default::default(),
+                agent_id: "agent".into(),
+                model: "model".into(),
+                runtime: None,
+                application: Some(
+                    awaken_protocol_managed::ApplicationContributionReceipt::from_input(
+                        "plan".into(),
+                        &input,
+                    ),
+                ),
+                delegate_ids: Vec::new(),
+                mounts: input.mounts,
+                env: input.env,
+                prompts: input.prompts,
+            },
+        );
+        awaken_protocol_managed::FrozenSessionProjection {
+            workspace_id: "workspace".into(),
+            revision: awaken_protocol_managed::SessionRevision(2),
+            baseline,
+            resources: Default::default(),
+            mcp: Vec::new(),
+        }
+    }
 
-    host.install_application_session_plan("flow-thread", plan.clone())
-        .expect("first plan installs");
-    host.install_application_session_plan("flow-thread", plan)
-        .expect("same fingerprint is idempotent");
+    let host = SharedHost::new(Arc::new(MemoryHostModel), "stub");
+    let frozen = projection("Use the bound Flow project.");
+    host.install_frozen_session_projection("flow-thread", frozen.clone())
+        .await
+        .expect("first frozen projection installs");
+    host.install_frozen_session_projection("flow-thread", frozen)
+        .await
+        .expect("same frozen fingerprint is idempotent");
 
     let spec = host.sandbox_spec("flow-thread");
     assert_eq!(spec.mounts.len(), 1);
@@ -643,11 +694,12 @@ fn application_session_plan_joins_the_authoritative_session_slot() {
         host.thread_resource_prompts("flow-thread"),
         vec!["Use the bound Flow project."]
     );
-    let replacement = crate::ApplicationSessionPlan::empty("flow-snapshot:sha256:two");
+    let replacement = projection("different");
     assert!(
-        host.install_application_session_plan("flow-thread", replacement)
+        host.install_frozen_session_projection("flow-thread", replacement)
+            .await
             .is_err(),
-        "a bound Session cannot switch application plans"
+        "a bound Session cannot switch frozen baselines"
     );
 }
 
@@ -2120,7 +2172,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             realization_id: format!("realize-{session}"),
             stage_idempotency_key: format!("stage-{session}"),
             name: "docs".into(),
-            target: awaken_protocol_managed::McpTarget::new("https://mcp.example.test"),
+            target: awaken_protocol_managed::McpTarget::parse_http("https://mcp.example.test")
+                .unwrap(),
             credential: Some(CredentialAccess::new(
                 CredentialRef {
                     id: credential.id.0.clone(),

@@ -1,7 +1,7 @@
 //! Session-create MCP binding (ADR-0043 Phase 3): a session's `mcp_servers` are
-//! bound to vault credentials by the canonical normalized-URL rule and provisioned through
-//! `SessionRuntime::prepare_session` BEFORE the record exists — a failed
-//! preparation fails the create with the mapped error envelope.
+//! bound to vault credentials by the canonical normalized-URL rule. Preparing,
+//! frozen generation-1 state and realization claims are durable before Runtime
+//! I/O; a failed realization fails the create with the mapped error envelope.
 
 mod support;
 
@@ -55,6 +55,7 @@ impl SessionRuntime for PreparingFake {
         request: awaken_session_contract::StageMcpAttachment,
     ) -> Result<awaken_session_contract::McpRealizationReceipt, RunError> {
         self.staged.lock().unwrap().push(request.clone());
+        let receipt_fingerprint = request.fingerprint();
         Ok(awaken_session_contract::McpRealizationReceipt {
             generation: request.generation,
             realization_id: request.realization_id,
@@ -62,7 +63,7 @@ impl SessionRuntime for PreparingFake {
             actual_realization_kind: Some(
                 awaken_credential_contract::CredentialRealizationKind::WorkerRelay,
             ),
-            receipt_fingerprint: "test-receipt".into(),
+            receipt_fingerprint,
         })
     }
     async fn publish_mcp_generation(
@@ -174,6 +175,7 @@ impl SessionRuntime for HotRuntime {
         if matches!(mode, HotStageMode::FailNext) {
             return Err(RunError::internal("hot stage failed"));
         }
+        let receipt_fingerprint = request.fingerprint();
         let mut generation = request.generation;
         if matches!(mode, HotStageMode::MismatchNext) {
             generation.generation.0 += 1;
@@ -183,7 +185,7 @@ impl SessionRuntime for HotRuntime {
             realization_id: request.realization_id,
             selected_plaintext_holder: request.selected_plaintext_holder,
             actual_realization_kind: None,
-            receipt_fingerprint: "hot-receipt".into(),
+            receipt_fingerprint,
         })
     }
 
@@ -466,45 +468,46 @@ async fn create_binds_mcp_server_to_vault_credential_and_echoes_the_wire_shape()
 
     // The exact-generation stage saw the secret-free credential access; the
     // baseline-only prepare call carries no parallel MCP authority.
-    let captured = h.captured.lock().unwrap();
-    assert_eq!(captured.len(), 1);
-    let init = &captured[0];
-    assert_eq!(init.agent_id, "calc-agent");
-    drop(captured);
-    let staged = h.staged.lock().unwrap();
-    assert_eq!(staged.len(), 1);
-    assert_eq!(staged[0].name, "calc");
-    assert_eq!(staged[0].target.url, MCP_URL);
     let expected = h
         .vaults
         .credential_source_id(&vault_id, &cred_id)
         .expect("wire credential maps to a domain source");
-    // The binding carries the neutral row-id string (the port speaks no vault vocab).
-    assert_eq!(
-        staged[0]
-            .credential
-            .as_ref()
-            .map(|access| access.credential.id.as_str()),
-        Some(expected.0.as_str())
-    );
-    assert_eq!(
-        staged[0]
-            .credential
-            .as_ref()
-            .map(|access| access.credential.revision),
-        Some(1),
-        "Session-inline Vault selection is compiled to one exact credential revision"
-    );
-    // The credential was entered without a refresh object, so the binding
-    // carries no refresh configuration.
-    assert!(
-        staged[0]
-            .credential
-            .as_ref()
-            .and_then(|access| access.refresh.as_ref())
-            .is_none()
-    );
-    drop(staged);
+    {
+        let captured = h.captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].agent_id, "calc-agent");
+    }
+    {
+        let staged = h.staged.lock().unwrap();
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].name, "calc");
+        assert_eq!(staged[0].target.url, MCP_URL);
+        // The binding carries the neutral row-id string (the port speaks no vault vocab).
+        assert_eq!(
+            staged[0]
+                .credential
+                .as_ref()
+                .map(|access| access.credential.id.as_str()),
+            Some(expected.0.as_str())
+        );
+        assert_eq!(
+            staged[0]
+                .credential
+                .as_ref()
+                .map(|access| access.credential.revision),
+            Some(1),
+            "Session-inline Vault selection is compiled to one exact credential revision"
+        );
+        // The credential was entered without a refresh object, so the binding
+        // carries no refresh configuration.
+        assert!(
+            staged[0]
+                .credential
+                .as_ref()
+                .and_then(|access| access.refresh.as_ref())
+                .is_none()
+        );
+    }
 
     // Cause graph: exact generation is Requested -> lease+claim root CAS ->
     // Runtime stage -> success/failure -> terminal activation CAS.
@@ -514,19 +517,25 @@ async fn create_binds_mcp_server_to_vault_credential_and_echoes_the_wire_shape()
     // | A1 | T | T | success | Active + visible |
     // | A2 | T | T | failure | Failed + hidden |
     // | A3 | F | - | success | no attachment effect |
-    let observed = h.observed_durable.lock().unwrap();
-    assert_eq!(observed.len(), 1, "A1");
-    assert!(matches!(
-        observed[0].baseline,
-        awaken_session_contract::SessionBaselineState::Frozen(_)
-    ));
-    assert!(observed[0].realization.is_some(), "A1 lease is durable");
-    assert_eq!(
-        observed[0].mcp.attachments[0].state,
-        awaken_session_contract::McpAttachmentState::Realizing,
-        "A1 claim is durable before Runtime I/O"
-    );
-    drop(observed);
+    {
+        let observed = h.observed_durable.lock().unwrap();
+        assert_eq!(observed.len(), 1, "A1");
+        assert_eq!(
+            observed[0].revision,
+            awaken_session_contract::SessionRevision(3),
+            "A1 insert(Preparing) -> finalize generation 1 -> claim all commit before Runtime I/O"
+        );
+        assert!(matches!(
+            observed[0].baseline,
+            awaken_session_contract::SessionBaselineState::Frozen(_)
+        ));
+        assert!(observed[0].realization.is_some(), "A1 lease is durable");
+        assert_eq!(
+            observed[0].mcp.attachments[0].state,
+            awaken_session_contract::McpAttachmentState::Realizing,
+            "A1 claim is durable before Runtime I/O"
+        );
+    }
     let active = h.repo.get("sesn_0").await.expect("active aggregate");
     assert_eq!(
         active.mcp.attachments[0].state,
@@ -1163,11 +1172,11 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
 /// | Rule | Durable state | Runtime result | Effect |
 /// |---|---|---|---|
 /// | R1 | Requested | success | Active + published under new lease |
-/// | R2 | Active | success | restaged + republished; remains Active |
+/// | R2 | Active + expired lease | success | restaged + republished; remains Active |
 /// | R3 | Draining | success/unknown | Removed; no stage/publish |
 /// | R4 | Removed | - | not selected; no Runtime effect |
-/// | R5 | Requested | stage failure | remains recoverable Realizing; no publish |
-/// | R6 | prior R5 Realizing | retry success | new claim then Active + published |
+/// | R5 | Requested | stage failure | terminal Failed; no publish |
+/// | R6 | prior R5 Failed | same desired command | generation N+1 becomes Active |
 #[tokio::test]
 async fn mcp_recovery_tests_are_generated_from_decision_table() {
     let h = hot_harness();
@@ -1186,7 +1195,8 @@ async fn mcp_recovery_tests_are_generated_from_decision_table() {
         .request_full_replacement(
             vec![awaken_session_contract::McpAttachmentDraft {
                 name: "docs".into(),
-                target: awaken_session_contract::McpTarget::new("https://docs.example/mcp"),
+                target: awaken_session_contract::McpTarget::parse_http("https://docs.example/mcp")
+                    .unwrap(),
                 credential: None,
                 origin: awaken_session_contract::McpAttachmentOrigin::Session,
             }],
@@ -1202,7 +1212,7 @@ async fn mcp_recovery_tests_are_generated_from_decision_table() {
     .await;
 
     assert_eq!(h.managed.reconcile_mcp_attachments().await, 1, "R1");
-    let active = h.repo.get(id).await.unwrap();
+    let mut active = h.repo.get(id).await.unwrap();
     assert_eq!(
         active.mcp.attachments[0].state,
         awaken_session_contract::McpAttachmentState::Active,
@@ -1211,6 +1221,14 @@ async fn mcp_recovery_tests_are_generated_from_decision_table() {
     let first_epoch = active.realization.as_ref().unwrap().epoch;
     assert_eq!(h.state.lock().unwrap().published.len(), 1, "R1");
 
+    active.realization.as_mut().unwrap().expires_at_unix_ms = 0;
+    replace_session_fixture(
+        h.repo.as_ref(),
+        "default",
+        active,
+        "test:recovery-expired-lease",
+    )
+    .await;
     assert_eq!(h.managed.reconcile_mcp_attachments().await, 1, "R2");
     let active = h.repo.get(id).await.unwrap();
     assert!(
@@ -1256,17 +1274,18 @@ async fn mcp_recovery_tests_are_generated_from_decision_table() {
         )
     };
     assert_eq!(h.managed.reconcile_mcp_attachments().await, 0, "R4");
-    let state = h.state.lock().unwrap();
-    assert_eq!(
-        (
-            state.staged.len(),
-            state.published.len(),
-            state.drained.len()
-        ),
-        effects,
-        "R4"
-    );
-    drop(state);
+    {
+        let state = h.state.lock().unwrap();
+        assert_eq!(
+            (
+                state.staged.len(),
+                state.published.len(),
+                state.drained.len()
+            ),
+            effects,
+            "R4"
+        );
+    }
 
     let (status, created) = call(
         &h.app,
@@ -1283,7 +1302,8 @@ async fn mcp_recovery_tests_are_generated_from_decision_table() {
         .request_full_replacement(
             vec![awaken_session_contract::McpAttachmentDraft {
                 name: "retry".into(),
-                target: awaken_session_contract::McpTarget::new("https://retry.example/mcp"),
+                target: awaken_session_contract::McpTarget::parse_http("https://retry.example/mcp")
+                    .unwrap(),
                 credential: None,
                 origin: awaken_session_contract::McpAttachmentOrigin::Session,
             }],
@@ -1295,16 +1315,29 @@ async fn mcp_recovery_tests_are_generated_from_decision_table() {
     assert_eq!(h.managed.reconcile_mcp_attachments().await, 0, "R5");
     assert_eq!(
         h.repo.get(retry_id).await.unwrap().mcp.attachments[0].state,
-        awaken_session_contract::McpAttachmentState::Realizing,
+        awaken_session_contract::McpAttachmentState::Failed,
         "R5"
     );
 
-    assert_eq!(h.managed.reconcile_mcp_attachments().await, 1, "R6");
+    let (status, _) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/sessions/{retry_id}"),
+        Some(json!({"agent": {"mcp_servers": [{
+            "name": "retry",
+            "url": "https://retry.example/mcp"
+        }]}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "R6");
+    let retried = h.repo.get(retry_id).await.unwrap();
+    assert_eq!(retried.mcp.attachments.len(), 2, "R6");
     assert_eq!(
-        h.repo.get(retry_id).await.unwrap().mcp.attachments[0].state,
+        retried.mcp.attachments[1].state,
         awaken_session_contract::McpAttachmentState::Active,
         "R6"
     );
+    assert_eq!(retried.mcp.attachments[1].generation.0, 2, "R6");
 }
 
 /// External acknowledgement gaps are derived from this cause graph:
@@ -1484,17 +1517,18 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
     assert_eq!(status, StatusCode::OK, "I2");
     assert_eq!(replayed["agent"]["mcp_servers"], json!([desired]), "I2");
     assert_eq!(replay_headers["etag"], applied_etag, "I2");
-    let state = h.state.lock().unwrap();
-    assert_eq!(
-        (
-            state.staged.len(),
-            state.published.len(),
-            state.drained.len()
-        ),
-        effects,
-        "I2"
-    );
-    drop(state);
+    {
+        let state = h.state.lock().unwrap();
+        assert_eq!(
+            (
+                state.staged.len(),
+                state.published.len(),
+                state.drained.len()
+            ),
+            effects,
+            "I2"
+        );
+    }
 
     let (status, _, _) = call_with_headers(
         &h.app,

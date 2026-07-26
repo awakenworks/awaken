@@ -19,6 +19,7 @@ serde.workspace = true
 # (Pending.input, CustomTool.input_schema); thiserror derives the port error enums.
 serde_json.workspace = true
 thiserror.workspace = true
+http = "1"
 
 [dev-dependencies]
 # The work-queue port's in-memory impl is exercised by `#[tokio::test]`s.

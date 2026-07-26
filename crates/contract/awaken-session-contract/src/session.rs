@@ -741,7 +741,7 @@ mod tests {
             realization_id: "realization-1".into(),
             stage_idempotency_key: "stage-1".into(),
             name: "calculator".into(),
-            target: McpTarget::new("https://mcp.example.test"),
+            target: McpTarget::parse_http("https://mcp.example.test").unwrap(),
             credential: None,
             selected_plaintext_holder: None,
         };

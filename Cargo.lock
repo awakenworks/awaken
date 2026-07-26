@@ -1531,6 +1531,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-credential-contract",
  "awaken-resource-contract",
+ "http",
  "proptest",
  "serde",
  "serde_json",
