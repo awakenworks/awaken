@@ -71,8 +71,8 @@ impl RawTool for AuxAgentTool {
     }
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
-        let request: AuxiliaryAgentInput = serde_json::from_value(call.arguments)
-            .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
+        let request: AuxiliaryAgentInput =
+            awaken_runtime_contract::tool::parse_tool_args(call.arguments)?;
         let n = self.seq.fetch_add(1, Ordering::SeqCst);
         let name = format!("{}-agent-run-{n}", request.agent_id);
         // Every Run behind this port is out-of-band housekeeping (compaction or

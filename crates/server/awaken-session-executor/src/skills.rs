@@ -100,8 +100,8 @@ impl RawTool for ForkAgentTool {
     }
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
-        let request: AuxiliaryAgentInput = serde_json::from_value(call.arguments)
-            .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
+        let request: AuxiliaryAgentInput =
+            awaken_runtime_contract::tool::parse_tool_args(call.arguments)?;
         // The skill id names the sub-run; the seed is the resolved skill body. Skill
         // activation is out-of-band housekeeping, so its usage stays isolated (this
         // port surfaces only the reply text).

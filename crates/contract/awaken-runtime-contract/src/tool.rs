@@ -250,6 +250,49 @@ pub trait Tool: Send + Sync {
     async fn call(&self, args: Self::Args) -> Result<Self::Output, ToolError>;
 }
 
+/// Parse the dynamic wire arguments at the single typed-tool boundary.
+///
+/// JSON `null` has historically meant an omitted argument object, so it is
+/// normalized to `{}` exactly once. Every typed tool and legacy `RawTool`
+/// adapter must use this function rather than inventing its own null/error rules.
+pub fn parse_tool_args<A: serde::de::DeserializeOwned>(
+    arguments: serde_json::Value,
+) -> Result<A, ToolError> {
+    let raw = if arguments.is_null() {
+        serde_json::Value::Object(serde_json::Map::new())
+    } else {
+        arguments
+    };
+    serde_json::from_value(raw).map_err(|error| ToolError::InvalidArguments(error.to_string()))
+}
+
+/// Parse arguments for a legacy [`RawTool`] that intentionally reports invalid
+/// model input as a model-visible tool result instead of aborting the Run.
+/// This preserves that explicit policy while sharing the same parser and error
+/// wording as [`Erased`].
+pub fn parse_tool_args_or_error_output<A: serde::de::DeserializeOwned>(
+    call_id: &str,
+    arguments: serde_json::Value,
+) -> Result<A, ToolOutput> {
+    parse_tool_args(arguments).map_err(|error| {
+        let detail = match error {
+            ToolError::InvalidArguments(detail) => detail,
+            other => other.to_string(),
+        };
+        ToolOutput::error(call_id, format!("invalid arguments: {detail}"))
+    })
+}
+
+/// Render typed tool output using the one model-visible representation rule.
+pub fn render_tool_output<O: Serialize>(output: &O) -> Result<String, ToolError> {
+    match serde_json::to_value(output).map_err(|error| ToolError::Execution(error.to_string()))? {
+        serde_json::Value::String(text) => Ok(text),
+        other => {
+            serde_json::to_string(&other).map_err(|error| ToolError::Execution(error.to_string()))
+        }
+    }
+}
+
 /// The port the execution loop calls to run one already-authorized tool call.
 /// Where the call runs is hidden behind this port and owned by its implementer
 /// (the orchestration layer above), not the runtime core.
@@ -297,6 +340,35 @@ pub trait ToolExecutorProvider: Send + Sync {
 #[cfg(test)]
 mod recovery_tests {
     use super::*;
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    #[serde(deny_unknown_fields)]
+    struct OptionalArgs {
+        #[serde(default)]
+        topic: Option<String>,
+    }
+
+    #[test]
+    fn typed_argument_boundary_has_one_null_and_unknown_field_rule() {
+        // Cause graph / decision table:
+        // null -> {} -> optional args; exact object -> typed args;
+        // missing required/unknown field -> InvalidArguments.
+        assert_eq!(
+            parse_tool_args::<OptionalArgs>(serde_json::Value::Null).unwrap(),
+            OptionalArgs { topic: None }
+        );
+        assert_eq!(
+            parse_tool_args::<OptionalArgs>(serde_json::json!({"topic": "tools"})).unwrap(),
+            OptionalArgs {
+                topic: Some("tools".into())
+            }
+        );
+        assert!(matches!(
+            parse_tool_args::<OptionalArgs>(serde_json::json!({"extra": true})),
+            Err(ToolError::InvalidArguments(_))
+        ));
+    }
 
     #[tokio::test]
     async fn operation_identity_is_scoped_to_one_executor_future() {
