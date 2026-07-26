@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 
-use crate::types::{AgUiContent, AgUiMessage, InputContentPart, InputContentSource, RunAgentInput};
+use crate::types::{
+    AgUiContent, AgUiMessage, AgUiRole, InputContentPart, InputContentSource, RunAgentInput,
+};
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -33,6 +35,24 @@ pub struct Processed {
     pub agent_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ProcessError {
+    #[error("AG-UI {0} content is not supported by the runtime")]
+    UnsupportedContent(&'static str),
+    #[error("AG-UI per-run tools are not supported by the runtime")]
+    PerRunToolsUnsupported,
+    #[error("AG-UI per-run context is not supported by the runtime")]
+    PerRunContextUnsupported,
+    #[error("AG-UI parentRunId is not supported by the runtime")]
+    ParentRunUnsupported,
+    #[error("AG-UI state is not supported by the runtime")]
+    StateUnsupported,
+    #[error("AG-UI forwardedProps are not supported by the runtime")]
+    ForwardedPropsUnsupported,
+    #[error("AG-UI resume entries are not supported by the runtime")]
+    ResumeUnsupported,
+}
+
 impl Processed {
     /// True when the input carries only tool results (no new content) — a resume.
     pub fn is_resume_only(&self) -> bool {
@@ -46,7 +66,29 @@ pub fn process(
     input: RunAgentInput,
     agent_id: Option<String>,
     known_ids: &HashSet<String>,
-) -> Processed {
+) -> Result<Processed, ProcessError> {
+    if !input.tools.is_empty() {
+        return Err(ProcessError::PerRunToolsUnsupported);
+    }
+    if !input.context.is_empty() {
+        return Err(ProcessError::PerRunContextUnsupported);
+    }
+    if input
+        .parent_run_id
+        .as_deref()
+        .is_some_and(|id| !id.is_empty())
+    {
+        return Err(ProcessError::ParentRunUnsupported);
+    }
+    if !is_empty_extension_value(&input.state) {
+        return Err(ProcessError::StateUnsupported);
+    }
+    if !is_empty_extension_value(&input.forwarded_props) {
+        return Err(ProcessError::ForwardedPropsUnsupported);
+    }
+    if !input.resume.is_empty() {
+        return Err(ProcessError::ResumeUnsupported);
+    }
     let thread_id = input
         .thread_id
         .map(|t| t.trim().to_string())
@@ -59,20 +101,29 @@ pub fn process(
         .unwrap_or_else(|| next("run"));
 
     let tool_results = extract_tool_results(&input.messages);
-    let messages = convert_new_messages(&input.messages, known_ids);
+    let messages = convert_new_messages(&input.messages, known_ids)?;
 
-    Processed {
+    Ok(Processed {
         thread_id,
         run_id,
         messages,
         tool_results,
         agent_id,
-    }
+    })
+}
+
+fn is_empty_extension_value(value: &serde_json::Value) -> bool {
+    value.is_null()
+        || value.as_object().is_some_and(serde_json::Map::is_empty)
+        || value.as_array().is_some_and(Vec::is_empty)
 }
 
 /// Convert new user/system messages to runtime input. Assistant messages are
 /// server-held history and are ignored; messages already committed are dropped.
-fn convert_new_messages(messages: &[AgUiMessage], known_ids: &HashSet<String>) -> Vec<Message> {
+fn convert_new_messages(
+    messages: &[AgUiMessage],
+    known_ids: &HashSet<String>,
+) -> Result<Vec<Message>, ProcessError> {
     let mut out = Vec::new();
     for message in messages {
         if let Some(id) = &message.id
@@ -80,15 +131,16 @@ fn convert_new_messages(messages: &[AgUiMessage], known_ids: &HashSet<String>) -
         {
             continue;
         }
-        let role = match message.role.as_str() {
-            "user" => Role::User,
-            "system" | "developer" => Role::System,
+        let role = match message.role {
+            AgUiRole::User => Role::User,
+            AgUiRole::System | AgUiRole::Developer => Role::System,
             _ => continue,
         };
         let blocks = message
             .content
             .as_ref()
             .map(content_blocks)
+            .transpose()?
             .unwrap_or_default();
         if blocks.is_empty() {
             continue;
@@ -96,29 +148,33 @@ fn convert_new_messages(messages: &[AgUiMessage], known_ids: &HashSet<String>) -
         let id = message.id.clone().unwrap_or_else(|| next("msg"));
         out.push(Message::new(MessageId(id), role, blocks));
     }
-    out
+    Ok(out)
 }
 
 /// Convert AG-UI message content into neutral content blocks: a plain string
 /// becomes one text block; a typed part list maps `text` and image parts (inline
 /// base64 or remote URL) to their neutral blocks.
-fn content_blocks(content: &AgUiContent) -> Vec<ContentBlock> {
+fn content_blocks(content: &AgUiContent) -> Result<Vec<ContentBlock>, ProcessError> {
     match content {
-        AgUiContent::Text(text) if !text.is_empty() => vec![ContentBlock::text(text)],
-        AgUiContent::Text(_) => Vec::new(),
-        AgUiContent::Parts(parts) => parts.iter().filter_map(part_to_block).collect(),
+        AgUiContent::Text(text) if !text.is_empty() => Ok(vec![ContentBlock::text(text)]),
+        AgUiContent::Text(_) => Ok(Vec::new()),
+        AgUiContent::Parts(parts) => parts.iter().map(part_to_block).collect(),
     }
 }
 
-fn part_to_block(part: &InputContentPart) -> Option<ContentBlock> {
+fn part_to_block(part: &InputContentPart) -> Result<ContentBlock, ProcessError> {
     match part {
-        InputContentPart::Text { text } => (!text.is_empty()).then(|| ContentBlock::text(text)),
-        InputContentPart::Image { source } => Some(match source {
+        InputContentPart::Text { text } => Ok(ContentBlock::text(text)),
+        InputContentPart::Image { source, .. } => Ok(match source {
             InputContentSource::Data { value, mime_type } => {
                 ContentBlock::image_base64(mime_type, value)
             }
-            InputContentSource::Url { value } => ContentBlock::image_url(value),
+            InputContentSource::Url { value, .. } => ContentBlock::image_url(value),
         }),
+        InputContentPart::Audio { .. } => Err(ProcessError::UnsupportedContent("audio")),
+        InputContentPart::Video { .. } => Err(ProcessError::UnsupportedContent("video")),
+        InputContentPart::Document { .. } => Err(ProcessError::UnsupportedContent("document")),
+        InputContentPart::Binary { .. } => Err(ProcessError::UnsupportedContent("binary")),
     }
 }
 
@@ -142,7 +198,7 @@ fn content_text(content: &Option<AgUiContent>) -> String {
 fn extract_tool_results(messages: &[AgUiMessage]) -> Vec<ToolResultInput> {
     messages
         .iter()
-        .filter(|m| m.role == "tool")
+        .filter(|m| m.role == AgUiRole::Tool)
         .filter_map(|m| {
             let tool_call_id = m.tool_call_id.clone()?;
             Some(ToolResultInput {
@@ -179,8 +235,9 @@ mod tests {
                 msg("user", "u1", Some("hi"), None),
                 msg("assistant", "a1", Some("prior"), None),
             ],
+            ..Default::default()
         };
-        let p = process(input, None, &HashSet::new());
+        let p = process(input, None, &HashSet::new()).unwrap();
         assert_eq!(p.thread_id, "t");
         assert_eq!(p.run_id, "r");
         assert_eq!(p.messages.len(), 1);
@@ -203,8 +260,9 @@ mod tests {
                 }))
                 .unwrap(),
             ],
+            ..Default::default()
         };
-        let p = process(input, None, &HashSet::new());
+        let p = process(input, None, &HashSet::new()).unwrap();
         assert_eq!(p.messages.len(), 1);
         assert_eq!(p.messages[0].content.len(), 2);
         assert!(matches!(
@@ -223,9 +281,10 @@ mod tests {
                 msg("user", "u1", Some("old"), None),
                 msg("tool", "tr1", Some("42"), Some("c1")),
             ],
+            ..Default::default()
         };
         let known = HashSet::from(["u1".to_string()]);
-        let p = process(input, None, &known);
+        let p = process(input, None, &known).unwrap();
         assert!(p.is_resume_only());
         assert_eq!(
             p.tool_results,
@@ -254,8 +313,9 @@ mod tests {
                 }))
                 .unwrap(),
             ],
+            ..Default::default()
         };
-        let p = process(input, None, &HashSet::new());
+        let p = process(input, None, &HashSet::new()).unwrap();
         assert!(matches!(
             &p.messages[0].content[0],
             ContentBlock::Image {
@@ -270,8 +330,9 @@ mod tests {
             thread_id: Some("t".into()),
             run_id: Some("r".into()),
             messages: vec![msg("system", "s1", Some("be terse"), None)],
+            ..Default::default()
         };
-        let p = process(input, None, &HashSet::new());
+        let p = process(input, None, &HashSet::new()).unwrap();
         assert_eq!(p.messages.len(), 1);
         assert_eq!(p.messages[0].role, Role::System);
     }
@@ -284,8 +345,9 @@ mod tests {
             messages: vec![
                 serde_json::from_value(json!({ "role": "user", "content": "hi" })).unwrap(),
             ],
+            ..Default::default()
         };
-        let p = process(input, None, &HashSet::new());
+        let p = process(input, None, &HashSet::new()).unwrap();
         assert_eq!(p.messages.len(), 1);
         assert!(!p.messages[0].id.0.is_empty());
     }
@@ -296,8 +358,9 @@ mod tests {
             thread_id: Some("t".into()),
             run_id: Some("r".into()),
             messages: vec![msg("developer", "d1", Some("guidance"), None)],
+            ..Default::default()
         };
-        let p = process(input, None, &HashSet::new());
+        let p = process(input, None, &HashSet::new()).unwrap();
         assert_eq!(p.messages[0].role, Role::System);
     }
 
@@ -311,8 +374,9 @@ mod tests {
                 msg("user", "dup", Some("one"), None),
                 msg("user", "dup", Some("two"), None),
             ],
+            ..Default::default()
         };
-        let p = process(input, None, &HashSet::new());
+        let p = process(input, None, &HashSet::new()).unwrap();
         assert_eq!(p.messages.len(), 2);
     }
 
@@ -325,8 +389,9 @@ mod tests {
                 msg("user", "e1", None, None),
                 msg("user", "u2", Some("hi"), None),
             ],
+            ..Default::default()
         };
-        let p = process(input, None, &HashSet::new());
+        let p = process(input, None, &HashSet::new()).unwrap();
         assert_eq!(p.messages.len(), 1);
         assert_eq!(blocks_text(&p.messages[0].content), "hi");
     }
@@ -343,8 +408,9 @@ mod tests {
                 }))
                 .unwrap(),
             ],
+            ..Default::default()
         };
-        let p = process(input, None, &HashSet::new());
+        let p = process(input, None, &HashSet::new()).unwrap();
         assert_eq!(p.tool_results[0].error.as_deref(), Some("it failed"));
     }
 
@@ -354,8 +420,9 @@ mod tests {
             thread_id: Some("t".into()),
             run_id: None,
             messages: vec![msg("tool", "tr1", Some("ok"), Some("c1"))],
+            ..Default::default()
         };
-        let p = process(input, None, &HashSet::new());
+        let p = process(input, None, &HashSet::new()).unwrap();
         assert!(p.tool_results[0].error.is_none());
     }
 
@@ -374,8 +441,9 @@ mod tests {
                 }))
                 .unwrap(),
             ],
+            ..Default::default()
         };
-        let p = process(input, None, &HashSet::new());
+        let p = process(input, None, &HashSet::new()).unwrap();
         assert_eq!(p.tool_results[0].content, "result");
     }
 
@@ -385,8 +453,9 @@ mod tests {
             thread_id: Some("t".into()),
             run_id: Some("r".into()),
             messages: vec![msg("user", "u1", Some("hello"), None)],
+            ..Default::default()
         };
-        let p = process(input, None, &HashSet::new());
+        let p = process(input, None, &HashSet::new()).unwrap();
         assert_eq!(p.messages[0].content.len(), 1);
         assert_eq!(blocks_text(&p.messages[0].content), "hello");
     }
@@ -400,8 +469,9 @@ mod tests {
                 msg("user", "e1", Some(""), None),
                 msg("user", "u2", Some("hi"), None),
             ],
+            ..Default::default()
         };
-        let p = process(input, None, &HashSet::new());
+        let p = process(input, None, &HashSet::new()).unwrap();
         assert_eq!(p.messages.len(), 1);
         assert_eq!(blocks_text(&p.messages[0].content), "hi");
     }

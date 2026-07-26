@@ -135,8 +135,25 @@ async fn run(rt: Runtime, input: RunAgentInput, agent_id: Option<String>) -> Res
             .collect(),
         None => HashSet::new(),
     };
+    let error_thread = peek.clone().unwrap_or_else(|| "unknown-thread".into());
+    let error_run = input
+        .run_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .unwrap_or("unknown-run")
+        .to_string();
 
-    let processed = process(input, agent_id, &known_ids);
+    let processed = match process(input, agent_id, &known_ids) {
+        Ok(processed) => processed,
+        Err(error) => {
+            return sse_error(
+                &error_thread,
+                &error_run,
+                DriverError::BadRequest(error.to_string()),
+            );
+        }
+    };
     let thread = processed.thread_id.clone();
     let run_id = processed.run_id.clone();
 
@@ -228,8 +245,12 @@ async fn resume_step(
     let result = tool_results
         .iter()
         .find(|r| r.tool_call_id == pending.tool_use_id)
-        .or_else(|| tool_results.first())
-        .ok_or_else(|| DriverError::BadRequest("no tool result for the awaiting tool".into()))?;
+        .ok_or_else(|| {
+            DriverError::BadRequest(format!(
+                "no tool result matches the awaiting tool {}",
+                pending.tool_use_id
+            ))
+        })?;
     let resume = to_resume(&result.content, result.error.as_deref(), &pending);
     rt.resume(thread, &pending.tool_use_id, resume).await
 }
