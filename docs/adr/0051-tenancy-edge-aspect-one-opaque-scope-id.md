@@ -9,7 +9,7 @@
 > `ScopedRepo` implementation was never selected by a production composition and
 > created a second Session persistence model. Production persists the trusted
 > Workspace coordinate atomically beside the Session row through
-> `ManagedSessionRepository::save_owned*`; the ingress PEP performs authorization,
+> `ManagedSessionRepository::create` / `commit_mutation`; the ingress PEP performs authorization,
 > while resource persistence enforces ownership and routing only. ADR-0063 D6 and
 > G39 are authoritative for the resource/authorization-plane boundary.
 - Refines / partially supersedes:

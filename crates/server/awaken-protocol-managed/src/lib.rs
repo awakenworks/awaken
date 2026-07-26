@@ -71,11 +71,11 @@ pub use awaken_ext_memory::{
 };
 pub use awaken_resource_contract::ResourceCatalog;
 pub use awaken_session_contract::{
-    ApplicationContributionState, ManagedSessionRepository, McpAttachmentId, McpGeneration,
-    McpGenerationRef, McpRealizationReceipt, McpTarget, PersistedSession, ResolvedInput,
-    ResolvedInputSource, ResolvedSessionResources, ResolvedSkillBinding, SessionBaselineState,
-    SessionCreationIntent, SessionResourceManifest, StageMcpAttachment, resource_plane,
-    stable_fingerprint,
+    ApplicationContributionState, IdempotencyRecord, ManagedSessionRepository, McpAttachmentId,
+    McpGeneration, McpGenerationRef, McpRealizationReceipt, McpTarget, PersistedSession,
+    ResolvedInput, ResolvedInputSource, ResolvedSessionResources, ResolvedSkillBinding,
+    SessionBaselineState, SessionCreationIntent, SessionResourceManifest, StageMcpAttachment,
+    resource_plane, stable_fingerprint,
 };
 pub use awaken_session_store::SqliteManagedSessionRepository;
 pub use state::{

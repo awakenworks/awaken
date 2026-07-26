@@ -53,6 +53,11 @@ fn stage_mcp_request(
 }
 
 impl ManagedState {
+    /// Bounded retry for a root Session CAS. A retry always reloads the
+    /// aggregate and reruns the command's domain checks; stale snapshots are
+    /// never merged wholesale.
+    pub(super) const ROOT_CAS_ATTEMPTS: usize = 3;
+
     /// Sole Managed anti-corruption compiler for create-time and hot MCP input.
     /// URL identity, Vault ordering and exact credential pinning cannot be
     /// repeated by either caller after this function returns.
@@ -821,7 +826,10 @@ impl ManagedState {
                         "environment `{environment_id}` is unavailable"
                     )))
                 })?,
-            None => default_environment_snapshot(environment_id.clone(), req.awaken_runtime()),
+            None => crate::routes::environments::default_environment_snapshot(
+                environment_id.clone(),
+                req.awaken_runtime(),
+            ),
         };
         let deny_egress = !matches!(
             environment.network,
@@ -1184,34 +1192,6 @@ impl ManagedState {
             return Some(scope);
         }
         self.sessions_repo.owner(session_id).await
-    }
-
-    /// Persist the runtime's opaque Session-environment identity after an
-    /// execution edge has materialized it. The repository performs a narrow
-    /// atomic column update, so this cannot roll back a concurrent resource or
-    /// lifecycle transition with an older aggregate snapshot.
-    pub(crate) async fn persist_session_environment_binding(
-        &self,
-        session_id: &str,
-    ) -> Result<(), StateError> {
-        let Some(binding) = self
-            .runtime
-            .session_environment_binding(session_id)
-            .await
-            .map_err(StateError::Run)?
-        else {
-            return Ok(());
-        };
-        if !self
-            .sessions_repo
-            .bind_environment(session_id, &binding)
-            .await
-        {
-            return Err(StateError::Run(RunError::internal(format!(
-                "cannot bind an environment to unknown Session `{session_id}`"
-            ))));
-        }
-        Ok(())
     }
 
     async fn reconcile_persisted_resources(
@@ -1724,7 +1704,6 @@ impl ManagedState {
     /// is a 404 (delete removes the session; it does not tombstone it as archive
     /// does).
     pub async fn delete_session(&self, id: &str) -> Result<(), StateError> {
-        let _resource_guard = self.resource_mutations.lock().await;
         // Snapshot before the durable commit, but do not remove the visible record
         // until the repository has atomically stored the terminal state, cleanup
         // intent, and outbox fact. The row becomes a tombstone only after every
@@ -1908,7 +1887,6 @@ impl ManagedState {
     /// terminal transition (not just the mutated status field). Idempotent: a
     /// re-archive returns the same terminal record without a second event.
     pub async fn archive_session(&self, id: &str) -> Result<Session, StateError> {
-        let _resource_guard = self.resource_mutations.lock().await;
         let (mut newly_terminated, child_threads) = {
             let sessions = self.sessions.lock().unwrap();
             let record = sessions.get(id).ok_or(StateError::NotFound)?;

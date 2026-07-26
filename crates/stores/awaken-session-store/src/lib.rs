@@ -1302,6 +1302,95 @@ mod tests {
         }
     }
 
+    async fn create_fixture<R: ManagedSessionRepository>(
+        repo: &R,
+        owner: &str,
+        mut session: PersistedSession,
+        facts: Vec<SessionLifecycleFact>,
+    ) -> PersistedSession {
+        session.revision = SessionRevision(0);
+        let payload = SessionMutationPayload::Replace(session.clone());
+        let payload_hash = payload.stable_hash();
+        session.revision = repo
+            .create(
+                owner,
+                session.clone(),
+                IdempotencyRecord {
+                    key: format!("test:create:{}:{payload_hash}", session.session_id),
+                    payload_hash,
+                },
+                facts,
+            )
+            .await
+            .expect("create Session fixture");
+        session
+    }
+
+    async fn replace_fixture<R: ManagedSessionRepository>(
+        repo: &R,
+        owner: &str,
+        mut session: PersistedSession,
+        key: &str,
+        facts: Vec<SessionLifecycleFact>,
+    ) -> PersistedSession {
+        session.revision = repo.get(&session.session_id).await.unwrap().revision;
+        let payload = SessionMutationPayload::Replace(session.clone());
+        let payload_hash = payload.stable_hash();
+        let result = repo
+            .commit_mutation(
+                owner,
+                SessionMutation {
+                    expected_revision: session.revision,
+                    idempotency: IdempotencyRecord {
+                        key: key.into(),
+                        payload_hash,
+                    },
+                    payload,
+                    lifecycle_facts: facts,
+                },
+            )
+            .await
+            .expect("replace Session fixture");
+        session.revision = match result {
+            SessionMutationResult::Applied { new_revision }
+            | SessionMutationResult::Replayed { new_revision } => new_revision,
+            other => panic!("replace Session fixture failed: {other:?}"),
+        };
+        session
+    }
+
+    async fn delete_fixture<R: ManagedSessionRepository>(
+        repo: &R,
+        owner: &str,
+        session_id: &str,
+        fact: SessionLifecycleFact,
+    ) {
+        let current = repo.get(session_id).await.unwrap();
+        let payload = SessionMutationPayload::Delete(awaken_session_contract::SessionTombstone {
+            session_id: session_id.into(),
+            deleted_revision: SessionRevision(current.revision.0 + 1),
+            deleted_at: fact.timestamp.to_string(),
+        });
+        let payload_hash = payload.stable_hash();
+        assert!(matches!(
+            repo.commit_mutation(
+                owner,
+                SessionMutation {
+                    expected_revision: current.revision,
+                    idempotency: IdempotencyRecord {
+                        key: format!("test:delete:{session_id}:{payload_hash}"),
+                        payload_hash,
+                    },
+                    payload,
+                    lifecycle_facts: vec![fact],
+                },
+            )
+            .await
+            .unwrap(),
+            SessionMutationResult::Applied { .. }
+        ));
+    }
+
     fn extraction(id: &str, key: &str) -> awaken_ext_memory::MemoryExtractionIntent {
         awaken_ext_memory::MemoryExtractionIntent::new_range(
             id,
@@ -1382,10 +1471,15 @@ mod tests {
         let path = path.to_string_lossy().to_string();
         {
             let repo = SqliteManagedSessionRepository::open(&path).unwrap();
-            repo.save_owned_with_lifecycle(
+            create_fixture(
+                &repo,
                 "ws_a",
                 sample("sesn_tx"),
-                fact("session:sesn_tx:created", "sesn_tx", "session.status_idled"),
+                vec![fact(
+                    "session:sesn_tx:created",
+                    "sesn_tx",
+                    "session.status_idled",
+                )],
             )
             .await;
             // Simulated hard crash: the lifecycle sink is deliberately never called.
@@ -1409,8 +1503,10 @@ mod tests {
         let path = path.to_string_lossy().to_string();
         {
             let repo = SqliteManagedSessionRepository::open(&path).unwrap();
-            repo.save_owned("ws_a", sample("sesn_bound")).await;
-            assert!(repo.bind_environment("sesn_bound", "opaque-binding").await);
+            create_fixture(&repo, "ws_a", sample("sesn_bound"), Vec::new()).await;
+            let mut bound = repo.get("sesn_bound").await.unwrap();
+            bound.environment_binding = Some("opaque-binding".into());
+            replace_fixture(&repo, "ws_a", bound, "test:bind", Vec::new()).await;
         }
         let reopened = SqliteManagedSessionRepository::open(&path).unwrap();
         assert_eq!(
@@ -1426,18 +1522,28 @@ mod tests {
     #[tokio::test]
     async fn terminal_state_and_its_fact_share_one_repository_commit() {
         let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
-        repo.save_owned_with_lifecycle(
+        create_fixture(
+            &repo,
             "ws_a",
             sample("sesn_terminal"),
-            fact("created", "sesn_terminal", "session.status_idled"),
+            vec![fact("created", "sesn_terminal", "session.status_idled")],
         )
         .await;
         repo.complete_lifecycle("created").await;
 
-        repo.archive_with_lifecycle(
-            "sesn_terminal",
-            "2026-01-01T00:00:00Z",
-            fact("terminated", "sesn_terminal", "session.status_terminated"),
+        let mut terminal = repo.get("sesn_terminal").await.unwrap();
+        terminal.status = "terminated".into();
+        terminal.archived_at = Some("2026-01-01T00:00:00Z".into());
+        replace_fixture(
+            &repo,
+            "ws_a",
+            terminal,
+            "test:terminal",
+            vec![fact(
+                "terminated",
+                "sesn_terminal",
+                "session.status_terminated",
+            )],
         )
         .await;
         let archived = repo.get("sesn_terminal").await.unwrap();
@@ -1449,7 +1555,9 @@ mod tests {
         assert_eq!(repo.pending_lifecycle().await[0].id, "terminated");
 
         repo.complete_lifecycle("terminated").await;
-        repo.delete_with_lifecycle(
+        delete_fixture(
+            &repo,
+            "ws_a",
             "sesn_terminal",
             fact("deleted", "sesn_terminal", "session.deleted"),
         )
@@ -1467,9 +1575,7 @@ mod tests {
         // First process: create + persist, then drop the repo (simulated exit).
         {
             let repo = SqliteManagedSessionRepository::open(&path).unwrap();
-            repo.save(sample("sesn_1")).await;
-            let mut expected = sample("sesn_1");
-            expected.revision = SessionRevision(1);
+            let expected = create_fixture(&repo, "default", sample("sesn_1"), Vec::new()).await;
             assert_eq!(repo.get("sesn_1").await, Some(expected));
         }
         // Second process: a fresh repo over the same file restores the row.
@@ -1513,11 +1619,10 @@ mod tests {
     #[tokio::test]
     async fn save_is_an_idempotent_upsert() {
         let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
-        repo.save(sample("sesn_1")).await;
+        create_fixture(&repo, "default", sample("sesn_1"), Vec::new()).await;
         let mut updated = sample("sesn_1");
         updated.title = Some("Renamed".to_string());
-        repo.save(updated.clone()).await;
-        updated.revision = SessionRevision(2);
+        updated = replace_fixture(&repo, "default", updated, "test:rename", Vec::new()).await;
         assert_eq!(
             repo.get("sesn_1").await,
             Some(updated),
@@ -1532,7 +1637,7 @@ mod tests {
         let path = path.to_string_lossy().to_string();
         {
             let repo = SqliteManagedSessionRepository::open(&path).unwrap();
-            repo.save_owned("ws_a", sample("sesn_1")).await;
+            create_fixture(&repo, "ws_a", sample("sesn_1"), Vec::new()).await;
             assert_eq!(repo.owner("sesn_1").await, Some("ws_a".to_string()));
         }
         // After a restart the owner is still readable — the cross-process fence input
@@ -1540,7 +1645,7 @@ mod tests {
         let reopened = SqliteManagedSessionRepository::open(&path).unwrap();
         assert_eq!(reopened.owner("sesn_1").await, Some("ws_a".to_string()));
         // A row saved but never owner-stamped defaults to the seeded scope.
-        reopened.save(sample("sesn_2")).await;
+        create_fixture(&reopened, "default", sample("sesn_2"), Vec::new()).await;
         assert_eq!(reopened.owner("sesn_2").await, Some("default".to_string()));
         // An unknown session has no owner.
         assert_eq!(reopened.owner("sesn_missing").await, None);
@@ -1560,7 +1665,7 @@ mod tests {
     #[should_panic(expected = "decode managed session")]
     async fn corrupt_canonical_aggregate_fails_closed() {
         let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
-        repo.save(sample("sesn_1")).await;
+        create_fixture(&repo, "default", sample("sesn_1"), Vec::new()).await;
         {
             let conn = repo.conn.lock().unwrap();
             conn.execute(
@@ -1577,8 +1682,7 @@ mod tests {
     async fn legacy_columns_are_not_a_parallel_authority() {
         let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
         let mut expected = sample("sesn_1");
-        repo.save(expected.clone()).await;
-        expected.revision = SessionRevision(1);
+        expected = create_fixture(&repo, "default", expected, Vec::new()).await;
         repo.conn
             .lock()
             .unwrap()
@@ -1648,26 +1752,24 @@ mod tests {
             .await
             .expect("store");
 
-        repo.save(sample("sesn_1")).await;
-        let mut created = sample("sesn_1");
-        created.revision = SessionRevision(1);
+        let created = create_fixture(&repo, "default", sample("sesn_1"), Vec::new()).await;
         assert_eq!(repo.get("sesn_1").await, Some(created));
         assert!(repo.get("sesn_missing").await.is_none());
 
         let mut updated = sample("sesn_1");
         updated.title = None; // exercises the nullable title column
-        repo.save(updated.clone()).await;
-        updated.revision = SessionRevision(2);
+        updated = replace_fixture(&repo, "default", updated, "test:pg-update", Vec::new()).await;
         assert_eq!(repo.get("sesn_1").await, Some(updated));
 
-        repo.save_owned_with_lifecycle(
+        create_fixture(
+            &repo,
             "ws_a",
             sample("sesn_pg_tx"),
-            fact(
+            vec![fact(
                 "session:sesn_pg_tx:created",
                 "sesn_pg_tx",
                 "session.status_idled",
-            ),
+            )],
         )
         .await;
         assert_eq!(repo.owner("sesn_pg_tx").await.as_deref(), Some("ws_a"));
@@ -1676,14 +1778,19 @@ mod tests {
             "session:sesn_pg_tx:created"
         );
         repo.complete_lifecycle("session:sesn_pg_tx:created").await;
-        repo.archive_with_lifecycle(
-            "sesn_pg_tx",
-            "2026-07-19T00:00:00Z",
-            fact(
+        let mut terminal = repo.get("sesn_pg_tx").await.unwrap();
+        terminal.status = "terminated".into();
+        terminal.archived_at = Some("2026-07-19T00:00:00Z".into());
+        replace_fixture(
+            &repo,
+            "ws_a",
+            terminal,
+            "test:pg-terminal",
+            vec![fact(
                 "session:sesn_pg_tx:terminated",
                 "sesn_pg_tx",
                 "session.status_terminated",
-            ),
+            )],
         )
         .await;
         assert_eq!(repo.get("sesn_pg_tx").await.unwrap().status, "terminated");
@@ -1712,7 +1819,7 @@ mod tests {
     }
 
     /// Postgres parity for the ADR-0051 owner `scope_id` — the same atomic
-    /// `save_owned` / `owner` + default-seed assertions the SQLite test
+    /// aggregate `create` / `commit_mutation` ownership assertions the SQLite test
     /// test has, which the pg test previously OMITTED. A second pool over the same schema
     /// stands in for a restart (the cross-process fence input the edge guard reads). Skips
     /// when no Postgres is reachable (`AWAKEN_TEST_DATABASE_URL`), isolated in its schema.
@@ -1758,7 +1865,7 @@ mod tests {
         let repo = PostgresManagedSessionRepository::with_pool(pool().await)
             .await
             .expect("store");
-        repo.save_owned("ws_a", sample("sesn_1")).await;
+        create_fixture(&repo, "ws_a", sample("sesn_1"), Vec::new()).await;
         assert_eq!(repo.owner("sesn_1").await, Some("ws_a".to_string()));
 
         // Second "process": a fresh pool over the same schema still reads the owner.
@@ -1767,7 +1874,7 @@ mod tests {
             .expect("store");
         assert_eq!(reopened.owner("sesn_1").await, Some("ws_a".to_string()));
         // A row saved but never owner-stamped defaults to the seeded scope.
-        reopened.save(sample("sesn_2")).await;
+        create_fixture(&reopened, "default", sample("sesn_2"), Vec::new()).await;
         assert_eq!(reopened.owner("sesn_2").await, Some("default".to_string()));
         // An unknown session has no owner.
         assert_eq!(reopened.owner("sesn_missing").await, None);

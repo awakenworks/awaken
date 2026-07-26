@@ -5,27 +5,121 @@
 
 use super::*;
 
+#[derive(Clone)]
+enum ResourceSettlement {
+    Commit,
+    Rollback(String),
+    RetryableFailure(String),
+}
+
 impl ManagedState {
+    async fn prepare_resource_transition(
+        &self,
+        owner_scope: &str,
+        mut current: PersistedSession,
+        desired: &awaken_session_contract::ResolvedSessionResources,
+    ) -> Result<PersistedSession, StateError> {
+        let unchanged_resources = current.resources.clone();
+        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+            if current.resources != unchanged_resources {
+                return Err(StateError::Conflict);
+            }
+            let mut candidate = current.clone();
+            candidate
+                .resources
+                .prepare(&candidate.session_id, desired.clone())
+                .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
+            candidate
+                .resources
+                .start_attempt()
+                .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
+            match self
+                .commit_session_snapshot(owner_scope, candidate, "resource-prepare", Vec::new())
+                .await
+            {
+                Err(StateError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
+                    current = self
+                        .sessions_repo
+                        .get(&current.session_id)
+                        .await
+                        .ok_or(StateError::NotFound)?;
+                }
+                result => return result,
+            }
+        }
+        Err(StateError::Conflict)
+    }
+
+    async fn settle_resource_transition(
+        &self,
+        owner_scope: &str,
+        session_id: &str,
+        resource_revision: u64,
+        desired: &awaken_session_contract::ResolvedSessionResources,
+        settlement: ResourceSettlement,
+    ) -> Result<PersistedSession, StateError> {
+        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+            let mut current = self
+                .sessions_repo
+                .get(session_id)
+                .await
+                .ok_or(StateError::NotFound)?;
+            if current.resources.revision != resource_revision
+                || current.resources.pending.as_ref() != Some(desired)
+            {
+                return Err(StateError::Conflict);
+            }
+            let operation = match &settlement {
+                ResourceSettlement::Commit => {
+                    current
+                        .resources
+                        .commit()
+                        .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
+                    "resource-activate"
+                }
+                ResourceSettlement::Rollback(error) => {
+                    current
+                        .resources
+                        .rollback(error.clone())
+                        .map_err(|state_error| {
+                            StateError::Run(RunError::internal(state_error.to_string()))
+                        })?;
+                    "resource-rollback"
+                }
+                ResourceSettlement::RetryableFailure(error) => {
+                    current
+                        .resources
+                        .note_retryable_failure(error.clone())
+                        .map_err(|state_error| {
+                            StateError::Run(RunError::internal(state_error.to_string()))
+                        })?;
+                    "resource-retryable-failure"
+                }
+            };
+            match self
+                .commit_session_snapshot(owner_scope, current, operation, Vec::new())
+                .await
+            {
+                Err(StateError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => continue,
+                result => return result,
+            }
+        }
+        Err(StateError::Conflict)
+    }
+
     async fn activate_inputs(
         &self,
-        mut persisted: PersistedSession,
+        persisted: PersistedSession,
         owner_scope: &str,
         desired: awaken_session_contract::ResolvedSessionResources,
     ) -> Result<(), StateError> {
         let session_id = persisted.session_id.clone();
         let previous = persisted.resources.active.clone();
-        persisted
-            .resources
-            .prepare(&session_id, desired.clone())
-            .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        persisted
-            .resources
-            .start_attempt()
-            .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
         // Prepared/Releasing is durable before the first external side effect.
-        persisted = self
-            .commit_session_snapshot(owner_scope, persisted, "resource-prepare", Vec::new())
+        let persisted = self
+            .prepare_resource_transition(owner_scope, persisted, &desired)
             .await?;
+        let resource_revision = persisted.resources.revision;
 
         if let Err(error) = self
             .runtime
@@ -35,43 +129,37 @@ impl ManagedState {
             // Restore the prior projection before reporting synchronous failure.
             // If rollback also fails, retain the pending transition for the
             // ResourceReclaimer instead of pretending either generation won.
-            match self
+            let settlement = match self
                 .runtime
                 .apply_session_inputs(&session_id, owner_scope, &previous)
                 .await
             {
-                Ok(()) => {
-                    persisted
-                        .resources
-                        .rollback(error.to_string())
-                        .map_err(|state_error| {
-                            StateError::Run(RunError::internal(state_error.to_string()))
-                        })?
-                }
-                Err(rollback_error) => {
-                    persisted
-                        .resources
-                        .note_retryable_failure(format!(
-                            "activation failed: {error}; rollback failed: {rollback_error}"
-                        ))
-                        .map_err(|state_error| {
-                            StateError::Run(RunError::internal(state_error.to_string()))
-                        })?;
-                }
-            }
-            self.commit_session_snapshot(owner_scope, persisted, "resource-rollback", Vec::new())
-                .await?;
+                Ok(()) => ResourceSettlement::Rollback(error.to_string()),
+                Err(rollback_error) => ResourceSettlement::RetryableFailure(format!(
+                    "activation failed: {error}; rollback failed: {rollback_error}"
+                )),
+            };
+            self.settle_resource_transition(
+                owner_scope,
+                &session_id,
+                resource_revision,
+                &desired,
+                settlement,
+            )
+            .await?;
             return Err(StateError::Run(error));
         }
 
-        persisted
-            .resources
-            .commit()
-            .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
         // Active/Released is the second durable edge. A crash before it leaves
         // Prepared/Releasing and is safe to retry idempotently.
-        persisted = self
-            .commit_session_snapshot(owner_scope, persisted, "resource-activate", Vec::new())
+        let persisted = self
+            .settle_resource_transition(
+                owner_scope,
+                &session_id,
+                resource_revision,
+                &desired,
+                ResourceSettlement::Commit,
+            )
             .await?;
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(&session_id).ok_or(StateError::NotFound)?;
@@ -184,7 +272,6 @@ impl ManagedState {
         id: &str,
         body: serde_json::Value,
     ) -> Result<serde_json::Value, StateError> {
-        let _guard = self.resource_mutations.lock().await;
         let parsed = parse_session_input(&body).ok_or_else(|| {
             StateError::Run(RunError::bad_request(
                 "resource must be a file or github_repository with its backing id",
@@ -262,7 +349,6 @@ impl ManagedState {
         resource_id: &str,
         patch: serde_json::Value,
     ) -> Result<serde_json::Value, StateError> {
-        let _guard = self.resource_mutations.lock().await;
         let owner_scope = self.resolve_owner(id).await.ok_or(StateError::NotFound)?;
         let binding_id = resource_binding_id(id, resource_id).ok_or(StateError::NotFound)?;
         let persisted = self
@@ -349,7 +435,6 @@ impl ManagedState {
     }
 
     pub async fn delete_resource(&self, id: &str, resource_id: &str) -> Result<(), StateError> {
-        let _guard = self.resource_mutations.lock().await;
         let owner_scope = self.resolve_owner(id).await.ok_or(StateError::NotFound)?;
         let binding_id = resource_binding_id(id, resource_id).ok_or(StateError::NotFound)?;
         let persisted = self

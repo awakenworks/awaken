@@ -2,7 +2,10 @@ use std::collections::BTreeMap;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use awaken_session_contract::{ManagedSessionRepository, PersistedSession, SessionLifecycleFact};
+use awaken_session_contract::{
+    IdempotencyRecord, ManagedSessionRepository, PersistedSession, SessionLifecycleFact,
+    SessionMutationPayload,
+};
 use awaken_session_store::SqliteManagedSessionRepository;
 
 const CHILD_MODE: &str = "AWAKEN_SESSION_CRASH_CHILD";
@@ -69,8 +72,19 @@ async fn session_commit_survives_process_kill_before_notification() {
         let db = std::env::var(DB_PATH).unwrap();
         let marker = std::env::var(MARKER_PATH).unwrap();
         let repo = SqliteManagedSessionRepository::open(&db).unwrap();
-        repo.save_owned_with_lifecycle("ws_a", session(), fact())
-            .await;
+        let value = session();
+        let payload = SessionMutationPayload::Replace(value.clone());
+        repo.create(
+            "ws_a",
+            value,
+            IdempotencyRecord {
+                key: "test:process-crash:create".into(),
+                payload_hash: payload.stable_hash(),
+            },
+            vec![fact()],
+        )
+        .await
+        .unwrap();
         std::fs::write(marker, b"committed").unwrap();
         tokio::time::sleep(Duration::from_secs(60)).await;
         panic!("parent failed to kill crash child");

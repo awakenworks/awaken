@@ -2256,6 +2256,147 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         .expect("H11");
 }
 
+/// Native and ACP are projections of the same exact durable generation.  This
+/// test deliberately drives the Host projection state directly: transport
+/// differences may change how a visible generation is consumed, but may never
+/// change which generation is visible.
+#[tokio::test]
+async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
+    use crate::mcp::{McpTransportMaterial, McpWiring, project_mcp_transport};
+    use crate::session_slot::{McpGenerationProjection, McpProjectionState};
+    use awaken_protocol_managed::{
+        McpAttachmentId, McpGeneration, McpGenerationRef, McpRealizationReceipt,
+    };
+    use awaken_run_executor_acp::{McpCredential, McpTransport};
+
+    let host = SharedHost::new(Arc::new(OkModel), "stub");
+    let generation = |number: u64| McpGenerationRef {
+        session_id: "mcp-parity".into(),
+        attachment_id: McpAttachmentId("mcp-docs".into()),
+        generation: McpGeneration(number),
+        runtime_incarnation: "runtime-1".into(),
+        lease_epoch: 7,
+        lease_expires_at_unix_ms: u64::MAX,
+    };
+    let projection = |number: u64, secret: &str| McpGenerationProjection {
+        generation: generation(number),
+        realization_id: format!("realize-{number}"),
+        stage_idempotency_key: format!("stage-{number}"),
+        receipt: McpRealizationReceipt {
+            generation: generation(number),
+            realization_id: format!("realize-{number}"),
+            selected_plaintext_holder: None,
+            actual_realization_kind: None,
+            receipt_fingerprint: format!("fingerprint-{number}"),
+        },
+        server: Some(McpTransportMaterial {
+            name: "docs".into(),
+            url: format!("https://mcp-{number}.example.test"),
+            bearer: Some(awaken_agent_contract::RedactedString::new(secret)),
+            refresh: None,
+        }),
+        native_wiring: Some(McpWiring {
+            plugins: Vec::new(),
+            tool_ids: vec![format!("docs-generation-{number}")],
+        }),
+        state: McpProjectionState::Staged,
+    };
+    let relay = crate::mcp_relay::McpRelay::start().await.unwrap();
+    assert!(
+        host.mcp_relay.set(relay.clone()).is_ok(),
+        "install the canonical Host relay"
+    );
+
+    // Cause graph:
+    // exact generation staged --publish--> active/visible --replacement publish-->
+    // old draining + new active --old drain--> old route removed.  Both adapter
+    // projections consume only `active_mcp_projections`; ACP additionally turns
+    // that exact generation into a loopback route without a credential.
+    //
+    // | Rule | g1 state | g2 state | Native visible | ACP visible | old route |
+    // |------|----------|----------|----------------|-------------|-----------|
+    // | P1   | staged   | absent   | none           | none        | absent    |
+    // | P2   | active   | absent   | g1             | g1          | present   |
+    // | P3   | active   | staged   | g1             | g1          | present   |
+    // | P4   | draining | active   | g2             | g2          | present   |
+    // | P5   | removed  | active   | g2             | g2          | absent    |
+    host.insert_mcp_projection(projection(1, "secret-one"))
+        .unwrap();
+    assert!(host.active_mcp_projections("mcp-parity").is_empty(), "P1");
+
+    host.publish_mcp_projection(&generation(1)).await.unwrap();
+    let visible = host.active_mcp_projections("mcp-parity");
+    assert_eq!(
+        visible[0].native_wiring.as_ref().unwrap().tool_ids[0],
+        "docs-generation-1",
+        "P2"
+    );
+    relay.set_route(&visible[0].generation, visible[0].server.as_ref().unwrap());
+    let acp = project_mcp_transport(
+        visible[0].server.as_ref().unwrap(),
+        &visible[0].generation,
+        Some(&relay),
+    )
+    .unwrap();
+    assert!(matches!(acp.credential, McpCredential::None), "P2");
+    let old_route = match acp.transport {
+        McpTransport::Http { url } => url,
+        other => panic!("P2 expected HTTP transport, got {other:?}"),
+    };
+    assert!(old_route.ends_with("/mcp-parity/mcp-docs/1"), "P2");
+
+    host.insert_mcp_projection(projection(2, "secret-two"))
+        .unwrap();
+    assert_eq!(
+        host.active_mcp_projections("mcp-parity")[0]
+            .generation
+            .generation,
+        McpGeneration(1),
+        "P3"
+    );
+
+    host.publish_mcp_projection(&generation(2)).await.unwrap();
+    let visible = host.active_mcp_projections("mcp-parity");
+    assert_eq!(visible.len(), 1, "P4");
+    assert_eq!(
+        visible[0].native_wiring.as_ref().unwrap().tool_ids[0],
+        "docs-generation-2",
+        "P4"
+    );
+    relay.set_route(&visible[0].generation, visible[0].server.as_ref().unwrap());
+    let replacement = project_mcp_transport(
+        visible[0].server.as_ref().unwrap(),
+        &visible[0].generation,
+        Some(&relay),
+    )
+    .unwrap();
+    let new_route = match replacement.transport {
+        McpTransport::Http { url } => url,
+        other => panic!("P4 expected HTTP transport, got {other:?}"),
+    };
+    assert!(new_route.ends_with("/mcp-parity/mcp-docs/2"), "P4");
+    assert_ne!(old_route, new_route, "P4");
+
+    host.drain_mcp_projection(&generation(1)).await.unwrap();
+    assert_eq!(
+        host.active_mcp_projections("mcp-parity")[0]
+            .generation
+            .generation,
+        McpGeneration(2),
+        "P5"
+    );
+    assert_eq!(
+        reqwest::Client::new()
+            .post(old_route)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::NOT_FOUND,
+        "P5"
+    );
+}
+
 /// Repository credentials remain owned by Resource realization. They must not
 /// create a hidden MCP desired-state or credential path beside Session MCP
 /// generations.
