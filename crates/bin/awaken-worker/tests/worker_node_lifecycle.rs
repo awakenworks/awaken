@@ -1,4 +1,4 @@
-use awaken_runtime_host::WorkerUpstream;
+use awaken_runtime_host::{SignedWorkerRequestAuthorizer, WorkerSigningCredential, WorkerUpstream};
 use awaken_worker::{StandardManifestConfig, WorkerNodeBuilder, WorkerShutdown};
 use awaken_worker_contract::{VersionRange, WorkerManifest};
 use std::sync::{Arc, Mutex};
@@ -169,22 +169,34 @@ fn explicit_and_standard_manifest_sources_are_mutually_exclusive() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_runs_register_ready_drain_quiesce_and_deregister() {
     let upstream = FakeWorkerUpstream::start();
+    let request_authorizer = Arc::new(SignedWorkerRequestAuthorizer::new(
+        WorkerSigningCredential::new(
+            "worker-node-test",
+            "key-1",
+            "credential-1",
+            b"fixture-secret".to_vec(),
+        )
+        .expect("signing credential is valid"),
+    ));
     let registered_identity = Arc::new(Mutex::new(None));
     let observed = registered_identity.clone();
-    WorkerNodeBuilder::new(WorkerUpstream::new(upstream.url()).with_worker_id("worker-node-test"))
-        .with_manifest(manifest())
-        .with_application_factory(Arc::new(move |context| {
-            *observed.lock().expect("identity observation mutex") =
-                Some(context.identity().clone());
-            let decorator: awaken_runtime_host::AttemptExecutorDecorator = Arc::new(|inner| inner);
-            Ok(awaken_worker::RegisteredWorkerApplication::new(decorator))
-        }))
-        .without_admin_surface()
-        .build()
-        .expect("valid explicit Worker topology")
-        .run_until(async { Ok(WorkerShutdown::Prompt) })
-        .await
-        .expect("Worker lifecycle completes");
+    WorkerNodeBuilder::new(
+        WorkerUpstream::new(upstream.url())
+            .with_request_authorizer(request_authorizer)
+            .with_worker_id("worker-node-test"),
+    )
+    .with_manifest(manifest())
+    .with_application_factory(Arc::new(move |context| {
+        *observed.lock().expect("identity observation mutex") = Some(context.identity().clone());
+        let decorator: awaken_runtime_host::AttemptExecutorDecorator = Arc::new(|inner| inner);
+        Ok(awaken_worker::RegisteredWorkerApplication::new(decorator))
+    }))
+    .without_admin_surface()
+    .build()
+    .expect("valid explicit Worker topology")
+    .run_until(async { Ok(WorkerShutdown::Prompt) })
+    .await
+    .expect("Worker lifecycle completes");
 
     let identity = registered_identity
         .lock()
@@ -214,4 +226,11 @@ async fn node_runs_register_ready_drain_quiesce_and_deregister() {
         positions.windows(2).all(|pair| pair[0] < pair[1]),
         "Worker lifecycle calls are ordered: {requests:?}"
     );
+    let headers = upstream.request_headers();
+    assert_eq!(headers.len(), requests.len());
+    assert!(headers.iter().all(|header| {
+        header
+            .to_ascii_lowercase()
+            .contains("authorization: awakenworker ")
+    }));
 }

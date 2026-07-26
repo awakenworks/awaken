@@ -10,6 +10,8 @@ pub struct FakeWorkerUpstream {
     url: String,
     stop: Arc<AtomicBool>,
     requests: Arc<Mutex<Vec<String>>>,
+    #[allow(dead_code)] // Only the lifecycle integration test asserts client provenance.
+    request_headers: Arc<Mutex<Vec<String>>>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -20,8 +22,10 @@ impl FakeWorkerUpstream {
         listener.set_nonblocking(true).unwrap();
         let stop = Arc::new(AtomicBool::new(false));
         let requests = Arc::new(Mutex::new(Vec::new()));
+        let request_headers = Arc::new(Mutex::new(Vec::new()));
         let thread_stop = stop.clone();
         let thread_requests = requests.clone();
+        let thread_request_headers = request_headers.clone();
         let thread = std::thread::spawn(move || {
             while !thread_stop.load(Ordering::Acquire) {
                 match listener.accept() {
@@ -30,7 +34,7 @@ impl FakeWorkerUpstream {
                             break;
                         }
                         stream.set_nonblocking(false).unwrap();
-                        handle(stream, &thread_requests);
+                        handle(stream, &thread_requests, &thread_request_headers);
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(2));
@@ -43,6 +47,7 @@ impl FakeWorkerUpstream {
             url: format!("http://{addr}"),
             stop,
             requests,
+            request_headers,
             thread: Some(thread),
         }
     }
@@ -53,6 +58,11 @@ impl FakeWorkerUpstream {
 
     pub fn requests(&self) -> Vec<String> {
         self.requests.lock().unwrap().clone()
+    }
+
+    #[allow(dead_code)] // This shared fixture is also compiled by tests that need paths only.
+    pub fn request_headers(&self) -> Vec<String> {
+        self.request_headers.lock().unwrap().clone()
     }
 }
 
@@ -68,7 +78,11 @@ impl Drop for FakeWorkerUpstream {
     }
 }
 
-fn handle(mut stream: TcpStream, requests: &Mutex<Vec<String>>) {
+fn handle(
+    mut stream: TcpStream,
+    requests: &Mutex<Vec<String>>,
+    request_headers: &Mutex<Vec<String>>,
+) {
     let request = read_request(&mut stream);
     let header_end = request
         .windows(4)
@@ -82,6 +96,11 @@ fn handle(mut stream: TcpStream, requests: &Mutex<Vec<String>>) {
         .unwrap();
     let path = request_line.split_whitespace().nth(1).unwrap();
     requests.lock().unwrap().push(path.to_string());
+    request_headers.lock().unwrap().push(
+        std::str::from_utf8(&request[..header_end])
+            .unwrap()
+            .to_owned(),
+    );
     let body = std::str::from_utf8(&request[header_end..]).unwrap();
     let response = match path {
         "/v1/worker/register" => {
