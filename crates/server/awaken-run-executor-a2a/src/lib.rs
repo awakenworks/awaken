@@ -559,7 +559,7 @@ mod tests {
     use awaken_protocol_a2a::Artifact;
     use awaken_protocol_a2a::client::Response;
     use awaken_protocol_a2a::types::{
-        Message as A2aMessage, MessageRole, Part as A2aPart, TaskStatus,
+        Message as A2aMessage, MessageKind, MessageRole, Part as A2aPart, TaskKind, TaskStatus,
     };
     use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
     use awaken_runtime_contract::snapshot::{
@@ -760,12 +760,15 @@ mod tests {
     /// A text agent message for the A2A wire shape (helper for task fixtures).
     fn a2a_msg(text: &str) -> A2aMessage {
         A2aMessage {
-            kind: None,
+            kind: MessageKind::Message,
             task_id: None,
             context_id: None,
             message_id: "m".into(),
             role: MessageRole::Agent,
             parts: vec![A2aPart::text(text)],
+            extensions: Vec::new(),
+            metadata: None,
+            reference_task_ids: Vec::new(),
         }
     }
 
@@ -774,7 +777,7 @@ mod tests {
     /// selection is what these exercise.
     fn task_with(status_msg: Option<&str>, history: &[&str], artifacts: &[&[&str]]) -> Task {
         Task {
-            kind: None,
+            kind: TaskKind::Task,
             id: "t".into(),
             context_id: "c".into(),
             status: TaskStatus {
@@ -788,9 +791,13 @@ mod tests {
                 .map(|parts| Artifact {
                     artifact_id: "artifact".into(),
                     name: None,
+                    description: None,
+                    extensions: Vec::new(),
+                    metadata: None,
                     parts: parts.iter().map(|t| A2aPart::text(*t)).collect(),
                 })
                 .collect(),
+            metadata: None,
         }
     }
 
@@ -881,7 +888,7 @@ mod tests {
     /// the transport, socket, and parse path are all real.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dials_a_real_http_a2a_server_and_commits_the_reply() {
-        const REPLY: &str = r#"{"task":{"id":"t-1","contextId":"c","status":{"state":"TASK_STATE_COMPLETED","message":{"messageId":"a","role":"ROLE_AGENT","parts":[{"text":"real remote reply"}]}}}}"#;
+        const REPLY: &str = r#"{"task":{"kind":"task","id":"t-1","contextId":"c","status":{"state":"completed","message":{"kind":"message","messageId":"a","role":"agent","parts":[{"kind":"text","text":"real remote reply"}]}}}}"#;
 
         // A real HTTP server on an ephemeral port; a fallback answers the A2A
         // `message:send` POST (the `:` in the path is a matchit param char, so a
@@ -983,7 +990,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn artifacts_are_preferred_over_status_and_history() {
         let backend = serve(
-            r#"{"task":{"kind":"task","id":"t","contextId":"c","status":{"state":"completed","message":{"messageId":"m","role":"agent","parts":[{"text":"status msg"}]}},"artifacts":[{"artifactId":"a1","parts":[{"text":"artifact body"}]}]}}"#,
+            r#"{"task":{"kind":"task","id":"t","contextId":"c","status":{"state":"completed","message":{"kind":"message","messageId":"m","role":"agent","parts":[{"kind":"text","text":"status msg"}]}},"artifacts":[{"artifactId":"a1","parts":[{"kind":"text","text":"artifact body"}]}]}}"#,
         )
         .await;
         let rec = Arc::new(Rec::default());
@@ -1004,7 +1011,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn history_last_is_the_final_reply_fallback() {
         let backend = serve(
-            r#"{"task":{"kind":"task","id":"t","contextId":"c","status":{"state":"completed"},"history":[{"messageId":"h0","role":"agent","parts":[{"text":"first"}]},{"messageId":"h1","role":"agent","parts":[{"text":"last history"}]}]}}"#,
+            r#"{"task":{"kind":"task","id":"t","contextId":"c","status":{"state":"completed"},"history":[{"kind":"message","messageId":"h0","role":"agent","parts":[{"kind":"text","text":"first"}]},{"kind":"message","messageId":"h1","role":"agent","parts":[{"kind":"text","text":"last history"}]}]}}"#,
         )
         .await;
         let rec = Arc::new(Rec::default());
@@ -1058,7 +1065,7 @@ mod tests {
     /// A real A2A server that records the inbound request (uri + body) and answers a
     /// completed task; returns the backend ref and the shared capture slot.
     async fn serve_capturing() -> (String, Arc<Mutex<Option<(String, String)>>>) {
-        const REPLY: &str = r#"{"task":{"id":"t-1","contextId":"c","status":{"state":"TASK_STATE_COMPLETED","message":{"messageId":"a","role":"ROLE_AGENT","parts":[{"text":"ok"}]}}}}"#;
+        const REPLY: &str = r#"{"task":{"kind":"task","id":"t-1","contextId":"c","status":{"state":"completed","message":{"kind":"message","messageId":"a","role":"agent","parts":[{"kind":"text","text":"ok"}]}}}}"#;
         let cap: Arc<Mutex<Option<(String, String)>>> = Arc::new(Mutex::new(None));
         let slot = cap.clone();
         let app = axum::Router::new().fallback(move |req: axum::extract::Request| {
@@ -1103,7 +1110,11 @@ mod tests {
             body.contains(r#""messageId":"a2a-msg-r""#),
             "messageId = a2a-msg-<run_id>: {body}"
         );
-        assert!(body.contains(r#""role":"ROLE_USER""#), "user role: {body}");
+        assert!(
+            body.contains(r#""kind":"message""#),
+            "message union: {body}"
+        );
+        assert!(body.contains(r#""role":"user""#), "user role: {body}");
         assert!(body.contains(r#""text":"go""#), "the prompt text: {body}");
         assert!(
             body.contains(r#""agentId":null"#),
@@ -1164,7 +1175,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_missing_commit_coordinator_still_returns_the_terminal_phase() {
         let backend = serve(
-            r#"{"task":{"id":"t","contextId":"c","status":{"state":"completed","message":{"messageId":"m","role":"agent","parts":[{"text":"ok"}]}}}}"#,
+            r#"{"task":{"kind":"task","id":"t","contextId":"c","status":{"state":"completed","message":{"kind":"message","messageId":"m","role":"agent","parts":[{"kind":"text","text":"ok"}]}}}}"#,
         )
         .await;
         // RuntimeRunContext::new() carries no commit coordinator.
@@ -1181,7 +1192,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_failed_remote_task_ends_in_error_not_success() {
         let backend = serve(
-            r#"{"task":{"id":"t","contextId":"c","status":{"state":"failed","message":{"messageId":"m","role":"agent","parts":[{"text":"model exploded"}]}}}}"#,
+            r#"{"task":{"kind":"task","id":"t","contextId":"c","status":{"state":"failed","message":{"kind":"message","messageId":"m","role":"agent","parts":[{"kind":"text","text":"model exploded"}]}}}}"#,
         )
         .await;
         let rec = Arc::new(Rec::default());
@@ -1207,8 +1218,10 @@ mod tests {
     /// natural end.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_canceled_remote_task_ends_cancelled() {
-        let backend =
-            serve(r#"{"task":{"id":"t","contextId":"c","status":{"state":"canceled"}}}"#).await;
+        let backend = serve(
+            r#"{"task":{"kind":"task","id":"t","contextId":"c","status":{"state":"canceled"}}}"#,
+        )
+        .await;
         let rec = Arc::new(Rec::default());
         let state = A2aRunExecutor::over_http()
             .execute(
@@ -1223,9 +1236,11 @@ mod tests {
     #[tokio::test]
     async fn a_working_remote_task_is_polled_to_its_real_terminal_state() {
         let transport = Arc::new(ScriptedTransport::new(vec![
-            response(r#"{"task":{"id":"t","contextId":"c","status":{"state":"working"}}}"#),
             response(
-                r#"{"id":"t","contextId":"c","status":{"state":"completed","message":{"messageId":"m","role":"agent","parts":[{"text":"finished"}]}}}"#,
+                r#"{"task":{"kind":"task","id":"t","contextId":"c","status":{"state":"working"}}}"#,
+            ),
+            response(
+                r#"{"kind":"task","id":"t","contextId":"c","status":{"state":"completed","message":{"kind":"message","messageId":"m","role":"agent","parts":[{"kind":"text","text":"finished"}]}}}"#,
             ),
         ]));
         let rec = Arc::new(Rec::default());
@@ -1255,11 +1270,11 @@ mod tests {
     async fn replacement_executor_reattaches_by_the_committed_task_id() {
         let transport = Arc::new(ScriptedTransport::new(vec![
             response(
-                r#"{"task":{"id":"remote-7","contextId":"ctx-7","status":{"state":"working"}}}"#,
+                r#"{"task":{"kind":"task","id":"remote-7","contextId":"ctx-7","status":{"state":"working"}}}"#,
             ),
             Err("connection dropped after task creation".to_string()),
             response(
-                r#"{"id":"remote-7","contextId":"ctx-7","status":{"state":"completed","message":{"messageId":"m","role":"agent","parts":[{"text":"recovered"}]}}}"#,
+                r#"{"kind":"task","id":"remote-7","contextId":"ctx-7","status":{"state":"completed","message":{"kind":"message","messageId":"m","role":"agent","parts":[{"kind":"text","text":"recovered"}]}}}"#,
             ),
         ]));
         let rec = Arc::new(Rec::default());
@@ -1310,10 +1325,10 @@ mod tests {
     async fn replacement_executor_resumes_input_on_the_committed_context() {
         let transport = Arc::new(ScriptedTransport::new(vec![
             response(
-                r#"{"task":{"id":"remote-input","contextId":"ctx-input","status":{"state":"input-required","message":{"messageId":"m","role":"agent","parts":[{"text":"which file?"}]}}}}"#,
+                r#"{"task":{"kind":"task","id":"remote-input","contextId":"ctx-input","status":{"state":"input-required","message":{"kind":"message","messageId":"m","role":"agent","parts":[{"kind":"text","text":"which file?"}]}}}}"#,
             ),
             response(
-                r#"{"task":{"id":"remote-finished","contextId":"ctx-input","status":{"state":"completed","message":{"messageId":"m2","role":"agent","parts":[{"text":"done"}]}}}}"#,
+                r#"{"task":{"kind":"task","id":"remote-finished","contextId":"ctx-input","status":{"state":"completed","message":{"kind":"message","messageId":"m2","role":"agent","parts":[{"kind":"text","text":"done"}]}}}}"#,
             ),
         ]));
         let rec = Arc::new(Rec::default());
@@ -1353,7 +1368,7 @@ mod tests {
 
     #[tokio::test]
     async fn durable_cancel_addresses_the_committed_remote_task() {
-        let active = r#"{"id":"remote-cancel","contextId":"ctx-cancel","status":{"state":"input-required"}}"#;
+        let active = r#"{"kind":"task","id":"remote-cancel","contextId":"ctx-cancel","status":{"state":"input-required"}}"#;
         let transport = Arc::new(ScriptedTransport::new(vec![
             response(&format!(r#"{{"task":{active}}}"#)),
             response(active),
@@ -1397,12 +1412,11 @@ mod tests {
 
     #[tokio::test]
     async fn failed_remote_cancel_is_retryable_against_the_same_committed_task() {
-        let active =
-            r#"{"id":"remote-retry","contextId":"ctx-retry","status":{"state":"working"}}"#;
+        let active = r#"{"kind":"task","id":"remote-retry","contextId":"ctx-retry","status":{"state":"working"}}"#;
         let transport = Arc::new(ScriptedTransport::new(vec![
             response(&format!(r#"{{"task":{active}}}"#)),
             response(
-                r#"{"id":"remote-retry","contextId":"ctx-retry","status":{"state":"input-required"}}"#,
+                r#"{"kind":"task","id":"remote-retry","contextId":"ctx-retry","status":{"state":"input-required"}}"#,
             ),
             response(active),
             Err("remote cancel unavailable".to_string()),
@@ -1460,7 +1474,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_input_required_task_commits_the_partial_message() {
         let backend = serve(
-            r#"{"task":{"id":"t","contextId":"c","status":{"state":"input-required","message":{"messageId":"m","role":"agent","parts":[{"text":"which file?"}]}}}}"#,
+            r#"{"task":{"kind":"task","id":"t","contextId":"c","status":{"state":"input-required","message":{"kind":"message","messageId":"m","role":"agent","parts":[{"kind":"text","text":"which file?"}]}}}}"#,
         )
         .await;
         let rec = Arc::new(Rec::default());
@@ -1486,7 +1500,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_auth_required_task_commits_the_partial_message() {
         let backend = serve(
-            r#"{"task":{"id":"t","contextId":"c","status":{"state":"auth-required","message":{"messageId":"m","role":"agent","parts":[{"text":"please authenticate"}]}}}}"#,
+            r#"{"task":{"kind":"task","id":"t","contextId":"c","status":{"state":"auth-required","message":{"kind":"message","messageId":"m","role":"agent","parts":[{"kind":"text","text":"please authenticate"}]}}}}"#,
         )
         .await;
         let rec = Arc::new(Rec::default());
@@ -1714,7 +1728,7 @@ mod tests {
             .unwrap();
 
         let transport = Arc::new(ScriptedTransport::new(vec![response(
-            r#"{"id":"task-7","contextId":"ctx-7","status":{"state":"completed"}}"#,
+            r#"{"kind":"task","id":"task-7","contextId":"ctx-7","status":{"state":"completed"}}"#,
         )]));
         let rec = Arc::new(Rec::default());
         let context = RuntimeRunContext::new()
@@ -1744,7 +1758,7 @@ mod tests {
     async fn a_pre_cancelled_poll_commits_a_cancelled_terminal_boundary() {
         let transport = Arc::new(ScriptedTransport::new(vec![
             response(
-                r#"{"task":{"id":"task-7","contextId":"ctx-7","status":{"state":"working"}}}"#,
+                r#"{"task":{"kind":"task","id":"task-7","contextId":"ctx-7","status":{"state":"working"}}}"#,
             ),
             Ok(Response::new(204, Vec::new())),
         ]));
