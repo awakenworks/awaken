@@ -704,14 +704,15 @@ mod tests {
             provider,
             route,
             "workspace-a",
-            Some(awaken_runtime_contract::CredentialAccess {
-                credential: awaken_runtime_contract::CredentialRef {
+            Some(awaken_runtime_contract::CredentialAccess::new(
+                awaken_runtime_contract::CredentialRef {
                     id: credential.into(),
                     revision: 0,
                 },
-                injection: awaken_runtime_contract::CredentialInjectionKind::Reference,
-                usage: awaken_runtime_contract::CredentialUsage::ProviderAdapter,
-            }),
+                awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+                awaken_runtime_contract::CredentialUsage::ProviderAdapter,
+                awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+            )),
             awaken_runtime_contract::InferenceEndpoint {
                 adapter_kind: "test".into(),
                 base_url: "https://example.invalid".into(),

@@ -17,8 +17,8 @@ use awaken_credential_vault::{
 };
 use awaken_runtime_contract::resolved::ResolvedModelCandidate;
 use awaken_runtime_contract::{
-    CredentialAccess, CredentialInjectionKind, CredentialRef, CredentialUsage,
-    ExecutableAgentSnapshot, InferenceEndpoint, ModelBinding, RunActivation,
+    CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
+    CredentialUsage, ExecutableAgentSnapshot, InferenceEndpoint, ModelBinding, RunActivation,
 };
 use awaken_server::InferenceExecutorMaterializer;
 use awaken_server::inference_materializer::CredentialInferenceMaterializer;
@@ -53,14 +53,15 @@ async fn services() -> TestServices {
         "anthropic@1",
         "ep1@1",
         "ws",
-        Some(CredentialAccess {
-            credential: CredentialRef {
+        Some(CredentialAccess::new(
+            CredentialRef {
                 id: source.id.0,
                 revision,
             },
-            injection: CredentialInjectionKind::Reference,
-            usage: CredentialUsage::ProviderAdapter,
-        }),
+            CredentialMaterialSource::ControlPlaneReference,
+            CredentialUsage::ProviderAdapter,
+            CredentialExecutionPolicy::self_hosted_provider(),
+        )),
         InferenceEndpoint {
             adapter_kind: "anthropic".into(),
             base_url: "https://api.anthropic.com/v1/".into(),

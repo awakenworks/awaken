@@ -115,14 +115,15 @@ fn provider_model_candidate_provisioning_is_pinned() {
         "provider-a@2",
         "route-a@3",
         "workspace-a",
-        Some(awaken_runtime_contract::CredentialAccess {
-            credential: awaken_runtime_contract::CredentialRef {
+        Some(awaken_runtime_contract::CredentialAccess::new(
+            awaken_runtime_contract::CredentialRef {
                 id: "credential-a".into(),
                 revision: 4,
             },
-            injection: awaken_runtime_contract::CredentialInjectionKind::Reference,
-            usage: awaken_runtime_contract::CredentialUsage::ProviderAdapter,
-        }),
+            awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+            awaken_runtime_contract::CredentialUsage::ProviderAdapter,
+            awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+        )),
         awaken_runtime_contract::InferenceEndpoint {
             adapter_kind: "openai_chat_completions".into(),
             base_url: "https://provider.example/v1".into(),
@@ -140,8 +141,15 @@ fn provider_model_candidate_provisioning_is_pinned() {
             "scope_id": "workspace-a",
             "credential": {
                 "credential": { "id": "credential-a", "revision": 4 },
-                "injection": "reference",
-                "usage": { "type": "provider_adapter" }
+                "material_source": "control_plane_reference",
+                "usage": { "type": "provider_adapter" },
+                "policy": {
+                    "allowed_plaintext_holders": [
+                        { "boundary": "workload", "trust_domain": "awaken.workload.acp" },
+                        { "boundary": "worker", "trust_domain": "awaken.worker" }
+                    ],
+                    "model_exposure": "forbidden"
+                }
             },
             "endpoint": {
                 "adapter_kind": "openai_chat_completions",

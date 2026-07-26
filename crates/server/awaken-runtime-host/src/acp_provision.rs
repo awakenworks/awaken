@@ -7,6 +7,7 @@
 use awaken_run_executor_acp::{AcpCli, ConfigHome, LaunchResolver, OpenError, ResolvedModel};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::ModelProvisioning;
+use awaken_runtime_contract::{CredentialRealizationKind, PlaintextBoundary, PlaintextHolder};
 use std::path::PathBuf;
 
 /// Resolves an ACP run from its published access and a worker-side exact credential
@@ -54,8 +55,14 @@ impl PublishedAcpLaunchResolver {
             )));
         }
         let secret = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(self.credentials.materialize_provider(candidate))
+            tokio::runtime::Handle::current().block_on(self.credentials.materialize_provider_for(
+                candidate,
+                &PlaintextHolder::new(
+                    PlaintextBoundary::Workload,
+                    awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
+                ),
+                CredentialRealizationKind::ProcessSecretEnvironment,
+            ))
         })
         .map_err(OpenError)?;
         Ok(ResolvedModel {
@@ -102,8 +109,8 @@ mod tests {
         AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
     };
     use awaken_runtime_contract::{
-        CredentialAccess, CredentialInjectionKind, CredentialRef, CredentialUsage,
-        InferenceEndpoint,
+        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
+        CredentialUsage, InferenceEndpoint,
     };
     use std::sync::Arc;
 
@@ -169,14 +176,15 @@ mod tests {
             "anthropic@1",
             "anthropic-messages@1",
             "ws",
-            Some(CredentialAccess {
-                credential: CredentialRef {
+            Some(CredentialAccess::new(
+                CredentialRef {
                     id: source.id.0,
                     revision: 1,
                 },
-                injection: CredentialInjectionKind::Reference,
-                usage: CredentialUsage::ProviderAdapter,
-            }),
+                CredentialMaterialSource::ControlPlaneReference,
+                CredentialUsage::ProviderAdapter,
+                CredentialExecutionPolicy::self_hosted_provider(),
+            )),
             InferenceEndpoint {
                 adapter_kind: "anthropic".into(),
                 base_url: "https://db.example/v1".into(),

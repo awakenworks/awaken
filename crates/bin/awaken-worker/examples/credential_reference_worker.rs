@@ -50,7 +50,8 @@ impl InferenceExecutorMaterializer for ReferenceMaterializer {
         else {
             return None;
         };
-        if credential.injection != awaken_runtime_contract::CredentialInjectionKind::WorkerReference
+        if credential.material_source
+            != awaken_runtime_contract::CredentialMaterialSource::WorkerReference
             || credential.credential != self.credential
         {
             return None;

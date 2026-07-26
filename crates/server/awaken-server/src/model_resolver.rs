@@ -15,7 +15,8 @@ use awaken_model_catalog::repo::CatalogRepo;
 use awaken_model_catalog::{Offering, ProviderCatalog};
 use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
 use awaken_runtime_contract::{
-    CredentialAccess, CredentialInjectionKind, CredentialRef, CredentialUsage, InferenceEndpoint,
+    CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
+    CredentialUsage, InferenceEndpoint,
 };
 use awaken_runtime_host::{
     ModelPublicationResolver, PublicationResolutionError, ResolvedPublicationModels,
@@ -208,20 +209,21 @@ impl CatalogModelPublicationResolver {
             format!("{}@{}", offering.provider_id.0, provider.version),
             format!("{}@{}", offering.protocol_endpoint_id.0, endpoint.version),
             workspace.clone(),
-            Some(CredentialAccess {
-                credential: CredentialRef {
+            Some(CredentialAccess::new(
+                CredentialRef {
                     id: credential.id.0.clone(),
                     revision,
                 },
-                injection: match credential.kind {
-                    CredentialKind::WorkerLocal => CredentialInjectionKind::WorkerReference,
+                match credential.kind {
+                    CredentialKind::WorkerLocal => CredentialMaterialSource::WorkerReference,
                     CredentialKind::Vault | CredentialKind::Oauth => {
-                        CredentialInjectionKind::Reference
+                        CredentialMaterialSource::ControlPlaneReference
                     }
                     CredentialKind::Env => unreachable!("environment sources are filtered out"),
                 },
-                usage: CredentialUsage::ProviderAdapter,
-            }),
+                CredentialUsage::ProviderAdapter,
+                CredentialExecutionPolicy::self_hosted_provider(),
+            )),
             InferenceEndpoint {
                 adapter_kind: endpoint.dialect.adapter_kind().to_string(),
                 base_url,
@@ -528,6 +530,9 @@ mod tests {
         };
         assert_eq!(access.credential.id, source.id.0);
         assert_eq!(access.credential.revision, 1);
-        assert_eq!(access.injection, CredentialInjectionKind::WorkerReference);
+        assert_eq!(
+            access.material_source,
+            CredentialMaterialSource::WorkerReference
+        );
     }
 }

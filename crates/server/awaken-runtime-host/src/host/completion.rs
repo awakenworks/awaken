@@ -5,7 +5,7 @@ use super::*;
 use awaken_run_ingress::{
     HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, PlacementRequirements,
 };
-use awaken_runtime_contract::CredentialInjectionKind;
+use awaken_runtime_contract::CredentialMaterialSource;
 use std::collections::{BTreeSet, HashMap};
 
 pub(crate) fn model_realization_capability(
@@ -18,7 +18,7 @@ pub(crate) fn model_realization_capability(
         awaken_runtime_contract::resolved::ModelProvisioning::Provider {
             credential: Some(credential),
             ..
-        } if credential.injection == CredentialInjectionKind::WorkerReference => {
+        } if credential.material_source == CredentialMaterialSource::WorkerReference => {
             awaken_run_ingress::WORKER_LOCAL_CREDENTIALS_CAPABILITY
         }
         awaken_runtime_contract::resolved::ModelProvisioning::Provider { .. } => {
@@ -36,7 +36,7 @@ fn worker_local_credentials(
             awaken_runtime_contract::resolved::ModelProvisioning::Provider {
                 credential: Some(credential),
                 ..
-            } if credential.injection == CredentialInjectionKind::WorkerReference => {
+            } if credential.material_source == CredentialMaterialSource::WorkerReference => {
                 Some(awaken_run_ingress::WorkerCredentialRevision {
                     source_id: credential.credential.id.clone(),
                     revision: credential.credential.revision,
@@ -399,8 +399,8 @@ mod completion_tests {
     #[test]
     fn worker_local_candidates_pin_every_exact_credential_for_claim_admission() {
         use awaken_runtime_contract::{
-            CredentialAccess, CredentialInjectionKind, CredentialRef, CredentialUsage,
-            InferenceEndpoint,
+            CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
+            CredentialUsage, InferenceEndpoint,
         };
 
         let worker_candidate = |model: &str, credential: &str, revision: u64| {
@@ -409,14 +409,15 @@ mod completion_tests {
                 "provider@1",
                 "route@1",
                 "workspace-a",
-                Some(CredentialAccess {
-                    credential: CredentialRef {
+                Some(CredentialAccess::new(
+                    CredentialRef {
                         id: credential.into(),
                         revision,
                     },
-                    injection: CredentialInjectionKind::WorkerReference,
-                    usage: CredentialUsage::ProviderAdapter,
-                }),
+                    CredentialMaterialSource::WorkerReference,
+                    CredentialUsage::ProviderAdapter,
+                    CredentialExecutionPolicy::self_hosted_provider(),
+                )),
                 InferenceEndpoint {
                     adapter_kind: "openai".into(),
                     base_url: "https://example.invalid".into(),

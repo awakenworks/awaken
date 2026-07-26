@@ -41,14 +41,15 @@ fn provider_candidate(
         "provider@1",
         "route@1",
         "workspace-a",
-        Some(awaken_runtime_contract::CredentialAccess {
-            credential: awaken_runtime_contract::CredentialRef {
+        Some(awaken_runtime_contract::CredentialAccess::new(
+            awaken_runtime_contract::CredentialRef {
                 id: reference.into(),
                 revision: 1,
             },
-            injection: awaken_runtime_contract::CredentialInjectionKind::Reference,
-            usage: awaken_runtime_contract::CredentialUsage::ProviderAdapter,
-        }),
+            awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+            awaken_runtime_contract::CredentialUsage::ProviderAdapter,
+            awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+        )),
         awaken_runtime_contract::InferenceEndpoint {
             adapter_kind: "openai".into(),
             base_url: "https://gateway.invalid/v1".into(),
