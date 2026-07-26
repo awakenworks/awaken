@@ -35,7 +35,7 @@ pub struct UserProfile {
     pub metadata: BTreeMap<String, String>,
     pub relationship: Relationship,
     /// Trust grants keyed by grant name; empty on this single-machine surface.
-    pub trust_grants: BTreeMap<String, serde_json::Value>,
+    pub trust_grants: BTreeMap<String, TrustGrant>,
     #[serde(rename = "type")]
     pub object_type: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -44,8 +44,23 @@ pub struct UserProfile {
     pub name: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TrustGrant {
+    pub status: TrustGrantStatus,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TrustGrantStatus {
+    Active,
+    Pending,
+    Rejected,
+}
+
 /// `UserProfileCreateParams`.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UserProfileCreateParams {
     #[serde(default)]
     pub external_id: Option<String>,
@@ -72,13 +87,14 @@ pub struct EnrollmentUrl {
 /// string** value removes the key (the SDK's documented convention) and keys not
 /// present are preserved.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UserProfileUpdateParams {
-    #[serde(default)]
-    pub external_id: Option<String>,
+    #[serde(default, deserialize_with = "super::presence::double_option")]
+    pub external_id: Option<Option<String>>,
     #[serde(default)]
     pub metadata: Option<BTreeMap<String, String>>,
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub relationship: Option<Relationship>,
+    #[serde(default, deserialize_with = "super::presence::double_option")]
+    pub name: Option<Option<String>>,
+    #[serde(default, deserialize_with = "super::presence::double_option")]
+    pub relationship: Option<Option<Relationship>>,
 }

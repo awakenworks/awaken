@@ -10,7 +10,9 @@
 // Decision table:
 // | profile | patch/enrollment | observable behavior |
 // | present | empty-string metadata | key removed |
+// | present | nullable fields = null | fields clear; relationship resets external |
 // | present | enrollment | URL contains profile id and expiry |
+// | any | unknown request field | 400; profile state unchanged |
 // | missing | read/update/enrollment | 404, no profile created |
 
 import assert from 'node:assert/strict';
@@ -56,6 +58,27 @@ async function main() {
       assert.equal(updated.metadata.region, 'us');
       assert.ok(!('tier' in updated.metadata), 'empty-string metadata value removes the key');
       pass('beta.userProfiles.update -> metadata merge (empty-string removes)');
+
+      const rejectedUpdate = await fetch(`${baseUrl}/v1/user_profiles/${profile.id}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'anthropic-beta': BETAS[0] },
+        body: JSON.stringify({ parallel_profile_config: true }),
+      });
+      assert.equal(rejectedUpdate.status, 400);
+      const afterRejectedUpdate = await client.beta.userProfiles.retrieve(profile.id, { betas: BETAS });
+      assert.equal(afterRejectedUpdate.name, 'Acme Inc', 'rejected patch has no state effect');
+
+      const cleared = await client.beta.userProfiles.update(profile.id, {
+        external_id: null,
+        name: null,
+        relationship: null,
+        betas: BETAS,
+      });
+      assert.equal(cleared.external_id, undefined);
+      assert.equal(cleared.name, undefined);
+      assert.equal(cleared.relationship, 'external');
+      assert.deepEqual(cleared.trust_grants, {});
+      pass('beta.userProfiles.update -> explicit null is distinct from omission');
 
       const ids = (await drain(client.beta.userProfiles.list({ betas: BETAS }))).map((p) => p.id);
       assert.ok(ids.includes(profile.id), 'list returns the profile');

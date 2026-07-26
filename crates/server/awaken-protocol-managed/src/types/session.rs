@@ -91,31 +91,23 @@ pub struct AgentRefObject {
     pub kind: Option<AgentRefKind>,
     #[serde(default)]
     pub version: Option<u32>,
-    #[serde(default, deserialize_with = "deserialize_double_option")]
+    #[serde(default, deserialize_with = "super::presence::double_option")]
     pub system: Option<Option<String>>,
-    #[serde(default, deserialize_with = "deserialize_double_option")]
+    #[serde(default, deserialize_with = "super::presence::double_option")]
     pub tools: Option<Option<Vec<AgentTool>>>,
-    #[serde(default, deserialize_with = "deserialize_double_option")]
+    #[serde(default, deserialize_with = "super::presence::double_option")]
     pub mcp_servers: Option<Option<Vec<UrlMcpServer>>>,
-    #[serde(default, deserialize_with = "deserialize_double_option")]
+    #[serde(default, deserialize_with = "super::presence::double_option")]
     pub skills: Option<Option<Vec<AgentSkill>>>,
     /// Outer `None` = `model` omitted; `Some(None)` = `model: null`; `Some(Some(_))` =
     /// a value. Only meaningful when `kind` is `agent_with_overrides`.
-    #[serde(default, deserialize_with = "deserialize_double_option")]
+    #[serde(default, deserialize_with = "super::presence::double_option")]
     pub model: Option<Option<super::agent::ModelInput>>,
 }
 
 /// The standard serde double-`Option` reader: distinguishes an absent field (handled
 /// by `#[serde(default)]` → outer `None`) from a present `null` (`Some(None)`) from a
 /// present value (`Some(Some(_))`). Load-bearing for the model not-clearable rule.
-fn deserialize_double_option<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
-where
-    T: Deserialize<'de>,
-    D: serde::Deserializer<'de>,
-{
-    Deserialize::deserialize(deserializer).map(Some)
-}
-
 /// `agent` in a create-session request — the SDK's
 /// `string | {id, type:'agent', version?} | {id, type:'agent_with_overrides',
 /// version?, model?, system?, tools?, ...}` (`BetaManagedAgentsAgentParams`).
@@ -209,9 +201,9 @@ pub struct SessionAgentUpdate {
 pub struct SessionUpdateParams {
     #[serde(default)]
     pub agent: Option<SessionAgentUpdate>,
-    #[serde(default, deserialize_with = "deserialize_double_option")]
+    #[serde(default, deserialize_with = "super::presence::double_option")]
     pub title: Option<Option<String>>,
-    #[serde(default, deserialize_with = "deserialize_double_option")]
+    #[serde(default, deserialize_with = "super::presence::double_option")]
     pub metadata: Option<Option<std::collections::BTreeMap<String, Option<String>>>>,
     /// Reserved by the SDK but not supported by the product yet. The route rejects
     /// a present value before any state mutation.
