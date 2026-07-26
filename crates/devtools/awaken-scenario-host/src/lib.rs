@@ -845,9 +845,15 @@ pub async fn build_acp_container_router() -> Router {
     deployment.sandbox_tier = match std::env::var("SESSION_ENVIRONMENT_TIER").as_deref() {
         Ok("local") => awaken_session_executor::SandboxTier::Local,
         Ok("namespace") | Err(_) => awaken_session_executor::SandboxTier::Namespace,
+        Ok("docker") => awaken_session_executor::SandboxTier::Docker,
+        Ok("podman") => awaken_session_executor::SandboxTier::Podman,
+        Ok("k8s") | Ok("kubernetes") => awaken_session_executor::SandboxTier::K8s,
         Ok(other) => panic!("unsupported scenario Session environment tier: {other}"),
     };
     deployment.sandbox_tier_explicit = true;
+    deployment.container_image = std::env::var("AWAKEN_CONTAINER_IMAGE")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
     let host = resource_host_with_deployment(Arc::new(EchoModel), "awaken", deployment);
     let argv = std::env::var("AWAKEN_ACP_ARGV")
         .expect("container scenario requires AWAKEN_ACP_ARGV")

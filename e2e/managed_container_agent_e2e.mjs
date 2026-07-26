@@ -258,7 +258,7 @@ async function main() {
     AWAKEN_HTTP_ADDR: addr,
     AWAKEN_MODEL_MODE: 'acp-container',
     AWAKEN_CONTAINER_IMAGE: IMAGE,
-    AWAKEN_SANDBOX_TIER: ENGINE,
+    SESSION_ENVIRONMENT_TIER: ENGINE,
     AWAKEN_STORAGE_DIR: `${TMP}/storage`,
     AWAKEN_ACP_ARGV: `node -e ${ACP_FIXTURE}`,
     // Exercise the production pool wrapper. Resource-bearing environments are
