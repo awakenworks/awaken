@@ -104,7 +104,7 @@ async function main(): Promise<void> {
   const cell = spawnServer('echo', PORT, {
     AWAKEN_INGRESS: 'durable',
     AWAKEN_STORAGE_DIR: storage,
-    AWAKEN_SERVER_RUN_LOCAL_POOL: 'false',
+    AWAKEN_DISABLE_LOCAL_POOL: '1',
   }).server;
   let cellStopped = false;
   let worker: ChildProcessWithoutNullStreams | undefined;

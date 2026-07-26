@@ -19,7 +19,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // starts the HTTP surface; Serve is the default — single-machine all-in-one, or a
     // coordinator when the local pool is disabled. (The hand is now the separate
     // `awaken-sandbox hand` execution-plane binary, not a server role.)
-    match awaken_server::Role::Serve {
+    let scenario_role = if std::env::var("AWAKEN_SCENARIO_ROLE").as_deref() == Ok("worker") {
+        awaken_server::Role::Worker
+    } else {
+        awaken_server::Role::Serve
+    };
+    match scenario_role {
         awaken_server::Role::Worker => {
             let upstream = std::env::var("AWAKEN_UPSTREAM_URL").unwrap_or_default();
             // Test-only echo-draining worker (the worker-pool e2e). The production
@@ -33,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // resolve to a volatile in-memory queue (durable + default sqlite backend + no
     // AWAKEN_STORAGE_DIR) — such a queue silently drops every queued/crashed/scheduled
     // run on restart, defeating the whole point of durable ingress (no-data-loss).
-    let deployment = awaken_session_executor::DeploymentConfig::ephemeral();
+    let deployment = awaken_scenario_host::scenario_deployment();
     if let Some(error) = deployment.durable_needs_persistence_error(false) {
         return Err(error.to_owned().into());
     }

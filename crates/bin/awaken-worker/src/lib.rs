@@ -793,6 +793,25 @@ pub async fn run_with_inference_materializer(
         WorkerUpstream::new(upstream),
         WorkerProcessConfig::embedded_defaults(),
         materializer,
+        None,
+    )
+    .await?
+    .run_until_shutdown()
+    .await
+}
+
+/// Run a secretless Worker whose one authoritative adapter supplies both exact
+/// executor materialization and typed Worker-local credential observations.
+pub async fn run_with_inference_and_credential_resolver(
+    upstream: &str,
+    materializer: Arc<dyn InferenceExecutorMaterializer>,
+    resolver: Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    build_secretless_worker(
+        WorkerUpstream::new(upstream),
+        WorkerProcessConfig::embedded_defaults(),
+        materializer,
+        Some(resolver),
     )
     .await?
     .run_until_shutdown()
@@ -803,9 +822,18 @@ async fn build_secretless_worker(
     upstream: WorkerUpstream,
     process: WorkerProcessConfig,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
+    credential_resolver: Option<Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>>,
 ) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
-    let builder = WorkerNodeBuilder::new(upstream)
-        .with_process_config(process)
+    let mut builder = WorkerNodeBuilder::new(upstream).with_process_config(process);
+    if let Some(resolver) = credential_resolver {
+        builder = builder
+            .with_credential_stores(
+                Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
+                Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
+            )
+            .with_external_credential_resolver(resolver);
+    }
+    builder = builder
         .with_inference_materializer(materializer)
         .with_standard_manifest(Default::default());
     Ok(builder.build()?)

@@ -8,12 +8,11 @@ import fs, { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnServer, stopServer, waitForPort } from './harness.mjs';
+import { deploymentEnv, spawnServer, stopServer, waitForPort } from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38823);
-const ADMIN_PORT = Number(process.env.E2E_WORKER_PORT ?? 39823);
 const CONFIG_PORT = Number(process.env.E2E_CONFIG_PORT ?? 40823);
 const BASE = `http://127.0.0.1:${PORT}`;
 const CONFIG_BASE = `http://127.0.0.1:${CONFIG_PORT}`;
@@ -24,17 +23,17 @@ const PROVIDER_KEY = 'sk-worker-materialization-e2e'; // awaken-allow: secret
 function workerBinary(): string {
   const output = execFileSync(
     'cargo',
-    ['build', '--quiet', '--message-format=json', '-p', 'awaken-worker', '--bin', 'awaken-worker'],
+    ['build', '--quiet', '--message-format=json', '-p', 'awaken-cli', '--bin', 'awaken'],
     { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
   );
   for (const line of output.split('\n')) {
     if (!line.trim()) continue;
     try {
       const artifact = JSON.parse(line);
-      if (artifact.executable && artifact.target?.name === 'awaken-worker') return artifact.executable;
+      if (artifact.executable && artifact.target?.name === 'awaken') return artifact.executable;
     } catch { /* only Cargo artifact records matter */ }
   }
-  throw new Error('could not resolve awaken-worker binary');
+  throw new Error('could not resolve awaken binary');
 }
 
 async function request(
@@ -112,15 +111,14 @@ async function waitForReply(timeoutMs = 30_000) {
 async function main() {
   const storage = mkdtempSync(path.join(tmpdir(), 'awaken-materialization-worker-'));
   const upstream = await startFakeAnthropic(PROVIDER_KEY);
-  const management = spawnServer('management', CONFIG_PORT, {
-    AWAKEN_MGMT_DIR: storage,
-    AWAKEN_MGMT_SEAL_KEY: SEAL_KEY,
-  }).server;
+  const management = spawnServer(
+    'management',
+    CONFIG_PORT,
+    deploymentEnv(storage, { controlSealKey: SEAL_KEY }),
+  ).server;
   const cell = spawnServer('echo', PORT, {
     AWAKEN_INGRESS: 'durable',
     AWAKEN_STORAGE_DIR: storage,
-    AWAKEN_MGMT_DIR: storage,
-    AWAKEN_MGMT_SEAL_KEY: SEAL_KEY,
     AWAKEN_DISABLE_LOCAL_POOL: '1',
   }).server;
   let worker: ChildProcessWithoutNullStreams | undefined;
@@ -266,30 +264,23 @@ async function main() {
     }, seed.id);
     assert.equal(settled.json.settled, true, settled.text);
 
-    const workerEnv = { ...process.env } as Record<string, string>;
-    delete workerEnv.AWAKEN_MGMT_DIR;
-    delete workerEnv.AWAKEN_MGMT_SEAL_KEY;
-    delete workerEnv.AWAKEN_MGMT_SEAL_KEY_FILE;
-    delete workerEnv.AWAKEN_CONTROL_SEAL_KEY;
-    delete workerEnv.AWAKEN_CONTROL_SEAL_KEY_FILE;
-    Object.assign(workerEnv, {
-      AWAKEN_UPSTREAM_URL: BASE,
-      AWAKEN_INGRESS: 'durable',
-      // A remote worker can open the one explicit credential component without
-      // pretending to own a management bundle or any authoring/Session stores.
-      AWAKEN_CREDENTIAL_DB: path.join(storage, 'credential.db'),
-      AWAKEN_CONTROL_SEAL_KEY: SEAL_KEY,
-      AWAKEN_WORKER_ID: 'materialization-worker',
-      AWAKEN_WORKER_ADMIN_LISTEN: `127.0.0.1:${ADMIN_PORT}`,
-    });
-    worker = spawn(workerBinary(), [], {
+    const workerConfig = path.join(storage, 'worker.toml');
+    const sharedResourceDatabase = process.env.AWAKEN_DATABASE_URL;
+    assert.ok(sharedResourceDatabase, 'production Worker E2E requires the stage PostgreSQL resource plane');
+    fs.writeFileSync(workerConfig, [
+      `data_dir = ${JSON.stringify(path.join(storage, 'worker'))}`,
+      `credential_db = ${JSON.stringify(path.join(storage, 'credential.db'))}`,
+      `admin_db = ${JSON.stringify(sharedResourceDatabase)}`,
+      `resource_database_url = ${JSON.stringify(sharedResourceDatabase)}`,
+      `control_seal_key = ${JSON.stringify(SEAL_KEY)}`,
+    ].join('\n'));
+    worker = spawn(workerBinary(), ['worker', '--config', workerConfig, '--server', BASE], {
       cwd: ROOT,
-      env: workerEnv,
+      env: process.env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     worker.stdout.on('data', (chunk) => (output += chunk.toString()));
     worker.stderr.on('data', (chunk) => (output += chunk.toString()));
-    await waitForPort(ADMIN_PORT);
     const messages = await waitForReply().catch((error) => {
       throw new Error(`${error instanceof Error ? error.message : error}\nworker output:\n${output}`);
     });
