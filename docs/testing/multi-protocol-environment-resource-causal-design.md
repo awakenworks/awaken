@@ -454,3 +454,25 @@ production config ResourcePlane
 The injected credential resolver remains the sole resolver. The embedded Worker
 receives a resolved DeploymentConfig and reuses the canonical shared resource
 wiring; removed worker `from_env` configuration is not recreated by the fixture.
+
+## Phase 21: typed production restart durability
+
+```text
+one typed deployment data_dir
+  -> boot 1 authors model + Session transcript
+  -> graceful process stop
+  -> boot 2 on a different port, same data_dir
+  -> catalog warm-load + original Session continuation
+```
+
+| Rule | Deployment root | Process | Port | Expected |
+|---|---|---|---|---|
+| D1 | exact A | first | P1 | author model and persist Session turn |
+| D2 | exact A | replacement | P2 | new Session resolves persisted model |
+| D3 | exact A | replacement | P2 | original Session rehydrates transcript |
+| D4 | developer home / removed env vars | either | any | cannot affect the scenario |
+
+The durability fixture now reuses the production build, typed deployment, port,
+and shutdown harness. The retired management/storage environment variables and
+its parallel process fixture are deleted; `data_dir` is the sole persistence
+authority across both process lifetimes.
