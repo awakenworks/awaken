@@ -261,7 +261,7 @@ async function main() {
     // Disable the reaper's periodic sweep noise during the short test; the startup
     // sweep still runs (proving it is harmless with no leaked containers present).
     AWAKEN_SANDBOX_REAP_INTERVAL: '3600',
-    AWAKEN_CONTAINER_EGRESS_PROXY: 'http://127.0.0.1:9',
+    AWAKEN_CONTAINER_FORWARD_PROXY: 'http://127.0.0.1:9',
   };
   const spawnBrain = () => spawn(bin, {
     env: brainEnv,

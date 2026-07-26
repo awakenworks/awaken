@@ -18,11 +18,120 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
+use awaken_runtime_contract::resolved::{Backend, ModelProvisioning};
 use awaken_runtime_contract::resume::ResumeResult;
+pub use awaken_runtime_contract::{
+    AttemptCredentialBinding, CandidateFingerprint, CredentialRealizationReceipt,
+    CredentialReceiptError, verify_credential_realization_receipt,
+};
+use awaken_runtime_contract::{
+    CredentialAdmissionError, CredentialRealizationCapabilities, CredentialRealizationKind,
+    CredentialUsage, PlaintextBoundary, candidate_fingerprint,
+};
 use awaken_worker_contract::{PlacementPolicy, WorkerAssignment, WorkerIdentity, WorkerSnapshot};
 use serde::{Deserialize, Serialize};
 
 use crate::run_dispatch::RunDispatch;
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum AttemptCredentialBindingError {
+    #[error("dispatch claim epoch must be greater than zero")]
+    InvalidClaimEpoch,
+    #[error("credential-bearing inference has no exact plaintext holder request")]
+    MissingPlaintextHolder,
+    #[error("inference credential usage must be provider_adapter")]
+    InvalidCredentialUsage,
+    #[error("plaintext boundary {boundary:?} is unsupported for inference backend {backend}")]
+    UnsupportedRealization {
+        boundary: PlaintextBoundary,
+        backend: String,
+    },
+    #[error("published model candidate fingerprint failed: {0}")]
+    Fingerprint(String),
+    #[error("published model candidate is duplicated in the selected fallback set")]
+    DuplicateCandidate,
+    #[error("invalid Worker credential capability evidence: {0}")]
+    InvalidWorkerCapabilities(String),
+    #[error(transparent)]
+    Admission(#[from] CredentialAdmissionError),
+}
+
+pub fn worker_credential_realization_capabilities(
+    worker: &WorkerSnapshot,
+) -> Result<CredentialRealizationCapabilities, AttemptCredentialBindingError> {
+    CredentialRealizationCapabilities::from_manifest_capabilities(&worker.manifest.capabilities)
+        .map_err(AttemptCredentialBindingError::InvalidWorkerCapabilities)
+}
+
+/// Compile all credential-bearing candidates selected for this Run into exact
+/// attempt bindings. Every caller must pass installed capability evidence: an
+/// immutable registered Worker manifest or the in-process Worker's composed
+/// capabilities. Claim admission never synthesizes capabilities from the request.
+pub fn compile_attempt_credential_bindings(
+    request: &RunDispatch,
+    installed: &CredentialRealizationCapabilities,
+    claim_epoch: u64,
+    now_unix_ms: u64,
+) -> Result<Vec<AttemptCredentialBinding>, AttemptCredentialBindingError> {
+    if claim_epoch == 0 {
+        return Err(AttemptCredentialBindingError::InvalidClaimEpoch);
+    }
+    let candidates = request
+        .activation
+        .snapshot
+        .resolved_spec
+        .execution_candidates(request.activation.model_ref_override.as_deref());
+    let mut seen = std::collections::BTreeSet::new();
+    let mut bindings = Vec::new();
+    for candidate in candidates {
+        let ModelProvisioning::Provider {
+            credential: Some(access),
+            ..
+        } = &candidate.provisioning
+        else {
+            continue;
+        };
+        if access.usage != CredentialUsage::ProviderAdapter {
+            return Err(AttemptCredentialBindingError::InvalidCredentialUsage);
+        }
+        let holder = request
+            .inference_plaintext_holder
+            .as_ref()
+            .ok_or(AttemptCredentialBindingError::MissingPlaintextHolder)?;
+        let backend = Backend::from_ref(&candidate.binding.backend_ref);
+        let realization = match (&backend, holder.boundary) {
+            (Backend::Native, PlaintextBoundary::Worker) => {
+                CredentialRealizationKind::WorkerProviderAdapter
+            }
+            (Backend::Acp { .. }, PlaintextBoundary::Workload) => {
+                CredentialRealizationKind::ProcessSecretEnvironment
+            }
+            (Backend::Acp { .. }, PlaintextBoundary::Worker) => {
+                CredentialRealizationKind::WorkerRelay
+            }
+            (Backend::Native | Backend::Acp { .. } | Backend::Remote { .. }, boundary) => {
+                return Err(AttemptCredentialBindingError::UnsupportedRealization {
+                    boundary,
+                    backend: candidate.binding.backend_ref.clone(),
+                });
+            }
+        };
+        access.admit(holder, realization, installed, now_unix_ms)?;
+        let fingerprint = candidate_fingerprint(candidate)
+            .map_err(|error| AttemptCredentialBindingError::Fingerprint(error.to_string()))?;
+        if !seen.insert(fingerprint.clone()) {
+            return Err(AttemptCredentialBindingError::DuplicateCandidate);
+        }
+        bindings.push(AttemptCredentialBinding {
+            candidate_fingerprint: fingerprint,
+            credential: access.credential.clone(),
+            selected_plaintext_holder: holder.clone(),
+            selected_realization_kind: realization,
+            claim_epoch,
+        });
+    }
+    Ok(bindings)
+}
 
 /// A durable-store failure. Commit-time agent truth uses the commit coordinator's
 /// own error; this is only the dispatch queue's own storage failure.
@@ -109,6 +218,10 @@ pub struct ClaimedCommitCommand {
 pub struct Claimed {
     pub request: RunDispatch,
     pub lease: Lease,
+    /// Exact credential decisions atomically committed with this lease epoch.
+    /// Empty for cancellation and credential-free candidates.
+    #[serde(default)]
+    pub credential_bindings: Vec<AttemptCredentialBinding>,
     /// A durable cancellation intent recorded before any live signal or terminal
     /// commit. The worker drives this through the same claim/epoch fence as normal
     /// execution, so a crash cannot lose a cancellation or resurrect the run.
@@ -305,6 +418,7 @@ pub trait DispatchQueue: Send + Sync {
         owner: &str,
         lease_ms: u64,
         now_ms: u64,
+        capabilities: &CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError>;
 
     async fn claim_new_run_compatible(
@@ -332,6 +446,7 @@ pub trait DispatchQueue: Send + Sync {
         owner: &str,
         lease_ms: u64,
         now_ms: u64,
+        capabilities: &CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError>;
 
     async fn deliver_and_claim_compatible(
@@ -355,6 +470,7 @@ pub trait DispatchQueue: Send + Sync {
         owner: &str,
         lease_ms: u64,
         now_ms: u64,
+        capabilities: &CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError>;
 
     /// Atomically claim only work compatible with the registered worker snapshot.
@@ -402,6 +518,7 @@ pub trait DispatchQueue: Send + Sync {
         owner: &str,
         lease_ms: u64,
         now_ms: u64,
+        capabilities: &CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError>;
 
     async fn claim_run_compatible(
@@ -458,6 +575,20 @@ pub trait DispatchQueue: Send + Sync {
             .lock_commit_epoch(claim)
             .await?
             .is_some_and(|guard| guard.is_live_at(now_ms)))
+    }
+
+    /// Persist secret-free proof that the exact claim-epoch credential binding
+    /// was realized. Implementations fence on the complete claim, verify through
+    /// [`verify_credential_realization_receipt`], and make exact retries
+    /// idempotent. A stale claim returns [`SettleOutcome::Fenced`].
+    async fn record_credential_realization(
+        &self,
+        _claim: &RunClaim,
+        _receipt: CredentialRealizationReceipt,
+    ) -> Result<SettleOutcome, DispatchError> {
+        Err(DispatchError::Rejected(
+            "dispatch backend does not persist credential realization receipts".to_string(),
+        ))
     }
 
     /// Whether this exact registered Worker incarnation currently owns the live
@@ -726,6 +857,12 @@ impl<T: DispatchQueue + Inbox + Outbox> Dispatch for T {}
 mod tests {
     use super::*;
     use awaken_runtime_contract::resume::ResumeResult;
+    use awaken_runtime_contract::{
+        CredentialAccess, CredentialEnvelope, CredentialExecutionPolicy, CredentialMaterialSource,
+        CredentialRef, CredentialRefreshAccess, InferenceEndpoint, ModelExposurePolicy,
+        PlaintextHolder, SealedCredentialEnvelopeRef, TokenEndpointAuth, TrustDomainRef,
+    };
+    use std::collections::BTreeSet;
     use std::sync::Mutex;
 
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
@@ -763,6 +900,543 @@ mod tests {
             vec![Message::text(MessageId("u1".into()), Role::User, "go")],
         );
         RunDispatch::new(activation)
+    }
+
+    fn holder(boundary: PlaintextBoundary, domain: &str) -> PlaintextHolder {
+        PlaintextHolder::new(boundary, domain)
+    }
+
+    fn provider_candidate(
+        provider: &str,
+        model: &str,
+        backend: &str,
+        credential_id: &str,
+        allowed_holder: &PlaintextHolder,
+    ) -> awaken_runtime_contract::resolved::ResolvedModelCandidate {
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
+            ModelBinding::new(provider, model, backend),
+            format!("{provider}@1"),
+            format!("{provider}-route@1"),
+            "workspace-a",
+            Some(CredentialAccess::new(
+                CredentialRef {
+                    id: credential_id.into(),
+                    revision: 7,
+                },
+                CredentialMaterialSource::ControlPlaneReference,
+                CredentialUsage::ProviderAdapter,
+                CredentialExecutionPolicy::exact(
+                    allowed_holder.clone(),
+                    ModelExposurePolicy::Forbidden,
+                ),
+            )),
+            InferenceEndpoint {
+                adapter_kind: "openai".into(),
+                base_url: "https://provider.invalid/v1".into(),
+                upstream_model: model.into(),
+            },
+        )
+    }
+
+    fn credential_access_mut(
+        candidate: &mut awaken_runtime_contract::resolved::ResolvedModelCandidate,
+    ) -> &mut CredentialAccess {
+        let ModelProvisioning::Provider {
+            credential: Some(access),
+            ..
+        } = &mut candidate.provisioning
+        else {
+            panic!("test candidate must carry provider credential access")
+        };
+        access
+    }
+
+    fn request_with_candidates(
+        primary: awaken_runtime_contract::resolved::ResolvedModelCandidate,
+        fallbacks: Vec<awaken_runtime_contract::resolved::ResolvedModelCandidate>,
+        selected_holder: Option<PlaintextHolder>,
+    ) -> RunDispatch {
+        let mut request = a_request();
+        request.activation.snapshot.resolved_spec.model_binding = primary;
+        request.activation.snapshot.resolved_spec.model_candidates = fallbacks;
+        request.inference_plaintext_holder = selected_holder;
+        request
+    }
+
+    fn capabilities(
+        selected_holder: &PlaintextHolder,
+        realization: CredentialRealizationKind,
+    ) -> CredentialRealizationCapabilities {
+        CredentialRealizationCapabilities {
+            holders: BTreeSet::from([selected_holder.clone()]),
+            material_sources: BTreeSet::from([CredentialMaterialSource::ControlPlaneReference]),
+            realization_kinds: BTreeSet::from([realization]),
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum BindingFixture {
+        CredentialFree,
+        MissingHolder,
+        InvalidUsage,
+        NativeWorker,
+        AcpWorkload,
+        AcpWorker,
+        NativeWorkload,
+        RemoteWorker,
+        HolderUnsupported,
+        SourceUnsupported,
+        HolderForbidden,
+        EnvelopeExpired,
+        RefreshRevisionMismatch,
+        DuplicateCandidate,
+    }
+
+    #[derive(Clone)]
+    enum BindingExpected {
+        Empty,
+        One(CredentialRealizationKind),
+        Error(AttemptCredentialBindingError),
+    }
+
+    struct BindingRule {
+        id: &'static str,
+        fixture: BindingFixture,
+        claim_epoch: u64,
+        expected: BindingExpected,
+    }
+
+    /// Cause-effect graph for one selected publication candidate:
+    ///
+    /// C0 claim epoch > 0
+    ///   -> C1 selected candidate carries credential
+    ///      -> C2 exact holder requested -> C3 ProviderAdapter usage
+    ///      -> C4 backend/holder cell implemented
+    ///      -> C5 installed capability + published policy admit the exact tuple
+    ///      -> C6 candidate content identity is unique -> E1 frozen binding.
+    ///
+    /// Credential-free candidates yield E0 (no binding). Every failed cause is
+    /// terminal and yields its stable error; the credential contract's own
+    /// decision table exhaustively covers the internals of C5.
+    ///
+    /// | Rule | C0 | C1 | C2 | C3 | C4 | C5 | C6 | Result |
+    /// |---|---|---|---|---|---|---|---|---|
+    /// | B1 | F | - | - | - | - | - | - | invalid epoch |
+    /// | B2 | T | F | - | - | - | - | - | empty |
+    /// | B3 | T | T | F | - | - | - | - | missing holder |
+    /// | B4 | T | T | T | F | - | - | - | invalid usage |
+    /// | B5 | T | T | T | T | Native/Worker | T | T | provider adapter |
+    /// | B6 | T | T | T | T | ACP/Workload | T | T | process secret env |
+    /// | B7 | T | T | T | T | ACP/Worker | T | T | worker relay |
+    /// | B8 | T | T | T | T | Native/Workload | - | - | unsupported |
+    /// | B9 | T | T | T | T | Remote/Worker | - | - | unsupported |
+    /// | B10 | T | T | T | T | valid | F(holder) | - | unsupported holder |
+    /// | B11 | T | T | T | T | valid | F(source) | - | unsupported source |
+    /// | B12 | T | T | T | T | valid | F(policy) | - | forbidden holder |
+    /// | B13 | T | T | T | T | valid | F(expiry) | - | expired envelope |
+    /// | B14 | T | T | T | T | valid | F(revision) | - | refresh mismatch |
+    /// | B15 | T | T | T | T | valid | T | F | duplicate candidate |
+    #[test]
+    fn attempt_binding_cases_are_generated_from_the_decision_table() {
+        let rules = [
+            BindingRule {
+                id: "B1",
+                fixture: BindingFixture::NativeWorker,
+                claim_epoch: 0,
+                expected: BindingExpected::Error(AttemptCredentialBindingError::InvalidClaimEpoch),
+            },
+            BindingRule {
+                id: "B2",
+                fixture: BindingFixture::CredentialFree,
+                claim_epoch: 3,
+                expected: BindingExpected::Empty,
+            },
+            BindingRule {
+                id: "B3",
+                fixture: BindingFixture::MissingHolder,
+                claim_epoch: 3,
+                expected: BindingExpected::Error(
+                    AttemptCredentialBindingError::MissingPlaintextHolder,
+                ),
+            },
+            BindingRule {
+                id: "B4",
+                fixture: BindingFixture::InvalidUsage,
+                claim_epoch: 3,
+                expected: BindingExpected::Error(
+                    AttemptCredentialBindingError::InvalidCredentialUsage,
+                ),
+            },
+            BindingRule {
+                id: "B5",
+                fixture: BindingFixture::NativeWorker,
+                claim_epoch: 3,
+                expected: BindingExpected::One(CredentialRealizationKind::WorkerProviderAdapter),
+            },
+            BindingRule {
+                id: "B6",
+                fixture: BindingFixture::AcpWorkload,
+                claim_epoch: 3,
+                expected: BindingExpected::One(CredentialRealizationKind::ProcessSecretEnvironment),
+            },
+            BindingRule {
+                id: "B7",
+                fixture: BindingFixture::AcpWorker,
+                claim_epoch: 3,
+                expected: BindingExpected::One(CredentialRealizationKind::WorkerRelay),
+            },
+            BindingRule {
+                id: "B8",
+                fixture: BindingFixture::NativeWorkload,
+                claim_epoch: 3,
+                expected: BindingExpected::Error(
+                    AttemptCredentialBindingError::UnsupportedRealization {
+                        boundary: PlaintextBoundary::Workload,
+                        backend: "genai".into(),
+                    },
+                ),
+            },
+            BindingRule {
+                id: "B9",
+                fixture: BindingFixture::RemoteWorker,
+                claim_epoch: 3,
+                expected: BindingExpected::Error(
+                    AttemptCredentialBindingError::UnsupportedRealization {
+                        boundary: PlaintextBoundary::Worker,
+                        backend: "a2a:https://agent.invalid".into(),
+                    },
+                ),
+            },
+            BindingRule {
+                id: "B10",
+                fixture: BindingFixture::HolderUnsupported,
+                claim_epoch: 3,
+                expected: BindingExpected::Error(AttemptCredentialBindingError::Admission(
+                    CredentialAdmissionError::HolderUnsupported,
+                )),
+            },
+            BindingRule {
+                id: "B11",
+                fixture: BindingFixture::SourceUnsupported,
+                claim_epoch: 3,
+                expected: BindingExpected::Error(AttemptCredentialBindingError::Admission(
+                    CredentialAdmissionError::MaterialSourceUnsupported,
+                )),
+            },
+            BindingRule {
+                id: "B12",
+                fixture: BindingFixture::HolderForbidden,
+                claim_epoch: 3,
+                expected: BindingExpected::Error(AttemptCredentialBindingError::Admission(
+                    CredentialAdmissionError::HolderNotAllowed,
+                )),
+            },
+            BindingRule {
+                id: "B13",
+                fixture: BindingFixture::EnvelopeExpired,
+                claim_epoch: 3,
+                expected: BindingExpected::Error(AttemptCredentialBindingError::Admission(
+                    CredentialAdmissionError::EnvelopeExpired,
+                )),
+            },
+            BindingRule {
+                id: "B14",
+                fixture: BindingFixture::RefreshRevisionMismatch,
+                claim_epoch: 3,
+                expected: BindingExpected::Error(AttemptCredentialBindingError::Admission(
+                    CredentialAdmissionError::CredentialRevisionMismatch,
+                )),
+            },
+            BindingRule {
+                id: "B15",
+                fixture: BindingFixture::DuplicateCandidate,
+                claim_epoch: 3,
+                expected: BindingExpected::Error(AttemptCredentialBindingError::DuplicateCandidate),
+            },
+        ];
+
+        for rule in rules {
+            let worker_holder = holder(PlaintextBoundary::Worker, "worker-a");
+            let workload_holder = holder(PlaintextBoundary::Workload, "workload-a");
+            let (backend, selected_holder, realization) = match rule.fixture {
+                BindingFixture::AcpWorkload | BindingFixture::NativeWorkload => (
+                    if matches!(rule.fixture, BindingFixture::AcpWorkload) {
+                        "acp:claude"
+                    } else {
+                        "genai"
+                    },
+                    workload_holder.clone(),
+                    CredentialRealizationKind::ProcessSecretEnvironment,
+                ),
+                BindingFixture::AcpWorker => (
+                    "acp:claude",
+                    worker_holder.clone(),
+                    CredentialRealizationKind::WorkerRelay,
+                ),
+                BindingFixture::RemoteWorker => (
+                    "a2a:https://agent.invalid",
+                    worker_holder.clone(),
+                    CredentialRealizationKind::WorkerProviderAdapter,
+                ),
+                _ => (
+                    "genai",
+                    worker_holder.clone(),
+                    CredentialRealizationKind::WorkerProviderAdapter,
+                ),
+            };
+            let mut candidate = provider_candidate(
+                "provider-a",
+                "model-a",
+                backend,
+                "credential-a",
+                &selected_holder,
+            );
+            if matches!(rule.fixture, BindingFixture::InvalidUsage) {
+                credential_access_mut(&mut candidate).usage = CredentialUsage::HttpHeader {
+                    name: "authorization".into(),
+                    scheme: Some("Bearer".into()),
+                };
+            }
+            if matches!(rule.fixture, BindingFixture::HolderForbidden) {
+                credential_access_mut(&mut candidate).policy = CredentialExecutionPolicy::exact(
+                    holder(PlaintextBoundary::Worker, "worker-b"),
+                    ModelExposurePolicy::Forbidden,
+                );
+            }
+            if matches!(rule.fixture, BindingFixture::EnvelopeExpired) {
+                let access = credential_access_mut(&mut candidate).clone().with_envelope(
+                    CredentialEnvelope::SealedForWorker {
+                        envelope_ref: SealedCredentialEnvelopeRef {
+                            id: "envelope-a".into(),
+                            payload_fingerprint: "sha256:payload".into(),
+                        },
+                        recipient: TrustDomainRef(selected_holder.trust_domain.0.clone()),
+                        expires_at_unix_ms: 9,
+                    },
+                );
+                *credential_access_mut(&mut candidate) = access;
+            }
+            if matches!(rule.fixture, BindingFixture::RefreshRevisionMismatch) {
+                let access = credential_access_mut(&mut candidate).clone().with_refresh(
+                    CredentialRefreshAccess::new(
+                        8,
+                        "https://auth.invalid/token".into(),
+                        "client-a".into(),
+                        TokenEndpointAuth::None,
+                        None,
+                        "refresh-a".into(),
+                        "access-a".into(),
+                        None,
+                        None,
+                    ),
+                );
+                *credential_access_mut(&mut candidate) = access;
+            }
+            let primary = if matches!(rule.fixture, BindingFixture::CredentialFree) {
+                awaken_runtime_contract::resolved::ResolvedModelCandidate::host(ModelBinding::new(
+                    "host", "model-a", "native",
+                ))
+            } else {
+                candidate.clone()
+            };
+            let fallbacks = if matches!(rule.fixture, BindingFixture::DuplicateCandidate) {
+                vec![candidate]
+            } else {
+                Vec::new()
+            };
+            let requested_holder = if matches!(
+                rule.fixture,
+                BindingFixture::CredentialFree | BindingFixture::MissingHolder
+            ) {
+                None
+            } else {
+                Some(selected_holder.clone())
+            };
+            let request = request_with_candidates(primary, fallbacks, requested_holder);
+            let mut installed = capabilities(&selected_holder, realization);
+            if matches!(rule.fixture, BindingFixture::HolderUnsupported) {
+                installed.holders.clear();
+            }
+            if matches!(rule.fixture, BindingFixture::SourceUnsupported) {
+                installed.material_sources.clear();
+            }
+            let actual =
+                compile_attempt_credential_bindings(&request, &installed, rule.claim_epoch, 10);
+            match rule.expected {
+                BindingExpected::Empty => assert_eq!(actual, Ok(Vec::new()), "{}", rule.id),
+                BindingExpected::One(kind) => {
+                    let bindings = actual.unwrap_or_else(|error| panic!("{}: {error}", rule.id));
+                    assert_eq!(bindings.len(), 1, "{}", rule.id);
+                    assert_eq!(bindings[0].selected_realization_kind, kind, "{}", rule.id);
+                    assert_eq!(bindings[0].claim_epoch, rule.claim_epoch, "{}", rule.id);
+                    assert_eq!(bindings[0].credential.id, "credential-a", "{}", rule.id);
+                    assert!(
+                        bindings[0].candidate_fingerprint.0.starts_with("sha256:"),
+                        "{}",
+                        rule.id
+                    );
+                }
+                BindingExpected::Error(expected) => {
+                    assert_eq!(actual, Err(expected), "{}", rule.id);
+                }
+            }
+        }
+    }
+
+    /// Candidate-selection cause graph:
+    ///
+    /// C1 nonblank override -> select every published route for that model.
+    /// !C1 -> retain the complete ordered primary/fallback pool.
+    /// Credential-free selected candidates contribute no binding, while every
+    /// credential-bearing candidate contributes exactly one distinct binding.
+    ///
+    /// | Rule | override | selected publication | Result |
+    /// |---|---|---|---|
+    /// | S1 | absent | primary + both fallbacks | three ordered bindings |
+    /// | S2 | model-b | both model-b routes only | two ordered bindings |
+    /// | S3 | model-c | credential-free host only | empty |
+    #[test]
+    fn binding_set_preserves_published_fallbacks_and_model_override_scope() {
+        let selected = holder(PlaintextBoundary::Worker, "worker-a");
+        let primary =
+            provider_candidate("provider-a", "model-a", "genai", "credential-a", &selected);
+        let route_b1 = provider_candidate(
+            "provider-b1",
+            "model-b",
+            "genai",
+            "credential-b1",
+            &selected,
+        );
+        let route_b2 = provider_candidate(
+            "provider-b2",
+            "model-b",
+            "genai",
+            "credential-b2",
+            &selected,
+        );
+        let host = awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+            ModelBinding::new("host", "model-c", "native"),
+        );
+        let installed = capabilities(&selected, CredentialRealizationKind::WorkerProviderAdapter);
+        let base = request_with_candidates(primary, vec![route_b1, route_b2, host], Some(selected));
+
+        let all = compile_attempt_credential_bindings(&base, &installed, 11, 10)
+            .expect("S1 complete pool binds");
+        assert_eq!(
+            all.iter()
+                .map(|binding| binding.credential.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["credential-a", "credential-b1", "credential-b2"]
+        );
+        assert_eq!(
+            all.iter()
+                .map(|binding| &binding.candidate_fingerprint)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            3,
+            "each publication route has a distinct content identity"
+        );
+
+        let mut model_b = base.clone();
+        model_b.activation.model_ref_override = Some("model-b".into());
+        let selected_b = compile_attempt_credential_bindings(&model_b, &installed, 12, 10)
+            .expect("S2 same-model routes bind");
+        assert_eq!(
+            selected_b
+                .iter()
+                .map(|binding| binding.credential.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["credential-b1", "credential-b2"]
+        );
+
+        let mut model_c = base;
+        model_c.activation.model_ref_override = Some("model-c".into());
+        assert_eq!(
+            compile_attempt_credential_bindings(&model_c, &installed, 13, 10),
+            Ok(Vec::new()),
+            "S3 selected host candidate needs no credential binding"
+        );
+    }
+
+    /// Receipt cause-effect graph:
+    ///
+    /// exact binding identity + exact planned/actual mechanism + intact content
+    /// fingerprint -> verified receipt. Any mismatch fails closed before the
+    /// receipt can become durable evidence.
+    ///
+    /// | Rule | binding fields | mechanism | fingerprint | Result |
+    /// |---|---|---|---|---|
+    /// | P1 | exact | exact | exact | verified |
+    /// | P2 | mismatch | exact | exact | binding mismatch |
+    /// | P3 | exact | mismatch | - | mechanism mismatch |
+    /// | P4 | exact | exact | mismatch | fingerprint mismatch |
+    #[test]
+    fn realization_receipt_cases_are_generated_from_the_decision_table() {
+        let binding = AttemptCredentialBinding {
+            candidate_fingerprint: CandidateFingerprint("sha256:candidate-a".into()),
+            credential: CredentialRef {
+                id: "credential-a".into(),
+                revision: 7,
+            },
+            selected_plaintext_holder: holder(PlaintextBoundary::Worker, "worker-a"),
+            selected_realization_kind: CredentialRealizationKind::WorkerProviderAdapter,
+            claim_epoch: 9,
+        };
+        let valid = CredentialRealizationReceipt::new(
+            &binding,
+            CredentialRealizationKind::WorkerProviderAdapter,
+        )
+        .expect("P1 exact receipt");
+        assert_eq!(valid.verify(&binding), Ok(()));
+
+        let mismatched_bindings = [
+            AttemptCredentialBinding {
+                candidate_fingerprint: CandidateFingerprint("sha256:candidate-b".into()),
+                ..binding.clone()
+            },
+            AttemptCredentialBinding {
+                credential: CredentialRef {
+                    id: "credential-b".into(),
+                    revision: 7,
+                },
+                ..binding.clone()
+            },
+            AttemptCredentialBinding {
+                selected_plaintext_holder: holder(PlaintextBoundary::Worker, "worker-b"),
+                ..binding.clone()
+            },
+            AttemptCredentialBinding {
+                claim_epoch: 10,
+                ..binding.clone()
+            },
+        ];
+        for mismatched in mismatched_bindings {
+            assert_eq!(
+                valid.verify(&mismatched),
+                Err(CredentialReceiptError::BindingMismatch),
+                "P2 every binding coordinate is fenced"
+            );
+        }
+
+        let mut wrong_mechanism = valid.clone();
+        wrong_mechanism.actual_realization_kind = CredentialRealizationKind::WorkerRelay;
+        assert_eq!(
+            wrong_mechanism.verify(&binding),
+            Err(CredentialReceiptError::MechanismMismatch),
+            "P3 actual mechanism cannot differ from admission"
+        );
+
+        let mut tampered = valid.clone();
+        tampered.receipt_fingerprint = "sha256:tampered".into();
+        assert_eq!(
+            tampered.verify(&binding),
+            Err(CredentialReceiptError::FingerprintMismatch),
+            "P4 receipt content is tamper-evident"
+        );
+
+        let wire = serde_json::to_string(&(binding, valid)).expect("receipt wire serializes");
+        assert!(!wire.contains("secret-material"));
+        assert!(!wire.contains("api_key"));
     }
 
     /// The SQL backends' `status` column maps to the public enum, and any value
@@ -899,6 +1573,7 @@ mod tests {
                 expires_ms: 5_000,
                 epoch: 2,
             },
+            credential_bindings: Vec::new(),
             cancellation_requested: true,
             pending: vec![pending()],
             recovered: true,
@@ -963,6 +1638,7 @@ mod tests {
             _owner: &str,
             _lease_ms: u64,
             _now_ms: u64,
+            _capabilities: &CredentialRealizationCapabilities,
         ) -> Result<Option<Claimed>, DispatchError> {
             Self::unsupported()
         }
@@ -972,6 +1648,7 @@ mod tests {
             _owner: &str,
             _lease_ms: u64,
             _now_ms: u64,
+            _capabilities: &CredentialRealizationCapabilities,
         ) -> Result<Option<Claimed>, DispatchError> {
             Self::unsupported()
         }
@@ -980,6 +1657,7 @@ mod tests {
             _owner: &str,
             _lease_ms: u64,
             _now_ms: u64,
+            _capabilities: &CredentialRealizationCapabilities,
         ) -> Result<Option<Claimed>, DispatchError> {
             Self::unsupported()
         }
@@ -990,6 +1668,7 @@ mod tests {
             _owner: &str,
             _lease_ms: u64,
             _now_ms: u64,
+            _capabilities: &CredentialRealizationCapabilities,
         ) -> Result<Option<Claimed>, DispatchError> {
             Self::unsupported()
         }

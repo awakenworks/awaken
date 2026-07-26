@@ -7,7 +7,9 @@
   (one exact published model candidate and credential access pin)
 - Coordinates with:
   [ADR-0066](0066-session-service-binding-and-realization.md)
-  (Session baseline and MCP attachment lifecycle)
+  (Session baseline and MCP attachment lifecycle), and
+  [ADR-0063](0063-resource-input-identity-configuration-pinning-and-lifecycle.md)
+  (Repository configuration pinning and activation)
 - Clarifies [ADR-0043](0043-management-plane-config-credential-model-and-runtime-unaware-secret-seam.md):
   Vault storage at rest, material location, execution-time plaintext permission,
   model exposure, and realization mechanism are separate facts
@@ -92,6 +94,7 @@ struct TrustDomainRef(String);
 struct CredentialRealizationProfile {
     inference_holder: PlaintextHolder,
     mcp_holder: PlaintextHolder,
+    resource_holder: PlaintextHolder,
 }
 ```
 
@@ -112,8 +115,8 @@ dispatch attempt execution plan. Its purpose-specific holder is exact, and admis
 validates that it is both allowed by the published policy and supported by the
 installed adapter and provider. Zero matches fail unsupported; multiple possible
 matches do not matter because no runtime preference algorithm runs. Changing the
-requested holder is a new Session MCP generation or Run attempt, never a failure
-fallback.
+requested holder is a new Session MCP/Resource generation or Run attempt, never
+a failure fallback.
 
 Unauthenticated access has no credential and therefore no plaintext-holder
 policy.
@@ -214,6 +217,16 @@ This refines the existing `CredentialInjectionKind` rather than adding a paralle
 `CredentialUsage` remains authoritative for `ProviderAdapter`, HTTP header/query,
 client certificate, environment variable, and file semantics. MCP, Model, and
 Resource adapters must not invent protocol-specific credential-usage fields.
+
+A Repository configuration remains authoritative for its Vault source binding.
+Before the resolved input enters the Session aggregate, the Session application
+compiles that binding into one `ResolvedRepositoryCredential`: exact
+`CredentialAccess`, canonical HTTP transport usage, `Forbidden` model exposure,
+and the Environment profile's exact `resource_holder`. Runtime receives this pin
+instead of a bare source id. It validates the binding, revision, usage, policy,
+and holder before using the same `CredentialMaterialResolver` as Model and MCP.
+This reuses credential execution mechanics without turning Repository into an
+MCP attachment or a generic Service aggregate.
 
 `CredentialRefreshAccess` preserves the existing MCP OAuth refresh/reseal
 capability as an exact, secret-free credential execution fact. It is compiled
@@ -436,6 +449,11 @@ Model materializer              Runtime Host MCP realization
                                                    implementation + receipt
 ```
 
+`ResolvedRepositoryCredential` is a third consumer of the same exact access,
+holder-admission, and material-resolution contracts. It remains nested in the
+resolved Repository input owned by the Resource/Session lifecycle; it does not
+join `SessionMcpAttachmentSet` and does not create a common Service authority.
+
 ## Dynamic Behavior
 
 ### Model publication and execution
@@ -475,6 +493,27 @@ Model materializer              Runtime Host MCP realization
 6. Recovery recreates realization from exact references and policy; it never
    restores serialized plaintext or selects a different holder.
 
+### Repository Resource realization
+
+1. The Resource Catalog persists one immutable Repository config version with a
+   Vault source binding, never material or a Runtime-ready credential decision.
+2. Session creation or hot Resource replacement resolves that binding exactly
+   once against the trusted Workspace and active source revision. It persists a
+   `ResolvedRepositoryCredential` with canonical HTTP usage, `Forbidden` model
+   exposure, and the baseline's exact `resource_holder` before activation.
+3. Runtime rejects a missing pin for a bound Repository, a pin for an anonymous
+   Repository, source/usage/holder mismatch, or stale source revision before a
+   Git side effect. It admits `WorkerRelay` and calls the common exact material
+   resolver; there is no Runtime API that opens a bare Vault source id.
+4. The Worker-held material is used only by the host-mediated Git transport.
+   The persisted Session manifest, prompts, events, and sandbox-origin metadata
+   remain secret-free. Replacing the Repository binding creates and commits a
+   new config version and exact pin; it never mutates the old pin in place.
+5. A retained pre-pin Session row crosses the same compiler once under the root
+   Session CAS before recovery I/O. An already pinned row is unchanged; a
+   missing compiler or no-longer-active/in-Workspace source fails closed. Runtime
+   never regains the deleted bare-source path as a compatibility fallback.
+
 ## Failure, Retry, and Terminal Rules
 
 - unsupported holder, missing provider capability, unavailable broker, or
@@ -495,7 +534,7 @@ Model materializer              Runtime Host MCP realization
 | Config publication/runtime contract | secret-free `CredentialAccess`, material source/envelope reference, usage, refresh access, policy in the executable snapshot | plaintext, IAM decision, realization route |
 | Model context | exact `ResolvedModelCandidate` and fallback order | Session MCP state or runtime Vault search |
 | Dispatch claim transaction | exact attempt-epoch candidate fingerprint, selected holder, planned realization, Worker/lease fence | model/credential selection or fallback after failure |
-| Session context | MCP generation and selected allowed holder | credential enumeration or model selection |
+| Session context | MCP generation and selected allowed holder; resolved Repository input with exact access/holder pin | credential enumeration, material opening, or model selection |
 | Credential material resolver | exact source/envelope opening and recipient/revision/use validation | enumeration, holder selection, target selection, or cross-boundary material return |
 | Runtime Host/materializer | exact validation, realization, OAuth refresh/reseal execution, ownership checks, receipt | new credential/holder selection after failure |
 | Provisioning provider | last-mile process/file and network enforcement | policy authorship, route selection, Vault schema |
@@ -522,8 +561,10 @@ Model materializer              Runtime Host MCP realization
 9. replace ACP `api_key: String`/ordinary inline env with an exact typed
    last-mile requirement before claiming Workload plaintext conformance;
 10. require substitution plus no-bypass networking before claiming Worker-held
-   MCP behavior;
-11. design automatic LLM Vault authoring separately before implementation.
+    MCP behavior;
+11. replace bare Repository source materialization with the Session-persisted
+    exact access/holder pin and the common exact material resolver;
+12. design automatic LLM Vault authoring separately before implementation.
 
 ## Verification
 
@@ -542,6 +583,7 @@ Model materializer              Runtime Host MCP realization
 | Native/ACP parity | same candidate, credential revision, allowed holder policy, and selected holder |
 | attempt durability | claim transaction atomically stores binding/epoch; retry reuses it; reclaim mints a new fenced binding |
 | OAuth continuity | exact refresh config, public/confidential client exchange, access/refresh-token reseal, restart, and no URL rediscovery |
+| Repository continuity | config binding compiles to one exact revision/holder/usage pin; anonymous, stale, inactive, cross-Workspace, mismatched, and missing-pin cases fail before Git I/O; no bare-source Runtime materialization remains |
 | secret-free state | serialization/database/event/log/error/receipt/queue fixture scans |
 
 TypeScript E2E belongs to the slice that exposes each behavior. The first MCP

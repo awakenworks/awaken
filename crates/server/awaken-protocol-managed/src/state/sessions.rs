@@ -542,6 +542,12 @@ impl ManagedState {
                 req.awaken_runtime(),
             ),
         };
+        self.pin_repository_credentials(
+            &owner_scope,
+            &environment.credential_realization.resource_holder,
+            &mut resolved_resources,
+        )
+        .await?;
         // Validate the advertised tool surface before persisting an activation or
         // touching a Host. A definition error cannot strand Prepared resources.
         let caps = self.runtime.capabilities_for(&id);
@@ -757,6 +763,9 @@ impl ManagedState {
         owner_scope: &str,
         mut session: PersistedSession,
     ) -> Result<PersistedSession, StateError> {
+        session = self
+            .ensure_repository_credentials_pinned(owner_scope, session)
+            .await?;
         let session_id = session.session_id.clone();
         if session.status == "idle" {
             if let Some(desired) = session.resources.pending.clone() {
@@ -1143,6 +1152,7 @@ impl ManagedState {
                         resources: session.resources.active.clone(),
                         model: Some(baseline.model.clone()),
                         runtime: baseline.runtime.clone(),
+                        credential_realization: baseline.environment.credential_realization.clone(),
                         deny_egress: !matches!(
                             baseline.environment.network,
                             awaken_session_contract::SessionNetworkPolicy::Unrestricted

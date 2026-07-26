@@ -315,6 +315,7 @@ mod tests {
                 path_fidelity: false,
                 enforced_readonly: false,
                 network_isolation: false,
+                enforced_network_allowlist: false,
                 secret_egress_substitution: false,
                 resource_limits: false,
                 custom_rootfs: false,

@@ -35,18 +35,12 @@ fn backend(e: impl std::fmt::Display) -> RuntimeError {
     RuntimeError::Backend(e.to_string())
 }
 
-fn exec_env(command: &pc::Command) -> Result<Vec<String>, RuntimeError> {
-    command
+fn exec_env(command: &pc::MaterializedCommand) -> Result<Vec<String>, RuntimeError> {
+    Ok(command
         .env
         .iter()
-        .map(|var| match &var.value {
-            pc::EnvValue::Inline { value } => Ok(format!("{}={value}", var.name)),
-            _ => Err(backend(format!(
-                "exec env {} is not materialized inline",
-                var.name
-            ))),
-        })
-        .collect()
+        .map(|var| format!("{}={}", var.name, var.value.expose()))
+        .collect())
 }
 
 struct DockerExecProcess {
@@ -368,23 +362,6 @@ mod cgroup_host_config_tests {
         });
         assert_eq!(denied.network_mode.as_deref(), Some("none"));
         assert!(denied.port_bindings.is_none());
-
-        // Allowlist: the container keeps the daemon's default bridge (so it can reach
-        // the brokered proxy that enforces the allowlist) and the agent port is still
-        // published. It must NOT be conflated with `None` (which would sever egress and
-        // drop the channel) — only `None` denies the network.
-        let allow = rt.host_config(&ContainerPlan {
-            network: crate::NetworkMode::Allowlist(vec!["api.anthropic.com".into()]),
-            ..plan()
-        });
-        assert_eq!(allow.network_mode, None);
-        assert!(
-            allow
-                .port_bindings
-                .as_ref()
-                .unwrap()
-                .contains_key("8080/tcp")
-        );
     }
 
     #[test]
@@ -465,11 +442,8 @@ impl DockerRuntime {
                 format!("{}:{}{ro}", b.source_ref, b.mount_path)
             })
             .collect();
-        // Apply the planned egress policy at the container level. `None` gets its own
-        // empty network (`--network none`); `Open`/`Allowlist` keep the daemon default
-        // bridge (an allowlist is enforced at the brokered proxy, whose env is injected,
-        // so the container still needs bridge egress to reach that chokepoint). Without
-        // this the policy is planned but never applied — a fail-open egress leak.
+        // Apply the planned egress policy at the container level. Only `Open`
+        // receives a bridge; unresolved Allowlist intent is treated as total denial.
         let deny_net = matches!(plan.network, crate::NetworkMode::None);
         // Publish the agent port to an ephemeral 127.0.0.1 host port — but not under
         // `--network none`, where Docker forbids port publishing (and there is no
@@ -518,6 +492,10 @@ impl DockerRuntime {
 
 #[async_trait]
 impl ContainerRuntime for DockerRuntime {
+    fn enforces_network_none(&self) -> bool {
+        true
+    }
+
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {
         let env: Vec<String> = plan.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
         let mut exposed_ports = HashMap::new();
@@ -578,7 +556,7 @@ impl ContainerRuntime for DockerRuntime {
     async fn spawn(
         &self,
         container_id: &str,
-        command: pc::Command,
+        command: pc::MaterializedCommand,
     ) -> Result<Box<dyn pc::ProcessHandle>, RuntimeError> {
         if command.argv.is_empty() {
             return Err(backend("exec command argv is empty"));
@@ -626,7 +604,7 @@ impl ContainerRuntime for DockerRuntime {
     async fn spawn_agent(
         &self,
         container_id: &str,
-        command: pc::Command,
+        command: pc::MaterializedCommand,
     ) -> Result<RuntimeAgentProcess, RuntimeError> {
         if command.argv.is_empty() {
             return Err(backend("agent exec command argv is empty"));

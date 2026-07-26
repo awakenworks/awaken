@@ -57,6 +57,8 @@ mod skill_catalog;
 mod skills;
 mod skills_api;
 mod store;
+#[cfg(test)]
+mod test_mcp;
 mod worker_http;
 mod worker_security;
 
@@ -193,7 +195,7 @@ pub use awaken_work_store::{PostgresWorkQueue, SqliteWorkQueue};
 pub use crate::inference_routing::InferenceExecutorMaterializer;
 // The managed-vault OAuth seams (ADR-0043): the transport-level refresher, its
 // prepared configuration, and the live MCP credential probe.
-pub use crate::mcp::{ExtMcpProbe, McpRefreshMaterial, VaultRefresher};
+pub use crate::mcp::{ExtMcpProbe, VaultRefresher};
 // Skill authoring inputs (ADR-0036): a composition root supplies these to
 // `SharedHost::with_skills`. The whole set is fronted by the single `Skill` tool.
 pub use awaken_ext_skills::{SkillContext, SkillSpec, parse_skill_md};
@@ -277,16 +279,8 @@ fn to_step_outcome(result: RunResult) -> Result<StepOutcome, RunError> {
 /// composes with any other adapter bound to the same host.
 pub struct ManagedHost {
     host: Arc<SharedHost>,
-    credentials: Option<CredentialInjector>,
+    credentials: Option<PinnedCredentialMaterializer>,
     resource_validator: Option<Arc<dyn awaken_resource_contract::ResourceBindingValidator>>,
-}
-
-/// Shared Runtime credential injection for MCP and Repository realization;
-/// persisted Session inputs carry references only.
-#[derive(Clone)]
-struct CredentialInjector {
-    credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
-    secrets: Arc<dyn awaken_credential_vault::SecretStore>,
 }
 
 /// Weak, cloneable Worker-side adapter over the same configured Managed
@@ -296,7 +290,7 @@ struct CredentialInjector {
 #[derive(Clone)]
 pub(crate) struct DispatchSessionRuntime {
     host: std::sync::Weak<SharedHost>,
-    credentials: Option<CredentialInjector>,
+    credentials: Option<PinnedCredentialMaterializer>,
     resource_validator: Option<Arc<dyn awaken_resource_contract::ResourceBindingValidator>>,
 }
 
@@ -584,6 +578,7 @@ impl ManagedHost {
             ResolvedInputSource::Repository {
                 repository_id,
                 config,
+                credential: credential_pin,
             } => {
                 let validator = self.resource_validator.as_ref().ok_or_else(|| {
                     RunError::bad_request(
@@ -599,39 +594,53 @@ impl ManagedHost {
                         repository_id: repository_id.to_string(),
                         config_version: config.version,
                     });
-                let credential = match &config.credential_binding {
-                    Some(binding) => {
+                let credential = match (&config.credential_binding, credential_pin) {
+                    (Some(binding), Some(pin)) => {
+                        pin.validate_for_binding(binding).map_err(|error| {
+                            RunError::bad_request(format!(
+                                "repository `{repository_id}` credential: {error}"
+                            ))
+                        })?;
+                        if pin.selected_plaintext_holder.boundary
+                            != awaken_runtime_contract::PlaintextBoundary::Worker
+                        {
+                            return Err(RunError::bad_request(format!(
+                                "repository `{repository_id}` credential requires an unsupported plaintext holder"
+                            )));
+                        }
                         let credentials = self.credentials.as_ref().ok_or_else(|| {
                             RunError::bad_request(
                                 "repository credential requires a configured credential vault",
                             )
                         })?;
-                        let source_id =
-                            awaken_credential_vault::CredentialSourceId(binding.clone());
-                        let row =
+                        Some(
                             credentials
-                                .credentials
-                                .get(&source_id)
+                                .resolve_for_workspace(
+                                    &pin.access,
+                                    &pin.selected_plaintext_holder,
+                                    awaken_runtime_contract::CredentialRealizationKind::WorkerRelay,
+                                    workspace,
+                                )
                                 .await
                                 .map_err(|error| {
                                     RunError::bad_request(format!(
                                         "repository `{repository_id}` credential: {error}"
                                     ))
-                                })?;
-                        Some(
-                            awaken_credential_vault::materialize(
-                                &row,
-                                credentials.secrets.as_ref(),
-                            )
-                            .await
-                            .map_err(|error| {
-                                RunError::bad_request(format!(
-                                    "repository `{repository_id}` credential: {error}"
-                                ))
-                            })?,
+                                })?
+                                .material,
                         )
                     }
-                    None => None,
+                    (None, None) => None,
+                    (Some(_), None) => {
+                        return Err(RunError::bad_request(format!(
+                            "repository `{repository_id}` credential binding has no exact Session pin"
+                        )));
+                    }
+                    (None, Some(_)) => {
+                        return Err(RunError::bad_request(format!(
+                            "repository `{repository_id}` has a credential pin without a binding"
+                        )));
+                    }
                 };
                 staged
                     .repositories
@@ -825,10 +834,7 @@ impl ManagedHost {
         credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
         secrets: Arc<dyn awaken_credential_vault::SecretStore>,
     ) -> Self {
-        self.credentials = Some(CredentialInjector {
-            credentials,
-            secrets,
-        });
+        self.credentials = Some(PinnedCredentialMaterializer::new(credentials, secrets));
         self.refresh_dispatch_session_runtime();
         self
     }
@@ -1047,17 +1053,8 @@ impl SessionRuntime for ManagedHost {
         })
     }
 
-    /// Provision a new session's MCP servers on its thread (ADR-0043 Phase 3),
-    /// BEFORE the session record exists — a failure fails the create.
-    ///
-    /// 1. Each binding's vault credential is materialized to a bearer (a binding
-    ///    without a credential stays bearer-less); a missing/broken credential
-    ///    row is the caller's fault (`bad_request`, fail closed).
-    /// 2. The prepared set is staged on the shared host; the thread's first turn
-    ///    stages and publishes their exact generations before `ctx_for` exposes tools.
-    ///
-    /// Authored Agent MCP defaults are resolved before Session creation and
-    /// persisted in `SessionInit`; this runtime path never reads current config.
+    /// Replace only the already-selected model projection for one Session and
+    /// force its next context construction to consume that exact selection.
     async fn rebind_model(&self, thread: &str, model: &str) -> Result<(), RunError> {
         // R5: re-stage the thread's model and evict its cached context so the next
         // turn rebuilds with the newly resolved executor (native switch is O(1); an
@@ -1269,6 +1266,15 @@ impl SessionRuntime for ManagedHost {
             ));
         }
 
+        let is_acp = self
+            .host
+            .acp
+            .as_ref()
+            .and_then(|acp| acp.adapter_for(&request.generation.session_id))
+            .is_some_and(|adapter| {
+                awaken_runtime_contract::resolved::Backend::from_ref(&adapter).is_acp()
+            });
+
         let (bearer, refresh, actual_realization_kind) = match (
             request.credential.as_ref(),
             request.selected_plaintext_holder.as_ref(),
@@ -1279,6 +1285,18 @@ impl SessionRuntime for ManagedHost {
                     return Err(RunError::classified(
                         "mcp_holder_unsupported",
                         "MCP Runtime supports only the Worker-held relay boundary",
+                    ));
+                }
+                if is_acp
+                    && !self
+                        .host
+                        .session_provider
+                        .capabilities()
+                        .enforced_network_allowlist
+                {
+                    return Err(RunError::classified(
+                        "mcp_holder_unsupported",
+                        "authenticated ACP MCP requires provider-enforced no-bypass networking before Worker relay materialization",
                     ));
                 }
                 access
@@ -1305,76 +1323,27 @@ impl SessionRuntime for ManagedHost {
                         "MCP credential requires a configured material resolver",
                     )
                 })?;
-                let source_id =
-                    awaken_credential_vault::CredentialSourceId(access.credential.id.clone());
-                let row = injector
-                    .credentials
-                    .get(&source_id)
+                let bearer = injector
+                    .resolve_for_workspace(
+                        access,
+                        holder,
+                        CredentialRealizationKind::WorkerRelay,
+                        &request.workspace_id,
+                    )
                     .await
                     .map_err(|error| {
-                        RunError::bad_request(format!("mcp server `{}`: {error}", request.name))
-                    })?;
-                if row.workspace_id != request.workspace_id
-                    || u64::try_from(row.version).ok() != Some(access.credential.revision)
-                {
-                    return Err(RunError::classified(
-                        "mcp_credential_revision_mismatch",
-                        format!(
-                            "mcp server `{}` credential is unavailable at the pinned revision",
-                            request.name
-                        ),
-                    ));
-                }
-                let bearer = awaken_credential_vault::materialize(&row, &*injector.secrets)
-                    .await
-                    .map_err(|error| {
-                        RunError::bad_request(format!("mcp server `{}`: {error}", request.name))
-                    })?;
-                let refresh = access
-                    .refresh
-                    .as_ref()
-                    .map(|refresh| {
-                        let token_endpoint_auth = match refresh.token_endpoint_auth {
-                            awaken_runtime_contract::TokenEndpointAuth::None => {
-                                awaken_protocol_managed::TokenEndpointAuthBinding::None
-                            }
-                            awaken_runtime_contract::TokenEndpointAuth::ClientSecretBasic => {
-                                awaken_protocol_managed::TokenEndpointAuthBinding::ClientSecretBasic {
-                                    secret_ref: refresh.client_secret_ref.clone().ok_or_else(|| {
-                                        RunError::classified(
-                                            "mcp_refresh_invalid",
-                                            "confidential MCP refresh has no client secret reference",
-                                        )
-                                    })?,
-                                }
-                            }
-                            awaken_runtime_contract::TokenEndpointAuth::ClientSecretPost => {
-                                awaken_protocol_managed::TokenEndpointAuthBinding::ClientSecretPost {
-                                    secret_ref: refresh.client_secret_ref.clone().ok_or_else(|| {
-                                        RunError::classified(
-                                            "mcp_refresh_invalid",
-                                            "confidential MCP refresh has no client secret reference",
-                                        )
-                                    })?,
-                                }
-                            }
-                        };
-                        Ok(crate::mcp::McpRefreshMaterial {
-                            token_endpoint: refresh.token_endpoint.clone(),
-                            client_id: refresh.client_id.clone(),
-                            token_endpoint_auth,
-                            scope: refresh.scope.clone(),
-                            resource: refresh.resource.clone(),
-                            refresh_token_ref: awaken_credential_vault::SecretRef(
-                                refresh.refresh_token_ref.clone(),
+                        RunError::classified(
+                            "mcp_credential_revision_mismatch",
+                            format!(
+                                "mcp server `{}` credential could not be resolved exactly: {error}",
+                                request.name
                             ),
-                            access_token_ref: awaken_credential_vault::SecretRef(
-                                refresh.access_token_ref.clone(),
-                            ),
-                            secrets: injector.secrets.clone(),
-                        })
-                    })
-                    .transpose()?;
+                        )
+                    })?
+                    .material;
+                let refresh = access.refresh.as_ref().map(|refresh| {
+                    crate::mcp::McpRefreshMaterial::new(refresh.clone(), injector.secret_store())
+                });
                 (
                     Some(bearer),
                     refresh,
@@ -1394,14 +1363,6 @@ impl SessionRuntime for ManagedHost {
             bearer,
             refresh,
         };
-        let is_acp = self
-            .host
-            .acp
-            .as_ref()
-            .and_then(|acp| acp.adapter_for(&request.generation.session_id))
-            .is_some_and(|adapter| {
-                awaken_runtime_contract::resolved::Backend::from_ref(&adapter).is_acp()
-            });
         let native_wiring = if is_acp {
             None
         } else {
@@ -1476,6 +1437,8 @@ impl SessionRuntime for ManagedHost {
         if let Some(runtime) = &init.runtime {
             self.host.register_thread_runtime(thread, runtime);
         }
+        self.host
+            .register_thread_credential_realization(thread, init.credential_realization.clone());
         self.host
             .register_thread_delegates(thread, init.delegate_ids.clone());
         // Stage the session's network-egress policy (from its environment): the first

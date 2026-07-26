@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::RedactedString;
 use awaken_config_resolver::resolve_inference;
+use awaken_credential_contract::TokenEndpointAuth;
 use awaken_credential_vault::repo::InMemoryCredentialRepo;
 use awaken_credential_vault::{
     CredentialBinding, CredentialSource, CredentialSourceId, InMemorySecretStore, SecretRef,
@@ -20,7 +21,7 @@ use awaken_model_catalog::repo::InMemoryCatalogRepo;
 use awaken_model_catalog::{
     ApiDialect, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
 };
-use awaken_protocol_managed::{McpProbe, McpProbeStatus, TokenEndpointAuthBinding};
+use awaken_protocol_managed::{McpProbe, McpProbeStatus};
 use awaken_protocol_managed::{VaultState, vault_router};
 use axum::Router;
 use axum::body::Body;
@@ -828,12 +829,15 @@ async fn update_mcp_oauth_refresh_rotates_sealed_secrets() {
         .unwrap();
     assert_eq!(cs.expose_secret(), "cs-new");
     // The binding the session refresher reads now reflects the new scheme.
-    let binding = h.state.mcp_refresh_for_source(&source_id).unwrap();
+    let access = h.state.mcp_access_for_source(&source_id).await.unwrap();
+    let binding = access.refresh.unwrap();
     assert_eq!(
         binding.token_endpoint_auth,
-        TokenEndpointAuthBinding::ClientSecretPost {
-            secret_ref: format!("sec:client:{}", source_id.0)
-        }
+        TokenEndpointAuth::ClientSecretPost
+    );
+    assert_eq!(
+        binding.client_secret_ref.as_deref(),
+        Some(format!("sec:client:{}", source_id.0).as_str())
     );
 
     // Updating refresh on a credential that has none is a 400.
@@ -902,12 +906,15 @@ async fn update_refresh_token_endpoint_auth_omitting_client_secret_keeps_the_sea
         .await
         .unwrap();
     assert_eq!(cs.expose_secret(), "cs-orig");
-    let binding = h.state.mcp_refresh_for_source(&source_id).unwrap();
+    let access = h.state.mcp_access_for_source(&source_id).await.unwrap();
+    let binding = access.refresh.unwrap();
     assert_eq!(
         binding.token_endpoint_auth,
-        TokenEndpointAuthBinding::ClientSecretPost {
-            secret_ref: format!("sec:client:{}", source_id.0)
-        }
+        TokenEndpointAuth::ClientSecretPost
+    );
+    assert_eq!(
+        binding.client_secret_ref.as_deref(),
+        Some(format!("sec:client:{}", source_id.0).as_str())
     );
 }
 
@@ -1600,8 +1607,28 @@ async fn validate_never_probes_env_var_or_static_bearer_credentials() {
     );
 }
 
+/// Cause-effect graph for the sole Vault -> execution compiler:
+///
+/// C1 exact active source exists
+///  -> C2 source has MCP OAuth refresh
+///      ├─ F -> E1 exact access without refresh
+///      └─ T -> C3 endpoint auth kind
+///              ├─ none -> E2 no client-secret ref
+///              ├─ basic -> E3 basic + exact client-secret ref
+///              └─ post -> E4 post + exact client-secret ref
+/// Every refresh effect also carries one self-verifying fingerprint over all
+/// executable fields; no intermediate refresh binding exists.
+///
+/// | Rule | Source kind | Refresh | Endpoint auth | Result |
+/// |---|---|---|---|---|
+/// | V1 | MCP OAuth | yes | none | E2 |
+/// | V2 | MCP OAuth | no | - | E1 |
+/// | V3 | MCP OAuth | yes | basic | E3 |
+/// | V4 | MCP OAuth | yes | post | E4 |
+/// | V5 | environment | no | - | E1 |
+/// | V6 | static bearer | no | - | E1 |
 #[tokio::test]
-async fn mcp_refresh_for_source_exposes_public_and_confidential_refresh() {
+async fn exact_mcp_access_compiles_public_and_confidential_refresh() {
     let h = harness();
     let vault_id = create_vault(&h, "mcp").await;
     let url = "https://mcp.example.com/sse";
@@ -1626,26 +1653,36 @@ async fn mcp_refresh_for_source_exposes_public_and_confidential_refresh() {
         .state
         .credential_source_id(&vault_id, &refreshable_id)
         .unwrap();
-    let binding = h
+    let access = h
         .state
-        .mcp_refresh_for_source(&source_id)
-        .expect("a public-client refresh is exposed");
+        .mcp_access_for_source(&source_id)
+        .await
+        .expect("exact MCP access compiles");
+    let binding = access.refresh.expect("public-client refresh is pinned");
     assert_eq!(binding.token_endpoint, "https://auth.example.com/token");
     assert_eq!(binding.client_id, "cli_pub");
     assert_eq!(binding.scope.as_deref(), Some("mcp:read"));
     assert_eq!(binding.resource.as_deref(), Some("https://mcp.example.com"));
-    assert_eq!(binding.token_endpoint_auth, TokenEndpointAuthBinding::None);
+    assert_eq!(binding.token_endpoint_auth, TokenEndpointAuth::None);
     // The refresh token itself stays sealed: the binding carries only its ref.
     assert_eq!(
         binding.refresh_token_ref,
         format!("sec:refresh:{}", source_id.0)
     );
+    assert!(binding.has_valid_configuration_fingerprint());
 
     // An mcp_oauth credential entered WITHOUT a refresh object yields none.
     let plain = create_mcp_oauth(&h, &vault_id, "https://mcp.example.com/plain", None).await;
     let plain_id = plain["id"].as_str().unwrap().to_string();
     let plain_source = h.state.credential_source_id(&vault_id, &plain_id).unwrap();
-    assert!(h.state.mcp_refresh_for_source(&plain_source).is_none());
+    assert!(
+        h.state
+            .mcp_access_for_source(&plain_source)
+            .await
+            .unwrap()
+            .refresh
+            .is_none()
+    );
 
     // A confidential-client scheme is exposed too: its client_secret was sealed
     // at create, so the binding carries the sealed ref for the grant's client
@@ -1671,25 +1708,39 @@ async fn mcp_refresh_for_source_exposes_public_and_confidential_refresh() {
             .state
             .credential_source_id(&vault_id, &confidential_id)
             .unwrap();
-        let binding = h
+        let access = h
             .state
-            .mcp_refresh_for_source(&confidential_source)
-            .expect("a confidential-client refresh is exposed");
+            .mcp_access_for_source(&confidential_source)
+            .await
+            .expect("exact confidential MCP access compiles");
+        let binding = access.refresh.expect("confidential refresh is pinned");
         assert_eq!(binding.client_id, "cli_conf");
         // The auth binding carries the sealed client secret's ref — the
         // deterministic `sec:client:{source_id}` shape, never material.
         let secret_ref = format!("sec:client:{}", confidential_source.0);
         let expected = match auth_type {
-            "client_secret_basic" => TokenEndpointAuthBinding::ClientSecretBasic { secret_ref },
-            _ => TokenEndpointAuthBinding::ClientSecretPost { secret_ref },
+            "client_secret_basic" => TokenEndpointAuth::ClientSecretBasic,
+            _ => TokenEndpointAuth::ClientSecretPost,
         };
         assert_eq!(binding.token_endpoint_auth, expected, "{auth_type}");
+        assert_eq!(
+            binding.client_secret_ref.as_deref(),
+            Some(secret_ref.as_str())
+        );
+        assert!(binding.has_valid_configuration_fingerprint());
     }
 
     // Env-var and static_bearer rows never carry a refresh configuration.
     let env_id = create_credential(&h, &vault_id, "K").await;
     let env_source = h.state.credential_source_id(&vault_id, &env_id).unwrap();
-    assert!(h.state.mcp_refresh_for_source(&env_source).is_none());
+    assert!(
+        h.state
+            .mcp_access_for_source(&env_source)
+            .await
+            .unwrap()
+            .refresh
+            .is_none()
+    );
     let (s, bearer) = call(
         &h.app,
         "POST",
@@ -1704,5 +1755,12 @@ async fn mcp_refresh_for_source_exposes_public_and_confidential_refresh() {
     assert_eq!(s, StatusCode::OK);
     let bearer_id = bearer["id"].as_str().unwrap().to_string();
     let bearer_source = h.state.credential_source_id(&vault_id, &bearer_id).unwrap();
-    assert!(h.state.mcp_refresh_for_source(&bearer_source).is_none());
+    assert!(
+        h.state
+            .mcp_access_for_source(&bearer_source)
+            .await
+            .unwrap()
+            .refresh
+            .is_none()
+    );
 }

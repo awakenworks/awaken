@@ -60,7 +60,10 @@ pub use sandbox::{
     select_provider_with_policy,
 };
 pub use shape::{ExecutionShape, plan_shape};
-pub use spec::{Command, EnvironmentKind, RootfsSource, SandboxOverride, SandboxSpec, Stdio};
+pub use spec::{
+    Command, EnvironmentKind, MaterializedCommand, MaterializedEnvValue, MaterializedEnvVar,
+    RootfsSource, SandboxOverride, SandboxSpec, Stdio, materialize_process_command,
+};
 pub use token::{LeaseCallbackClaims, LeaseCallbackToken, NonceWatermark, TokenError};
 pub use vocab::{
     Artifact, EnvValue, EnvVar, EnvVisibility, MountAccess, MountLifetime, MountRequirement,

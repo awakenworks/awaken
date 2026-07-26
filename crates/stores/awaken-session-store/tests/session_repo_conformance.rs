@@ -36,6 +36,7 @@ fn session(id: &str, title: &str) -> PersistedSession {
         credential_realization: awaken_credential_contract::CredentialRealizationProfile {
             inference_holder: holder.clone(),
             mcp_holder: holder.clone(),
+            resource_holder: holder.clone(),
         },
     };
     let access = awaken_credential_contract::CredentialAccess::new(

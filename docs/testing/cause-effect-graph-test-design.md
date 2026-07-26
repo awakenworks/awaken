@@ -505,7 +505,7 @@ C61=restricted → E53(存活)
 | E57 | `NoCapableBackend`(绝不降级) | sandbox.rs:188 |
 | E58 | 同意降级:floor 下最强,`degraded_to=Some` | sandbox.rs:288 |
 | E59 | k8s pids fail-closed `Backend("k8s cannot enforce … pids")`(遮蔽 ConfigMap+Pod 创建) | k8s.rs:499 |
-| E60 | allowlist 无 proxy → `EgressError::ProxyRequired` | lib.rs:626 |
+| E60 | allowlist 无 no-bypass provider capability → `NetworkAllowlistUnsupported`；forward proxy 不能改变结果 | prepare.rs / lib.rs |
 | E61 | 暖命中复用 `open_agent_from` / 未命中新建 `open_agent` / 非池化恒新建 | pool.rs:235 |
 | E62 | MemoryStore 无 mounter → 高声失败 | provider.rs:250 |
 | E63 | FUSE 挂载 vs copy 物化(可写者 teardown 收割);必需挂载不可解→fail closed | mounter.rs:108 / provider.rs:288 |
@@ -514,11 +514,11 @@ C61=restricted → E53(存活)
 
 ```
 C62 → E55     C64 → E56     C65 → E56     C66 → E56     (C62∧~c63 同意) → E58    C63 → E57
-C67 → E59     C68 → E60     C69 → ~E61(暖) → 恒新建/非池化   C70 → E61(复用)   C71 → E62   C72 → E63   C73 → E63(fail closed)
+C67 → E59     (C68∧~C74) → E60     C69 → ~E61(暖) → 恒新建/非池化   C70 → E61(复用)   C71 → E62   C72 → E63   C73 → E63(fail closed)
 ```
 
 - **O**{IsolationClass Workdir<Namespace<Container} 单值;**O**{NetworkPolicy Unrestricted/Allowlist/None};**O**{MountSource 七类之一};**E**{FUSE, copy}(`prefer_fuse=false` 强制 copy 无视 /dev/fuse)。
-- **R**:C70 暖命中要求 C69 假(无 mounts,池化)且 `size>0`;C67 k8s pids fail-closed 要求 tier=k8s;E60 要求注入 EgressProxy;E62 要求 MemoryMounter 接线。
+- **R**:C70 暖命中要求 C69 假(无 mounts,池化)且 `size>0`;C67 k8s pids fail-closed 要求 tier=k8s;C74 是任意进程无法绕过的网络 allowlist 证据，普通 forward-proxy env 不构成 C74；E62 要求 MemoryMounter 接线。
 - **M 优先级**:`prepare_environment` 中隔离故障 E55 遮蔽保留键等低优先级(`an_isolation_violation_masks_a_lower_precedence_reserved_key`);k8s create pids fail-closed 遮蔽全部实现效果;admission `summary > required_field > reserved_key > writable_base`。
 
 ### 判定表 M8
@@ -529,7 +529,7 @@ C67 → E59     C68 → E60     C69 → ~E61(暖) → 恒新建/非池化   C70 
 | C62 隔离不足(同意降级) | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
 | C65 保留 env key | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 |
 | C67 k8s pids | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 |
-| C68 allowlist 无 proxy | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 |
+| C68 allowlist 且无 C74 no-bypass enforcement | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 |
 | C70 暖池命中 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 |
 | C71 无 mounter | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 |
 | C73 必需挂载缺失 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 |
@@ -537,7 +537,7 @@ C67 → E59     C68 → E60     C69 → ~E61(暖) → 恒新建/非池化   C70 
 | **E58 同意降级** | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
 | **E56 保留键(被 E55 遮蔽)** | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 |
 | **E59 k8s pids 拒绝** | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 |
-| **E60 ProxyRequired** | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 |
+| **E60 NetworkAllowlistUnsupported** | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 |
 | **E61 暖复用** | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 |
 | **E62 无 mounter 失败** | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 |
 | **E63 fail-closed** | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 |

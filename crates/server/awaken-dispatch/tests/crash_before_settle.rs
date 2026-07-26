@@ -122,7 +122,7 @@ async fn crash_before_settle_re_delivers_bound_pending_exactly_once() {
     // An owner claims the woken run (a wake pick hands the pending) then CRASHES
     // before settling: dropping the claim leaves the run leased-but-unsettled.
     let crashed = store
-        .claim("crasher", LEASE, 10)
+        .claim("crasher", LEASE, 10, &Default::default())
         .await
         .unwrap()
         .expect("the awaiting run with due input is claimable");
@@ -188,7 +188,13 @@ async fn assert_bound_pending_survives_claim_without_settle<S: Dispatch>(store: 
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
-    assert!(store.claim("w", LEASE, 0).await.unwrap().is_some());
+    assert!(
+        store
+            .claim("w", LEASE, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
     store
         .settle(&run, 1, DispatchOutcome::Awaiting, &[])
         .await
@@ -207,7 +213,7 @@ async fn assert_bound_pending_survives_claim_without_settle<S: Dispatch>(store: 
 
     // An owner wakes the run (claim hands the pending) then crashes before settle.
     let crashed = store
-        .claim("crasher", LEASE, 10)
+        .claim("crasher", LEASE, 10, &Default::default())
         .await
         .unwrap()
         .expect("wake claim");
@@ -220,7 +226,7 @@ async fn assert_bound_pending_survives_claim_without_settle<S: Dispatch>(store: 
     // Consumed on settle, not on read: a re-claim after the lease lapses re-hands
     // the SAME pending input.
     let recovered = store
-        .claim("w2", LEASE, 10 + LEASE + 1)
+        .claim("w2", LEASE, 10 + LEASE + 1, &Default::default())
         .await
         .unwrap()
         .expect("recovery re-claim");
@@ -300,7 +306,7 @@ async fn crash_before_settle_re_delivers_unbound_inbox_input_exactly_once() {
         .await
         .unwrap();
     let crashed = store
-        .claim("crasher", LEASE, 0)
+        .claim("crasher", LEASE, 0, &Default::default())
         .await
         .unwrap()
         .expect("the fresh run is claimable");
@@ -418,7 +424,7 @@ async fn recovering_a_terminal_run_consumes_its_delivered_unbound_input() {
         .await
         .unwrap();
     let _crashed = store
-        .claim("crasher", LEASE, 0)
+        .claim("crasher", LEASE, 0, &Default::default())
         .await
         .unwrap()
         .expect("fresh claim");
@@ -525,7 +531,7 @@ async fn recovering_a_terminal_run_keeps_undelivered_unbound_input() {
         .await
         .unwrap();
     let _crashed = store
-        .claim("crasher", LEASE, 0)
+        .claim("crasher", LEASE, 0, &Default::default())
         .await
         .unwrap()
         .expect("claim");
@@ -589,7 +595,13 @@ async fn assert_unbound_consumed_on_settle_not_on_read<S: Dispatch>(store: &S) {
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
-    assert!(store.claim("w", LEASE, 0).await.unwrap().is_some());
+    assert!(
+        store
+            .claim("w", LEASE, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
     store
         .settle(&RunId("run-1".to_string()), 1, DispatchOutcome::Done, &[])
         .await
@@ -604,7 +616,13 @@ async fn assert_unbound_consumed_on_settle_not_on_read<S: Dispatch>(store: &S) {
         .enqueue(RunDispatch::new(harness::activation("run-2")))
         .await
         .unwrap();
-    assert!(store.claim("w", LEASE, 0).await.unwrap().is_some());
+    assert!(
+        store
+            .claim("w", LEASE, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
     store
         .settle(
             &RunId("run-2".to_string()),

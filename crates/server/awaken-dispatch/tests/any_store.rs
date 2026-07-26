@@ -326,17 +326,27 @@ async fn any_delegates_enqueue_claim_and_owner_scoped_lease() {
 
     // The claim records the owner on the lease; a held lease blocks a second
     // owner; an expired lease is reclaimed by the next owner.
-    let claimed = store.claim("owner-a", 1_000, 0).await.unwrap();
+    let claimed = store
+        .claim("owner-a", 1_000, 0, &Default::default())
+        .await
+        .unwrap();
     assert_eq!(
         claimed.map(|c| c.lease.owner),
         Some("owner-a".to_string()),
         "claim records the claiming owner on the lease"
     );
     assert!(
-        store.claim("owner-b", 1_000, 500).await.unwrap().is_none(),
+        store
+            .claim("owner-b", 1_000, 500, &Default::default())
+            .await
+            .unwrap()
+            .is_none(),
         "a live lease blocks a second owner"
     );
-    let recovered = store.claim("owner-b", 1_000, 1_001).await.unwrap();
+    let recovered = store
+        .claim("owner-b", 1_000, 1_001, &Default::default())
+        .await
+        .unwrap();
     assert_eq!(
         recovered.map(|c| c.lease.owner),
         Some("owner-b".to_string()),
@@ -347,14 +357,38 @@ async fn any_delegates_enqueue_claim_and_owner_scoped_lease() {
 #[tokio::test]
 async fn reclaim_preserves_the_dispatch_pinned_model_candidate_set() {
     let store = any_in_memory();
+    let worker_holder = awaken_runtime_contract::PlaintextHolder::new(
+        awaken_runtime_contract::PlaintextBoundary::Worker,
+        awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+    );
+    let capabilities = awaken_runtime_contract::CredentialRealizationCapabilities {
+        holders: [worker_holder.clone()].into_iter().collect(),
+        material_sources: [
+            awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+        ]
+        .into_iter()
+        .collect(),
+        realization_kinds: [
+            awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
+        ]
+        .into_iter()
+        .collect(),
+    };
     let primary = candidate("primary", "cred-a", "provider-a@1", "route-a@2");
     let fallback = candidate("fallback", "cred-b", "provider-b@3", "route-b@4");
     let mut activation = activation("binding-retry");
     activation.snapshot.resolved_spec.model_binding = primary.clone();
     activation.snapshot.resolved_spec.model_candidates = vec![fallback.clone()];
-    store.enqueue(RunDispatch::new(activation)).await.unwrap();
+    store
+        .enqueue(RunDispatch::new(activation).with_inference_plaintext_holder(worker_holder))
+        .await
+        .unwrap();
 
-    let first = store.claim("worker-a", 10, 0).await.unwrap().unwrap();
+    let first = store
+        .claim("worker-a", 10, 0, &capabilities)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         &first
             .request
@@ -364,7 +398,11 @@ async fn reclaim_preserves_the_dispatch_pinned_model_candidate_set() {
             .model_binding,
         &primary
     );
-    let recovered = store.claim("worker-b", 10, 11).await.unwrap().unwrap();
+    let recovered = store
+        .claim("worker-b", 10, 11, &capabilities)
+        .await
+        .unwrap()
+        .unwrap();
 
     assert!(recovered.recovered);
     assert_eq!(
@@ -396,12 +434,12 @@ async fn any_lets_two_owners_claim_distinct_runs() {
         .unwrap();
 
     let first = store
-        .claim("worker-a", 1_000, 0)
+        .claim("worker-a", 1_000, 0, &Default::default())
         .await
         .unwrap()
         .expect("one");
     let second = store
-        .claim("worker-b", 1_000, 0)
+        .claim("worker-b", 1_000, 0, &Default::default())
         .await
         .unwrap()
         .expect("two");
@@ -413,7 +451,11 @@ async fn any_lets_two_owners_claim_distinct_runs() {
         "distinct owners must claim distinct runs"
     );
     assert!(
-        store.claim("worker-c", 1_000, 0).await.unwrap().is_none(),
+        store
+            .claim("worker-c", 1_000, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_none(),
         "no runnable dispatch remains once both are claimed"
     );
 }
@@ -430,7 +472,7 @@ async fn any_serializes_one_thread_across_workers() {
         .await
         .unwrap();
     let first = store
-        .claim("worker-a", 1_000, 0)
+        .claim("worker-a", 1_000, 0, &Default::default())
         .await
         .unwrap()
         .expect("run-1 claims and is now in flight on thread-x");
@@ -442,7 +484,11 @@ async fn any_serializes_one_thread_across_workers() {
         .await
         .unwrap();
     assert!(
-        store.claim("worker-b", 1_000, 1).await.unwrap().is_none(),
+        store
+            .claim("worker-b", 1_000, 1, &Default::default())
+            .await
+            .unwrap()
+            .is_none(),
         "the thread's second run is NOT claimable while the first is in flight"
     );
 
@@ -457,7 +503,7 @@ async fn any_serializes_one_thread_across_workers() {
         .await
         .unwrap();
     let second = store
-        .claim("worker-b", 1_000, 2)
+        .claim("worker-b", 1_000, 2, &Default::default())
         .await
         .unwrap()
         .expect("run-2 claims after run-1 settled");
@@ -491,7 +537,7 @@ async fn any_exposes_the_builtin_backends_operational_feed() {
         .await
         .expect("enqueue");
     store
-        .claim("operations-owner", 1_000, 0)
+        .claim("operations-owner", 1_000, 0, &Default::default())
         .await
         .expect("claim")
         .expect("runnable");
@@ -567,6 +613,9 @@ async fn any_postgres_connect_and_claim() {
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .expect("enqueue over postgres");
-    let claimed = store.claim("pg-owner", 1_000, 0).await.expect("claim");
+    let claimed = store
+        .claim("pg-owner", 1_000, 0, &Default::default())
+        .await
+        .expect("claim");
     assert_eq!(claimed.map(|c| c.lease.owner), Some("pg-owner".to_string()));
 }

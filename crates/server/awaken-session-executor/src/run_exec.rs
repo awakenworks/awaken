@@ -243,7 +243,7 @@ impl SharedHost {
             // unaffected.
             if let Some(exec) = self
                 .inference_routing
-                .executor_for_activation(&activation)
+                .executor_for_activation(&activation, &context)
                 .map_err(HostError::bad_request)?
             {
                 context = context.with_model_executor(exec);

@@ -8,9 +8,10 @@
 //! (`agent = "assistant"`, empty `mcp_servers`, no title). This port stores that
 //! aggregate so rehydration restores the real values.
 //!
-//! Secrets never cross this port: MCP entries keep only the wire-echo
-//! `{name, type, url}` values, never a credential — those are re-materialized from
-//! the vault at prepare time (G3).
+//! Secrets never cross this port. MCP and Repository entries may persist an
+//! exact secret-free credential access/holder pin, but never credential material;
+//! realization consumes that pin through the common exact resolver without
+//! selecting another source or revision.
 
 use async_trait::async_trait;
 use std::collections::BTreeMap;
@@ -388,6 +389,10 @@ mod mutation_tests {
                                 "awaken.workload.acp",
                             ),
                             mcp_holder: PlaintextHolder::new(
+                                PlaintextBoundary::Worker,
+                                "awaken.worker",
+                            ),
+                            resource_holder: PlaintextHolder::new(
                                 PlaintextBoundary::Worker,
                                 "awaken.worker",
                             ),

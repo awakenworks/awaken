@@ -53,6 +53,8 @@ pub(crate) struct SessionRuntimeSlot {
     pub workspace: Option<String>,
     pub model_ref: Option<String>,
     pub runtime_adapter: Option<String>,
+    /// Process-local projection of the frozen Environment credential decision.
+    pub credential_realization: Option<awaken_runtime_contract::CredentialRealizationProfile>,
     pub memory: Option<Arc<BoundMemory>>,
     pub mcp: Vec<McpGenerationProjection>,
     /// Exact Control-frozen baseline projected for realization. It is never

@@ -340,13 +340,27 @@ pub struct EnvVar {
 }
 
 /// The value of an env var. A secret is a **broker reference**, never the bytes.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EnvValue {
     /// Non-secret literal (`TZ`, `NODE_ENV`, …).
     Inline { value: String },
     /// A secret resolved by a credential broker at realization/egress time.
     Secret { reference: String },
+}
+
+impl std::fmt::Debug for EnvValue {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Inline { value } => formatter
+                .debug_struct("Inline")
+                .field("value", value)
+                .finish(),
+            // A process-secret reference is an ephemeral capability. It is
+            // secret-free but still must not be copied into logs/debug dumps.
+            Self::Secret { .. } => formatter.write_str("Secret { reference: *** }"),
+        }
+    }
 }
 
 /// Where an injected value is visible.

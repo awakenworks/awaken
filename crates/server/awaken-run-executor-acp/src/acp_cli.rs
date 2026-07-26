@@ -6,6 +6,7 @@
 //! — never agent config itself.
 
 use crate::AcpLaunch;
+use awaken_provisioning_contract as pc;
 
 /// How resolved model coordinates reach a CLI. Endpoints and secrets use env keys;
 /// model selection may additionally use the CLI's generic config override (Codex
@@ -23,7 +24,7 @@ pub struct ModelDelivery {
     /// with `model_config_key`, the projection merges the resolved model into the
     /// row's static JSON config. `None` retains the legacy `-c key=value` delivery.
     pub model_config_env: Option<&'static str>,
-    /// Env key for the API key (a secret — the host materializes it; never stored).
+    /// Env key for the API key (a process-secret broker reference; never plaintext).
     pub key: &'static str,
     /// Extra model-name env keys the CLI reads as tier aliases, all set to the same
     /// resolved model (e.g. `ANTHROPIC_SONNET_MODEL`/`OPUS`/`HAIKU`).
@@ -114,34 +115,62 @@ pub struct AcpCli {
     pub env: &'static [(&'static str, &'static str)],
 }
 
-/// The host-resolved model coordinates handed to the projection: base URL and model
-/// come from the resolved spec + model catalog; `api_key` is materialized from the
-/// vault (a secret — it enters only the launched process env, never the catalog).
+/// One already-selected process-secret requirement. The opaque reference is
+/// resolved only by the final launch provider through `SecretBroker`; this type
+/// carries no material, policy, or credential-selection behavior.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ProcessSecretRequirement {
+    reference: String,
+}
+
+impl ProcessSecretRequirement {
+    #[must_use]
+    pub fn new(reference: impl Into<String>) -> Self {
+        Self {
+            reference: reference.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn reference(&self) -> &str {
+        &self.reference
+    }
+}
+
+impl std::fmt::Debug for ProcessSecretRequirement {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ProcessSecretRequirement(***)")
+    }
+}
+
+/// The host-resolved model coordinates handed to the projection. Base URL and
+/// model come from the resolved spec; the credential remains a typed broker
+/// requirement until the concrete process-launch boundary.
 #[derive(Debug, Clone)]
 pub struct ResolvedModel {
     pub base_url: String,
     pub model: String,
-    pub api_key: String,
+    pub process_secret: Option<ProcessSecretRequirement>,
 }
 
 impl ResolvedModel {
     /// Cloud-managed egress (D-R2, ADR-0021 §9/R2). An ACP CLI runs inside the
     /// untrusted sandbox, so it must never hold a raw provider key: its egress is
     /// mediated by the gateway. `base_url` is the **gateway**, and the CLI's "API
-    /// key" is a short-lived **lease token** — the gateway injects the real provider
-    /// credential out of the sandbox's address space. Build the ACP model this way
-    /// from a resolved cloud-managed gateway (base URL + lease) so the raw key never
-    /// enters the launch env.
+    /// key" is a brokered requirement for a short-lived **lease token** — the gateway
+    /// injects the real provider credential out of the sandbox's address space. Build
+    /// the ACP model this way from a resolved cloud-managed gateway (base URL + lease
+    /// reference) so neither the lease nor raw key enters planning state as plaintext.
     #[must_use]
     pub fn cloud_managed_gateway(
         gateway_base_url: impl Into<String>,
         model: impl Into<String>,
-        lease_token: impl Into<String>,
+        lease_reference: impl Into<String>,
     ) -> Self {
         Self {
             base_url: gateway_base_url.into(),
             model: model.into(),
-            api_key: lease_token.into(),
+            process_secret: Some(ProcessSecretRequirement::new(lease_reference)),
         }
     }
 }
@@ -161,29 +190,46 @@ impl AcpCli {
         extra_env: &[(String, String)],
     ) -> AcpLaunch {
         use std::collections::BTreeMap;
-        let mut env: BTreeMap<String, String> = BTreeMap::new();
+        let mut env: BTreeMap<String, pc::EnvVar> = BTreeMap::new();
+        let inline = |name: &str, value: String| pc::EnvVar {
+            name: name.to_string(),
+            value: pc::EnvValue::Inline { value },
+            visibility: pc::EnvVisibility::Process,
+        };
         for (k, v) in self.env {
-            env.insert((*k).to_string(), (*v).to_string());
+            env.insert((*k).to_string(), inline(k, (*v).to_string()));
         }
         for (k, v) in extra_env {
-            env.insert(k.clone(), v.clone());
+            env.insert(k.clone(), inline(k, v.clone()));
         }
         let d = &self.model_delivery;
         if !model.base_url.is_empty() {
-            env.insert(d.base_url.to_string(), model.base_url.clone());
+            env.insert(
+                d.base_url.to_string(),
+                inline(d.base_url, model.base_url.clone()),
+            );
         }
         if !model.model.is_empty() {
-            env.insert(d.model.to_string(), model.model.clone());
+            env.insert(d.model.to_string(), inline(d.model, model.model.clone()));
             for alias in d.aliases {
-                env.insert((*alias).to_string(), model.model.clone());
+                env.insert((*alias).to_string(), inline(alias, model.model.clone()));
             }
         }
         if let (Some(key), Some(window)) = (self.context_window_env, context_window) {
-            env.insert(key.to_string(), window.to_string());
+            env.insert(key.to_string(), inline(key, window.to_string()));
         }
-        // The secret goes last so no passthrough key can shadow it.
-        if !model.api_key.is_empty() {
-            env.insert(d.key.to_string(), model.api_key.clone());
+        // The typed secret goes last so no passthrough key can shadow it.
+        if let Some(secret) = &model.process_secret {
+            env.insert(
+                d.key.to_string(),
+                pc::EnvVar {
+                    name: d.key.to_string(),
+                    value: pc::EnvValue::Secret {
+                        reference: secret.reference().to_string(),
+                    },
+                    visibility: pc::EnvVisibility::Process,
+                },
+            );
         }
 
         let mut argv = vec![self.command.to_string()];
@@ -194,9 +240,12 @@ impl AcpCli {
             if let Some(config_env) = d.model_config_env {
                 let mut config = env
                     .get(config_env)
-                    .and_then(|value| {
-                        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(value)
-                            .ok()
+                    .and_then(|var| match &var.value {
+                        pc::EnvValue::Inline { value } => serde_json::from_str::<
+                            serde_json::Map<String, serde_json::Value>,
+                        >(value)
+                        .ok(),
+                        pc::EnvValue::Secret { .. } => None,
                     })
                     .unwrap_or_default();
                 config.insert(
@@ -205,7 +254,7 @@ impl AcpCli {
                 );
                 env.insert(
                     config_env.to_string(),
-                    serde_json::Value::Object(config).to_string(),
+                    inline(config_env, serde_json::Value::Object(config).to_string()),
                 );
             } else {
                 argv.push("-c".to_string());
@@ -214,7 +263,7 @@ impl AcpCli {
         }
         AcpLaunch {
             argv,
-            env: env.into_iter().collect(),
+            env: env.into_values().collect(),
         }
     }
 }
@@ -518,7 +567,7 @@ mod tests {
         ResolvedModel {
             base_url: "https://api.minimaxi.com/anthropic".to_string(),
             model: "MiniMax-M3[1m]".to_string(),
-            api_key: "test-materialized-key".to_string(), // awaken-allow: secret
+            process_secret: Some(ProcessSecretRequirement::new("lease://test-model")),
         }
     }
 
@@ -526,8 +575,22 @@ mod tests {
         launch
             .env
             .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v.clone())
+            .find(|var| var.name == key)
+            .and_then(|var| match &var.value {
+                pc::EnvValue::Inline { value } => Some(value.clone()),
+                pc::EnvValue::Secret { .. } => None,
+            })
+    }
+
+    fn secret_ref_of<'a>(launch: &'a AcpLaunch, key: &str) -> Option<&'a str> {
+        launch
+            .env
+            .iter()
+            .find(|var| var.name == key)
+            .and_then(|var| match &var.value {
+                pc::EnvValue::Secret { reference } => Some(reference.as_str()),
+                pc::EnvValue::Inline { .. } => None,
+            })
     }
 
     #[test]
@@ -580,8 +643,8 @@ mod tests {
                 cli.id
             );
             assert_eq!(
-                env_of(&launch, d.key).as_deref(),
-                Some(m.api_key.as_str()),
+                secret_ref_of(&launch, d.key),
+                Some("lease://test-model"),
                 "{}: key",
                 cli.id
             );
@@ -603,7 +666,7 @@ mod tests {
             &ResolvedModel {
                 base_url: String::new(),
                 model: "gpt-5-codex".into(),
-                api_key: String::new(),
+                process_secret: None,
             },
             None,
             &[],
@@ -634,8 +697,8 @@ mod tests {
                 cli.id
             );
             assert_eq!(
-                env_of(&launch, d.key).as_deref(),
-                Some(m.api_key.as_str()),
+                secret_ref_of(&launch, d.key),
+                Some("lease://test-model"),
                 "{}: secret unshadowable",
                 cli.id
             );
@@ -645,24 +708,24 @@ mod tests {
     #[test]
     fn every_cli_egresses_through_the_gateway_with_a_lease_never_a_raw_key() {
         // D-R2 for the whole catalog: no matter which CLI runs in the sandbox, a
-        // cloud-managed launch carries only a lease token, never a raw provider key.
+        // cloud-managed launch carries only a lease requirement, never a raw provider key.
         let raw = "sk-RAW-PROVIDER-SECRET"; // awaken-allow: secret
         for cli in known_acp_clis() {
             let model = ResolvedModel::cloud_managed_gateway(
                 "https://gateway.awaken.internal",
                 "some-model",
-                "lease-tok-123", // awaken-allow: secret
+                "lease://gateway-123",
             );
             let launch = cli.project(&model, None, &[]);
             assert!(
-                launch.env.iter().all(|(_, v)| v != raw),
+                !format!("{launch:?}").contains(raw),
                 "{}: raw key must never appear",
                 cli.id
             );
             assert_eq!(
-                env_of(&launch, cli.model_delivery.key).as_deref(),
-                Some("lease-tok-123"),
-                "{}: key env holds the lease token",
+                secret_ref_of(&launch, cli.model_delivery.key),
+                Some("lease://gateway-123"),
+                "{}: key env holds only the broker reference",
                 cli.id
             );
             assert_eq!(
@@ -889,8 +952,8 @@ mod tests {
             Some("https://api.minimaxi.com/anthropic")
         );
         assert_eq!(
-            env_of(&launch, "OPENAI_API_KEY").as_deref(),
-            Some("test-materialized-key")
+            secret_ref_of(&launch, "OPENAI_API_KEY"),
+            Some("lease://test-model")
         );
     }
 
@@ -915,30 +978,30 @@ mod tests {
     }
 
     #[test]
-    fn cloud_managed_gateway_puts_the_lease_token_not_a_raw_key_in_the_env() {
+    fn cloud_managed_gateway_puts_a_lease_requirement_not_a_raw_key_in_the_plan() {
         // D-R2: an ACP CLI in the untrusted sandbox must egress through the gateway
-        // with a lease token, never a raw provider key.
+        // with a brokered lease token, never a raw provider key.
         let raw_provider_key = "sk-REAL-PROVIDER-SECRET"; // awaken-allow: secret
         let model = ResolvedModel::cloud_managed_gateway(
             "https://gateway.awaken.internal",
             "claude-opus-4-8",
-            "lease-abc123", // awaken-allow: secret
+            "lease://gateway-abc123",
         );
         let cli = acp_cli("claude").unwrap();
         let launch = cli.project(&model, None, &[]);
 
-        // The CLI's base_url is the gateway and its "key" env is the lease token.
+        // The CLI's base_url is the gateway and its key requirement is opaque.
         assert_eq!(
             env_of(&launch, "ANTHROPIC_BASE_URL").as_deref(),
             Some("https://gateway.awaken.internal")
         );
         assert_eq!(
-            env_of(&launch, "ANTHROPIC_API_KEY").as_deref(),
-            Some("lease-abc123")
+            secret_ref_of(&launch, "ANTHROPIC_API_KEY"),
+            Some("lease://gateway-abc123")
         );
         // The raw provider key never appears in any launch env value.
         assert!(
-            launch.env.iter().all(|(_, v)| v != raw_provider_key),
+            !format!("{launch:?}").contains(raw_provider_key),
             "raw provider key must never enter the ACP launch env"
         );
     }
@@ -1021,10 +1084,11 @@ mod tests {
             env_of(&launch, "CLAUDE_CODE_AUTO_COMPACT_WINDOW").as_deref(),
             Some("1000000")
         );
-        // The secret is injected into the launch env (host-materialized).
+        // Projection carries only the one-shot requirement. Materialization is
+        // deferred until the concrete process boundary.
         assert_eq!(
-            env_of(&launch, "ANTHROPIC_API_KEY").as_deref(),
-            Some("test-materialized-key")
+            secret_ref_of(&launch, "ANTHROPIC_API_KEY"),
+            Some("lease://test-model")
         );
     }
 
@@ -1038,14 +1102,15 @@ mod tests {
             ("EXTRA_FLAG".to_string(), "1".to_string()),
         ];
         let launch = cli.project(&resolved(), None, &extra);
-        // Typed model wins; secret stays the host's; unmodeled passthrough survives.
+        // Typed model wins; the opaque secret requirement cannot be shadowed by
+        // ordinary env; unmodeled passthrough survives.
         assert_eq!(
             env_of(&launch, "ANTHROPIC_MODEL").as_deref(),
             Some("MiniMax-M3[1m]")
         );
         assert_eq!(
-            env_of(&launch, "ANTHROPIC_API_KEY").as_deref(),
-            Some("test-materialized-key")
+            secret_ref_of(&launch, "ANTHROPIC_API_KEY"),
+            Some("lease://test-model")
         );
         assert_eq!(env_of(&launch, "EXTRA_FLAG").as_deref(), Some("1"));
     }

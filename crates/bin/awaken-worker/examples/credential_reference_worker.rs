@@ -42,6 +42,7 @@ impl InferenceExecutorMaterializer for ReferenceMaterializer {
     fn materialize_pinned(
         &self,
         candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
+        _context: &awaken_runtime_contract::RuntimeRunContext,
     ) -> Option<Arc<dyn LlmExecutor>> {
         let awaken_runtime_contract::resolved::ModelProvisioning::Provider {
             credential: Some(credential),

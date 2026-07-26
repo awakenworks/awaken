@@ -71,7 +71,7 @@ async fn a_genuine_drive_failure_is_reraised_and_the_dispatch_is_left_unsettled(
     );
     assert!(
         store
-            .claim("recovery", LEASE, LEASE + 1)
+            .claim("recovery", LEASE, LEASE + 1, &Default::default())
             .await
             .unwrap()
             .is_some(),

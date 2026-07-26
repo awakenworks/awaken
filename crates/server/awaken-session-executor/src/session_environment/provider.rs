@@ -19,6 +19,14 @@ pub(crate) enum SessionEnvironmentProvider {
 }
 
 impl SessionEnvironmentProvider {
+    pub(crate) fn capabilities(&self) -> pc::SandboxCapabilities {
+        match self {
+            Self::Workdir(provider) => pc::SandboxProvider::capabilities(provider),
+            Self::Namespace(provider) => pc::SandboxProvider::capabilities(provider),
+            Self::Container { provider, .. } => provider.sandbox_capabilities(),
+        }
+    }
+
     pub(crate) fn workdir(base: impl Into<std::path::PathBuf>) -> Self {
         Self::Workdir(LocalProvider::new(base))
     }

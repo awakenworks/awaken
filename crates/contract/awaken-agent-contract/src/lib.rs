@@ -3,6 +3,7 @@
 pub mod agent;
 pub mod audit;
 pub mod event;
+pub mod fingerprint;
 pub mod model_spec;
 pub mod page;
 pub mod secret;
@@ -16,6 +17,7 @@ pub use agent::state::Key as StateKey;
 pub use agent::thread::Id as ThreadId;
 pub use audit::record::Record as EventRecord;
 pub use event::AgentEvent;
+pub use fingerprint::stable_fingerprint;
 pub use model_spec::ModelSpec;
 pub use secret::RedactedString;
 pub use stream::event::Event as StreamEvent;

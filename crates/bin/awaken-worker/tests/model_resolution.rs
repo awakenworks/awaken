@@ -17,8 +17,12 @@ use awaken_credential_vault::{
 };
 use awaken_runtime_contract::resolved::ResolvedModelCandidate;
 use awaken_runtime_contract::{
-    CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
+    AttemptCredentialBinding, AttemptCredentialRealization, AttemptOwnershipError,
+    AttemptOwnershipVerifier, CredentialAccess, CredentialExecutionPolicy,
+    CredentialMaterialSource, CredentialRealizationKind, CredentialRealizationReceipt,
+    CredentialRealizationRecordError, CredentialRealizationRecorder, CredentialRef,
     CredentialUsage, ExecutableAgentSnapshot, InferenceEndpoint, ModelBinding, RunActivation,
+    RuntimeRunContext,
 };
 use awaken_server::InferenceExecutorMaterializer;
 use awaken_server::inference_materializer::CredentialInferenceMaterializer;
@@ -27,6 +31,56 @@ struct TestServices {
     materializer: CredentialInferenceMaterializer,
     credentials: Arc<InMemoryCredentialRepo>,
     candidate: ResolvedModelCandidate,
+}
+
+struct CurrentOwnership;
+
+#[async_trait::async_trait]
+impl AttemptOwnershipVerifier for CurrentOwnership {
+    async fn verify_current(&self) -> Result<(), AttemptOwnershipError> {
+        Ok(())
+    }
+}
+
+struct AcceptReceipt;
+
+#[async_trait::async_trait]
+impl CredentialRealizationRecorder for AcceptReceipt {
+    async fn record(
+        &self,
+        _receipt: CredentialRealizationReceipt,
+    ) -> Result<(), CredentialRealizationRecordError> {
+        Ok(())
+    }
+}
+
+fn binding(candidate: &ResolvedModelCandidate) -> AttemptCredentialBinding {
+    let credential = match &candidate.provisioning {
+        awaken_runtime_contract::resolved::ModelProvisioning::Provider {
+            credential: Some(access),
+            ..
+        } => access.credential.clone(),
+        _ => panic!("provider candidate has a credential pin"),
+    };
+    AttemptCredentialBinding {
+        candidate_fingerprint: awaken_runtime_contract::candidate_fingerprint(candidate).unwrap(),
+        credential,
+        selected_plaintext_holder: awaken_runtime_contract::PlaintextHolder::new(
+            awaken_runtime_contract::PlaintextBoundary::Worker,
+            awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+        ),
+        selected_realization_kind: CredentialRealizationKind::WorkerProviderAdapter,
+        claim_epoch: 1,
+    }
+}
+
+fn context(candidate: &ResolvedModelCandidate) -> RuntimeRunContext {
+    RuntimeRunContext::new()
+        .with_ownership(Arc::new(CurrentOwnership))
+        .with_credential_realization(AttemptCredentialRealization::new(
+            vec![binding(candidate)],
+            Arc::new(AcceptReceipt),
+        ))
 }
 
 async fn services() -> TestServices {
@@ -92,7 +146,16 @@ fn activation(candidate: ResolvedModelCandidate) -> RunActivation {
 async fn worker_materializes_the_exact_published_candidate() {
     let services = services().await;
     let activation = activation(services.candidate);
-    assert!(services.materializer.materialize(&activation).is_some());
+    assert!(
+        services
+            .materializer
+            .materialize(
+                &activation,
+                &context(&activation.snapshot.resolved_spec.model_binding),
+            )
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -107,10 +170,11 @@ async fn missing_published_credential_fails_closed() {
         panic!("provider candidate has a credential pin")
     };
     access.credential.id = "missing".into();
+    let context = context(&candidate);
     assert!(
         services
             .materializer
-            .materialize_candidate(&candidate)
+            .materialize_candidate(&candidate, &context)
             .await
             .is_none()
     );
@@ -137,10 +201,11 @@ async fn revoked_published_credential_fails_closed() {
         .put(row)
         .await
         .expect("disable credential");
+    let context = context(&services.candidate);
     assert!(
         services
             .materializer
-            .materialize_candidate(&services.candidate)
+            .materialize_candidate(&services.candidate, &context)
             .await
             .is_none()
     );

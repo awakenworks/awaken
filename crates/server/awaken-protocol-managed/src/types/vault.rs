@@ -7,8 +7,8 @@
 //! the create/update params, never on a response projection.
 //!
 //! Pure serde shapes only. The store, the secret-sealing, the record→wire
-//! projection, and the internal binding vocabulary (`McpRefreshBinding`,
-//! `TokenEndpointAuthBinding`, `McpProbe`) live in `routes::vaults`.
+//! projection and the live `McpProbe` port live in `routes::vaults`; exact
+//! refresh execution facts use `CredentialRefreshAccess` directly.
 
 use std::collections::BTreeMap;
 
