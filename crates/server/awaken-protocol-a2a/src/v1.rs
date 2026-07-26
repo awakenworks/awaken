@@ -180,9 +180,8 @@ fn message_value(message: &crate::types::Message) -> Value {
 
 fn part_value(part: &Part) -> Value {
     let mut value = if part.kind.as_deref() == Some("data") {
-        part.text
-            .as_deref()
-            .and_then(|text| serde_json::from_str::<Value>(text).ok())
+        part.data
+            .clone()
             .map(|data| json!({ "data": data, "mediaType": "application/json" }))
             .unwrap_or(Value::Null)
     } else if let Some(text) = &part.text {
@@ -218,6 +217,39 @@ fn artifact_value(artifact: &Artifact) -> Value {
         value["name"] = Value::String(name.clone());
     }
     value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn v1_projection_preserves_data_payload_and_metadata_exactly() {
+        // Causal graph: stored A2A Part -> v1 ProtoJSON projection -> remote client.
+        //
+        // Decision table:
+        // | data present | metadata present | projection                         |
+        // | yes          | yes              | exact data + metadata + mediaType  |
+        // | no           | either           | null (invalid internal data part)  |
+        let data = json!({"nested":[1, true, null], "literal":"{not encoded}"});
+        let metadata = json!({"trace":"t-1"});
+        let part = Part {
+            kind: Some("data".into()),
+            text: None,
+            data: Some(data.clone()),
+            file: None,
+            metadata: Some(metadata.clone()),
+        };
+
+        assert_eq!(
+            part_value(&part),
+            json!({
+                "data": data,
+                "mediaType": "application/json",
+                "metadata": metadata,
+            })
+        );
+    }
 }
 
 pub(crate) fn agent_card_value(model: &str, origin: &str) -> Value {
