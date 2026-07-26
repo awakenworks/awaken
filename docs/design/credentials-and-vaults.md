@@ -316,6 +316,10 @@ execution's `AttemptCredentialBinding` atomically with Worker/lease epoch. All
 three paths use the same exact material resolver. Runtime cannot open a bare
 Repository Vault source id or perform a second source/revision selection. The
 binding stores the planned mechanism; a secret-free receipt stores the actual mechanism.
+Explicitly non-durable local turns reuse the same binding compiler but fence the
+binding to their process-local active Session `run_id`; they have no recovery or
+reassignment promise and cannot synthesize a durable dispatch claim. Losing that
+run ownership rejects both materialization and receipt recording.
 Legacy `Direct` provenance survives serialization and durable queue/database
 round trips, so compatibility decoding cannot launder it into an admissible
 Control reference. Broad Worker selection preflights the same authoritative

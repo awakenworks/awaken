@@ -25,15 +25,30 @@ pub(super) struct ManagedMcpCandidate {
 pub(super) fn initial_mcp_candidates(
     session: &[McpServer],
     agent: Option<&awaken_session_contract::AgentConfigView>,
+    agent_override: Option<&[McpServer]>,
 ) -> Vec<ManagedMcpCandidate> {
-    let mut candidates =
-        Vec::with_capacity(session.len() + agent.map_or(0, |view| view.mcp_servers.len()));
+    let agent_len = agent_override.map_or_else(
+        || agent.map_or(0, |view| view.mcp_servers.len()),
+        <[McpServer]>::len,
+    );
+    let mut candidates = Vec::with_capacity(session.len() + agent_len);
     candidates.extend(session.iter().cloned().map(|server| ManagedMcpCandidate {
         server,
         published_credential: None,
         origin: awaken_session_contract::McpAttachmentOrigin::Session,
     }));
-    if let Some(agent) = agent {
+    if let Some(agent_override) = agent_override {
+        candidates.extend(
+            agent_override
+                .iter()
+                .cloned()
+                .map(|server| ManagedMcpCandidate {
+                    server,
+                    published_credential: None,
+                    origin: awaken_session_contract::McpAttachmentOrigin::Agent,
+                }),
+        );
+    } else if let Some(agent) = agent {
         candidates.extend(agent.mcp_servers.iter().map(|server| {
             ManagedMcpCandidate {
                 server: McpServer {
@@ -614,6 +629,7 @@ mod tests {
                 server("session-alias", "https://same.example"),
             ],
             Some(&view),
+            None,
         );
         assert_eq!(candidates.len(), 7);
         assert_eq!(
@@ -647,5 +663,40 @@ mod tests {
             2,
             "C5"
         );
+
+        // Agent overrides replace, rather than overlay, the published Agent MCP
+        // set. Session declarations remain higher-precedence candidates and the
+        // same aggregate resolver handles any collision.
+        //
+        // | Rule | Override             | Session input | Effect |
+        // |---|---|---|---|
+        // | C6 | one replacement server | present       | Session + replacement Agent candidate |
+        // | C7 | empty                  | present       | Session candidate only |
+        let replacement = [server("replacement", "https://replacement.example")];
+        let replaced = initial_mcp_candidates(
+            &[server("inline", "https://inline.example")],
+            Some(&view),
+            Some(&replacement),
+        );
+        assert_eq!(replaced.len(), 2, "C6");
+        assert_eq!(replaced[1].server.name, "replacement", "C6");
+        assert_eq!(
+            replaced[1].origin,
+            awaken_session_contract::McpAttachmentOrigin::Agent,
+            "C6"
+        );
+        assert!(
+            replaced
+                .iter()
+                .all(|candidate| candidate.server.name != "secured"),
+            "C6"
+        );
+        let cleared = initial_mcp_candidates(
+            &[server("inline", "https://inline.example")],
+            Some(&view),
+            Some(&[]),
+        );
+        assert_eq!(cleared.len(), 1, "C7");
+        assert_eq!(cleared[0].server.name, "inline", "C7");
     }
 }

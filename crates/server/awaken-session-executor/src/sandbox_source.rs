@@ -100,6 +100,16 @@ impl AcpLaunchRegistry {
             ))
         })
     }
+
+    pub(crate) fn credential_realization_capabilities(
+        &self,
+        backend: &awaken_runtime_contract::resolved::Backend,
+    ) -> Result<awaken_runtime_contract::CredentialRealizationCapabilities, OpenError> {
+        Ok(self
+            .selected(backend)?
+            .resolver
+            .credential_realization_capabilities())
+    }
 }
 
 /// How a sandboxed/containerized ACP source obtains a run's CLI launch: a fixed
@@ -117,6 +127,16 @@ pub enum LaunchSource {
 }
 
 impl LaunchSource {
+    pub(crate) fn credential_realization_capabilities(
+        &self,
+        backend: &awaken_runtime_contract::resolved::Backend,
+    ) -> Result<awaken_runtime_contract::CredentialRealizationCapabilities, OpenError> {
+        match self {
+            Self::Fixed(_) => Ok(Default::default()),
+            Self::Projected(registry) => registry.credential_realization_capabilities(backend),
+        }
+    }
+
     /// The concrete launch for `activation` — the fixed argv, or the projection of the
     /// run's selected [`AcpCli`]. A projecting source serves only the exact routes in
     /// its registry, so an unadvertised `acp:<other>` fails closed rather than silently
@@ -501,6 +521,7 @@ impl AgentChannelSource for SandboxChannelSource {
                 cli,
                 injection.config_file.clone(),
                 self.provider.config_home(),
+                self.provider.config_home(),
                 self.provider.enforces_read_only(),
             )
         {
@@ -578,6 +599,21 @@ impl AgentChannelSource for BoundLocalChannelSource {
     ) -> Result<AgentSession, OpenError> {
         let mut launch = self.launch.resolve(activation, &self.backend, context)?;
         let cli = self.launch.cli(&self.backend)?;
+        // Cause/decision table for executable lookup and ambient isolation:
+        //
+        // | rule | container | projected CLI | result |
+        // | L1   | false     | false         | local PATH/HOME allowlist |
+        // | L2   | false     | true          | allowlist, then Session HOME |
+        // | L3   | true      | false         | image argv/env only |
+        // | L4   | true      | true          | container argv + Session HOME |
+        //
+        // C1=host executable lookup is required; C2=the image owns lookup;
+        // C3=an opaque projected CLI requires an isolated home. L1/L2 satisfy
+        // C1 through the one ACP allowlist, L3/L4 exclude host PATH because C2,
+        // and L2/L4 replace any admitted host HOME because C3.
+        if !self.sandbox.is_container() {
+            launch.env = awaken_run_executor_acp::with_local_host_launch_environment(launch.env);
+        }
         if let Some(cli) = cli {
             if self.sandbox.is_container() {
                 launch.argv = cli
@@ -591,8 +627,9 @@ impl AgentChannelSource for BoundLocalChannelSource {
             // config file — at a directory realized inside the bound Session
             // environment. A sentinel forces the directory to exist before launch.
             let config_home = self.sandbox.config_home();
+            let config_home_logical = self.sandbox.config_home_logical();
             self.sandbox
-                .materialize_inline(&format!("{config_home}/.awaken-config-home"), b"")
+                .materialize_inline(&format!("{config_home_logical}/.awaken-config-home"), b"")
                 .await
                 .map_err(|error| OpenError(format!("materialize ACP config home: {error}")))?;
             launch.env.retain(|var| var.name != cli.config_home_env);
@@ -629,9 +666,15 @@ impl AgentChannelSource for BoundLocalChannelSource {
             None => awaken_run_executor_acp::McpInjection::default(),
         };
         let config_home = self.sandbox.config_home();
+        let config_home_logical = self.sandbox.config_home_logical();
         if let Some(cli) = cli
-            && let Some((mount, (env_key, env_val))) =
-                acp_config_mount(cli, injection.config_file.clone(), &config_home, false)
+            && let Some((mount, (env_key, env_val))) = acp_config_mount(
+                cli,
+                injection.config_file.clone(),
+                &config_home_logical,
+                &config_home,
+                false,
+            )
         {
             let pc::MountSource::Inline { contents } = mount.source else {
                 return Err(OpenError(
@@ -677,7 +720,8 @@ impl AgentChannelSource for BoundLocalChannelSource {
 fn acp_config_mount(
     cli: &AcpCli,
     config_file: Option<(String, String)>,
-    config_home: &str,
+    materialization_home: &str,
+    exposed_home: &str,
     read_only: bool,
 ) -> Option<(pc::MountRequirement, (String, String))> {
     let (rel_path, contents) = config_file?;
@@ -685,7 +729,7 @@ fn acp_config_mount(
         pc::MountRequirement {
             mount_id: "acp-config".to_string(),
             source: pc::MountSource::Inline { contents },
-            mount_path: format!("{config_home}/{rel_path}"),
+            mount_path: format!("{materialization_home}/{rel_path}"),
             access: if read_only {
                 pc::MountAccess::ReadOnly
             } else {
@@ -694,7 +738,7 @@ fn acp_config_mount(
             lifetime: pc::MountLifetime::PerRun,
             required: true,
         },
-        (cli.config_home_env.to_string(), config_home.to_string()),
+        (cli.config_home_env.to_string(), exposed_home.to_string()),
     ))
 }
 
@@ -1043,20 +1087,47 @@ mod tests {
         }
     }
 
-    #[derive(Default)]
     struct CapturingAgentSandbox {
+        container: bool,
         command: Mutex<Option<pc::Command>>,
         materialized: Mutex<Vec<(String, Vec<u8>)>>,
+    }
+
+    impl Default for CapturingAgentSandbox {
+        fn default() -> Self {
+            Self {
+                container: true,
+                command: Mutex::new(None),
+                materialized: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl CapturingAgentSandbox {
+        fn local() -> Self {
+            Self {
+                container: false,
+                ..Self::default()
+            }
+        }
     }
 
     #[async_trait]
     impl crate::session_environment::AgentSandbox for CapturingAgentSandbox {
         fn is_container(&self) -> bool {
-            true
+            self.container
         }
 
         fn config_home(&self) -> String {
             SANDBOX_CONFIG_HOME.to_string()
+        }
+
+        fn config_home_logical(&self) -> String {
+            if self.container {
+                SANDBOX_CONFIG_HOME.to_string()
+            } else {
+                WORKDIR_CONFIG_HOME.to_string()
+            }
         }
 
         fn workspace_cwd(&self) -> String {
@@ -1132,6 +1203,90 @@ mod tests {
             vec!["claude-agent-acp"],
             "the bound container uses the catalog's preinstalled argv"
         );
+        assert!(
+            !command
+                .as_ref()
+                .unwrap()
+                .env
+                .iter()
+                .any(|entry| entry.name == "PATH"),
+            "L4: a container must use image lookup rather than the Worker's PATH"
+        );
+    }
+
+    #[tokio::test]
+    async fn bound_local_launch_reuses_host_path_but_replaces_host_home() {
+        let sandbox = Arc::new(CapturingAgentSandbox::local());
+        let source = bound_projecting_source(sandbox.clone(), "gemini");
+
+        source
+            .open(
+                &acp_activation("acp:gemini"),
+                &awaken_runtime_contract::RuntimeRunContext::new(),
+            )
+            .await
+            .expect("open the bound local agent");
+
+        let command = sandbox.command.lock().unwrap();
+        let command = command.as_ref().expect("agent was spawned");
+        let inline = |name: &str| {
+            command.env.iter().find_map(|entry| {
+                if entry.name != name {
+                    return None;
+                }
+                match &entry.value {
+                    pc::EnvValue::Inline { value } => Some(value.as_str()),
+                    pc::EnvValue::Secret { .. } => None,
+                }
+            })
+        };
+        assert_eq!(
+            inline("PATH"),
+            std::env::var("PATH").ok().as_deref(),
+            "L2: a local projected CLI uses the canonical host PATH allowlist"
+        );
+        assert_eq!(
+            inline("HOME"),
+            Some(SANDBOX_CONFIG_HOME),
+            "L2: the Session config home replaces any admitted host HOME"
+        );
+        assert_eq!(command.argv.first().map(String::as_str), Some("gemini"));
+    }
+
+    #[tokio::test]
+    async fn bound_fixed_launch_admits_host_path_only_outside_a_container() {
+        for (container, expect_path) in [(false, true), (true, false)] {
+            let sandbox = Arc::new(if container {
+                CapturingAgentSandbox::default()
+            } else {
+                CapturingAgentSandbox::local()
+            });
+            let source = BoundLocalChannelSource {
+                sandbox: sandbox.clone(),
+                launch: LaunchSource::Fixed(AcpLaunch::custom(vec!["fixture".into()], vec![])),
+                codec: awaken_run_executor_acp::Codec::Newline,
+                backend: awaken_runtime_contract::resolved::Backend::Acp { cli: String::new() },
+                mcp_servers: Vec::new(),
+            };
+            source
+                .open(
+                    &acp_activation("acp"),
+                    &awaken_runtime_contract::RuntimeRunContext::new(),
+                )
+                .await
+                .expect("capture the fixed launch");
+            let command = sandbox.command.lock().unwrap();
+            assert_eq!(
+                command
+                    .as_ref()
+                    .unwrap()
+                    .env
+                    .iter()
+                    .any(|entry| entry.name == "PATH"),
+                expect_path,
+                "L1/L3: host lookup belongs only to a local launch"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1278,6 +1433,7 @@ mod tests {
             cli,
             Some(("config.toml".into(), "[mcp_servers.gh]\n".into())),
             SANDBOX_CONFIG_HOME,
+            SANDBOX_CONFIG_HOME,
             true,
         )
         .expect("codex gets a config mount");
@@ -1292,6 +1448,7 @@ mod tests {
             cli,
             Some(("config.toml".into(), "x".into())),
             WORKDIR_CONFIG_HOME,
+            WORKDIR_CONFIG_HOME,
             false,
         )
         .unwrap();
@@ -1301,7 +1458,10 @@ mod tests {
 
         // A session-server CLI (claude, no config file) → no config mount.
         let claude = awaken_run_executor_acp::acp_cli("claude").unwrap();
-        assert!(acp_config_mount(claude, None, SANDBOX_CONFIG_HOME, true).is_none());
+        assert!(
+            acp_config_mount(claude, None, SANDBOX_CONFIG_HOME, SANDBOX_CONFIG_HOME, true,)
+                .is_none()
+        );
     }
 
     #[tokio::test]

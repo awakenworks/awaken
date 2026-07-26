@@ -33,15 +33,16 @@ pub use boundary::{BoundaryOutcome, evaluate_boundary};
 pub use capture::{CaptureDecision, ContentCapture, ContentKind, ContentRedactor, NoopRedactor};
 pub use control::LiveRunControl;
 pub use credential::{
-    AttemptCredentialBinding, AttemptCredentialRealization, CandidateFingerprint, CredentialAccess,
-    CredentialAdmissionError, CredentialEnvelope, CredentialExecutionPolicy,
-    CredentialMaterialBinding, CredentialMaterialError, CredentialMaterialRequest,
-    CredentialMaterialResolver, CredentialMaterialSource, CredentialRealizationCapabilities,
-    CredentialRealizationKind, CredentialRealizationPlan, CredentialRealizationProfile,
-    CredentialRealizationReceipt, CredentialRealizationRecordError, CredentialRealizationRecorder,
-    CredentialReceiptError, CredentialRef, CredentialRefreshAccess, CredentialUsage,
-    ModelExposurePolicy, PlaintextBoundary, PlaintextHolder, ResolvedCredentialMaterial,
-    SealedCredentialEnvelopeRef, TokenEndpointAuth, TrustDomainRef, candidate_fingerprint,
+    AttemptCredentialBinding, AttemptCredentialBindingError, AttemptCredentialRealization,
+    CandidateFingerprint, CredentialAccess, CredentialAdmissionError, CredentialEnvelope,
+    CredentialExecutionPolicy, CredentialMaterialBinding, CredentialMaterialError,
+    CredentialMaterialRequest, CredentialMaterialResolver, CredentialMaterialSource,
+    CredentialRealizationCapabilities, CredentialRealizationKind, CredentialRealizationPlan,
+    CredentialRealizationProfile, CredentialRealizationReceipt, CredentialRealizationRecordError,
+    CredentialRealizationRecorder, CredentialReceiptError, CredentialRef, CredentialRefreshAccess,
+    CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
+    ResolvedCredentialMaterial, SealedCredentialEnvelopeRef, TokenEndpointAuth, TrustDomainRef,
+    candidate_fingerprint, compile_candidate_credential_bindings,
     verify_credential_realization_receipt,
 };
 pub use data_subject::{

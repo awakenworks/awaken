@@ -19,6 +19,54 @@ use awaken_runtime_contract::resolved::Backend;
 use awaken_runtime_contract::resume::ResumeCommand;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
+static LOCAL_ATTEMPT_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+struct LocalAttemptAuthority {
+    session: std::sync::Weak<SessionCtx>,
+    run_id: awaken_agent_contract::agent::run::Id,
+    bindings: Vec<awaken_runtime_contract::AttemptCredentialBinding>,
+}
+
+impl LocalAttemptAuthority {
+    fn is_current(&self) -> bool {
+        self.session.upgrade().is_some_and(|session| {
+            session
+                .active_run
+                .lock()
+                .expect("active run mutex poisoned")
+                .as_ref()
+                == Some(&self.run_id)
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_runtime_contract::AttemptOwnershipVerifier for LocalAttemptAuthority {
+    async fn verify_current(&self) -> Result<(), awaken_runtime_contract::AttemptOwnershipError> {
+        self.is_current()
+            .then_some(())
+            .ok_or(awaken_runtime_contract::AttemptOwnershipError::Lost)
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_runtime_contract::CredentialRealizationRecorder for LocalAttemptAuthority {
+    async fn record(
+        &self,
+        receipt: awaken_runtime_contract::CredentialRealizationReceipt,
+    ) -> Result<(), awaken_runtime_contract::CredentialRealizationRecordError> {
+        if !self.is_current() {
+            return Err(awaken_runtime_contract::CredentialRealizationRecordError(
+                "process-local attempt lost ownership before receipt".into(),
+            ));
+        }
+        awaken_runtime_contract::verify_credential_realization_receipt(&self.bindings, &receipt)
+            .map_err(|error| {
+                awaken_runtime_contract::CredentialRealizationRecordError(error.to_string())
+            })
+    }
+}
+
 struct ActivationOptions {
     supersede: bool,
     sink: Option<Arc<dyn StreamSink>>,
@@ -231,6 +279,73 @@ impl SharedHost {
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))?
                 .with_live_inbox(ctx.open_live_inbox());
+            let candidates = activation
+                .snapshot
+                .resolved_spec
+                .execution_candidates(activation.model_ref_override.as_deref());
+            let holder = self
+                .session_slots
+                .read(&ctx.thread_id.0, |slot| {
+                    slot.environment_projection.as_ref().map(|environment| {
+                        environment.credential_realization.inference_holder.clone()
+                    })
+                })
+                .flatten();
+            let epoch = LOCAL_ATTEMPT_EPOCH
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                .max(1);
+            let now_unix_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+                .unwrap_or_default();
+            let mut bindings = Vec::new();
+            let mut seen = std::collections::BTreeSet::new();
+            for candidate in &candidates {
+                let backend = Backend::from_ref(&candidate.binding.backend_ref);
+                // Each route is admitted only by the resolver/provider that will
+                // execute that exact candidate. Unioning evidence across fallback
+                // candidates would let one ACP route authorize another route.
+                let installed = match &backend {
+                    Backend::Native => self.inference_routing.credential_realization_capabilities(),
+                    Backend::Acp { .. } => self
+                        .acp
+                        .as_ref()
+                        .ok_or_else(|| HostError::bad_request("ACP backend is not installed"))?
+                        .credential_realization_capabilities(&backend)
+                        .map_err(HostError::bad_request)?,
+                    Backend::Remote { .. } => Default::default(),
+                };
+                let compiled = awaken_runtime_contract::compile_candidate_credential_bindings(
+                    &[*candidate],
+                    holder.as_ref(),
+                    &installed,
+                    epoch,
+                    now_unix_ms,
+                )
+                .map_err(|error| HostError::bad_request(error.to_string()))?;
+                for binding in compiled {
+                    if !seen.insert(binding.candidate_fingerprint.clone()) {
+                        return Err(HostError::bad_request(
+                            "published model candidate is duplicated in the selected fallback set",
+                        ));
+                    }
+                    bindings.push(binding);
+                }
+            }
+            if !bindings.is_empty() {
+                let authority = Arc::new(LocalAttemptAuthority {
+                    session: Arc::downgrade(ctx),
+                    run_id: activation.run_id.clone(),
+                    bindings: bindings.clone(),
+                });
+                context = context
+                    .with_ownership(authority.clone())
+                    .with_credential_realization(
+                        awaken_runtime_contract::AttemptCredentialRealization::new(
+                            bindings, authority,
+                        ),
+                    );
+            }
             if let (Some(mirror), Some(token)) = (
                 options.cancellation_mirror.as_ref(),
                 context.cancellation.clone(),

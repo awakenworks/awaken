@@ -7,6 +7,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs, { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -121,7 +122,34 @@ function terminalCommit(runId: string) {
     ],
     state: [],
     events: [],
-    waiting: null,
+    resume_ticket: null,
+  };
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value !== null && typeof value === 'object') {
+    const object = value as Record<string, unknown>;
+    return `{${Object.keys(object).sort().map((key) =>
+      `${JSON.stringify(key)}:${canonicalJson(object[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function commitOperation(commit: ReturnType<typeof terminalCommit>, runId: string) {
+  const version = Buffer.from('awaken.thread-commit.v1');
+  const payload = Buffer.from(canonicalJson(commit));
+  const versionLength = Buffer.alloc(8);
+  versionLength.writeBigUInt64LE(BigInt(version.length));
+  const payloadLength = Buffer.alloc(8);
+  payloadLength.writeBigUInt64LE(BigInt(payload.length));
+  const hash = createHash('sha256')
+    .update(versionLength).update(version).update(payloadLength).update(payload).digest('hex');
+  return {
+    operation_id: { run_id: runId, ordinal: 0 },
+    expected_thread_version: 0,
+    payload_hash: `sha256:${hash}`,
+    commit,
   };
 }
 
@@ -176,6 +204,14 @@ async function main(): Promise<void> {
     assert.ok(first, 'worker A claimed the Postgres dispatch');
     const runId = first.lease.run_id as string;
 
+    // A keeps authority for its already-issued claim while draining, but is no
+    // longer eligible for a new placement. Do this before starting the delayed
+    // transaction so the administrative request cannot consume the trigger's
+    // bounded delay and accidentally move the assertion past lock release.
+    const draining = await post('/v1/worker/drain', {}, OWNER_A);
+    assert.equal(draining.status, 200, draining.text);
+    assert.equal(draining.json?.mutation, 'applied');
+
     // Make the lease recoverable, then delay only this run's commit. The guard is
     // allowed because A still owns the current epoch; reclaim cannot interleave
     // after that validation because the guard retains FOR UPDATE until commit ends.
@@ -192,30 +228,43 @@ async function main(): Promise<void> {
       FOR EACH ROW EXECUTE FUNCTION e2e_delay_claimed_commit();
     `);
 
+    // Cause-effect graph / decision table:
+    // C1 current epoch + C2 valid canonical operation -> commit holds row lock;
+    // while held, C3 reclaim -> no claim; after release -> higher epoch claim;
+    // the old epoch can neither settle nor duplicate the transcript.
+    //
+    // | Rule | Commit guard | Reclaim time | Epoch used | Result              |
+    // | P1   | held         | during       | new        | null or wait; never re-own |
+    // | P2   | released     | after        | new        | higher epoch claim  |
+    // | P3   | released     | after        | old        | stale settle fenced |
+    const commit = terminalCommit(runId);
     const committing = post(
       '/v1/worker/commit-claimed',
       {
         claim: { run_id: runId, owner: first.lease.owner, epoch: first.lease.epoch },
-        commit: terminalCommit(runId),
+        operation: commitOperation(commit, runId),
       },
       OWNER_A,
     );
     await waitUntilCommitIsBlocked();
 
-    // Remove A from placement while its already-authorized commit is in flight.
-    // B is now the only eligible worker, so the null claim below is evidence of
-    // the database epoch guard (not the placement policy preferring A).
-    const draining = await post('/v1/worker/drain', {}, OWNER_A);
-    assert.equal(draining.status, 200, draining.text);
-    assert.equal(draining.json?.mutation, 'applied');
-
-    const blockedReclaim = await post('/v1/worker/dispatch/claim', {}, OWNER_B);
-    assert.equal(blockedReclaim.status, 200, blockedReclaim.text);
-    assert.equal(
-      blockedReclaim.json?.claimed,
-      null,
-      'FOR UPDATE guard prevents re-ownership while ThreadCommit is in flight',
-    );
+    // B is the only eligible worker. A store may use SKIP LOCKED and immediately
+    // return null, or wait on the row lock; neither may re-own the row before the
+    // guarded commit releases it.
+    const reclaiming = post('/v1/worker/dispatch/claim', {}, OWNER_B);
+    const earlyReclaim = await Promise.race([
+      reclaiming.then((response) => ({ type: 'response' as const, response })),
+      new Promise<{ type: 'pending' }>((resolve) =>
+        setTimeout(() => resolve({ type: 'pending' }), 250)),
+    ]);
+    if (earlyReclaim.type === 'response') {
+      assert.equal(earlyReclaim.response.status, 200, earlyReclaim.response.text);
+      assert.equal(
+        earlyReclaim.response.json?.claimed,
+        null,
+        'the commit guard forbids re-ownership while the transaction is in flight',
+      );
+    }
 
     const committed = await committing;
     assert.equal(committed.status, 200, `current claimed commit succeeds: ${committed.text}`);
@@ -225,7 +274,9 @@ async function main(): Promise<void> {
     // sqlx queues rollback when the opaque transaction guard is dropped, so the
     // HTTP response may arrive just before PostgreSQL releases the row lock. A
     // real worker polls the queue; mirror that behavior with a bounded deadline.
-    const recovered = await claimEventually(OWNER_B);
+    const reclaimResponse = await reclaiming;
+    assert.equal(reclaimResponse.status, 200, reclaimResponse.text);
+    const recovered = reclaimResponse.json?.claimed ?? await claimEventually(OWNER_B);
     assert.equal(recovered?.lease?.run_id, runId, 'worker B recovers the same run after guard release');
     assert.ok(recovered.lease.epoch > first.lease.epoch, 'recovery increments the monotone fencing epoch');
 
