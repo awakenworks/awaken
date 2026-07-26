@@ -419,12 +419,6 @@ impl SharedHost {
         for tool in &self.admin_tools {
             runtime = runtime.with_tool(tool.clone());
         }
-        // A gate override (slice E) replaces the default authorization gate — e.g.
-        // a scheduling gate that defers tool calls as `ScheduledAction`s so the
-        // durable worker performs them out of band (ADR-0020).
-        if let Some(gate) = &self.gate_override {
-            runtime = runtime.with_gate(gate.clone());
-        }
         // Delegation is a runtime concern: inject the executor so the kernel runs
         // `agent_run` as a sub-agent (native or remote), not the tool registry.
         let published_delegate_targets = installed
@@ -526,6 +520,12 @@ impl SharedHost {
                 .with_tool(wiring.activate_tool);
             skill_descriptors = wiring.descriptors;
             skill_registry = Some(wiring.registry);
+        }
+        // This is the sole final gate replacement point. Skill wiring may decorate
+        // the ordinary base gate above; an explicit host override intentionally
+        // replaces that complete default chain (the scheduled-action scenario).
+        if let Some(gate) = &self.gate_override {
+            runtime = runtime.with_gate(gate.clone());
         }
         // Memory recall is a plugin: it contributes a BeforeInference hook that
         // injects bounded recall as request-only context (never committed). Install

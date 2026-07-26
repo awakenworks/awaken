@@ -64,6 +64,16 @@ fn resource_host(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Sha
     )
 }
 
+fn scenario_deployment() -> awaken_runtime_host::DeploymentConfig {
+    let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
+    deployment.storage_dir = std::env::var("AWAKEN_STORAGE_DIR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(std::path::PathBuf::from);
+    deployment.durable = std::env::var("AWAKEN_INGRESS").as_deref() == Ok("durable");
+    deployment
+}
+
 fn resource_host_with_deployment(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
@@ -829,7 +839,7 @@ pub async fn build_acp_container_router() -> Router {
         .unwrap_or_else(|| {
             std::env::temp_dir().join(format!("awaken-acp-container-{}", std::process::id()))
         });
-    let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
+    let mut deployment = scenario_deployment();
     deployment.storage_dir = Some(storage_dir.clone());
     deployment.sandbox_dir = Some(
         std::env::var("AWAKEN_SANDBOX_DIR")
@@ -975,16 +985,10 @@ pub fn build_real_router() -> Router {
         .or_else(|_| std::env::var("KIMI_MODEL"))
         .unwrap_or_else(|_| default_anthropic_compatible_model(&base).to_string());
     let executor = GenaiExecutor::anthropic_compatible(base, key);
-    let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
-    deployment.storage_dir = std::env::var("AWAKEN_STORAGE_DIR")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .map(std::path::PathBuf::from);
-    deployment.durable = std::env::var("AWAKEN_INGRESS").as_deref() == Ok("durable");
     mount(Arc::new(resource_host_with_deployment(
         Arc::new(executor),
         model,
-        deployment,
+        scenario_deployment(),
     )))
 }
 
@@ -1603,7 +1607,8 @@ impl awaken_runtime_contract::permission::ToolGateHook for ScheduleGate {
 /// completes without any human confirmation.
 pub fn build_schedule_router() -> Router {
     let (model, model_ref) = scenario_model(Arc::new(ProbeModel), "schedule");
-    let host = SharedHost::new(model, model_ref).with_gate_override(Arc::new(ScheduleGate));
+    let host = resource_host_with_deployment(model, model_ref, scenario_deployment())
+        .with_gate_override(Arc::new(ScheduleGate));
     mount(Arc::new(host))
 }
 

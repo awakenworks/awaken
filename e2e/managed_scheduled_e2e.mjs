@@ -30,6 +30,17 @@ const listEvents = async (sessionId) => {
   return events;
 };
 
+const waitForScheduledCompletion = async (sessionId) => {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const events = await listEvents(sessionId);
+    const idle = [...events].reverse().find((event) => event.type === 'session.status_idle');
+    if (idle?.stop_reason?.type === 'end_turn') return events;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return listEvents(sessionId);
+};
+
 async function main() {
   fs.rmSync(STORE_DIR, { recursive: true, force: true });
   fs.mkdirSync(STORE_DIR, { recursive: true });
@@ -42,7 +53,7 @@ async function main() {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'SCHEDULE-ME' }] }],
       betas: BETAS,
     });
-    const events = await listEvents(session.id);
+    const events = await waitForScheduledCompletion(session.id);
 
     // The run completed autonomously — no human confirmation was needed, because
     // the durable worker performed the scheduled tool calls out of band.
