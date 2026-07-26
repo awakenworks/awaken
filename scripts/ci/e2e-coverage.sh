@@ -96,6 +96,7 @@ npm run test:fs
 # vaults/files APIs; managed full-lifecycle/reconnect/terminated/concurrency) was
 # measured as uncovered though the tests exist and pass.
 npm run test:extended
+npm run test:environment-matrix
 # The production `awaken` composition (not the scenario host) proves
 # catalog publication -> snapshot-pinned access -> credential materialization.
 # `test:extended` uses 38411 immediately before this process. Give the CLI

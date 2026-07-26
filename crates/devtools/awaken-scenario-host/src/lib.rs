@@ -394,6 +394,15 @@ pub fn build_worker_router() -> Router {
     mount_with_environments(host)
 }
 
+/// Echo-model composition with the official Environment API, exact sandbox-policy
+/// store, Resource Catalog, Managed Sessions, and all protocol adapters. It exists
+/// solely to drive the orthogonal configuration matrix without application-auth
+/// concerns obscuring the baseline/provisioning behavior under test.
+pub fn build_environment_matrix_router() -> Router {
+    let (model, model_ref) = scenario_model(Arc::new(EchoModel), "environment-matrix");
+    mount_with_environments(Arc::new(resource_host(model, model_ref)))
+}
+
 /// A fake ACP agent speaking the OFFICIAL JSON-RPC 2.0 wire (shell builtins only,
 /// so it survives `env_clear`): answer `initialize` (id 1) and `session/new`
 /// (id 2), then on `session/prompt` (id 3) stream a tool call, its completed
@@ -802,22 +811,40 @@ pub async fn build_acp_container_router() -> Router {
             std::env::temp_dir().join(format!("awaken-acp-container-{}", std::process::id()))
         });
     let resources = awaken_server::embedded_resource_plane(&storage_dir);
-    let host = SharedHost::new_with_resource_plane(Arc::new(EchoModel), "awaken", resources);
+    let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
+    deployment.storage_dir = Some(storage_dir.clone());
+    deployment.sandbox_dir = Some(
+        std::env::var("AWAKEN_SANDBOX_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| storage_dir.join("sandboxes")),
+    );
+    deployment.sandbox_tier = match std::env::var("SESSION_ENVIRONMENT_TIER").as_deref() {
+        Ok("local") => awaken_runtime_host::SandboxTier::Local,
+        Ok("namespace") | Err(_) => awaken_runtime_host::SandboxTier::Namespace,
+        Ok(other) => panic!("unsupported scenario Session environment tier: {other}"),
+    };
+    deployment.sandbox_tier_explicit = true;
+    let host = SharedHost::new_with_resource_plane_and_deployment(
+        Arc::new(EchoModel),
+        "awaken",
+        resources,
+        deployment,
+    );
     awaken_server::install_platform_memory_data_plane(&host);
     let argv = std::env::var("AWAKEN_ACP_ARGV")
         .expect("container scenario requires AWAKEN_ACP_ARGV")
         .split_whitespace()
         .map(str::to_string)
         .collect();
-    let host =
-        host.with_store_dir(storage_dir)
-            .with_acp_launch_source(
-                awaken_server::relay_hand_executor_factory(),
-                awaken_runtime_host::LaunchSource::Fixed(
-                    awaken_run_executor_acp::AcpLaunch::custom(argv, vec![]),
-                ),
-            )
-            .await;
+    let host = host
+        .with_acp_launch_source(
+            awaken_server::relay_hand_executor_factory(),
+            awaken_runtime_host::LaunchSource::Fixed(awaken_run_executor_acp::AcpLaunch::custom(
+                argv,
+                vec![],
+            )),
+        )
+        .await;
     // Use the same shared Resource Catalog + Managed ACL assembly as every other
     // scenario, with the exact EnvironmentState mounted by the environment API.
     mount_with_environments(Arc::new(host))

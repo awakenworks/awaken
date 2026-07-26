@@ -110,13 +110,24 @@ async function main() {
   fs.mkdirSync(TMP, { recursive: true });
   const repository = seedRepository();
   const fixtureRepository = seedAgentFixtureRepository();
+  const home = `${TMP}/home`;
+  fs.mkdirSync(`${home}/.awaken`, { recursive: true });
+  fs.writeFileSync(`${home}/.awaken/config.toml`, [
+    `data_dir = ${JSON.stringify(`${TMP}/storage`)}`,
+    `sandbox_tier = ${JSON.stringify(TIER)}`,
+    `sandbox_dir = ${JSON.stringify(`${TMP}/sandboxes`)}`,
+    '',
+  ].join('\n'));
   const serverEnv = {
-    AWAKEN_SANDBOX_TIER: TIER,
+    HOME: home,
+    // Scenario-only fixed-launch composition still consumes these explicit test
+    // knobs; the production CLI independently resolves the same values from TOML.
+    SESSION_ENVIRONMENT_TIER: TIER,
     AWAKEN_SANDBOX_DIR: `${TMP}/sandboxes`,
-    AWAKEN_ACP_ARGV: TIER === 'namespace'
-      ? 'node /workspace/fixture/namespace-agent.mjs'
-      : `node ${TMP}/fixture-seed/namespace-agent.mjs`,
     AWAKEN_STORAGE_DIR: `${TMP}/storage`,
+    AWAKEN_ACP_ARGV: TIER === 'namespace'
+      ? `${process.execPath} /workspace/fixture/namespace-agent.mjs`
+      : `${process.execPath} ${TMP}/fixture-seed/namespace-agent.mjs`,
   };
   let running = spawnServer('acp-container', PORT, serverEnv);
   let server = running.server;
@@ -241,6 +252,16 @@ async function main() {
         fs.existsSync(`${TMP}/sandboxes/${session.id}`),
         'a process crash retains the namespace tree for durable adoption',
       );
+      assert.ok(
+        fs.existsSync(`${TMP}/storage/sessions.db`),
+        'the frozen Session baseline was committed before the crash',
+      );
+      const durableSession = execFileSync(
+        'sqlite3',
+        [`${TMP}/storage/sessions.db`, `SELECT session_id FROM managed_session WHERE session_id = '${session.id}'`],
+        { encoding: 'utf8' },
+      ).trim();
+      assert.equal(durableSession, session.id, 'the durable repository contains the Session row');
       running = spawnServer('acp-container', PORT, serverEnv);
       server = running.server;
       await waitForPort(PORT, 180_000, server);

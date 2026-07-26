@@ -119,12 +119,17 @@ async function assertCorruptAggregateRejected(baseUrl, aggregatePath, clean, lab
 
 async function main() {
   const managementDir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-skill-pin-mgmt-'));
-  const storageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-skill-pin-store-'));
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-skill-pin-home-'));
+  const configDir = path.join(homeDir, '.awaken');
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(path.join(configDir, 'config.toml'), [
+    `data_dir = ${JSON.stringify(managementDir)}`,
+    `control_seal_key = ${JSON.stringify(SEAL_KEY)}`,
+    'sandbox_tier = "local"',
+    '',
+  ].join('\n'));
   const env = {
-    AWAKEN_MGMT_DIR: managementDir,
-    AWAKEN_MGMT_SEAL_KEY: SEAL_KEY,
-    AWAKEN_STORAGE_DIR: storageDir,
-    AWAKEN_STORE: 'fs',
+    HOME: homeDir,
   };
   let server = null;
   try {
@@ -276,7 +281,7 @@ async function main() {
   } finally {
     if (server) await stopServer(server);
     fs.rmSync(managementDir, { recursive: true, force: true });
-    fs.rmSync(storageDir, { recursive: true, force: true });
+    fs.rmSync(homeDir, { recursive: true, force: true });
   }
 }
 
