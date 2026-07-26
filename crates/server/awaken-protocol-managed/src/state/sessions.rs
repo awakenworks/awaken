@@ -540,14 +540,8 @@ impl ManagedState {
         let resources = req
             .resources
             .iter()
-            .map(|resource| {
-                parse_session_input(resource).ok_or_else(|| {
-                    StateError::Run(RunError::bad_request(
-                        "invalid resource: unsupported type or malformed fields",
-                    ))
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(crate::types::resource::ResourceInput::to_parsed_input)
+            .collect::<Vec<_>>();
         // Lower compatibility Repository URLs/tokens before the neutral resolver:
         // the catalog receives a Session-scoped definition and a Vault reference,
         // never the token. File/Memory already carry platform identities on wire.

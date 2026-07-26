@@ -176,6 +176,7 @@ async fn schedule_cron_is_validated_and_echoed_at_the_wire() {
             "agent": "agent_x",
             "environment_id": "env_1",
             "name": "nightly",
+            "initial_events": [{ "type":"user.message", "content":[{"type":"text", "text":"go"}] }],
             "schedule": { "type": "cron", "expression": "0 9 * * 1-5", "timezone": "UTC" }
         })),
     )
@@ -194,6 +195,7 @@ async fn schedule_cron_is_validated_and_echoed_at_the_wire() {
             "agent": "agent_x",
             "environment_id": "env_1",
             "name": "bad",
+            "initial_events": [{ "type":"user.message", "content":[{"type":"text", "text":"go"}] }],
             "schedule": { "type": "cron", "expression": "0 99 * * *", "timezone": "UTC" }
         })),
     )
@@ -210,6 +212,7 @@ async fn schedule_cron_is_validated_and_echoed_at_the_wire() {
             "agent": "agent_x",
             "environment_id": "env_1",
             "name": "noexpr",
+            "initial_events": [{ "type":"user.message", "content":[{"type":"text", "text":"go"}] }],
             "schedule": { "type": "cron", "timezone": "UTC" }
         })),
     )

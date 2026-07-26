@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::agent::{AgentSkill, AgentTool, UrlMcpServer};
+use super::resource::ResourceInput;
 
 /// The Anthropic error envelope: `{ "type": "error", "error": { "type", "message" } }`.
 /// The SDK parses this shape to populate `err.error.type` / `err.error.message`;
@@ -188,11 +189,10 @@ pub struct SessionCreateParams {
     /// by exact `mcp_server_url`).
     #[serde(default)]
     pub vault_ids: Vec<String>,
-    /// Mounted resources (ADR-0038): file / memory_store / github_repository entries
-    /// the SDK sends on `sessions.create`. Kept as opaque `Value`s (the wire shapes
-    /// differ per kind); the state layer lowers each into a typed input binding.
+    /// Mounted resources (ADR-0038), decoded as the SDK's tagged union before the
+    /// state layer lowers them into neutral input bindings.
     #[serde(default)]
-    pub resources: Vec<Value>,
+    pub resources: Vec<ResourceInput>,
 }
 
 /// One MCP server on the wire (`BetaManagedAgentsMCPServerURLDefinition` /
@@ -320,6 +320,13 @@ pub enum ConfirmResult {
     Deny,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum OutcomeRubric {
+    Text { content: String },
+    File { file_id: String },
+}
+
 /// Inbound events a client posts to `POST /v1/sessions/{id}/events`. M1 acts on
 /// `user.message`; the rest deserialize (so the batch is accepted) and are
 /// wired in later milestones.
@@ -368,7 +375,7 @@ pub enum InboundEvent {
     #[serde(rename = "user.define_outcome")]
     UserDefineOutcome {
         description: String,
-        rubric: Value,
+        rubric: OutcomeRubric,
         #[serde(default)]
         max_iterations: Option<u32>,
     },

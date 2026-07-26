@@ -11,6 +11,31 @@ import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import { withScenarioServer, pass } from './harness.mjs';
 
+/**
+ * Causal graph
+ *
+ * typed deployment config -> durable deployment -> manual/scheduled trigger
+ *      |                                              |
+ *      + metadata patch/null clear                    v
+ *      + schedule replace/null clear          create Session -> send initial event
+ *      + resource full replacement                    |
+ *                                                     v
+ *                                            deployment run links Session
+ *
+ * Decision table
+ *
+ * | case | initial event | metadata update | schedule update | behavior |
+ * |------|---------------|-----------------|-----------------|----------|
+ * | D1   | valid user    | absent          | absent          | create active deployment |
+ * | D2   | retained      | upsert + delete | absent          | patch keys, preserve others |
+ * | D3   | retained      | absent          | null            | clear schedule, remain active |
+ * | D4   | valid user    | absent          | absent          | run creates linked Session |
+ * | D5   | invalid union | any             | any             | admission rejects; no deployment |
+ *
+ * Assertions below target lifecycle and mutation effects through the official SDK,
+ * not only response decoding.
+ */
+
 const BETAS = ['managed-agents-2026-04-01'];
 
 async function drain(pagePromise) {
@@ -23,12 +48,20 @@ async function main() {
   try {
     await withScenarioServer('management', 'mcp', 38140, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
+      const environment = await client.beta.environments.create({
+        name: 'deployment-e2e',
+        config: { type: 'cloud' },
+        betas: BETAS,
+      });
 
       const dep = await client.beta.deployments.create({
         agent: 'agent_x',
-        environment_id: 'env_1',
+        environment_id: environment.id,
         name: 'nightly',
+        description: 'scheduled work',
+        metadata: { keep: 'yes', drop: 'old' },
         initial_events: [{ type: 'user.message', content: [{ type: 'text', text: 'go' }] }],
+        schedule: { type: 'cron', expression: '0 9 * * 1-5', timezone: 'UTC' },
         vault_ids: ['vlt_1'],
         betas: BETAS,
       });
@@ -43,9 +76,28 @@ async function main() {
       assert.equal(got.id, dep.id);
       pass('beta.deployments.retrieve');
 
-      const up = await client.beta.deployments.update(dep.id, { name: 'hourly', betas: BETAS });
+      const up = await client.beta.deployments.update(dep.id, {
+        name: 'hourly',
+        metadata: { drop: null, add: 'new' },
+        betas: BETAS,
+      });
       assert.equal(up.name, 'hourly');
+      assert.deepEqual(up.metadata, { add: 'new', keep: 'yes' });
+      assert.equal(up.schedule?.expression, '0 9 * * 1-5');
       pass('beta.deployments.update');
+
+      const cleared = await client.beta.deployments.update(dep.id, {
+        description: null,
+        schedule: null,
+        resources: null,
+        vault_ids: null,
+        betas: BETAS,
+      });
+      assert.equal(cleared.description, null);
+      assert.equal(cleared.schedule, null);
+      assert.deepEqual(cleared.resources, []);
+      assert.deepEqual(cleared.vault_ids, []);
+      pass('beta.deployments.update null-clears nullable/full-replacement axes');
 
       const paused = await client.beta.deployments.pause(dep.id, { betas: BETAS });
       assert.equal(paused.status, 'paused');
@@ -59,6 +111,8 @@ async function main() {
       assert.equal(run.type, 'deployment_run');
       assert.equal(run.deployment_id, dep.id);
       assert.equal(run.trigger_context.type, 'manual');
+      assert.equal(run.error, null, `unexpected launch error: ${JSON.stringify(run.error)}`);
+      assert.ok(run.session_id, `a run with a valid initial event creates a Session: ${JSON.stringify(run)}`);
       pass('beta.deployments.run -> BetaManagedAgentsDeploymentRun');
 
       const gotRun = await client.beta.deploymentRuns.retrieve(run.id, { betas: BETAS });
@@ -66,6 +120,24 @@ async function main() {
       const runs = await drain(client.beta.deploymentRuns.list({ deployment_id: dep.id, betas: BETAS }));
       assert.ok(runs.some((r) => r.id === run.id), 'the run is listed');
       pass(`beta.deploymentRuns.retrieve / list (${runs.length})`);
+
+      const beforeInvalid = await drain(client.beta.deployments.list({ betas: BETAS }));
+      await assert.rejects(
+        client.beta.deployments.create({
+          agent: 'agent_x',
+          environment_id: 'env_1',
+          name: 'invalid-event',
+          initial_events: [{ type: 'user.interrupt' }],
+          betas: BETAS,
+        }),
+      );
+      const afterInvalid = await drain(client.beta.deployments.list({ betas: BETAS }));
+      assert.equal(
+        afterInvalid.length,
+        beforeInvalid.length,
+        'rejected initial-event union must not create a deployment',
+      );
+      pass('invalid deployment initial event fails before state mutation');
 
       const archived = await client.beta.deployments.archive(dep.id, { betas: BETAS });
       assert.ok(archived.archived_at, 'archived deployment carries archived_at');
