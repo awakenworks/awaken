@@ -11,7 +11,9 @@
 
 use awaken_env_store::{InMemoryEnvRegistry, SqliteEnvRegistry};
 use awaken_session_contract::env_registry::{
-    EnvRegistry, EnvUpdate, EnvironmentConfig, EnvironmentRevision,
+    EnvRegistry, EnvUpdate, EnvironmentConfig, EnvironmentConfigMutation, EnvironmentNetworking,
+    EnvironmentNetworkingMutation, EnvironmentPackages, EnvironmentPackagesMutation,
+    EnvironmentRevision,
 };
 
 fn block<F: std::future::Future>(f: F) -> F::Output {
@@ -158,6 +160,69 @@ async fn scope_round_trips_and_updates<R: EnvRegistry>(r: &R) {
     assert_eq!(updated.revision, EnvironmentRevision(2));
 }
 
+async fn nested_config_patch_is_atomic_and_durable<R: EnvRegistry>(r: &R) {
+    // Cause graph / decision table (run unchanged against memory and SQLite):
+    // | Rule | Present mutation | Omitted sibling | Durable reread |
+    // | P1 | MCP=false | hosts/package flag | siblings preserved |
+    // | P2 | npm=null | pip | npm cleared, pip preserved |
+    let item = r
+        .create(
+            "patch".into(),
+            String::new(),
+            Default::default(),
+            EnvironmentConfig::Cloud {
+                networking: EnvironmentNetworking::Limited {
+                    allowed_hosts: vec!["api.example.test".into()],
+                    allow_mcp_servers: true,
+                    allow_package_managers: true,
+                },
+                packages: EnvironmentPackages {
+                    npm: vec!["tsx".into()],
+                    pip: vec!["httpx".into()],
+                    ..Default::default()
+                },
+            },
+        )
+        .await;
+    r.update(
+        &item.id,
+        EnvUpdate {
+            config: Some(EnvironmentConfigMutation::PatchCloud {
+                networking: Some(EnvironmentNetworkingMutation::Limited {
+                    allowed_hosts: None,
+                    allow_mcp_servers: Some(Some(false)),
+                    allow_package_managers: None,
+                }),
+                packages: Some(EnvironmentPackagesMutation {
+                    npm: Some(None),
+                    ..Default::default()
+                }),
+            }),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("atomic patch");
+    let reread = r.get(&item.id).await.expect("durable reread");
+    let EnvironmentConfig::Cloud {
+        networking:
+            EnvironmentNetworking::Limited {
+                allowed_hosts,
+                allow_mcp_servers,
+                allow_package_managers,
+            },
+        packages,
+    } = reread.config
+    else {
+        panic!("patch must retain cloud/limited variants")
+    };
+    assert_eq!(allowed_hosts, vec!["api.example.test"], "P1");
+    assert!(!allow_mcp_servers, "P1");
+    assert!(allow_package_managers, "P1");
+    assert!(packages.npm.is_empty(), "P2");
+    assert_eq!(packages.pip, vec!["httpx"], "P2");
+}
+
 async fn run_suite<R: EnvRegistry>(fresh: impl Fn() -> R) {
     unique_ids(&fresh()).await;
     archive_soft_delete_hard(&fresh()).await;
@@ -165,6 +230,7 @@ async fn run_suite<R: EnvRegistry>(fresh: impl Fn() -> R) {
     delete_idempotent(&fresh()).await;
     revision_decision_table(&fresh()).await;
     scope_round_trips_and_updates(&fresh()).await;
+    nested_config_patch_is_atomic_and_durable(&fresh()).await;
 }
 
 // ── Backend rows: each must pass the identical suite ─────────────────────────────

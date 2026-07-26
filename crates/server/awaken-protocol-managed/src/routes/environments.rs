@@ -21,11 +21,15 @@ use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use serde_json::json;
 
-use crate::env_registry::{EnvRegistry, EnvUpdate, InMemoryEnvRegistry};
+use crate::env_registry::{
+    EnvRegistry, EnvUpdate, EnvironmentConfigMutation, EnvironmentNetworkingMutation,
+    EnvironmentPackagesMutation, InMemoryEnvRegistry,
+};
 use crate::routes::ManagedJson;
 use crate::types::environment::{
-    CloudNetworkingParams, DeletedEnvironment, Environment, EnvironmentConfigParams,
-    EnvironmentCreateParams, EnvironmentUpdateParams, Work, WorkHeartbeat, WorkQueueStats,
+    CloudNetworkingParams, CloudNetworkingUpdateParams, DeletedEnvironment, Environment,
+    EnvironmentConfigParams, EnvironmentConfigUpdateParams, EnvironmentCreateParams,
+    EnvironmentUpdateParams, PackagesUpdateParams, Work, WorkHeartbeat, WorkQueueStats,
     WorkUpdateParams,
 };
 use crate::types::{ErrorResponse, Page, PageQuery, paginate};
@@ -132,6 +136,17 @@ impl EnvironmentState {
         env_id: &str,
         runtime: Option<&str>,
     ) -> Option<awaken_session_contract::EnvironmentSnapshot> {
+        self.snapshot_for_session(env_id, runtime, &[]).await
+    }
+
+    /// Compile a Session-specific snapshot from the exact MCP desired set that
+    /// was already normalized by the Managed application boundary.
+    pub async fn snapshot_for_session(
+        &self,
+        env_id: &str,
+        runtime: Option<&str>,
+        mcp_targets: &[awaken_session_contract::McpTarget],
+    ) -> Option<awaken_session_contract::EnvironmentSnapshot> {
         let Some(item) = self.envs.get(env_id).await else {
             return (env_id == "env_local")
                 .then(|| default_environment_snapshot(env_id.to_string(), runtime));
@@ -139,7 +154,10 @@ impl EnvironmentState {
         if item.archived_at.is_some() {
             return None;
         }
-        let network = item.config.network_policy().normalized();
+        let network = item
+            .config
+            .network_policy_for_session(mcp_targets)
+            .normalized();
         let acp = runtime.is_some_and(|value| value.starts_with("acp:"));
         let holder = if acp {
             awaken_credential_contract::PlaintextHolder::new(
@@ -204,7 +222,20 @@ impl EnvironmentState {
         revision: u64,
         runtime: Option<&str>,
     ) -> Option<awaken_session_contract::EnvironmentSnapshot> {
-        let snapshot = self.snapshot(env_id, runtime).await?;
+        self.snapshot_exact_for_session(env_id, revision, runtime, &[])
+            .await
+    }
+
+    pub async fn snapshot_exact_for_session(
+        &self,
+        env_id: &str,
+        revision: u64,
+        runtime: Option<&str>,
+        mcp_targets: &[awaken_session_contract::McpTarget],
+    ) -> Option<awaken_session_contract::EnvironmentSnapshot> {
+        let snapshot = self
+            .snapshot_for_session(env_id, runtime, mcp_targets)
+            .await?;
         (snapshot.revision.0 == revision).then_some(snapshot)
     }
 
@@ -503,7 +534,10 @@ async fn update_env(
     Path(id): Path<String>,
     ManagedJson(params): ManagedJson<EnvironmentUpdateParams>,
 ) -> Result<Json<Environment>, WireError> {
-    let config = params.config.map(canonical_environment_config);
+    let config = params.config.map(|config| match config {
+        None => EnvironmentConfigMutation::Replace(Default::default()),
+        Some(config) => environment_config_mutation(config),
+    });
     let patch = EnvUpdate {
         name: params.name,
         description: params.description,
@@ -517,6 +551,66 @@ async fn update_env(
         .await
         .ok_or_else(|| not_found("environment"))?;
     Ok(Json(crate::env_registry::project_env(&item)))
+}
+
+fn environment_config_mutation(config: EnvironmentConfigUpdateParams) -> EnvironmentConfigMutation {
+    match config {
+        EnvironmentConfigUpdateParams::SelfHosted {} => {
+            EnvironmentConfigMutation::Replace(Default::default())
+        }
+        EnvironmentConfigUpdateParams::Cloud {
+            networking,
+            packages,
+        } => EnvironmentConfigMutation::PatchCloud {
+            networking: networking.map(|value| match value {
+                None => EnvironmentNetworkingMutation::Reset,
+                Some(CloudNetworkingUpdateParams::Unrestricted) => {
+                    EnvironmentNetworkingMutation::Unrestricted
+                }
+                Some(CloudNetworkingUpdateParams::Limited {
+                    allowed_hosts,
+                    allow_mcp_servers,
+                    allow_package_managers,
+                }) => EnvironmentNetworkingMutation::Limited {
+                    allowed_hosts: allowed_hosts.map(|value| {
+                        value.map(|hosts| {
+                            hosts
+                                .into_iter()
+                                .map(crate::types::environment::AllowedHost::into_inner)
+                                .collect::<std::collections::BTreeSet<_>>()
+                                .into_iter()
+                                .collect()
+                        })
+                    }),
+                    allow_mcp_servers,
+                    allow_package_managers,
+                },
+            }),
+            packages: packages.map(|value| match value {
+                None => EnvironmentPackagesMutation {
+                    reset: true,
+                    ..Default::default()
+                },
+                Some(PackagesUpdateParams {
+                    apt,
+                    cargo,
+                    gem,
+                    go,
+                    npm,
+                    pip,
+                    kind: _,
+                }) => EnvironmentPackagesMutation {
+                    reset: false,
+                    apt,
+                    cargo,
+                    gem,
+                    go,
+                    npm,
+                    pip,
+                },
+            }),
+        },
+    }
 }
 
 fn canonical_environment_config(
@@ -538,7 +632,13 @@ fn canonical_environment_config(
                     allow_mcp_servers,
                     allow_package_managers,
                 } => EnvironmentNetworking::Limited {
-                    allowed_hosts: allowed_hosts.unwrap_or_default(),
+                    allowed_hosts: allowed_hosts
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(crate::types::environment::AllowedHost::into_inner)
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .into_iter()
+                        .collect(),
                     allow_mcp_servers: allow_mcp_servers.unwrap_or(false),
                     allow_package_managers: allow_package_managers.unwrap_or(false),
                 },

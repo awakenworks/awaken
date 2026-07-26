@@ -5,7 +5,10 @@
 
 pub use awaken_env_store::InMemoryEnvRegistry;
 use awaken_session_contract::env_registry::OBJECT_AT;
-pub use awaken_session_contract::env_registry::{EnvItem, EnvRegistry, EnvUpdate};
+pub use awaken_session_contract::env_registry::{
+    EnvItem, EnvRegistry, EnvUpdate, EnvironmentConfigMutation, EnvironmentNetworkingMutation,
+    EnvironmentPackagesMutation,
+};
 
 use crate::types::environment::Environment;
 

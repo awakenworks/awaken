@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::SessionNetworkPolicy;
+use crate::{McpTarget, SessionNetworkPolicy};
 use async_trait::async_trait;
 
 /// The frozen presence timestamp stamped on a record (parity with the work queue).
@@ -58,10 +58,13 @@ impl EnvironmentConfig {
         matches!(self, Self::SelfHosted)
     }
 
+    /// Compile the effective, frozen Session egress policy. Environment remains
+    /// the sole network authority; MCP declarations only supply the exact hosts
+    /// selected by an Environment that opted into them.
     #[must_use]
-    pub fn network_policy(&self) -> SessionNetworkPolicy {
+    pub fn network_policy_for_session(&self, mcp_targets: &[McpTarget]) -> SessionNetworkPolicy {
         match self {
-            Self::Cloud { networking, .. } => networking.network_policy(),
+            Self::Cloud { networking, .. } => networking.network_policy_for_session(mcp_targets),
             Self::SelfHosted => SessionNetworkPolicy::Unrestricted,
         }
     }
@@ -83,17 +86,59 @@ pub enum EnvironmentNetworking {
 }
 
 impl EnvironmentNetworking {
+    /// Resolve Anthropic's semantic limited-network switches into the one host
+    /// allowlist understood by every sandbox provider. This happens before the
+    /// Environment snapshot is fingerprinted, so Runtime never re-opens Agent
+    /// configuration or infers ambient package-manager access.
     #[must_use]
-    pub fn network_policy(&self) -> SessionNetworkPolicy {
+    pub fn network_policy_for_session(&self, mcp_targets: &[McpTarget]) -> SessionNetworkPolicy {
         match self {
             Self::Unrestricted => SessionNetworkPolicy::Unrestricted,
-            Self::Limited { allowed_hosts, .. } => SessionNetworkPolicy::Allowlist {
-                hosts: allowed_hosts.clone(),
+            Self::Limited {
+                allowed_hosts,
+                allow_mcp_servers,
+                allow_package_managers,
+            } => {
+                let mut hosts = allowed_hosts.clone();
+                if *allow_mcp_servers {
+                    hosts.extend(mcp_targets.iter().filter_map(|target| {
+                        McpTarget::identity(&target.url)
+                            .ok()
+                            .map(|identity| identity.host)
+                    }));
+                }
+                if *allow_package_managers {
+                    hosts.extend(
+                        PUBLIC_PACKAGE_REGISTRY_HOSTS
+                            .iter()
+                            .map(ToString::to_string),
+                    );
+                }
+                SessionNetworkPolicy::Allowlist { hosts }.normalized()
             }
-            .normalized(),
         }
     }
 }
+
+/// Canonical public registries represented by Anthropic's
+/// `allow_package_managers` switch. Keeping this catalog at the Environment
+/// policy owner prevents protocol adapters and sandbox providers from growing
+/// competing interpretations.
+pub const PUBLIC_PACKAGE_REGISTRY_HOSTS: &[&str] = &[
+    "archive.ubuntu.com",
+    "crates.io",
+    "deb.debian.org",
+    "files.pythonhosted.org",
+    "index.crates.io",
+    "proxy.golang.org",
+    "pypi.org",
+    "registry.npmjs.org",
+    "rubygems.org",
+    "security.debian.org",
+    "security.ubuntu.com",
+    "static.crates.io",
+    "sum.golang.org",
+];
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -169,7 +214,7 @@ impl EnvItem {
             self.description = description;
         }
         if let Some(config) = patch.config {
-            self.config = config;
+            self.config.apply(config);
         }
         if let Some(scope) = patch.scope {
             self.scope = scope;
@@ -201,10 +246,138 @@ impl EnvItem {
 pub struct EnvUpdate {
     pub name: Option<String>,
     pub description: Option<String>,
-    pub config: Option<EnvironmentConfig>,
+    pub config: Option<EnvironmentConfigMutation>,
     /// Outer `Some` means the field was supplied; inner `None` clears it.
     pub scope: Option<Option<String>>,
     pub metadata: Option<BTreeMap<String, Option<String>>>,
+}
+
+/// Atomic mutation vocabulary for the official Environment update semantics.
+/// It is deliberately owned beside `EnvironmentConfig` so every store applies
+/// omitted-field preservation identically under its existing update lock.
+#[derive(Debug)]
+pub enum EnvironmentConfigMutation {
+    Replace(EnvironmentConfig),
+    PatchCloud {
+        networking: Option<EnvironmentNetworkingMutation>,
+        packages: Option<EnvironmentPackagesMutation>,
+    },
+}
+
+#[derive(Debug)]
+pub enum EnvironmentNetworkingMutation {
+    Reset,
+    Unrestricted,
+    Limited {
+        allowed_hosts: Option<Option<Vec<String>>>,
+        allow_mcp_servers: Option<Option<bool>>,
+        allow_package_managers: Option<Option<bool>>,
+    },
+}
+
+#[derive(Debug, Default)]
+pub struct EnvironmentPackagesMutation {
+    pub reset: bool,
+    pub apt: Option<Option<Vec<String>>>,
+    pub cargo: Option<Option<Vec<String>>>,
+    pub gem: Option<Option<Vec<String>>>,
+    pub go: Option<Option<Vec<String>>>,
+    pub npm: Option<Option<Vec<String>>>,
+    pub pip: Option<Option<Vec<String>>>,
+}
+
+impl EnvironmentConfig {
+    fn apply(&mut self, mutation: EnvironmentConfigMutation) {
+        match mutation {
+            EnvironmentConfigMutation::Replace(config) => *self = config,
+            EnvironmentConfigMutation::PatchCloud {
+                networking,
+                packages,
+            } => {
+                if !matches!(self, Self::Cloud { .. }) {
+                    *self = Self::Cloud {
+                        networking: EnvironmentNetworking::default(),
+                        packages: EnvironmentPackages::default(),
+                    };
+                }
+                let Self::Cloud {
+                    networking: current_networking,
+                    packages: current_packages,
+                } = self
+                else {
+                    unreachable!("Cloud initialized above")
+                };
+                if let Some(mutation) = networking {
+                    current_networking.apply(mutation);
+                }
+                if let Some(mutation) = packages {
+                    current_packages.apply(mutation);
+                }
+            }
+        }
+    }
+}
+
+impl EnvironmentNetworking {
+    fn apply(&mut self, mutation: EnvironmentNetworkingMutation) {
+        match mutation {
+            EnvironmentNetworkingMutation::Reset | EnvironmentNetworkingMutation::Unrestricted => {
+                *self = Self::Unrestricted
+            }
+            EnvironmentNetworkingMutation::Limited {
+                allowed_hosts,
+                allow_mcp_servers,
+                allow_package_managers,
+            } => {
+                if !matches!(self, Self::Limited { .. }) {
+                    *self = Self::Limited {
+                        allowed_hosts: Vec::new(),
+                        allow_mcp_servers: false,
+                        allow_package_managers: false,
+                    };
+                }
+                let Self::Limited {
+                    allowed_hosts: current_hosts,
+                    allow_mcp_servers: current_mcp,
+                    allow_package_managers: current_packages,
+                } = self
+                else {
+                    unreachable!("Limited initialized above")
+                };
+                if let Some(value) = allowed_hosts {
+                    *current_hosts = value.unwrap_or_default();
+                }
+                if let Some(value) = allow_mcp_servers {
+                    *current_mcp = value.unwrap_or(false);
+                }
+                if let Some(value) = allow_package_managers {
+                    *current_packages = value.unwrap_or(false);
+                }
+            }
+        }
+    }
+}
+
+impl EnvironmentPackages {
+    fn apply(&mut self, mutation: EnvironmentPackagesMutation) {
+        if mutation.reset {
+            *self = Self::default();
+            return;
+        }
+        macro_rules! apply_field {
+            ($field:ident) => {
+                if let Some(value) = mutation.$field {
+                    self.$field = value.unwrap_or_default();
+                }
+            };
+        }
+        apply_field!(apt);
+        apply_field!(cargo);
+        apply_field!(gem);
+        apply_field!(go);
+        apply_field!(npm);
+        apply_field!(pip);
+    }
 }
 
 /// The port the environment routes drive. In-memory by default; a durable impl

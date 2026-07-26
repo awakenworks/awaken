@@ -1,7 +1,8 @@
 //! `POST /v1/sessions` resolves the session's `environment_id` to its networking
-//! policy and stages the exact `EnvironmentSnapshot`: a session on a `limited`
-//! environment denies egress, one on `unrestricted` (or an unknown env) keeps the
-//! host network. No coarse boolean becomes a second policy authority.
+//! policy and stages the exact `EnvironmentSnapshot`: semantic MCP/package
+//! exceptions are resolved before the snapshot is frozen and the Runtime sees
+//! only one canonical network fact. No coarse boolean becomes a second policy
+//! authority.
 
 use std::sync::{Arc, Mutex};
 
@@ -70,6 +71,36 @@ impl SessionRuntime for CapturingFake {
     }
 }
 
+#[async_trait::async_trait]
+impl awaken_protocol_managed::McpAttachmentRealizer for CapturingFake {
+    async fn stage_mcp_attachment(
+        &self,
+        request: awaken_session_contract::StageMcpAttachment,
+    ) -> Result<awaken_session_contract::McpRealizationReceipt, RunError> {
+        Ok(awaken_session_contract::McpRealizationReceipt {
+            receipt_fingerprint: request.fingerprint(),
+            generation: request.generation,
+            realization_id: request.realization_id,
+            selected_plaintext_holder: request.selected_plaintext_holder,
+            actual_realization_kind: None,
+        })
+    }
+
+    async fn publish_mcp_generation(
+        &self,
+        _generation: awaken_session_contract::McpGenerationRef,
+    ) -> Result<(), RunError> {
+        Ok(())
+    }
+
+    async fn drain_mcp_generation(
+        &self,
+        _generation: awaken_session_contract::McpGenerationRef,
+    ) -> Result<(), RunError> {
+        Ok(())
+    }
+}
+
 async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
     let mut b = Request::builder().method(method).uri(uri);
     let body = match body {
@@ -91,7 +122,7 @@ async fn session_carries_the_exact_frozen_environment_network() {
     let env_state = Arc::new(EnvironmentState::new());
     let egress = Arc::new(Mutex::new(Vec::new()));
     let managed = Arc::new(
-        ManagedState::new(CapturingFake {
+        ManagedState::new_with_mcp(CapturingFake {
             egress: egress.clone(),
         })
         .with_environments(env_state.clone()),
@@ -148,5 +179,113 @@ async fn session_carries_the_exact_frozen_environment_network() {
     assert_eq!(
         egress.lock().unwrap().last(),
         Some(&awaken_protocol_managed::SessionNetworkPolicy::Unrestricted)
+    );
+}
+
+/// Limited-network behavior cause graph:
+/// C1 Environment is limited; C2 MCP exception enabled; C3 exact MCP target is
+/// present at Session creation; C4 package-manager exception enabled.
+/// E1 the sole snapshot compiler adds exact selected hosts; E2 Runtime receives
+/// that frozen canonical policy; E3 a disabled exception grants nothing.
+///
+/// | Rule | C2 | C3 | C4 | Runtime effect |
+/// |---|---|---|---|---|
+/// | N1 | F | T | F | explicit hosts only; MCP denied |
+/// | N2 | T | T | F | exact MCP host added |
+/// | N3 | T | F | F | no ambient/default MCP host added |
+/// | N4 | F | F | T | canonical public registry hosts added |
+#[tokio::test]
+async fn limited_network_exceptions_change_the_prepared_runtime_policy() {
+    let env_state = Arc::new(EnvironmentState::new());
+    let egress = Arc::new(Mutex::new(Vec::new()));
+    let managed = Arc::new(
+        ManagedState::new_with_mcp(CapturingFake {
+            egress: egress.clone(),
+        })
+        .with_environments(env_state.clone()),
+    );
+    let app = router(managed).merge(environments_router(env_state));
+
+    async fn environment(app: &Router, networking: Value) -> String {
+        let (status, value) = call(
+            app,
+            "POST",
+            "/v1/environments",
+            Some(json!({
+                "name": "limited",
+                "config": { "type": "cloud", "networking": networking }
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        value["id"].as_str().unwrap().to_string()
+    }
+    async fn create_session(app: &Router, environment_id: &str, with_mcp: bool) {
+        let mut body = json!({ "agent": "a", "environment_id": environment_id });
+        if with_mcp {
+            body["mcp_servers"] = json!([{
+                "name": "docs",
+                "url": "https://Docs.Example.test:443/rpc"
+            }]);
+        }
+        let (status, response) = call(app, "POST", "/v1/sessions", Some(body)).await;
+        assert_eq!(status, StatusCode::OK, "{response}");
+    }
+
+    let disabled = environment(
+        &app,
+        json!({
+            "type": "limited",
+            "allowed_hosts": ["api.example.test"],
+            "allow_mcp_servers": false
+        }),
+    )
+    .await;
+    create_session(&app, &disabled, true).await;
+    assert_eq!(
+        egress.lock().unwrap().last(),
+        Some(&awaken_protocol_managed::SessionNetworkPolicy::Allowlist {
+            hosts: vec!["api.example.test".into()]
+        }),
+        "N1 disabled MCP exception has no runtime effect"
+    );
+
+    let enabled = environment(
+        &app,
+        json!({ "type": "limited", "allow_mcp_servers": true }),
+    )
+    .await;
+    create_session(&app, &enabled, true).await;
+    assert_eq!(
+        egress.lock().unwrap().last(),
+        Some(&awaken_protocol_managed::SessionNetworkPolicy::Allowlist {
+            hosts: vec!["docs.example.test".into()]
+        }),
+        "N2 only the exact normalized MCP host reaches Runtime"
+    );
+    create_session(&app, &enabled, false).await;
+    assert_eq!(
+        egress.lock().unwrap().last(),
+        Some(&awaken_protocol_managed::SessionNetworkPolicy::None),
+        "N3 no declared MCP target means no ambient fallback"
+    );
+
+    let packages = environment(
+        &app,
+        json!({ "type": "limited", "allow_package_managers": true }),
+    )
+    .await;
+    create_session(&app, &packages, false).await;
+    let expected = awaken_protocol_managed::SessionNetworkPolicy::Allowlist {
+        hosts: awaken_session_contract::env_registry::PUBLIC_PACKAGE_REGISTRY_HOSTS
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+    }
+    .normalized();
+    assert_eq!(
+        egress.lock().unwrap().last(),
+        Some(&expected),
+        "N4 package-manager exception reaches Runtime as the canonical catalog"
     );
 }

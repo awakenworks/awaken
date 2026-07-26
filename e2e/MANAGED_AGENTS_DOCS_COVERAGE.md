@@ -129,8 +129,13 @@ These are real coverage gaps: awaken implements the behavior, no e2e asserts it.
    The combined thinking-specific no-replay assertion remains provider-gated.
 7. **Deployment run failure taxonomy + auto-pause/auto-archive** (`environment_archived_error`,
    `agent_archived_error`, `session_rate_limited_error`; `has_error` run filter).
-8. **`limited` networking sub-flags** — `allow_mcp_servers` / `allow_package_managers`
-   (default `false`); only `allowed_hosts` is exercised.
+8. ~~**`limited` networking sub-flags**~~ — closed across
+   `management_environments_e2e.mjs` and the Rust `session_egress` behavior suite:
+   omitted/null defaults are false, update omission preserves exact aggregate state,
+   MCP access expands only the Session's normalized declared targets, package-manager
+   access expands the one canonical registry policy, and disabled/empty inputs add no
+   ambient fallback host. The resulting policy is frozen into `SessionInit`; providers
+   without no-bypass allowlist enforcement continue to reject it fail-closed.
 9. ~~**Worker lease-reclaim**~~ — `management_environments_e2e.mjs` proves the
     `reclaim_older_than_ms=0` HTTP boundary and `awaken-work-store` proves the same
     requested age against SQLite durable state.

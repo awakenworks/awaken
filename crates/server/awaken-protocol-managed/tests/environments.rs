@@ -165,6 +165,18 @@ async fn environment_config_admission_follows_the_official_union_decision_table(
             "A5-package",
             json!({"type":"cloud", "packages":{"docker":["x"]}}),
         ),
+        (
+            "A5-host-scheme",
+            json!({"type":"cloud", "networking":{"type":"limited", "allowed_hosts":["https://api.test"]}}),
+        ),
+        (
+            "A5-host-port",
+            json!({"type":"cloud", "networking":{"type":"limited", "allowed_hosts":["api.test:443"]}}),
+        ),
+        (
+            "A5-host-wildcard",
+            json!({"type":"cloud", "networking":{"type":"limited", "allowed_hosts":["*api.test"]}}),
+        ),
     ];
     for (rule, config) in cases {
         let (status, _) = call(
@@ -197,6 +209,83 @@ async fn environment_config_admission_follows_the_official_union_decision_table(
     for manager in ["apt", "cargo", "gem", "go", "npm", "pip"] {
         assert_eq!(cloud["config"]["packages"][manager], json!([]), "{manager}");
     }
+}
+
+/// Update cause graph: a present Cloud patch changes only present nested fields;
+/// omitted fields preserve aggregate state while explicit null resets the field.
+/// The store applies this mutation atomically with the Environment revision.
+///
+/// | Rule | Field | Input | Effect |
+/// |---|---|---|---|
+/// | U1 | limited hosts/package flag | omitted | preserved |
+/// | U2 | MCP flag | false | replaced |
+/// | U3 | npm | null | cleared; pip preserved |
+/// | U4 | networking | null | unrestricted; packages preserved |
+#[tokio::test]
+async fn environment_update_preserves_omitted_and_resets_null_fields() {
+    let app = app();
+    let (status, created) = call(
+        &app,
+        "POST",
+        "/v1/environments",
+        Some(json!({
+            "name": "patchable",
+            "config": {
+                "type": "cloud",
+                "networking": {
+                    "type": "limited",
+                    "allowed_hosts": ["api.example.test"],
+                    "allow_mcp_servers": true,
+                    "allow_package_managers": true
+                },
+                "packages": { "type": "packages", "npm": ["tsx"], "pip": ["httpx"] }
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let id = created["id"].as_str().unwrap();
+
+    let (status, patched) = call(
+        &app,
+        "POST",
+        &format!("/v1/environments/{id}"),
+        Some(json!({
+            "config": {
+                "type": "cloud",
+                "networking": { "type": "limited", "allow_mcp_servers": false },
+                "packages": { "type": "packages", "npm": null }
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        patched["config"]["networking"]["allowed_hosts"],
+        json!(["api.example.test"]),
+        "U1"
+    );
+    assert_eq!(
+        patched["config"]["networking"]["allow_mcp_servers"], false,
+        "U2"
+    );
+    assert_eq!(
+        patched["config"]["networking"]["allow_package_managers"], true,
+        "U1"
+    );
+    assert_eq!(patched["config"]["packages"]["npm"], json!([]), "U3");
+    assert_eq!(patched["config"]["packages"]["pip"], json!(["httpx"]), "U3");
+
+    let (status, reset) = call(
+        &app,
+        "POST",
+        &format!("/v1/environments/{id}"),
+        Some(json!({ "config": { "type": "cloud", "networking": null } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(reset["config"]["networking"]["type"], "unrestricted", "U4");
+    assert_eq!(reset["config"]["packages"]["pip"], json!(["httpx"]), "U4");
 }
 
 #[tokio::test]

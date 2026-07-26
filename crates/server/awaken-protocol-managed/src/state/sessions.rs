@@ -633,21 +633,30 @@ impl ManagedState {
             .clone()
             .or_else(|| agent_environment.map(|binding| binding.environment_id.clone()))
             .unwrap_or_else(|| "env_local".to_string());
+        let mcp_targets = mcp_drafts
+            .iter()
+            .map(|draft| draft.target.clone())
+            .collect::<Vec<_>>();
         let environment = match self.environments.as_ref() {
             Some(environments) => {
                 let snapshot = match (req.environment_id.as_ref(), agent_environment) {
                     (None, Some(binding)) => {
                         environments
-                            .snapshot_exact(
+                            .snapshot_exact_for_session(
                                 &binding.environment_id,
                                 binding.revision,
                                 req.awaken_runtime(),
+                                &mcp_targets,
                             )
                             .await
                     }
                     _ => {
                         environments
-                            .snapshot(&environment_id, req.awaken_runtime())
+                            .snapshot_for_session(
+                                &environment_id,
+                                req.awaken_runtime(),
+                                &mcp_targets,
+                            )
                             .await
                     }
                 };

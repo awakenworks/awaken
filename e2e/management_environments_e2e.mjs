@@ -69,6 +69,9 @@ async function main() {
         ['unknown variant', { type: 'custom_cloud' }],
         ['unknown network field', { type: 'cloud', networking: { type: 'limited', proxy: 'x' } }],
         ['unknown package manager', { type: 'cloud', packages: { docker: ['x'] } }],
+        ['host with scheme', { type: 'cloud', networking: { type: 'limited', allowed_hosts: ['https://api.test'] } }],
+        ['host with port', { type: 'cloud', networking: { type: 'limited', allowed_hosts: ['api.test:443'] } }],
+        ['malformed wildcard', { type: 'cloud', networking: { type: 'limited', allowed_hosts: ['*api.test'] } }],
       ];
       for (const [rule, config] of rejectedConfigs) {
         const response = await fetch(`${baseUrl}/v1/environments`, {
@@ -110,6 +113,53 @@ async function main() {
       assert.equal(nullableCloud.config.networking.allow_package_managers, false);
       assert.deepEqual(nullableCloud.config.packages.apt, []);
       assert.deepEqual(nullableCloud.config.packages.npm, ['tsx']);
+
+      // Environment update cause graph:
+      // a present cloud config patches only present nested fields; omitted
+      // networking/package fields retain the durable aggregate value, explicit
+      // null resets that field to its canonical default, and the next Session
+      // compiles from the resulting exact Environment revision.
+      //
+      // | Rule | Update field | Value | Durable effect |
+      // |---|---|---|---|
+      // | U1 | networking members | omitted | preserve hosts/package flag |
+      // | U2 | allow_mcp_servers | false | replace only that flag |
+      // | U3 | packages.npm | null | clear npm; preserve pip |
+      // | U4 | networking | null | reset to unrestricted; preserve packages |
+      const patchable = await client.beta.environments.create({
+        name: 'patchable-cloud',
+        config: {
+          type: 'cloud',
+          networking: {
+            type: 'limited',
+            allowed_hosts: ['api.example.test'],
+            allow_mcp_servers: true,
+            allow_package_managers: true,
+          },
+          packages: { type: 'packages', npm: ['tsx'], pip: ['httpx'] },
+        },
+        betas: BETAS,
+      });
+      const patched = await client.beta.environments.update(patchable.id, {
+        config: {
+          type: 'cloud',
+          networking: { type: 'limited', allow_mcp_servers: false },
+          packages: { type: 'packages', npm: null },
+        },
+        betas: BETAS,
+      });
+      assert.deepEqual(patched.config.networking.allowed_hosts, ['api.example.test'], 'U1');
+      assert.equal(patched.config.networking.allow_mcp_servers, false, 'U2');
+      assert.equal(patched.config.networking.allow_package_managers, true, 'U1');
+      assert.deepEqual(patched.config.packages.npm, [], 'U3');
+      assert.deepEqual(patched.config.packages.pip, ['httpx'], 'U3');
+      const resetNetwork = await client.beta.environments.update(patchable.id, {
+        config: { type: 'cloud', networking: null },
+        betas: BETAS,
+      });
+      assert.equal(resetNetwork.config.networking.type, 'unrestricted', 'U4');
+      assert.deepEqual(resetNetwork.config.packages.pip, ['httpx'], 'U4');
+      pass('Environment update preserves omitted fields and resets explicit null fields');
       const namesAfterRejectedCreate = (await drain(
         client.beta.environments.list({ betas: BETAS }),
       )).map((item) => item.name);
