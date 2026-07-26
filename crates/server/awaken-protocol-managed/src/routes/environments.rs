@@ -22,8 +22,9 @@ use serde_json::json;
 use crate::env_registry::{EnvRegistry, EnvUpdate, InMemoryEnvRegistry};
 use crate::routes::ManagedJson;
 use crate::types::environment::{
-    DeletedEnvironment, Environment, EnvironmentCreateParams, EnvironmentUpdateParams, Work,
-    WorkHeartbeat, WorkQueueStats, WorkUpdateParams,
+    CloudNetworkingParams, DeletedEnvironment, Environment, EnvironmentConfigParams,
+    EnvironmentCreateParams, EnvironmentUpdateParams, PackagesParams, Work, WorkHeartbeat,
+    WorkQueueStats, WorkUpdateParams,
 };
 use crate::types::{ErrorResponse, Page, PageQuery, paginate};
 use awaken_work_store::InMemoryWorkQueue;
@@ -121,28 +122,7 @@ impl EnvironmentState {
         if item.archived_at.is_some() {
             return None;
         }
-        let authored_network = crate::env_registry::env_network_policy(&item.config);
-        let mut sandbox = item
-            .config
-            .get("sandbox")
-            .and_then(awaken_provisioning_contract::SandboxOverride::from_config_value)
-            .unwrap_or_default();
-        let sandbox_network = sandbox.network.take().map(|network| match network {
-            awaken_provisioning_contract::NetworkPolicy::Unrestricted => {
-                awaken_session_contract::SessionNetworkPolicy::Unrestricted
-            }
-            awaken_provisioning_contract::NetworkPolicy::Allowlist { hosts } => {
-                awaken_session_contract::SessionNetworkPolicy::Allowlist { hosts }
-            }
-            awaken_provisioning_contract::NetworkPolicy::None => {
-                awaken_session_contract::SessionNetworkPolicy::None
-            }
-        });
-        let network = sandbox_network
-            .map_or(authored_network.clone(), |sandbox_network| {
-                authored_network.safe_intersection(&sandbox_network)
-            })
-            .normalized();
+        let network = crate::env_registry::env_network_policy(&item.config).normalized();
         let acp = runtime.is_some_and(|value| value.starts_with("acp:"));
         let holder = if acp {
             awaken_credential_contract::PlaintextHolder::new(
@@ -166,7 +146,9 @@ impl EnvironmentState {
                 awaken_credential_contract::SELF_HOSTED_WORKER_TRUST_DOMAIN,
             ),
         };
-        let sandbox = serde_json::to_value(sandbox).expect("Sandbox requirement serializes");
+        // Anthropic Environment config owns cloud networking/packages and
+        // self-hosted routing only. Awaken sandbox policy has a separate owner.
+        let sandbox = serde_json::json!({});
         let config_fingerprint = awaken_session_contract::EnvironmentFingerprint(
             awaken_session_contract::stable_fingerprint(&(
                 &sandbox,
@@ -184,18 +166,28 @@ impl EnvironmentState {
         })
     }
 
-    /// Create an environment named `name` with the opaque `config` blob
-    /// (`{type, runtime?, sandbox?}`) and seed its healthcheck work item — the same
+    /// Create an environment named `name` with the official typed config union and
+    /// seed its healthcheck work item — the same
     /// effect as `POST /v1/environments`, exposed so an in-process author (the admin
     /// assistant's `admin_draft_environment`) persists through the SAME registry path.
     /// Returns the new environment id.
-    pub async fn author(&self, name: &str, config: serde_json::Value) -> String {
+    pub async fn author(&self, name: &str, config: serde_json::Value) -> Result<String, String> {
+        let typed = serde_json::from_value::<EnvironmentConfigParams>(config)
+            .map_err(|error| format!("invalid Environment config: {error}"))?;
+        let config =
+            canonical_environment_config(typed).map_err(|error| error.1.0.error.message)?;
         let item = self
             .envs
-            .create(name.to_string(), String::new(), Default::default(), config)
+            .create_scoped(
+                name.to_string(),
+                String::new(),
+                Default::default(),
+                None,
+                config,
+            )
             .await;
         self.work.enqueue_healthcheck(&item.id).await;
-        item.id
+        Ok(item.id)
     }
 
     /// Whether `env_id` is a self-hosted environment. Sessions assigned to one are
@@ -252,24 +244,29 @@ fn not_found(what: &str) -> WireError {
     )
 }
 
+fn invalid_environment_config(reason: impl Into<String>) -> WireError {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorResponse::new("invalid_request_error", reason.into())),
+    )
+}
+
 // ---- Environment routes ----------------------------------------------------
 
 async fn create_env(
     State(state): State<Arc<EnvironmentState>>,
     ManagedJson(params): ManagedJson<EnvironmentCreateParams>,
 ) -> Result<Json<Environment>, WireError> {
-    let config = params
-        .config
-        .filter(|v| !v.is_null())
-        .unwrap_or_else(|| json!({ "type": "self_hosted" }));
+    let config = canonical_environment_config(params.config.unwrap_or_default())?;
     // No `scope` on the wire: ownership is credential-implicit (authz enforces the
     // workspace) and any awaken tenancy is an ingress concern.
     let item = state
         .envs
-        .create(
+        .create_scoped(
             params.name,
             params.description.unwrap_or_default(),
             params.metadata,
+            params.scope.map(|scope| scope.as_str().to_string()),
             config,
         )
         .await;
@@ -309,10 +306,15 @@ async fn update_env(
     Path(id): Path<String>,
     ManagedJson(params): ManagedJson<EnvironmentUpdateParams>,
 ) -> Result<Json<Environment>, WireError> {
+    let config = params
+        .config
+        .map(canonical_environment_config)
+        .transpose()?;
     let patch = EnvUpdate {
         name: params.name,
         description: params.description,
-        config: params.config,
+        config,
+        scope: params.scope.map(|scope| Some(scope.as_str().to_string())),
         metadata: params.metadata,
     };
     let item = state
@@ -321,6 +323,89 @@ async fn update_env(
         .await
         .ok_or_else(|| not_found("environment"))?;
     Ok(Json(crate::env_registry::project_env(&item)))
+}
+
+fn canonical_environment_config(
+    config: EnvironmentConfigParams,
+) -> Result<serde_json::Value, WireError> {
+    match config {
+        EnvironmentConfigParams::SelfHosted { extra } => {
+            if !extra.is_empty() {
+                return Err(invalid_environment_config(
+                    "self_hosted config contains unsupported fields",
+                ));
+            }
+            Ok(json!({ "type": "self_hosted" }))
+        }
+        EnvironmentConfigParams::Cloud {
+            networking,
+            packages,
+            extra,
+        } => {
+            if !extra.is_empty() {
+                return Err(invalid_environment_config(
+                    "cloud config contains unsupported fields",
+                ));
+            }
+            let networking = match networking.unwrap_or(CloudNetworkingParams::Unrestricted {
+                extra: Default::default(),
+            }) {
+                CloudNetworkingParams::Unrestricted { extra } => {
+                    if !extra.is_empty() {
+                        return Err(invalid_environment_config(
+                            "unrestricted networking contains unsupported fields",
+                        ));
+                    }
+                    json!({ "type": "unrestricted" })
+                }
+                CloudNetworkingParams::Limited {
+                    allowed_hosts,
+                    allow_mcp_servers,
+                    allow_package_managers,
+                    extra,
+                } => {
+                    if !extra.is_empty() {
+                        return Err(invalid_environment_config(
+                            "limited networking contains unsupported fields",
+                        ));
+                    }
+                    json!({
+                        "type": "limited",
+                        "allowed_hosts": allowed_hosts,
+                        "allow_mcp_servers": allow_mcp_servers,
+                        "allow_package_managers": allow_package_managers,
+                    })
+                }
+            };
+            let PackagesParams {
+                apt,
+                cargo,
+                gem,
+                go,
+                npm,
+                pip,
+                extra,
+            } = packages.unwrap_or_default();
+            if !extra.is_empty() {
+                return Err(invalid_environment_config(
+                    "packages contains unsupported fields",
+                ));
+            }
+            Ok(json!({
+                "type": "cloud",
+                "networking": networking,
+                "packages": {
+                    "type": "packages",
+                    "apt": apt,
+                    "cargo": cargo,
+                    "gem": gem,
+                    "go": go,
+                    "npm": npm,
+                    "pip": pip,
+                }
+            }))
+        }
+    }
 }
 
 async fn delete_env(
@@ -574,7 +659,7 @@ mod tests {
 
     #[tokio::test]
     async fn environment_snapshot_decision_table() {
-        // Cause graph: active exact record -> normalize networking and choose the
+        // Cause graph: active exact Anthropic record -> normalize networking and choose the
         // inference holder while MCP remains on the one Worker relay boundary,
         // then fingerprint. Missing/archived records fail closed;
         // a later edit increments the registry revision but cannot mutate an old
@@ -588,6 +673,7 @@ mod tests {
         // | S4   | missing/archived custom | any | - | None |
         // | S5   | implicit env_local | native/ACP | - | canonical local snapshot |
         // | S6   | active empty limited allowlist | any | - | network None |
+        // Sandbox policy is not part of the Environment graph.
         let state = EnvironmentState::new();
         let item = state
             .envs
@@ -596,8 +682,8 @@ mod tests {
                 String::new(),
                 BTreeMap::new(),
                 json!({
-                    "networking": {"type": "limited", "allowed_hosts": ["a.test", "shared.test"]},
-                    "sandbox": {"network": {"mode": "allowlist", "hosts": ["shared.test", "b.test"]}}
+                    "type": "cloud",
+                    "networking": {"type": "limited", "allowed_hosts": ["a.test", "shared.test"]}
                 }),
             )
             .await;
@@ -605,8 +691,13 @@ mod tests {
         assert_eq!(
             native.network,
             awaken_session_contract::SessionNetworkPolicy::Allowlist {
-                hosts: vec!["shared.test".into()]
+                hosts: vec!["a.test".into(), "shared.test".into()]
             }
+        );
+        assert_eq!(
+            native.sandbox,
+            json!({}),
+            "sandbox policy is not an Environment field"
         );
         assert_eq!(
             native.credential_realization.mcp_holder.boundary,
@@ -673,7 +764,7 @@ mod tests {
                 "closed".into(),
                 String::new(),
                 BTreeMap::new(),
-                json!({"networking": {"type": "limited"}}),
+                json!({"type": "cloud", "networking": {"type": "limited"}}),
             )
             .await;
         assert_eq!(
@@ -681,5 +772,35 @@ mod tests {
             awaken_session_contract::SessionNetworkPolicy::None,
             "S6"
         );
+    }
+
+    #[tokio::test]
+    async fn assistant_authoring_uses_the_same_official_union_guard() {
+        let state = EnvironmentState::new();
+        let id = state
+            .author(
+                "cloud",
+                json!({
+                    "type": "cloud",
+                    "networking": {"type": "limited", "allowed_hosts": ["api.example.com"]}
+                }),
+            )
+            .await
+            .expect("official cloud config");
+        assert!(state.snapshot(&id, None).await.is_some());
+
+        for (case, config) in [
+            (
+                "runtime",
+                json!({"type": "self_hosted", "runtime": "acp:codex"}),
+            ),
+            (
+                "sandbox",
+                json!({"type": "self_hosted", "sandbox": {"isolation": "namespace"}}),
+            ),
+        ] {
+            let error = state.author(case, config).await.expect_err(case);
+            assert!(error.contains("unsupported fields"), "{case}: {error}");
+        }
     }
 }

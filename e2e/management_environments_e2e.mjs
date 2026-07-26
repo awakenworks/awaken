@@ -36,19 +36,53 @@ async function main() {
       assert.ok(env.id.startsWith('env_'), `id: ${env.id}`);
       pass('beta.environments.create -> BetaEnvironment');
 
-      // Byte-faithful to the official BetaEnvironment: ownership is credential-
-      // implicit, so the object carries no `scope`, and a `scope` sent in the body
-      // is ignored (non-official field) rather than echoed.
+      // Scope decision table: omitted is absent; organization/account round-trip;
+      // an unknown scope fails before Environment creation.
       assert.equal(env.scope, undefined, 'SDK-created environment carries no scope');
-      const rawRes = await fetch(`${baseUrl}/v1/environments`, {
+      const scoped = await client.beta.environments.create({
+        name: 'scoped', scope: 'organization', betas: BETAS,
+      });
+      assert.equal(scoped.scope, 'organization');
+      const scopedUpdate = await client.beta.environments.update(scoped.id, {
+        scope: 'account', betas: BETAS,
+      });
+      assert.equal(scopedUpdate.scope, 'account');
+      const invalidScope = await fetch(`${baseUrl}/v1/environments`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'anthropic-beta': BETAS[0] },
-        body: JSON.stringify({ name: 'raw-scoped', scope: 'org_acme/ws_eng/proj_x' }),
+        body: JSON.stringify({ name: 'bad-scope', scope: 'workspace' }),
       });
-      assert.equal(rawRes.status, 200);
-      const rawEnv = await rawRes.json();
-      assert.ok(!('scope' in rawEnv), 'a body scope is ignored, not echoed on the wire');
-      pass('environment is byte-faithful: no scope field, body scope ignored');
+      assert.equal(invalidScope.status, 400);
+      pass('official Environment scope omission/create/update/rejection decision table');
+
+      // Environment-config admission cause graph:
+      // official tagged union + official nested fields -> canonical resource;
+      // any private sandbox/unknown variant/unknown nested field -> 400 before
+      // an Environment or healthcheck work item can be created.
+      const rejectedConfigs = [
+        ['private sandbox', { type: 'self_hosted', sandbox: { isolation: 'container' } }],
+        ['unknown variant', { type: 'custom_cloud' }],
+        ['unknown network field', { type: 'cloud', networking: { type: 'limited', proxy: 'x' } }],
+        ['unknown package manager', { type: 'cloud', packages: { docker: ['x'] } }],
+      ];
+      for (const [rule, config] of rejectedConfigs) {
+        const response = await fetch(`${baseUrl}/v1/environments`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'anthropic-beta': BETAS[0] },
+          body: JSON.stringify({ name: rule, config }),
+        });
+        assert.equal(response.status, 400, rule);
+      }
+      const cloud = await client.beta.environments.create({
+        name: 'official-cloud-defaults',
+        config: { type: 'cloud' },
+        betas: BETAS,
+      });
+      assert.equal(cloud.config.networking.type, 'unrestricted');
+      for (const manager of ['apt', 'cargo', 'gem', 'go', 'npm', 'pip']) {
+        assert.deepEqual(cloud.config.packages[manager], [], manager);
+      }
+      pass('official Environment config union accepts canonical cases and rejects extensions');
 
       const gotEnv = await client.beta.environments.retrieve(env.id, { betas: BETAS });
       assert.equal(gotEnv.id, env.id);

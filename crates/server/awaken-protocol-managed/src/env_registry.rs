@@ -25,6 +25,7 @@ pub(crate) fn project_env(item: &EnvItem) -> Environment {
         name: item.name.clone(),
         description: item.description.clone(),
         metadata: item.metadata.clone(),
+        scope: item.scope.clone(),
         config: item.config.clone(),
     }
 }
