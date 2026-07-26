@@ -5,6 +5,7 @@
 // HITL approval path parks).
 
 import net from 'node:net';
+import fs from 'node:fs';
 import { spawn, execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -18,6 +19,15 @@ process.env.E2E_PORT ??= String(processPortBase);
 process.env.E2E_WORKER_PORT ??= String(processPortBase + 50);
 
 export const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const E2E_HOME_ROOT = `/tmp/awaken-e2e-home-${process.pid}`;
+const E2E_HOME = `${E2E_HOME_ROOT}/home`;
+fs.rmSync(E2E_HOME_ROOT, { recursive: true, force: true });
+fs.mkdirSync(`${E2E_HOME}/.awaken`, { recursive: true });
+fs.writeFileSync(
+  `${E2E_HOME}/.awaken/config.toml`,
+  `data_dir = ${JSON.stringify(`${E2E_HOME_ROOT}/data`)}\n`,
+);
+process.on('exit', () => fs.rmSync(E2E_HOME_ROOT, { recursive: true, force: true }));
 
 // Build the server once, up front, and resolve its binary path. We spawn the
 // binary directly (not `cargo run`) so each server is a single process the
@@ -38,7 +48,7 @@ let serverBin = null;
 // Keeping this merge in one place prevents the three spawn entry points from
 // recreating competing precedence rules.
 function serverProcessEnv(addr, configured = {}) {
-  return { ...process.env, ...configured, AWAKEN_HTTP_ADDR: addr };
+  return { ...process.env, HOME: E2E_HOME, ...configured, AWAKEN_HTTP_ADDR: addr };
 }
 
 function ensureBuilt() {
