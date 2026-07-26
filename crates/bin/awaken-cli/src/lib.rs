@@ -744,6 +744,14 @@ fn identity_wiring(
 fn awaken_cloud_authz(
     config: &config::CloudIamConfig,
 ) -> Result<Arc<RemoteManagementAuthz>, String> {
+    if let Some(path) = &config.service_token_file {
+        return RemoteManagementAuthz::connect_with_projected_service_token(
+            config.base_url.clone(),
+            config.audience.clone(),
+            config.issuer.clone(),
+            path.clone(),
+        );
+    }
     let user_token = config
         .access_token
         .clone()

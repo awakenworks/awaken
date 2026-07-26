@@ -199,3 +199,33 @@ DTOs are removed by the scoped admin migration. Historical migration files stay
 append-only. A Session persists the effective published-or-explicit-override MCP
 projection needed for restart; that immutable Session value is not another
 authoring aggregate.
+
+## Amendment (2026-07-26): Hosted Management uses workload identity
+
+`awaken-cloud` identity has two compositions over the same
+`RemoteManagementAuthz` adapter. A local interactive process may use the cached
+Cloud login as its default request bearer and as the remote PDP carrier. A
+server-mode Awaken Management process has no local user and instead requires a
+dedicated projected service-token file; browser requests must present their own
+bearer. The projected token is read by the IAM HTTP transport for every PDP
+attempt, so atomic replacement rotates it without restarting Management.
+
+```text
+browser bearer -> local JWT verification -> subject principal
+Management projected token file -> remote PDP carrier
+subject + exact Workspace + action -> IAM decision
+```
+
+| Mode | Request bearer | Management token file | Result |
+|---|---|---|---|
+| local | absent | absent | cached Cloud login may authenticate |
+| local | valid | absent | explicit bearer overrides cached login |
+| server | valid | readable, non-empty | authenticate user, authorize through IAM |
+| server | absent/invalid | any | `401`; workload identity is not a user identity |
+| server | valid | missing/empty/expired | fail closed at PDP; no local authorization fallback |
+| server | any | Flow or another workload's token | IAM audience/subject policy denies |
+
+Server mode rejects an inline service token, a missing token file, and dual
+inline/file configuration before serving. Management never mounts a Flow token
+or an IAM signing key, and Runtime/resource stores remain unaware of this
+deployment credential.

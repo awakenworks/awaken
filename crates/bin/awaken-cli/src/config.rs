@@ -193,6 +193,7 @@ pub struct CloudIamConfig {
     pub issuer: String,
     pub access_token: Option<String>,
     pub service_token: Option<String>,
+    pub service_token_file: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for CloudIamConfig {
@@ -210,6 +211,7 @@ impl std::fmt::Debug for CloudIamConfig {
                 "service_token",
                 &self.service_token.as_ref().map(|_| "[REDACTED]"),
             )
+            .field("service_token_file", &self.service_token_file)
             .finish()
     }
 }
@@ -416,6 +418,21 @@ impl ResolvedDeployment {
             })
             .transpose()?
             .unwrap_or(awaken_control::ManagementIdentityMode::NoLogin);
+        if file.cloud_iam_service_token.is_some() && file.cloud_iam_service_token_file.is_some() {
+            return Err(
+                "configure exactly one of cloud_iam_service_token or cloud_iam_service_token_file"
+                    .to_owned(),
+            );
+        }
+        if mode == OperatingMode::Server
+            && identity_mode == awaken_control::ManagementIdentityMode::AwakenCloud
+            && file.cloud_iam_service_token_file.is_none()
+        {
+            return Err(
+                "server-mode Awaken Cloud identity requires cloud_iam_service_token_file"
+                    .to_owned(),
+            );
+        }
         let cloud_iam = CloudIamConfig {
             base_url: file
                 .cloud_iam_url
@@ -431,6 +448,7 @@ impl ResolvedDeployment {
                 .unwrap_or_else(|| "https://accounts.awakenworks.com".to_owned()),
             access_token: file.cloud_access_token.clone(),
             service_token: file.cloud_iam_service_token.clone(),
+            service_token_file: file.cloud_iam_service_token_file.clone(),
         };
         Ok(Self {
             role,
@@ -576,6 +594,7 @@ struct FileConfig {
     cloud_access_token: Option<String>,
     cloud_iam_service_token: Option<String>,
     mcp_bearer_token: Option<String>,
+    cloud_iam_service_token_file: Option<PathBuf>,
     admin_listen: Option<String>,
     control_seal_key: Option<String>,
     control_seal_key_file: Option<PathBuf>,
@@ -746,5 +765,44 @@ mod tests {
                 0o600
             );
         }
+    }
+
+    #[test]
+    fn hosted_cloud_identity_requires_one_projected_service_credential() {
+        let mut file = FileConfig {
+            mode: Some("server".to_owned()),
+            identity_mode: Some("awaken-cloud".to_owned()),
+            control_seal_key: Some(
+                "0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
+            ),
+            ..FileConfig::default()
+        };
+        let error = ResolvedDeployment::resolve_file(
+            ConfigOverrides::default(),
+            Some(PathBuf::from("/home/dev")),
+            PathBuf::from("/home/dev/.awaken/config.toml"),
+            file.clone(),
+        )
+        .unwrap_err();
+        assert!(error.contains("cloud_iam_service_token_file"));
+
+        file.cloud_iam_service_token_file =
+            Some(PathBuf::from("/var/run/awaken/management-iam/token"));
+        let config = resolve(file.clone(), ConfigOverrides::default());
+        assert_eq!(
+            config.cloud_iam.service_token_file.as_deref(),
+            Some(Path::new("/var/run/awaken/management-iam/token"))
+        );
+        assert!(config.cloud_iam.service_token.is_none());
+
+        file.cloud_iam_service_token = Some("inline-is-forbidden".to_owned());
+        let error = ResolvedDeployment::resolve_file(
+            ConfigOverrides::default(),
+            Some(PathBuf::from("/home/dev")),
+            PathBuf::from("/home/dev/.awaken/config.toml"),
+            file,
+        )
+        .unwrap_err();
+        assert!(error.contains("configure exactly one"));
     }
 }
