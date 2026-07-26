@@ -15,6 +15,7 @@
 //   C5 wildcard precondition -> U5 apply against the current root revision
 //   C6 metadata bag is null -> U6 clear the complete bag
 //
+// Decision table:
 // | Rule | Session | semantic delta | key | Effect |
 // |---|---|---|---|---|
 // | U1 | absent | any | none | 404 |

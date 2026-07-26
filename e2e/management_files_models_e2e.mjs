@@ -5,6 +5,14 @@
 // official `DeletedFile` / `BetaModelInfo` types surfaces as an SDK decode error.
 //
 // Run: (from e2e/)  node management_files_models_e2e.mjs
+//
+// Causal graph: multipart upload -> durable file -> delete -> metadata lookup
+// fails; configured model catalog -> list/retrieve -> exact model or 404.
+// Decision table:
+// | resource | identity | operation | observable behavior |
+// | file | existing | delete | file_deleted then metadata 404 |
+// | model | existing | list/retrieve | typed BetaModelInfo |
+// | model | missing | retrieve | 404 without catalog mutation |
 
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';

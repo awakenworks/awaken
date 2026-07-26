@@ -5,6 +5,14 @@
 // / `VersionCreateResponse` types surfaces as an SDK decode error.
 //
 // Run: (from e2e/)  node management_skills_e2e.mjs
+//
+// Causal graph: validated multipart SKILL.md -> immutable version -> download /
+// new version / delete -> latest-version and archive state update atomically.
+// Decision table:
+// | bundle | identity/version | operation | observable behavior |
+// | valid | new | create | version 1 becomes latest |
+// | malformed/duplicate | any | create | 400/409 and no partial Skill |
+// | valid | next | version create/delete | latest pointer follows durable versions |
 
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
