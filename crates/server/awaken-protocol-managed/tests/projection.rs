@@ -485,6 +485,16 @@ async fn a_retries_exhausted_turn_idles_with_that_stop_reason() {
 
 // --- CE: subagent-delegate child-thread lifecycle ----------------------------
 
+/// Cause graph: completed delegated Run -> one typed child Thread -> ordered
+/// lifecycle events -> idle terminal state. Re-observing the same Run id updates
+/// the same Thread and must not create a parallel projection.
+///
+/// | Run id | completion | prior child | Thread effect | Event effect |
+/// |---|---|---|---|---|
+/// | exact | complete | absent | create idle child | create, running, sent, received, idle |
+/// | exact | pending | absent | create running child | create, running, sent |
+/// | exact | complete | running | update same child idle | received, idle only |
+///
 /// An inline `agent_run` delegation projects the delegate's full child-thread
 /// lifecycle after the turn's own idle — `session.thread_created` →
 /// `session.thread_status_running` → the input sent → the reply received →

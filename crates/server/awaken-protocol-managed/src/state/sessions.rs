@@ -1624,12 +1624,10 @@ impl ManagedState {
     /// a dispose failure is logged, never propagated (it must not resurrect the
     /// session). `SessionRuntime::end_session` is a no-op for a thread that never
     /// materialized a sandbox, so deriving child ids is safe.
-    async fn end_session_sandboxes(&self, id: &str, child_threads: &[serde_json::Value]) -> bool {
+    async fn end_session_sandboxes(&self, id: &str, child_threads: &[SessionThread]) -> bool {
         let mut threads: Vec<String> = vec![id.to_string()];
         for child in child_threads {
-            if let Some(child_run_id) = child["id"].as_str() {
-                threads.push(child_run_id.to_string());
-            }
+            threads.push(child.id.clone());
         }
         let mut released = true;
         for thread in threads {
@@ -1650,7 +1648,7 @@ impl ManagedState {
         &self,
         id: &str,
         owner_scope: Option<&str>,
-        child_threads: &[serde_json::Value],
+        child_threads: &[SessionThread],
     ) -> bool {
         let Some(mut persisted) = self.sessions_repo.get(id).await else {
             return self.end_session_sandboxes(id, child_threads).await;

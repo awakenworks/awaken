@@ -22,7 +22,7 @@ use tokio_stream::Stream;
 use crate::state::{LiveInboxError, ManagedState, RunError, RunErrorKind, StateError};
 use crate::types::{
     ErrorResponse, ListEventsResponse, Page, PageQuery, SendEventsRequest, SendEventsResponse,
-    Session, SessionCreateParams, paginate,
+    Session, SessionCreateParams, SessionThread, paginate,
 };
 use crate::types::{Event, StreamFrame};
 
@@ -317,13 +317,6 @@ fn versioned_session_response_at_revision(
 
 type WireErr = (StatusCode, Json<ErrorResponse>);
 
-/// A single (bounded) page for the thread/resource sub-lists the state layer
-/// projects as `Value`. These are bounded per session, so they are not cursor-
-/// paginated (unlike the top-level typed lists, which use `paginate`).
-fn page(data: Vec<serde_json::Value>) -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "data": data, "has_more": false, "next_page": null }))
-}
-
 /// `GET /v1/sessions` — a cursor page of the request scope's sessions (ADR-0051:
 /// tenancy-fenced, so a workspace never lists another's).
 async fn list_sessions(
@@ -451,14 +444,18 @@ async fn archive_session(
 async fn list_threads(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, WireErr> {
-    state.list_threads(&id).map(page).map_err(error_response)
+) -> Result<Json<Page<SessionThread>>, WireErr> {
+    state
+        .list_threads(&id)
+        .map(Page::single)
+        .map(Json)
+        .map_err(error_response)
 }
 
 async fn get_thread(
     State(state): State<Arc<ManagedState>>,
     Path((id, tid)): Path<(String, String)>,
-) -> Result<Json<serde_json::Value>, WireErr> {
+) -> Result<Json<SessionThread>, WireErr> {
     state
         .get_thread(&id, &tid)
         .map(Json)
@@ -468,7 +465,7 @@ async fn get_thread(
 async fn archive_thread(
     State(state): State<Arc<ManagedState>>,
     Path((id, tid)): Path<(String, String)>,
-) -> Result<Json<serde_json::Value>, WireErr> {
+) -> Result<Json<SessionThread>, WireErr> {
     state
         .archive_thread(&id, &tid)
         .map(Json)
@@ -594,18 +591,13 @@ async fn stream_thread_events(
     Path((id, tid)): Path<(String, String)>,
     RawQuery(raw): RawQuery,
 ) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, WireErr> {
-    // Per-thread streams reject the preview opt-in entirely (only the session-level
-    // stream supports it) — before resolving the thread, matching the official wire:
-    // the parameter is unsupported on this endpoint regardless of the thread.
-    if parse_event_deltas(raw.as_deref())? {
-        return Err(error_response(
-            RunError::bad_request("event_deltas is only supported on the session event stream")
-                .into(),
-        ));
-    }
+    // The official Thread EventStreamParams carries the same preview selector as
+    // the Session stream. Primary-thread previews are the Session previews; child
+    // execution currently has no independent preview producer.
+    let previews = parse_event_deltas(raw.as_deref())?;
     state.get_thread(&id, &tid).map_err(error_response)?;
     let (snapshot, rx) = state.stream_subscribe(&id).map_err(error_response)?;
-    Ok(Sse::new(live_sse_stream(snapshot, rx, false)).keep_alive(KeepAlive::default()))
+    Ok(Sse::new(live_sse_stream(snapshot, rx, previews)).keep_alive(KeepAlive::default()))
 }
 
 // -- Resources --

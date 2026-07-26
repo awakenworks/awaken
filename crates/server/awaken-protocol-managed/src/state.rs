@@ -21,7 +21,8 @@ use crate::routes::vaults::VaultState;
 use crate::types::{
     ConfirmResult, Event, EventReceipt, InboundEvent, ListEventsResponse, ModelConfig,
     ModelOverride, OutboundKind, SendEventsRequest, SendEventsResponse, Session, SessionAgent,
-    SessionCreateParams, SessionError, SessionStats, StopReason, StreamFrame, Usage,
+    SessionCreateParams, SessionError, SessionStats, SessionThread, SessionThreadAgent,
+    SessionThreadStatus, StopReason, StreamFrame, Usage,
 };
 use awaken_session_contract::{ManagedSessionRepository, PersistedSession, SessionLifecycleFact};
 use awaken_session_store::SqliteManagedSessionRepository;
@@ -71,11 +72,10 @@ struct SessionRecord {
     /// Durable source of truth for the runtime's currently applied input projection.
     resource_state: awaken_session_contract::SessionResourceState,
     events: Vec<Event>,
-    /// Subagent (multiagent delegate) child threads spawned in the session, each a
-    /// projected `session_thread` object (parent = the primary thread). Enumerated
+    /// Subagent (multiagent delegate) child threads spawned in the session. Enumerated
     /// by `list_threads`/`get_thread`; each is announced by a `session.thread_created`
     /// event (ADR-0047 D4, first slice).
-    child_threads: Vec<serde_json::Value>,
+    child_threads: Vec<SessionThread>,
 }
 
 impl SessionRecord {

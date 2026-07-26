@@ -683,19 +683,27 @@ async fn stream_thread_events_backfills_the_primary_thread() {
     assert!(sse.contains("event: session.status_idle"), "sse:\n{sse}");
 }
 
-/// The per-thread stream rejects the `event_deltas[]` preview opt-in outright (only
-/// the session-level stream supports previews), before resolving the thread — a 400.
+/// The official per-thread EventStreamParams accepts the same `event_deltas[]`
+/// preview selector. The primary Thread shares the Session producer, so admission
+/// succeeds; unsupported values still fail through the one shared parser.
 #[tokio::test]
-async fn stream_thread_events_rejects_the_preview_opt_in() {
+async fn stream_thread_events_accepts_the_preview_opt_in() {
     let app = router(Arc::new(ManagedState::new(EchoFake)));
     let id = http_create(&app).await;
+    http_json(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": "hi" }] }] }),
+    )
+    .await;
     let (status, _) = http_sse(
         &app,
         &format!("/v1/sessions/{id}/threads/{id}:primary/stream?event_deltas[]=agent.message"),
         &[],
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::OK);
 }
 
 /// An unknown thread id on the per-thread stream is a 404 (fail-closed).

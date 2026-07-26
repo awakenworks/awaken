@@ -6,6 +6,19 @@
 // archive stamps `archived_at`. The model runs for real through the echo upstream.
 //
 // Run: (from e2e/)  node management_session_threads_e2e.mjs
+//
+// Cause graph:
+//   accepted Session -> primary Thread -> committed turn -> list/stream views
+//   primary archive -> Session terminal transition + Thread archived projection
+//   unknown Thread -X-> event lookup/archive mutation
+//
+// Decision table:
+// | Thread | operation | prior state | result | authoritative effect |
+// |---|---|---|---|---|
+// | primary | list/retrieve | idle | typed Thread | same Session/agent snapshot |
+// | primary | events list/stream | committed turn | ordered events | same committed content |
+// | primary | archive | idle | archived Thread | Session archived |
+// | unknown | retrieve/list events/archive | absent | 404 | Session/events unchanged |
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
@@ -43,6 +56,14 @@ async function main() {
     assert.equal(threads.length, 1, 'a fresh session has one primary thread');
     const thread = threads[0];
     assert.equal(thread.archived_at, null, 'the primary thread starts un-archived');
+    assert.equal(thread.type, 'session_thread');
+    assert.equal(thread.session_id, session.id);
+    assert.equal(thread.parent_thread_id, null);
+    assert.equal(thread.status, 'idle');
+    assert.equal(thread.agent.id, session.agent.id);
+    assert.equal(thread.agent.multiagent, undefined, 'a Thread agent never repeats the Session roster');
+    assert.equal(thread.stats, null);
+    assert.equal(thread.usage, null);
 
     // -- threads.events.list mirrors the session events -----------------------
     const threadEvents = await drain(
@@ -71,6 +92,9 @@ async function main() {
     pass('beta.sessions.threads.events.stream -> SSE frames for the thread');
 
     // -- an unknown thread id is a 404 on every per-thread view ---------------
+    const eventsBeforeUnknownCommands = await drain(
+      client.beta.sessions.events.list(session.id, { betas: BETAS }),
+    );
     await assert.rejects(
       () => client.beta.sessions.threads.retrieve('sthr_nope', { session_id: session.id, betas: BETAS }),
       (err) => err.status === 404,
@@ -94,6 +118,11 @@ async function main() {
     await assert.rejects(
       () => client.beta.sessions.threads.archive('sthr_nope', { session_id: session.id, betas: BETAS }),
       (err) => err.status === 404,
+    );
+    assert.deepEqual(
+      (await drain(client.beta.sessions.events.list(session.id, { betas: BETAS }))).map((event) => event.id),
+      eventsBeforeUnknownCommands.map((event) => event.id),
+      'an unknown Thread command commits no event side effect',
     );
     pass('archive unknown thread -> 404');
   });

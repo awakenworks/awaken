@@ -153,15 +153,14 @@ impl ManagedState {
             let existing = record
                 .child_threads
                 .iter()
-                .position(|thread| thread["id"] == thread_id);
+                .position(|thread| thread.id == thread_id);
             let is_new = existing.is_none();
             let index = existing.unwrap_or_else(|| {
-                let mut child = Self::child_thread(&record.session, &thread_id, &name);
-                child["status"] = serde_json::json!("running");
+                let child = Self::child_thread(&record.session, &thread_id, &name);
                 record.child_threads.push(child);
                 record.child_threads.len() - 1
             });
-            let was_idle = record.child_threads[index]["status"] == "idle";
+            let was_idle = record.child_threads[index].status == SessionThreadStatus::Idle;
             let completed = d.status == DelegationStatus::Completed;
             let mut kinds = Vec::new();
             if is_new {
@@ -182,7 +181,8 @@ impl ManagedState {
                 ]);
             }
             if completed && !was_idle {
-                record.child_threads[index]["status"] = serde_json::json!("idle");
+                record.child_threads[index].status = SessionThreadStatus::Idle;
+                record.child_threads[index].updated_at = PROCESSED_AT.to_string();
                 kinds.extend([
                     OutboundKind::AgentThreadMessageReceived {
                         from_session_thread_id: thread_id.clone(),
