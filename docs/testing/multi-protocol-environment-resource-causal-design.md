@@ -96,3 +96,21 @@ Current default-bundle revision != publication   -> reject projection
 | Session can compile | 1 | 0 | 1 | 1 |
 | Current revision substituted | 0 | 0 | 0 | 0 |
 | Binding survives Resource update | - | - | - | 1 |
+
+## Phase 4: protocol convergence
+
+```text
+Managed create                         -> create/freeze Session baseline
+AI SDK | AG-UI | A2A first fresh turn -> same SessionDefaultsPreparer
+Existing thread                       -> idempotent reuse
+Preparation failure                   -> no Host run
+```
+
+| Cause/effect | M1 Managed | M2 AI SDK | M3 AG-UI | M4 A2A | M5 repeat | M6 invalid default |
+|---|---:|---:|---:|---:|---:|---:|
+| Managed create | 1 | 0 | 0 | 0 | 0 | 0 |
+| Protocol fresh turn | 0 | 1 | 1 | 1 | 1 | 1 |
+| Existing Session | 0 | 0 | 0 | 0 | 1 | 0 |
+| Defaults valid | 1 | 1 | 1 | 1 | 1 | 0 |
+| Same baseline path | 1 | 1 | 1 | 1 | 1 | 1 |
+| Runtime invoked | 0 | 1 | 1 | 1 | 1 | 0 |
