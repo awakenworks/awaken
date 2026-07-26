@@ -344,86 +344,7 @@ mod tests {
     // injection yields upstream 401 and no successful tool result.
     #[tokio::test]
     async fn injected_credential_preserves_the_complete_mcp_tool_flow() {
-        type Seen = Arc<Mutex<Vec<(String, String)>>>;
-
-        async fn mcp(State(seen): State<Seen>, req: Request) -> Response {
-            let bearer = req
-                .headers()
-                .get(header::AUTHORIZATION)
-                .and_then(|value| value.to_str().ok())
-                .unwrap_or("<none>")
-                .to_string();
-            if bearer != "Bearer relay-only-secret" {
-                return StatusCode::UNAUTHORIZED.into_response();
-            }
-            let body = match axum::body::to_bytes(req.into_body(), usize::MAX).await {
-                Ok(body) => body,
-                Err(error) => {
-                    return (StatusCode::BAD_REQUEST, error.to_string()).into_response();
-                }
-            };
-            let value: serde_json::Value = match serde_json::from_slice(&body) {
-                Ok(value) => value,
-                Err(error) => {
-                    return (StatusCode::BAD_REQUEST, error.to_string()).into_response();
-                }
-            };
-            let method = value
-                .get("method")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("<missing>")
-                .to_string();
-            seen.lock().unwrap().push((method.clone(), bearer));
-            let Some(id) = value.get("id").cloned() else {
-                return StatusCode::ACCEPTED.into_response();
-            };
-            let result = match method.as_str() {
-                "initialize" => serde_json::json!({
-                    "protocolVersion": "2025-06-18",
-                    "capabilities": { "tools": {} },
-                    "serverInfo": { "name": "relay-test", "version": "1" }
-                }),
-                "tools/list" => serde_json::json!({
-                    "tools": [{
-                        "name": "echo",
-                        "description": "echo one value",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": { "value": { "type": "string" } },
-                            "required": ["value"]
-                        }
-                    }]
-                }),
-                "tools/call" => serde_json::json!({
-                    "content": [{ "type": "text", "text": value["params"]["arguments"]["value"] }],
-                    "isError": false
-                }),
-                _ => {
-                    return axum::Json(serde_json::json!({
-                        "jsonrpc": "2.0",
-                        "id": id,
-                        "error": { "code": -32601, "message": "method not found" }
-                    }))
-                    .into_response();
-                }
-            };
-            axum::Json(serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": result
-            }))
-            .into_response()
-        }
-
-        let seen: Seen = Arc::new(Mutex::new(Vec::new()));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let upstream = listener.local_addr().unwrap();
-        let app = axum::Router::new()
-            .route("/mcp", axum::routing::post(mcp))
-            .with_state(seen.clone());
-        tokio::spawn(async move {
-            let _ = axum::serve(listener, app).await;
-        });
+        let (upstream, seen) = crate::test_mcp::start(Some("Bearer relay-only-secret")).await;
 
         let relay = McpRelay::start().await.unwrap();
         let generation = generation("session-1", "mcp-functional", 1);
@@ -431,7 +352,7 @@ mod tests {
             &generation,
             &McpTransportMaterial {
                 name: "functional".into(),
-                url: format!("http://{upstream}/mcp"),
+                url: upstream,
                 bearer: Some(awaken_agent_contract::RedactedString::from(
                     "relay-only-secret".to_string(),
                 )),

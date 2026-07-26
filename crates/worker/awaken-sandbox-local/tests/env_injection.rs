@@ -5,14 +5,34 @@
 //!
 //! Invariants proven here:
 //! - an `Inline` var is visible in the process (both tiers);
-//! - a `Secret` value is NEVER injected as plaintext (the provider only realizes
-//!   `Inline`; a broker reference must not leak into the process address space — G3);
+//! - a `Secret` reference is resolved only at process launch and its reference
+//!   never reaches the process;
 //! - the runtime-owned dirs (`AWAKEN_OUTPUTS_DIR`) and user vars coexist.
 //!
 //! bwrap exec self-skips when userns is unavailable; the Workdir tier always runs.
 
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_local::{LocalProvider, NamespaceProvider};
+use std::sync::Arc;
+
+struct FixedBroker;
+
+#[async_trait::async_trait]
+impl pc::SecretBroker for FixedBroker {
+    async fn materialize(&self, reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
+        (reference == "broker://k")
+            .then(|| b"brokered-value".to_vec())
+            .ok_or_else(|| pc::SandboxError::new("unknown reference"))
+    }
+
+    async fn materialize_process(&self, reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
+        self.materialize(reference).await
+    }
+
+    async fn write_back(&self, _reference: &str, _bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
+        Err(pc::SandboxError::new("not supported"))
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 enum Tier {
@@ -45,10 +65,20 @@ fn spec(scope: &str, isolation: pc::IsolationClass) -> pc::SandboxSpec {
     }
 }
 
-fn provider(tier: Tier, base: &std::path::Path) -> Box<dyn pc::SandboxProvider> {
+fn provider(
+    tier: Tier,
+    base: &std::path::Path,
+    broker: Option<Arc<dyn pc::SecretBroker>>,
+) -> Box<dyn pc::SandboxProvider> {
     match tier {
-        Tier::Workdir => Box::new(LocalProvider::new(base)),
-        Tier::Namespace => Box::new(NamespaceProvider::new(base)),
+        Tier::Workdir => Box::new(match broker {
+            Some(broker) => LocalProvider::new(base).with_secret_broker(broker),
+            None => LocalProvider::new(base),
+        }),
+        Tier::Namespace => Box::new(match broker {
+            Some(broker) => NamespaceProvider::new(base).with_secret_broker(broker),
+            None => NamespaceProvider::new(base),
+        }),
     }
 }
 
@@ -89,7 +119,7 @@ async fn run(tier: Tier, can_exec: bool) -> bool {
         return false;
     }
     let tmp = tempfile::tempdir().unwrap();
-    let p = provider(tier, tmp.path());
+    let p = provider(tier, tmp.path(), Some(Arc::new(FixedBroker)));
     let mut s = spec("t-envinj", isolation(tier));
 
     // A plain user var (Inline/Process) and a secret var (a broker reference).
@@ -113,8 +143,7 @@ async fn run(tier: Tier, can_exec: bool) -> bool {
         .await
         .unwrap_or_else(|e| panic!("{tier:?}: create with env: {e:?}"));
 
-    // Inline is visible; the secret reference is NOT injected as plaintext; the
-    // runtime-owned outputs dir is present (we just wrote through it).
+    // Inline and brokered material are visible, while the opaque reference is not.
     let script = format!(
         "printf '%s|%s' \"$GREETING\" \"$MYSECRET\" > {}",
         out(tier, "env.txt")
@@ -134,9 +163,10 @@ async fn run(tier: Tier, can_exec: bool) -> bool {
         "{tier:?}: Inline env var is visible in the process"
     );
     assert_eq!(
-        secret, "",
-        "{tier:?}: a Secret env reference must NEVER be injected as plaintext (got {secret:?})"
+        secret, "brokered-value",
+        "{tier:?}: broker material reaches only the process"
     );
+    assert_ne!(secret, "broker://k", "{tier:?}: reference never leaks");
 
     sandbox.dispose().await.unwrap();
     true
@@ -153,6 +183,35 @@ async fn namespace_injects_inline_and_never_leaks_a_secret_reference() {
     if !run(Tier::Namespace, bwrap).await {
         eprintln!("skipping: bwrap/userns unavailable — Namespace env-injection exec self-skipped");
     }
+}
+
+/// Provider last-mile cause graph:
+///
+/// typed process secret -> provider holds broker -> broker resolves -> process
+/// starts. The common contract owns reference/visibility/material validation;
+/// both local providers consume that one result.
+///
+/// | Rule | tier | broker | Result |
+/// |---|---|---|---|
+/// | L1 | Workdir | installed | process sees material |
+/// | L2 | Namespace | installed | process sees material (when available) |
+/// | L3 | Workdir | missing | fail before process spawn |
+#[tokio::test]
+async fn missing_broker_fails_before_a_workdir_process_starts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = provider(Tier::Workdir, tmp.path(), None);
+    let mut s = spec("t-env-no-broker", pc::IsolationClass::Workdir);
+    s.env.push(pc::EnvVar {
+        name: "MYSECRET".into(),
+        value: pc::EnvValue::Secret {
+            reference: "broker://k".into(),
+        },
+        visibility: pc::EnvVisibility::Process,
+    });
+    let sandbox = p.create(&s).await.unwrap();
+    assert!(sandbox.spawn(sh("exit 0".into())).await.is_err());
+    assert!(sandbox.artifacts().await.unwrap().is_empty());
+    sandbox.dispose().await.unwrap();
 }
 
 /// The reserved runtime-owned keys are rejected at admission before any provisioning —

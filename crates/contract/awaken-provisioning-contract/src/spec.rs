@@ -3,9 +3,14 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use crate::sandbox::IsolationClass;
-use crate::vocab::{EnvVar, MountRequirement, NetworkPolicy, ResourceLimits};
+use crate::sandbox::{SandboxError, SecretBroker};
+use crate::vocab::{
+    EnvValue, EnvVar, EnvVisibility, MountRequirement, NetworkPolicy, ResourceLimits,
+};
 
 /// How a process's standard streams are wired.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +52,267 @@ impl Command {
             env: Vec::new(),
             stdio: Stdio::Inherit,
         }
+    }
+}
+
+/// One environment value after the final process boundary has resolved every
+/// broker reference. Unlike [`EnvValue`], this value is deliberately not
+/// serializable: plaintext can reach only the OS/container launch adapter.
+#[derive(Clone)]
+pub enum MaterializedEnvValue {
+    Inline(String),
+    Secret(awaken_agent_contract::RedactedString),
+}
+
+impl MaterializedEnvValue {
+    /// Expose the value only to the concrete process-launch adapter.
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        match self {
+            Self::Inline(value) => value,
+            Self::Secret(value) => value.expose_secret(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_secret(&self) -> bool {
+        matches!(self, Self::Secret(_))
+    }
+}
+
+impl std::fmt::Debug for MaterializedEnvValue {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Inline(value) => formatter.debug_tuple("Inline").field(value).finish(),
+            Self::Secret(_) => formatter.write_str("Secret(***)"),
+        }
+    }
+}
+
+/// One process environment entry after last-mile materialization.
+#[derive(Debug, Clone)]
+pub struct MaterializedEnvVar {
+    pub name: String,
+    pub value: MaterializedEnvValue,
+}
+
+/// A launch-ready command. It has no Serde implementation, and secret values use
+/// the repository-wide redacted/zeroizing wrapper. Providers may hand it to an OS
+/// API but cannot accidentally put it back on a planning wire.
+#[derive(Debug, Clone)]
+pub struct MaterializedCommand {
+    pub argv: Vec<String>,
+    pub cwd: String,
+    pub env: Vec<MaterializedEnvVar>,
+    pub stdio: Stdio,
+}
+
+impl MaterializedCommand {
+    /// Construct an already-materialized command with no environment. Intended
+    /// for concrete adapter tests and non-secret infrastructure commands; normal
+    /// callers use [`materialize_process_command`].
+    pub fn new(argv: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self {
+            argv: argv.into_iter().map(Into::into).collect(),
+            cwd: String::new(),
+            env: Vec::new(),
+            stdio: Stdio::Inherit,
+        }
+    }
+}
+
+/// Resolve the final effective process environment through the one neutral
+/// broker seam. Command entries override base entries by name before resolution,
+/// so an overridden secret is never unnecessarily opened.
+pub async fn materialize_process_command(
+    base_env: &[EnvVar],
+    command: Command,
+    broker: Option<&Arc<dyn SecretBroker>>,
+) -> Result<MaterializedCommand, SandboxError> {
+    let mut effective = BTreeMap::<String, EnvVar>::new();
+    for var in base_env.iter().chain(&command.env) {
+        effective.insert(var.name.clone(), var.clone());
+    }
+
+    let mut env = Vec::with_capacity(effective.len());
+    for (_, var) in effective {
+        let value = match var.value {
+            EnvValue::Inline { value } => MaterializedEnvValue::Inline(value),
+            EnvValue::Secret { .. } if var.visibility == EnvVisibility::EgressOnly => {
+                return Err(SandboxError::new(format!(
+                    "egress-only secret `{}` cannot be materialized into a process",
+                    var.name
+                )));
+            }
+            EnvValue::Secret { reference } => {
+                let broker = broker.ok_or_else(|| {
+                    SandboxError::new(format!(
+                        "process secret `{}` has no credential broker",
+                        var.name
+                    ))
+                })?;
+                let bytes = broker.materialize_process(&reference).await?;
+                let value = String::from_utf8(bytes).map_err(|_| {
+                    SandboxError::new(format!("process secret `{}` is not valid UTF-8", var.name))
+                })?;
+                MaterializedEnvValue::Secret(awaken_agent_contract::RedactedString::new(value))
+            }
+        };
+        env.push(MaterializedEnvVar {
+            name: var.name,
+            value,
+        });
+    }
+
+    Ok(MaterializedCommand {
+        argv: command.argv,
+        cwd: command.cwd,
+        env,
+        stdio: command.stdio,
+    })
+}
+
+#[cfg(test)]
+mod process_secret_tests {
+    use super::*;
+    use async_trait::async_trait;
+    use std::collections::BTreeMap;
+
+    struct DecisionBroker {
+        values: BTreeMap<String, Result<Vec<u8>, &'static str>>,
+    }
+
+    #[async_trait]
+    impl SecretBroker for DecisionBroker {
+        async fn materialize(&self, reference: &str) -> Result<Vec<u8>, SandboxError> {
+            self.values
+                .get(reference)
+                .cloned()
+                .unwrap_or(Err("missing"))
+                .map_err(SandboxError::new)
+        }
+
+        async fn materialize_process(&self, reference: &str) -> Result<Vec<u8>, SandboxError> {
+            self.materialize(reference).await
+        }
+
+        async fn write_back(&self, _reference: &str, _bytes: Vec<u8>) -> Result<(), SandboxError> {
+            Err(SandboxError::new("not supported"))
+        }
+    }
+
+    fn secret(visibility: EnvVisibility) -> Command {
+        let mut command = Command::new(["agent"]);
+        command.env.push(EnvVar {
+            name: "API_KEY".into(),
+            value: EnvValue::Secret {
+                reference: "lease://exact".into(),
+            },
+            visibility,
+        });
+        command
+    }
+
+    /// Process-secret cause graph:
+    ///
+    /// C1 visibility is Process -> C2 broker installed -> C3 exact reference
+    /// resolves -> C4 material is UTF-8 -> E1 non-serializable launch value.
+    /// Any failed cause terminates before launch with E2 and no plaintext in Debug.
+    ///
+    /// | Rule | C1 | C2 | C3 | C4 | Result |
+    /// |---|---|---|---|---|---|
+    /// | P1 | T | T | T | T | materialized secret |
+    /// | P2 | T | F | - | - | missing broker |
+    /// | P3 | T | T | F | - | broker failure |
+    /// | P4 | T | T | T | F | invalid UTF-8 |
+    /// | P5 | F | - | - | - | egress-only rejected |
+    #[tokio::test]
+    async fn process_secret_decision_table_fails_closed_and_redacts_material() {
+        struct Rule {
+            id: &'static str,
+            visibility: EnvVisibility,
+            broker: Option<Result<Vec<u8>, &'static str>>,
+            succeeds: bool,
+        }
+        for rule in [
+            Rule {
+                id: "P1",
+                visibility: EnvVisibility::Process,
+                broker: Some(Ok(b"decision-table-secret".to_vec())),
+                succeeds: true,
+            },
+            Rule {
+                id: "P2",
+                visibility: EnvVisibility::Process,
+                broker: None,
+                succeeds: false,
+            },
+            Rule {
+                id: "P3",
+                visibility: EnvVisibility::Process,
+                broker: Some(Err("planned rejection")),
+                succeeds: false,
+            },
+            Rule {
+                id: "P4",
+                visibility: EnvVisibility::Process,
+                broker: Some(Ok(vec![0xff])),
+                succeeds: false,
+            },
+            Rule {
+                id: "P5",
+                visibility: EnvVisibility::EgressOnly,
+                broker: Some(Ok(b"must-not-open".to_vec())),
+                succeeds: false,
+            },
+        ] {
+            let broker: Option<Arc<dyn SecretBroker>> = rule.broker.map(|result| {
+                Arc::new(DecisionBroker {
+                    values: [("lease://exact".into(), result)].into_iter().collect(),
+                }) as Arc<dyn SecretBroker>
+            });
+            let result =
+                materialize_process_command(&[], secret(rule.visibility), broker.as_ref()).await;
+            assert_eq!(result.is_ok(), rule.succeeds, "{} verdict", rule.id);
+            let debug = format!("{result:?}");
+            assert!(
+                !debug.contains("decision-table-secret") && !debug.contains("must-not-open"),
+                "{} debug must be secret-free: {debug}",
+                rule.id
+            );
+            if let Ok(command) = result {
+                assert_eq!(command.env.len(), 1, "{} one env", rule.id);
+                assert!(command.env[0].value.is_secret(), "{} typed secret", rule.id);
+                assert_eq!(command.env[0].value.expose(), "decision-table-secret");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn command_override_prevents_opening_an_overridden_base_secret() {
+        let base = [EnvVar {
+            name: "API_KEY".into(),
+            value: EnvValue::Secret {
+                reference: "lease://unused".into(),
+            },
+            visibility: EnvVisibility::Process,
+        }];
+        let mut command = Command::new(["agent"]);
+        command.env.push(EnvVar {
+            name: "API_KEY".into(),
+            value: EnvValue::Inline {
+                value: "public-override".into(),
+            },
+            visibility: EnvVisibility::Process,
+        });
+        let broker: Arc<dyn SecretBroker> = Arc::new(DecisionBroker {
+            values: BTreeMap::new(),
+        });
+        let materialized = materialize_process_command(&base, command, Some(&broker))
+            .await
+            .unwrap();
+        assert_eq!(materialized.env[0].value.expose(), "public-override");
+        assert!(!materialized.env[0].value.is_secret());
     }
 }
 

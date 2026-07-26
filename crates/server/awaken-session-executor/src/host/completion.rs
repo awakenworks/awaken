@@ -47,6 +47,53 @@ fn worker_local_credentials(
         .collect()
 }
 
+fn self_hosted_inference_holder(
+    activation: &RunActivation,
+) -> Result<Option<awaken_runtime_contract::PlaintextHolder>, HostError> {
+    let mut boundary = None;
+    for candidate in activation
+        .snapshot
+        .resolved_spec
+        .execution_candidates(activation.model_ref_override.as_deref())
+    {
+        let awaken_runtime_contract::resolved::ModelProvisioning::Provider {
+            credential: Some(_),
+            ..
+        } = &candidate.provisioning
+        else {
+            continue;
+        };
+        let candidate_boundary = match awaken_runtime_contract::resolved::Backend::from_ref(
+            &candidate.binding.backend_ref,
+        ) {
+            awaken_runtime_contract::resolved::Backend::Acp { .. } => {
+                awaken_runtime_contract::PlaintextBoundary::Workload
+            }
+            awaken_runtime_contract::resolved::Backend::Native
+            | awaken_runtime_contract::resolved::Backend::Remote { .. } => {
+                awaken_runtime_contract::PlaintextBoundary::Worker
+            }
+        };
+        if boundary.is_some_and(|existing| existing != candidate_boundary) {
+            return Err(HostError::bad_request(
+                "one execution candidate set cannot require multiple credential plaintext holders",
+            ));
+        }
+        boundary = Some(candidate_boundary);
+    }
+    Ok(boundary.map(|boundary| match boundary {
+        awaken_runtime_contract::PlaintextBoundary::Workload => {
+            awaken_runtime_contract::CredentialRealizationProfile::self_hosted_acp()
+                .inference_holder
+        }
+        awaken_runtime_contract::PlaintextBoundary::Worker
+        | awaken_runtime_contract::PlaintextBoundary::Platform => {
+            awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native()
+                .inference_holder
+        }
+    }))
+}
+
 pub(crate) fn remote_worker_placement(
     models: &awaken_runtime_contract::resolved::ResolvedSpec,
     resources: Option<&awaken_protocol_managed::SessionResourceManifest>,
@@ -96,6 +143,10 @@ impl SharedHost {
     ) -> Result<RunDispatch, HostError> {
         let thread = activation.thread_id.0.clone();
         let resources = self.thread_resource_manifest(&thread);
+        let inference_holder = match self.thread_credential_realization(&thread) {
+            Some(profile) => Some(profile.inference_holder),
+            None => self_hosted_inference_holder(&activation)?,
+        };
         // A mixed deployment may have both the local pool and remote workers.
         // Any carried manifest still needs capability admission: an explicit empty
         // successor can be the operation that removes a prior projection.
@@ -110,6 +161,9 @@ impl SharedHost {
             });
         let mut request = RunDispatch::new(activation)
             .with_traceparent(awaken_observability::current_traceparent());
+        if let Some(holder) = inference_holder {
+            request = request.with_inference_plaintext_holder(holder);
+        }
         if let Some(resources) = resources {
             let envelope = crate::provisioning::encode_session_resource_envelope(&resources)
                 .map_err(|error| {
@@ -481,6 +535,7 @@ mod completion_tests {
                             initial_branch: None,
                             clone_policy: ClonePolicy::default(),
                         },
+                        credential: None,
                     },
                     mount_path: "/workspace/repo".into(),
                     access: ResourceAccess::ReadWrite,

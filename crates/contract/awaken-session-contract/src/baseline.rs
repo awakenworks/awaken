@@ -448,6 +448,7 @@ mod tests {
                     "awaken.workload.acp",
                 ),
                 mcp_holder: PlaintextHolder::new(PlaintextBoundary::Worker, "awaken.worker"),
+                resource_holder: PlaintextHolder::new(PlaintextBoundary::Worker, "awaken.worker"),
             },
         }
     }

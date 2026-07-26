@@ -116,6 +116,9 @@ async fn docker_exec_can_be_polled_reattached_signaled_and_waited() {
         }],
         stdio: pc::Stdio::Null,
     };
+    let command = pc::materialize_process_command(&[], command, None)
+        .await
+        .expect("materialize public exec environment");
     let process = rt.spawn(&id, command).await.expect("spawn detached exec");
     assert!(process.poll().await.unwrap().is_none());
     let public_id = process.id().to_string();
@@ -127,7 +130,7 @@ async fn docker_exec_can_be_polled_reattached_signaled_and_waited() {
     assert!(recovered.wait().await.unwrap().code.is_some());
     assert!(rt.process("wrong-container", &public_id).await.is_err());
 
-    let empty = pc::Command::new(Vec::<String>::new());
+    let empty = pc::MaterializedCommand::new(Vec::<String>::new());
     assert!(rt.spawn(&id, empty.clone()).await.is_err());
     assert!(rt.spawn_agent(&id, empty).await.is_err());
     let _ = rt.remove(&id).await;

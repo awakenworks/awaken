@@ -7,6 +7,10 @@ use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, atomic::AtomicUsize};
 
+fn native_credential_profile() -> awaken_runtime_contract::CredentialRealizationProfile {
+    awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native()
+}
+
 fn resource_catalog() -> Arc<awaken_admin_config_api::SqliteAdminStore> {
     Arc::new(
         awaken_admin_config_api::SqliteAdminStore::open_in_memory()
@@ -290,6 +294,7 @@ fn effective_resources(
                             initial_branch: resource.initial_branch,
                             clone_policy: Default::default(),
                         },
+                        credential: None,
                     },
                     kind => panic!("unsupported test input kind {kind}"),
                 };
@@ -315,6 +320,25 @@ fn effective_repository(
     mount_path: &str,
     credential_binding: Option<String>,
 ) -> awaken_protocol_managed::ResolvedSessionResources {
+    let holder =
+        awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native().resource_holder;
+    let credential = credential_binding.as_ref().map(|binding| {
+        Box::new(awaken_protocol_managed::ResolvedRepositoryCredential {
+            access: awaken_runtime_contract::CredentialAccess::new(
+                awaken_runtime_contract::CredentialRef {
+                    id: binding.clone(),
+                    revision: 1,
+                },
+                awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+                awaken_protocol_managed::repository_transport_credential_usage(),
+                awaken_runtime_contract::CredentialExecutionPolicy::exact(
+                    holder.clone(),
+                    awaken_runtime_contract::ModelExposurePolicy::Forbidden,
+                ),
+            ),
+            selected_plaintext_holder: holder,
+        })
+    });
     awaken_protocol_managed::ResolvedSessionResources {
         inputs: vec![awaken_protocol_managed::ResolvedInput {
             binding_id: awaken_resource_contract::BindingId::from("test-repository"),
@@ -328,6 +352,7 @@ fn effective_repository(
                     initial_branch: None,
                     clone_policy: Default::default(),
                 },
+                credential,
             },
             mount_path: mount_path.into(),
             access: awaken_resource_contract::ResourceAccess::ReadWrite,
@@ -649,7 +674,8 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
                     network: awaken_protocol_managed::SessionNetworkPolicy::None,
                     credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
                         inference_holder: holder.clone(),
-                        mcp_holder: holder,
+                        mcp_holder: holder.clone(),
+                        resource_holder: holder,
                     },
                 },
                 mcp_authoring: Default::default(),
@@ -1145,6 +1171,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
             ),
             model: None,
             runtime: None,
+            credential_realization: native_credential_profile(),
             deny_egress: false,
             sandbox: None,
         };
@@ -1678,6 +1705,7 @@ async fn prepare_session_stages_egress_into_the_sandbox_spec() {
         resources: Default::default(),
         model: None,
         runtime: None,
+        credential_realization: native_credential_profile(),
         deny_egress: deny,
         sandbox: None,
     };
@@ -1727,6 +1755,7 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
         resources: Default::default(),
         model: None,
         runtime: None,
+        credential_realization: native_credential_profile(),
         deny_egress: false,
         sandbox: Some(serde_json::json!({
             "isolation": "namespace",
@@ -1760,6 +1789,7 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
         resources: Default::default(),
         model: None,
         runtime: None,
+        credential_realization: native_credential_profile(),
         deny_egress: false,
         sandbox: None,
     };
@@ -1807,6 +1837,7 @@ async fn prepare_session_mounts_an_effective_memory_resource() {
         ),
         model: None,
         runtime: None,
+        credential_realization: native_credential_profile(),
         deny_egress: false,
         sandbox: None,
     };
@@ -1997,6 +2028,7 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
                 ]),
                 model: None,
                 runtime: None,
+                credential_realization: native_credential_profile(),
                 deny_egress: false,
                 sandbox: None,
             },
@@ -2129,13 +2161,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
     };
 
-    let launch = awaken_run_executor_acp::AcpLaunch::custom(vec!["true".into()], vec![]);
-    let source = Arc::new(awaken_run_executor_acp::SubprocessChannelSource::new(
-        launch,
-    ));
-    let executor = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
-    let host =
-        Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_acp_default(executor, "acp:test"));
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
     let credential = awaken_credential_vault::repo::enter_credential(
@@ -2157,6 +2183,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     let managed = crate::ManagedHost::new(host.clone())
         .with_credentials(credentials.clone(), secrets.clone());
     let holder = PlaintextHolder::new(PlaintextBoundary::Worker, "awaken.worker");
+    let (mcp_url, _seen) = crate::test_mcp::start(Some("Bearer published-mcp-token")).await;
     let generation = |session: &str| awaken_protocol_managed::McpGenerationRef {
         session_id: session.into(),
         attachment_id: awaken_protocol_managed::McpAttachmentId("mcp-docs".into()),
@@ -2172,8 +2199,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             realization_id: format!("realize-{session}"),
             stage_idempotency_key: format!("stage-{session}"),
             name: "docs".into(),
-            target: awaken_protocol_managed::McpTarget::parse_http("https://mcp.example.test")
-                .unwrap(),
+            target: awaken_protocol_managed::McpTarget::parse_http(&mcp_url).unwrap(),
             credential: Some(CredentialAccess::new(
                 CredentialRef {
                     id: credential.id.0.clone(),
@@ -2190,9 +2216,10 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         }
     };
 
-    // Cause graph: exact workspace + revision + allowed Worker holder -> material
-    // is staged but invisible; durable publication command -> visible. Any
-    // workspace/revision mismatch terminates before a projection is installed.
+    // Cause graph: exact workspace + revision + allowed Worker holder -> Native
+    // host material is staged but invisible; durable publication command -> visible.
+    // ACP authentication additionally requires installed no-bypass provider evidence
+    // before material resolution; anonymous ACP has no secret and needs no custody proof.
     //
     // | Rule | workspace | revision | stage | publish | Effect |
     // |---|---|---|---|---|---|
@@ -2207,6 +2234,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // | H9 | exact | exact | expired stage | - | reject/no projection |
     // | H10 | exact | exact | conflicting replay | - | reject/no duplicate |
     // | H11 | exact | exact | drain unknown | - | idempotent no-op |
+    // | H12 | exact | exact | authenticated ACP/no no-bypass | - | reject before resolver |
+    // | H13 | - | - | anonymous ACP | no | staged without bearer |
     let exact_request = request("mcp-exact", "workspace-a", 1);
     let receipt = managed
         .stage_mcp_attachment(exact_request.clone())
@@ -2307,6 +2336,43 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         .drain_mcp_generation(generation("mcp-never-staged"))
         .await
         .expect("H11");
+
+    let launch = awaken_run_executor_acp::AcpLaunch::custom(vec!["true".into()], vec![]);
+    let source = Arc::new(awaken_run_executor_acp::SubprocessChannelSource::new(
+        launch,
+    ));
+    let executor = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
+    let acp_host =
+        Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_acp_default(executor, "acp:test"));
+    // Deliberately install no credential resolver: the no-bypass failure must mask
+    // material-source availability and prove no secret lookup was attempted.
+    let acp_managed = crate::ManagedHost::new(acp_host.clone());
+    let acp_error = acp_managed
+        .stage_mcp_attachment(request("mcp-acp-protected", "workspace-a", 1))
+        .await
+        .unwrap_err();
+    assert_eq!(acp_error.code, "mcp_holder_unsupported", "H12");
+    assert!(
+        acp_host
+            .mcp_projection(&generation("mcp-acp-protected"))
+            .is_none(),
+        "H12"
+    );
+
+    let mut anonymous = request("mcp-acp-anonymous", "workspace-a", 1);
+    anonymous.credential = None;
+    anonymous.selected_plaintext_holder = None;
+    acp_managed
+        .stage_mcp_attachment(anonymous)
+        .await
+        .expect("H13");
+    assert!(
+        acp_host
+            .mcp_projection(&generation("mcp-acp-anonymous"))
+            .and_then(|projection| projection.server)
+            .is_some_and(|server| server.bearer.is_none()),
+        "H13"
+    );
 }
 
 /// Native and ACP are projections of the same exact durable generation.  This
@@ -2492,6 +2558,7 @@ async fn a_github_repository_resource_does_not_create_a_parallel_mcp_projection(
                 ),
                 model: None,
                 runtime: None,
+                credential_realization: native_credential_profile(),
                 deny_egress: false,
                 sandbox: None,
             },
@@ -2518,6 +2585,328 @@ async fn a_github_repository_resource_does_not_create_a_parallel_mcp_projection(
         host.active_mcp_projections("t-gh").is_empty(),
         "Repository realization cannot manufacture Session MCP authority"
     );
+}
+
+/// Worker composition cause graph: C1 dispatch Session Runtime installed from
+/// the Managed adapter -> C2 outer builder released -> C3 validator present ->
+/// C4 exact credential materializer present -> E1 Repository material stages.
+/// Missing C4 rejects through the same runtime rather than a fallback path.
+///
+/// | Rule | C1 | C2 | C3 | C4 | Result |
+/// |---|---|---|---|---|---|
+/// | D1 | T | T | T | T | exact material staged |
+/// | D2 | T | T | T | F | reject, no activation |
+#[tokio::test]
+async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
+    for (rule, install_credentials) in [("D1", true), ("D2", false)] {
+        let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+        let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
+        let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
+        let source = awaken_credential_vault::repo::enter_credential(
+            awaken_credential_vault::CredentialCreateParams {
+                workspace_id: host.local_workspace().into(),
+                kind: awaken_credential_vault::CredentialKind::Vault,
+                provider_id: Some("git".into()),
+                env_key: None,
+                secret: Some(awaken_agent_contract::RedactedString::from(
+                    "dispatch-repository-secret".to_string(),
+                )),
+                oauth_command: None,
+            },
+            secrets.as_ref(),
+            credentials.as_ref(),
+        )
+        .await
+        .expect("author dispatch Repository credential");
+        let managed = managed_with_resource_source(host.clone());
+        let managed = if install_credentials {
+            managed.with_credentials(credentials, secrets)
+        } else {
+            managed
+        };
+        drop(managed);
+
+        let thread = format!("worker-dispatch-repository-{rule}");
+        let manifest = awaken_protocol_managed::SessionResourceManifest::new(
+            host.local_workspace(),
+            effective_repository(
+                "repo-1",
+                "https://github.com/awaken/example.git",
+                "/workspace/repo",
+                Some(source.id.0),
+            ),
+        );
+        let result = host.install_dispatched_resources(&thread, &manifest).await;
+        if install_credentials {
+            result.unwrap_or_else(|error| panic!("{rule}: {error}"));
+            assert_eq!(
+                host.thread_repository_activations(&thread).len(),
+                1,
+                "{rule}"
+            );
+            assert_eq!(
+                host.thread_repository_activations(&thread)[0]
+                    .credential
+                    .as_ref()
+                    .map(|material| material.expose_secret()),
+                Some("dispatch-repository-secret"),
+                "{rule}"
+            );
+        } else {
+            let error = result.expect_err("D2 must reject").to_string();
+            assert!(
+                error.contains("configured credential vault"),
+                "{rule}: {error}"
+            );
+            assert!(
+                host.thread_repository_activations(&thread).is_empty(),
+                "{rule}"
+            );
+        }
+    }
+}
+
+/// Repository realization cause graph:
+/// C1 binding/pin cardinality exact -> C2 source id/usage exact -> C3 holder
+/// allowed and model exposure forbidden -> C4 Worker holder exact -> C5 source
+/// revision active in the exact Workspace -> E1 ephemeral material staged.
+/// Anonymous input bypasses C2-C5; the first failed cause
+/// terminates without another credential or holder selection.
+///
+/// | Rule | Credential | C1 | C2 | C3 | C4 | C5 | Result |
+/// |---|---|---|---|---|---|---|---|
+/// | H1 | absent | T | - | - | - | - | anonymous |
+/// | H2 | present | T | T | T | T | T | exact material |
+/// | H3 | present | F | - | - | - | - | reject missing pin |
+/// | H4 | present | T | F | - | - | - | reject source mismatch |
+/// | H5 | present | T | T | F | - | - | reject usage mismatch |
+/// | H6 | absent | F | - | - | - | - | reject extra pin |
+/// | H7 | present | T | T | F | - | - | reject unauthorized holder |
+/// | H8 | present | T | T | F | - | - | reject virtual exposure |
+/// | H9 | present | T | T | T | F | - | reject unsupported holder |
+/// | H10 | present | T | T | T | T | F | reject stale revision |
+/// | H11 | present | T | T | T | T | F | reject inactive source |
+/// | H12 | present | T | T | T | T | F | reject cross-Workspace source |
+#[tokio::test]
+async fn repository_credential_realization_follows_the_decision_table() {
+    use awaken_protocol_managed::{SessionInit, SessionRuntime};
+
+    #[derive(Clone, Copy)]
+    enum Case {
+        Anonymous,
+        Exact,
+        MissingPin,
+        PinWithoutBinding,
+        WrongSource,
+        WrongUsage,
+        HolderNotAllowed,
+        VirtualExposure,
+        UnsupportedHolder,
+        StaleRevision,
+        InactiveSource,
+        CrossWorkspace,
+    }
+    struct Rule {
+        id: &'static str,
+        case: Case,
+        expected_error: Option<&'static str>,
+    }
+    let rules = [
+        Rule {
+            id: "H1",
+            case: Case::Anonymous,
+            expected_error: None,
+        },
+        Rule {
+            id: "H2",
+            case: Case::Exact,
+            expected_error: None,
+        },
+        Rule {
+            id: "H3",
+            case: Case::MissingPin,
+            expected_error: Some("has no exact Session pin"),
+        },
+        Rule {
+            id: "H4",
+            case: Case::WrongSource,
+            expected_error: Some("selects another source"),
+        },
+        Rule {
+            id: "H5",
+            case: Case::WrongUsage,
+            expected_error: Some("incompatible transport usage"),
+        },
+        Rule {
+            id: "H6",
+            case: Case::PinWithoutBinding,
+            expected_error: Some("credential pin without a binding"),
+        },
+        Rule {
+            id: "H7",
+            case: Case::HolderNotAllowed,
+            expected_error: Some("holder is not authorized"),
+        },
+        Rule {
+            id: "H8",
+            case: Case::VirtualExposure,
+            expected_error: Some("must remain model-invisible"),
+        },
+        Rule {
+            id: "H9",
+            case: Case::UnsupportedHolder,
+            expected_error: Some("unsupported plaintext holder"),
+        },
+        Rule {
+            id: "H10",
+            case: Case::StaleRevision,
+            expected_error: Some("credential material revision mismatch"),
+        },
+        Rule {
+            id: "H11",
+            case: Case::InactiveSource,
+            expected_error: Some("credential material unavailable"),
+        },
+        Rule {
+            id: "H12",
+            case: Case::CrossWorkspace,
+            expected_error: Some("credential material recipient mismatch"),
+        },
+    ];
+
+    for rule in rules {
+        let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+        let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
+        let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
+        let mut source = awaken_credential_vault::repo::enter_credential(
+            awaken_credential_vault::CredentialCreateParams {
+                workspace_id: if matches!(rule.case, Case::CrossWorkspace) {
+                    "another-workspace".into()
+                } else {
+                    host.local_workspace().into()
+                },
+                kind: awaken_credential_vault::CredentialKind::Vault,
+                provider_id: Some("git".into()),
+                env_key: None,
+                secret: Some(awaken_agent_contract::RedactedString::from(
+                    "repository-decision-secret".to_string(),
+                )),
+                oauth_command: None,
+            },
+            secrets.as_ref(),
+            credentials.as_ref(),
+        )
+        .await
+        .expect("author exact Repository credential");
+        if matches!(rule.case, Case::InactiveSource) {
+            source.status = awaken_credential_vault::CredentialStatus::Disabled;
+            awaken_credential_vault::repo::CredentialRepo::put(
+                credentials.as_ref(),
+                source.clone(),
+            )
+            .await
+            .expect("disable exact Repository credential");
+        }
+        let managed =
+            managed_with_resource_source(host.clone()).with_credentials(credentials, secrets);
+        let binding = (!matches!(rule.case, Case::Anonymous)).then(|| source.id.0.clone());
+        let mut resources = effective_repository(
+            "repo-1",
+            "https://github.com/awaken/example.git",
+            "/workspace/repo",
+            binding,
+        );
+        let awaken_protocol_managed::ResolvedInputSource::Repository {
+            config, credential, ..
+        } = &mut resources.inputs[0].source
+        else {
+            unreachable!()
+        };
+        match rule.case {
+            Case::Anonymous | Case::Exact => {}
+            Case::MissingPin => *credential = None,
+            Case::PinWithoutBinding => config.credential_binding = None,
+            Case::WrongSource => {
+                credential.as_mut().unwrap().access.credential.id = "another-source".into();
+            }
+            Case::WrongUsage => {
+                credential.as_mut().unwrap().access.usage =
+                    awaken_runtime_contract::CredentialUsage::QueryParameter {
+                        name: "token".into(),
+                    };
+            }
+            Case::HolderNotAllowed => {
+                let workload = awaken_runtime_contract::PlaintextHolder::new(
+                    awaken_runtime_contract::PlaintextBoundary::Workload,
+                    awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
+                );
+                credential.as_mut().unwrap().access.policy =
+                    awaken_runtime_contract::CredentialExecutionPolicy::exact(
+                        workload,
+                        awaken_runtime_contract::ModelExposurePolicy::Forbidden,
+                    );
+            }
+            Case::VirtualExposure => {
+                let credential = credential.as_mut().unwrap();
+                credential.access.policy =
+                    awaken_runtime_contract::CredentialExecutionPolicy::exact(
+                        credential.selected_plaintext_holder.clone(),
+                        awaken_runtime_contract::ModelExposurePolicy::VirtualOnly,
+                    );
+            }
+            Case::UnsupportedHolder => {
+                let workload = awaken_runtime_contract::PlaintextHolder::new(
+                    awaken_runtime_contract::PlaintextBoundary::Workload,
+                    awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
+                );
+                let credential = credential.as_mut().unwrap();
+                credential.selected_plaintext_holder = workload.clone();
+                credential.access.policy =
+                    awaken_runtime_contract::CredentialExecutionPolicy::exact(
+                        workload,
+                        awaken_runtime_contract::ModelExposurePolicy::Forbidden,
+                    );
+            }
+            Case::StaleRevision => {
+                credential.as_mut().unwrap().access.credential.revision = 2;
+            }
+            Case::InactiveSource | Case::CrossWorkspace => {}
+        }
+        let thread = format!("repository-decision-{}", rule.id);
+        let result = managed
+            .prepare_session(
+                &thread,
+                SessionInit {
+                    workspace_id: host.local_workspace().into(),
+                    agent_id: "a".into(),
+                    delegate_ids: Vec::new(),
+                    resources,
+                    model: None,
+                    runtime: None,
+                    credential_realization: native_credential_profile(),
+                    deny_egress: false,
+                    sandbox: None,
+                },
+            )
+            .await;
+        match rule.expected_error {
+            None => {
+                result.unwrap_or_else(|error| panic!("{}: {error}", rule.id));
+                let staged = host.thread_repository_activations(&thread);
+                assert_eq!(staged.len(), 1, "{}", rule.id);
+                assert_eq!(
+                    staged[0].credential.is_some(),
+                    matches!(rule.case, Case::Exact),
+                    "{}",
+                    rule.id
+                );
+            }
+            Some(fragment) => {
+                let error = result.expect_err("decision row must reject").to_string();
+                assert!(error.contains(fragment), "{}: {error}", rule.id);
+            }
+        }
+    }
 }
 
 /// Applying a repository manifest with a new credential reference re-keys the
@@ -2561,6 +2950,7 @@ async fn rotating_a_github_repository_token_re_keys_only_the_clone() {
                 ),
                 model: None,
                 runtime: None,
+                credential_realization: native_credential_profile(),
                 deny_egress: false,
                 sandbox: None,
             },
@@ -2632,6 +3022,7 @@ fn bare_session(agent: &str, workspace: &str) -> awaken_protocol_managed::Sessio
         resources: Default::default(),
         model: None,
         runtime: None,
+        credential_realization: native_credential_profile(),
         deny_egress: false,
         sandbox: None,
     }

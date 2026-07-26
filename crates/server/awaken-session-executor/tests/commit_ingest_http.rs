@@ -155,7 +155,7 @@ async fn registered_worker_commits_one_idempotent_versioned_operation() {
         .await
         .unwrap();
     let claimed = dispatch
-        .claim(&identity.lease_owner(), 30_000, 0)
+        .claim(&identity.lease_owner(), 30_000, 0, &Default::default())
         .await
         .unwrap()
         .expect("claim");

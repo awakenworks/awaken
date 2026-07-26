@@ -19,8 +19,9 @@ use std::sync::{Arc, Mutex};
 use awaken_agent_contract::RedactedString;
 use awaken_credential_vault::{SecretRef, SecretStore};
 use awaken_ext_mcp::{AuthChallenge, Credential, CredentialRefresher, HttpTransportBuilder};
-use awaken_protocol_managed::{McpProbe, McpProbeStatus, TokenEndpointAuthBinding};
+use awaken_protocol_managed::{McpProbe, McpProbeStatus};
 use awaken_runtime_contract::plugin::Plugin;
+use awaken_runtime_contract::{CredentialRefreshAccess, TokenEndpointAuth};
 use base64::Engine as _;
 
 use crate::host::HostError;
@@ -76,22 +77,17 @@ pub(crate) fn project_mcp_transport(
 /// results. Carries [`SecretRef`]s plus the [`SecretStore`] handle — never
 /// secret material.
 #[derive(Clone)]
-pub struct McpRefreshMaterial {
-    pub token_endpoint: String,
-    pub client_id: String,
-    /// How the grant authenticates at the token endpoint: `none` (public
-    /// client), or a confidential scheme carrying the sealed client secret's
-    /// ref ([`VaultRefresher`] reads it per exchange).
-    pub token_endpoint_auth: TokenEndpointAuthBinding,
-    pub scope: Option<String>,
-    pub resource: Option<String>,
-    /// Where the sealed refresh token lives (read per exchange; rewritten when
-    /// the token endpoint rotates it).
-    pub refresh_token_ref: SecretRef,
-    /// The credential row's `material_ref` — the fresh access token is resealed
-    /// under it, so later sessions (and the validate probe) get the new secret.
-    pub access_token_ref: SecretRef,
-    pub secrets: Arc<dyn SecretStore>,
+pub(crate) struct McpRefreshMaterial {
+    /// The same exact, fingerprinted execution fact persisted on the MCP
+    /// generation. Runtime does not project it into a second refresh DTO.
+    access: CredentialRefreshAccess,
+    secrets: Arc<dyn SecretStore>,
+}
+
+impl McpRefreshMaterial {
+    pub(crate) fn new(access: CredentialRefreshAccess, secrets: Arc<dyn SecretStore>) -> Self {
+        Self { access, secrets }
+    }
 }
 
 /// The host-side [`CredentialRefresher`] of the managed vault design (ADR-0043):
@@ -99,7 +95,7 @@ pub struct McpRefreshMaterial {
 /// an RFC 6749 `refresh_token` grant against the credential's stored token
 /// endpoint — `POST` form-encoded `grant_type=refresh_token&refresh_token=…`
 /// (+`scope`/`resource` when configured), with client authentication per the
-/// stored [`TokenEndpointAuthBinding`]:
+/// stored [`TokenEndpointAuth`]:
 /// - `none` (public client): `client_id=…` in the form body;
 /// - `client_secret_basic`: `Authorization: Basic
 ///   base64(urlencode(client_id):urlencode(client_secret))` (RFC 6749 §2.3.1),
@@ -132,8 +128,9 @@ fn basic_client_auth(client_id: &str, client_secret: &str) -> String {
 
 impl VaultRefresher {
     #[must_use]
-    pub fn new(refresh: McpRefreshMaterial) -> Self {
-        let http = http_client_for(&refresh.token_endpoint);
+    pub fn new(access: CredentialRefreshAccess, secrets: Arc<dyn SecretStore>) -> Self {
+        let refresh = McpRefreshMaterial::new(access, secrets);
+        let http = http_client_for(&refresh.access.token_endpoint);
         Self { refresh, http }
     }
 }
@@ -159,45 +156,54 @@ fn http_client_for(url: &str) -> reqwest::Client {
 impl CredentialRefresher for VaultRefresher {
     async fn refresh(&self, _challenge: &AuthChallenge) -> Option<Credential> {
         let r = &self.refresh;
-        let refresh_token = r.secrets.get(&r.refresh_token_ref).await.ok()?;
+        let access = &r.access;
+        if !access.has_valid_client_authentication_binding()
+            || !access.has_valid_configuration_fingerprint()
+        {
+            return None;
+        }
+        let refresh_token = r
+            .secrets
+            .get(&SecretRef(access.refresh_token_ref.clone()))
+            .await
+            .ok()?;
         // A confidential scheme's sealed client secret is read HERE, per
         // exchange; missing/unreadable → None (fail closed: the transport
         // surfaces the original challenge).
-        let client_secret = match &r.token_endpoint_auth {
-            TokenEndpointAuthBinding::ClientSecretBasic { secret_ref }
-            | TokenEndpointAuthBinding::ClientSecretPost { secret_ref } => {
-                // The port carries the ref as a neutral string; re-type at the lookup.
+        let client_secret = match access.token_endpoint_auth {
+            TokenEndpointAuth::ClientSecretBasic | TokenEndpointAuth::ClientSecretPost => {
+                let secret_ref = access.client_secret_ref.as_ref()?;
                 Some(r.secrets.get(&SecretRef(secret_ref.clone())).await.ok()?)
             }
-            TokenEndpointAuthBinding::None => None,
+            TokenEndpointAuth::None => None,
         };
         let mut form: Vec<(&str, &str)> = vec![
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token.expose_secret()),
         ];
-        let mut request = self.http.post(&r.token_endpoint);
-        match &r.token_endpoint_auth {
+        let mut request = self.http.post(&access.token_endpoint);
+        match access.token_endpoint_auth {
             // Public client: the bare client_id rides in the form body.
-            TokenEndpointAuthBinding::None => form.push(("client_id", r.client_id.as_str())),
+            TokenEndpointAuth::None => form.push(("client_id", access.client_id.as_str())),
             // RFC 6749 §2.3.1: HTTP Basic with the form-urlencoded credential
             // pair; the client_id is OMITTED from the form body.
-            TokenEndpointAuthBinding::ClientSecretBasic { .. } => {
+            TokenEndpointAuth::ClientSecretBasic => {
                 request = request.header(
                     reqwest::header::AUTHORIZATION,
-                    basic_client_auth(&r.client_id, client_secret.as_ref()?.expose_secret()),
+                    basic_client_auth(&access.client_id, client_secret.as_ref()?.expose_secret()),
                 );
             }
             // RFC 6749 §2.3.1 form alternative: client_id + client_secret in
             // the body.
-            TokenEndpointAuthBinding::ClientSecretPost { .. } => {
-                form.push(("client_id", r.client_id.as_str()));
+            TokenEndpointAuth::ClientSecretPost => {
+                form.push(("client_id", access.client_id.as_str()));
                 form.push(("client_secret", client_secret.as_ref()?.expose_secret()));
             }
         }
-        if let Some(scope) = &r.scope {
+        if let Some(scope) = &access.scope {
             form.push(("scope", scope.as_str()));
         }
-        if let Some(resource) = &r.resource {
+        if let Some(resource) = &access.resource {
             form.push(("resource", resource.as_str()));
         }
         let response = request.form(&form).send().await.ok()?;
@@ -210,7 +216,7 @@ impl CredentialRefresher for VaultRefresher {
         // probe materialize the row and must see the fresh secret.
         r.secrets
             .put(
-                &r.access_token_ref,
+                &SecretRef(access.access_token_ref.clone()),
                 RedactedString::new(access_token.clone()),
             )
             .await
@@ -218,7 +224,7 @@ impl CredentialRefresher for VaultRefresher {
         if let Some(rotated) = body.get("refresh_token").and_then(|v| v.as_str()) {
             r.secrets
                 .put(
-                    &r.refresh_token_ref,
+                    &SecretRef(access.refresh_token_ref.clone()),
                     RedactedString::new(rotated.to_string()),
                 )
                 .await
@@ -427,10 +433,10 @@ pub(crate) async fn connect_materialized(
         };
         let mut builder = HttpTransportBuilder::new(server.url.clone()).credential(credential);
         if let Some(refresh) = &server.refresh {
-            builder =
-                builder
-                    .refresher(Arc::new(VaultRefresher::new(refresh.clone()))
-                        as Arc<dyn CredentialRefresher>);
+            builder = builder.refresher(Arc::new(VaultRefresher::new(
+                refresh.access.clone(),
+                refresh.secrets.clone(),
+            )) as Arc<dyn CredentialRefresher>);
         }
         let transport = builder.connect_streaming().await.map_err(|e| {
             HostError::internal(format!(
@@ -520,5 +526,36 @@ mod alpha_beta_tests {
             "routed by exact generation: {url}"
         );
         assert!(!serde_json::to_string(&s).unwrap().contains("sk-RAW-SECRET"));
+    }
+
+    /// Runtime's final refresh gate follows the contract decision table too:
+    /// valid authoring fingerprint + unchanged facts may proceed; changing any
+    /// executable fact after compilation must stop before secret lookup/network.
+    #[tokio::test]
+    async fn oauth_refresh_fails_closed_when_exact_configuration_is_tampered() {
+        let mut access = awaken_runtime_contract::CredentialRefreshAccess::new(
+            1,
+            "https://auth.example/token".into(),
+            "client".into(),
+            awaken_runtime_contract::TokenEndpointAuth::None,
+            None,
+            "refresh-ref".into(),
+            "access-ref".into(),
+            None,
+            None,
+        );
+        access.scope = Some("tampered".into());
+        let secrets: Arc<dyn awaken_credential_vault::SecretStore> =
+            Arc::new(awaken_credential_vault::InMemorySecretStore::new());
+        let refresher = VaultRefresher::new(access, secrets);
+        assert_eq!(
+            refresher
+                .refresh(&AuthChallenge {
+                    status: 401,
+                    www_authenticate: None,
+                })
+                .await,
+            None
+        );
     }
 }

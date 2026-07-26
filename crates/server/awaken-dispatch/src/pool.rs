@@ -48,6 +48,15 @@ use std::sync::atomic::{AtomicU32, Ordering};
 /// the one shared store, which satisfies this).
 #[async_trait]
 pub trait WorkerResolver<S>: Send + Sync {
+    /// Exact process-local realization evidence used before the pool freezes a
+    /// local claim. Registered remote workers use their immutable manifest at
+    /// the server and do not route through this local pool seam.
+    fn credential_realization_capabilities(
+        &self,
+    ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
+        Default::default()
+    }
+
     /// The worker whose runtime owns `thread_id`, opening the session if needed.
     /// `agent_id` is the claimed run's own agent (from its activation snapshot), so a
     /// cold worker opens the session bound to THAT agent's published config — its own
@@ -437,7 +446,14 @@ async fn claim_and_drive<S: Dispatch + 'static>(
         if !gate.open {
             return Ok(false);
         }
-        store.claim(owner, lease_ms, now).await?
+        store
+            .claim(
+                owner,
+                lease_ms,
+                now,
+                &resolver.credential_realization_capabilities(),
+            )
+            .await?
     };
     let Some(claimed) = claimed else {
         return Ok(false);

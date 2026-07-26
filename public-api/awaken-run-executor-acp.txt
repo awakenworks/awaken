@@ -4,6 +4,8 @@ pub use awaken_run_executor_acp::AcpLaunchStage
 pub use awaken_run_executor_acp::AgentChannelType
 pub use awaken_run_executor_acp::Codec
 pub use awaken_run_executor_acp::LaunchObserver
+pub use awaken_run_executor_acp::SandboxError
+pub use awaken_run_executor_acp::SecretBroker
 pub enum awaken_run_executor_acp::McpCredential
 pub awaken_run_executor_acp::McpCredential::None
 pub awaken_run_executor_acp::McpCredential::Reference
@@ -63,9 +65,9 @@ impl awaken_run_executor_acp::AcpCli
 pub fn awaken_run_executor_acp::AcpCli::project_mcp(&self, &[awaken_run_executor_acp::McpServerConfig]) -> awaken_run_executor_acp::McpDelivery
 pub struct awaken_run_executor_acp::AcpLaunch
 pub awaken_run_executor_acp::AcpLaunch::argv: alloc::vec::Vec<alloc::string::String>
-pub awaken_run_executor_acp::AcpLaunch::env: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub awaken_run_executor_acp::AcpLaunch::env: alloc::vec::Vec<awaken_provisioning_contract::vocab::EnvVar>
 impl awaken_run_executor_acp::AcpLaunch
-pub fn awaken_run_executor_acp::AcpLaunch::claude(&str, &str, &str) -> Self
+pub fn awaken_run_executor_acp::AcpLaunch::claude(&str, &str, awaken_run_executor_acp::ProcessSecretRequirement) -> Self
 pub fn awaken_run_executor_acp::AcpLaunch::custom(alloc::vec::Vec<alloc::string::String>, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>) -> Self
 pub struct awaken_run_executor_acp::AcpRunExecutor
 impl awaken_run_executor_acp::AcpRunExecutor
@@ -133,15 +135,21 @@ impl awaken_run_executor_acp::SessionHomeProvider for awaken_run_executor_acp::N
 pub fn awaken_run_executor_acp::NoSessionHome::harvest<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_run_executor_acp::SessionHomeKey, &'life2 awaken_run_executor_acp::SessionHomePlan) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_run_executor_acp::NoSessionHome::restore<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_run_executor_acp::SessionHomeKey, &'life2 awaken_run_executor_acp::SessionHomePlan) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub struct awaken_run_executor_acp::OpenError(pub alloc::string::String)
+pub struct awaken_run_executor_acp::ProcessSecretRequirement
+impl awaken_run_executor_acp::ProcessSecretRequirement
+pub fn awaken_run_executor_acp::ProcessSecretRequirement::new(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_run_executor_acp::ProcessSecretRequirement::reference(&self) -> &str
+impl core::fmt::Debug for awaken_run_executor_acp::ProcessSecretRequirement
+pub fn awaken_run_executor_acp::ProcessSecretRequirement::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct awaken_run_executor_acp::ProjectingChannelSource
 impl awaken_run_executor_acp::ProjectingChannelSource
 pub fn awaken_run_executor_acp::ProjectingChannelSource::new(awaken_run_executor_acp::AcpCli, alloc::sync::Arc<dyn awaken_run_executor_acp::LaunchResolver>) -> Self
 impl awaken_run_executor_acp::AgentChannelSource for awaken_run_executor_acp::ProjectingChannelSource
-pub fn awaken_run_executor_acp::ProjectingChannelSource::open<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::activation::RunActivation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_run_executor_acp::AgentSession, awaken_run_executor_acp::OpenError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_run_executor_acp::ProjectingChannelSource::open<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::activation::RunActivation, &'life2 awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_run_executor_acp::AgentSession, awaken_run_executor_acp::OpenError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub struct awaken_run_executor_acp::ResolvedModel
-pub awaken_run_executor_acp::ResolvedModel::api_key: alloc::string::String
 pub awaken_run_executor_acp::ResolvedModel::base_url: alloc::string::String
 pub awaken_run_executor_acp::ResolvedModel::model: alloc::string::String
+pub awaken_run_executor_acp::ResolvedModel::process_secret: core::option::Option<awaken_run_executor_acp::ProcessSecretRequirement>
 impl awaken_run_executor_acp::ResolvedModel
 pub fn awaken_run_executor_acp::ResolvedModel::cloud_managed_gateway(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_run_executor_acp::RetentionPolicy
@@ -159,17 +167,19 @@ pub struct awaken_run_executor_acp::SubprocessChannelSource
 impl awaken_run_executor_acp::SubprocessChannelSource
 pub fn awaken_run_executor_acp::SubprocessChannelSource::new(awaken_run_executor_acp::AcpLaunch) -> Self
 pub fn awaken_run_executor_acp::SubprocessChannelSource::with_codec(self, awaken_protocol_acp::Codec) -> Self
+pub fn awaken_run_executor_acp::SubprocessChannelSource::with_secret_broker(self, alloc::sync::Arc<dyn awaken_provisioning_contract::sandbox::SecretBroker>) -> Self
 impl awaken_run_executor_acp::AgentChannelSource for awaken_run_executor_acp::SubprocessChannelSource
-pub fn awaken_run_executor_acp::SubprocessChannelSource::open<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::activation::RunActivation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_run_executor_acp::AgentSession, awaken_run_executor_acp::OpenError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_run_executor_acp::SubprocessChannelSource::open<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::activation::RunActivation, &'life2 awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_run_executor_acp::AgentSession, awaken_run_executor_acp::OpenError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub trait awaken_run_executor_acp::AgentChannelSource: core::marker::Send + core::marker::Sync
-pub fn awaken_run_executor_acp::AgentChannelSource::open<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::activation::RunActivation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_run_executor_acp::AgentSession, awaken_run_executor_acp::OpenError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_run_executor_acp::AgentChannelSource::open<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::activation::RunActivation, &'life2 awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_run_executor_acp::AgentSession, awaken_run_executor_acp::OpenError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 impl awaken_run_executor_acp::AgentChannelSource for awaken_run_executor_acp::ProjectingChannelSource
-pub fn awaken_run_executor_acp::ProjectingChannelSource::open<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::activation::RunActivation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_run_executor_acp::AgentSession, awaken_run_executor_acp::OpenError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_run_executor_acp::ProjectingChannelSource::open<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::activation::RunActivation, &'life2 awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_run_executor_acp::AgentSession, awaken_run_executor_acp::OpenError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 impl awaken_run_executor_acp::AgentChannelSource for awaken_run_executor_acp::SubprocessChannelSource
-pub fn awaken_run_executor_acp::SubprocessChannelSource::open<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::activation::RunActivation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_run_executor_acp::AgentSession, awaken_run_executor_acp::OpenError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_run_executor_acp::SubprocessChannelSource::open<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::activation::RunActivation, &'life2 awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_run_executor_acp::AgentSession, awaken_run_executor_acp::OpenError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub trait awaken_run_executor_acp::LaunchResolver: core::marker::Send + core::marker::Sync
 pub fn awaken_run_executor_acp::LaunchResolver::extra_env(&self, &awaken_runtime_contract::activation::RunActivation) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
-pub fn awaken_run_executor_acp::LaunchResolver::model(&self, &awaken_runtime_contract::activation::RunActivation) -> core::result::Result<awaken_run_executor_acp::ResolvedModel, awaken_run_executor_acp::OpenError>
+pub fn awaken_run_executor_acp::LaunchResolver::model(&self, &awaken_runtime_contract::activation::RunActivation, &awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_run_executor_acp::ResolvedModel, awaken_run_executor_acp::OpenError>
+pub fn awaken_run_executor_acp::LaunchResolver::secret_broker(&self) -> core::option::Option<alloc::sync::Arc<dyn awaken_provisioning_contract::sandbox::SecretBroker>>
 pub trait awaken_run_executor_acp::SessionBlobStore: core::marker::Send + core::marker::Sync
 pub fn awaken_run_executor_acp::SessionBlobStore::fetch<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_run_executor_acp::SessionHomeKey, &'life2 std::path::Path) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::io::error::Result<bool>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_run_executor_acp::SessionBlobStore::store<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_run_executor_acp::SessionHomeKey, &'life2 std::path::Path) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::io::error::Result<()>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
@@ -190,4 +200,4 @@ pub fn awaken_run_executor_acp::is_dynamic_install(&awaken_run_executor_acp::Acp
 pub fn awaken_run_executor_acp::known_acp_clis() -> &'static [awaken_run_executor_acp::AcpCli]
 pub fn awaken_run_executor_acp::mcp_injection(&awaken_run_executor_acp::AcpCli, &alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>, bool) -> core::result::Result<awaken_run_executor_acp::McpInjection, awaken_run_executor_acp::OpenError>
 pub fn awaken_run_executor_acp::mcp_injection_from_servers(&awaken_run_executor_acp::AcpCli, &[awaken_run_executor_acp::McpServerConfig], bool) -> core::result::Result<awaken_run_executor_acp::McpInjection, awaken_run_executor_acp::OpenError>
-pub fn awaken_run_executor_acp::project_launch(&awaken_run_executor_acp::AcpCli, &dyn awaken_run_executor_acp::LaunchResolver, &awaken_runtime_contract::activation::RunActivation) -> core::result::Result<awaken_run_executor_acp::AcpLaunch, awaken_run_executor_acp::OpenError>
+pub fn awaken_run_executor_acp::project_launch(&awaken_run_executor_acp::AcpCli, &dyn awaken_run_executor_acp::LaunchResolver, &awaken_runtime_contract::activation::RunActivation, &awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_run_executor_acp::AcpLaunch, awaken_run_executor_acp::OpenError>

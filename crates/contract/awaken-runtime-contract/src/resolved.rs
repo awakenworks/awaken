@@ -75,6 +75,21 @@ pub struct ResolvedSpec {
 }
 
 impl ResolvedSpec {
+    /// Ordered published candidates eligible for one execution request. A
+    /// nonblank override scopes by model while retaining every published route
+    /// for that model; absent/blank retains primary plus all fallbacks.
+    #[must_use]
+    pub fn execution_candidates(
+        &self,
+        model_ref_override: Option<&str>,
+    ) -> Vec<&ResolvedModelCandidate> {
+        let selected = model_ref_override.filter(|model| !model.is_empty());
+        std::iter::once(&self.model_binding)
+            .chain(self.model_candidates.iter())
+            .filter(|candidate| selected.is_none_or(|model| candidate.binding.model_ref == model))
+            .collect()
+    }
+
     /// The ordered model bindings this run may use: the primary
     /// [`model_binding`](Self::model_binding) first, then any pool fallbacks in
     /// [`model_candidates`](Self::model_candidates). A single-model agent yields

@@ -18,9 +18,11 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
 
 use crate::dispatch::{
-    CasOutcome, Claimed, CommitEpochGuard, DispatchCompletion, DispatchError, DispatchOutcome,
-    DispatchQueue, DispatchState, DispatchSummary, Inbox, Lease, Outbox, PendingInput,
-    PendingRecord, RunClaim, SettleOutcome, SubmitOptions,
+    AttemptCredentialBinding, CasOutcome, Claimed, CommitEpochGuard, CredentialRealizationReceipt,
+    DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue, DispatchState,
+    DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim, SettleOutcome,
+    SubmitOptions, compile_attempt_credential_bindings, installed_worker_credential_capabilities,
+    verify_credential_realization_receipt,
 };
 use crate::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
@@ -71,6 +73,10 @@ struct Row {
     /// on `claim` so recovery re-adopts the same sandbox.
     sandbox: Option<String>,
     assignment: Option<WorkerAssignment>,
+    /// Exact secret-free decisions frozen with the current lease epoch.
+    credential_bindings: Vec<AttemptCredentialBinding>,
+    /// Idempotent effect evidence written under the same owner/epoch fence.
+    credential_receipts: Vec<CredentialRealizationReceipt>,
 }
 
 /// A pending input with its optimistic-concurrency revision.
@@ -279,22 +285,36 @@ fn claim_exact(
     owner: &str,
     lease_ms: u64,
     now_ms: u64,
-    assignment: Option<WorkerAssignment>,
-) -> Option<Claimed> {
-    let was_recovery = runnable(state, requested_run, now_ms)?;
+    worker: Option<&WorkerSnapshot>,
+    capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+) -> Result<Option<Claimed>, DispatchError> {
+    let Some(was_recovery) = runnable(state, requested_run, now_ms) else {
+        return Ok(None);
+    };
     let run_id = requested_run.clone();
     let row = state.rows.get(&run_id).expect("runnable row exists");
-    if assignment.is_none()
-        && !row.cancellation_requested
-        && !can_claim_locally(&row.request.placement)
+    if worker.is_none() && !row.cancellation_requested && !can_claim_locally(&row.request.placement)
     {
-        return None;
+        return Ok(None);
     }
     let previous =
         was_recovery.then(|| row.lease.clone().expect("a recovery has an expired lease"));
+    let claim_epoch = row
+        .lease_epoch
+        .checked_add(1)
+        .ok_or_else(|| DispatchError::Rejected("dispatch claim epoch exhausted".to_string()))?;
+    let credential_bindings = if row.cancellation_requested {
+        Vec::new()
+    } else {
+        compile_attempt_credential_bindings(&row.request, capabilities, claim_epoch, now_ms)
+            .map_err(|error| {
+                DispatchError::Rejected(format!("credential attempt admission failed: {error}"))
+            })?
+    };
+    let assignment = worker.map(WorkerAssignment::from);
     let (request, sandbox, cancellation_requested, lease) = {
         let row = state.rows.get_mut(&run_id).expect("runnable row exists");
-        row.lease_epoch += 1;
+        row.lease_epoch = claim_epoch;
         let lease = Lease {
             run_id: run_id.clone(),
             owner: owner.to_string(),
@@ -304,6 +324,8 @@ fn claim_exact(
         row.state = RowState::Leased;
         row.lease = Some(lease.clone());
         row.assignment = assignment.clone();
+        row.credential_bindings.clone_from(&credential_bindings);
+        row.credential_receipts.clear();
         if was_recovery {
             row.attempt_count += 1;
         }
@@ -323,6 +345,7 @@ fn claim_exact(
     let claimed = Claimed {
         request,
         lease: lease.clone(),
+        credential_bindings,
         cancellation_requested,
         pending,
         recovered: was_recovery,
@@ -348,7 +371,85 @@ fn claim_exact(
             },
         );
     }
-    Some(claimed)
+    Ok(Some(claimed))
+}
+
+fn claim_new_local(
+    state: &mut State,
+    request: RunDispatch,
+    owner: &str,
+    lease_ms: u64,
+    now_ms: u64,
+    capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+) -> Result<Option<Claimed>, DispatchError> {
+    if !can_claim_locally(&request.placement) {
+        return Ok(None);
+    }
+    let run_id = request.run_id().clone();
+    if state
+        .completions
+        .iter()
+        .any(|completion| completion.run_id == run_id)
+    {
+        return Ok(None);
+    }
+    if !state.rows.contains_key(&run_id) {
+        state.rows.insert(
+            run_id.clone(),
+            Row {
+                request,
+                state: RowState::Pending,
+                cancellation_requested: false,
+                lease: None,
+                attempt_count: 0,
+                priority: 0,
+                epoch: 0,
+                lease_epoch: 0,
+                dedupe_key: None,
+                dead_lettered_at: None,
+                sandbox: None,
+                assignment: None,
+                credential_bindings: Vec::new(),
+                credential_receipts: Vec::new(),
+            },
+        );
+        state.order.push(run_id.clone());
+    }
+    claim_exact(state, &run_id, owner, lease_ms, now_ms, None, capabilities)
+}
+
+fn deliver_and_claim_local(
+    state: &mut State,
+    input: PendingInput,
+    owner: &str,
+    lease_ms: u64,
+    now_ms: u64,
+    capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+) -> Result<Option<Claimed>, DispatchError> {
+    let run_id = input.run_id.clone();
+    if !state
+        .pending
+        .iter()
+        .any(|pending| pending.input.message_id == input.message_id)
+    {
+        state.pending.push(PendingRow { input, revision: 1 });
+    }
+    claim_exact(state, &run_id, owner, lease_ms, now_ms, None, capabilities)
+}
+
+fn claim_next_local(
+    state: &mut State,
+    owner: &str,
+    lease_ms: u64,
+    now_ms: u64,
+    capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+) -> Result<Option<Claimed>, DispatchError> {
+    let Some(run_id) = select_where(state, now_ms, |row| {
+        can_claim_locally(&row.request.placement)
+    }) else {
+        return Ok(None);
+    };
+    claim_exact(state, &run_id, owner, lease_ms, now_ms, None, capabilities)
 }
 
 #[async_trait]
@@ -459,6 +560,8 @@ impl DispatchQueue for MemoryDispatchStore {
                 dead_lettered_at: None,
                 sandbox: None,
                 assignment: None,
+                credential_bindings: Vec::new(),
+                credential_receipts: Vec::new(),
             },
         );
         state.order.push(run_id);
@@ -471,43 +574,11 @@ impl DispatchQueue for MemoryDispatchStore {
         owner: &str,
         lease_ms: u64,
         now_ms: u64,
+        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
-        if !can_claim_locally(&request.placement) {
-            return Ok(None);
-        }
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
-        let run_id = request.run_id().clone();
-        if state
-            .completions
-            .iter()
-            .any(|completion| completion.run_id == run_id)
-        {
-            return Ok(None);
-        }
-        if !state.rows.contains_key(&run_id) {
-            state.rows.insert(
-                run_id.clone(),
-                Row {
-                    request,
-                    state: RowState::Pending,
-                    cancellation_requested: false,
-                    lease: None,
-                    attempt_count: 0,
-                    priority: 0,
-                    epoch: 0,
-                    lease_epoch: 0,
-                    dedupe_key: None,
-                    dead_lettered_at: None,
-                    sandbox: None,
-                    assignment: None,
-                },
-            );
-            state.order.push(run_id.clone());
-        }
-        Ok(claim_exact(
-            &mut state, &run_id, owner, lease_ms, now_ms, None,
-        ))
+        claim_new_local(&mut state, request, owner, lease_ms, now_ms, capabilities)
     }
 
     async fn claim_new_run_compatible(
@@ -546,18 +617,21 @@ impl DispatchQueue for MemoryDispatchStore {
                     dead_lettered_at: None,
                     sandbox: None,
                     assignment: None,
+                    credential_bindings: Vec::new(),
+                    credential_receipts: Vec::new(),
                 },
             );
             state.order.push(run_id.clone());
         }
-        Ok(claim_exact(
+        claim_exact(
             &mut state,
             &run_id,
             &worker.identity.lease_owner(),
             lease_ms,
             now_ms,
-            Some(WorkerAssignment::from(worker)),
-        ))
+            Some(worker),
+            &installed_worker_credential_capabilities(worker)?,
+        )
     }
 
     async fn deliver_and_claim(
@@ -566,20 +640,11 @@ impl DispatchQueue for MemoryDispatchStore {
         owner: &str,
         lease_ms: u64,
         now_ms: u64,
+        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
-        let run_id = input.run_id.clone();
-        if !state
-            .pending
-            .iter()
-            .any(|pending| pending.input.message_id == input.message_id)
-        {
-            state.pending.push(PendingRow { input, revision: 1 });
-        }
-        Ok(claim_exact(
-            &mut state, &run_id, owner, lease_ms, now_ms, None,
-        ))
+        deliver_and_claim_local(&mut state, input, owner, lease_ms, now_ms, capabilities)
     }
 
     async fn deliver_and_claim_compatible(
@@ -612,14 +677,15 @@ impl DispatchQueue for MemoryDispatchStore {
         }) {
             return Ok(None);
         }
-        Ok(claim_exact(
+        claim_exact(
             &mut state,
             &run_id,
             &worker.identity.lease_owner(),
             lease_ms,
             now_ms,
-            Some(WorkerAssignment::from(worker)),
-        ))
+            Some(worker),
+            &installed_worker_credential_capabilities(worker)?,
+        )
     }
 
     async fn claim(
@@ -627,18 +693,11 @@ impl DispatchQueue for MemoryDispatchStore {
         owner: &str,
         lease_ms: u64,
         now_ms: u64,
+        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
-
-        let Some(run_id) = select_where(&state, now_ms, |row| {
-            can_claim_locally(&row.request.placement)
-        }) else {
-            return Ok(None);
-        };
-        Ok(claim_exact(
-            &mut state, &run_id, owner, lease_ms, now_ms, None,
-        ))
+        claim_next_local(&mut state, owner, lease_ms, now_ms, capabilities)
     }
 
     async fn claim_compatible(
@@ -662,14 +721,15 @@ impl DispatchQueue for MemoryDispatchStore {
         }) else {
             return Ok(None);
         };
-        Ok(claim_exact(
+        claim_exact(
             &mut state,
             &run_id,
             &worker.identity.lease_owner(),
             lease_ms,
             now_ms,
-            Some(WorkerAssignment::from(worker)),
-        ))
+            Some(worker),
+            &installed_worker_credential_capabilities(worker)?,
+        )
     }
 
     async fn claim_placed(
@@ -712,14 +772,15 @@ impl DispatchQueue for MemoryDispatchStore {
         let Some(run_id) = run_id else {
             return Ok(None);
         };
-        Ok(claim_exact(
+        claim_exact(
             &mut state,
             &run_id,
             &requester.identity.lease_owner(),
             lease_ms,
             now_ms,
-            Some(WorkerAssignment::from(requester)),
-        ))
+            Some(requester),
+            &installed_worker_credential_capabilities(requester)?,
+        )
     }
 
     async fn claim_run(
@@ -728,17 +789,19 @@ impl DispatchQueue for MemoryDispatchStore {
         owner: &str,
         lease_ms: u64,
         now_ms: u64,
+        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
-        Ok(claim_exact(
+        claim_exact(
             &mut state,
             requested_run,
             owner,
             lease_ms,
             now_ms,
             None,
-        ))
+            capabilities,
+        )
     }
 
     async fn claim_run_compatible(
@@ -763,14 +826,53 @@ impl DispatchQueue for MemoryDispatchStore {
         }) {
             return Ok(None);
         }
-        Ok(claim_exact(
+        claim_exact(
             &mut state,
             requested_run,
             &worker.identity.lease_owner(),
             lease_ms,
             now_ms,
-            Some(WorkerAssignment::from(worker)),
-        ))
+            Some(worker),
+            &installed_worker_credential_capabilities(worker)?,
+        )
+    }
+
+    async fn record_credential_realization(
+        &self,
+        claim: &RunClaim,
+        receipt: CredentialRealizationReceipt,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        let Some(row) = state.rows.get_mut(&claim.run_id) else {
+            return Ok(SettleOutcome::Fenced);
+        };
+        if row.state != RowState::Leased
+            || row.lease_epoch != claim.epoch
+            || row
+                .lease
+                .as_ref()
+                .is_none_or(|lease| lease.owner != claim.owner)
+        {
+            return Ok(SettleOutcome::Fenced);
+        }
+        verify_credential_realization_receipt(&row.credential_bindings, &receipt)
+            .map_err(|error| DispatchError::Rejected(error.to_string()))?;
+        if let Some(existing) = row
+            .credential_receipts
+            .iter()
+            .find(|existing| existing.candidate_fingerprint == receipt.candidate_fingerprint)
+        {
+            return if existing == &receipt {
+                Ok(SettleOutcome::Applied)
+            } else {
+                Err(DispatchError::Rejected(
+                    "credential realization receipt conflicts with committed evidence".to_string(),
+                ))
+            };
+        }
+        row.credential_receipts.push(receipt);
+        Ok(SettleOutcome::Applied)
     }
 
     async fn bind_sandbox(

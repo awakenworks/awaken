@@ -204,6 +204,75 @@ pub struct DeploymentConfig {
 pub const DEFAULT_WAKE_CHANNEL: &str = "awaken_dispatch_wake";
 
 impl DeploymentConfig {
+    /// Project the configured Sandbox adapter into the exact secret-free support
+    /// a Worker may advertise before provider construction. Runtime Host owns this
+    /// mapping because it also owns tier realization; Worker manifest derivation
+    /// must not duplicate provider semantics.
+    #[must_use]
+    pub fn sandbox_support(
+        &self,
+    ) -> (
+        awaken_provisioning_contract::SandboxCapabilities,
+        &'static str,
+    ) {
+        use awaken_provisioning_contract::{IsolationClass, SandboxCapabilities};
+
+        match self.sandbox_tier {
+            SandboxTier::Local => (
+                SandboxCapabilities {
+                    isolation: IsolationClass::Workdir,
+                    tool_transparent: false,
+                    path_fidelity: false,
+                    enforced_readonly: false,
+                    network_isolation: false,
+                    enforced_network_allowlist: false,
+                    secret_egress_substitution: false,
+                    resource_limits: false,
+                    custom_rootfs: false,
+                },
+                "local",
+            ),
+            SandboxTier::Docker | SandboxTier::Podman | SandboxTier::K8s => (
+                SandboxCapabilities {
+                    isolation: IsolationClass::Container,
+                    tool_transparent: true,
+                    path_fidelity: true,
+                    enforced_readonly: true,
+                    // Docker/Podman structurally apply `network none`. The current
+                    // Kubernetes adapter only labels restricted pods and cannot claim
+                    // enforcement until composition verifies an installed policy.
+                    network_isolation: !matches!(self.sandbox_tier, SandboxTier::K8s),
+                    enforced_network_allowlist: false,
+                    secret_egress_substitution: false,
+                    resource_limits: true,
+                    custom_rootfs: true,
+                },
+                match self.sandbox_tier {
+                    SandboxTier::Docker => "docker",
+                    SandboxTier::Podman => "podman",
+                    SandboxTier::K8s => "k8s",
+                    SandboxTier::Local | SandboxTier::Namespace => {
+                        unreachable!("matched container sandbox tier")
+                    }
+                },
+            ),
+            SandboxTier::Namespace => (
+                SandboxCapabilities {
+                    isolation: IsolationClass::Namespace,
+                    tool_transparent: true,
+                    path_fidelity: true,
+                    enforced_readonly: true,
+                    network_isolation: true,
+                    enforced_network_allowlist: false,
+                    secret_egress_substitution: false,
+                    resource_limits: false,
+                    custom_rootfs: false,
+                },
+                "namespace",
+            ),
+        }
+    }
+
     /// Environment-independent defaults for embedding composition roots.
     #[must_use]
     pub fn ephemeral() -> Self {
@@ -365,6 +434,39 @@ mod tests {
         assert!(!SandboxTier::Namespace.is_container());
         for t in [SandboxTier::Docker, SandboxTier::Podman, SandboxTier::K8s] {
             assert!(t.is_container());
+        }
+    }
+
+    /// Sandbox-network evidence graph:
+    ///
+    /// C1 adapter structurally severs networking -> E1 `network_isolation`.
+    /// C2 adapter structurally enforces host allowlists -> E2
+    /// `enforced_network_allowlist`. Isolation class alone implies neither.
+    ///
+    /// | Tier | C1 | C2 | Advertised support |
+    /// |---|---:|---:|---|
+    /// | local | 0 | 0 | neither |
+    /// | namespace | 1 | 0 | deny-all only |
+    /// | docker/podman | 1 | 0 | deny-all only |
+    /// | k8s (current adapter) | 0 | 0 | neither |
+    #[test]
+    fn sandbox_support_reports_adapter_evidence_not_isolation_class() {
+        for (tier, deny_all, backend) in [
+            (SandboxTier::Local, false, "local"),
+            (SandboxTier::Namespace, true, "namespace"),
+            (SandboxTier::Docker, true, "docker"),
+            (SandboxTier::Podman, true, "podman"),
+            (SandboxTier::K8s, false, "k8s"),
+        ] {
+            let mut deployment = base();
+            deployment.sandbox_tier = tier;
+            let (support, actual_backend) = deployment.sandbox_support();
+            assert_eq!(actual_backend, backend);
+            assert_eq!(support.network_isolation, deny_all, "{tier:?}");
+            assert!(
+                !support.enforced_network_allowlist,
+                "{tier:?} must not claim a no-bypass allowlist"
+            );
         }
     }
 

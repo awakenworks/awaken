@@ -824,7 +824,8 @@ mod tests {
             network: awaken_session_contract::SessionNetworkPolicy::None,
             credential_realization: awaken_credential_contract::CredentialRealizationProfile {
                 inference_holder: holder.clone(),
-                mcp_holder: holder,
+                mcp_holder: holder.clone(),
+                resource_holder: holder,
             },
         };
         let mut mcp = awaken_session_contract::SessionMcpAttachmentSet::from_initial(

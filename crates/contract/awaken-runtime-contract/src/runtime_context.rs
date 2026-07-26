@@ -130,6 +130,10 @@ pub struct RuntimeRunContext {
     /// decorators may recheck it immediately before an external side effect.
     /// Absence means the ingress topology has no dispatch ownership concept.
     pub ownership: Option<Arc<dyn AttemptOwnershipVerifier>>,
+    /// Secret-free projection of the credential decisions already committed by
+    /// this attempt's dispatch claim, plus its claim-fenced receipt port. This is
+    /// live wiring, never an alternative durable authority.
+    pub credential_realization: Option<crate::AttemptCredentialRealization>,
     /// Process-local plugins bound by the realized Session rather than authored
     /// into the immutable Agent publication. This is the live-wiring seam for
     /// dynamically discovered capabilities such as a claim-prepared MCP server:
@@ -168,6 +172,9 @@ impl RuntimeRunContext {
         child.stream_sink = None;
         child.pause = None;
         child.live_inbox = None;
+        // A delegated child owns another Run/claim epoch and must receive its own
+        // bindings from ingress rather than inheriting the parent's authority.
+        child.credential_realization = None;
         child
     }
 
@@ -175,6 +182,16 @@ impl RuntimeRunContext {
     #[must_use]
     pub fn with_ownership(mut self, ownership: Arc<dyn AttemptOwnershipVerifier>) -> Self {
         self.ownership = Some(ownership);
+        self
+    }
+
+    /// Bind the immutable claim-epoch credential decisions and receipt writer.
+    #[must_use]
+    pub fn with_credential_realization(
+        mut self,
+        realization: crate::AttemptCredentialRealization,
+    ) -> Self {
+        self.credential_realization = Some(realization);
         self
     }
 

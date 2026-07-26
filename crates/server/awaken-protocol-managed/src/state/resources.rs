@@ -13,6 +13,152 @@ enum ResourceSettlement {
 }
 
 impl ManagedState {
+    fn resource_plaintext_holder(
+        session: &PersistedSession,
+    ) -> Result<awaken_credential_contract::PlaintextHolder, StateError> {
+        session
+            .frozen_baseline()
+            .map(|baseline| {
+                baseline
+                    .environment
+                    .credential_realization
+                    .resource_holder
+                    .clone()
+            })
+            .ok_or_else(|| {
+                StateError::Run(RunError::bad_request(
+                    "Session resource mutation requires a frozen Environment baseline",
+                ))
+            })
+    }
+
+    /// Compile or verify the exact Repository credential execution pin before
+    /// the input enters the Session aggregate. This is the sole Resource→Vault
+    /// selection seam; Runtime receives no bare credential binding.
+    pub(super) async fn pin_repository_credential(
+        &self,
+        owner_scope: &str,
+        selected_holder: &awaken_credential_contract::PlaintextHolder,
+        input: &mut awaken_session_contract::ResolvedInput,
+    ) -> Result<(), StateError> {
+        let awaken_session_contract::ResolvedInputSource::Repository {
+            config, credential, ..
+        } = &mut input.source
+        else {
+            return Ok(());
+        };
+        let Some(binding) = config.credential_binding.as_deref() else {
+            if credential.is_some() {
+                return Err(StateError::Run(RunError::bad_request(
+                    "Repository without a Vault binding carries a credential pin",
+                )));
+            }
+            return Ok(());
+        };
+        if let Some(existing) = credential {
+            existing
+                .validate_for_binding(binding)
+                .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
+            if &existing.selected_plaintext_holder != selected_holder {
+                return Err(StateError::Run(RunError::bad_request(
+                    "Repository credential pin selects another Environment holder",
+                )));
+            }
+            return Ok(());
+        }
+        let vaults = self.vaults.as_ref().ok_or_else(|| {
+            StateError::Run(RunError::bad_request(
+                "Repository credential requires a configured credential vault",
+            ))
+        })?;
+        let access = vaults
+            .credential_access_for_source(
+                &awaken_credential_vault::CredentialSourceId(binding.to_string()),
+                owner_scope,
+                awaken_session_contract::repository_transport_credential_usage(),
+                awaken_credential_contract::CredentialExecutionPolicy::exact(
+                    selected_holder.clone(),
+                    awaken_credential_contract::ModelExposurePolicy::Forbidden,
+                ),
+            )
+            .await
+            .map_err(|error| {
+                StateError::Run(RunError::bad_request(format!(
+                    "Repository credential could not be pinned exactly: {error}"
+                )))
+            })?;
+        *credential = Some(Box::new(
+            awaken_session_contract::ResolvedRepositoryCredential {
+                access,
+                selected_plaintext_holder: selected_holder.clone(),
+            },
+        ));
+        Ok(())
+    }
+
+    /// Apply the one per-input compiler to a complete Resource generation.
+    /// Creation, hot mutation, and retained-row migration share this traversal;
+    /// callers never grow a second binding-to-access loop.
+    pub(super) async fn pin_repository_credentials(
+        &self,
+        owner_scope: &str,
+        selected_holder: &awaken_credential_contract::PlaintextHolder,
+        resources: &mut awaken_session_contract::ResolvedSessionResources,
+    ) -> Result<bool, StateError> {
+        let before = resources.clone();
+        for input in &mut resources.inputs {
+            self.pin_repository_credential(owner_scope, selected_holder, input)
+                .await?;
+        }
+        Ok(*resources != before)
+    }
+
+    /// One-time, root-CAS migration for retained Session rows written before the
+    /// exact Repository pin existed. It runs before every realization entry and
+    /// commits the secret-free pin before Runtime I/O. Existing pins are verified,
+    /// never refreshed or reselected.
+    pub(super) async fn ensure_repository_credentials_pinned(
+        &self,
+        owner_scope: &str,
+        mut session: PersistedSession,
+    ) -> Result<PersistedSession, StateError> {
+        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+            let holder = Self::resource_plaintext_holder(&session)?;
+            let mut changed = self
+                .pin_repository_credentials(owner_scope, &holder, &mut session.resources.active)
+                .await?;
+            if let Some(pending) = &mut session.resources.pending {
+                changed |= self
+                    .pin_repository_credentials(owner_scope, &holder, pending)
+                    .await?;
+            }
+            if !changed {
+                return Ok(session);
+            }
+            let session_id = session.session_id.clone();
+            match self
+                .commit_session_snapshot(
+                    owner_scope,
+                    session,
+                    "repository-credential-pin-migration",
+                    Vec::new(),
+                )
+                .await
+            {
+                Ok(session) => return Ok(session),
+                Err(StateError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
+                    session = self
+                        .sessions_repo
+                        .get(&session_id)
+                        .await
+                        .ok_or(StateError::NotFound)?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(StateError::Conflict)
+    }
+
     async fn prepare_resource_transition(
         &self,
         owner_scope: &str,
@@ -171,6 +317,7 @@ impl ManagedState {
         &self,
         session_id: &str,
         owner_scope: &str,
+        selected_holder: &awaken_credential_contract::PlaintextHolder,
         binding_id: String,
         parsed: &ParsedSessionInput,
     ) -> Result<awaken_session_contract::ResolvedInput, StateError> {
@@ -243,7 +390,7 @@ impl ManagedState {
                 "live resources require a configured Resource Catalog",
             ))
         })?;
-        awaken_session_contract::SessionInputResolver::resolve_inputs(
+        let mut input = awaken_session_contract::SessionInputResolver::resolve_inputs(
             owner_scope,
             Some(catalog),
             &[],
@@ -252,7 +399,10 @@ impl ManagedState {
         .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?
         .inputs
         .pop()
-        .ok_or_else(|| StateError::Run(RunError::internal("resolved input is empty")))
+        .ok_or_else(|| StateError::Run(RunError::internal("resolved input is empty")))?;
+        self.pin_repository_credential(owner_scope, selected_holder, &mut input)
+            .await?;
+        Ok(input)
     }
 
     pub fn list_resources(&self, id: &str) -> Result<Vec<serde_json::Value>, StateError> {
@@ -286,6 +436,7 @@ impl ManagedState {
             .get(id)
             .await
             .ok_or(StateError::NotFound)?;
+        let selected_holder = Self::resource_plaintext_holder(&persisted)?;
         let current = persisted.resources.active.clone();
         let mut suffix = current.inputs.len();
         let binding_id = loop {
@@ -306,7 +457,7 @@ impl ManagedState {
             )
             .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
         let input = self
-            .resolve_live_input(id, &owner_scope, binding_id, &parsed)
+            .resolve_live_input(id, &owner_scope, &selected_holder, binding_id, &parsed)
             .await?;
         let next = current
             .attach(input.clone())
@@ -356,6 +507,7 @@ impl ManagedState {
             .get(id)
             .await
             .ok_or(StateError::NotFound)?;
+        let selected_holder = Self::resource_plaintext_holder(&persisted)?;
         let (current, previous) = {
             let current = persisted.resources.active.clone();
             let previous = current
@@ -385,6 +537,7 @@ impl ManagedState {
             let awaken_session_contract::ResolvedInputSource::Repository {
                 repository_id,
                 config: pinned,
+                ..
             } = &previous.source
             else {
                 return Err(StateError::Run(RunError::bad_request(
@@ -425,8 +578,11 @@ impl ManagedState {
             replacement.source = awaken_session_contract::ResolvedInputSource::Repository {
                 repository_id: repository_id.clone(),
                 config: next_config,
+                credential: None,
             };
         }
+        self.pin_repository_credential(&owner_scope, &selected_holder, &mut replacement)
+            .await?;
         let next = current
             .replace(replacement.clone())
             .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;

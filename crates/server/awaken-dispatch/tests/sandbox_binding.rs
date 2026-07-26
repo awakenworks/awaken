@@ -82,7 +82,11 @@ async fn binding_survives_a_recovery_claim(store: &dyn DispatchQueue) {
     store.enqueue(req("run-1", "thread-1")).await.unwrap();
 
     // First claim: no sandbox yet.
-    let first = store.claim("worker-a", 1_000, 0).await.unwrap().unwrap();
+    let first = store
+        .claim("worker-a", 1_000, 0, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(first.lease.run_id, run);
     assert_eq!(first.sandbox, None, "unbound before placement");
 
@@ -98,7 +102,7 @@ async fn binding_survives_a_recovery_claim(store: &dyn DispatchQueue) {
     // The lease expires (worker-a crashed); a recovery claim re-adopts the SAME
     // sandbox — the binding is durable, so no sandbox is leaked.
     let recovered = store
-        .claim("worker-b", 1_000, 5_000)
+        .claim("worker-b", 1_000, 5_000, &Default::default())
         .await
         .unwrap()
         .unwrap();

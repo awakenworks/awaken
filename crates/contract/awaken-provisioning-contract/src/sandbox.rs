@@ -35,15 +35,20 @@ pub trait BlobSource: Send + Sync {
     async fn get(&self, id: &str) -> Option<Vec<u8>>;
 }
 
-/// Broker for a file-materialized credential. Unlike [`BlobSource`], this port is
-/// deliberately bidirectional: a CLI may rotate an OAuth access/refresh token by
-/// replacing its native auth file, and a durable writable `Secret` mount must commit
-/// those bytes back under the same opaque reference. Secret bytes never enter a
-/// [`SandboxSpec`].
+/// Last-mile credential broker shared by secret files and process-secret
+/// requirements. The two operations are intentionally distinct: a durable file
+/// reference may support refresh/write-back, while a process reference is normally
+/// short-lived, claim-fenced, one-shot, and never valid as a file identifier. Secret
+/// bytes never enter a [`SandboxSpec`].
 #[async_trait]
 pub trait SecretBroker: Send + Sync {
     /// Materialize the current credential file bytes for `reference`.
     async fn materialize(&self, reference: &str) -> Result<Vec<u8>, SandboxError>;
+
+    /// Consume a process-scoped requirement immediately before launch. An
+    /// implementation must validate the reference as a process capability; it must
+    /// not silently reinterpret an arbitrary durable file/credential id.
+    async fn materialize_process(&self, reference: &str) -> Result<Vec<u8>, SandboxError>;
 
     /// Atomically persist a CLI-refreshed credential file under `reference`.
     async fn write_back(&self, reference: &str, bytes: Vec<u8>) -> Result<(), SandboxError>;
@@ -199,6 +204,11 @@ pub struct SandboxCapabilities {
     pub enforced_readonly: bool,
     /// Egress can be isolated/controlled.
     pub network_isolation: bool,
+    /// Host allowlists are enforced for arbitrary workload traffic at a
+    /// no-bypass network boundary. A process proxy environment variable is not
+    /// sufficient evidence because the workload can remove or ignore it.
+    #[serde(default)]
+    pub enforced_network_allowlist: bool,
     /// `EnvVisibility::EgressOnly` secrets can be honored.
     pub secret_egress_substitution: bool,
     /// Resource limits are enforced.
@@ -227,7 +237,8 @@ impl SandboxCapabilities {
             !matches!(spec.network, NetworkPolicy::Unrestricted),
             self.resource_limits,
             spec.limits.is_set(),
-        )
+        ) && (!matches!(spec.network, NetworkPolicy::Allowlist { .. })
+            || self.enforced_network_allowlist)
     }
 }
 
@@ -685,6 +696,7 @@ mod tests {
                 path_fidelity: false,
                 enforced_readonly: false,
                 network_isolation: false,
+                enforced_network_allowlist: false,
                 secret_egress_substitution: false,
                 resource_limits: false,
                 custom_rootfs: false,
@@ -725,6 +737,7 @@ mod tests {
             path_fidelity: true,
             enforced_readonly: true,
             network_isolation,
+            enforced_network_allowlist: network_isolation,
             secret_egress_substitution: true,
             resource_limits: true,
             custom_rootfs: false,
@@ -779,6 +792,19 @@ mod tests {
         };
         assert!(!caps(IsolationClass::Workdir, false).satisfies(&s));
         assert!(caps(IsolationClass::Workdir, true).satisfies(&s));
+    }
+
+    #[test]
+    fn satisfies_rejects_isolation_without_enforced_allowlist() {
+        let mut s = spec();
+        s.network = NetworkPolicy::Allowlist {
+            hosts: vec!["api.anthropic.com".into()],
+        };
+        let mut isolated = caps(IsolationClass::Container, true);
+        isolated.enforced_network_allowlist = false;
+        assert!(!isolated.satisfies(&s));
+        isolated.enforced_network_allowlist = true;
+        assert!(isolated.satisfies(&s));
     }
 
     /// A provider whose readiness probe can be toggled, to exercise `select_provider`.

@@ -190,6 +190,10 @@ pub struct SessionInit {
     /// The session's requested runtime adapter (R3): `"acp:*"` routes to an ACP
     /// CLI; `None`/`"awaken"` → native.
     pub runtime: Option<String>,
+    /// Exact frozen Environment decision for inference and MCP credential
+    /// plaintext. Runtime projects this value; it never derives another holder
+    /// from a Vault or the current Environment registry.
+    pub credential_realization: awaken_credential_contract::CredentialRealizationProfile,
     /// Deny network egress for the session's sandbox, resolved from its environment's
     /// networking policy (a non-`unrestricted` policy → `true`). The host runs the
     /// `bash` tool under a `bwrap --unshare-net` namespace. `false` = host network.
@@ -770,6 +774,8 @@ mod tests {
             resources: crate::ResolvedSessionResources::default(),
             model: None,
             runtime: None,
+            credential_realization:
+                awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
             deny_egress: false,
             sandbox: None,
         }

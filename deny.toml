@@ -90,6 +90,9 @@ wrappers = [
     "awaken-session-contract",
     # Shared secret-free credential values + exact material resolver port.
     "awaken-credential-contract",
+    # Neutral process provisioning reuses the base zeroizing secret value at its
+    # non-serializable final launch boundary.
+    "awaken-provisioning-contract",
 ]
 reason = "base contract; nothing may pull it upward (no downward dep of its own)"
 

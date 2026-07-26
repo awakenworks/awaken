@@ -19,7 +19,7 @@ use crate::sandbox_source::spawn_container_reaper;
     feature = "container-podman",
     feature = "container-k8s"
 ))]
-use crate::sandbox_source::{configured_container_egress_proxy, container_image, warm_pool_size};
+use crate::sandbox_source::{configured_container_forward_proxy, container_image, warm_pool_size};
 
 #[cfg(any(
     feature = "container-docker",
@@ -50,8 +50,8 @@ fn finish<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     image: Option<&str>,
 ) -> Result<Arc<dyn ContainerEnvironmentProvider>, String> {
     let mut provider = ContainerProvider::new(runtime, container_image(image)?);
-    if let Some(proxy) = configured_container_egress_proxy() {
-        provider = provider.with_egress_proxy(proxy);
+    if let Some(proxy) = configured_container_forward_proxy() {
+        provider = provider.with_forward_proxy(proxy);
     }
     Ok(wrap(provider, warm_pool_size()))
 }

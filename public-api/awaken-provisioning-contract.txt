@@ -20,6 +20,8 @@ pub awaken_provisioning_contract::EnvValue::Inline
 pub awaken_provisioning_contract::EnvValue::Inline::value: alloc::string::String
 pub awaken_provisioning_contract::EnvValue::Secret
 pub awaken_provisioning_contract::EnvValue::Secret::reference: alloc::string::String
+impl core::fmt::Debug for awaken_provisioning_contract::EnvValue
+pub fn awaken_provisioning_contract::EnvValue::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum awaken_provisioning_contract::EnvVisibility
 pub awaken_provisioning_contract::EnvVisibility::EgressOnly
 pub awaken_provisioning_contract::EnvVisibility::Process
@@ -47,6 +49,14 @@ pub enum awaken_provisioning_contract::LeaseLiveness
 pub awaken_provisioning_contract::LeaseLiveness::Expiring
 pub awaken_provisioning_contract::LeaseLiveness::Live
 pub awaken_provisioning_contract::LeaseLiveness::Reapable
+pub enum awaken_provisioning_contract::MaterializedEnvValue
+pub awaken_provisioning_contract::MaterializedEnvValue::Inline(alloc::string::String)
+pub awaken_provisioning_contract::MaterializedEnvValue::Secret(awaken_agent_contract::secret::RedactedString)
+impl awaken_provisioning_contract::MaterializedEnvValue
+pub fn awaken_provisioning_contract::MaterializedEnvValue::expose(&self) -> &str
+pub fn awaken_provisioning_contract::MaterializedEnvValue::is_secret(&self) -> bool
+impl core::fmt::Debug for awaken_provisioning_contract::MaterializedEnvValue
+pub fn awaken_provisioning_contract::MaterializedEnvValue::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum awaken_provisioning_contract::MountAccess
 pub awaken_provisioning_contract::MountAccess::ReadOnly
 pub awaken_provisioning_contract::MountAccess::ReadWrite
@@ -96,6 +106,7 @@ pub awaken_provisioning_contract::PoisonVerdict::Quarantine
 pub enum awaken_provisioning_contract::PrepareError
 pub awaken_provisioning_contract::PrepareError::EgressSecretUnsupported(alloc::string::String)
 pub awaken_provisioning_contract::PrepareError::InsufficientIsolation
+pub awaken_provisioning_contract::PrepareError::NetworkAllowlistUnsupported
 pub awaken_provisioning_contract::PrepareError::NetworkIsolationUnsupported
 pub awaken_provisioning_contract::PrepareError::OutputsPathNotAbsolute
 pub awaken_provisioning_contract::PrepareError::ReadOnlyUnsupported(alloc::string::String)
@@ -204,6 +215,16 @@ pub struct awaken_provisioning_contract::LivenessSignals
 pub awaken_provisioning_contract::LivenessSignals::now_ms: u64
 pub awaken_provisioning_contract::LivenessSignals::revoked: bool
 pub awaken_provisioning_contract::LivenessSignals::transport_lost: bool
+pub struct awaken_provisioning_contract::MaterializedCommand
+pub awaken_provisioning_contract::MaterializedCommand::argv: alloc::vec::Vec<alloc::string::String>
+pub awaken_provisioning_contract::MaterializedCommand::cwd: alloc::string::String
+pub awaken_provisioning_contract::MaterializedCommand::env: alloc::vec::Vec<awaken_provisioning_contract::MaterializedEnvVar>
+pub awaken_provisioning_contract::MaterializedCommand::stdio: awaken_provisioning_contract::Stdio
+impl awaken_provisioning_contract::MaterializedCommand
+pub fn awaken_provisioning_contract::MaterializedCommand::new(impl core::iter::traits::collect::IntoIterator<Item = impl core::convert::Into<alloc::string::String>>) -> Self
+pub struct awaken_provisioning_contract::MaterializedEnvVar
+pub awaken_provisioning_contract::MaterializedEnvVar::name: alloc::string::String
+pub awaken_provisioning_contract::MaterializedEnvVar::value: awaken_provisioning_contract::MaterializedEnvValue
 pub struct awaken_provisioning_contract::MountRequirement
 pub awaken_provisioning_contract::MountRequirement::access: awaken_provisioning_contract::MountAccess
 pub awaken_provisioning_contract::MountRequirement::lifetime: awaken_provisioning_contract::MountLifetime
@@ -246,6 +267,7 @@ impl awaken_provisioning_contract::ResourceLimits
 pub fn awaken_provisioning_contract::ResourceLimits::is_set(&self) -> bool
 pub struct awaken_provisioning_contract::SandboxCapabilities
 pub awaken_provisioning_contract::SandboxCapabilities::custom_rootfs: bool
+pub awaken_provisioning_contract::SandboxCapabilities::enforced_network_allowlist: bool
 pub awaken_provisioning_contract::SandboxCapabilities::enforced_readonly: bool
 pub awaken_provisioning_contract::SandboxCapabilities::isolation: awaken_provisioning_contract::IsolationClass
 pub awaken_provisioning_contract::SandboxCapabilities::network_isolation: bool
@@ -319,6 +341,7 @@ pub fn awaken_provisioning_contract::SandboxProvider::create<'life0, 'life1, 'as
 pub fn awaken_provisioning_contract::SandboxProvider::probe_ready<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_provisioning_contract::SecretBroker: core::marker::Send + core::marker::Sync
 pub fn awaken_provisioning_contract::SecretBroker::materialize<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<u8>, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_provisioning_contract::SecretBroker::materialize_process<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<u8>, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_provisioning_contract::SecretBroker::write_back<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, alloc::vec::Vec<u8>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub async fn awaken_provisioning_contract::apply_adoption_plan(&dyn awaken_provisioning_contract::SandboxProvider, &awaken_provisioning_contract::AdoptionPlan) -> awaken_provisioning_contract::ReconcileOutcome
 pub fn awaken_provisioning_contract::approval_decide(awaken_provisioning_contract::ApprovalPolicy, awaken_provisioning_contract::SandboxAction) -> awaken_provisioning_contract::ApprovalDecision
@@ -328,6 +351,7 @@ pub fn awaken_provisioning_contract::check_environment_soundness(&awaken_provisi
 pub fn awaken_provisioning_contract::classify_poison(&[awaken_provisioning_contract::AttemptSignal], usize) -> awaken_provisioning_contract::PoisonVerdict
 pub fn awaken_provisioning_contract::decide_reap(&awaken_provisioning_contract::LeaseGrant, awaken_provisioning_contract::LivenessSignals) -> core::option::Option<awaken_provisioning_contract::ReapCause>
 pub fn awaken_provisioning_contract::egress_permitted(&awaken_provisioning_contract::LeaseGrant, u64, bool) -> bool
+pub async fn awaken_provisioning_contract::materialize_process_command(&[awaken_provisioning_contract::EnvVar], awaken_provisioning_contract::Command, core::option::Option<&alloc::sync::Arc<dyn awaken_provisioning_contract::SecretBroker>>) -> core::result::Result<awaken_provisioning_contract::MaterializedCommand, awaken_provisioning_contract::SandboxError>
 pub fn awaken_provisioning_contract::plan_shape(&awaken_provisioning_contract::SandboxSpec) -> awaken_provisioning_contract::ExecutionShape
 pub fn awaken_provisioning_contract::prepare_environment(&awaken_provisioning_contract::SandboxSpec, &awaken_provisioning_contract::SandboxCapabilities) -> core::result::Result<awaken_provisioning_contract::EnvironmentPlan, awaken_provisioning_contract::PrepareError>
 pub fn awaken_provisioning_contract::reconcile_adoption(&[awaken_provisioning_contract::SandboxHandle], &[awaken_provisioning_contract::SandboxHandle]) -> awaken_provisioning_contract::AdoptionPlan

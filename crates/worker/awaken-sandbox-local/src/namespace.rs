@@ -140,7 +140,6 @@ fn host_projection_path(
 #[must_use]
 pub fn bubblewrap_argv(input: &RenderInput) -> Vec<String> {
     let mut a: Vec<String> = vec![s("bwrap")];
-    a.push(s("--clearenv"));
     a.extend(
         [
             "--unshare-user",
@@ -197,21 +196,8 @@ pub fn bubblewrap_argv(input: &RenderInput) -> Vec<String> {
         a.push(m.host.to_string_lossy().into_owned());
         a.push(sandbox_mount_destination(&m.dest));
     }
-    a.extend(
-        ["--setenv", "AWAKEN_OUTPUTS_DIR", input.outputs_path]
-            .into_iter()
-            .map(s),
-    );
-    a.extend(
-        ["--setenv", "AWAKEN_PROJECT_DIR", "/workspace"]
-            .into_iter()
-            .map(s),
-    );
-    for (k, v) in input.env {
-        a.push(s("--setenv"));
-        a.push(k.clone());
-        a.push(v.clone());
-    }
+    // Environment is supplied through the wrapper process after `env_clear`, not
+    // as bwrap argv. This keeps process-secret values out of `/proc/*/cmdline`.
     a.push(s("--chdir"));
     a.push(s(if input.cwd.is_empty() {
         "/workspace"
@@ -434,6 +420,7 @@ impl NamespaceProvider {
             path_fidelity: !cfg!(target_os = "macos"),
             enforced_readonly: true,
             network_isolation: true,
+            enforced_network_allowlist: false,
             secret_egress_substitution: false,
             resource_limits: false,
             custom_rootfs: false,
@@ -627,18 +614,7 @@ impl NamespaceProvider {
             ));
         }
 
-        let mut base_env = Vec::new();
-        for var in &spec.env {
-            match &var.value {
-                pc::EnvValue::Inline { value } => {
-                    base_env.push((var.name.clone(), value.clone()));
-                }
-                // A broker reference is not a process value. Materialization happens
-                // above this provider; unresolved references are deliberately omitted
-                // so their URI can never leak into the child environment.
-                pc::EnvValue::Secret { .. } => {}
-            }
-        }
+        let base_env = spec.env.clone();
 
         let raw_root = crate::sandbox_dir(&self.base, &spec.scope);
         std::fs::create_dir_all(&raw_root).map_err(err)?;
@@ -671,6 +647,7 @@ impl NamespaceProvider {
             host_workspace,
             host_outputs,
             base_env,
+            secret_broker: self.secret_broker.clone(),
             network: spec.network.clone(),
             layout,
             realized,
@@ -716,7 +693,14 @@ impl NamespaceProvider {
             outputs_path,
             host_workspace,
             host_outputs,
-            base_env: Vec::new(),
+            base_env: handle
+                .extra
+                .as_ref()
+                .and_then(|value| value.get("base_env"))
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok())
+                .unwrap_or_default(),
+            secret_broker: self.secret_broker.clone(),
             network: pc::NetworkPolicy::Unrestricted,
             layout: Vec::new(),
             realized: Vec::new(),
@@ -733,7 +717,8 @@ pub struct NamespaceSandbox {
     outputs_path: String,
     host_workspace: PathBuf,
     host_outputs: PathBuf,
-    base_env: Vec<(String, String)>,
+    base_env: Vec<pc::EnvVar>,
+    secret_broker: Arc<std::sync::RwLock<Option<Arc<dyn pc::SecretBroker>>>>,
     network: pc::NetworkPolicy,
     layout: Vec<RenderMount>,
     realized: Vec<pc::RealizedMount>,
@@ -890,48 +875,63 @@ impl NamespaceSandbox {
         value.to_string()
     }
 
-    fn configure_macos_command(
+    async fn materialize_command(
+        &self,
+        command: pc::Command,
+    ) -> Result<pc::MaterializedCommand, pc::SandboxError> {
+        let broker = self
+            .secret_broker
+            .read()
+            .expect("secret broker lock poisoned")
+            .clone();
+        pc::materialize_process_command(&self.base_env, command, broker.as_ref()).await
+    }
+
+    fn configure_command(
         &self,
         process: &mut TokioCommand,
-        command: &pc::Command,
+        command: &pc::MaterializedCommand,
     ) -> Result<(), pc::SandboxError> {
-        let cwd = if command.cwd.is_empty() {
-            self.host_workspace.clone()
-        } else if let Some(translated) = self.translate_macos_path(&command.cwd) {
-            PathBuf::from(translated)
+        process.env_clear();
+        if cfg!(target_os = "macos") {
+            let cwd = if command.cwd.is_empty() {
+                self.host_workspace.clone()
+            } else if let Some(translated) = self.translate_macos_path(&command.cwd) {
+                PathBuf::from(translated)
+            } else {
+                self.root.resolve(&command.cwd).map_err(err)?
+            };
+            process
+                .current_dir(cwd)
+                .env("AWAKEN_OUTPUTS_DIR", &self.host_outputs)
+                .env("AWAKEN_PROJECT_DIR", &self.host_workspace);
         } else {
-            self.root.resolve(&command.cwd).map_err(err)?
-        };
-        process
-            .current_dir(cwd)
-            .env("AWAKEN_OUTPUTS_DIR", &self.host_outputs)
-            .env("AWAKEN_PROJECT_DIR", &self.host_workspace)
-            .envs(self.base_env.iter().map(|(key, value)| (key, value)));
+            process
+                .env("AWAKEN_OUTPUTS_DIR", &self.outputs_path)
+                .env("AWAKEN_PROJECT_DIR", "/workspace");
+        }
         for var in &command.env {
-            match &var.value {
-                pc::EnvValue::Inline { value } => {
-                    process.env(&var.name, value);
-                }
-                pc::EnvValue::Secret { .. } => {}
-            }
+            process.env(&var.name, var.value.expose());
         }
         Ok(())
     }
 
     /// The rendered launcher argv for `command` (bwrap or Seatbelt wrapping the program).
-    fn render_argv(&self, command: &pc::Command) -> Result<Vec<String>, pc::SandboxError> {
+    fn render_argv(
+        &self,
+        command: &pc::MaterializedCommand,
+    ) -> Result<Vec<String>, pc::SandboxError> {
         if command.argv.is_empty() {
             return Err(err("command argv is empty"));
         }
-        let mut cmd_env = self.base_env.clone();
-        for var in &command.env {
-            match &var.value {
-                pc::EnvValue::Inline { value } => {
-                    cmd_env.push((var.name.clone(), value.clone()));
-                }
-                pc::EnvValue::Secret { .. } => {}
-            }
-        }
+        // Only PATH is needed by the pure renderer to expose an explicitly
+        // selected runtime root. Secret values never enter renderer/argv data.
+        let path_env: Vec<(String, String)> = command
+            .env
+            .iter()
+            .filter(|var| var.name == "PATH" && !var.value.is_secret())
+            .map(|var| (var.name.clone(), var.value.expose().to_string()))
+            .collect();
         let macos_argv: Vec<String> = command
             .argv
             .iter()
@@ -942,7 +942,7 @@ impl NamespaceSandbox {
             host_outputs: &self.host_outputs,
             outputs_path: &self.outputs_path,
             mounts: &self.layout,
-            env: &cmd_env,
+            env: &path_env,
             network: &self.network,
             cwd: &command.cwd,
             argv: if cfg!(target_os = "macos") {
@@ -973,12 +973,11 @@ impl NamespaceSandbox {
         &self,
         command: pc::Command,
     ) -> Result<(Box<dyn pc::ProcessHandle>, Box<dyn AgentChannel>), pc::SandboxError> {
+        let command = self.materialize_command(command).await?;
         let argv = self.render_argv(&command)?;
         let mut cmd = TokioCommand::new(&argv[0]);
         cmd.args(&argv[1..]);
-        if cfg!(target_os = "macos") {
-            self.configure_macos_command(&mut cmd, &command)?;
-        }
+        self.configure_command(&mut cmd, &command)?;
         let stderr = if std::env::var_os("AWAKEN_SANDBOX_AGENT_STDERR").is_some() {
             ProcStdio::inherit()
         } else {
@@ -1014,7 +1013,10 @@ impl pc::Sandbox for NamespaceSandbox {
             "bwrap"
         };
         let mut h = pc::SandboxHandle::new(provider_kind, &self.id);
-        h.extra = Some(json!({ "outputs_path": self.outputs_path }));
+        h.extra = Some(json!({
+            "outputs_path": self.outputs_path,
+            "base_env": self.base_env,
+        }));
         h
     }
 
@@ -1022,13 +1024,13 @@ impl pc::Sandbox for NamespaceSandbox {
         &self,
         command: pc::Command,
     ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
+        let stdio = command.stdio;
+        let command = self.materialize_command(command).await?;
         let argv = self.render_argv(&command)?;
         let mut cmd = TokioCommand::new(&argv[0]);
         cmd.args(&argv[1..]);
-        if cfg!(target_os = "macos") {
-            self.configure_macos_command(&mut cmd, &command)?;
-        }
-        let (out, e) = match command.stdio {
+        self.configure_command(&mut cmd, &command)?;
+        let (out, e) = match stdio {
             pc::Stdio::Inherit => (ProcStdio::inherit(), ProcStdio::inherit()),
             pc::Stdio::Piped => (ProcStdio::piped(), ProcStdio::piped()),
             pc::Stdio::Null => (ProcStdio::null(), ProcStdio::null()),
@@ -1118,6 +1120,10 @@ mod tests {
         async fn materialize(&self, reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
             assert_eq!(reference, "broker://namespace");
             Ok(b"namespace-secret".to_vec())
+        }
+
+        async fn materialize_process(&self, _reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
+            Err(pc::SandboxError::new("process secrets are not supported"))
         }
 
         async fn write_back(
@@ -1340,7 +1346,10 @@ mod tests {
         let joined = a.join(" ");
         assert!(joined.contains("--bind /host/ws /workspace"));
         assert!(joined.contains("--bind /host/out /mnt/session/outputs"));
-        assert!(joined.contains("--setenv AWAKEN_OUTPUTS_DIR /mnt/session/outputs"));
+        assert!(
+            !joined.contains("--setenv"),
+            "environment is injected through the cleared wrapper env, never argv"
+        );
         assert!(joined.contains("--chdir /workspace"));
         // program follows the -- separator, in order
         let sep = a.iter().position(|x| x == "--").unwrap();
@@ -1401,7 +1410,10 @@ mod tests {
                 "/home/u/.local/bin".to_string(),
             ]
         );
-        assert!(rendered.iter().any(|value| value == "--clearenv"));
+        assert!(
+            !rendered.iter().any(|value| value == "--clearenv"),
+            "the Tokio wrapper clears and rebuilds env before bwrap"
+        );
     }
 
     #[test]
@@ -1477,7 +1489,7 @@ mod tests {
         let j = a.join(" ");
         assert!(j.contains("--ro-bind /h/in /workspace/in.txt"));
         assert!(j.contains("--bind /h/rw /workspace/.mnt/data"));
-        assert!(j.contains("--setenv TZ UTC"));
+        assert!(!j.contains("UTC"), "environment values stay out of argv");
     }
 
     #[test]
