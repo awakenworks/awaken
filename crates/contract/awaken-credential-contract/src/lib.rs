@@ -137,6 +137,42 @@ impl CredentialExecutionPolicy {
 pub struct CredentialRealizationProfile {
     pub inference_holder: PlaintextHolder,
     pub mcp_holder: PlaintextHolder,
+    /// Exact holder for Session Resource credentials such as host-mediated Git
+    /// transport. Older persisted Environment snapshots predate this purpose and
+    /// therefore decode to the canonical self-hosted Worker boundary.
+    #[serde(default = "self_hosted_worker_holder")]
+    pub resource_holder: PlaintextHolder,
+}
+
+fn self_hosted_worker_holder() -> PlaintextHolder {
+    PlaintextHolder::new(PlaintextBoundary::Worker, SELF_HOSTED_WORKER_TRUST_DOMAIN)
+}
+
+impl CredentialRealizationProfile {
+    /// Canonical self-hosted profile for the in-process Native runtime.
+    #[must_use]
+    pub fn self_hosted_native() -> Self {
+        let worker = self_hosted_worker_holder();
+        Self {
+            inference_holder: worker.clone(),
+            mcp_holder: worker.clone(),
+            resource_holder: worker,
+        }
+    }
+
+    /// Canonical self-hosted profile for an ACP workload. MCP remains mediated by
+    /// the Worker until a distinct trusted workload MCP client is installed.
+    #[must_use]
+    pub fn self_hosted_acp() -> Self {
+        Self {
+            inference_holder: PlaintextHolder::new(
+                PlaintextBoundary::Workload,
+                SELF_HOSTED_ACP_TRUST_DOMAIN,
+            ),
+            mcp_holder: self_hosted_worker_holder(),
+            resource_holder: self_hosted_worker_holder(),
+        }
+    }
 }
 
 /// Opaque reference to sealed credential material.
@@ -163,6 +199,13 @@ pub enum CredentialEnvelope {
 }
 
 impl CredentialEnvelope {
+    fn envelope_ref(&self) -> &SealedCredentialEnvelopeRef {
+        match self {
+            Self::SealedForWorker { envelope_ref, .. }
+            | Self::SealedForWorkload { envelope_ref, .. } => envelope_ref,
+        }
+    }
+
     fn recipient(&self) -> &TrustDomainRef {
         match self {
             Self::SealedForWorker { recipient, .. } | Self::SealedForWorkload { recipient, .. } => {
@@ -206,6 +249,72 @@ pub struct CredentialRefreshAccess {
     pub scope: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource: Option<String>,
+}
+
+impl CredentialRefreshAccess {
+    /// Compile one exact refresh/reseal instruction and bind every executable
+    /// configuration field into its owning-domain fingerprint.
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn new(
+        credential_revision: u64,
+        token_endpoint: String,
+        client_id: String,
+        token_endpoint_auth: TokenEndpointAuth,
+        client_secret_ref: Option<String>,
+        refresh_token_ref: String,
+        access_token_ref: String,
+        scope: Option<String>,
+        resource: Option<String>,
+    ) -> Self {
+        let mut access = Self {
+            credential_revision,
+            configuration_fingerprint: String::new(),
+            token_endpoint,
+            client_id,
+            token_endpoint_auth,
+            client_secret_ref,
+            refresh_token_ref,
+            access_token_ref,
+            scope,
+            resource,
+        };
+        access.configuration_fingerprint = access.expected_configuration_fingerprint();
+        access
+    }
+
+    /// Recompute the digest from executable facts only. Revision is checked
+    /// separately so drift and configuration tampering remain distinguishable.
+    #[must_use]
+    pub fn expected_configuration_fingerprint(&self) -> String {
+        awaken_agent_contract::stable_fingerprint(&(
+            &self.token_endpoint,
+            &self.client_id,
+            self.token_endpoint_auth,
+            &self.client_secret_ref,
+            &self.refresh_token_ref,
+            &self.access_token_ref,
+            &self.scope,
+            &self.resource,
+        ))
+    }
+
+    #[must_use]
+    pub fn has_valid_configuration_fingerprint(&self) -> bool {
+        self.configuration_fingerprint == self.expected_configuration_fingerprint()
+    }
+
+    #[must_use]
+    pub fn has_valid_client_authentication_binding(&self) -> bool {
+        matches!(
+            (self.token_endpoint_auth, self.client_secret_ref.as_ref()),
+            (TokenEndpointAuth::None, None)
+                | (
+                    TokenEndpointAuth::ClientSecretBasic | TokenEndpointAuth::ClientSecretPost,
+                    Some(_)
+                )
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -368,12 +477,23 @@ impl CredentialAccess {
             return Err(CredentialAdmissionError::MaterialSourceUnsupported);
         }
         if let Some(envelope) = &self.envelope {
+            if envelope.envelope_ref().id.trim().is_empty() {
+                return Err(CredentialAdmissionError::EnvelopeReferenceEmpty);
+            }
+            if envelope
+                .envelope_ref()
+                .payload_fingerprint
+                .trim()
+                .is_empty()
+            {
+                return Err(CredentialAdmissionError::EnvelopeFingerprintEmpty);
+            }
             if envelope.recipient() != &requested_holder.trust_domain
                 || envelope.required_boundary() != requested_holder.boundary
             {
                 return Err(CredentialAdmissionError::EnvelopeRecipientMismatch);
             }
-            if envelope.expires_at_unix_ms() < now_unix_ms {
+            if envelope.expires_at_unix_ms() <= now_unix_ms {
                 return Err(CredentialAdmissionError::EnvelopeExpired);
             }
         }
@@ -383,6 +503,20 @@ impl CredentialAccess {
             .is_some_and(|refresh| refresh.credential_revision != self.credential.revision)
         {
             return Err(CredentialAdmissionError::CredentialRevisionMismatch);
+        }
+        if self
+            .refresh
+            .as_ref()
+            .is_some_and(|refresh| !refresh.has_valid_client_authentication_binding())
+        {
+            return Err(CredentialAdmissionError::RefreshClientAuthenticationInvalid);
+        }
+        if self
+            .refresh
+            .as_ref()
+            .is_some_and(|refresh| !refresh.has_valid_configuration_fingerprint())
+        {
+            return Err(CredentialAdmissionError::RefreshConfigurationMismatch);
         }
         Ok(CredentialRealizationPlan {
             credential: self.credential.clone(),
@@ -402,11 +536,57 @@ pub enum CredentialRealizationKind {
 }
 
 /// Installed last-mile capabilities.  This is evidence, not preference policy.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CredentialRealizationCapabilities {
     pub holders: BTreeSet<PlaintextHolder>,
     pub material_sources: BTreeSet<CredentialMaterialSource>,
     pub realization_kinds: BTreeSet<CredentialRealizationKind>,
+}
+
+/// WorkerManifest capability namespace for one canonical credential realization
+/// evidence payload. The Worker contract remains credential-domain agnostic; the
+/// publishing and consuming contexts own this codec.
+pub const CREDENTIAL_REALIZATION_CAPABILITY_PREFIX: &str = "credential-realization.awaken.dev/v1:";
+
+impl CredentialRealizationCapabilities {
+    /// Whether this adapter/provider advertises no credential realization at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.holders.is_empty()
+            && self.material_sources.is_empty()
+            && self.realization_kinds.is_empty()
+    }
+
+    /// Encode this evidence as one canonical Worker capability. Empty evidence
+    /// emits no capability.
+    pub fn manifest_capability(&self) -> Result<Option<String>, serde_json::Error> {
+        if self.is_empty() {
+            return Ok(None);
+        }
+        serde_json::to_string(self).map(|payload| {
+            Some(format!(
+                "{CREDENTIAL_REALIZATION_CAPABILITY_PREFIX}{payload}"
+            ))
+        })
+    }
+
+    /// Decode the unique credential realization capability from an otherwise
+    /// domain-neutral Worker capability set. Multiple declarations fail closed.
+    pub fn from_manifest_capabilities(capabilities: &BTreeSet<String>) -> Result<Self, String> {
+        let mut encoded = capabilities.iter().filter_map(|capability| {
+            capability.strip_prefix(CREDENTIAL_REALIZATION_CAPABILITY_PREFIX)
+        });
+        let Some(payload) = encoded.next() else {
+            return Ok(Self::default());
+        };
+        if encoded.next().is_some() {
+            return Err(
+                "Worker manifest declares multiple credential realization capabilities".to_string(),
+            );
+        }
+        serde_json::from_str(payload)
+            .map_err(|error| format!("invalid credential realization capability: {error}"))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -426,6 +606,10 @@ pub enum CredentialAdmissionError {
     HolderUnsupported,
     #[error("credential material source is unsupported")]
     MaterialSourceUnsupported,
+    #[error("sealed credential envelope reference is empty")]
+    EnvelopeReferenceEmpty,
+    #[error("sealed credential envelope payload fingerprint is empty")]
+    EnvelopeFingerprintEmpty,
     #[error("sealed envelope recipient does not match the selected holder")]
     EnvelopeRecipientMismatch,
     #[error("sealed credential envelope is expired")]
@@ -434,6 +618,10 @@ pub enum CredentialAdmissionError {
     DirectPublicationRejected,
     #[error("credential refresh revision does not match credential revision")]
     CredentialRevisionMismatch,
+    #[error("credential refresh client authentication binding is invalid")]
+    RefreshClientAuthenticationInvalid,
+    #[error("credential refresh configuration fingerprint does not match its executable facts")]
+    RefreshConfigurationMismatch,
 }
 
 /// Material returned only to the exact selected holder by a resolver adapter.
@@ -470,6 +658,106 @@ pub trait CredentialMaterialResolver: Send + Sync {
 mod tests {
     use super::*;
 
+    /// Cause-effect graph for the credential evidence codec:
+    ///
+    /// C1 credential declaration exists
+    ///  ├─ F -> E1 empty installed capabilities
+    ///  └─ T -> C2 declaration is unique
+    ///           ├─ F -> E2 reject ambiguous evidence
+    ///           └─ T -> C3 payload is valid
+    ///                    ├─ F -> E3 reject malformed evidence
+    ///                    └─ T -> E4 recover exact installed capabilities.
+    ///
+    /// Decision table:
+    ///
+    /// | Rule | C1 | C2 | C3 | Result |
+    /// |---|---|---|---|---|
+    /// | M1 | F | - | - | empty |
+    /// | M2 | T | T | T | exact round trip |
+    /// | M3 | T | T | F | reject malformed |
+    /// | M4 | T | F | - | reject ambiguous |
+    #[test]
+    fn worker_manifest_capability_codec_follows_decision_table() {
+        let holder = PlaintextHolder::new(PlaintextBoundary::Worker, "worker-a");
+        let exact = CredentialRealizationCapabilities {
+            holders: BTreeSet::from([holder]),
+            material_sources: BTreeSet::from([CredentialMaterialSource::WorkerReference]),
+            realization_kinds: BTreeSet::from([CredentialRealizationKind::WorkerProviderAdapter]),
+        };
+        let encoded = exact
+            .manifest_capability()
+            .expect("encode exact capabilities")
+            .expect("nonempty capabilities emit evidence");
+
+        let rules = [
+            (
+                "M1",
+                BTreeSet::from(["unrelated.capability".to_string()]),
+                Ok(CredentialRealizationCapabilities::default()),
+            ),
+            ("M2", BTreeSet::from([encoded.clone()]), Ok(exact)),
+            (
+                "M3",
+                BTreeSet::from([format!(
+                    "{CREDENTIAL_REALIZATION_CAPABILITY_PREFIX}not-json"
+                )]),
+                Err("invalid"),
+            ),
+            (
+                "M4",
+                BTreeSet::from([
+                    encoded,
+                    format!("{CREDENTIAL_REALIZATION_CAPABILITY_PREFIX}{{}}"),
+                ]),
+                Err("multiple"),
+            ),
+        ];
+
+        for (id, capabilities, expected) in rules {
+            let actual =
+                CredentialRealizationCapabilities::from_manifest_capabilities(&capabilities);
+            match expected {
+                Ok(expected) => assert_eq!(actual, Ok(expected), "decision rule {id}"),
+                Err(fragment) => assert!(
+                    actual
+                        .expect_err("decision rule must reject")
+                        .contains(fragment),
+                    "decision rule {id}"
+                ),
+            }
+        }
+        assert_eq!(
+            CredentialRealizationCapabilities::default()
+                .manifest_capability()
+                .expect("encode empty capabilities"),
+            None
+        );
+    }
+
+    #[test]
+    fn retained_environment_profiles_default_only_the_new_resource_purpose() {
+        let profile: CredentialRealizationProfile = serde_json::from_value(serde_json::json!({
+            "inference_holder": {
+                "boundary": "workload",
+                "trust_domain": "retained.workload"
+            },
+            "mcp_holder": {
+                "boundary": "worker",
+                "trust_domain": "retained.worker"
+            }
+        }))
+        .expect("decode retained two-purpose profile");
+        assert_eq!(
+            profile.inference_holder,
+            PlaintextHolder::new(PlaintextBoundary::Workload, "retained.workload")
+        );
+        assert_eq!(
+            profile.mcp_holder,
+            PlaintextHolder::new(PlaintextBoundary::Worker, "retained.worker")
+        );
+        assert_eq!(profile.resource_holder, self_hosted_worker_holder());
+    }
+
     #[derive(Clone)]
     struct AdmissionRule {
         id: &'static str,
@@ -481,6 +769,7 @@ mod tests {
         envelope_recipient_matches: bool,
         envelope_live: bool,
         refresh_revision_matches: bool,
+        refresh_configuration_matches: bool,
         expected: Result<(), CredentialAdmissionError>,
     }
 
@@ -517,23 +806,26 @@ mod tests {
     ///  -> C1 policy nonempty -> C2 exact holder allowed
     ///  -> C3 installed holder/kind -> C4 material source supported
     ///  -> C5 envelope recipient exact -> C6 envelope live
-    ///  -> C7 refresh revision exact -> E1 exact plan admitted.
+    ///  -> C7 refresh revision exact -> C8 refresh client auth well formed
+    ///  -> C9 refresh fingerprint exact
+    ///  -> E1 exact plan admitted.
     ///
     /// Each failed cause yields its stable error E2 and terminates the chain.
     /// The decision table uses `T` for the satisfied cause and `F` for the sole
     /// failing cause; later causes are don't-care because evaluation has stopped.
     ///
-    /// | Rule | C0 | C1 | C2 | C3 | C4 | C5 | C6 | C7 | Result |
-    /// |---|---|---|---|---|---|---|---|---|---|
-    /// | R1 | T | T | T | T | T | T | T | T | admitted |
-    /// | R2 | F | - | - | - | - | - | - | - | direct rejected |
-    /// | R3 | T | F | - | - | - | - | - | - | empty policy |
-    /// | R4 | T | T | F | - | - | - | - | - | holder forbidden |
-    /// | R5 | T | T | T | F | - | - | - | - | holder unsupported |
-    /// | R6 | T | T | T | T | F | - | - | - | source unsupported |
-    /// | R7 | T | T | T | T | T | F | - | - | recipient mismatch |
-    /// | R8 | T | T | T | T | T | T | F | - | envelope expired |
-    /// | R9 | T | T | T | T | T | T | T | F | revision mismatch |
+    /// | Rule | C0 | C1 | C2 | C3 | C4 | C5 | C6 | C7 | C8 | C9 | Result |
+    /// |---|---|---|---|---|---|---|---|---|---|---|---|
+    /// | R1 | T | T | T | T | T | T | T | T | T | T | admitted |
+    /// | R2 | F | - | - | - | - | - | - | - | - | - | direct rejected |
+    /// | R3 | T | F | - | - | - | - | - | - | - | - | empty policy |
+    /// | R4 | T | T | F | - | - | - | - | - | - | - | holder forbidden |
+    /// | R5 | T | T | T | F | - | - | - | - | - | - | holder unsupported |
+    /// | R6 | T | T | T | T | F | - | - | - | - | - | source unsupported |
+    /// | R7 | T | T | T | T | T | F | - | - | - | - | recipient mismatch |
+    /// | R8 | T | T | T | T | T | T | F | - | - | - | envelope expired |
+    /// | R9 | T | T | T | T | T | T | T | F | - | - | revision mismatch |
+    /// | R10 | T | T | T | T | T | T | T | T | T | F | config mismatch |
     #[test]
     fn admission_tests_are_generated_from_the_decision_table() {
         let rules = [
@@ -547,6 +839,7 @@ mod tests {
                 envelope_recipient_matches: true,
                 envelope_live: true,
                 refresh_revision_matches: true,
+                refresh_configuration_matches: true,
                 expected: Ok(()),
             },
             AdmissionRule {
@@ -559,6 +852,7 @@ mod tests {
                 envelope_recipient_matches: true,
                 envelope_live: true,
                 refresh_revision_matches: true,
+                refresh_configuration_matches: true,
                 expected: Err(CredentialAdmissionError::DirectPublicationRejected),
             },
             AdmissionRule {
@@ -571,6 +865,7 @@ mod tests {
                 envelope_recipient_matches: true,
                 envelope_live: true,
                 refresh_revision_matches: true,
+                refresh_configuration_matches: true,
                 expected: Err(CredentialAdmissionError::EmptyAllowedHolders),
             },
             AdmissionRule {
@@ -583,6 +878,7 @@ mod tests {
                 envelope_recipient_matches: true,
                 envelope_live: true,
                 refresh_revision_matches: true,
+                refresh_configuration_matches: true,
                 expected: Err(CredentialAdmissionError::HolderNotAllowed),
             },
             AdmissionRule {
@@ -595,6 +891,7 @@ mod tests {
                 envelope_recipient_matches: true,
                 envelope_live: true,
                 refresh_revision_matches: true,
+                refresh_configuration_matches: true,
                 expected: Err(CredentialAdmissionError::HolderUnsupported),
             },
             AdmissionRule {
@@ -607,6 +904,7 @@ mod tests {
                 envelope_recipient_matches: true,
                 envelope_live: true,
                 refresh_revision_matches: true,
+                refresh_configuration_matches: true,
                 expected: Err(CredentialAdmissionError::MaterialSourceUnsupported),
             },
             AdmissionRule {
@@ -619,6 +917,7 @@ mod tests {
                 envelope_recipient_matches: false,
                 envelope_live: true,
                 refresh_revision_matches: true,
+                refresh_configuration_matches: true,
                 expected: Err(CredentialAdmissionError::EnvelopeRecipientMismatch),
             },
             AdmissionRule {
@@ -631,6 +930,7 @@ mod tests {
                 envelope_recipient_matches: true,
                 envelope_live: false,
                 refresh_revision_matches: true,
+                refresh_configuration_matches: true,
                 expected: Err(CredentialAdmissionError::EnvelopeExpired),
             },
             AdmissionRule {
@@ -643,7 +943,21 @@ mod tests {
                 envelope_recipient_matches: true,
                 envelope_live: true,
                 refresh_revision_matches: false,
+                refresh_configuration_matches: true,
                 expected: Err(CredentialAdmissionError::CredentialRevisionMismatch),
+            },
+            AdmissionRule {
+                id: "R10",
+                legacy_direct: false,
+                policy_nonempty: true,
+                holder_allowed: true,
+                holder_supported: true,
+                source_supported: true,
+                envelope_recipient_matches: true,
+                envelope_live: true,
+                refresh_revision_matches: true,
+                refresh_configuration_matches: false,
+                expected: Err(CredentialAdmissionError::RefreshConfigurationMismatch),
             },
         ];
 
@@ -678,19 +992,22 @@ mod tests {
                     expires_at_unix_ms: if rule.envelope_live { 20 } else { 9 },
                 });
             }
-            if !rule.refresh_revision_matches {
-                access = access.with_refresh(CredentialRefreshAccess {
-                    credential_revision: 8,
-                    configuration_fingerprint: "sha256:refresh".into(),
-                    token_endpoint: "https://auth.example/token".into(),
-                    client_id: "client".into(),
-                    token_endpoint_auth: TokenEndpointAuth::None,
-                    client_secret_ref: None,
-                    refresh_token_ref: "refresh-ref".into(),
-                    access_token_ref: "access-ref".into(),
-                    scope: None,
-                    resource: None,
-                });
+            if !rule.refresh_revision_matches || !rule.refresh_configuration_matches {
+                let mut refresh = CredentialRefreshAccess::new(
+                    if rule.refresh_revision_matches { 7 } else { 8 },
+                    "https://auth.example/token".into(),
+                    "client".into(),
+                    TokenEndpointAuth::None,
+                    None,
+                    "refresh-ref".into(),
+                    "access-ref".into(),
+                    None,
+                    None,
+                );
+                if !rule.refresh_configuration_matches {
+                    refresh.token_endpoint.push_str("/tampered");
+                }
+                access = access.with_refresh(refresh);
             }
             let mut capabilities = capabilities(&selected);
             if !rule.holder_supported {
@@ -711,6 +1028,168 @@ mod tests {
                     assert_eq!(plan.selected_plaintext_holder, selected, "{}", rule.id);
                 });
             assert_eq!(actual, rule.expected, "decision rule {}", rule.id);
+        }
+    }
+
+    /// Cause-effect graph for the recipient-bound envelope gate:
+    ///
+    /// C1 envelope reference is nonempty
+    ///  -> C2 payload fingerprint is nonempty
+    ///  -> C3 recipient trust domain and boundary match the selected holder
+    ///  -> C4 expiry is strictly after admission time
+    ///  -> E1 admit the exact realization plan.
+    ///
+    /// The first false cause terminates evaluation with its stable error. This
+    /// prevents an empty opaque handle or an unverified payload identity from
+    /// being treated as sealed transport evidence.
+    ///
+    /// | Rule | C1 | C2 | C3 | C4 | Result |
+    /// |---|---|---|---|---|---|
+    /// | S1 | T | T | T | T | admitted |
+    /// | S2 | F | - | - | - | empty reference |
+    /// | S3 | T | F | - | - | empty fingerprint |
+    /// | S4 | T | T | F | - | recipient mismatch |
+    /// | S5 | T | T | T | F | expired at boundary |
+    #[test]
+    fn sealed_envelope_admission_follows_the_decision_table() {
+        struct Rule {
+            id: &'static str,
+            reference: &'static str,
+            fingerprint: &'static str,
+            recipient: &'static str,
+            expiry: u64,
+            expected: Result<(), CredentialAdmissionError>,
+        }
+
+        let rules = [
+            Rule {
+                id: "S1",
+                reference: "envelope-1",
+                fingerprint: "sha256:payload",
+                recipient: "worker-a",
+                expiry: 11,
+                expected: Ok(()),
+            },
+            Rule {
+                id: "S2",
+                reference: " ",
+                fingerprint: "sha256:payload",
+                recipient: "worker-a",
+                expiry: 11,
+                expected: Err(CredentialAdmissionError::EnvelopeReferenceEmpty),
+            },
+            Rule {
+                id: "S3",
+                reference: "envelope-1",
+                fingerprint: " ",
+                recipient: "worker-a",
+                expiry: 11,
+                expected: Err(CredentialAdmissionError::EnvelopeFingerprintEmpty),
+            },
+            Rule {
+                id: "S4",
+                reference: "envelope-1",
+                fingerprint: "sha256:payload",
+                recipient: "worker-b",
+                expiry: 11,
+                expected: Err(CredentialAdmissionError::EnvelopeRecipientMismatch),
+            },
+            Rule {
+                id: "S5",
+                reference: "envelope-1",
+                fingerprint: "sha256:payload",
+                recipient: "worker-a",
+                expiry: 10,
+                expected: Err(CredentialAdmissionError::EnvelopeExpired),
+            },
+        ];
+
+        for rule in rules {
+            let selected = holder(PlaintextBoundary::Worker, "worker-a");
+            let access = access(BTreeSet::from([selected.clone()])).with_envelope(
+                CredentialEnvelope::SealedForWorker {
+                    envelope_ref: SealedCredentialEnvelopeRef {
+                        id: rule.reference.into(),
+                        payload_fingerprint: rule.fingerprint.into(),
+                    },
+                    recipient: TrustDomainRef(rule.recipient.into()),
+                    expires_at_unix_ms: rule.expiry,
+                },
+            );
+            let actual = access
+                .admit(
+                    &selected,
+                    CredentialRealizationKind::WorkerProviderAdapter,
+                    &capabilities(&selected),
+                    10,
+                )
+                .map(|_| ());
+            assert_eq!(actual, rule.expected, "decision rule {}", rule.id);
+        }
+    }
+
+    /// Cause-effect graph for refresh client authentication:
+    /// C1 auth is public -> C2 client ref absent -> admit;
+    /// C1 confidential -> C3 client ref present -> admit. Every other pairing
+    /// fails before its fingerprint can authorize secret access.
+    ///
+    /// | Rule | Auth | Client ref | Result |
+    /// |---|---|---|---|
+    /// | A1 | none | absent | admitted |
+    /// | A2 | none | present | reject |
+    /// | A3 | basic | present | admitted |
+    /// | A4 | basic | absent | reject |
+    /// | A5 | post | present | admitted |
+    /// | A6 | post | absent | reject |
+    #[test]
+    fn refresh_client_authentication_tests_are_generated_from_the_decision_table() {
+        let selected = holder(PlaintextBoundary::Worker, "worker-a");
+        let rules = [
+            ("A1", TokenEndpointAuth::None, None, true),
+            ("A2", TokenEndpointAuth::None, Some("client-ref"), false),
+            (
+                "A3",
+                TokenEndpointAuth::ClientSecretBasic,
+                Some("client-ref"),
+                true,
+            ),
+            ("A4", TokenEndpointAuth::ClientSecretBasic, None, false),
+            (
+                "A5",
+                TokenEndpointAuth::ClientSecretPost,
+                Some("client-ref"),
+                true,
+            ),
+            ("A6", TokenEndpointAuth::ClientSecretPost, None, false),
+        ];
+        for (id, auth, client_ref, admitted) in rules {
+            let refresh = CredentialRefreshAccess::new(
+                7,
+                "https://auth.example/token".into(),
+                "client".into(),
+                auth,
+                client_ref.map(str::to_owned),
+                "refresh-ref".into(),
+                "access-ref".into(),
+                None,
+                None,
+            );
+            let result = access(BTreeSet::from([selected.clone()]))
+                .with_refresh(refresh)
+                .admit(
+                    &selected,
+                    CredentialRealizationKind::WorkerProviderAdapter,
+                    &capabilities(&selected),
+                    10,
+                );
+            assert_eq!(result.is_ok(), admitted, "decision rule {id}: {result:?}");
+            if !admitted {
+                assert_eq!(
+                    result.unwrap_err(),
+                    CredentialAdmissionError::RefreshClientAuthenticationInvalid,
+                    "decision rule {id}"
+                );
+            }
         }
     }
 

@@ -51,7 +51,10 @@ async fn assert_live_lease_fences_a_claim<S: DispatchQueue>(store: &S) {
         .unwrap();
 
     // A claims at t=0 with a lease that expires at LEASE.
-    let a = store.claim("owner-a", LEASE, 0).await.unwrap();
+    let a = store
+        .claim("owner-a", LEASE, 0, &Default::default())
+        .await
+        .unwrap();
     assert_eq!(
         a.map(|c| c.lease.owner),
         Some("owner-a".to_string()),
@@ -61,7 +64,7 @@ async fn assert_live_lease_fences_a_claim<S: DispatchQueue>(store: &S) {
     // B claiming mid-lease (t=LEASE/2) is fenced: the run is leased to A.
     assert!(
         store
-            .claim("owner-b", LEASE, LEASE / 2)
+            .claim("owner-b", LEASE, LEASE / 2, &Default::default())
             .await
             .unwrap()
             .is_none(),
@@ -70,7 +73,7 @@ async fn assert_live_lease_fences_a_claim<S: DispatchQueue>(store: &S) {
     // Even at the instant of expiry (expires_ms == now is still held) B is fenced.
     assert!(
         store
-            .claim("owner-b", LEASE, LEASE - 1)
+            .claim("owner-b", LEASE, LEASE - 1, &Default::default())
             .await
             .unwrap()
             .is_none(),
@@ -105,7 +108,7 @@ async fn assert_exact_claim_isolated_and_recoverable<S: DispatchQueue>(store: &S
 
     let child = RunId("child".to_string());
     let claimed = store
-        .claim_run(&child, "parent-worker", LEASE, 0)
+        .claim_run(&child, "parent-worker", LEASE, 0, &Default::default())
         .await
         .unwrap()
         .expect("the named child is runnable");
@@ -113,7 +116,7 @@ async fn assert_exact_claim_isolated_and_recoverable<S: DispatchQueue>(store: &S
     assert_eq!(claimed.lease.owner, "parent-worker");
 
     let unrelated = store
-        .claim("pool-worker", LEASE, 0)
+        .claim("pool-worker", LEASE, 0, &Default::default())
         .await
         .unwrap()
         .expect("exact claim did not consume unrelated work");
@@ -121,14 +124,26 @@ async fn assert_exact_claim_isolated_and_recoverable<S: DispatchQueue>(store: &S
 
     assert!(
         store
-            .claim_run(&child, "recovery-worker", LEASE, LEASE - 1)
+            .claim_run(
+                &child,
+                "recovery-worker",
+                LEASE,
+                LEASE - 1,
+                &Default::default(),
+            )
             .await
             .unwrap()
             .is_none(),
         "the exact child lease is exclusive while live"
     );
     let recovered = store
-        .claim_run(&child, "recovery-worker", LEASE, LEASE + 1)
+        .claim_run(
+            &child,
+            "recovery-worker",
+            LEASE,
+            LEASE + 1,
+            &Default::default(),
+        )
         .await
         .unwrap()
         .expect("the exact child is independently recoverable");
@@ -156,6 +171,7 @@ async fn assert_parent_mediated_claims_are_atomic<S: DispatchQueue>(store: &S) {
             "parent-worker",
             LEASE,
             0,
+            &Default::default(),
         )
         .await
         .unwrap()
@@ -163,7 +179,7 @@ async fn assert_parent_mediated_claims_are_atomic<S: DispatchQueue>(store: &S) {
     assert_eq!(claimed.request.run_id(), &child);
     assert!(
         store
-            .claim("pool-worker", LEASE, 0)
+            .claim("pool-worker", LEASE, 0, &Default::default())
             .await
             .unwrap()
             .is_none(),
@@ -190,6 +206,7 @@ async fn assert_parent_mediated_claims_are_atomic<S: DispatchQueue>(store: &S) {
             "parent-worker",
             LEASE,
             1,
+            &Default::default(),
         )
         .await
         .unwrap()
@@ -198,7 +215,7 @@ async fn assert_parent_mediated_claims_are_atomic<S: DispatchQueue>(store: &S) {
     assert_eq!(resumed.pending[0].message_id, "child-answer");
     assert!(
         store
-            .claim("pool-worker", LEASE, 1)
+            .claim("pool-worker", LEASE, 1, &Default::default())
             .await
             .unwrap()
             .is_none(),
@@ -232,7 +249,11 @@ async fn expired_lease_is_reclaimed_and_driven_exactly_once() {
         .await
         .unwrap();
     assert!(
-        store.claim("owner-a", LEASE, 0).await.unwrap().is_some(),
+        store
+            .claim("owner-a", LEASE, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_some(),
         "A claims the fresh run"
     );
     assert_eq!(infers.load(Ordering::SeqCst), 0, "A died before executing");
@@ -259,7 +280,7 @@ async fn expired_lease_is_reclaimed_and_driven_exactly_once() {
     assert_eq!(store.dispatch_count(), 0, "D is settled");
     assert!(
         store
-            .claim("owner-b", LEASE, LEASE + 2)
+            .claim("owner-b", LEASE, LEASE + 2, &Default::default())
             .await
             .unwrap()
             .is_none(),
@@ -285,7 +306,13 @@ async fn stale_reclaim_of_a_completed_run_settles_without_re_executing() {
         .unwrap();
     // A takes the lease, then commits the run to a terminal Ended record by hand —
     // exactly what its worker would have committed — but never calls settle.
-    assert!(store.claim("owner-a", LEASE, 0).await.unwrap().is_some());
+    assert!(
+        store
+            .claim("owner-a", LEASE, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
     let ctx = RuntimeRunContext::new().with_commit(commit.clone());
     let state = runtime.execute(activation("run-1"), ctx).await.unwrap();
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
@@ -333,7 +360,11 @@ async fn renewal_keeps_a_slow_owner_across_multiple_lease_periods() {
         .await
         .unwrap();
     assert!(
-        store.claim("owner-a", lease, 0).await.unwrap().is_some(),
+        store
+            .claim("owner-a", lease, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_some(),
         "A claims at t=0 (expires 100)"
     );
 
@@ -350,7 +381,7 @@ async fn renewal_keeps_a_slow_owner_across_multiple_lease_periods() {
         );
         assert!(
             store
-                .claim("owner-b", lease, poke_at)
+                .claim("owner-b", lease, poke_at, &Default::default())
                 .await
                 .unwrap()
                 .is_none(),
@@ -362,7 +393,7 @@ async fn renewal_keeps_a_slow_owner_across_multiple_lease_periods() {
     // so at t=281 recovery hands the run to B.
     assert_eq!(
         store
-            .claim("owner-b", lease, 281)
+            .claim("owner-b", lease, 281, &Default::default())
             .await
             .unwrap()
             .map(|c| c.lease.owner),

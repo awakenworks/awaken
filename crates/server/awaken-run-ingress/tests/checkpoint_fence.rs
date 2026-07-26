@@ -27,7 +27,11 @@ async fn replacement_fences_stale_checkpoint_put_and_delete() {
         .enqueue(RunDispatch::new(activation("run-fenced-checkpoint")))
         .await
         .unwrap();
-    let first = dispatch.claim("worker-a", 10, 0).await.unwrap().unwrap();
+    let first = dispatch
+        .claim("worker-a", 10, 0, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
     let inner = Arc::new(MemoryStreamCheckpointStore::new());
     let first_store = FencedStreamCheckpointStore::new(
         inner.clone(),
@@ -44,7 +48,11 @@ async fn replacement_fences_stale_checkpoint_put_and_delete() {
         "first"
     );
 
-    let second = dispatch.claim("worker-b", 10, 11).await.unwrap().unwrap();
+    let second = dispatch
+        .claim("worker-b", 10, 11, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
     let second_store =
         FencedStreamCheckpointStore::new(inner.clone(), dispatch, RunClaim::from(&second.lease));
     first_store.put(checkpoint("stale")).await;

@@ -62,7 +62,11 @@ async fn the_admitting_traceparent_survives_the_enqueue_claim_queue_hop() {
         .await
         .unwrap();
 
-    let traced = store.claim("w", 1_000, 0).await.unwrap().expect("traced");
+    let traced = store
+        .claim("w", 1_000, 0, &Default::default())
+        .await
+        .unwrap()
+        .expect("traced");
     assert_eq!(traced.request.run_id().0, "traced");
     assert_eq!(
         traced.request.traceparent.as_deref(),
@@ -70,7 +74,11 @@ async fn the_admitting_traceparent_survives_the_enqueue_claim_queue_hop() {
         "the admitting traceparent is persisted and returned on the claimed request"
     );
 
-    let untraced = store.claim("w", 1_000, 0).await.unwrap().expect("untraced");
+    let untraced = store
+        .claim("w", 1_000, 0, &Default::default())
+        .await
+        .unwrap()
+        .expect("untraced");
     assert_eq!(untraced.request.run_id().0, "untraced");
     assert_eq!(
         untraced.request.traceparent, None,

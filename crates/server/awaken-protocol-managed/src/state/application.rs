@@ -321,7 +321,8 @@ mod tests {
                     network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
                     credential_realization: CredentialRealizationProfile {
                         inference_holder: holder.clone(),
-                        mcp_holder: holder,
+                        mcp_holder: holder.clone(),
+                        resource_holder: holder,
                     },
                 },
                 agent_id: "agent".into(),

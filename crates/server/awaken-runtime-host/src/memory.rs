@@ -463,7 +463,11 @@ impl MemoryRuntime {
             .as_ref()
         {
             return materializer
-                .materialize_pinned(&snapshot.model)
+                // Extraction owns a separate durable claim aggregate today; it
+                // must not borrow a Session Run's credential authority. A
+                // credential-bearing candidate therefore fails closed until
+                // extraction is submitted as an ordinary claimed Run.
+                .materialize_pinned(&snapshot.model, &RuntimeRunContext::new())
                 .ok_or_else(|| {
                     format!(
                         "published model candidate `{}` is unavailable",

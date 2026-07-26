@@ -17,10 +17,11 @@
 use async_trait::async_trait;
 use serde_json::json;
 
+use crate::dispatch::installed_worker_credential_capabilities;
 use crate::{
-    CasOutcome, Claimed, CommitEpochGuard, DispatchError, DispatchOutcome, DispatchQueue,
-    DispatchSummary, Inbox, Outbox, PendingInput, PendingRecord, RunClaim, RunDispatch,
-    SettleOutcome, SubmitOptions,
+    CasOutcome, Claimed, CommitEpochGuard, CredentialRealizationReceipt, DispatchError,
+    DispatchOutcome, DispatchQueue, DispatchSummary, Inbox, Outbox, PendingInput, PendingRecord,
+    RunClaim, RunDispatch, SettleOutcome, SubmitOptions,
 };
 use crate::{WorkerIdentity, WorkerSnapshot};
 use awaken_agent_contract::agent::run::Id as RunId;
@@ -148,6 +149,31 @@ impl DispatchQueue for HttpDispatchQueue {
             .get("current")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false))
+    }
+
+    async fn record_credential_realization(
+        &self,
+        claim: &RunClaim,
+        receipt: CredentialRealizationReceipt,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let value = self
+            .post(
+                "/v1/worker/dispatch/credential_realization",
+                json!({
+                    "claim": claim,
+                    "receipt": receipt,
+                    "identity": &self.worker_identity
+                }),
+                self.worker_id(),
+            )
+            .await?;
+        Ok(
+            if value.get("applied").and_then(serde_json::Value::as_bool) == Some(true) {
+                SettleOutcome::Applied
+            } else {
+                SettleOutcome::Fenced
+            },
+        )
     }
 
     async fn worker_owns_run(
@@ -285,6 +311,7 @@ impl DispatchQueue for HttpDispatchQueue {
         _owner: &str,
         lease_ms: u64,
         now_ms: u64,
+        _capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let value = self
             .post(
@@ -311,8 +338,15 @@ impl DispatchQueue for HttpDispatchQueue {
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
-        self.claim_new_run(request, &worker.identity.lease_owner(), lease_ms, now_ms)
-            .await
+        let capabilities = installed_worker_credential_capabilities(worker)?;
+        self.claim_new_run(
+            request,
+            &worker.identity.lease_owner(),
+            lease_ms,
+            now_ms,
+            &capabilities,
+        )
+        .await
     }
 
     async fn deliver_and_claim(
@@ -321,6 +355,7 @@ impl DispatchQueue for HttpDispatchQueue {
         _owner: &str,
         lease_ms: u64,
         now_ms: u64,
+        _capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let value = self
             .post(
@@ -347,8 +382,15 @@ impl DispatchQueue for HttpDispatchQueue {
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
-        self.deliver_and_claim(input, &worker.identity.lease_owner(), lease_ms, now_ms)
-            .await
+        let capabilities = installed_worker_credential_capabilities(worker)?;
+        self.deliver_and_claim(
+            input,
+            &worker.identity.lease_owner(),
+            lease_ms,
+            now_ms,
+            &capabilities,
+        )
+        .await
     }
 
     async fn claim(
@@ -356,6 +398,7 @@ impl DispatchQueue for HttpDispatchQueue {
         _owner: &str,
         lease_ms: u64,
         now_ms: u64,
+        _capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let v = self
             .post(
@@ -373,12 +416,18 @@ impl DispatchQueue for HttpDispatchQueue {
 
     async fn claim_compatible(
         &self,
-        _worker: &WorkerSnapshot,
+        worker: &WorkerSnapshot,
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
-        self.claim(&self.worker_identity.lease_owner(), lease_ms, now_ms)
-            .await
+        let capabilities = installed_worker_credential_capabilities(worker)?;
+        self.claim(
+            &self.worker_identity.lease_owner(),
+            lease_ms,
+            now_ms,
+            &capabilities,
+        )
+        .await
     }
 
     async fn claim_run(
@@ -387,6 +436,7 @@ impl DispatchQueue for HttpDispatchQueue {
         _owner: &str,
         lease_ms: u64,
         now_ms: u64,
+        _capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let value = self
             .post(
@@ -413,8 +463,15 @@ impl DispatchQueue for HttpDispatchQueue {
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
-        self.claim_run(run_id, &worker.identity.lease_owner(), lease_ms, now_ms)
-            .await
+        let capabilities = installed_worker_credential_capabilities(worker)?;
+        self.claim_run(
+            run_id,
+            &worker.identity.lease_owner(),
+            lease_ms,
+            now_ms,
+            &capabilities,
+        )
+        .await
     }
 
     async fn renew_lease(

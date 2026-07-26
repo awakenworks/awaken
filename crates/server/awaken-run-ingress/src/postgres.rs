@@ -19,9 +19,11 @@ use sqlx::postgres::PgPool;
 use sqlx::types::Json;
 
 use crate::dispatch::{
-    CasOutcome, Claimed, CommitEpochGuard, DispatchCompletion, DispatchError, DispatchOutcome,
-    DispatchQueue, DispatchState, DispatchSummary, Inbox, Lease, Outbox, PendingInput,
-    PendingRecord, RunClaim, SettleOutcome, SubmitOptions,
+    AttemptCredentialBinding, CasOutcome, Claimed, CommitEpochGuard, CredentialRealizationReceipt,
+    DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue, DispatchState,
+    DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim, SettleOutcome,
+    SubmitOptions, compile_attempt_credential_bindings, installed_worker_credential_capabilities,
+    verify_credential_realization_receipt,
 };
 use crate::dispatch_schema::dispatch_bundle;
 use crate::{
@@ -296,62 +298,36 @@ impl DispatchQueue for PostgresDispatchStore {
         owner: &str,
         lease_ms: u64,
         now_ms: u64,
+        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         if !can_claim_locally(&request.placement) {
             return Ok(None);
         }
         let p = NS;
-        let expires = now_ms + lease_ms;
         let mut tx = self.pool.begin().await.map_err(reject)?;
-        let inserted = sqlx::query_scalar::<_, i64>(&format!(
-            "INSERT INTO {p}_dispatch \
-             (run_id, thread_id, request, status, lease_owner, lease_until, lease_epoch) \
-             SELECT $1,$2,$3,'running',$4,$5,1 \
+        sqlx::query(&format!(
+            "INSERT INTO {p}_dispatch (run_id, thread_id, request, status) \
+             SELECT $1,$2,$3,'pending' \
              WHERE NOT EXISTS (SELECT 1 FROM {p}_dispatch_completion WHERE run_id = $1) \
-             ON CONFLICT (run_id) DO NOTHING RETURNING lease_epoch"
+             ON CONFLICT (run_id) DO NOTHING"
         ))
         .bind(&request.run_id().0)
         .bind(&request.thread_id().0)
         .bind(Json(&request))
-        .bind(owner)
-        .bind(expires as i64)
-        .fetch_optional(&mut *tx)
+        .execute(&mut *tx)
         .await
         .map_err(reject)?;
-        if let Some(epoch) = inserted {
-            let run_id = request.run_id().clone();
-            insert_operation(
-                &mut tx,
-                &DispatchOperation::Claimed {
-                    claim: RunClaim {
-                        run_id: run_id.clone(),
-                        owner: owner.to_string(),
-                        epoch: epoch as u64,
-                    },
-                },
-            )
-            .await?;
-            tx.commit().await.map_err(reject)?;
-            return Ok(Some(Claimed {
-                request,
-                lease: Lease {
-                    run_id,
-                    owner: owner.to_string(),
-                    expires_ms: expires,
-                    epoch: epoch as u64,
-                },
-                cancellation_requested: false,
-                pending: Vec::new(),
-                recovered: false,
-                sandbox: None,
-                assignment: None,
-            }));
-        }
-
-        // Idempotent retries share the exact-claim transition kernel.
         let run_id = request.run_id().clone();
-        let claimed =
-            claim_exact_transaction(&mut tx, &run_id, owner, lease_ms, now_ms, None).await?;
+        let claimed = claim_exact_transaction(
+            &mut tx,
+            &run_id,
+            owner,
+            lease_ms,
+            now_ms,
+            None,
+            capabilities,
+        )
+        .await?;
         tx.commit().await.map_err(reject)?;
         Ok(claimed)
     }
@@ -367,59 +343,31 @@ impl DispatchQueue for PostgresDispatchStore {
             return Ok(None);
         }
         let p = NS;
-        let expires = now_ms + lease_ms;
-        let assignment = WorkerAssignment::from(worker);
         let owner = worker.identity.lease_owner();
         let mut tx = self.pool.begin().await.map_err(reject)?;
-        let inserted = sqlx::query_scalar::<_, i64>(&format!(
-            "INSERT INTO {p}_dispatch \
-             (run_id, thread_id, request, status, lease_owner, lease_until, lease_epoch, worker_assignment) \
-             SELECT $1,$2,$3,'running',$4,$5,1,$6 \
+        sqlx::query(&format!(
+            "INSERT INTO {p}_dispatch (run_id, thread_id, request, status) \
+             SELECT $1,$2,$3,'pending' \
              WHERE NOT EXISTS (SELECT 1 FROM {p}_dispatch_completion WHERE run_id = $1) \
-             ON CONFLICT (run_id) DO NOTHING RETURNING lease_epoch"
+             ON CONFLICT (run_id) DO NOTHING"
         ))
         .bind(&request.run_id().0)
         .bind(&request.thread_id().0)
         .bind(Json(&request))
-        .bind(&owner)
-        .bind(expires as i64)
-        .bind(Json(&assignment))
-        .fetch_optional(&mut *tx)
+        .execute(&mut *tx)
         .await
         .map_err(reject)?;
-        if let Some(epoch) = inserted {
-            let run_id = request.run_id().clone();
-            insert_operation(
-                &mut tx,
-                &DispatchOperation::Claimed {
-                    claim: RunClaim {
-                        run_id: run_id.clone(),
-                        owner: owner.clone(),
-                        epoch: epoch as u64,
-                    },
-                },
-            )
-            .await?;
-            tx.commit().await.map_err(reject)?;
-            return Ok(Some(Claimed {
-                request,
-                lease: Lease {
-                    run_id,
-                    owner,
-                    expires_ms: expires,
-                    epoch: epoch as u64,
-                },
-                cancellation_requested: false,
-                pending: Vec::new(),
-                recovered: false,
-                sandbox: None,
-                assignment: Some(assignment),
-            }));
-        }
         let run_id = request.run_id().clone();
-        let claimed =
-            claim_exact_transaction(&mut tx, &run_id, &owner, lease_ms, now_ms, Some(worker))
-                .await?;
+        let claimed = claim_exact_transaction(
+            &mut tx,
+            &run_id,
+            &owner,
+            lease_ms,
+            now_ms,
+            Some(worker),
+            &installed_worker_credential_capabilities(worker)?,
+        )
+        .await?;
         tx.commit().await.map_err(reject)?;
         Ok(claimed)
     }
@@ -430,6 +378,7 @@ impl DispatchQueue for PostgresDispatchStore {
         owner: &str,
         lease_ms: u64,
         now_ms: u64,
+        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let p = NS;
         let run_id = input.run_id.clone();
@@ -448,8 +397,16 @@ impl DispatchQueue for PostgresDispatchStore {
         .execute(&mut *tx)
         .await
         .map_err(reject)?;
-        let claimed =
-            claim_exact_transaction(&mut tx, &run_id, owner, lease_ms, now_ms, None).await?;
+        let claimed = claim_exact_transaction(
+            &mut tx,
+            &run_id,
+            owner,
+            lease_ms,
+            now_ms,
+            None,
+            capabilities,
+        )
+        .await?;
         tx.commit().await.map_err(reject)?;
         Ok(claimed)
     }
@@ -485,6 +442,7 @@ impl DispatchQueue for PostgresDispatchStore {
             lease_ms,
             now_ms,
             Some(worker),
+            &installed_worker_credential_capabilities(worker)?,
         )
         .await?;
         tx.commit().await.map_err(reject)?;
@@ -524,24 +482,24 @@ impl DispatchQueue for PostgresDispatchStore {
         owner: &str,
         lease_ms: u64,
         now_ms: u64,
+        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let p = NS;
         let mut tx = self.pool.begin().await.map_err(reject)?;
 
-        // Priority: recover an expired lease, then wake an awaiting run with pending
-        // input, then a fresh pending run. Each locks its row, skipping rows a
-        // concurrent worker already holds.
+        // Priority chooses a candidate only. The exact transition below is the
+        // sole claim algorithm and rechecks every cause while holding the row and
+        // per-thread transaction lock.
         let local_eligible = "(d.cancel_requested = 1 OR (\
             COALESCE(d.request #>> '{placement,location}', 'remote_preferred') \
                 <> 'remote_required' AND \
             jsonb_array_length(COALESCE(\
                 d.request #> '{placement,required_credentials}', '[]'::jsonb)) = 0))";
         let recovery = format!(
-            "SELECT d.run_id, d.request, d.sandbox, d.cancel_requested, \
-                    d.lease_owner, d.lease_epoch FROM {p}_dispatch d \
+            "SELECT d.run_id FROM {p}_dispatch d \
              WHERE d.status = 'running' AND d.lease_until IS NOT NULL \
              AND d.lease_until < $1 AND {local_eligible} \
-             ORDER BY d.cancel_requested DESC, d.created_at FOR UPDATE SKIP LOCKED LIMIT 1"
+             ORDER BY d.cancel_requested DESC, d.created_at LIMIT 1"
         );
         // Single-writer-per-thread (ADR-0022): a wake or fresh pick skips any thread
         // that already has a run in flight. Recovery is exempt (it re-owns the SAME
@@ -552,174 +510,53 @@ impl DispatchQueue for PostgresDispatchStore {
              WHERE r.thread_id = d.thread_id AND r.status = 'running')"
         );
         let wake = format!(
-            "SELECT d.run_id, d.request, d.sandbox, d.cancel_requested, \
-                    d.lease_owner, d.lease_epoch FROM {p}_dispatch d \
+            "SELECT d.run_id FROM {p}_dispatch d \
              WHERE d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS ( \
                  SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id \
                  AND (pe.available_at IS NULL OR pe.available_at <= $1))) \
              AND {not_running} AND {local_eligible} \
-             ORDER BY d.cancel_requested DESC, d.created_at FOR UPDATE SKIP LOCKED LIMIT 1"
+             ORDER BY d.cancel_requested DESC, d.created_at LIMIT 1"
         );
         let fresh = format!(
-            "SELECT d.run_id, d.request, d.sandbox, d.cancel_requested, \
-                    d.lease_owner, d.lease_epoch FROM {p}_dispatch d \
+            "SELECT d.run_id FROM {p}_dispatch d \
              WHERE d.status = 'pending' AND {not_running} AND {local_eligible} \
-             ORDER BY d.cancel_requested DESC, d.priority DESC, d.created_at \
-             FOR UPDATE SKIP LOCKED LIMIT 1"
+             ORDER BY d.cancel_requested DESC, d.priority DESC, d.created_at LIMIT 1"
         );
-
-        // Track whether this is a recovery pick (an expired-lease running row),
-        // which spends one crash-retry; a fresh or wake pick does not.
-        let mut recovery_pick = true;
-        let picked = match sqlx::query(&recovery)
+        let picked = match sqlx::query_scalar::<_, String>(&recovery)
             .bind(now_ms as i64)
             .fetch_optional(&mut *tx)
             .await
             .map_err(reject)?
         {
             Some(row) => Some(row),
-            None => {
-                recovery_pick = false;
-                match sqlx::query(&wake)
-                    .bind(now_ms as i64)
+            None => match sqlx::query_scalar::<_, String>(&wake)
+                .bind(now_ms as i64)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(reject)?
+            {
+                Some(row) => Some(row),
+                None => sqlx::query_scalar::<_, String>(&fresh)
                     .fetch_optional(&mut *tx)
                     .await
-                    .map_err(reject)?
-                {
-                    Some(row) => Some(row),
-                    None => sqlx::query(&fresh)
-                        .fetch_optional(&mut *tx)
-                        .await
-                        .map_err(reject)?,
-                }
-            }
+                    .map_err(reject)?,
+            },
         };
-
-        let Some(row) = picked else {
+        let Some(run_id) = picked else {
             return Ok(None);
         };
-        let run_id: String = row.try_get("run_id").map_err(reject)?;
-        let Json(request): Json<RunDispatch> = row.try_get("request").map_err(reject)?;
-        let sandbox: Option<String> = row.try_get("sandbox").map_err(reject)?;
-        let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(reject)?;
-        let previous_owner: Option<String> = row.try_get("lease_owner").map_err(reject)?;
-        let previous_epoch: i64 = row.try_get("lease_epoch").map_err(reject)?;
-        let expires = now_ms + lease_ms;
-        // Bump the fence token on every claim (fresh, wake, recovery) and read it
-        // back, so the returned lease carries the epoch the holder settles under.
-        let claimed = sqlx::query_scalar::<_, i64>(&format!(
-            "UPDATE {p}_dispatch SET status = 'running', lease_owner = $1, lease_until = $2, \
-             attempt_count = attempt_count + $3, lease_epoch = lease_epoch + 1, \
-             worker_assignment = NULL \
-             WHERE run_id = $4 RETURNING lease_epoch"
-        ))
-        .bind(owner)
-        .bind(expires as i64)
-        .bind(i64::from(recovery_pick))
-        .bind(&run_id)
-        .fetch_one(&mut *tx)
-        .await;
-        // The V0012 one-running-per-thread unique index is the topology-independent
-        // backstop: if a concurrent claimer already made another run of this thread
-        // running, this UPDATE hits the unique violation. That claim simply lost the
-        // race — roll back and report "nothing claimed", the pool retries next tick.
-        let lease_epoch = match claimed {
-            Ok(epoch) => epoch,
-            Err(err) => {
-                if err.as_database_error().and_then(|e| e.code()).as_deref() == Some("23505") {
-                    let _ = tx.rollback().await;
-                    return Ok(None);
-                }
-                return Err(reject(err));
-            }
-        };
-        let claim = RunClaim {
-            run_id: RunId(run_id.clone()),
-            owner: owner.to_string(),
-            epoch: lease_epoch as u64,
-        };
-        if recovery_pick {
-            let previous = RunClaim {
-                run_id: RunId(run_id.clone()),
-                owner: previous_owner.ok_or_else(|| {
-                    DispatchError::Rejected(
-                        "expired running dispatch has no persisted lease owner".to_string(),
-                    )
-                })?,
-                epoch: previous_epoch.max(0) as u64,
-            };
-            insert_operation(
-                &mut tx,
-                &DispatchOperation::LeaseLost {
-                    claim: previous.clone(),
-                    reason: LeaseLossReason::Expired,
-                },
-            )
-            .await?;
-            insert_operation(
-                &mut tx,
-                &DispatchOperation::Reclaimed {
-                    previous,
-                    claim: claim.clone(),
-                },
-            )
-            .await?;
-        } else {
-            insert_operation(
-                &mut tx,
-                &DispatchOperation::Claimed {
-                    claim: claim.clone(),
-                },
-            )
-            .await?;
-        }
-
-        // Hand the run's current pending input to the worker. It is not removed
-        // here: settle removes exactly what the worker reports it consumed, so a
-        // crash before settle leaves the input to be re-derived (ADR-0010).
-        let rows = sqlx::query(&format!(
-            "SELECT message_id, thread_id, correlation_id, result, available_at FROM {p}_pending \
-             WHERE run_id = $1 AND (available_at IS NULL OR available_at <= $2) ORDER BY created_at"
-        ))
-        .bind(&run_id)
-        .bind(now_ms as i64)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(reject)?;
-
-        let mut pending = Vec::with_capacity(rows.len());
-        for prow in rows {
-            let message_id: String = prow.try_get("message_id").map_err(reject)?;
-            let thread_id: String = prow.try_get("thread_id").map_err(reject)?;
-            let correlation_id: String = prow.try_get("correlation_id").map_err(reject)?;
-            let Json(result): Json<ResumeResult> = prow.try_get("result").map_err(reject)?;
-            let available_at: Option<i64> = prow.try_get("available_at").map_err(reject)?;
-            pending.push(PendingInput {
-                message_id,
-                run_id: RunId(run_id.clone()),
-                thread_id: ThreadId(thread_id),
-                correlation_id,
-                available_at_ms: available_at.map(|t| t as u64),
-                result,
-            });
-        }
-
+        let claimed = claim_exact_transaction(
+            &mut tx,
+            &RunId(run_id),
+            owner,
+            lease_ms,
+            now_ms,
+            None,
+            capabilities,
+        )
+        .await?;
         tx.commit().await.map_err(reject)?;
-
-        Ok(Some(Claimed {
-            request,
-            sandbox,
-            lease: Lease {
-                run_id: claim.run_id,
-                owner: claim.owner,
-                expires_ms: expires,
-                epoch: claim.epoch,
-            },
-            cancellation_requested: cancellation_requested != 0,
-            pending,
-            recovered: recovery_pick,
-            assignment: None,
-        }))
+        Ok(claimed)
     }
 
     async fn claim_compatible(
@@ -776,6 +613,7 @@ impl DispatchQueue for PostgresDispatchStore {
             lease_ms,
             now_ms,
             Some(worker),
+            &installed_worker_credential_capabilities(worker)?,
         )
         .await?;
         tx.commit().await.map_err(reject)?;
@@ -843,6 +681,7 @@ impl DispatchQueue for PostgresDispatchStore {
             lease_ms,
             now_ms,
             Some(requester),
+            &installed_worker_credential_capabilities(requester)?,
         )
         .await?;
         tx.commit().await.map_err(reject)?;
@@ -855,10 +694,19 @@ impl DispatchQueue for PostgresDispatchStore {
         owner: &str,
         lease_ms: u64,
         now_ms: u64,
+        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let mut tx = self.pool.begin().await.map_err(reject)?;
-        let claimed =
-            claim_exact_transaction(&mut tx, requested_run, owner, lease_ms, now_ms, None).await?;
+        let claimed = claim_exact_transaction(
+            &mut tx,
+            requested_run,
+            owner,
+            lease_ms,
+            now_ms,
+            None,
+            capabilities,
+        )
+        .await?;
         tx.commit().await.map_err(reject)?;
         Ok(claimed)
     }
@@ -878,6 +726,7 @@ impl DispatchQueue for PostgresDispatchStore {
             lease_ms,
             now_ms,
             Some(worker),
+            &installed_worker_credential_capabilities(worker)?,
         )
         .await?;
         tx.commit().await.map_err(reject)?;
@@ -927,6 +776,73 @@ impl DispatchQueue for PostgresDispatchStore {
         } else {
             SettleOutcome::Fenced
         })
+    }
+
+    async fn record_credential_realization(
+        &self,
+        claim: &RunClaim,
+        receipt: CredentialRealizationReceipt,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let p = NS;
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let current = sqlx::query(&format!(
+            "SELECT credential_bindings, credential_receipts FROM {p}_dispatch \
+             WHERE run_id = $1 AND status = 'running' \
+             AND lease_owner = $2 AND lease_epoch = $3 FOR UPDATE"
+        ))
+        .bind(&claim.run_id.0)
+        .bind(&claim.owner)
+        .bind(claim.epoch as i64)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(reject)?;
+        let Some(current) = current else {
+            let _ = tx.rollback().await;
+            return Ok(SettleOutcome::Fenced);
+        };
+        let bindings = current
+            .try_get::<Option<Json<Vec<AttemptCredentialBinding>>>, _>("credential_bindings")
+            .map_err(reject)?
+            .map(|value| value.0)
+            .unwrap_or_default();
+        verify_credential_realization_receipt(&bindings, &receipt)
+            .map_err(|error| DispatchError::Rejected(error.to_string()))?;
+        let mut receipts = current
+            .try_get::<Option<Json<Vec<CredentialRealizationReceipt>>>, _>("credential_receipts")
+            .map_err(reject)?
+            .map(|value| value.0)
+            .unwrap_or_default();
+        if let Some(existing) = receipts
+            .iter()
+            .find(|existing| existing.candidate_fingerprint == receipt.candidate_fingerprint)
+        {
+            if existing != &receipt {
+                return Err(DispatchError::Rejected(
+                    "credential realization receipt conflicts with committed evidence".to_string(),
+                ));
+            }
+            tx.commit().await.map_err(reject)?;
+            return Ok(SettleOutcome::Applied);
+        }
+        receipts.push(receipt);
+        let changed = sqlx::query(&format!(
+            "UPDATE {p}_dispatch SET credential_receipts = $1 \
+             WHERE run_id = $2 AND status = 'running' \
+             AND lease_owner = $3 AND lease_epoch = $4"
+        ))
+        .bind(Json(&receipts))
+        .bind(&claim.run_id.0)
+        .bind(&claim.owner)
+        .bind(claim.epoch as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(reject)?;
+        if changed.rows_affected() != 1 {
+            let _ = tx.rollback().await;
+            return Ok(SettleOutcome::Fenced);
+        }
+        tx.commit().await.map_err(reject)?;
+        Ok(SettleOutcome::Applied)
     }
 
     async fn runnable_depth(&self, now_ms: u64) -> Result<Option<u64>, DispatchError> {
@@ -1584,8 +1500,27 @@ async fn claim_exact_transaction(
     lease_ms: u64,
     now_ms: u64,
     worker: Option<&WorkerSnapshot>,
+    capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
 ) -> Result<Option<Claimed>, DispatchError> {
     let p = NS;
+    let thread_id = sqlx::query_scalar::<_, String>(&format!(
+        "SELECT thread_id FROM {p}_dispatch WHERE run_id = $1"
+    ))
+    .bind(&requested_run.0)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(reject)?;
+    let Some(thread_id) = thread_id else {
+        return Ok(None);
+    };
+    // The partial unique index remains the hard backstop, while this transaction
+    // lock orders all claim transitions for one Thread before the eligibility
+    // recheck. Hash collisions only over-serialize unrelated Threads.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(&thread_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(reject)?;
     let not_running = format!(
         "NOT EXISTS (SELECT 1 FROM {p}_dispatch r \
          WHERE r.thread_id = d.thread_id AND r.status = 'running')"
@@ -1633,24 +1568,39 @@ async fn claim_exact_transaction(
         return Ok(None);
     }
     let status: String = row.try_get("status").map_err(reject)?;
+    let claim_epoch = (previous_epoch.max(0) as u64)
+        .checked_add(1)
+        .ok_or_else(|| DispatchError::Rejected("dispatch claim epoch exhausted".to_string()))?;
+    let credential_bindings = if cancellation_requested != 0 {
+        Vec::new()
+    } else {
+        compile_attempt_credential_bindings(&request, capabilities, claim_epoch, now_ms).map_err(
+            |error| {
+                DispatchError::Rejected(format!("credential attempt admission failed: {error}"))
+            },
+        )?
+    };
     let expires = now_ms + lease_ms;
-    let lease_epoch = sqlx::query_scalar::<_, i64>(&format!(
+    sqlx::query(&format!(
         "UPDATE {p}_dispatch SET status = 'running', lease_owner = $1, lease_until = $2, \
-         attempt_count = attempt_count + $3, lease_epoch = lease_epoch + 1 \
-         , worker_assignment = $5 WHERE run_id = $4 RETURNING lease_epoch"
+         attempt_count = attempt_count + $3, lease_epoch = $5, worker_assignment = $6, \
+         credential_bindings = $7, credential_receipts = $8 WHERE run_id = $4"
     ))
     .bind(owner)
     .bind(expires as i64)
     .bind(i64::from(status == "running"))
     .bind(&requested_run.0)
+    .bind(claim_epoch as i64)
     .bind(worker.map(WorkerAssignment::from).map(Json))
-    .fetch_one(&mut **tx)
+    .bind(Json(&credential_bindings))
+    .bind(Json(Vec::<CredentialRealizationReceipt>::new()))
+    .execute(&mut **tx)
     .await
     .map_err(reject)?;
     let claim = RunClaim {
         run_id: requested_run.clone(),
         owner: owner.to_string(),
-        epoch: lease_epoch as u64,
+        epoch: claim_epoch,
     };
     if status == "running" {
         let previous = RunClaim {
@@ -1720,6 +1670,7 @@ async fn claim_exact_transaction(
             expires_ms: expires,
             epoch: claim.epoch,
         },
+        credential_bindings,
         cancellation_requested: cancellation_requested != 0,
         pending,
         recovered: status == "running",

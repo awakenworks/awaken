@@ -300,7 +300,12 @@ mod tests {
         entered.notified().await;
         assert!(
             store
-                .claim("competing-pool", 30_000, SystemClock.now_ms())
+                .claim(
+                    "competing-pool",
+                    30_000,
+                    SystemClock.now_ms(),
+                    &Default::default(),
+                )
                 .await
                 .unwrap()
                 .is_none(),

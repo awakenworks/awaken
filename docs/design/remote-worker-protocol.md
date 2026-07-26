@@ -826,7 +826,7 @@ helpers and CLI parsing do not belong here.
 | MCP stage/publish/drain methods on `SessionRuntime` *(target)* | Session application port | one local-or-remote port for invisible exact-generation staging, post-CAS safe-boundary publication, and idempotent drain | durable generation, Session realization lease, existing relay/transport/Runtime refresh | desired-state persistence, credential selection, or generation fallback | a staged route leaks before commit or an old call reaches replacement credentials | target G42; local/remote parity, stage-crash, stale-CAS disposal, replacement, and stale-call tests |
 | `CredentialExecutionPolicy` *(target)* | published value object | exact allowed plaintext-holder trust domains plus `Forbidden`/`VirtualOnly` exposure | existing `CredentialAccess` and `CredentialUsage` | authorization grant, holder ordering/fallback, secret bytes, or protocol-specific duplication | an adapter treats a different trust domain as automatically stronger | target G43; allowed-set, serialization, exposure, and no-fallback tests |
 | `PlaintextHolder` *(target)* | credential value object | one exact Workload/Worker/Platform boundary plus opaque trust-domain identity | publication policy and Environment/adapter admission | IAM role/principal, global strength rank, or delivery mechanism | plaintext moves to an unauthorized deployment boundary | target G43; trust-domain mismatch and capability-conformance tests |
-| `CredentialRealizationProfile` *(target)* | Environment/deployment execution value | exact inference and MCP holders requested by trusted composition and frozen into Session/attempt execution | Environment definition and installed adapter/provider facts | credential policy, runtime ranking, fallback, or secret material | a runtime iterates allowed holders or changes boundary after failure | target G43; deterministic profile, unsupported-holder, and retry-pin tests |
+| `CredentialRealizationProfile` *(target)* | Environment/deployment execution value | exact inference, MCP, and Resource holders requested by trusted composition and frozen into Session/attempt execution | Environment definition and installed adapter/provider facts | credential policy, runtime ranking, fallback, or secret material | a runtime iterates allowed holders or changes boundary after failure | target G43; deterministic profile, unsupported-holder, and retry-pin tests |
 | `CredentialMaterialSource` / `CredentialEnvelope` / resolver *(target)* | credential value objects and port | material resolver location separately from recipient-bound sealed payload reference | exact credential ref, payload fingerprint, and trust-domain recipient | usage semantics, holder authorization, plaintext persistence, or fallback | an envelope is treated as permission, lacks a payload identity, or opens at the wrong boundary | target G43; resolver conformance, schema/fingerprint, recipient, expiry, and replay tests |
 | `CredentialRefreshAccess` *(target)* | credential execution value | exact revision/fingerprint and opaque access/refresh/client-secret references for OAuth refresh and reseal | credential publication and material store | MCP URL rediscovery, current-Vault scan, plaintext persistence, or newer-revision adoption | migration deletes refresh support or a reconnect silently changes credentials | target G43; public/confidential refresh, reseal, restart, and exact-revision tests |
 | `AttemptCredentialBinding` / realization receipt *(target)* | dispatch attempt-epoch value and execution receipt | atomically pin candidate, revision, holder, planned mechanism, Worker/lease epoch before materialization; record actual mechanism after | published candidate, frozen execution profile, and claim transaction | Model/credential selection, allowed-holder policy authorship, or failure fallback | one attempt changes plaintext boundary after response loss or a stale epoch materializes | target G43; claim atomicity, Native/ACP parity, retry/reclaim, and no-fallback tests |
@@ -861,11 +861,15 @@ optional OAuth refresh/reseal access, and explicit allowed plaintext-holder trus
 domains. Holders are not ordered; model exposure is `Forbidden` or
 `VirtualOnly`; inference stays authoritative in `ResolvedModelCandidate`, while
 the dispatch claim transaction pins each attempt epoch's exact holder and
-planned realization before materialization. These contracts are part of Slice
-0 and are not yet implementation-ready. Generic Service, public realizer,
-automatic LLM Vault authoring, HTTP/WebSocket/Git transports, and downstream
-platform custody remain deferred until concrete second implementations justify
-their boundaries.
+planned realization before materialization. The root Session mutation,
+Environment realization profile, exact material resolver, claim-epoch binding,
+and Repository Resource credential pin are implemented slices; G42/G43 remain
+target guardrails until the remaining behavior and E2E evidence are complete.
+Generic Service, a public generic realizer, automatic LLM Vault authoring,
+dynamic HTTP/WebSocket service attachments, general Git service attachments,
+and downstream platform custody remain deferred until concrete second
+implementations justify their boundaries. Existing Repository Git activation is
+a Resource lifecycle and is not deferred by that Service decision.
 
 The first vertical slice is one Worker, one Control Node, one claimed Run that
 Awaits, crashes, is reclaimed by another Worker, resumes from a consistent

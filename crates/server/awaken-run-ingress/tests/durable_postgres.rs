@@ -141,8 +141,8 @@ async fn postgres_one_running_per_thread_under_concurrent_claimers() {
     let a = store.clone();
     let b = store.clone();
     let (ra, rb) = tokio::join!(
-        tokio::spawn(async move { a.claim("owner-a", 1_000, 0).await }),
-        tokio::spawn(async move { b.claim("owner-b", 1_000, 0).await }),
+        tokio::spawn(async move { a.claim("owner-a", 1_000, 0, &Default::default()).await }),
+        tokio::spawn(async move { b.claim("owner-b", 1_000, 0, &Default::default()).await }),
     );
     let won = ra.unwrap().expect("claim a ok").is_some() as u8
         + rb.unwrap().expect("claim b ok").is_some() as u8;
@@ -167,7 +167,7 @@ async fn postgres_epoch_guard_prevents_reclaim_until_commit_returns() {
         .await
         .unwrap();
     let lease = store
-        .claim("owner-a", 100, 0)
+        .claim("owner-a", 100, 0, &Default::default())
         .await
         .unwrap()
         .expect("claim")
@@ -183,8 +183,11 @@ async fn postgres_epoch_guard_prevents_reclaim_until_commit_returns() {
     inner.entered.notified().await;
 
     let reclaim_store = store.clone();
-    let mut reclaiming =
-        tokio::spawn(async move { reclaim_store.claim("owner-b", 100, 200).await });
+    let mut reclaiming = tokio::spawn(async move {
+        reclaim_store
+            .claim("owner-b", 100, 200, &Default::default())
+            .await
+    });
     // Claim intentionally uses SKIP LOCKED. Depending on scheduling it either
     // waits for the guard's transaction or immediately reports no claim; both
     // are safe, but it must never hand the guarded row to owner-b.
@@ -204,7 +207,7 @@ async fn postgres_epoch_guard_prevents_reclaim_until_commit_returns() {
     committing.await.unwrap().expect("commit");
     let reclaimed = if skipped_locked_row {
         store
-            .claim("owner-b", 100, 200)
+            .claim("owner-b", 100, 200, &Default::default())
             .await
             .unwrap()
             .expect("reclaim after the guard releases")
@@ -298,7 +301,7 @@ async fn enqueued_dispatch_survives_a_restart() {
         .await
         .expect("dispatch b");
     let claimed = restarted
-        .claim("worker", 1_000, 0)
+        .claim("worker", 1_000, 0, &Default::default())
         .await
         .expect("claim")
         .expect("the enqueued run survived restart");
@@ -329,8 +332,17 @@ async fn postgres_connect_applies_migrations_and_claim_recovers_a_lease() {
         .expect("re-enqueue");
 
     // Claim with a zero lease, then a later claim reclaims the expired lease.
-    assert!(store.claim("a", 0, 100).await.unwrap().is_some());
-    let recovered = store.claim("b", 1_000, 101).await.unwrap();
+    assert!(
+        store
+            .claim("a", 0, 100, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let recovered = store
+        .claim("b", 1_000, 101, &Default::default())
+        .await
+        .unwrap();
     assert_eq!(
         recovered.map(|c| c.lease.owner),
         Some("b".to_string()),
@@ -498,7 +510,11 @@ async fn two_workers_claim_distinct_runs_on_postgres() {
         .await
         .unwrap();
 
-    let (a, b) = tokio::join!(store.claim("wa", 1_000, 0), store.claim("wb", 1_000, 0));
+    let capabilities = Default::default();
+    let (a, b) = tokio::join!(
+        store.claim("wa", 1_000, 0, &capabilities),
+        store.claim("wb", 1_000, 0, &capabilities)
+    );
     let a = a
         .unwrap()
         .expect("worker a claims")

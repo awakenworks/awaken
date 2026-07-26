@@ -73,20 +73,22 @@ fn k8s_exit_status(status: Option<Status>) -> pc::ExitStatus {
     }
 }
 
-fn k8s_exec_argv(id: &str, command: pc::Command) -> Result<(String, Vec<String>), RuntimeError> {
+fn k8s_exec_argv(
+    id: &str,
+    command: pc::MaterializedCommand,
+) -> Result<(String, Vec<String>), RuntimeError> {
     if command.argv.is_empty() {
         return Err(backend("exec command argv is empty"));
     }
     let pid_file = format!("/tmp/{id}.pid");
     let mut argv = vec!["env".to_string()];
     for var in command.env {
-        let pc::EnvValue::Inline { value } = var.value else {
-            return Err(backend(format!(
-                "exec env {} is not materialized inline",
-                var.name
-            )));
-        };
-        argv.push(format!("{}={value}", var.name));
+        if var.value.is_secret() {
+            return Err(backend(
+                "Kubernetes exec cannot deliver a process secret without argv exposure",
+            ));
+        }
+        argv.push(format!("{}={}", var.name, var.value.expose()));
     }
     argv.extend([
         "sh".into(),
@@ -716,12 +718,13 @@ fn build_pod(
     }
 }
 
-/// The egress-posture label value a platform NetworkPolicy selects on: `restricted`
-/// for any non-`Open` policy (routed through the proxy chokepoint), else `open`.
+/// The egress-posture label value an external platform policy may select on. The
+/// label itself is metadata, not enforcement, so this adapter does not advertise
+/// network isolation until composition can verify that policy separately.
 fn egress_label(network: &crate::NetworkMode) -> &'static str {
     match network {
         crate::NetworkMode::Open => "open",
-        crate::NetworkMode::Allowlist(_) | crate::NetworkMode::None => "restricted",
+        crate::NetworkMode::None => "restricted",
     }
 }
 
@@ -775,6 +778,11 @@ impl ContainerRuntime for K8sRuntime {
     }
 
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {
+        if !matches!(plan.network, crate::NetworkMode::Open) {
+            return Err(RuntimeError::Backend(
+                "k8s adapter cannot prove an installed network-isolation policy".into(),
+            ));
+        }
         // Fail closed on a limit k8s cannot enforce at the Pod-spec level (pids), rather
         // than silently placing the spec and dropping the cap — the tier advertises
         // `resource_limits`, so honoring it means refusing what it cannot enforce.
@@ -833,7 +841,7 @@ impl ContainerRuntime for K8sRuntime {
     async fn spawn(
         &self,
         container_id: &str,
-        command: pc::Command,
+        command: pc::MaterializedCommand,
     ) -> Result<Box<dyn pc::ProcessHandle>, RuntimeError> {
         if command.stdio == pc::Stdio::Piped {
             return Err(backend(
@@ -888,7 +896,7 @@ impl ContainerRuntime for K8sRuntime {
     async fn spawn_agent(
         &self,
         container_id: &str,
-        command: pc::Command,
+        command: pc::MaterializedCommand,
     ) -> Result<RuntimeAgentProcess, RuntimeError> {
         let id = format!(
             "k8s-agent-exec-{}-{}",
@@ -1069,8 +1077,36 @@ impl ContainerRuntime for K8sRuntime {
 #[cfg(test)]
 mod tests {
     use awaken_provisioning_contract::ProcessHandle;
+    use std::sync::Arc;
 
     use super::*;
+
+    struct FixedBroker;
+
+    #[async_trait]
+    impl pc::SecretBroker for FixedBroker {
+        async fn materialize(&self, _reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
+            Ok(b"k8s-secret".to_vec())
+        }
+
+        async fn materialize_process(&self, reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
+            self.materialize(reference).await
+        }
+
+        async fn write_back(
+            &self,
+            _reference: &str,
+            _bytes: Vec<u8>,
+        ) -> Result<(), pc::SandboxError> {
+            Err(pc::SandboxError::new("not supported"))
+        }
+    }
+
+    async fn materialized(command: pc::Command) -> pc::MaterializedCommand {
+        pc::materialize_process_command(&[], command, None)
+            .await
+            .unwrap()
+    }
 
     fn exec_process(completion: Option<tokio::task::JoinHandle<Option<Status>>>) -> K8sExecProcess {
         let rt = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap());
@@ -1155,7 +1191,9 @@ mod tests {
 
     #[tokio::test]
     async fn exec_admission_and_argv_materialization_cover_all_command_boundaries() {
-        assert!(k8s_exec_argv("empty", pc::Command::new(Vec::<String>::new())).is_err());
+        assert!(
+            k8s_exec_argv("empty", pc::MaterializedCommand::new(Vec::<String>::new())).is_err()
+        );
 
         let mut secret = pc::Command::new(["echo", "value"]);
         secret.env.push(pc::EnvVar {
@@ -1165,6 +1203,10 @@ mod tests {
             },
             visibility: pc::EnvVisibility::Process,
         });
+        let broker: Arc<dyn pc::SecretBroker> = Arc::new(FixedBroker);
+        let secret = pc::materialize_process_command(&[], secret, Some(&broker))
+            .await
+            .unwrap();
         assert!(k8s_exec_argv("secret", secret).is_err());
 
         let mut inline = pc::Command::new(["echo", "value"]);
@@ -1176,17 +1218,18 @@ mod tests {
             },
             visibility: pc::EnvVisibility::Process,
         });
+        let inline = materialized(inline).await;
         let (pid_file, argv) = k8s_exec_argv("inline", inline).unwrap();
         assert_eq!(pid_file, "/tmp/inline.pid");
         assert!(argv.iter().any(|value| value == "MODE=test"));
         assert!(argv.iter().any(|value| value == "/workspace"));
 
         let rt = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap());
-        let mut piped = pc::Command::new(["echo", "value"]);
+        let mut piped = pc::MaterializedCommand::new(["echo", "value"]);
         piped.stdio = pc::Stdio::Piped;
         assert!(rt.spawn("pod", piped).await.is_err());
         assert!(
-            rt.spawn_agent("pod", pc::Command::new(Vec::<String>::new()))
+            rt.spawn_agent("pod", pc::MaterializedCommand::new(Vec::<String>::new()))
                 .await
                 .is_err()
         );
@@ -1499,26 +1542,23 @@ mod tests {
     }
 
     #[test]
-    fn build_pod_carries_the_brokered_lease_token_env_not_a_raw_key() {
-        // D-R2: the host injects the gateway + short-lived lease token into plan.env
-        // (via acp_provision → spec.env). The k8s pod must carry those to the agent so
-        // it reaches the model through the egress proxy — and never a raw provider key.
+    fn build_pod_carries_only_non_secret_base_environment() {
+        // ContainerPlan is the environment-container creation layer and carries
+        // public base env only. Process credentials are materialized for exec later;
+        // the Kubernetes adapter currently rejects that operation because the exec
+        // API would otherwise expose the value in argv.
         let mut plan = plan_with_memory(Vec::new());
         plan.env = vec![
             ("AWAKEN_ACP_GATEWAY_URL".into(), "http://gw.internal".into()),
-            ("AWAKEN_ACP_LEASE_TOKEN".into(), "lease-abc".into()),
             ("HTTPS_PROXY".into(), "http://gw.internal:8888".into()),
         ];
         let spec = build_pod("r", &plan, &None, "m", None, false).spec.unwrap();
         let env = spec.containers[0].env.clone().unwrap();
+        assert!(env.iter().any(|e| e.name == "AWAKEN_ACP_GATEWAY_URL"));
         assert!(
             env.iter()
-                .any(|e| e.name == "AWAKEN_ACP_LEASE_TOKEN"
-                    && e.value.as_deref() == Some("lease-abc"))
+                .all(|e| e.name != "ANTHROPIC_API_KEY" && e.name != "AWAKEN_ACP_LEASE_TOKEN")
         );
-        assert!(env.iter().any(|e| e.name == "AWAKEN_ACP_GATEWAY_URL"));
-        // The sandbox holds no raw provider key.
-        assert!(env.iter().all(|e| e.name != "ANTHROPIC_API_KEY"));
     }
 
     #[test]
@@ -1649,9 +1689,10 @@ mod tests {
 
     #[test]
     fn build_pod_labels_the_egress_posture_for_a_networkpolicy() {
-        // Restricted egress → the pod is labeled so a platform NetworkPolicy fences it.
+        // Restricted intent is labeled for platform observation, while provider
+        // capability remains false until an installed policy is verified.
         let mut plan = plan_with_memory(Vec::new());
-        plan.network = crate::NetworkMode::Allowlist(vec!["api.anthropic.com".into()]);
+        plan.network = crate::NetworkMode::None;
         let pod = build_pod("r", &plan, &None, "m", None, false);
         let labels = pod.metadata.labels.unwrap();
         assert_eq!(

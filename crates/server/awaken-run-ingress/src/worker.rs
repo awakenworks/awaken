@@ -24,6 +24,10 @@ use awaken_runtime_contract::runtime_context::{
     AttemptOwnershipError, AttemptOwnershipVerifier, RuntimeRunContext,
 };
 use awaken_runtime_contract::terminal::redeliver_committed_terminal;
+use awaken_runtime_contract::{
+    AttemptCredentialBinding, AttemptCredentialRealization, CredentialRealizationReceipt,
+    CredentialRealizationRecordError, CredentialRealizationRecorder,
+};
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
@@ -50,12 +54,38 @@ pub struct DispatchWorker<S> {
     lease_ms: u64,
     cancellation: Option<CancellationToken>,
     ownership_clock: Arc<dyn Clock>,
+    local_credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
 }
 
 struct ClaimBoundOwnershipVerifier {
     dispatch: Arc<dyn crate::DispatchQueue>,
     claim: RunClaim,
     clock: Arc<dyn Clock>,
+}
+
+struct ClaimBoundCredentialRecorder {
+    dispatch: Arc<dyn crate::DispatchQueue>,
+    claim: RunClaim,
+}
+
+#[async_trait::async_trait]
+impl CredentialRealizationRecorder for ClaimBoundCredentialRecorder {
+    async fn record(
+        &self,
+        receipt: CredentialRealizationReceipt,
+    ) -> Result<(), CredentialRealizationRecordError> {
+        match self
+            .dispatch
+            .record_credential_realization(&self.claim, receipt)
+            .await
+        {
+            Ok(SettleOutcome::Applied) => Ok(()),
+            Ok(SettleOutcome::Fenced) => Err(CredentialRealizationRecordError(
+                "dispatch claim was superseded before receipt commit".to_string(),
+            )),
+            Err(error) => Err(CredentialRealizationRecordError(error.to_string())),
+        }
+    }
 }
 
 /// Build the neutral ownership verifier for one exact dispatch claim.
@@ -145,6 +175,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             lease_ms: DEFAULT_LEASE_MS,
             cancellation: None,
             ownership_clock: Arc::new(SystemClock),
+            local_credential_capabilities: Default::default(),
         }
     }
 
@@ -250,6 +281,15 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         self
     }
 
+    #[must_use]
+    pub fn with_local_credential_capabilities(
+        mut self,
+        capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
+    ) -> Self {
+        self.local_credential_capabilities = capabilities;
+        self
+    }
+
     pub fn runtime(&self) -> &Arc<Runtime> {
         &self.runtime
     }
@@ -284,6 +324,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         &self,
         claim: &RunClaim,
         model_executor: &Option<Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>,
+        credential_bindings: &[AttemptCredentialBinding],
     ) -> RuntimeRunContext {
         // The base commit boundary, wrapped per drive because the fence epoch is per
         // claim. `self.store` (the dispatch queue) reports the run's current epoch, so
@@ -304,6 +345,15 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             .execution_context()
             .with_commit(fenced)
             .with_ownership(ownership);
+        if !credential_bindings.is_empty() {
+            ctx = ctx.with_credential_realization(AttemptCredentialRealization::new(
+                credential_bindings.to_vec(),
+                Arc::new(ClaimBoundCredentialRecorder {
+                    dispatch: dispatch.clone(),
+                    claim: claim.clone(),
+                }),
+            ));
+        }
         if let Some(checkpoint) = ctx.stream_checkpoint.clone() {
             ctx = ctx.with_stream_checkpoint(Arc::new(crate::FencedStreamCheckpointStore::new(
                 checkpoint,
@@ -324,9 +374,8 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         &self,
         claim: &RunClaim,
         now_ms: u64,
-        model_executor: &Option<Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>,
+        context: RuntimeRunContext,
     ) -> Result<RunState, Error> {
-        let context = self.execution_context_with(claim, model_executor);
         Ok(self
             .runtime
             .perform_scheduled_action(&claim.run_id, self.reader.as_ref(), context, now_ms)
@@ -341,7 +390,15 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     /// runtime carrying its thread's model/tools/config (not whichever worker
     /// happened to claim it).
     pub async fn claim_one(&self, now_ms: u64) -> Result<Option<Claimed>, Error> {
-        Ok(self.store.claim(&self.owner, self.lease_ms, now_ms).await?)
+        Ok(self
+            .store
+            .claim(
+                &self.owner,
+                self.lease_ms,
+                now_ms,
+                &self.local_credential_capabilities,
+            )
+            .await?)
     }
 
     /// Claim one known Run under the same lease/fence policy without taking work
@@ -350,7 +407,13 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     pub async fn claim_run(&self, run_id: &RunId, now_ms: u64) -> Result<Option<Claimed>, Error> {
         Ok(self
             .store
-            .claim_run(run_id, &self.owner, self.lease_ms, now_ms)
+            .claim_run(
+                run_id,
+                &self.owner,
+                self.lease_ms,
+                now_ms,
+                &self.local_credential_capabilities,
+            )
             .await?)
     }
 
@@ -362,11 +425,17 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         request: awaken_run_ingress_contract::RunDispatch,
         now_ms: u64,
     ) -> Result<Option<(RunId, RunState)>, Error> {
-        let Some(claimed) = self
+        let claimed = self
             .store
-            .claim_new_run(request, &self.owner, self.lease_ms, now_ms)
-            .await?
-        else {
+            .claim_new_run(
+                request,
+                &self.owner,
+                self.lease_ms,
+                now_ms,
+                &self.local_credential_capabilities,
+            )
+            .await?;
+        let Some(claimed) = claimed else {
             return Ok(None);
         };
         self.drive_claimed(claimed, now_ms).await
@@ -380,11 +449,17 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         input: PendingInput,
         now_ms: u64,
     ) -> Result<Option<(RunId, RunState)>, Error> {
-        let Some(claimed) = self
+        let claimed = self
             .store
-            .deliver_and_claim(input, &self.owner, self.lease_ms, now_ms)
-            .await?
-        else {
+            .deliver_and_claim(
+                input,
+                &self.owner,
+                self.lease_ms,
+                now_ms,
+                &self.local_credential_capabilities,
+            )
+            .await?;
+        let Some(claimed) = claimed else {
             return Ok(None);
         };
         self.drive_claimed(claimed, now_ms).await
@@ -466,7 +541,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         // remain possible when the execution dependency being cancelled is down.
         if claimed.cancellation_requested {
             let attempt_executor = self.attempt_executor();
-            let context = self.execution_context_with(&claim, &None);
+            let context = self.execution_context_with(&claim, &None, &[]);
             if let Err(error) = attempt_executor
                 .cancel(activation.clone(), context.clone())
                 .await
@@ -513,10 +588,14 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         // through the injected provider — which owns how the model is reached (local
         // credentials or a gateway offering). `None` leaves the runtime's bound (host
         // default) executor, so a single-model deployment is unaffected.
+        let mut execution_context =
+            self.execution_context_with(&claim, &None, &claimed.credential_bindings);
         let model_executor = self
             .exec
-            .materialize_inference(&claimed.request.activation)?;
-        let execution_context = self.execution_context_with(&claim, &model_executor);
+            .materialize_inference(&claimed.request.activation, &execution_context)?;
+        if let Some(executor) = &model_executor {
+            execution_context = execution_context.with_model_executor(executor.clone());
+        }
         self.runtime
             .register_attempt_controls(&run_id, &execution_context);
         let _attempt_control = AttemptControlGuard {
@@ -535,7 +614,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             // crash recovery of a scheduled await (no pending input is expected).
             Some(ticket) if ticket.reason == AwaitReason::ScheduledAction => {
                 match self
-                    .perform_scheduled(&claim, now_ms, &model_executor)
+                    .perform_scheduled(&claim, now_ms, execution_context.clone())
                     .instrument(dispatch.clone())
                     .await
                 {
@@ -708,7 +787,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             match self.reader.resume_ticket(&run_id) {
                 Some(ticket) if ticket.reason == AwaitReason::ScheduledAction => {
                     state = match self
-                        .perform_scheduled(&claim, now_ms, &model_executor)
+                        .perform_scheduled(&claim, now_ms, execution_context.clone())
                         .await
                     {
                         Ok(state) => state,

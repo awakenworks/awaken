@@ -35,6 +35,8 @@ pub enum PrepareError {
     EgressSecretUnsupported(String),
     #[error("network policy requested but backend has no network isolation")]
     NetworkIsolationUnsupported,
+    #[error("network allowlist requested but backend has no no-bypass allowlist enforcement")]
+    NetworkAllowlistUnsupported,
     #[error("resource limits requested but backend cannot enforce them")]
     ResourceLimitsUnsupported,
     #[error("env key {0:?} is reserved by the runtime")]
@@ -83,6 +85,9 @@ pub fn prepare_environment(
     if spec.network.rank() > NetworkPolicy::Unrestricted.rank() && !caps.network_isolation {
         return Err(PrepareError::NetworkIsolationUnsupported);
     }
+    if matches!(spec.network, NetworkPolicy::Allowlist { .. }) && !caps.enforced_network_allowlist {
+        return Err(PrepareError::NetworkAllowlistUnsupported);
+    }
 
     // Resource caps must be enforceable — never silently ignored on a tier that
     // can't cgroup them (bwrap reports `resource_limits = false`).
@@ -113,6 +118,7 @@ mod tests {
             path_fidelity: isolation >= IsolationClass::Namespace,
             enforced_readonly: isolation >= IsolationClass::Namespace,
             network_isolation: isolation >= IsolationClass::Namespace,
+            enforced_network_allowlist: isolation >= IsolationClass::Namespace,
             secret_egress_substitution: isolation == IsolationClass::Container,
             resource_limits: isolation >= IsolationClass::Namespace,
             custom_rootfs: isolation == IsolationClass::Container,
@@ -212,6 +218,57 @@ mod tests {
             prepare_environment(&spec(), &c),
             Err(PrepareError::NetworkIsolationUnsupported)
         );
+    }
+
+    /// Network-policy cause graph:
+    ///
+    /// C1 restricted policy -> C2 general isolation -> (C3 allowlist requested
+    /// -> C4 no-bypass allowlist enforcement) -> E1 admit. Missing C2 yields
+    /// E2 `NetworkIsolationUnsupported`; C3 with missing C4 yields E3
+    /// `NetworkAllowlistUnsupported`.
+    ///
+    /// | Rule | Policy | C2 isolation | C4 allowlist | Effect |
+    /// |---|---|---:|---:|---|
+    /// | N1 | unrestricted | 0 | 0 | admit |
+    /// | N2 | none | 0 | - | E2 |
+    /// | N3 | none | 1 | - | admit |
+    /// | N4 | allowlist | 0 | 0 | E2 |
+    /// | N5 | allowlist | 1 | 0 | E3 |
+    /// | N6 | allowlist | 1 | 1 | admit |
+    #[test]
+    fn network_policy_requires_its_exact_enforcement_capability() {
+        let mut request = spec();
+        request.mounts.clear();
+        let mut provider = caps(IsolationClass::Namespace);
+
+        request.network = NetworkPolicy::Unrestricted;
+        provider.network_isolation = false;
+        provider.enforced_network_allowlist = false;
+        assert!(prepare_environment(&request, &provider).is_ok());
+
+        request.network = NetworkPolicy::None;
+        assert_eq!(
+            prepare_environment(&request, &provider),
+            Err(PrepareError::NetworkIsolationUnsupported)
+        );
+        provider.network_isolation = true;
+        assert!(prepare_environment(&request, &provider).is_ok());
+
+        request.network = NetworkPolicy::Allowlist {
+            hosts: vec!["api.anthropic.com".into()],
+        };
+        provider.network_isolation = false;
+        assert_eq!(
+            prepare_environment(&request, &provider),
+            Err(PrepareError::NetworkIsolationUnsupported)
+        );
+        provider.network_isolation = true;
+        assert_eq!(
+            prepare_environment(&request, &provider),
+            Err(PrepareError::NetworkAllowlistUnsupported)
+        );
+        provider.enforced_network_allowlist = true;
+        assert!(prepare_environment(&request, &provider).is_ok());
     }
 
     #[test]

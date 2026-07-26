@@ -21,24 +21,29 @@ use std::sync::Arc;
 
 mod environment_owned;
 use environment_owned::EnvironmentOwnedProcess;
+mod cgroup;
+mod egress;
 mod files;
 mod podman_plan;
 mod recovery;
 mod secret;
+pub use cgroup::CgroupCaps;
+pub use egress::{EgressError, EgressRealization, ForwardProxy, NetworkMode, egress_plan};
 pub use podman_plan::{RootfsError, RootfsPlan, podman_run_argv, rootfs_plan};
 pub use secret::SecretBytes;
 
-/// Container-tier capabilities: OS-enforced isolation strong enough to host an
-/// opaque agent, with the guarantees bwrap could not give (allowlist egress,
-/// resource limits, a custom rootfs/image).
-#[must_use]
-pub fn container_capabilities() -> pc::SandboxCapabilities {
+/// Capabilities common to one concrete container runtime. Network denial is
+/// runtime evidence rather than an isolation-class assumption: Docker/Podman
+/// implement `network none`; the current Kubernetes adapter does not install or
+/// verify a NetworkPolicy and therefore reports false.
+fn container_capabilities(network_isolation: bool) -> pc::SandboxCapabilities {
     pc::SandboxCapabilities {
         isolation: pc::IsolationClass::Container,
         tool_transparent: true,
         path_fidelity: true,
         enforced_readonly: true,
-        network_isolation: true,
+        network_isolation,
+        enforced_network_allowlist: false,
         secret_egress_substitution: false,
         resource_limits: true,
         custom_rootfs: true,
@@ -46,17 +51,6 @@ pub fn container_capabilities() -> pc::SandboxCapabilities {
 }
 
 // ── Pure planners ─────────────────────────────────────────────────────────────
-
-/// How egress maps onto a container network mode.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NetworkMode {
-    /// Full egress (default bridge).
-    Open,
-    /// Deny-by-default with an allowlist (enforced by the runtime/CNI).
-    Allowlist(Vec<String>),
-    /// No network.
-    None,
-}
 
 /// One realized bind inside the container.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,128 +110,9 @@ pub struct ContainerPlan {
     pub rootfs: RootfsPlan,
 }
 
-/// Neutral cgroup caps derived from [`pc::ResourceLimits`] — what a container
-/// runtime (Docker `HostConfig`, k8s `resources.limits`) must apply. Extracted as a
-/// pure value so the swap-escape pin and disk mapping are unit-testable without a
-/// live daemon (the daemon-backed adapters just translate the fields).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct CgroupCaps {
-    /// Hard memory cap, bytes.
-    pub memory_bytes: Option<i64>,
-    /// Swap ceiling, **pinned equal to `memory_bytes`** so a memory-capped container
-    /// cannot escape the cap by swapping (awaken-next parity; in Docker's model
-    /// `memory_swap == memory` disables swap beyond the memory limit).
-    pub memory_swap_bytes: Option<i64>,
-    /// CPU quota expressed in nano-CPUs (`cpu_millis * 1e6`).
-    pub nano_cpus: Option<i64>,
-    /// Max process/thread count.
-    pub pids: Option<i64>,
-    /// Writable-layer size limit for `--storage-opt size=` (as the runtime expects it).
-    pub disk_size: Option<String>,
-}
-
-impl CgroupCaps {
-    /// Map neutral limits onto container-runtime cgroup fields, pinning swap to the
-    /// memory cap (the swap-escape close).
-    #[must_use]
-    pub fn from_limits(limits: &pc::ResourceLimits) -> Self {
-        let memory = limits.memory_bytes.map(|m| m as i64);
-        Self {
-            memory_bytes: memory,
-            memory_swap_bytes: memory,
-            nano_cpus: limits.cpu_millis.map(|c| i64::from(c) * 1_000_000),
-            pids: limits.pids.map(i64::from),
-            disk_size: limits.disk_bytes.map(|d| d.to_string()),
-        }
-    }
-}
-
 #[cfg(test)]
-mod cgroup_caps_tests {
+mod planner_tests {
     use super::*;
-
-    #[test]
-    fn pins_swap_to_the_memory_cap_and_maps_every_field() {
-        let limits = pc::ResourceLimits {
-            cpu_millis: Some(1500),
-            memory_bytes: Some(512 * 1024 * 1024),
-            pids: Some(256),
-            disk_bytes: Some(2 * 1024 * 1024 * 1024),
-        };
-        let caps = CgroupCaps::from_limits(&limits);
-        assert_eq!(caps.memory_bytes, Some(512 * 1024 * 1024));
-        // The swap-escape close: swap ceiling == memory cap.
-        assert_eq!(caps.memory_swap_bytes, caps.memory_bytes);
-        assert_eq!(caps.nano_cpus, Some(1_500_000_000));
-        assert_eq!(caps.pids, Some(256));
-        assert_eq!(caps.disk_size.as_deref(), Some("2147483648"));
-    }
-
-    #[test]
-    fn unset_limits_map_to_no_caps() {
-        let caps = CgroupCaps::from_limits(&pc::ResourceLimits::default());
-        assert_eq!(caps, CgroupCaps::default());
-        assert!(caps.memory_swap_bytes.is_none());
-    }
-
-    #[test]
-    fn unrestricted_egress_needs_no_proxy() {
-        let r = egress_plan(&pc::NetworkPolicy::Unrestricted, None).unwrap();
-        assert_eq!(r.network, NetworkMode::Open);
-        assert!(r.proxy_env.is_empty());
-    }
-
-    #[test]
-    fn unrestricted_egress_uses_an_operator_proxy_when_configured() {
-        let proxy = EgressProxy {
-            url: "http://host-gateway:8888".into(),
-        };
-        let r = egress_plan(&pc::NetworkPolicy::Unrestricted, Some(&proxy)).unwrap();
-        assert_eq!(r.network, NetworkMode::Open);
-        assert!(
-            r.proxy_env
-                .contains(&("HTTPS_PROXY".into(), proxy.url.clone()))
-        );
-    }
-
-    #[test]
-    fn no_egress_needs_no_proxy() {
-        let r = egress_plan(&pc::NetworkPolicy::None, None).unwrap();
-        assert_eq!(r.network, NetworkMode::None);
-        assert!(r.proxy_env.is_empty());
-    }
-
-    #[test]
-    fn allowlist_routes_through_the_brokered_proxy() {
-        let proxy = EgressProxy {
-            url: "http://gw.internal:8888".into(),
-        };
-        let policy = pc::NetworkPolicy::Allowlist {
-            hosts: vec!["api.anthropic.com".into()],
-        };
-        let r = egress_plan(&policy, Some(&proxy)).unwrap();
-        assert_eq!(
-            r.network,
-            NetworkMode::Allowlist(vec!["api.anthropic.com".into()])
-        );
-        assert!(
-            r.proxy_env
-                .contains(&("HTTPS_PROXY".into(), "http://gw.internal:8888".into()))
-        );
-        assert!(
-            r.proxy_env
-                .contains(&("HTTP_PROXY".into(), "http://gw.internal:8888".into()))
-        );
-        assert!(r.proxy_env.iter().any(|(k, _)| k == "NO_PROXY"));
-    }
-
-    #[test]
-    fn allowlist_without_a_proxy_fails_closed() {
-        let policy = pc::NetworkPolicy::Allowlist {
-            hosts: vec!["api.anthropic.com".into()],
-        };
-        assert_eq!(egress_plan(&policy, None), Err(EgressError::ProxyRequired));
-    }
 
     #[test]
     fn rootfs_plan_maps_image_and_isolated_roots() {
@@ -462,18 +337,6 @@ mod cgroup_caps_tests {
     }
 
     #[test]
-    fn podman_run_argv_allowlist_keeps_bridge_egress_to_reach_the_proxy() {
-        // Allowlist is enforced at the brokered proxy; the container itself keeps
-        // default bridge egress to reach that chokepoint. It must NOT be severed with
-        // `--network none` (that would block the proxy) nor left flagless like Open —
-        // a mismap here silently breaks controlled egress.
-        let mut plan = podman_plan();
-        plan.network = NetworkMode::Allowlist(vec!["api.anthropic.com".into()]);
-        let argv = podman_run_argv("r", &plan, &RootfsPlan::HostUserland);
-        assert_eq!(arg_after(&argv, "--network"), Some("bridge"));
-    }
-
-    #[test]
     fn podman_run_argv_maps_a_disk_cap_to_storage_opt() {
         // A declared disk cap must reach the writable-layer limit (`--storage-opt
         // size=`), otherwise the advertised resource limit is never enforced.
@@ -491,14 +354,6 @@ fn image_of(spec: &pc::SandboxSpec, default_image: &str) -> String {
         .and_then(|v| v.as_str())
         .unwrap_or(default_image)
         .to_string()
-}
-
-fn network_of(policy: &pc::NetworkPolicy) -> NetworkMode {
-    match policy {
-        pc::NetworkPolicy::Unrestricted => NetworkMode::Open,
-        pc::NetworkPolicy::Allowlist { hosts } => NetworkMode::Allowlist(hosts.clone()),
-        pc::NetworkPolicy::None => NetworkMode::None,
-    }
 }
 
 /// The sandbox paths that must stay writable under a **read-only rootfs**: the
@@ -534,70 +389,6 @@ pub fn writable_dirs(plan: &ContainerPlan) -> Vec<String> {
         }
     }
     dirs
-}
-
-/// A brokered egress chokepoint the sandbox routes through. The host allowlist is
-/// enforced **at the proxy**, out of the sandbox — the same secretless-gateway route
-/// used for model/MCP egress. The endpoint is supplied by the host's gateway; it is
-/// never chosen inside the sandbox tier.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EgressProxy {
-    /// The forward-proxy URL the agent's HTTP client must use (e.g. `http://gw:8888`).
-    pub url: String,
-}
-
-/// How egress is realized for a container: the effective network mode plus any proxy
-/// env the agent process must export.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EgressRealization {
-    pub network: NetworkMode,
-    /// `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` pairs — empty when direct or denied.
-    pub proxy_env: Vec<(String, String)>,
-}
-
-/// Why an egress policy cannot be realized on this tier.
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
-pub enum EgressError {
-    /// An allowlist policy needs a brokered chokepoint; none was supplied.
-    #[error("allowlist egress requires a brokered proxy endpoint, none supplied")]
-    ProxyRequired,
-}
-
-/// Realize an egress policy for the container tier, fail-closed. An `Allowlist` is
-/// realized as a route through the brokered `proxy` (direct egress denied; all
-/// traffic flows through the chokepoint that enforces the host allowlist). Without a
-/// proxy an allowlist **cannot** be enforced, so it is rejected rather than silently
-/// opened — the sandbox never runs believing egress is controlled when it is not.
-pub fn egress_plan(
-    policy: &pc::NetworkPolicy,
-    proxy: Option<&EgressProxy>,
-) -> Result<EgressRealization, EgressError> {
-    match policy {
-        pc::NetworkPolicy::Unrestricted => Ok(EgressRealization {
-            network: NetworkMode::Open,
-            proxy_env: proxy.map(proxy_env).unwrap_or_default(),
-        }),
-        pc::NetworkPolicy::None => Ok(EgressRealization {
-            network: NetworkMode::None,
-            proxy_env: Vec::new(),
-        }),
-        pc::NetworkPolicy::Allowlist { hosts } => {
-            let proxy = proxy.ok_or(EgressError::ProxyRequired)?;
-            Ok(EgressRealization {
-                network: NetworkMode::Allowlist(hosts.clone()),
-                proxy_env: proxy_env(proxy),
-            })
-        }
-    }
-}
-
-fn proxy_env(proxy: &EgressProxy) -> Vec<(String, String)> {
-    vec![
-        ("HTTPS_PROXY".to_string(), proxy.url.clone()),
-        ("HTTP_PROXY".to_string(), proxy.url.clone()),
-        // Keep loopback (the agent's own sidecars) direct.
-        ("NO_PROXY".to_string(), "localhost,127.0.0.1".to_string()),
-    ]
 }
 
 /// A host staging directory holding the bytes of inline mounts (codex `config.toml`,
@@ -1117,24 +908,29 @@ fn inline_env(spec: &pc::SandboxSpec) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Render a [`ContainerPlan`] from a spec + the agent command (Docker path). Pure.
-#[must_use]
+/// Render a [`ContainerPlan`] from a spec + the agent command (Docker path). The
+/// same egress planner used by provider creation is authoritative here, so a
+/// direct planner caller cannot regain the removed fail-open allowlist path.
 pub fn container_plan(
     spec: &pc::SandboxSpec,
     default_image: &str,
     command: &[String],
-) -> ContainerPlan {
-    ContainerPlan {
+    forward_proxy: Option<&ForwardProxy>,
+) -> Result<ContainerPlan, EgressError> {
+    let egress = egress_plan(&spec.network, forward_proxy)?;
+    let mut env = inline_env(spec);
+    env.extend(egress.proxy_env);
+    Ok(ContainerPlan {
         image: image_of(spec, default_image),
         command: command.to_vec(),
-        env: inline_env(spec),
+        env,
         binds: binds_of(spec),
         outputs_volume: spec.outputs_path.clone(),
-        network: network_of(&spec.network),
+        network: egress.network,
         limits: spec.limits.clone(),
         memory_mounts: memory_mounts_of(spec),
         rootfs: rootfs_of(spec, default_image),
-    }
+    })
 }
 
 /// Resolve the rootfs from a declared `spec.extra.environment` (a serialized
@@ -1171,26 +967,29 @@ pub struct PodPlan {
     pub restart_never: bool,
 }
 
-/// Render a [`PodPlan`] from a spec + the agent command + a GC owner. Pure.
-#[must_use]
+/// Render a [`PodPlan`] through the same egress authority as container creation.
 pub fn pod_plan(
     spec: &pc::SandboxSpec,
     command: &pc::Command,
     default_image: &str,
     owner_uid: &str,
-) -> PodPlan {
-    PodPlan {
+    forward_proxy: Option<&ForwardProxy>,
+) -> Result<PodPlan, EgressError> {
+    let egress = egress_plan(&spec.network, forward_proxy)?;
+    let mut env = inline_env(spec);
+    env.extend(egress.proxy_env);
+    Ok(PodPlan {
         name: format!("awaken-{}", spec.scope),
         image: image_of(spec, default_image),
         command: command.argv.clone(),
-        env: inline_env(spec),
+        env,
         binds: binds_of(spec),
         outputs_volume: spec.outputs_path.clone(),
-        network: network_of(&spec.network),
+        network: egress.network,
         limits: spec.limits.clone(),
         owner_uid: owner_uid.to_string(),
         restart_never: true,
-    }
+    })
 }
 
 // ── Runtime port (dependency inversion) ─────────────────────────────────────────
@@ -1225,6 +1024,12 @@ pub struct RuntimeAgentProcess {
 /// type beyond the value objects it must move.
 #[async_trait]
 pub trait ContainerRuntime: Send + Sync {
+    /// Whether this runtime structurally enforces `NetworkPolicy::None` for an
+    /// arbitrary workload. Labels, annotations, and proxy env are not evidence.
+    fn enforces_network_none(&self) -> bool {
+        false
+    }
+
     /// Kubernetes realizes MemoryStore mounts with its native sidecar/volume
     /// topology. Local container engines need the provider's portable host-copy
     /// bind instead.
@@ -1257,7 +1062,7 @@ pub trait ContainerRuntime: Send + Sync {
     async fn spawn(
         &self,
         _container_id: &str,
-        _command: pc::Command,
+        _command: pc::MaterializedCommand,
     ) -> Result<Box<dyn pc::ProcessHandle>, RuntimeError> {
         Err(RuntimeError::Backend(
             "container runtime does not implement exec".into(),
@@ -1269,7 +1074,7 @@ pub trait ContainerRuntime: Send + Sync {
     async fn spawn_agent(
         &self,
         _container_id: &str,
-        _command: pc::Command,
+        _command: pc::MaterializedCommand,
     ) -> Result<RuntimeAgentProcess, RuntimeError> {
         Err(RuntimeError::Backend(
             "container runtime does not implement attached exec".into(),
@@ -1379,9 +1184,9 @@ fn err(e: RuntimeError) -> pc::SandboxError {
 pub struct ContainerProvider<R: ContainerRuntime> {
     runtime: Arc<R>,
     default_image: String,
-    /// The brokered egress chokepoint an `Allowlist` policy routes through. Without
-    /// one, an allowlist spec fails closed at `create` (never silently opened).
-    egress_proxy: Option<EgressProxy>,
+    /// Optional connectivity proxy for unrestricted traffic. It is never treated
+    /// as network-policy enforcement.
+    forward_proxy: Option<ForwardProxy>,
     /// In-memory blob seed for `File`/`Resource`/`Secret` mounts (keyed by content id),
     /// consulted before the store — the test/seed path, mirroring `LocalProvider`.
     blobs: std::collections::HashMap<String, Vec<u8>>,
@@ -1402,7 +1207,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         Self {
             runtime,
             default_image: default_image.into(),
-            egress_proxy: None,
+            forward_proxy: None,
             blobs: std::collections::HashMap::new(),
             file_store: None,
             secret_broker: std::sync::RwLock::new(None),
@@ -1417,11 +1222,10 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             .expect("container memory mounter lock poisoned") = Some(mounter);
     }
 
-    /// Route `Allowlist` egress through the brokered `proxy` (the secretless-gateway
-    /// egress route). Without this, an allowlist spec is rejected at `create`.
+    /// Configure a conventional forward proxy for unrestricted traffic.
     #[must_use]
-    pub fn with_egress_proxy(mut self, proxy: EgressProxy) -> Self {
-        self.egress_proxy = Some(proxy);
+    pub fn with_forward_proxy(mut self, proxy: ForwardProxy) -> Self {
+        self.forward_proxy = Some(proxy);
         self
     }
 
@@ -1461,8 +1265,11 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         spec: &pc::SandboxSpec,
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
         // Fail closed against our capabilities before touching the runtime.
-        pc::prepare_environment(spec, &container_capabilities())
-            .map_err(|e| err(RuntimeError::Backend(e.to_string())))?;
+        pc::prepare_environment(
+            spec,
+            &container_capabilities(self.runtime.enforces_network_none()),
+        )
+        .map_err(|e| err(RuntimeError::Backend(e.to_string())))?;
         if spec
             .mounts
             .iter()
@@ -1479,7 +1286,13 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         // Native/ACP commands are exec processes and can be replaced or retried
         // without recreating the workspace.
         let command = environment_keepalive_command();
-        let mut plan = container_plan(spec, &self.default_image, &command);
+        let mut plan = container_plan(
+            spec,
+            &self.default_image,
+            &command,
+            self.forward_proxy.as_ref(),
+        )
+        .map_err(|e| err(RuntimeError::Backend(e.to_string())))?;
         // Resolve + materialize each mount's bytes: self-contained content (codex config,
         // ADR-0038 resources) ships in the plan; File/Resource/Secret resolve by id through
         // the seed then the injected BlobSource, hash-verified. Bytes are staged to a host
@@ -1506,11 +1319,6 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 .clone();
             stage_memory_binds(spec, &mut plan, &mut staging, mounter).await?;
         }
-        // Realize egress: an Allowlist policy is routed through the brokered proxy
-        // (its env is injected here); without a proxy an allowlist fails closed.
-        let egress = egress_plan(&spec.network, self.egress_proxy.as_ref())
-            .map_err(|e| err(RuntimeError::Backend(e.to_string())))?;
-        plan.env.extend(egress.proxy_env);
         let container_id = match self.runtime.create(&spec.scope, &plan).await {
             Ok(id) => id,
             Err(error) => {
@@ -1545,6 +1353,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             id: spec.scope.clone(),
             container_id,
             outputs_path: spec.outputs_path.clone(),
+            base_env: spec.env.clone(),
             realized,
             recovered: false,
             lifecycle: Arc::new(ContainerLifecycle {
@@ -1570,9 +1379,21 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             id: handle.sandbox_id.clone(),
             container_id,
             outputs_path,
+            base_env: handle
+                .extra
+                .as_ref()
+                .and_then(|value| value.get("base_env"))
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok())
+                .unwrap_or_default(),
             realized: Vec::new(),
             recovered: true,
-            lifecycle: Arc::new(ContainerLifecycle::completed()),
+            lifecycle: Arc::new(ContainerLifecycle::completed(
+                self.secret_broker
+                    .read()
+                    .expect("container secret broker lock poisoned")
+                    .clone(),
+            )),
         })
     }
 }
@@ -1634,6 +1455,10 @@ impl<R: ContainerRuntime + 'static> AgentContainerProvider for ContainerProvider
 
 #[async_trait]
 impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerProvider<R> {
+    fn sandbox_capabilities(&self) -> pc::SandboxCapabilities {
+        container_capabilities(self.runtime.enforces_network_none())
+    }
+
     fn install_memory_mounter(&self, mounter: Arc<dyn pc::MemoryMounter>) {
         self.install_memory_mounter(mounter);
     }
@@ -1660,7 +1485,7 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
 #[async_trait]
 impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R> {
     fn capabilities(&self) -> pc::SandboxCapabilities {
-        container_capabilities()
+        container_capabilities(self.runtime.enforces_network_none())
     }
 
     async fn create(
@@ -1685,6 +1510,8 @@ pub struct ContainerSandbox<R: ContainerRuntime> {
     id: String,
     container_id: String,
     outputs_path: String,
+    /// Secret-free base requirements retained across attempt processes.
+    base_env: Vec<pc::EnvVar>,
     realized: Vec<pc::RealizedMount>,
     recovered: bool,
     /// Host staging dir for materialized inline-mount content, held for the container's
@@ -1701,6 +1528,12 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
         &self,
         command: pc::Command,
     ) -> Result<RuntimeAgentProcess, pc::SandboxError> {
+        let command = pc::materialize_process_command(
+            &self.base_env,
+            command,
+            self.lifecycle.secret_broker.as_ref(),
+        )
+        .await?;
         self.runtime
             .spawn_agent(&self.container_id, command)
             .await
@@ -1774,6 +1607,23 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironment for ContainerSandbox<R>
 /// Backend-erased provider for Session-owned container environments.
 #[async_trait]
 pub trait ContainerEnvironmentProvider: Send + Sync {
+    /// Exact provider evidence used by Host admission before any secret opens.
+    fn sandbox_capabilities(&self) -> pc::SandboxCapabilities {
+        // Existing/out-of-tree providers remain source compatible but acquire no
+        // security claim until they explicitly report enforceable behavior.
+        pc::SandboxCapabilities {
+            isolation: pc::IsolationClass::Workdir,
+            tool_transparent: false,
+            path_fidelity: false,
+            enforced_readonly: false,
+            network_isolation: false,
+            enforced_network_allowlist: false,
+            secret_egress_substitution: false,
+            resource_limits: false,
+            custom_rootfs: false,
+        }
+    }
+
     fn install_memory_mounter(&self, _mounter: Arc<dyn pc::MemoryMounter>) {}
 
     fn install_secret_broker(&self, _broker: Arc<dyn pc::SecretBroker>) {}
@@ -1799,11 +1649,11 @@ struct ContainerLifecycle {
 }
 
 impl ContainerLifecycle {
-    fn completed() -> Self {
+    fn completed(secret_broker: Option<Arc<dyn pc::SecretBroker>>) -> Self {
         Self {
             staging: std::sync::Mutex::new(None),
             secret_writebacks: Vec::new(),
-            secret_broker: None,
+            secret_broker,
             memory: tokio::sync::Mutex::new(None),
             writeback_done: tokio::sync::Mutex::new(true),
             remove_done: tokio::sync::Mutex::new(false),
@@ -1872,6 +1722,7 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
         h.extra = Some(serde_json::json!({
             "container_id": self.container_id,
             "outputs_path": self.outputs_path,
+            "base_env": self.base_env,
         }));
         h
     }
@@ -1880,6 +1731,12 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
         &self,
         command: pc::Command,
     ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
+        let command = pc::materialize_process_command(
+            &self.base_env,
+            command,
+            self.lifecycle.secret_broker.as_ref(),
+        )
+        .await?;
         self.runtime
             .spawn(&self.container_id, command)
             .await

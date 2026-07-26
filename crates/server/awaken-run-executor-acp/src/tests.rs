@@ -89,6 +89,7 @@ impl AgentChannelSource for ScriptedSource {
     async fn open(
         &self,
         _activation: &RunActivation,
+        _context: &RuntimeRunContext,
     ) -> std::result::Result<AgentSession, OpenError> {
         if let Some(e) = &self.open_error {
             return Err(OpenError(e.clone()));
@@ -847,7 +848,11 @@ async fn a_session_persisted_in_one_dir_is_recovered_in_another_through_the_exec
     }
     #[async_trait]
     impl AgentChannelSource for PersistingSource {
-        async fn open(&self, _a: &RunActivation) -> std::result::Result<AgentSession, OpenError> {
+        async fn open(
+            &self,
+            _a: &RunActivation,
+            _context: &RuntimeRunContext,
+        ) -> std::result::Result<AgentSession, OpenError> {
             let (ours, mut theirs) = tokio::io::duplex(4096);
             let marker = self.dir.join("projects/marker");
             tokio::spawn(async move {
@@ -1162,6 +1167,7 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
         async fn open(
             &self,
             _activation: &RunActivation,
+            _context: &RuntimeRunContext,
         ) -> std::result::Result<AgentSession, OpenError> {
             let attempt = self.opens.fetch_add(1, Ordering::SeqCst);
             let replies = self.permission_replies.clone();
@@ -1635,7 +1641,11 @@ async fn acp_relaunches_the_cli_every_turn_so_a_model_switch_takes_effect() {
     struct CountingSource(Arc<AtomicUsize>);
     #[async_trait]
     impl AgentChannelSource for CountingSource {
-        async fn open(&self, _a: &RunActivation) -> std::result::Result<AgentSession, OpenError> {
+        async fn open(
+            &self,
+            _a: &RunActivation,
+            _context: &RuntimeRunContext,
+        ) -> std::result::Result<AgentSession, OpenError> {
             self.0.fetch_add(1, Ordering::SeqCst);
             let (ours, mut theirs) = tokio::io::duplex(4096);
             tokio::spawn(async move {
@@ -1676,7 +1686,11 @@ async fn acp_relaunches_the_cli_every_turn_so_a_model_switch_takes_effect() {
 /// config-plane + vault lookup).
 struct FixedModel(ResolvedModel);
 impl LaunchResolver for FixedModel {
-    fn model(&self, _a: &RunActivation) -> std::result::Result<ResolvedModel, OpenError> {
+    fn model(
+        &self,
+        _a: &RunActivation,
+        _context: &RuntimeRunContext,
+    ) -> std::result::Result<ResolvedModel, OpenError> {
         Ok(self.0.clone())
     }
     fn extra_env(&self, _a: &RunActivation) -> Vec<(String, String)> {
@@ -1687,42 +1701,43 @@ impl LaunchResolver for FixedModel {
     }
 }
 
+fn projected_env<'a>(launch: &'a AcpLaunch, key: &str) -> Option<&'a str> {
+    launch
+        .env
+        .iter()
+        .find(|var| var.name == key)
+        .map(|var| match &var.value {
+            awaken_provisioning_contract::EnvValue::Inline { value } => value.as_str(),
+            awaken_provisioning_contract::EnvValue::Secret { reference } => reference.as_str(),
+        })
+}
+
 #[test]
 fn projecting_source_plans_launch_from_resolved_model_and_host_env() {
     let cli = *acp_cli("claude").expect("claude in the catalog");
     let resolver = Arc::new(FixedModel(ResolvedModel {
         base_url: "https://api.kimi.com/coding/".to_string(),
         model: "kimi-k2".to_string(),
-        api_key: "materialized-by-host".to_string(), // awaken-allow: secret
+        process_secret: Some(ProcessSecretRequirement::new("lease://projected-host")),
     }));
     // The resolver supplies the config-home path as non-secret per-run env.
     let source = ProjectingChannelSource::new(cli, resolver);
-    let launch = source.plan(&activation()).expect("plan");
-    let env = |k: &str| {
-        launch
-            .env
-            .iter()
-            .find(|(kk, _)| kk == k)
-            .map(|(_, v)| v.clone())
-    };
+    let launch = source
+        .plan(&activation(), &RuntimeRunContext::new())
+        .expect("plan");
+    let env = |k: &str| projected_env(&launch, k);
     assert_eq!(
         launch.argv,
         vec!["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.44"]
     );
-    assert_eq!(env("ANTHROPIC_MODEL").as_deref(), Some("kimi-k2"));
+    assert_eq!(env("ANTHROPIC_MODEL"), Some("kimi-k2"));
     assert_eq!(
-        env("ANTHROPIC_BASE_URL").as_deref(),
+        env("ANTHROPIC_BASE_URL"),
         Some("https://api.kimi.com/coding/")
     );
-    assert_eq!(
-        env("ANTHROPIC_API_KEY").as_deref(),
-        Some("materialized-by-host")
-    );
+    assert_eq!(env("ANTHROPIC_API_KEY"), Some("lease://projected-host"));
     // The host-provided config-home path threads through as extra env.
-    assert_eq!(
-        env("CLAUDE_CONFIG_DIR").as_deref(),
-        Some("/run/agent/.claude")
-    );
+    assert_eq!(env("CLAUDE_CONFIG_DIR"), Some("/run/agent/.claude"));
 }
 
 /// A resolver that supplies a config-home dir under an arbitrary env key.
@@ -1733,11 +1748,15 @@ struct ConfigHomeAt {
 }
 #[cfg(unix)]
 impl LaunchResolver for ConfigHomeAt {
-    fn model(&self, _a: &RunActivation) -> std::result::Result<ResolvedModel, OpenError> {
+    fn model(
+        &self,
+        _a: &RunActivation,
+        _context: &RuntimeRunContext,
+    ) -> std::result::Result<ResolvedModel, OpenError> {
         Ok(ResolvedModel {
             base_url: "u".into(),
             model: "m".into(),
-            api_key: "k".into(), // awaken-allow: secret
+            process_secret: None,
         })
     }
     fn extra_env(&self, _a: &RunActivation) -> Vec<(String, String)> {
@@ -1782,7 +1801,10 @@ async fn open_writes_the_codex_mcp_config_into_the_config_home() {
     );
 
     // open() writes the config.toml before spawning the (immediately-exiting) child.
-    let session = source.open(&act).await.expect("open");
+    let session = source
+        .open(&act, &RuntimeRunContext::new())
+        .await
+        .expect("open");
     drop(session); // reap the child
 
     let written = std::fs::read_to_string(dir.join("config.toml")).expect("config.toml written");
@@ -1839,7 +1861,7 @@ async fn open_and_drive_inject_the_mcp_server_into_session_new_for_an_acp_sessio
         Arc::new(FixedModel(ResolvedModel {
             base_url: "u".into(),
             model: "m".into(),
-            api_key: "k".into(), // awaken-allow: secret
+            process_secret: None,
         })),
     ));
     let e = AcpRunExecutor::new(source);
@@ -1900,7 +1922,7 @@ async fn open_and_drive_inject_a_trusted_inline_mcp_credential_into_session_new(
         Arc::new(FixedModel(ResolvedModel {
             base_url: "u".into(),
             model: "m".into(),
-            api_key: "k".into(), // awaken-allow: secret
+            process_secret: None,
         })),
     ));
     let e = AcpRunExecutor::new(source);
@@ -1961,7 +1983,7 @@ async fn acp_session_id_is_carried_across_the_per_turn_relaunch() {
         Arc::new(FixedModel(ResolvedModel {
             base_url: "u".into(),
             model: "m".into(),
-            api_key: "k".into(), // awaken-allow: secret
+            process_secret: None,
         })),
     ));
     let e = AcpRunExecutor::new(source);
@@ -2019,7 +2041,7 @@ async fn paused_run_resumes_after_executor_replacement_with_the_committed_sessio
         Arc::new(FixedModel(ResolvedModel {
             base_url: "u".into(),
             model: "m".into(),
-            api_key: "k".into(), // awaken-allow: secret
+            process_secret: None,
         })),
     ));
     let committed = Arc::new(RecordingCoordinator::default());
@@ -2079,7 +2101,7 @@ fn projecting_source_reads_the_cli_compact_window_from_config() {
     let resolver = Arc::new(FixedModel(ResolvedModel {
         base_url: "u".to_string(),
         model: "m".to_string(),
-        api_key: "k".to_string(), // awaken-allow: secret
+        process_secret: None,
     }));
     let source = ProjectingChannelSource::new(cli, resolver);
 
@@ -2089,13 +2111,16 @@ fn projecting_source_reads_the_cli_compact_window_from_config() {
         "acp".to_string(),
         serde_json::json!({ "compact_window": 262144 }),
     );
-    let launch = source.plan(&act).expect("plan");
+    let launch = source.plan(&act, &RuntimeRunContext::new()).expect("plan");
     let window = launch
         .env
         .iter()
-        .find(|(k, _)| k == "CLAUDE_CODE_AUTO_COMPACT_WINDOW")
-        .map(|(_, v)| v.clone());
-    assert_eq!(window.as_deref(), Some("262144"));
+        .find(|var| var.name == "CLAUDE_CODE_AUTO_COMPACT_WINDOW")
+        .and_then(|var| match &var.value {
+            awaken_provisioning_contract::EnvValue::Inline { value } => Some(value.as_str()),
+            awaken_provisioning_contract::EnvValue::Secret { .. } => None,
+        });
+    assert_eq!(window, Some("262144"));
 }
 
 // ── Cancellation, multi-turn usage, and mid-loop relaunch failure ────────────
@@ -2110,7 +2135,11 @@ async fn a_cancelled_token_ends_the_run_cancelled() {
     struct HangingSource;
     #[async_trait]
     impl AgentChannelSource for HangingSource {
-        async fn open(&self, _a: &RunActivation) -> std::result::Result<AgentSession, OpenError> {
+        async fn open(
+            &self,
+            _a: &RunActivation,
+            _context: &RuntimeRunContext,
+        ) -> std::result::Result<AgentSession, OpenError> {
             let (ours, mut theirs) = tokio::io::duplex(4096);
             tokio::spawn(async move {
                 let mut p = String::new();
@@ -2219,7 +2248,11 @@ async fn a_relaunch_open_failure_mid_run_classifies_and_ends() {
     struct FlakySource(Arc<AtomicUsize>);
     #[async_trait]
     impl AgentChannelSource for FlakySource {
-        async fn open(&self, _a: &RunActivation) -> std::result::Result<AgentSession, OpenError> {
+        async fn open(
+            &self,
+            _a: &RunActivation,
+            _context: &RuntimeRunContext,
+        ) -> std::result::Result<AgentSession, OpenError> {
             let n = self.0.fetch_add(1, Ordering::SeqCst);
             if n >= 1 {
                 // The relaunch (second open) fails.
@@ -2292,13 +2325,55 @@ async fn a_relaunch_open_failure_mid_run_classifies_and_ends() {
 /// A model resolver for the matrix: fixed coordinates, no per-run env (a plain
 /// turn declares no MCP, so no config-home is needed — keeping it row-agnostic).
 struct MatrixModel;
+
+struct MatrixSecretBroker;
+
+#[async_trait]
+impl awaken_provisioning_contract::SecretBroker for MatrixSecretBroker {
+    async fn materialize(
+        &self,
+        _reference: &str,
+    ) -> std::result::Result<Vec<u8>, awaken_provisioning_contract::SandboxError> {
+        Err(awaken_provisioning_contract::SandboxError::new(
+            "matrix broker has no file credential",
+        ))
+    }
+
+    async fn materialize_process(
+        &self,
+        reference: &str,
+    ) -> std::result::Result<Vec<u8>, awaken_provisioning_contract::SandboxError> {
+        (reference == "lease://matrix")
+            .then(|| b"matrix-secret".to_vec())
+            .ok_or_else(|| awaken_provisioning_contract::SandboxError::new("unknown lease"))
+    }
+
+    async fn write_back(
+        &self,
+        _reference: &str,
+        _bytes: Vec<u8>,
+    ) -> std::result::Result<(), awaken_provisioning_contract::SandboxError> {
+        Err(awaken_provisioning_contract::SandboxError::new(
+            "not supported",
+        ))
+    }
+}
+
 impl LaunchResolver for MatrixModel {
-    fn model(&self, _a: &RunActivation) -> std::result::Result<ResolvedModel, OpenError> {
+    fn model(
+        &self,
+        _a: &RunActivation,
+        _context: &RuntimeRunContext,
+    ) -> std::result::Result<ResolvedModel, OpenError> {
         Ok(ResolvedModel {
             base_url: "https://gateway.example/anthropic".to_string(),
             model: "MiniMax-M2".to_string(),
-            api_key: "matrix-materialized-key".to_string(), // awaken-allow: secret
+            process_secret: Some(ProcessSecretRequirement::new("lease://matrix")),
         })
+    }
+
+    fn secret_broker(&self) -> Option<Arc<dyn awaken_provisioning_contract::SecretBroker>> {
+        Some(Arc::new(MatrixSecretBroker))
     }
 }
 
@@ -2307,17 +2382,15 @@ fn every_backend_row_projects_a_launchable_process_through_the_source() {
     // The source seam (not just `AcpCli::project`) must be row-agnostic: for each
     // catalog CLI, `ProjectingChannelSource::plan` yields the row's own command as
     // argv[0] and delivers the resolved model under that row's env keys.
-    let model = MatrixModel.model(&activation()).unwrap();
+    let model = MatrixModel
+        .model(&activation(), &RuntimeRunContext::new())
+        .unwrap();
     for cli in known_acp_clis() {
         let source = ProjectingChannelSource::new(*cli, Arc::new(MatrixModel));
-        let launch = source.plan(&activation()).expect("plan");
-        let env = |k: &str| {
-            launch
-                .env
-                .iter()
-                .find(|(kk, _)| kk == k)
-                .map(|(_, v)| v.clone())
-        };
+        let launch = source
+            .plan(&activation(), &RuntimeRunContext::new())
+            .expect("plan");
+        let env = |k: &str| projected_env(&launch, k);
         assert_eq!(
             launch.argv.first().map(String::as_str),
             Some(cli.command),
@@ -2326,20 +2399,20 @@ fn every_backend_row_projects_a_launchable_process_through_the_source() {
         );
         let d = &cli.model_delivery;
         assert_eq!(
-            env(d.base_url).as_deref(),
+            env(d.base_url),
             Some(model.base_url.as_str()),
             "{}: base_url delivered",
             cli.id
         );
         assert_eq!(
-            env(d.model).as_deref(),
+            env(d.model),
             Some(model.model.as_str()),
             "{}: model delivered",
             cli.id
         );
         assert_eq!(
-            env(d.key).as_deref(),
-            Some(model.api_key.as_str()),
+            env(d.key),
+            Some("lease://matrix"),
             "{}: secret delivered by the host",
             cli.id
         );

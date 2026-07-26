@@ -18,6 +18,7 @@ use awaken_runtime_contract::llm::{
     ChatRequest, ChatResponse, DeltaSink, Error as LlmError, LlmExecutor,
 };
 use awaken_runtime_contract::resolved::{ModelProvisioning, ResolvedModelCandidate};
+use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_host::InferenceExecutorMaterializer;
 
 use crate::executor_from_materialized_access;
@@ -68,16 +69,21 @@ impl CredentialInferenceMaterializer {
         }
     }
 
-    async fn materialize_pinned(
+    async fn materialize_secret(
         &self,
         candidate: &ResolvedModelCandidate,
+        context: &RuntimeRunContext,
     ) -> Option<Arc<dyn LlmExecutor>> {
         let ModelProvisioning::Provider { endpoint, .. } = &candidate.provisioning else {
             return None;
         };
         let secret = self
             .credentials
-            .materialize_provider(candidate)
+            .materialize_claimed_provider(
+                candidate,
+                context,
+                awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
+            )
             .await
             .ok()?;
         if endpoint.upstream_model.is_empty() {
@@ -86,7 +92,7 @@ impl CredentialInferenceMaterializer {
         let executor = executor_from_materialized_access(
             &endpoint.adapter_kind,
             Some(&endpoint.base_url),
-            Some(&secret),
+            secret.as_ref(),
         )
         .ok()?;
         Some(Arc::new(PinnedModelExecutor {
@@ -95,43 +101,56 @@ impl CredentialInferenceMaterializer {
         }))
     }
 
-    /// Realize one complete publication candidate. This is the worker/provisioning
-    /// boundary: callers cannot supply independent provider, endpoint, or
-    /// credential choices.
+    /// Realize one complete publication candidate through the exact attempt
+    /// authority. Credential-bearing candidates verify ownership before opening
+    /// material and must commit their receipt before an executor is returned.
     pub async fn materialize_candidate(
         &self,
         candidate: &ResolvedModelCandidate,
+        context: &RuntimeRunContext,
     ) -> Option<Arc<dyn LlmExecutor>> {
-        self.materialize_pinned(candidate).await
+        self.materialize_secret(candidate, context).await
     }
 }
 
 struct PinnedCandidateExecutor {
     provider: CredentialInferenceMaterializer,
     candidates: Vec<ResolvedModelCandidate>,
+    realization: Option<awaken_runtime_contract::AttemptCredentialRealization>,
+    ownership: Option<Arc<dyn awaken_runtime_contract::AttemptOwnershipVerifier>>,
 }
 
 impl PinnedCandidateExecutor {
-    async fn executor_for(&self, binding: &ModelBinding) -> Result<Arc<dyn LlmExecutor>, LlmError> {
+    async fn executor_for(
+        &self,
+        requested: &ModelBinding,
+    ) -> Result<Arc<dyn LlmExecutor>, LlmError> {
         let candidate = self
             .candidates
             .iter()
-            .find(|candidate| &candidate.binding == binding)
+            .find(|candidate| &candidate.binding == requested)
             .ok_or_else(|| {
                 LlmError::Binding(format!(
                     "model {} is outside the publication-pinned candidate set",
-                    binding.model_ref
+                    requested.model_ref
                 ))
             })?;
-        self.provider
-            .materialize_candidate(candidate)
+        let context = RuntimeRunContext {
+            credential_realization: self.realization.clone(),
+            ownership: self.ownership.clone(),
+            ..RuntimeRunContext::new()
+        };
+        let executor = self
+            .provider
+            .materialize_candidate(candidate, &context)
             .await
             .ok_or_else(|| {
                 LlmError::Binding(format!(
                     "publication-pinned model candidate is unavailable for {}",
-                    binding.model_ref
+                    requested.model_ref
                 ))
-            })
+            })?;
+        Ok(executor)
     }
 }
 
@@ -157,31 +176,110 @@ impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
         &[awaken_runtime_host::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY]
     }
 
+    fn credential_realization_capabilities(
+        &self,
+    ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
+        awaken_runtime_contract::CredentialRealizationCapabilities {
+            holders: [awaken_runtime_contract::PlaintextHolder::new(
+                awaken_runtime_contract::PlaintextBoundary::Worker,
+                awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+            )]
+            .into_iter()
+            .collect(),
+            material_sources: [
+                awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+            ]
+            .into_iter()
+            .collect(),
+            realization_kinds: [
+                awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
+            ]
+            .into_iter()
+            .collect(),
+        }
+    }
+
     fn materialize(
         &self,
         activation: &awaken_runtime_contract::activation::RunActivation,
-    ) -> Option<Arc<dyn LlmExecutor>> {
-        let candidates = std::iter::once(&activation.snapshot.resolved_spec.model_binding)
-            .chain(activation.snapshot.resolved_spec.model_candidates.iter())
+        context: &RuntimeRunContext,
+    ) -> Result<Option<Arc<dyn LlmExecutor>>, String> {
+        let exact = activation
+            .snapshot
+            .resolved_spec
+            .candidate_for_model(activation.effective_model_ref())
+            .ok_or_else(|| {
+                "effective model is outside the publication candidate set".to_string()
+            })?;
+        if !matches!(
+            awaken_runtime_contract::resolved::Backend::from_ref(&exact.binding.backend_ref),
+            awaken_runtime_contract::resolved::Backend::Native
+        ) {
+            return Ok(None);
+        }
+        let candidates = activation
+            .snapshot
+            .resolved_spec
+            .execution_candidates(activation.model_ref_override.as_deref())
+            .into_iter()
             .cloned()
             .collect::<Vec<_>>();
-        candidates
-            .iter()
-            .any(|candidate| candidate.binding.model_ref == activation.effective_model_ref())
-            .then(|| {
-                Arc::new(PinnedCandidateExecutor {
-                    provider: self.clone(),
-                    candidates,
-                }) as Arc<dyn LlmExecutor>
-            })
+        for candidate in &candidates {
+            if let ModelProvisioning::Provider {
+                credential: Some(access),
+                ..
+            } = &candidate.provisioning
+            {
+                let binding = context
+                    .credential_realization
+                    .as_ref()
+                    .ok_or_else(|| "credential-bearing inference has no claim binding".to_string())?
+                    .binding_for(candidate)
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| {
+                        "candidate has no exact attempt credential binding".to_string()
+                    })?;
+                if binding.credential != access.credential
+                    || binding.selected_realization_kind
+                        != awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter
+                {
+                    return Err(
+                        "attempt credential binding differs from Native materializer".into(),
+                    );
+                }
+            }
+        }
+        Ok(Some(Arc::new(PinnedCandidateExecutor {
+            provider: self.clone(),
+            candidates,
+            realization: context.credential_realization.clone(),
+            ownership: context.ownership.clone(),
+        }) as Arc<dyn LlmExecutor>))
     }
 
     fn materialize_pinned(
         &self,
         candidate: &ResolvedModelCandidate,
+        context: &RuntimeRunContext,
     ) -> Option<Arc<dyn LlmExecutor>> {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(self.materialize_candidate(candidate))
+        let binding = context
+            .credential_realization
+            .as_ref()
+            .and_then(|realization| realization.binding_for(candidate).ok().flatten());
+        Some(Arc::new(PinnedCandidateExecutor {
+            provider: self.clone(),
+            candidates: vec![candidate.clone()],
+            realization: context.credential_realization.clone(),
+            ownership: context.ownership.clone(),
+        }) as Arc<dyn LlmExecutor>)
+        .filter(|_| {
+            !matches!(
+                &candidate.provisioning,
+                ModelProvisioning::Provider {
+                    credential: Some(_),
+                    ..
+                }
+            ) || binding.is_some()
         })
     }
 }
@@ -195,7 +293,8 @@ mod tests {
     use awaken_config_store::ModelSelection;
     use awaken_credential_vault::repo::{InMemoryCredentialRepo, enter_credential};
     use awaken_credential_vault::{
-        CredentialCreateParams, CredentialKind, CredentialStatus, InMemorySecretStore,
+        CredentialCreateParams, CredentialError, CredentialKind, CredentialStatus,
+        InMemorySecretStore, SecretRef,
     };
     use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo};
     use awaken_model_catalog::{
@@ -207,6 +306,7 @@ mod tests {
         AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
     };
     use awaken_runtime_host::{ModelPublicationResolver, ResolvedPublicationModels};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use crate::model_resolver::CatalogModelPublicationResolver;
 
@@ -220,6 +320,71 @@ mod tests {
         catalog: Arc<InMemoryCatalogRepo>,
         credentials: Arc<InMemoryCredentialRepo>,
         secrets: Arc<InMemorySecretStore>,
+    }
+
+    struct CurrentOwnership;
+
+    #[async_trait::async_trait]
+    impl awaken_runtime_contract::AttemptOwnershipVerifier for CurrentOwnership {
+        async fn verify_current(
+            &self,
+        ) -> Result<(), awaken_runtime_contract::AttemptOwnershipError> {
+            Ok(())
+        }
+    }
+
+    struct AcceptReceipt;
+
+    #[async_trait::async_trait]
+    impl awaken_runtime_contract::CredentialRealizationRecorder for AcceptReceipt {
+        async fn record(
+            &self,
+            _receipt: awaken_runtime_contract::CredentialRealizationReceipt,
+        ) -> Result<(), awaken_runtime_contract::CredentialRealizationRecordError> {
+            Ok(())
+        }
+    }
+
+    fn attempt_binding(
+        candidate: &ResolvedModelCandidate,
+    ) -> Option<awaken_runtime_contract::AttemptCredentialBinding> {
+        let ModelProvisioning::Provider {
+            credential: Some(access),
+            ..
+        } = &candidate.provisioning
+        else {
+            return None;
+        };
+        Some(awaken_runtime_contract::AttemptCredentialBinding {
+            candidate_fingerprint: awaken_runtime_contract::candidate_fingerprint(candidate)
+                .unwrap(),
+            credential: access.credential.clone(),
+            selected_plaintext_holder: awaken_runtime_contract::PlaintextHolder::new(
+                awaken_runtime_contract::PlaintextBoundary::Worker,
+                awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+            ),
+            selected_realization_kind:
+                awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
+            claim_epoch: 1,
+        })
+    }
+
+    fn attempt_realization(
+        candidates: &[&ResolvedModelCandidate],
+    ) -> awaken_runtime_contract::AttemptCredentialRealization {
+        awaken_runtime_contract::AttemptCredentialRealization::new(
+            candidates
+                .iter()
+                .filter_map(|candidate| attempt_binding(candidate))
+                .collect(),
+            Arc::new(AcceptReceipt),
+        )
+    }
+
+    fn attempt_context(candidate: &ResolvedModelCandidate) -> RuntimeRunContext {
+        RuntimeRunContext::new()
+            .with_ownership(Arc::new(CurrentOwnership))
+            .with_credential_realization(attempt_realization(&[candidate]))
     }
 
     async fn provider(model: &str, credential: Option<(&str, bool)>) -> TestServices {
@@ -287,6 +452,237 @@ mod tests {
             catalog,
             credentials: creds,
             secrets,
+        }
+    }
+
+    struct CountingSecrets {
+        inner: InMemorySecretStore,
+        gets: AtomicUsize,
+        fail_get: AtomicBool,
+    }
+
+    impl CountingSecrets {
+        fn new() -> Self {
+            Self {
+                inner: InMemorySecretStore::new(),
+                gets: AtomicUsize::new(0),
+                fail_get: AtomicBool::new(false),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SecretStore for CountingSecrets {
+        async fn put(
+            &self,
+            reference: &SecretRef,
+            secret: RedactedString,
+        ) -> Result<(), CredentialError> {
+            self.inner.put(reference, secret).await
+        }
+
+        async fn get(&self, reference: &SecretRef) -> Result<RedactedString, CredentialError> {
+            self.gets.fetch_add(1, Ordering::SeqCst);
+            if self.fail_get.load(Ordering::SeqCst) {
+                return Err(CredentialError::Storage(
+                    "planned unavailable material".into(),
+                ));
+            }
+            self.inner.get(reference).await
+        }
+
+        async fn delete(&self, reference: &SecretRef) -> Result<(), CredentialError> {
+            self.inner.delete(reference).await
+        }
+    }
+
+    struct DecisionOwnership(bool);
+
+    #[async_trait::async_trait]
+    impl awaken_runtime_contract::AttemptOwnershipVerifier for DecisionOwnership {
+        async fn verify_current(
+            &self,
+        ) -> Result<(), awaken_runtime_contract::AttemptOwnershipError> {
+            self.0
+                .then_some(())
+                .ok_or(awaken_runtime_contract::AttemptOwnershipError::Lost)
+        }
+    }
+
+    struct DecisionRecorder {
+        accepts: bool,
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_runtime_contract::CredentialRealizationRecorder for DecisionRecorder {
+        async fn record(
+            &self,
+            _receipt: awaken_runtime_contract::CredentialRealizationReceipt,
+        ) -> Result<(), awaken_runtime_contract::CredentialRealizationRecordError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.accepts.then_some(()).ok_or_else(|| {
+                awaken_runtime_contract::CredentialRealizationRecordError(
+                    "planned receipt rejection".into(),
+                )
+            })
+        }
+    }
+
+    async fn realization_fixture() -> (
+        CredentialInferenceMaterializer,
+        ResolvedModelCandidate,
+        Arc<CountingSecrets>,
+    ) {
+        let secrets = Arc::new(CountingSecrets::new());
+        let credentials = Arc::new(InMemoryCredentialRepo::new());
+        let source = enter_credential(
+            CredentialCreateParams {
+                workspace_id: "ws".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("anthropic".into()),
+                env_key: None,
+                secret: Some(RedactedString::new("decision-table-secret")),
+                oauth_command: None,
+            },
+            secrets.as_ref(),
+            credentials.as_ref(),
+        )
+        .await
+        .unwrap();
+        let candidate = ResolvedModelCandidate::provider(
+            ModelBinding::new("anthropic", "claude-x", "genai"),
+            "anthropic@1",
+            "endpoint@1",
+            "ws",
+            Some(awaken_runtime_contract::CredentialAccess::new(
+                awaken_runtime_contract::CredentialRef {
+                    id: source.id.0,
+                    revision: 1,
+                },
+                awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+                awaken_runtime_contract::CredentialUsage::ProviderAdapter,
+                awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+            )),
+            awaken_runtime_contract::InferenceEndpoint {
+                adapter_kind: "anthropic".into(),
+                base_url: "https://provider.invalid/v1".into(),
+                upstream_model: "claude-x".into(),
+            },
+        );
+        (
+            CredentialInferenceMaterializer::new(credentials, secrets.clone()),
+            candidate,
+            secrets,
+        )
+    }
+
+    #[tokio::test]
+    async fn attempt_realization_cause_graph_decision_table() {
+        // Cause graph:
+        // binding ─> ownership ─> secret open ─> receipt commit ─> executor
+        // each failed cause ───────────────────────────────────> fail closed
+        struct Rule {
+            id: &'static str,
+            binding: bool,
+            ownership_current: bool,
+            secret_available: bool,
+            receipt_accepts: bool,
+            expected_gets: usize,
+            expected_receipts: usize,
+            expected_executor: bool,
+        }
+        let rules = [
+            Rule {
+                id: "R1 missing binding",
+                binding: false,
+                ownership_current: true,
+                secret_available: true,
+                receipt_accepts: true,
+                expected_gets: 0,
+                expected_receipts: 0,
+                expected_executor: false,
+            },
+            Rule {
+                id: "R2 stale claim",
+                binding: true,
+                ownership_current: false,
+                secret_available: true,
+                receipt_accepts: true,
+                expected_gets: 0,
+                expected_receipts: 0,
+                expected_executor: false,
+            },
+            Rule {
+                id: "R3 material unavailable",
+                binding: true,
+                ownership_current: true,
+                secret_available: false,
+                receipt_accepts: true,
+                expected_gets: 1,
+                expected_receipts: 0,
+                expected_executor: false,
+            },
+            Rule {
+                id: "R4 receipt fenced",
+                binding: true,
+                ownership_current: true,
+                secret_available: true,
+                receipt_accepts: false,
+                expected_gets: 1,
+                expected_receipts: 1,
+                expected_executor: false,
+            },
+            Rule {
+                id: "R5 exact success",
+                binding: true,
+                ownership_current: true,
+                secret_available: true,
+                receipt_accepts: true,
+                expected_gets: 1,
+                expected_receipts: 1,
+                expected_executor: true,
+            },
+        ];
+
+        for rule in rules {
+            let (materializer, candidate, secrets) = realization_fixture().await;
+            secrets
+                .fail_get
+                .store(!rule.secret_available, Ordering::SeqCst);
+            let receipt_calls = Arc::new(AtomicUsize::new(0));
+            let bindings = rule
+                .binding
+                .then(|| attempt_binding(&candidate).unwrap())
+                .into_iter()
+                .collect();
+            let context = RuntimeRunContext::new()
+                .with_ownership(Arc::new(DecisionOwnership(rule.ownership_current)))
+                .with_credential_realization(
+                    awaken_runtime_contract::AttemptCredentialRealization::new(
+                        bindings,
+                        Arc::new(DecisionRecorder {
+                            accepts: rule.receipt_accepts,
+                            calls: receipt_calls.clone(),
+                        }),
+                    ),
+                );
+            let actual = materializer
+                .materialize_candidate(&candidate, &context)
+                .await;
+            assert_eq!(actual.is_some(), rule.expected_executor, "{}", rule.id);
+            assert_eq!(
+                secrets.gets.load(Ordering::SeqCst),
+                rule.expected_gets,
+                "{} secret opens",
+                rule.id
+            );
+            assert_eq!(
+                receipt_calls.load(Ordering::SeqCst),
+                rule.expected_receipts,
+                "{} receipt writes",
+                rule.id
+            );
         }
     }
 
@@ -378,7 +774,7 @@ mod tests {
         let models = resolve_activation(&p.resolver, &activation).await.unwrap();
         assert!(
             p.materializer
-                .materialize_pinned(&models.primary)
+                .materialize_candidate(&models.primary, &attempt_context(&models.primary))
                 .await
                 .is_some()
         );
@@ -405,7 +801,7 @@ mod tests {
         );
         assert!(
             p.materializer
-                .materialize_candidate(&candidate)
+                .materialize_candidate(&candidate, &RuntimeRunContext::new())
                 .await
                 .is_none()
         );
@@ -487,7 +883,7 @@ mod tests {
         let candidate = pinned.primary.clone();
         assert!(
             p.materializer
-                .materialize_pinned(&candidate)
+                .materialize_candidate(&candidate, &attempt_context(&candidate))
                 .await
                 .is_some()
         );
@@ -501,7 +897,7 @@ mod tests {
         p.credentials.put(old).await.unwrap();
         assert!(
             p.materializer
-                .materialize_pinned(&candidate)
+                .materialize_candidate(&candidate, &attempt_context(&candidate))
                 .await
                 .is_none(),
             "revoking the pinned credential fails closed instead of selecting the new default"
@@ -547,7 +943,7 @@ mod tests {
         assert_eq!(scope_id.as_str(), "workspace-b");
         assert!(
             p.materializer
-                .materialize_pinned(&resolved.primary)
+                .materialize_candidate(&resolved.primary, &attempt_context(&resolved.primary))
                 .await
                 .is_some()
         );
@@ -558,7 +954,10 @@ mod tests {
         };
         *scope_id = "ws".into();
         assert!(
-            p.materializer.materialize_pinned(&forged).await.is_none(),
+            p.materializer
+                .materialize_candidate(&forged, &attempt_context(&forged))
+                .await
+                .is_none(),
             "execution rejects a credential whose persisted owner differs from the snapshot scope"
         );
     }
@@ -595,7 +994,7 @@ mod tests {
 
         assert!(
             p.materializer
-                .materialize_pinned(&resolved.primary)
+                .materialize_candidate(&resolved.primary, &attempt_context(&resolved.primary))
                 .await
                 .is_none(),
             "a reference-only materializer cannot downgrade a direct-only publication policy"
@@ -621,7 +1020,7 @@ mod tests {
             .unwrap();
         assert!(
             p.materializer
-                .materialize_pinned(&pinned.primary)
+                .materialize_candidate(&pinned.primary, &attempt_context(&pinned.primary))
                 .await
                 .is_some(),
             "execution uses the publication-pinned endpoint without consulting the updated catalog"
@@ -717,13 +1116,13 @@ mod tests {
         let fallback_candidate = pinned.candidates[0].clone();
         assert!(
             p.materializer
-                .materialize_pinned(&primary_candidate)
+                .materialize_candidate(&primary_candidate, &attempt_context(&primary_candidate),)
                 .await
                 .is_none()
         );
         assert!(
             p.materializer
-                .materialize_pinned(&fallback_candidate)
+                .materialize_candidate(&fallback_candidate, &attempt_context(&fallback_candidate),)
                 .await
                 .is_some(),
             "the already-pinned fallback remains materializable"
@@ -731,6 +1130,11 @@ mod tests {
         let router = PinnedCandidateExecutor {
             provider: p.materializer,
             candidates: vec![primary_candidate.clone(), fallback_candidate.clone()],
+            realization: Some(attempt_realization(&[
+                &primary_candidate,
+                &fallback_candidate,
+            ])),
+            ownership: Some(Arc::new(CurrentOwnership)),
         };
         assert!(
             router

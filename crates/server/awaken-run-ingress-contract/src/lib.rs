@@ -11,6 +11,10 @@ pub mod dispatch;
 pub mod operational;
 pub mod run_dispatch;
 
+pub use awaken_runtime_contract::{
+    AttemptCredentialBinding, CandidateFingerprint, CredentialRealizationReceipt,
+    CredentialReceiptError, verify_credential_realization_receipt,
+};
 pub use awaken_worker_contract::{
     AssignmentRejection, ExecutionLocation, HOST_EXECUTOR_CAPABILITY, LeastLoadedPolicy,
     PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, PlacementContext, PlacementError, PlacementPolicy,
@@ -21,9 +25,10 @@ pub use awaken_worker_contract::{
     can_assign, can_claim, can_claim_locally, place_assignment,
 };
 pub use dispatch::{
-    CasOutcome, Claimed, ClaimedCommitCommand, CommitEpochGuard, Dispatch, DispatchCompletion,
-    DispatchError, DispatchOutcome, DispatchQueue, DispatchState, DispatchSummary, Inbox, Lease,
-    Outbox, PendingInput, PendingRecord, RunClaim, SettleOutcome, SubmitOptions,
+    AttemptCredentialBindingError, CasOutcome, Claimed, ClaimedCommitCommand, CommitEpochGuard,
+    Dispatch, DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue, DispatchState,
+    DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim, SettleOutcome,
+    SubmitOptions, compile_attempt_credential_bindings, worker_credential_realization_capabilities,
 };
 pub use operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,

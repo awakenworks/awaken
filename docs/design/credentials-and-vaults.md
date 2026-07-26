@@ -280,10 +280,14 @@ ACP process environment can coexist with `Forbidden` model exposure.
 source, optional recipient-bound sealed payload reference, one exact material
 resolver, optional exact OAuth refresh/reseal access, and execution policy; no
 parallel `CredentialDelivery` policy is added. The frozen Environment/execution
-profile requests one exact allowed holder. MCP persists it with the attachment
-generation, while the dispatch claim transaction persists Model execution's
-`AttemptCredentialBinding` atomically with Worker/lease epoch. The binding stores
-the planned mechanism; a secret-free receipt stores the actual mechanism.
+profile requests separate exact allowed holders for inference, MCP, and Resource
+execution. MCP persists its holder with the attachment generation; a resolved
+Repository input persists its exact access and Resource holder beside the pinned
+Repository config version; and the dispatch claim transaction persists Model
+execution's `AttemptCredentialBinding` atomically with Worker/lease epoch. All
+three paths use the same exact material resolver. Runtime cannot open a bare
+Repository Vault source id or perform a second source/revision selection. The
+binding stores the planned mechanism; a secret-free receipt stores the actual mechanism.
 `ResolvedModelCandidate` remains the only Model access authority, and Session
 `vault_ids` never override it. Automatic LLM Vault authoring is deferred until a
 separate proposal defines its application service, transaction/saga,

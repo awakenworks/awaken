@@ -53,15 +53,16 @@ pub use awaken_run_ingress_contract::{
     WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerAssignment, WorkerCredentialRevision,
     WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerRecoveryMode,
     WorkerRegistration, WorkerSnapshot, WorkerState, can_assign, can_claim, can_claim_locally,
-    place_assignment,
+    place_assignment, worker_credential_realization_capabilities,
 };
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
 pub use commit_operation::{CommitHashError, commit_payload_hash};
 pub use dispatch::{
-    CasOutcome, Claimed, CommitEpochGuard, Dispatch, DispatchCompletion, DispatchError,
-    DispatchOutcome, DispatchQueue, DispatchState, DispatchSummary, Inbox, Lease, Outbox,
-    PendingInput, PendingRecord, RunClaim, SettleOutcome, SubmitOptions,
+    AttemptCredentialBinding, CandidateFingerprint, CasOutcome, Claimed, CommitEpochGuard,
+    CredentialRealizationReceipt, Dispatch, DispatchCompletion, DispatchError, DispatchOutcome,
+    DispatchQueue, DispatchState, DispatchSummary, Inbox, Lease, Outbox, PendingInput,
+    PendingRecord, RunClaim, SettleOutcome, SubmitOptions,
 };
 pub use dispatch_schema::dispatch_bundle;
 pub use durable::DurableRunIngress;

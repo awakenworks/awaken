@@ -15,10 +15,8 @@ mod agent_config;
 mod application_contribution;
 mod baseline;
 pub mod env_registry;
-mod fingerprint;
 mod lifecycle;
 mod mcp_attachment;
-mod mcp_binding;
 mod mcp_probe;
 mod resource;
 mod resource_activation;
@@ -40,6 +38,7 @@ pub use application_contribution::{
     ApplicationSessionContributionPort, ApplicationSessionContributionReceipt,
     FrozenSessionProjection,
 };
+pub use awaken_agent_contract::stable_fingerprint;
 pub use baseline::{
     ApplicationContributionError, ApplicationContributionOutcome, ApplicationContributionReceipt,
     ApplicationContributionState, ApplicationSessionInput, CompiledSessionCreation,
@@ -48,7 +47,6 @@ pub use baseline::{
     SessionCreationFinalizeError, SessionCreationIntent, SessionMcpAuthoringContext,
     SessionNetworkPolicy,
 };
-pub use fingerprint::stable_fingerprint;
 pub use lifecycle::{SessionLifecycleFact, SessionLifecycleSink};
 pub use mcp_attachment::{
     McpAttachmentDraft, McpAttachmentError, McpAttachmentId, McpAttachmentOrigin,
@@ -57,11 +55,11 @@ pub use mcp_attachment::{
     McpSetRevision, McpTarget, McpTargetError, McpTargetIdentity, SessionMcpAttachment,
     SessionMcpAttachmentSet, StageMcpAttachment,
 };
-pub use mcp_binding::{McpRefreshBinding, TokenEndpointAuthBinding};
 pub use mcp_probe::{McpProbe, McpProbeStatus};
 pub use resource::{
-    ResolvedInput, ResolvedInputSource, ResolvedSessionResources, ResolvedSkillBinding,
-    SessionInputAttachment, SessionInputError, SessionInputResolver, SessionResourceManifest,
+    ResolvedInput, ResolvedInputSource, ResolvedRepositoryCredential, ResolvedSessionResources,
+    ResolvedSkillBinding, SessionInputAttachment, SessionInputError, SessionInputResolver,
+    SessionResourceManifest, repository_transport_credential_usage,
 };
 pub use resource_activation::{
     ActivationState, ResourceActivationError, SessionResourceActivation, SessionResourceState,

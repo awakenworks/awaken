@@ -56,6 +56,10 @@ pub(crate) fn default_environment_snapshot(
             awaken_credential_contract::PlaintextBoundary::Worker,
             awaken_credential_contract::SELF_HOSTED_WORKER_TRUST_DOMAIN,
         ),
+        resource_holder: awaken_credential_contract::PlaintextHolder::new(
+            awaken_credential_contract::PlaintextBoundary::Worker,
+            awaken_credential_contract::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+        ),
     };
     awaken_session_contract::EnvironmentSnapshot {
         environment_id,
@@ -152,6 +156,10 @@ impl EnvironmentState {
         let credential_realization = awaken_credential_contract::CredentialRealizationProfile {
             inference_holder: holder,
             mcp_holder: awaken_credential_contract::PlaintextHolder::new(
+                awaken_credential_contract::PlaintextBoundary::Worker,
+                awaken_credential_contract::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+            ),
+            resource_holder: awaken_credential_contract::PlaintextHolder::new(
                 awaken_credential_contract::PlaintextBoundary::Worker,
                 awaken_credential_contract::SELF_HOSTED_WORKER_TRUST_DOMAIN,
             ),

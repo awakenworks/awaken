@@ -10,10 +10,11 @@
 
 use std::sync::Arc;
 
-use awaken_runtime_contract::CredentialRef;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::LlmExecutor;
-use awaken_runtime_contract::resolved::ResolvedModelCandidate;
+use awaken_runtime_contract::resolved::{Backend, ResolvedModelCandidate};
+use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_runtime_contract::{CredentialRealizationCapabilities, CredentialRef};
 use std::collections::BTreeSet;
 
 /// Turns an admission-pinned, secret-free inference access descriptor into a live
@@ -35,22 +36,56 @@ pub trait InferenceExecutorMaterializer: Send + Sync {
         BTreeSet::new()
     }
 
+    /// Exact credential boundaries and last-mile mechanisms implemented by this
+    /// adapter. Standard Worker manifest derivation consumes this evidence; the
+    /// default advertises none, so an arbitrary model adapter cannot accidentally
+    /// claim credential custody.
+    fn credential_realization_capabilities(&self) -> CredentialRealizationCapabilities {
+        CredentialRealizationCapabilities::default()
+    }
+
     /// Materialize one configuration-pinned model/access pair. The implementation
     /// may inject referenced credential material, but must not resolve or select a
     /// different model, route, scope, or credential.
     fn materialize_pinned(
         &self,
         candidate: &ResolvedModelCandidate,
+        context: &RuntimeRunContext,
     ) -> Option<Arc<dyn LlmExecutor>>;
 
-    /// Materialize exactly the pinned access for this activation. Returning
-    /// `None` rejects the run; it never falls back to a different route.
-    fn materialize(&self, activation: &RunActivation) -> Option<Arc<dyn LlmExecutor>> {
+    /// Materialize exactly the pinned Native access for this activation. ACP and
+    /// remote candidates are not applicable here and are handled by their peer
+    /// attempt executors. A Native failure never falls back to another route.
+    fn materialize(
+        &self,
+        activation: &RunActivation,
+        context: &RuntimeRunContext,
+    ) -> Result<Option<Arc<dyn LlmExecutor>>, String> {
         let exact = activation
             .snapshot
             .resolved_spec
-            .candidate_for_model(activation.effective_model_ref())?;
-        self.materialize_pinned(exact)
+            .candidate_for_model(activation.effective_model_ref())
+            .ok_or_else(|| {
+                format!(
+                    "model `{}` is outside the publication-pinned candidate set",
+                    activation.effective_model_ref()
+                )
+            })?;
+        if !matches!(
+            Backend::from_ref(&exact.binding.backend_ref),
+            Backend::Native
+        ) {
+            return Ok(None);
+        }
+        self.materialize_pinned(exact, context)
+            .map(Some)
+            .ok_or_else(|| {
+                format!(
+                    "snapshot `{}` pinned inference access cannot materialize model `{}`",
+                    activation.snapshot.id.0,
+                    activation.effective_model_ref()
+                )
+            })
     }
 }
 
@@ -107,20 +142,12 @@ impl InferenceRouting {
     pub(crate) fn executor_for_activation(
         &self,
         activation: &RunActivation,
+        context: &RuntimeRunContext,
     ) -> Result<Option<Arc<dyn LlmExecutor>>, String> {
         let Some(materializer) = &self.materializer else {
             return Ok(None);
         };
-        materializer
-            .materialize(activation)
-            .map(Some)
-            .ok_or_else(|| {
-                format!(
-                    "snapshot `{}` pinned inference access cannot materialize model `{}`",
-                    activation.snapshot.id.0,
-                    activation.effective_model_ref()
-                )
-            })
+        materializer.materialize(activation, context)
     }
 }
 
@@ -190,6 +217,7 @@ mod tests {
         fn materialize_pinned(
             &self,
             candidate: &ResolvedModelCandidate,
+            _context: &RuntimeRunContext,
         ) -> Option<Arc<dyn LlmExecutor>> {
             matches!(
                 candidate.provisioning,
@@ -212,13 +240,15 @@ mod tests {
         // A resolvable ref → the provider's executor (resolved per run, from the ref).
         assert!(Arc::ptr_eq(
             &binding
-                .executor_for_activation(&activation("fast-model"))
+                .executor_for_activation(&activation("fast-model"), &RuntimeRunContext::new())
                 .unwrap()
                 .unwrap(),
             &fast
         ));
         // An unknown published ref is rejected; it cannot fall back to the host model.
-        let error = match binding.executor_for_activation(&activation("no-such")) {
+        let error = match binding
+            .executor_for_activation(&activation("no-such"), &RuntimeRunContext::new())
+        {
             Ok(_) => panic!("unknown pinned model must be rejected"),
             Err(error) => error,
         };
@@ -246,7 +276,7 @@ mod tests {
 
         assert!(Arc::ptr_eq(
             &routing
-                .executor_for_activation(&activation)
+                .executor_for_activation(&activation, &RuntimeRunContext::new())
                 .unwrap()
                 .unwrap(),
             &fast
@@ -285,7 +315,7 @@ mod tests {
         let binding = routing();
         assert!(
             binding
-                .executor_for_activation(&activation("whatever"))
+                .executor_for_activation(&activation("whatever"), &RuntimeRunContext::new())
                 .unwrap()
                 .is_none()
         );
@@ -297,7 +327,7 @@ mod tests {
         binding.set_materializer(Arc::new(MapProvider(HashMap::new())));
         let activation = activation("model-a");
 
-        let error = match binding.executor_for_activation(&activation) {
+        let error = match binding.executor_for_activation(&activation, &RuntimeRunContext::new()) {
             Ok(_) => panic!("snapshot without pinned access must be rejected"),
             Err(error) => error,
         };
@@ -316,6 +346,7 @@ mod tests {
             fn materialize_pinned(
                 &self,
                 candidate: &ResolvedModelCandidate,
+                _context: &RuntimeRunContext,
             ) -> Option<Arc<dyn LlmExecutor>> {
                 assert_eq!(candidate.binding.model_ref, "gateway-model");
                 *self.seen.lock().expect("candidate capture mutex") = Some(candidate.clone());
@@ -335,7 +366,7 @@ mod tests {
         let activation = activation("gateway-model");
         let candidate = activation.snapshot.resolved_spec.model_binding.clone();
         let resolved = binding
-            .executor_for_activation(&activation)
+            .executor_for_activation(&activation, &RuntimeRunContext::new())
             .unwrap()
             .expect("reference materializer resolves the run");
         assert!(Arc::ptr_eq(&resolved, &executor));

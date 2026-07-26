@@ -57,9 +57,7 @@ pub use routes::deployments::{
 };
 pub use routes::environments::{EnvironmentState, environments_router};
 pub use routes::user_profiles::{UserProfileState, user_profiles_router};
-pub use routes::vaults::{
-    McpProbe, McpProbeStatus, McpRefreshBinding, TokenEndpointAuthBinding, VaultState, vault_router,
-};
+pub use routes::vaults::{McpProbe, McpProbeStatus, VaultState, vault_router};
 pub use routes::{WorkspaceScope, enforce_managed_beta, router};
 // The session-repository port family now lives in `awaken-session-contract`;
 // re-exported so existing `awaken_protocol_managed::…` paths keep resolving.
@@ -79,12 +77,13 @@ pub use awaken_session_contract::{
     EnvironmentFingerprint, EnvironmentSnapshot, FailSessionRealization, FrozenSessionProjection,
     IdempotencyRecord, ManagedSessionRepository, McpAttachmentId, McpGeneration, McpGenerationRef,
     McpRealizationReceipt, McpTarget, PersistedSession, ResolvedInput, ResolvedInputSource,
-    ResolvedSessionResources, ResolvedSkillBinding, SessionBaseline, SessionBaselineFingerprint,
-    SessionBaselineInputs, SessionBaselineState, SessionCreationFinalizeError,
-    SessionCreationIntent, SessionNetworkPolicy, SessionRealizationAction,
-    SessionRealizationControl, SessionRealizationControlFailure, SessionRealizationDirective,
-    SessionRealizationLease, SessionRealizationTarget, SessionResourceManifest, SessionRevision,
-    StageMcpAttachment, resource_plane, stable_fingerprint,
+    ResolvedRepositoryCredential, ResolvedSessionResources, ResolvedSkillBinding, SessionBaseline,
+    SessionBaselineFingerprint, SessionBaselineInputs, SessionBaselineState,
+    SessionCreationFinalizeError, SessionCreationIntent, SessionNetworkPolicy,
+    SessionRealizationAction, SessionRealizationControl, SessionRealizationControlFailure,
+    SessionRealizationDirective, SessionRealizationLease, SessionRealizationTarget,
+    SessionResourceManifest, SessionRevision, StageMcpAttachment,
+    repository_transport_credential_usage, resource_plane, stable_fingerprint,
 };
 pub use awaken_session_store::SqliteManagedSessionRepository;
 pub use state::{

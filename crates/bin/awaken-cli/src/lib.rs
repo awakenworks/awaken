@@ -1405,6 +1405,10 @@ mod runtime_session_store_tests {
                             awaken_runtime_contract::PlaintextBoundary::Worker,
                             "awaken.worker",
                         ),
+                        resource_holder: awaken_runtime_contract::PlaintextHolder::new(
+                            awaken_runtime_contract::PlaintextBoundary::Worker,
+                            "awaken.worker",
+                        ),
                     },
                 },
                 agent_id: "assistant".into(),

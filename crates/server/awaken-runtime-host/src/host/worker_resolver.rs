@@ -222,6 +222,16 @@ impl HostWorkerResolver {
 
 #[async_trait::async_trait]
 impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
+    fn credential_realization_capabilities(
+        &self,
+    ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
+        self.host
+            .upgrade()
+            .and_then(|host| host.inference_routing.materializer())
+            .map(|materializer| materializer.credential_realization_capabilities())
+            .unwrap_or_default()
+    }
+
     async fn worker_for(
         &self,
         thread_id: &awaken_agent_contract::agent::thread::Id,
@@ -492,7 +502,8 @@ mod tests {
                         credential_realization:
                             awaken_runtime_contract::CredentialRealizationProfile {
                                 inference_holder: holder.clone(),
-                                mcp_holder: holder,
+                                mcp_holder: holder.clone(),
+                                resource_holder: holder,
                             },
                     },
                     mcp_authoring: Default::default(),
@@ -662,7 +673,7 @@ mod tests {
                 .expect("enqueue");
             let now = awaken_run_ingress::SystemClock.now_ms();
             let claimed = dispatch
-                .claim("worker-a", 30_000, now)
+                .claim("worker-a", 30_000, now, &Default::default())
                 .await
                 .expect("claim")
                 .expect("claimed run");
@@ -719,7 +730,7 @@ mod tests {
             .expect("enqueue");
         let now = awaken_run_ingress::SystemClock.now_ms();
         let mut claimed = dispatch
-            .claim("worker-a", 30_000, now)
+            .claim("worker-a", 30_000, now, &Default::default())
             .await
             .expect("claim")
             .expect("claimed run");
@@ -761,6 +772,7 @@ mod tests {
                 expires_ms: 100,
                 epoch: 1,
             },
+            credential_bindings: Vec::new(),
             cancellation_requested: false,
             pending: Vec::new(),
             recovered: false,
@@ -810,6 +822,7 @@ mod tests {
                 expires_ms: 100,
                 epoch: 1,
             },
+            credential_bindings: Vec::new(),
             cancellation_requested: false,
             pending: Vec::new(),
             recovered: false,
@@ -1162,6 +1175,7 @@ mod tests {
                 expires_ms: 100,
                 epoch: 2,
             },
+            credential_bindings: Vec::new(),
             cancellation_requested: true,
             pending: Vec::new(),
             recovered: false,

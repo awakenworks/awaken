@@ -23,6 +23,64 @@ pub struct SessionInputAttachment {
     pub replaces: Option<BindingId>,
 }
 
+/// Exact, secret-free credential decision frozen for one Repository input.
+/// Resource Catalog configuration keeps only its Vault binding; the Session
+/// application resolves that binding once into this execution pin before any
+/// Runtime or Git side effect.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedRepositoryCredential {
+    pub access: awaken_credential_contract::CredentialAccess,
+    pub selected_plaintext_holder: awaken_credential_contract::PlaintextHolder,
+}
+
+/// Canonical consumption contract for a host-mediated HTTPS Git operation. The
+/// Worker adapter performs the Basic transformation; Resource and Vault contexts
+/// share this existing HTTP usage value instead of defining Git-specific secret
+/// injection vocabulary.
+#[must_use]
+pub fn repository_transport_credential_usage() -> awaken_credential_contract::CredentialUsage {
+    awaken_credential_contract::CredentialUsage::HttpHeader {
+        name: "authorization".into(),
+        scheme: Some("Basic".into()),
+    }
+}
+
+impl ResolvedRepositoryCredential {
+    /// Validate the cross-context pin without opening material. This is consumed
+    /// both before persistence and at Runtime activation, so malformed retained
+    /// rows fail closed through the same rule.
+    pub fn validate_for_binding(&self, binding: &str) -> Result<(), SessionInputError> {
+        if self.access.credential.id != binding {
+            return Err(SessionInputError::InvalidCredentialPin(
+                "Repository credential pin selects another source".into(),
+            ));
+        }
+        if self.access.usage != repository_transport_credential_usage() {
+            return Err(SessionInputError::InvalidCredentialPin(
+                "Repository credential pin has incompatible transport usage".into(),
+            ));
+        }
+        if !self
+            .access
+            .policy
+            .allowed_plaintext_holders
+            .contains(&self.selected_plaintext_holder)
+        {
+            return Err(SessionInputError::InvalidCredentialPin(
+                "Repository credential holder is not authorized".into(),
+            ));
+        }
+        if self.access.policy.model_exposure
+            != awaken_credential_contract::ModelExposurePolicy::Forbidden
+        {
+            return Err(SessionInputError::InvalidCredentialPin(
+                "Repository credential must remain model-invisible".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Resource-specific, secret-free configuration frozen once for a Session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -37,6 +95,8 @@ pub enum ResolvedInputSource {
     Repository {
         repository_id: awaken_resource_contract::RepositoryId,
         config: RepositoryConfigVersion,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credential: Option<Box<ResolvedRepositoryCredential>>,
     },
 }
 
@@ -177,6 +237,8 @@ pub enum SessionInputError {
     UnknownReplacement(String),
     #[error("Session input binding `{0}` was not found")]
     UnknownBinding(String),
+    #[error("invalid Repository credential execution pin: {0}")]
+    InvalidCredentialPin(String),
     #[error(transparent)]
     Catalog(#[from] awaken_resource_contract::ResourceCatalogError),
 }
@@ -309,6 +371,7 @@ impl SessionInputResolver {
                         ResolvedInputSource::Repository {
                             repository_id,
                             config,
+                            credential: None,
                         }
                     }
                 };

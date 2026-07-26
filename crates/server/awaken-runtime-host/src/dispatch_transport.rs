@@ -21,9 +21,10 @@ use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
 };
 use awaken_run_ingress::{
-    AnyDispatchStore, Dispatch, DispatchOutcome, DispatchQueue, HttpDispatchQueue, PendingInput,
-    PlacementPolicy, RunClaim, RunDispatch, SubmitOptions, WorkerDirectory, WorkerHeartbeat,
-    WorkerIdentity, WorkerRegistration, WorkerSnapshot, WorkerState,
+    AnyDispatchStore, CredentialRealizationReceipt, Dispatch, DispatchOutcome, DispatchQueue,
+    HttpDispatchQueue, PendingInput, PlacementPolicy, RunClaim, RunDispatch, SubmitOptions,
+    WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerRegistration, WorkerSnapshot,
+    WorkerState,
 };
 
 use crate::host::{HostError, SharedHost};
@@ -59,6 +60,7 @@ pub struct WorkerDispatchService {
     recovery: Option<Arc<dyn RunRecoverySource>>,
     application_session_control:
         Option<Arc<dyn awaken_protocol_managed::ApplicationSessionControl>>,
+    local_credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
 }
 
 impl WorkerDispatchService {
@@ -80,6 +82,7 @@ impl WorkerDispatchService {
             checkpoint: None,
             recovery: None,
             application_session_control: None,
+            local_credential_capabilities: Default::default(),
         }
     }
 
@@ -123,6 +126,15 @@ impl WorkerDispatchService {
     #[must_use]
     pub fn with_placement_policy(mut self, policy: Arc<dyn PlacementPolicy>) -> Self {
         self.placement_policy = Some(policy);
+        self
+    }
+
+    #[must_use]
+    pub fn with_local_credential_capabilities(
+        mut self,
+        capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
+    ) -> Self {
+        self.local_credential_capabilities = capabilities;
         self
     }
 
@@ -277,6 +289,10 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
             "/v1/worker/dispatch/claim_is_current",
             post(claim_is_current),
         )
+        .route(
+            "/v1/worker/dispatch/credential_realization",
+            post(record_credential_realization),
+        )
         .route("/v1/worker/dispatch/settle", post(settle))
         .route("/v1/worker/register", post(register_worker))
         .route("/v1/worker/heartbeat", post(heartbeat_worker))
@@ -353,6 +369,14 @@ struct RecoveryReq {
     claim: RunClaim,
     #[serde(default)]
     identity: Option<WorkerIdentity>,
+}
+
+#[derive(Deserialize)]
+struct CredentialRealizationReq {
+    claim: RunClaim,
+    #[serde(default)]
+    identity: Option<WorkerIdentity>,
+    receipt: CredentialRealizationReceipt,
 }
 
 #[derive(Deserialize)]
@@ -562,6 +586,30 @@ async fn claim_is_current(
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
         Ok(json!({ "current": current }))
+    }
+    .await;
+    respond(result)
+}
+
+async fn record_credential_realization(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<CredentialRealizationReq>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        let authority =
+            claim_authority(&service, &worker, request.identity.as_ref(), false).await?;
+        if authority.owner != request.claim.owner {
+            return Err(HostError::bad_request(
+                "authenticated worker does not own the credential realization claim",
+            ));
+        }
+        let outcome = service
+            .dispatch
+            .record_credential_realization(&request.claim, request.receipt)
+            .await
+            .map_err(|error| HostError::bad_request(error.to_string()))?;
+        Ok(json!({ "applied": outcome.applied() }))
     }
     .await;
     respond(result)
@@ -957,6 +1005,7 @@ async fn claim_new_run(
                     &authority.owner,
                     authority.lease_ms,
                     authority.now_ms,
+                    &service.local_credential_capabilities,
                 )
                 .await
         }
@@ -999,6 +1048,7 @@ async fn deliver_and_claim(
                     &authority.owner,
                     authority.lease_ms,
                     authority.now_ms,
+                    &service.local_credential_capabilities,
                 )
                 .await
         }
@@ -1044,7 +1094,12 @@ async fn claim(
         } else {
             service
                 .dispatch
-                .claim(&authority.owner, authority.lease_ms, authority.now_ms)
+                .claim(
+                    &authority.owner,
+                    authority.lease_ms,
+                    authority.now_ms,
+                    &service.local_credential_capabilities,
+                )
                 .await
         }
         .map_err(|error| HostError::internal(error.to_string()))?;
@@ -1088,6 +1143,7 @@ async fn claim_run(
                     &authority.owner,
                     authority.lease_ms,
                     authority.now_ms,
+                    &service.local_credential_capabilities,
                 )
                 .await
         }

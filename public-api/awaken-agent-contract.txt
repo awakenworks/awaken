@@ -443,6 +443,8 @@ pub fn awaken_agent_contract::event::fold_messages(&[awaken_agent_contract::agen
 pub fn awaken_agent_contract::event::fold_step(&[awaken_agent_contract::agent::message::Message], &awaken_agent_contract::agent::run::RunState, core::option::Option<(&str, bool)>) -> alloc::vec::Vec<awaken_agent_contract::event::agent::Fact>
 pub fn awaken_agent_contract::event::terminal(&awaken_agent_contract::agent::run::RunState, core::option::Option<(&str, bool)>) -> awaken_agent_contract::event::agent::Fact
 pub fn awaken_agent_contract::event::terminal_awaiting(core::option::Option<&str>) -> awaken_agent_contract::event::agent::Fact
+pub mod awaken_agent_contract::fingerprint
+pub fn awaken_agent_contract::fingerprint::stable_fingerprint(&impl serde_core::ser::Serialize) -> alloc::string::String
 pub mod awaken_agent_contract::model_spec
 pub enum awaken_agent_contract::model_spec::Modality
 pub awaken_agent_contract::model_spec::Modality::Audio
@@ -904,3 +906,4 @@ pub fn awaken_agent_contract::thread::read::lifecycle::CheckpointRunLifecycleFee
 pub trait awaken_agent_contract::StreamSink: core::marker::Send + core::marker::Sync
 pub fn awaken_agent_contract::StreamSink::send<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::stream::event::Event) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_contract::stream::sink::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_agent_contract::classify_run_lifecycle(&awaken_agent_contract::agent::run::RunState, core::option::Option<&awaken_agent_contract::agent::run::RunState>) -> awaken_agent_contract::thread::read::lifecycle::RunLifecycleKind
+pub fn awaken_agent_contract::stable_fingerprint(&impl serde_core::ser::Serialize) -> alloc::string::String

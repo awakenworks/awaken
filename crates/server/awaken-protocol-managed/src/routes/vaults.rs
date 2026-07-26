@@ -26,9 +26,9 @@
 //! probe — and always for `environment_variable` / `static_bearer`, which have no
 //! MCP handshake to probe — `status` stays `unknown` (never a false `valid`).
 //! [`VaultState::mcp_credential_source_for_url`] is the seam a session uses to
-//! bind an MCP server to a vault credential by URL, and
-//! [`VaultState::mcp_refresh_for_source`] exposes that credential's stored
-//! refresh configuration for the session's transport-level token refresh.
+//! bind an MCP server to a vault credential by URL. Once selected,
+//! [`VaultState::mcp_access_for_source`] compiles the sole exact credential and
+//! refresh/reseal execution value.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -89,12 +89,6 @@ fn apply_metadata_patch(
     }
 }
 
-// The session MCP-server credential bindings now live in `awaken-session-contract`
-// (a contract/ leaf) — they are secret-free plain data. Re-exported here so existing
-// `awaken_protocol_managed::…` paths keep resolving until consumers flip to the
-// contract directly.
-pub use awaken_session_contract::{McpRefreshBinding, TokenEndpointAuthBinding};
-
 // The live MCP-probe port + its status now live in `awaken-session-contract`
 // (a contract/ leaf), re-exported here so existing `awaken_protocol_managed::…` paths
 // keep resolving until consumers flip to the contract directly.
@@ -141,13 +135,14 @@ fn auth_mcp_server_url(auth: &AuthRecord) -> Option<&str> {
 
 /// Stored refresh configuration for an `mcp_oauth` credential: the secret-free
 /// projection plus the refs the sealed refresh token (and, for a confidential
-/// client, the sealed client secret) live under, which
-/// [`VaultState::mcp_refresh_for_source`] hands to the session's refresher.
+/// client, the sealed client secret) live under. It is authoring state only;
+/// execution receives the canonical `CredentialRefreshAccess`.
 #[derive(Clone)]
 struct McpOauthRefreshRecord {
     projection: McpOauthRefreshResponse,
     refresh_token_ref: SecretRef,
-    token_endpoint_auth: TokenEndpointAuthBinding,
+    token_endpoint_auth: awaken_credential_contract::TokenEndpointAuth,
+    client_secret_ref: Option<String>,
 }
 
 /// A stored credential: its neutral domain row id plus the wire-only projection
@@ -297,40 +292,67 @@ impl VaultState {
         None
     }
 
-    /// The stored refresh configuration of the `mcp_oauth` credential backing
-    /// `source_id`, if it is refreshable. This is the second half of the
-    /// vault→MCP binding seam (consumer: `ManagedState::create_session`, which
-    /// carries it on [`crate::McpServerBinding`] next to the source id): the
-    /// server's session build turns it into a transport-level refresher. Both
-    /// public (`token_endpoint_auth: none`) and confidential
-    /// (`client_secret_basic` / `client_secret_post`) clients are exposed — a
-    /// confidential scheme's binding carries its sealed client secret's ref
-    /// ([`TokenEndpointAuthBinding`]). `None` for env-var / `static_bearer`
-    /// credentials and for an `mcp_oauth` credential entered without a refresh
-    /// object.
-    #[must_use]
-    pub fn mcp_refresh_for_source(
+    async fn exact_access_for_source(
         &self,
         source_id: &CredentialSourceId,
-    ) -> Option<McpRefreshBinding> {
-        let store = self.inner.lock().unwrap();
-        store
-            .credentials
-            .values()
-            .filter(|c| &c.source_id == source_id)
-            .find_map(|c| match &c.auth {
-                AuthRecord::McpOauth {
-                    refresh: Some(r), ..
-                } => Some(McpRefreshBinding {
-                    token_endpoint: r.projection.token_endpoint.clone(),
-                    client_id: r.projection.client_id.clone(),
-                    refresh_token_ref: r.refresh_token_ref.0.clone(),
-                    token_endpoint_auth: r.token_endpoint_auth.clone(),
-                    scope: r.projection.scope.clone(),
-                    resource: r.projection.resource.clone(),
-                }),
-                _ => None,
-            })
+        workspace_id: Option<&str>,
+        usage: awaken_credential_contract::CredentialUsage,
+        policy: awaken_credential_contract::CredentialExecutionPolicy,
+    ) -> Result<
+        (
+            awaken_credential_vault::CredentialSource,
+            awaken_credential_contract::CredentialAccess,
+        ),
+        awaken_credential_vault::CredentialError,
+    > {
+        use awaken_credential_contract::{
+            CredentialAccess, CredentialMaterialSource, CredentialRef,
+        };
+
+        let source = self.credentials.get(source_id).await?;
+        if source.status != awaken_credential_vault::CredentialStatus::Active {
+            return Err(awaken_credential_vault::CredentialError::NotActive(
+                source_id.0.clone(),
+            ));
+        }
+        if workspace_id.is_some_and(|workspace_id| source.workspace_id != workspace_id) {
+            return Err(awaken_credential_vault::CredentialError::InvalidSource(
+                "credential source belongs to another Workspace".into(),
+            ));
+        }
+        let revision = u64::try_from(source.version).map_err(|_| {
+            awaken_credential_vault::CredentialError::InvalidSource(
+                "credential revision is negative".into(),
+            )
+        })?;
+        let access = CredentialAccess::new(
+            CredentialRef {
+                id: source_id.0.clone(),
+                revision,
+            },
+            CredentialMaterialSource::ControlPlaneReference,
+            usage,
+            policy,
+        );
+        Ok((source, access))
+    }
+
+    /// Compile one exact, secret-free execution pin for a previously selected
+    /// credential source. Selection and material opening remain separate: this
+    /// reads only the active source revision and never opens secret material.
+    pub async fn credential_access_for_source(
+        &self,
+        source_id: &CredentialSourceId,
+        workspace_id: &str,
+        usage: awaken_credential_contract::CredentialUsage,
+        policy: awaken_credential_contract::CredentialExecutionPolicy,
+    ) -> Result<
+        awaken_credential_contract::CredentialAccess,
+        awaken_credential_vault::CredentialError,
+    > {
+        self.exact_access_for_source(source_id, Some(workspace_id), usage, policy)
+            .await
+            .map(|(_, access)| access)
     }
 
     /// Compile one exact, secret-free execution pin for a previously selected
@@ -344,43 +366,36 @@ impl VaultState {
         awaken_credential_vault::CredentialError,
     > {
         use awaken_credential_contract::{
-            CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
-            CredentialRefreshAccess, CredentialUsage, TokenEndpointAuth,
+            CredentialExecutionPolicy, CredentialRefreshAccess, CredentialUsage,
         };
 
-        let source = self.credentials.get(source_id).await?;
-        if source.status != awaken_credential_vault::CredentialStatus::Active {
-            return Err(awaken_credential_vault::CredentialError::NotActive(
-                source_id.0.clone(),
-            ));
-        }
-        let revision = u64::try_from(source.version).map_err(|_| {
-            awaken_credential_vault::CredentialError::InvalidSource(
-                "credential revision is negative".into(),
+        let (source, mut access) = self
+            .exact_access_for_source(
+                source_id,
+                None,
+                CredentialUsage::HttpHeader {
+                    name: "authorization".into(),
+                    scheme: Some("Bearer".into()),
+                },
+                CredentialExecutionPolicy::self_hosted_provider(),
             )
-        })?;
-        let mut access = CredentialAccess::new(
-            CredentialRef {
-                id: source_id.0.clone(),
-                revision,
-            },
-            CredentialMaterialSource::ControlPlaneReference,
-            CredentialUsage::HttpHeader {
-                name: "authorization".into(),
-                scheme: Some("Bearer".into()),
-            },
-            CredentialExecutionPolicy::self_hosted_provider(),
-        );
-        if let Some(refresh) = self.mcp_refresh_for_source(source_id) {
-            let (token_endpoint_auth, client_secret_ref) = match refresh.token_endpoint_auth {
-                TokenEndpointAuthBinding::None => (TokenEndpointAuth::None, None),
-                TokenEndpointAuthBinding::ClientSecretBasic { secret_ref } => {
-                    (TokenEndpointAuth::ClientSecretBasic, Some(secret_ref))
-                }
-                TokenEndpointAuthBinding::ClientSecretPost { secret_ref } => {
-                    (TokenEndpointAuth::ClientSecretPost, Some(secret_ref))
-                }
-            };
+            .await?;
+        let revision = access.credential.revision;
+        let refresh = self
+            .inner
+            .lock()
+            .unwrap()
+            .credentials
+            .values()
+            .find(|record| &record.source_id == source_id)
+            .and_then(|record| match &record.auth {
+                AuthRecord::McpOauth {
+                    refresh: Some(refresh),
+                    ..
+                } => Some(refresh.clone()),
+                _ => None,
+            });
+        if let Some(refresh) = refresh {
             let access_token_ref = source
                 .material_ref
                 .ok_or_else(|| {
@@ -389,25 +404,17 @@ impl VaultState {
                     )
                 })?
                 .0;
-            access = access.with_refresh(CredentialRefreshAccess {
-                credential_revision: revision,
-                configuration_fingerprint: awaken_session_contract::stable_fingerprint(&(
-                    &refresh.token_endpoint,
-                    &refresh.client_id,
-                    &refresh.refresh_token_ref,
-                    &client_secret_ref,
-                    &refresh.scope,
-                    &refresh.resource,
-                )),
-                token_endpoint: refresh.token_endpoint,
-                client_id: refresh.client_id,
-                token_endpoint_auth,
-                client_secret_ref,
-                refresh_token_ref: refresh.refresh_token_ref,
+            access = access.with_refresh(CredentialRefreshAccess::new(
+                revision,
+                refresh.projection.token_endpoint,
+                refresh.projection.client_id,
+                refresh.token_endpoint_auth,
+                refresh.client_secret_ref,
+                refresh.refresh_token_ref.0,
                 access_token_ref,
-                scope: refresh.scope,
-                resource: refresh.resource,
-            });
+                refresh.projection.scope,
+                refresh.projection.resource,
+            ));
         }
         Ok(access)
     }
@@ -800,32 +807,39 @@ async fn create_credential(
                         .put(&r, secret)
                         .await
                         .map_err(|e| bad_request(e.to_string()))?;
-                    let token_endpoint_auth = match (projection.token_endpoint_auth, client_secret)
-                    {
-                        (TokenEndpointAuthResponse::ClientSecretBasic, Some(cs)) => {
-                            let secret_ref = format!("sec:client:{}", source.id.0);
-                            state
-                                .secrets
-                                .put(&SecretRef(secret_ref.clone()), RedactedString::new(cs))
-                                .await
-                                .map_err(|e| bad_request(e.to_string()))?;
-                            TokenEndpointAuthBinding::ClientSecretBasic { secret_ref }
-                        }
-                        (TokenEndpointAuthResponse::ClientSecretPost, Some(cs)) => {
-                            let secret_ref = format!("sec:client:{}", source.id.0);
-                            state
-                                .secrets
-                                .put(&SecretRef(secret_ref.clone()), RedactedString::new(cs))
-                                .await
-                                .map_err(|e| bad_request(e.to_string()))?;
-                            TokenEndpointAuthBinding::ClientSecretPost { secret_ref }
-                        }
-                        _ => TokenEndpointAuthBinding::None,
-                    };
+                    let (token_endpoint_auth, client_secret_ref) =
+                        match (projection.token_endpoint_auth, client_secret) {
+                            (TokenEndpointAuthResponse::ClientSecretBasic, Some(cs)) => {
+                                let secret_ref = format!("sec:client:{}", source.id.0);
+                                state
+                                    .secrets
+                                    .put(&SecretRef(secret_ref.clone()), RedactedString::new(cs))
+                                    .await
+                                    .map_err(|e| bad_request(e.to_string()))?;
+                                (
+                                awaken_credential_contract::TokenEndpointAuth::ClientSecretBasic,
+                                Some(secret_ref),
+                            )
+                            }
+                            (TokenEndpointAuthResponse::ClientSecretPost, Some(cs)) => {
+                                let secret_ref = format!("sec:client:{}", source.id.0);
+                                state
+                                    .secrets
+                                    .put(&SecretRef(secret_ref.clone()), RedactedString::new(cs))
+                                    .await
+                                    .map_err(|e| bad_request(e.to_string()))?;
+                                (
+                                    awaken_credential_contract::TokenEndpointAuth::ClientSecretPost,
+                                    Some(secret_ref),
+                                )
+                            }
+                            _ => (awaken_credential_contract::TokenEndpointAuth::None, None),
+                        };
                     Some(McpOauthRefreshRecord {
                         projection,
                         refresh_token_ref: r,
                         token_endpoint_auth,
+                        client_secret_ref,
                     })
                 }
                 _ => None,
@@ -1098,26 +1112,26 @@ async fn update_credential(
                             // `sec:client:{source_id}` ref: an omitted secret keeps
                             // the sealed value, a supplied one re-sealed it above.
                             let client_ref = || format!("sec:client:{}", source_id.0);
-                            let (tag, binding) = match tea {
+                            let (tag, auth, secret_ref) = match tea {
                                 TokenEndpointAuthUpdate::None => (
                                     TokenEndpointAuthResponse::None,
-                                    TokenEndpointAuthBinding::None,
+                                    awaken_credential_contract::TokenEndpointAuth::None,
+                                    None,
                                 ),
                                 TokenEndpointAuthUpdate::ClientSecretBasic { .. } => (
                                     TokenEndpointAuthResponse::ClientSecretBasic,
-                                    TokenEndpointAuthBinding::ClientSecretBasic {
-                                        secret_ref: client_ref(),
-                                    },
+                                    awaken_credential_contract::TokenEndpointAuth::ClientSecretBasic,
+                                    Some(client_ref()),
                                 ),
                                 TokenEndpointAuthUpdate::ClientSecretPost { .. } => (
                                     TokenEndpointAuthResponse::ClientSecretPost,
-                                    TokenEndpointAuthBinding::ClientSecretPost {
-                                        secret_ref: client_ref(),
-                                    },
+                                    awaken_credential_contract::TokenEndpointAuth::ClientSecretPost,
+                                    Some(client_ref()),
                                 ),
                             };
                             r.projection.token_endpoint_auth = tag;
-                            r.token_endpoint_auth = binding;
+                            r.token_endpoint_auth = auth;
+                            r.client_secret_ref = secret_ref;
                         }
                     }
                 }

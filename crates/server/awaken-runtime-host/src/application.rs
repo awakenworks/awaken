@@ -269,6 +269,14 @@ impl crate::SharedHost {
             self.register_thread_runtime(thread, runtime);
         }
         self.register_thread_delegates(thread, projection.baseline.delegate_ids);
+        self.register_thread_credential_realization(
+            thread,
+            projection
+                .baseline
+                .environment
+                .credential_realization
+                .clone(),
+        );
         self.register_thread_egress(
             thread,
             projection.baseline.environment.network.is_restricted(),

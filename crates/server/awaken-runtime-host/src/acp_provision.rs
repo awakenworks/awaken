@@ -4,10 +4,13 @@
 //! materialized from the persisted vault. Process environment may advertise which
 //! CLI a worker can host, but never supplies provider execution facts.
 
-use awaken_run_executor_acp::{AcpCli, ConfigHome, LaunchResolver, OpenError, ResolvedModel};
+use awaken_run_executor_acp::{
+    AcpCli, ConfigHome, LaunchResolver, OpenError, ProcessSecretRequirement, ResolvedModel,
+};
+#[cfg(test)]
+use awaken_runtime_contract::CredentialRealizationKind;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::ModelProvisioning;
-use awaken_runtime_contract::{CredentialRealizationKind, PlaintextBoundary, PlaintextHolder};
 use std::path::PathBuf;
 
 /// Resolves an ACP run from its published access and a worker-side exact credential
@@ -32,7 +35,11 @@ impl PublishedAcpLaunchResolver {
         }
     }
 
-    fn resolve_model(&self, activation: &RunActivation) -> Result<ResolvedModel, OpenError> {
+    fn resolve_model(
+        &self,
+        activation: &RunActivation,
+        context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
+    ) -> Result<ResolvedModel, OpenError> {
         let model_ref = activation.effective_model_ref();
         let candidate = activation
             .snapshot
@@ -54,21 +61,15 @@ impl PublishedAcpLaunchResolver {
                 "published model {model_ref} has incomplete endpoint coordinates"
             )));
         }
-        let secret = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(self.credentials.materialize_provider_for(
-                candidate,
-                &PlaintextHolder::new(
-                    PlaintextBoundary::Workload,
-                    awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
-                ),
-                CredentialRealizationKind::ProcessSecretEnvironment,
-            ))
-        })
-        .map_err(OpenError)?;
+        let process_secret = self
+            .credentials
+            .plan_claimed_process_secret(candidate, context)
+            .map_err(OpenError)?
+            .map(ProcessSecretRequirement::new);
         Ok(ResolvedModel {
             base_url: endpoint.base_url,
             model: endpoint.upstream_model,
-            api_key: secret.expose_secret().to_string(),
+            process_secret,
         })
     }
 
@@ -87,12 +88,22 @@ impl PublishedAcpLaunchResolver {
 }
 
 impl LaunchResolver for PublishedAcpLaunchResolver {
-    fn model(&self, activation: &RunActivation) -> Result<ResolvedModel, OpenError> {
-        self.resolve_model(activation)
+    fn model(
+        &self,
+        activation: &RunActivation,
+        context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
+    ) -> Result<ResolvedModel, OpenError> {
+        self.resolve_model(activation, context)
     }
 
     fn extra_env(&self, activation: &RunActivation) -> Vec<(String, String)> {
         self.config_home_env(&activation.thread_id.0)
+    }
+
+    fn secret_broker(
+        &self,
+    ) -> Option<std::sync::Arc<dyn awaken_provisioning_contract::SecretBroker>> {
+        Some(std::sync::Arc::new(self.credentials.clone()))
     }
 }
 
@@ -103,16 +114,156 @@ mod tests {
     use awaken_agent_contract::agent::run::Id as RunId;
     use awaken_agent_contract::agent::thread::Id as ThreadId;
     use awaken_credential_vault::repo::{InMemoryCredentialRepo, enter_credential};
-    use awaken_credential_vault::{CredentialCreateParams, CredentialKind, InMemorySecretStore};
+    use awaken_credential_vault::{
+        CredentialCreateParams, CredentialError, CredentialKind, InMemorySecretStore, SecretRef,
+        SecretStore,
+    };
     use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
     use awaken_runtime_contract::snapshot::{
         AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
     };
     use awaken_runtime_contract::{
-        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
-        CredentialUsage, InferenceEndpoint,
+        AttemptCredentialBinding, AttemptCredentialRealization, AttemptOwnershipError,
+        AttemptOwnershipVerifier, CredentialAccess, CredentialExecutionPolicy,
+        CredentialMaterialSource, CredentialRealizationReceipt, CredentialRealizationRecordError,
+        CredentialRealizationRecorder, CredentialRef, CredentialUsage, InferenceEndpoint,
     };
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    struct CurrentOwnership;
+
+    #[async_trait::async_trait]
+    impl AttemptOwnershipVerifier for CurrentOwnership {
+        async fn verify_current(&self) -> Result<(), AttemptOwnershipError> {
+            Ok(())
+        }
+    }
+
+    struct AcceptReceipt;
+
+    #[async_trait::async_trait]
+    impl CredentialRealizationRecorder for AcceptReceipt {
+        async fn record(
+            &self,
+            _receipt: CredentialRealizationReceipt,
+        ) -> Result<(), CredentialRealizationRecordError> {
+            Ok(())
+        }
+    }
+
+    struct CountingSecrets {
+        inner: InMemorySecretStore,
+        gets: AtomicUsize,
+        fail_get: AtomicBool,
+    }
+
+    impl CountingSecrets {
+        fn new(fail_get: bool) -> Self {
+            Self {
+                inner: InMemorySecretStore::new(),
+                gets: AtomicUsize::new(0),
+                fail_get: AtomicBool::new(fail_get),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SecretStore for CountingSecrets {
+        async fn put(
+            &self,
+            reference: &SecretRef,
+            secret: RedactedString,
+        ) -> Result<(), CredentialError> {
+            self.inner.put(reference, secret).await
+        }
+
+        async fn get(&self, reference: &SecretRef) -> Result<RedactedString, CredentialError> {
+            self.gets.fetch_add(1, Ordering::SeqCst);
+            if self.fail_get.load(Ordering::SeqCst) {
+                return Err(CredentialError::Storage(
+                    "planned unavailable material".into(),
+                ));
+            }
+            self.inner.get(reference).await
+        }
+
+        async fn delete(&self, reference: &SecretRef) -> Result<(), CredentialError> {
+            self.inner.delete(reference).await
+        }
+    }
+
+    struct DecisionOwnership(bool);
+
+    #[async_trait::async_trait]
+    impl AttemptOwnershipVerifier for DecisionOwnership {
+        async fn verify_current(&self) -> Result<(), AttemptOwnershipError> {
+            self.0.then_some(()).ok_or(AttemptOwnershipError::Lost)
+        }
+    }
+
+    struct DecisionRecorder {
+        accepts: bool,
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl CredentialRealizationRecorder for DecisionRecorder {
+        async fn record(
+            &self,
+            _receipt: CredentialRealizationReceipt,
+        ) -> Result<(), CredentialRealizationRecordError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.accepts
+                .then_some(())
+                .ok_or_else(|| CredentialRealizationRecordError("planned receipt rejection".into()))
+        }
+    }
+
+    fn attempt_context(
+        candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
+    ) -> awaken_runtime_contract::RuntimeRunContext {
+        attempt_context_with(
+            candidate,
+            true,
+            CredentialRealizationKind::ProcessSecretEnvironment,
+            Arc::new(CurrentOwnership),
+            Arc::new(AcceptReceipt),
+        )
+    }
+
+    fn attempt_context_with(
+        candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
+        include_binding: bool,
+        kind: CredentialRealizationKind,
+        ownership: Arc<dyn AttemptOwnershipVerifier>,
+        recorder: Arc<dyn CredentialRealizationRecorder>,
+    ) -> awaken_runtime_contract::RuntimeRunContext {
+        let credential = match &candidate.provisioning {
+            ModelProvisioning::Provider {
+                credential: Some(access),
+                ..
+            } => access.credential.clone(),
+            _ => panic!("test candidate must carry a credential"),
+        };
+        let binding = AttemptCredentialBinding {
+            candidate_fingerprint: awaken_runtime_contract::candidate_fingerprint(candidate)
+                .unwrap(),
+            credential,
+            selected_plaintext_holder: awaken_runtime_contract::PlaintextHolder::new(
+                awaken_runtime_contract::PlaintextBoundary::Workload,
+                awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
+            ),
+            selected_realization_kind: kind,
+            claim_epoch: 1,
+        };
+        awaken_runtime_contract::RuntimeRunContext::new()
+            .with_ownership(ownership)
+            .with_credential_realization(AttemptCredentialRealization::new(
+                include_binding.then_some(binding).into_iter().collect(),
+                recorder,
+            ))
+    }
 
     fn claude() -> AcpCli {
         *awaken_run_executor_acp::acp_cli("claude").unwrap()
@@ -196,10 +347,234 @@ mod tests {
             None,
             crate::PinnedCredentialMaterializer::new(repo, secrets),
         );
-        let resolved = resolver.model(&activation(Some(model))).unwrap();
+        let context = attempt_context(&model);
+        let resolved = resolver
+            .model(&activation(Some(model.clone())), &context)
+            .unwrap();
         assert_eq!(resolved.base_url, "https://db.example/v1");
         assert_eq!(resolved.model, "upstream-model");
-        assert_eq!(resolved.api_key, "persisted-key");
+        let reference = resolved
+            .process_secret
+            .as_ref()
+            .expect("credential-bearing model has process requirement")
+            .reference();
+        assert!(!reference.contains("persisted-key"));
+        assert!(!format!("{resolved:?}").contains(reference));
+        let broker = resolver.secret_broker().unwrap();
+        assert_eq!(
+            broker.materialize_process(reference).await.unwrap(),
+            b"persisted-key"
+        );
+        assert!(
+            broker.materialize_process(reference).await.is_err(),
+            "process reference is one-shot"
+        );
+    }
+
+    /// ACP credential-realization cause graph:
+    ///
+    /// exact binding -> process-secret mechanism -> opaque requirement planned ->
+    /// current ownership -> secret open -> durable receipt -> process material.
+    /// Planning never opens material. Every later failure terminates broker
+    /// consumption; ownership failure precedes secret access and receipt failure
+    /// prevents material from reaching the process.
+    ///
+    /// | Rule | binding | mechanism | ownership | material | receipt | planned | gets | records | process |
+    /// |---|---|---|---|---|---|---|---:|---:|---|
+    /// | A1 | missing | exact | current | present | accept | no | 0 | 0 | reject |
+    /// | A2 | exact | wrong | current | present | accept | no | 0 | 0 | reject |
+    /// | A3 | exact | exact | lost | present | accept | yes | 0 | 0 | reject |
+    /// | A4 | exact | exact | current | missing | accept | yes | 1 | 0 | reject |
+    /// | A5 | exact | exact | current | present | reject | yes | 1 | 1 | reject |
+    /// | A6 | exact | exact | current | present | accept | yes | 1 | 1 | material |
+    #[tokio::test(flavor = "multi_thread")]
+    async fn credential_launch_cases_are_generated_from_the_decision_table() {
+        #[derive(Clone, Copy)]
+        struct Rule {
+            id: &'static str,
+            include_binding: bool,
+            kind: CredentialRealizationKind,
+            owns: bool,
+            material_available: bool,
+            receipt_accepts: bool,
+            expected_gets: usize,
+            expected_records: usize,
+            plans: bool,
+            launches: bool,
+        }
+
+        let rules = [
+            Rule {
+                id: "A1",
+                include_binding: false,
+                kind: CredentialRealizationKind::ProcessSecretEnvironment,
+                owns: true,
+                material_available: true,
+                receipt_accepts: true,
+                expected_gets: 0,
+                expected_records: 0,
+                plans: false,
+                launches: false,
+            },
+            Rule {
+                id: "A2",
+                include_binding: true,
+                kind: CredentialRealizationKind::WorkerRelay,
+                owns: true,
+                material_available: true,
+                receipt_accepts: true,
+                expected_gets: 0,
+                expected_records: 0,
+                plans: false,
+                launches: false,
+            },
+            Rule {
+                id: "A3",
+                include_binding: true,
+                kind: CredentialRealizationKind::ProcessSecretEnvironment,
+                owns: false,
+                material_available: true,
+                receipt_accepts: true,
+                expected_gets: 0,
+                expected_records: 0,
+                plans: true,
+                launches: false,
+            },
+            Rule {
+                id: "A4",
+                include_binding: true,
+                kind: CredentialRealizationKind::ProcessSecretEnvironment,
+                owns: true,
+                material_available: false,
+                receipt_accepts: true,
+                expected_gets: 1,
+                expected_records: 0,
+                plans: true,
+                launches: false,
+            },
+            Rule {
+                id: "A5",
+                include_binding: true,
+                kind: CredentialRealizationKind::ProcessSecretEnvironment,
+                owns: true,
+                material_available: true,
+                receipt_accepts: false,
+                expected_gets: 1,
+                expected_records: 1,
+                plans: true,
+                launches: false,
+            },
+            Rule {
+                id: "A6",
+                include_binding: true,
+                kind: CredentialRealizationKind::ProcessSecretEnvironment,
+                owns: true,
+                material_available: true,
+                receipt_accepts: true,
+                expected_gets: 1,
+                expected_records: 1,
+                plans: true,
+                launches: true,
+            },
+        ];
+
+        for rule in rules {
+            let repo = Arc::new(InMemoryCredentialRepo::new());
+            let secrets = Arc::new(CountingSecrets::new(!rule.material_available));
+            let source = enter_credential(
+                CredentialCreateParams {
+                    workspace_id: "ws".into(),
+                    kind: CredentialKind::Vault,
+                    provider_id: Some("anthropic".into()),
+                    env_key: None,
+                    secret: Some(RedactedString::new("decision-key")),
+                    oauth_command: None,
+                },
+                secrets.as_ref(),
+                repo.as_ref(),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{} fixture: {error}", rule.id));
+            let candidate = awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
+                ModelBinding::new("anthropic", "published-model", "acp:claude"),
+                "anthropic@1",
+                "anthropic-messages@1",
+                "ws",
+                Some(CredentialAccess::new(
+                    CredentialRef {
+                        id: source.id.0,
+                        revision: 1,
+                    },
+                    CredentialMaterialSource::ControlPlaneReference,
+                    CredentialUsage::ProviderAdapter,
+                    CredentialExecutionPolicy::self_hosted_provider(),
+                )),
+                InferenceEndpoint {
+                    adapter_kind: "anthropic".into(),
+                    base_url: "https://db.example/v1".into(),
+                    upstream_model: "upstream-model".into(),
+                },
+            );
+            let record_calls = Arc::new(AtomicUsize::new(0));
+            let context = attempt_context_with(
+                &candidate,
+                rule.include_binding,
+                rule.kind,
+                Arc::new(DecisionOwnership(rule.owns)),
+                Arc::new(DecisionRecorder {
+                    accepts: rule.receipt_accepts,
+                    calls: record_calls.clone(),
+                }),
+            );
+            let resolver = PublishedAcpLaunchResolver::new(
+                claude(),
+                None,
+                crate::PinnedCredentialMaterializer::new(repo, secrets.clone()),
+            );
+
+            let plan = resolver.model(&activation(Some(candidate)), &context);
+            assert_eq!(plan.is_ok(), rule.plans, "{} planning verdict", rule.id);
+            assert_eq!(
+                secrets.gets.load(Ordering::SeqCst),
+                0,
+                "{} planning never opens material",
+                rule.id
+            );
+            let result = match plan {
+                Ok(model) => {
+                    let reference = model
+                        .process_secret
+                        .as_ref()
+                        .expect("planned credential requirement")
+                        .reference();
+                    assert!(!format!("{model:?}").contains(reference));
+                    resolver
+                        .secret_broker()
+                        .unwrap()
+                        .materialize_process(reference)
+                        .await
+                }
+                Err(error) => Err(awaken_provisioning_contract::SandboxError::new(
+                    error.to_string(),
+                )),
+            };
+            assert_eq!(result.is_ok(), rule.launches, "{} launch verdict", rule.id);
+            if let Ok(material) = result {
+                assert_eq!(material, b"decision-key", "{} exact material", rule.id);
+            }
+            assert_eq!(
+                secrets.gets.load(Ordering::SeqCst),
+                rule.expected_gets,
+                "{} secret opens",
+                rule.id
+            );
+            assert_eq!(
+                record_calls.load(Ordering::SeqCst),
+                rule.expected_records,
+                "{} receipt attempts",
+                rule.id
+            );
+        }
     }
 
     #[test]
@@ -212,7 +587,14 @@ mod tests {
                 Arc::new(InMemorySecretStore::new()),
             ),
         );
-        assert!(resolver.model(&activation(None)).is_err());
+        assert!(
+            resolver
+                .model(
+                    &activation(None),
+                    &awaken_runtime_contract::RuntimeRunContext::new(),
+                )
+                .is_err()
+        );
     }
 
     #[test]

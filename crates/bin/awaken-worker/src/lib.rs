@@ -533,6 +533,7 @@ impl WorkerNodeBuilder {
             }) => derive_standard_manifest(StandardManifestInputs {
                 deployment: &self.deployment,
                 materializer: self.materializer.as_deref(),
+                credential_materializer: self.credential_materializer.is_some(),
                 resource_support,
                 application_capabilities,
                 config: &self.standard_manifest_config,
@@ -837,16 +838,12 @@ impl WorkerNode {
 
         // Serve only the ACP CLI capability this worker advertises. The run's snapshot
         // selects the matching backend and supplies its published provider access.
-        let credential_materializer = self.credential_materializer.clone();
         host = host
             .with_acp_from_deployment(
                 awaken_server::relay_hand_executor_factory(),
                 self.credential_materializer,
             )
             .await;
-        if let Some(credentials) = credential_materializer {
-            host = host.with_session_secret_broker(Arc::new(credentials));
-        }
 
         let host = Arc::new(host);
         if let Some(validator) = resource_validator {
@@ -995,49 +992,14 @@ impl From<Option<&WorkerResourcePlane>> for ResourceManifestSupport {
 struct StandardManifestInputs<'a> {
     deployment: &'a awaken_runtime_host::DeploymentConfig,
     materializer: Option<&'a dyn InferenceExecutorMaterializer>,
+    credential_materializer: bool,
     resource_support: ResourceManifestSupport,
     application_capabilities: std::collections::BTreeSet<String>,
     config: &'a StandardManifestConfig,
 }
 
 fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> WorkerManifest {
-    use awaken_provisioning_contract::{IsolationClass, SandboxCapabilities};
-    let (sandbox, backend) = match inputs.deployment.sandbox_tier {
-        awaken_runtime_host::SandboxTier::Local => (WorkerManifest::default().sandbox, "local"),
-        awaken_runtime_host::SandboxTier::Docker
-        | awaken_runtime_host::SandboxTier::Podman
-        | awaken_runtime_host::SandboxTier::K8s => (
-            SandboxCapabilities {
-                isolation: IsolationClass::Container,
-                tool_transparent: true,
-                path_fidelity: true,
-                enforced_readonly: true,
-                network_isolation: true,
-                secret_egress_substitution: false,
-                resource_limits: true,
-                custom_rootfs: true,
-            },
-            match inputs.deployment.sandbox_tier {
-                awaken_runtime_host::SandboxTier::Docker => "docker",
-                awaken_runtime_host::SandboxTier::Podman => "podman",
-                awaken_runtime_host::SandboxTier::K8s => "k8s",
-                _ => unreachable!("matched container sandbox tier"),
-            },
-        ),
-        awaken_runtime_host::SandboxTier::Namespace => (
-            SandboxCapabilities {
-                isolation: IsolationClass::Namespace,
-                tool_transparent: true,
-                path_fidelity: true,
-                enforced_readonly: true,
-                network_isolation: true,
-                secret_egress_substitution: false,
-                resource_limits: false,
-                custom_rootfs: false,
-            },
-            "namespace",
-        ),
-    };
+    let (sandbox, backend) = inputs.deployment.sandbox_support();
     let mut capabilities = std::collections::BTreeSet::from([
         NATIVE_RUNTIME_CAPABILITY.to_string(),
         awaken_runtime_contract::A2A_RUNTIME_CAPABILITY.to_string(),
@@ -1064,6 +1026,30 @@ fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> WorkerManifes
         capabilities.extend(profile.cli_ids().map(|cli| format!("acp:{cli}")));
     }
     capabilities.extend(inputs.config.extra_capabilities.iter().cloned());
+    let mut credential_realization = inputs
+        .materializer
+        .map(InferenceExecutorMaterializer::credential_realization_capabilities)
+        .unwrap_or_default();
+    if inputs.credential_materializer && inputs.deployment.acp.is_some() {
+        credential_realization
+            .holders
+            .insert(awaken_runtime_contract::PlaintextHolder::new(
+                awaken_runtime_contract::PlaintextBoundary::Workload,
+                awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
+            ));
+        credential_realization
+            .material_sources
+            .insert(awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference);
+        credential_realization
+            .realization_kinds
+            .insert(awaken_runtime_contract::CredentialRealizationKind::ProcessSecretEnvironment);
+    }
+    if let Some(capability) = credential_realization
+        .manifest_capability()
+        .expect("credential realization capability serializes")
+    {
+        capabilities.insert(capability);
+    }
     WorkerManifest {
         build_digest: inputs.config.build_digest.clone(),
         capabilities,
@@ -1181,9 +1167,33 @@ mod grace_tests {
             }])
         }
 
+        fn credential_realization_capabilities(
+            &self,
+        ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
+            awaken_runtime_contract::CredentialRealizationCapabilities {
+                holders: [awaken_runtime_contract::PlaintextHolder::new(
+                    awaken_runtime_contract::PlaintextBoundary::Worker,
+                    awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+                )]
+                .into_iter()
+                .collect(),
+                material_sources: [
+                    awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+                ]
+                .into_iter()
+                .collect(),
+                realization_kinds: [
+                    awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
+                ]
+                .into_iter()
+                .collect(),
+            }
+        }
+
         fn materialize_pinned(
             &self,
             _candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
+            _context: &awaken_runtime_contract::RuntimeRunContext,
         ) -> Option<Arc<dyn LlmExecutor>> {
             None
         }
@@ -1200,6 +1210,7 @@ mod grace_tests {
         let manifest = derive_standard_manifest(StandardManifestInputs {
             deployment: &deployment,
             materializer: Some(&materializer),
+            credential_materializer: false,
             resource_support: ResourceManifestSupport::None,
             application_capabilities: Default::default(),
             config: &StandardManifestConfig::default(),
@@ -1212,6 +1223,24 @@ mod grace_tests {
                 .contains(awaken_runtime_contract::A2A_RUNTIME_CAPABILITY)
         );
         assert!(manifest.capabilities.contains("test-access/v1"));
+        let realization =
+            awaken_runtime_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
+                &manifest.capabilities,
+            )
+            .expect("credential realization capability decodes");
+        assert!(
+            realization
+                .holders
+                .contains(&awaken_runtime_contract::PlaintextHolder::new(
+                    awaken_runtime_contract::PlaintextBoundary::Worker,
+                    awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+                ))
+        );
+        assert!(
+            realization.realization_kinds.contains(
+                &awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter
+            )
+        );
         assert_eq!(
             credential_observations(Some(&materializer)),
             std::collections::BTreeSet::from([awaken_worker_contract::WorkerCredentialRevision {
@@ -1233,12 +1262,83 @@ mod grace_tests {
         assert!(worker.manifest().capabilities.contains("test-access/v1"));
     }
 
+    /// Credential capability derivation cause graph:
+    ///
+    /// inference materializer -> Worker provider adapter; exact credential
+    /// materializer + installed ACP profile -> Workload process-secret delivery.
+    /// Missing either ACP cause advertises neither half of that workload tuple.
+    ///
+    /// | Rule | materializer | credential store | ACP | Result |
+    /// |---|---|---|---|---|
+    /// | C1 | credential-aware | - | - | Worker/provider-adapter |
+    /// | C2 | - | T | T | Workload/process-secret |
+    /// | C3 | - | T | F | no Workload/process-secret |
     #[test]
+    fn standard_manifest_advertises_only_installed_credential_mechanisms() {
+        let mut acp = deployment();
+        acp.acp = Some(
+            awaken_runtime_host::AcpWorkerProfile::new(["claude".to_string()], None)
+                .expect("one ACP profile"),
+        );
+        let workload = derive_standard_manifest(StandardManifestInputs {
+            deployment: &acp,
+            materializer: None,
+            credential_materializer: true,
+            resource_support: ResourceManifestSupport::None,
+            application_capabilities: Default::default(),
+            config: &StandardManifestConfig::default(),
+        });
+        let workload_realization =
+            awaken_runtime_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
+                &workload.capabilities,
+            )
+            .expect("ACP credential realization capability decodes");
+        assert!(workload_realization.holders.contains(
+            &awaken_runtime_contract::PlaintextHolder::new(
+                awaken_runtime_contract::PlaintextBoundary::Workload,
+                awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
+            )
+        ));
+        assert!(workload_realization.realization_kinds.contains(
+            &awaken_runtime_contract::CredentialRealizationKind::ProcessSecretEnvironment
+        ));
+
+        let without_acp = derive_standard_manifest(StandardManifestInputs {
+            deployment: &deployment(),
+            materializer: None,
+            credential_materializer: true,
+            resource_support: ResourceManifestSupport::None,
+            application_capabilities: Default::default(),
+            config: &StandardManifestConfig::default(),
+        });
+        assert!(
+            awaken_runtime_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
+                &without_acp.capabilities,
+            )
+            .expect("empty credential realization capability decodes")
+            .is_empty()
+        );
+    }
+
+    #[test]
+    /// Cause graph: C1 Resource plane installed -> session capability; C2 exact
+    /// Repository credential backend installed -> Repository capability; C3
+    /// inference materializer installed -> its exact realization evidence.
+    /// C1/C2 never synthesize C3: a Repository transport cannot authorize an
+    /// inference or MCP Worker relay merely because both hold material in Worker.
+    ///
+    /// | Rule | C1 | C2 | C3 | Session | Repository | Credential evidence |
+    /// |---|---|---|---|---|---|---|
+    /// | W1 | F | - | F | F | F | empty |
+    /// | W2 | T | F | F | T | F | empty |
+    /// | W3 | T | T | F | T | T | empty |
+    /// | W4 | F | - | T | F | F | materializer evidence only |
     fn worker_manifest_advertises_only_installed_resource_seams() {
         let deployment = deployment();
         let without = derive_standard_manifest(StandardManifestInputs {
             deployment: &deployment,
             materializer: None,
+            credential_materializer: false,
             resource_support: ResourceManifestSupport::None,
             application_capabilities: Default::default(),
             config: &StandardManifestConfig::default(),
@@ -1253,10 +1353,18 @@ mod grace_tests {
                 .capabilities
                 .contains(super::REPOSITORY_CREDENTIALS_CAPABILITY)
         );
+        assert!(
+            awaken_runtime_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
+                &without.capabilities,
+            )
+            .expect("W1 evidence decodes")
+            .is_empty()
+        );
 
         let secretless = derive_standard_manifest(StandardManifestInputs {
             deployment: &deployment,
             materializer: None,
+            credential_materializer: false,
             resource_support: ResourceManifestSupport::Session,
             application_capabilities: Default::default(),
             config: &StandardManifestConfig::default(),
@@ -1271,10 +1379,18 @@ mod grace_tests {
                 .capabilities
                 .contains(super::REPOSITORY_CREDENTIALS_CAPABILITY)
         );
+        assert!(
+            awaken_runtime_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
+                &secretless.capabilities,
+            )
+            .expect("W2 evidence decodes")
+            .is_empty()
+        );
 
         let credentialed = derive_standard_manifest(StandardManifestInputs {
             deployment: &deployment,
             materializer: None,
+            credential_materializer: false,
             resource_support: ResourceManifestSupport::SessionWithRepositoryCredentials,
             application_capabilities: Default::default(),
             config: &StandardManifestConfig::default(),
@@ -1284,6 +1400,56 @@ mod grace_tests {
                 .capabilities
                 .contains(super::REPOSITORY_CREDENTIALS_CAPABILITY)
         );
+        let evidence =
+            awaken_runtime_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
+                &credentialed.capabilities,
+            )
+            .expect("W3 evidence decodes");
+        assert!(evidence.is_empty(), "W3");
+
+        let materializer = SchemeMaterializer;
+        let inference = derive_standard_manifest(StandardManifestInputs {
+            deployment: &deployment,
+            materializer: Some(&materializer),
+            credential_materializer: false,
+            resource_support: ResourceManifestSupport::None,
+            application_capabilities: Default::default(),
+            config: &StandardManifestConfig::default(),
+        });
+        assert!(
+            !inference
+                .capabilities
+                .contains(super::SESSION_RESOURCES_CAPABILITY)
+        );
+        assert!(
+            !inference
+                .capabilities
+                .contains(super::REPOSITORY_CREDENTIALS_CAPABILITY)
+        );
+        let evidence =
+            awaken_runtime_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
+                &inference.capabilities,
+            )
+            .expect("W4 evidence decodes");
+        assert_eq!(
+            evidence.holders,
+            std::collections::BTreeSet::from([awaken_runtime_contract::PlaintextHolder::new(
+                awaken_runtime_contract::PlaintextBoundary::Worker,
+                awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+            ),])
+        );
+        assert_eq!(
+            evidence.material_sources,
+            std::collections::BTreeSet::from([
+                awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+            ])
+        );
+        assert_eq!(
+            evidence.realization_kinds,
+            std::collections::BTreeSet::from([
+                awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
+            ])
+        );
     }
 
     #[test]
@@ -1292,6 +1458,7 @@ mod grace_tests {
         let manifest = derive_standard_manifest(StandardManifestInputs {
             deployment: &deployment,
             materializer: None,
+            credential_materializer: false,
             resource_support: ResourceManifestSupport::None,
             application_capabilities: std::collections::BTreeSet::from([
                 "application:flow-envelope/v1".to_string(),
@@ -1318,6 +1485,7 @@ mod grace_tests {
         let manifest = derive_standard_manifest(StandardManifestInputs {
             deployment: &deployment,
             materializer: None,
+            credential_materializer: false,
             resource_support: ResourceManifestSupport::None,
             application_capabilities: Default::default(),
             config: &config,

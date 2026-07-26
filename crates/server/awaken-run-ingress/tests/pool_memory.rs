@@ -428,7 +428,7 @@ async fn crashed_lease_is_recovered_and_redriven() {
         .unwrap();
     assert!(
         store
-            .claim("dead-worker", 1_000, 0)
+            .claim("dead-worker", 1_000, 0, &Default::default())
             .await
             .unwrap()
             .is_some()
@@ -822,7 +822,11 @@ async fn the_renewal_loop_keeps_a_long_run_from_being_reclaimed() {
     for _ in 0..30 {
         let now = clock.now_ms();
         assert!(
-            store.claim("thief", lease_ms, now).await.unwrap().is_none(),
+            store
+                .claim("thief", lease_ms, now, &Default::default())
+                .await
+                .unwrap()
+                .is_none(),
             "the renewed lease is never reclaimable while the run is in-flight"
         );
         tokio::time::sleep(Duration::from_millis(15)).await;
@@ -858,7 +862,13 @@ async fn the_maintenance_loop_reaps_a_poison_run_then_gcs_it() {
         .enqueue(RunDispatch::new(activation_on("busy", "thread-busy")))
         .await
         .unwrap();
-    assert!(store.claim("dead-a", 1_000, 0).await.unwrap().is_some());
+    assert!(
+        store
+            .claim("dead-a", 1_000, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
 
     // A poison run pre-driven to its crash-retry budget (attempt_count == 2), with an
     // expired lease. `busy`'s lease is still live during these claims, so each
@@ -867,9 +877,27 @@ async fn the_maintenance_loop_reaps_a_poison_run_then_gcs_it() {
         .enqueue(RunDispatch::new(activation_on("poison", "thread-poison")))
         .await
         .unwrap();
-    assert!(store.claim("dead-b", 1, 5).await.unwrap().is_some()); // fresh -> attempt 0
-    assert!(store.claim("dead-b", 1, 10).await.unwrap().is_some()); // recovery -> attempt 1
-    assert!(store.claim("dead-b", 1, 15).await.unwrap().is_some()); // recovery -> attempt 2
+    assert!(
+        store
+            .claim("dead-b", 1, 5, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    ); // fresh -> attempt 0
+    assert!(
+        store
+            .claim("dead-b", 1, 10, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    ); // recovery -> attempt 1
+    assert!(
+        store
+            .claim("dead-b", 1, 15, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    ); // recovery -> attempt 2
 
     let resolver = Arc::new(MapResolver {
         workers: HashMap::from([("thread-busy".to_string(), busy_worker)]),

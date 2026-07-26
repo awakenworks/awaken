@@ -21,12 +21,11 @@ use awaken_credential_contract::{
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use awaken_session_contract::{
     EnvironmentFingerprint, EnvironmentSnapshot, IdempotencyRecord, ManagedSessionRepository,
-    McpAttachmentDraft, McpAttachmentOrigin, McpAttachmentState, McpRefreshBinding, McpTarget,
-    PersistedSession, ResolvedSessionResources, ScopedPersistedSession, SessionBaseline,
-    SessionBaselineState, SessionLifecycleFact, SessionMcpAttachmentSet,
-    SessionMcpAuthoringContext, SessionMutation, SessionMutationPayload, SessionMutationResult,
-    SessionNetworkPolicy, SessionRepositoryError, SessionResourceState, SessionRevision,
-    TokenEndpointAuthBinding,
+    McpAttachmentDraft, McpAttachmentOrigin, McpAttachmentState, McpTarget, PersistedSession,
+    ResolvedSessionResources, ScopedPersistedSession, SessionBaseline, SessionBaselineState,
+    SessionLifecycleFact, SessionMcpAttachmentSet, SessionMcpAuthoringContext, SessionMutation,
+    SessionMutationPayload, SessionMutationResult, SessionNetworkPolicy, SessionRepositoryError,
+    SessionResourceState, SessionRevision,
 };
 
 mod extraction;
@@ -225,7 +224,26 @@ struct LegacyMcpServerBinding {
     url: String,
     credential_source_id: Option<String>,
     credential_revision: Option<u64>,
-    refresh: Option<McpRefreshBinding>,
+    refresh: Option<LegacyMcpRefreshBinding>,
+}
+
+/// Decode-only compatibility shape for the refresh DTO removed when exact
+/// `CredentialRefreshAccess` became the sole execution authority.
+#[derive(serde::Deserialize)]
+struct LegacyMcpRefreshBinding {
+    token_endpoint: String,
+    client_id: String,
+    refresh_token_ref: String,
+    token_endpoint_auth: LegacyTokenEndpointAuthBinding,
+    scope: Option<String>,
+    resource: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+enum LegacyTokenEndpointAuthBinding {
+    None,
+    ClientSecretBasic { secret_ref: String },
+    ClientSecretPost { secret_ref: String },
 }
 
 fn decode_resource_state(data: &str) -> Result<SessionResourceState, serde_json::Error> {
@@ -261,6 +279,7 @@ fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_json::Error>
     let credential_realization = CredentialRealizationProfile {
         inference_holder: holder.clone(),
         mcp_holder: mcp_holder.clone(),
+        resource_holder: mcp_holder.clone(),
     };
     let sandbox = runtime.sandbox.unwrap_or_else(|| serde_json::json!({}));
     let network = if runtime.deny_egress {
@@ -338,7 +357,7 @@ fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_json::Error>
 fn legacy_credential_access(
     id: String,
     revision: u64,
-    refresh: Option<McpRefreshBinding>,
+    refresh: Option<LegacyMcpRefreshBinding>,
 ) -> awaken_credential_contract::CredentialAccess {
     use awaken_credential_contract::{
         CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
@@ -356,30 +375,25 @@ fn legacy_credential_access(
     );
     if let Some(refresh) = refresh {
         let (token_endpoint_auth, client_secret_ref) = match refresh.token_endpoint_auth {
-            TokenEndpointAuthBinding::None => (TokenEndpointAuth::None, None),
-            TokenEndpointAuthBinding::ClientSecretBasic { secret_ref } => {
+            LegacyTokenEndpointAuthBinding::None => (TokenEndpointAuth::None, None),
+            LegacyTokenEndpointAuthBinding::ClientSecretBasic { secret_ref } => {
                 (TokenEndpointAuth::ClientSecretBasic, Some(secret_ref))
             }
-            TokenEndpointAuthBinding::ClientSecretPost { secret_ref } => {
+            LegacyTokenEndpointAuthBinding::ClientSecretPost { secret_ref } => {
                 (TokenEndpointAuth::ClientSecretPost, Some(secret_ref))
             }
         };
-        access = access.with_refresh(CredentialRefreshAccess {
-            credential_revision: revision,
-            configuration_fingerprint: awaken_session_contract::stable_fingerprint(&(
-                &refresh.token_endpoint,
-                &refresh.client_id,
-                &refresh.refresh_token_ref,
-            )),
-            token_endpoint: refresh.token_endpoint,
-            client_id: refresh.client_id,
+        access = access.with_refresh(CredentialRefreshAccess::new(
+            revision,
+            refresh.token_endpoint,
+            refresh.client_id,
             token_endpoint_auth,
             client_secret_ref,
-            refresh_token_ref: refresh.refresh_token_ref,
-            access_token_ref: format!("credential:{revision}:access"),
-            scope: refresh.scope,
-            resource: refresh.resource,
-        });
+            refresh.refresh_token_ref,
+            format!("credential:{revision}:access"),
+            refresh.scope,
+            refresh.resource,
+        ));
     }
     access
 }
@@ -1251,6 +1265,10 @@ mod tests {
                                 "awaken.worker",
                             ),
                             mcp_holder: PlaintextHolder::new(
+                                PlaintextBoundary::Worker,
+                                "awaken.worker",
+                            ),
+                            resource_holder: PlaintextHolder::new(
                                 PlaintextBoundary::Worker,
                                 "awaken.worker",
                             ),

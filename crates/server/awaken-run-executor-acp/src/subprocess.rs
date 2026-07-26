@@ -6,7 +6,8 @@
 //! production counterpart behind the same [`AgentChannelSource`] trait, so the
 //! executor is unchanged either way. Per-CLI config projection is data
 //! ([`AcpLaunch`]): the host resolves the model (config plane) and hands this
-//! module already-materialized strings — no config or secret types cross here.
+//! module typed coordinates plus an opaque process-secret requirement — no config
+//! lookup or credential materialization policy lives here.
 
 use std::collections::BTreeMap;
 use std::process::Stdio;
@@ -14,6 +15,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_channel::{AgentChannel, SplitChannel};
+use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::{ExitStatus, ProcessHandle, SandboxError, Signal};
 use awaken_runtime_contract::activation::RunActivation;
 use tokio::process::{Child, Command};
@@ -27,7 +29,7 @@ use crate::{AcpCli, AgentChannelSource, AgentSession, OpenError, ResolvedModel};
 #[derive(Debug, Clone)]
 pub struct AcpLaunch {
     pub argv: Vec<String>,
-    pub env: Vec<(String, String)>,
+    pub env: Vec<pc::EnvVar>,
 }
 
 impl AcpLaunch {
@@ -35,9 +37,13 @@ impl AcpLaunch {
     /// model name, and key land in the Anthropic env the adapter reads. Claude Code
     /// has no native ACP flag; it is fronted by `@agentclientprotocol/claude-agent-acp`
     /// via `npx` (see the [`AcpCli`] catalog — this helper mirrors that CLI row).
-    /// `api_key` is the already-materialized secret the host injects.
+    /// `process_secret` remains an opaque broker reference until spawn.
     #[must_use]
-    pub fn claude(base_url: &str, model: &str, api_key: &str) -> Self {
+    pub fn claude(
+        base_url: &str,
+        model: &str,
+        process_secret: crate::ProcessSecretRequirement,
+    ) -> Self {
         Self {
             argv: vec![
                 "npx".to_string(),
@@ -45,9 +51,15 @@ impl AcpLaunch {
                 "@agentclientprotocol/claude-agent-acp@0.44".to_string(),
             ],
             env: vec![
-                ("ANTHROPIC_BASE_URL".to_string(), base_url.to_string()),
-                ("ANTHROPIC_MODEL".to_string(), model.to_string()),
-                ("ANTHROPIC_API_KEY".to_string(), api_key.to_string()),
+                inline_env("ANTHROPIC_BASE_URL", base_url),
+                inline_env("ANTHROPIC_MODEL", model),
+                pc::EnvVar {
+                    name: "ANTHROPIC_API_KEY".to_string(),
+                    value: pc::EnvValue::Secret {
+                        reference: process_secret.reference().to_string(),
+                    },
+                    visibility: pc::EnvVisibility::Process,
+                },
             ],
         }
     }
@@ -55,7 +67,27 @@ impl AcpLaunch {
     /// A custom launch (argv + env) — another CLI, or a test ACP agent.
     #[must_use]
     pub fn custom(argv: Vec<String>, env: Vec<(String, String)>) -> Self {
-        Self { argv, env }
+        Self {
+            argv,
+            env: env
+                .into_iter()
+                .map(|(name, value)| pc::EnvVar {
+                    name,
+                    value: pc::EnvValue::Inline { value },
+                    visibility: pc::EnvVisibility::Process,
+                })
+                .collect(),
+        }
+    }
+}
+
+fn inline_env(name: &str, value: &str) -> pc::EnvVar {
+    pc::EnvVar {
+        name: name.to_string(),
+        value: pc::EnvValue::Inline {
+            value: value.to_string(),
+        },
+        visibility: pc::EnvVisibility::Process,
     }
 }
 
@@ -70,14 +102,18 @@ const HOST_PASSTHROUGH_ENV: &[&str] = &["PATH", "HOME"];
 /// `lookup` (the host env at spawn). Pure so the allowlist is unit-testable without
 /// spawning; a projected key is not shadowed.
 fn with_host_passthrough(
-    mut env: Vec<(String, String)>,
+    mut env: Vec<pc::EnvVar>,
     lookup: impl Fn(&str) -> Option<String>,
-) -> Vec<(String, String)> {
+) -> Vec<pc::EnvVar> {
     for key in HOST_PASSTHROUGH_ENV {
-        if !env.iter().any(|(k, _)| k == key)
+        if !env.iter().any(|var| var.name == *key)
             && let Some(value) = lookup(key)
         {
-            env.push(((*key).to_string(), value));
+            env.push(pc::EnvVar {
+                name: (*key).to_string(),
+                value: pc::EnvValue::Inline { value },
+                visibility: pc::EnvVisibility::Process,
+            });
         }
     }
     env
@@ -88,6 +124,7 @@ fn with_host_passthrough(
 pub struct SubprocessChannelSource {
     launch: AcpLaunch,
     codec: awaken_protocol_acp::Codec,
+    secret_broker: Option<Arc<dyn pc::SecretBroker>>,
 }
 
 impl SubprocessChannelSource {
@@ -99,6 +136,7 @@ impl SubprocessChannelSource {
         Self {
             launch,
             codec: awaken_protocol_acp::Codec::Newline,
+            secret_broker: None,
         }
     }
 
@@ -108,13 +146,20 @@ impl SubprocessChannelSource {
         self.codec = codec;
         self
     }
+
+    #[must_use]
+    pub fn with_secret_broker(mut self, broker: Arc<dyn pc::SecretBroker>) -> Self {
+        self.secret_broker = Some(broker);
+        self
+    }
 }
 
 /// Spawn an ACP CLI child from a resolved [`AcpLaunch`] and pipe its stdio into an
 /// [`AgentChannel`]. `env_clear` + only the projected env, so no ambient leak.
-fn spawn(
+async fn spawn(
     launch: &AcpLaunch,
     codec: awaken_protocol_acp::Codec,
+    broker: Option<&Arc<dyn pc::SecretBroker>>,
 ) -> std::result::Result<AgentSession, OpenError> {
     let (program, args) = launch
         .argv
@@ -131,8 +176,14 @@ fn spawn(
     // Projected model/secret env plus the PATH/HOME allowlist, so `npx`/`node`/the
     // CLI resolve and `npx` finds its cache — everything else stays cleared.
     let env = with_host_passthrough(launch.env.clone(), |k| std::env::var(k).ok());
-    for (key, value) in &env {
-        command.env(key, value);
+    let mut planned = pc::Command::new(launch.argv.clone());
+    planned.env = env;
+    planned.stdio = pc::Stdio::Piped;
+    let materialized = pc::materialize_process_command(&[], planned, broker)
+        .await
+        .map_err(|error| OpenError(error.to_string()))?;
+    for var in &materialized.env {
+        command.env(&var.name, var.value.expose());
     }
     let mut child = command
         .spawn()
@@ -207,23 +258,35 @@ impl AgentChannelSource for SubprocessChannelSource {
     async fn open(
         &self,
         _activation: &RunActivation,
+        _context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
     ) -> std::result::Result<AgentSession, OpenError> {
-        spawn(&self.launch, self.codec)
+        spawn(&self.launch, self.codec, self.secret_broker.as_ref()).await
     }
 }
 
 /// Resolves the host-provided inputs for one ACP run: the model coordinates (base
-/// URL, model name, materialized key — the config-plane + vault lookup the executor
-/// must not do itself) and any per-run non-secret env (e.g. the thread's config-home
+/// URL, model name, process-secret requirement — the config-plane + vault lookup the
+/// executor must not do itself) and any per-run non-secret env (e.g. the thread's config-home
 /// path, which depends on `activation.thread_id` and so cannot be fixed up front).
 /// The one seam between the neutral projection and the host's config/secret world.
 pub trait LaunchResolver: Send + Sync {
-    fn model(&self, activation: &RunActivation) -> std::result::Result<ResolvedModel, OpenError>;
+    fn model(
+        &self,
+        activation: &RunActivation,
+        context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
+    ) -> std::result::Result<ResolvedModel, OpenError>;
 
     /// Host-provided non-secret env for this run (config-home path, passthrough).
     /// Merged under the typed model delivery — it can never shadow the model or key.
     fn extra_env(&self, _activation: &RunActivation) -> Vec<(String, String)> {
         Vec::new()
+    }
+
+    /// Broker paired with the process-secret requirement returned by [`Self::model`].
+    /// A projected local source consumes it at spawn; a sandboxed source uses the
+    /// same broker installed in its provider.
+    fn secret_broker(&self) -> Option<Arc<dyn pc::SecretBroker>> {
+        None
     }
 }
 
@@ -246,8 +309,9 @@ impl ProjectingChannelSource {
     pub(crate) fn plan(
         &self,
         activation: &RunActivation,
+        context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
     ) -> std::result::Result<AcpLaunch, OpenError> {
-        project_launch(&self.cli, self.resolver.as_ref(), activation)
+        project_launch(&self.cli, self.resolver.as_ref(), activation, context)
     }
 }
 
@@ -260,8 +324,9 @@ pub fn project_launch(
     cli: &AcpCli,
     resolver: &dyn LaunchResolver,
     activation: &RunActivation,
+    context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
 ) -> std::result::Result<AcpLaunch, OpenError> {
-    let model = resolver.model(activation)?;
+    let model = resolver.model(activation, context)?;
     let extra_env = resolver.extra_env(activation);
     let window = AcpSettings::from_plugin_config(&activation.snapshot.resolved_spec.plugin_config)
         .compact_window;
@@ -388,7 +453,7 @@ pub fn mcp_injection_from_servers(
 fn write_mcp_config(
     cli: &AcpCli,
     plugin_config: &std::collections::BTreeMap<String, serde_json::Value>,
-    launch_env: &[(String, String)],
+    launch_env: &[pc::EnvVar],
 ) -> std::result::Result<(), OpenError> {
     let Some(crate::McpDelivery::ConfigFile { path, contents }) = mcp_delivery(cli, plugin_config)
     else {
@@ -396,8 +461,11 @@ fn write_mcp_config(
     };
     let Some(dir) = launch_env
         .iter()
-        .find(|(k, _)| k == cli.config_home_env)
-        .map(|(_, v)| v.as_str())
+        .find(|var| var.name == cli.config_home_env)
+        .and_then(|var| match &var.value {
+            pc::EnvValue::Inline { value } => Some(value.as_str()),
+            pc::EnvValue::Secret { .. } => None,
+        })
     else {
         return Ok(());
     };
@@ -516,7 +584,7 @@ mod mcp_wiring_tests {
         let dir = std::env::temp_dir().join(format!("awaken-mcpcfg-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let env = vec![("CODEX_HOME".to_string(), dir.to_string_lossy().to_string())];
+        let env = vec![inline_env("CODEX_HOME", &dir.to_string_lossy())];
 
         write_mcp_config(acp_cli("codex").unwrap(), &plugin_config_with_mcp(), &env).unwrap();
 
@@ -544,10 +612,7 @@ mod mcp_wiring_tests {
 
         // The launch points the CLI's config-home env at the ISOLATED dir (what the host's
         // resolver does), so the MCP config lands there.
-        let env = vec![(
-            "CODEX_HOME".to_string(),
-            isolated.to_string_lossy().to_string(),
-        )];
+        let env = vec![inline_env("CODEX_HOME", &isolated.to_string_lossy())];
         write_mcp_config(acp_cli("codex").unwrap(), &plugin_config_with_mcp(), &env).unwrap();
 
         // The isolated home got the injected server; the host default is byte-unchanged.
@@ -595,10 +660,7 @@ mod mcp_wiring_tests {
         let dir = std::env::temp_dir().join(format!("awaken-mcpnoop-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let env = vec![(
-            "CLAUDE_CONFIG_DIR".to_string(),
-            dir.to_string_lossy().to_string(),
-        )];
+        let env = vec![inline_env("CLAUDE_CONFIG_DIR", &dir.to_string_lossy())];
         write_mcp_config(acp_cli("claude").unwrap(), &plugin_config_with_mcp(), &env).unwrap();
         assert!(!dir.join("config.toml").exists());
         let _ = std::fs::remove_dir_all(&dir);
@@ -610,14 +672,16 @@ impl AgentChannelSource for ProjectingChannelSource {
     async fn open(
         &self,
         activation: &RunActivation,
+        context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
     ) -> std::result::Result<AgentSession, OpenError> {
         // A real CLI (`claude --acp`, `codex acp`) speaks official ACP JSON-RPC.
-        let launch = self.plan(activation)?;
+        let launch = self.plan(activation, context)?;
         // A `ConfigFileToml` CLI (codex) gets its MCP servers written into the config
         // home before launch; an `AcpSession` CLI carries them at `session/new` instead.
         let plugin_config = &activation.snapshot.resolved_spec.plugin_config;
         write_mcp_config(&self.cli, plugin_config, &launch.env)?;
-        let mut session = spawn(&launch, CLI_CODEC)?;
+        let broker = self.resolver.secret_broker();
+        let mut session = spawn(&launch, CLI_CODEC, broker.as_ref()).await?;
         // An `AcpSession` CLI (claude/gemini/opencode) carries its MCP servers at
         // `session/new`; the driver reads them off the session into the turn config.
         if let Some(crate::McpDelivery::SessionServers(servers)) =
@@ -692,6 +756,15 @@ mod tests {
 
     fn pc(section: serde_json::Value) -> BTreeMap<String, serde_json::Value> {
         BTreeMap::from([("acp".to_string(), section)])
+    }
+
+    fn env_value<'a>(env: &'a [pc::EnvVar], key: &str) -> Option<&'a str> {
+        env.iter()
+            .find(|var| var.name == key)
+            .map(|var| match &var.value {
+                pc::EnvValue::Inline { value } => value.as_str(),
+                pc::EnvValue::Secret { reference } => reference.as_str(),
+            })
     }
 
     #[test]
@@ -814,8 +887,8 @@ mod tests {
     #[test]
     fn host_passthrough_adds_path_and_home_without_shadowing_projected_env() {
         let projected = vec![
-            ("ANTHROPIC_API_KEY".to_string(), "secret".to_string()),
-            ("HOME".to_string(), "/projected/home".to_string()),
+            inline_env("ANTHROPIC_API_KEY", "secret"),
+            inline_env("HOME", "/projected/home"),
         ];
         let env = with_host_passthrough(projected, |k| match k {
             "PATH" => Some("/usr/local/bin:/usr/bin".to_string()),
@@ -824,55 +897,44 @@ mod tests {
         });
         // PATH added from the host (so npx/node resolve).
         assert!(
-            env.iter()
-                .any(|(k, v)| k == "PATH" && v == "/usr/local/bin:/usr/bin")
+            env.iter().any(|var| var.name == "PATH"
+                && env_value(&env, "PATH") == Some("/usr/local/bin:/usr/bin"))
         );
         // HOME already set by the projection is NOT overridden by the host value.
         let homes: Vec<&str> = env
             .iter()
-            .filter(|(k, _)| k == "HOME")
-            .map(|(_, v)| v.as_str())
+            .filter(|var| var.name == "HOME")
+            .filter_map(|_| env_value(&env, "HOME"))
             .collect();
         assert_eq!(homes, vec!["/projected/home"], "projected HOME wins");
         // The secret survives untouched.
-        assert!(
-            env.iter()
-                .any(|(k, v)| k == "ANTHROPIC_API_KEY" && v == "secret")
-        );
+        assert!(env_value(&env, "ANTHROPIC_API_KEY") == Some("secret"));
     }
 
     #[test]
     fn host_passthrough_omits_a_key_absent_from_the_host() {
         let env = with_host_passthrough(Vec::new(), |k| (k == "PATH").then(|| "/bin".to_string()));
-        assert!(env.iter().any(|(k, _)| k == "PATH"));
+        assert!(env.iter().any(|var| var.name == "PATH"));
         assert!(
-            !env.iter().any(|(k, _)| k == "HOME"),
+            !env.iter().any(|var| var.name == "HOME"),
             "absent host key omitted"
         );
     }
 
     #[test]
     fn claude_projection_puts_model_and_base_in_anthropic_env() {
-        let l = AcpLaunch::claude("https://gw/v1/", "kimi-k2", "vault-key");
+        let l = AcpLaunch::claude(
+            "https://gw/v1/",
+            "kimi-k2",
+            crate::ProcessSecretRequirement::new("lease://vault-key"),
+        );
         assert_eq!(
             l.argv,
             vec!["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.44"]
         );
-        assert!(
-            l.env
-                .iter()
-                .any(|(k, v)| k == "ANTHROPIC_BASE_URL" && v == "https://gw/v1/")
-        );
-        assert!(
-            l.env
-                .iter()
-                .any(|(k, v)| k == "ANTHROPIC_MODEL" && v == "kimi-k2")
-        );
-        assert!(
-            l.env
-                .iter()
-                .any(|(k, v)| k == "ANTHROPIC_API_KEY" && v == "vault-key")
-        );
+        assert!(env_value(&l.env, "ANTHROPIC_BASE_URL") == Some("https://gw/v1/"));
+        assert!(env_value(&l.env, "ANTHROPIC_MODEL") == Some("kimi-k2"));
+        assert!(env_value(&l.env, "ANTHROPIC_API_KEY") == Some("lease://vault-key"));
     }
 
     #[tokio::test]
@@ -902,8 +964,9 @@ mod tests {
             vec![("MY_PROJECTED".to_string(), "projected-value".to_string())],
         );
 
-        let session =
-            spawn(&launch, awaken_protocol_acp::Codec::Newline).expect("spawn the real child");
+        let session = spawn(&launch, awaken_protocol_acp::Codec::Newline, None)
+            .await
+            .expect("spawn the real child");
         let mut channel = session.channel;
         channel
             .write_all(b"go\n")
@@ -934,6 +997,83 @@ mod tests {
             line.contains("PROJECTED=[projected-value]"),
             "the projected launch env must reach the child: {line:?}"
         );
+    }
+
+    /// ACP last-mile cause graph:
+    ///
+    /// typed Secret env -> broker installed -> exact reference resolves -> spawn
+    /// -> child receives plaintext. The reference and plaintext remain absent from
+    /// launch Debug; without the broker the child is never started.
+    ///
+    /// | Rule | typed secret | broker | resolves | Result |
+    /// |---|---|---|---|---|
+    /// | A1 | T | T | T | child sees secret exactly once |
+    /// | A2 | T | F | - | fail before spawn |
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn typed_process_secret_reaches_only_the_spawned_acp_process() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::AsyncReadExt;
+
+        struct Broker(AtomicUsize);
+        #[async_trait]
+        impl pc::SecretBroker for Broker {
+            async fn materialize(&self, reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
+                assert_eq!(reference, "lease://acp-exact");
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(b"process-only-value".to_vec())
+            }
+
+            async fn materialize_process(
+                &self,
+                reference: &str,
+            ) -> Result<Vec<u8>, pc::SandboxError> {
+                self.materialize(reference).await
+            }
+
+            async fn write_back(
+                &self,
+                _reference: &str,
+                _bytes: Vec<u8>,
+            ) -> Result<(), pc::SandboxError> {
+                Err(pc::SandboxError::new("not supported"))
+            }
+        }
+
+        let launch = AcpLaunch {
+            argv: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "printf '%s' \"$MODEL_TOKEN\"".into(),
+            ],
+            env: vec![pc::EnvVar {
+                name: "MODEL_TOKEN".into(),
+                value: pc::EnvValue::Secret {
+                    reference: "lease://acp-exact".into(),
+                },
+                visibility: pc::EnvVisibility::Process,
+            }],
+        };
+        let debug = format!("{launch:?}");
+        assert!(!debug.contains("lease://acp-exact"));
+        assert!(!debug.contains("process-only-value"));
+
+        assert!(
+            spawn(&launch, awaken_protocol_acp::Codec::Newline, None)
+                .await
+                .is_err(),
+            "A2 missing broker fails before spawn"
+        );
+
+        let broker = Arc::new(Broker(AtomicUsize::new(0)));
+        let erased: Arc<dyn pc::SecretBroker> = broker.clone();
+        let mut session = spawn(&launch, awaken_protocol_acp::Codec::Newline, Some(&erased))
+            .await
+            .expect("A1 brokered spawn");
+        let mut output = String::new();
+        session.channel.read_to_string(&mut output).await.unwrap();
+        assert_eq!(output, "process-only-value");
+        assert_eq!(broker.0.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

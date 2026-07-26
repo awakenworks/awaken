@@ -74,9 +74,24 @@ async fn enqueue_is_idempotent_and_expired_lease_is_reclaimed() {
         .unwrap();
 
     // A held lease blocks a second claim; an expired lease is reclaimed.
-    assert!(store.claim("a", 1_000, 0).await.unwrap().is_some());
-    assert!(store.claim("b", 1_000, 500).await.unwrap().is_none());
-    let recovered = store.claim("b", 1_000, 1_001).await.unwrap();
+    assert!(
+        store
+            .claim("a", 1_000, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        store
+            .claim("b", 1_000, 500, &Default::default())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let recovered = store
+        .claim("b", 1_000, 1_001, &Default::default())
+        .await
+        .unwrap();
     assert_eq!(recovered.map(|c| c.lease.owner), Some("b".to_string()));
 }
 
@@ -88,7 +103,7 @@ async fn sqlite_epoch_guard_blocks_reclaim_until_commit_returns() {
         .await
         .unwrap();
     let lease = store
-        .claim("owner-a", 100, 0)
+        .claim("owner-a", 100, 0, &Default::default())
         .await
         .unwrap()
         .expect("claim")
@@ -105,8 +120,11 @@ async fn sqlite_epoch_guard_blocks_reclaim_until_commit_returns() {
     inner.entered.notified().await;
 
     let reclaim_store = store.clone();
-    let mut reclaiming =
-        tokio::spawn(async move { reclaim_store.claim("owner-b", 100, 200).await });
+    let mut reclaiming = tokio::spawn(async move {
+        reclaim_store
+            .claim("owner-b", 100, 200, &Default::default())
+            .await
+    });
     assert!(
         tokio::time::timeout(std::time::Duration::from_millis(30), &mut reclaiming)
             .await
@@ -204,7 +222,7 @@ async fn sqlite_dispatch_opens_a_file_and_persists() {
     // A fresh handle on the same file still has the enqueued run.
     let restarted = SqliteDispatchStore::open(&path).expect("open b");
     let claimed = restarted
-        .claim("w", 1_000, 0)
+        .claim("w", 1_000, 0, &Default::default())
         .await
         .unwrap()
         .expect("survived");

@@ -145,6 +145,12 @@ impl SharedHost {
         // (R1). `None` when no provider is installed — the worker stays on the host
         // default.
         let inference_materializer = self.worker_inference_materializer();
+        let local_credential_capabilities = self.upstream.is_none().then(|| {
+            self.inference_routing
+                .materializer()
+                .map(|materializer| materializer.credential_realization_capabilities())
+                .unwrap_or_default()
+        });
         let recovery_projection = commit.recovery_projection();
         // The recovered dispatch a crash left mid-flight is re-executed by this
         // worker; giving it the same checkpoint store lets that re-execution resume
@@ -166,6 +172,9 @@ impl SharedHost {
             inference_materializer,
         )
         .with_context(run_context);
+        if let Some(capabilities) = local_credential_capabilities {
+            ingress = ingress.with_local_credential_capabilities(capabilities);
+        }
         ingress.install_attempt_executor(attempt_executor);
         if let Some(upstream) = &self.upstream {
             ingress =
@@ -193,7 +202,7 @@ impl SharedHost {
     ) -> Option<awaken_run_ingress::InferenceMaterializerFn> {
         self.inference_routing.materializer().map(|materializer| {
             let resolve: awaken_run_ingress::InferenceMaterializerFn =
-                Arc::new(move |activation| materializer.materialize(activation));
+                Arc::new(move |activation, context| materializer.materialize(activation, context));
             resolve
         })
     }

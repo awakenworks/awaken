@@ -25,7 +25,8 @@ fn session() -> PersistedSession {
         network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
         credential_realization: awaken_credential_contract::CredentialRealizationProfile {
             inference_holder: holder.clone(),
-            mcp_holder: holder,
+            mcp_holder: holder.clone(),
+            resource_holder: holder,
         },
     };
     PersistedSession {

@@ -41,6 +41,7 @@ use awaken_protocol_acp::{
 // executor also uses these names internally to emit lifecycle events.
 pub use awaken_protocol_acp::{AcpLaunchEvent, AcpLaunchStage, Codec, LaunchObserver};
 use awaken_provisioning_contract::ProcessHandle;
+pub use awaken_provisioning_contract::{SandboxError, SecretBroker};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::boundary::{BoundaryOutcome, evaluate_boundary};
 use awaken_runtime_contract::execution::{
@@ -82,6 +83,7 @@ pub trait AgentChannelSource: Send + Sync {
     async fn open(
         &self,
         activation: &RunActivation,
+        context: &RuntimeRunContext,
     ) -> std::result::Result<AgentSession, OpenError>;
 }
 
@@ -509,7 +511,7 @@ impl AcpRunExecutor {
 
         // The host opens the channel (sandbox launch / remote dial). A failure here
         // is a launch/config fault → classify at the Initialize stage.
-        let mut session = match self.source.open(&activation).await {
+        let mut session = match self.source.open(&activation, &context).await {
             Ok(session) => session,
             Err(open) => {
                 notify(
@@ -668,7 +670,7 @@ impl AcpRunExecutor {
                             "ACP handshake interrupted; relaunching once",
                         ),
                     );
-                    session = match self.source.open(&activation).await {
+                    session = match self.source.open(&activation, &context).await {
                         Ok(session) => session,
                         Err(open) => {
                             let failure =
@@ -788,7 +790,7 @@ impl AcpRunExecutor {
                     prompt = prompt_of(&fold);
                     committed.extend(fold);
                     // Relaunch the CLI for the next turn (ACP is per-turn).
-                    session = match self.source.open(&activation).await {
+                    session = match self.source.open(&activation, &context).await {
                         Ok(session) => session,
                         Err(open) => {
                             let failure =
@@ -1278,7 +1280,8 @@ mod session_home;
 mod subprocess;
 pub use acp_cli::{
     AcpCli, McpCredential, McpDelivery, McpInterface, McpServerConfig, McpTransport, ModelDelivery,
-    ResolvedModel, SessionKey, SessionPersistence, acp_cli, is_dynamic_install, known_acp_clis,
+    ProcessSecretRequirement, ResolvedModel, SessionKey, SessionPersistence, acp_cli,
+    is_dynamic_install, known_acp_clis,
 };
 // The ACP config-home path convention (shared kernel) and the reference cross-machine
 // session-home provider over it — the host consumes these instead of owning them.

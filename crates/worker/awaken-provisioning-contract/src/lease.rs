@@ -552,6 +552,7 @@ mod actuator_tests {
                 path_fidelity: true,
                 enforced_readonly: true,
                 network_isolation: true,
+                enforced_network_allowlist: false,
                 secret_egress_substitution: false,
                 resource_limits: true,
                 custom_rootfs: true,

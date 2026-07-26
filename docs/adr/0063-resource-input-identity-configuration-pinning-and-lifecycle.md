@@ -10,6 +10,8 @@
   (Workspace ownership and IAM boundary)
 - Detailed design:
   [Resources, Memory, Files, And Skills](../design/resources-memory-files-skills.md)
+- Coordinated credential execution amendment:
+  [ADR-0067](0067-credential-custody-model-exposure-and-secret-delivery.md)
 - Supersedes:
   - ADR-0038 D2 only where a content fingerprint was implied for every resource
     family;
@@ -123,9 +125,12 @@ pinned config + current state + current ownership + current authorization
 ```
 
 An old config version cannot revive a suspended/deleted resource or a revoked
-credential. Credential configuration contains only a binding/reference; secret
-material is injected as a short-lived lease at activation or remote operation
-time and is never persisted in `ResolvedSessionResources`.
+credential. Repository configuration contains only a binding/reference. Before
+the resolved input enters the Session aggregate, the Session application freezes
+the bound credential's exact active revision, canonical usage, `Forbidden`
+model-exposure policy, and Environment-selected Resource holder as a secret-free
+execution pin. Material is still opened only at activation or a remote operation
+and is never persisted in `ResolvedSessionResources`.
 
 ### D4: Resource services own data invariants, not authorization policy
 
@@ -176,7 +181,7 @@ PEP or PDP: it has no principal, role, API key, policy, or allow/deny decision.
 |---|---|---|
 | Configure | Resource Catalog application service and per-kind repositories | create definitions; publish immutable Memory/Repository config versions; maintain current version and live state |
 | Bind | Agent configuration service / Managed Session adapter | persist Agent defaults or accept temporary Session attachments; carry identity, mount, access, instructions only |
-| Resolve | `SessionInputResolver` + Skill resource resolver in the Session control plane | merge inputs once; resolve current config/Skill versions; validate paths/collisions; produce secret-free `ResolvedSessionResources` |
+| Resolve | `SessionInputResolver` + Skill resource resolver in the Session control plane | merge inputs once; resolve current config/Skill versions; compile Repository binding to an exact secret-free credential access/holder pin; validate paths/collisions; produce `ResolvedSessionResources` |
 | Authorize | front-door PEP + authorization PDP/PIP | evaluate principal, action, Workspace, target facts, and active policy; return allow/deny/obligations |
 | Activate | `SessionResourceCoordinator` + `ResourceBindingValidator` + `SandboxProvider` + per-kind realizer | validate the exact frozen config without re-resolving current; create activation records; materialize File, open Memory, clone Repo; inject short-lived credentials |
 | Use | sandbox tools plus `FileStore`, `ScopedMemoryStore`, and Git/MCP adapters | enforce read/write capability and resource-specific consistency during the Session |
@@ -223,8 +228,9 @@ because they execute in the parent's Session environment.
 Repository activation crosses a neutral `RepositoryRealizer` port with a
 secret-free `RepositoryRealizationPlan`. The plan contains the resolved config
 version's URL, optional initial branch, mount path, identity, and access—never a
-Git commit/tree pin or authorization object. Credential bytes are a separate,
-ephemeral transport argument. Publication and authored-Skill persistence occur at
+Git commit/tree pin or authorization object. Its separately persisted credential
+pin is validated and opened through the common exact material resolver; credential
+bytes remain an ephemeral transport argument. Publication and authored-Skill persistence occur at
 binding replacement or Session release; a Files GET is never a hidden write edge.
 
 `Active -> Suspended -> Archived -> Deleted -> Purged` is the managed-resource

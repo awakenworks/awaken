@@ -221,7 +221,10 @@ impl crate::host::SharedHost {
     ) -> Self {
         let deployment = self.deployment.clone();
         let Some(profile) = deployment.acp.as_ref() else {
-            return self;
+            return match credentials {
+                Some(credentials) => self.with_session_secret_broker(Arc::new(credentials)),
+                None => self,
+            };
         };
         let base = acp_sandbox_base(&deployment);
         let credentials = credentials.unwrap_or_else(|| {
@@ -248,7 +251,12 @@ impl crate::host::SharedHost {
             crate::AcpLaunchRegistry::new(routes, default)
                 .unwrap_or_else(|error| panic!("configure ACP launch routes: {error}")),
         );
-        self.with_acp_launch_source(hand_factory, source).await
+        // The same exact, claim-fenced materializer owns both sides of the
+        // last-mile seam: the resolver issues an opaque one-shot reference and
+        // the selected sandbox asks it for bytes immediately before spawn.
+        self.with_acp_launch_source(hand_factory, source)
+            .await
+            .with_session_secret_broker(Arc::new(credentials))
     }
 
     /// Realize an explicitly supplied ACP launch source in the deployment's sandbox
@@ -379,12 +387,13 @@ mod tests {
         fn model(
             &self,
             _activation: &awaken_runtime_contract::RunActivation,
+            _context: &awaken_runtime_contract::RuntimeRunContext,
         ) -> Result<awaken_run_executor_acp::ResolvedModel, awaken_run_executor_acp::OpenError>
         {
             Ok(awaken_run_executor_acp::ResolvedModel {
                 base_url: "http://example.invalid".into(),
                 model: "test".into(),
-                api_key: "test".into(),
+                process_secret: None,
             })
         }
     }

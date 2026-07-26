@@ -189,7 +189,13 @@ async fn open_maps_a_sandbox_create_failure_to_open_error() {
     let launch = AcpLaunch::custom(vec!["/bin/true".to_string()], vec![]);
     let source = SandboxChannelSource::new(file.clone(), launch);
 
-    let err = match source.open(&activation("t-create-fail")).await {
+    let err = match source
+        .open(
+            &activation("t-create-fail"),
+            &awaken_runtime_contract::RuntimeRunContext::new(),
+        )
+        .await
+    {
         Ok(_) => panic!("expected a sandbox-create failure"),
         Err(e) => e,
     };
@@ -210,7 +216,13 @@ async fn open_maps_a_spawn_failure_to_open_error() {
     let launch = AcpLaunch::custom(Vec::new(), vec![]);
     let source = SandboxChannelSource::new(base, launch);
 
-    let err = match source.open(&activation("t-spawn-fail")).await {
+    let err = match source
+        .open(
+            &activation("t-spawn-fail"),
+            &awaken_runtime_contract::RuntimeRunContext::new(),
+        )
+        .await
+    {
         Ok(_) => panic!("expected a sandboxed-agent-launch failure"),
         Err(e) => e,
     };

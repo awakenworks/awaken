@@ -4,8 +4,12 @@
 //! product crate's now-`pub` data-plane assembly helpers (`mount` / `mount_with_managed`
 //! / `data_subject_plane`) and production executors via `awaken_server::`.
 
+mod acp_gateway;
+mod attempt_credential;
+mod model_publication;
 mod models;
 pub use crate::models::*;
+pub use acp_gateway::build_acp_gateway_router;
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -23,50 +27,6 @@ use awaken_runtime_contract::resolved::{ModelBinding, ToolKind};
 use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshot};
 use axum::Router;
 
-/// Test composition adapter: scenario models are host-installed executors, while
-/// their model directory remains live so management-assistant `Auto` authoring
-/// exercises the ordinary publication path.
-struct ScenarioHostModelResolver {
-    catalog: Arc<dyn awaken_model_catalog::repo::CatalogRepo>,
-}
-
-#[async_trait::async_trait]
-impl awaken_runtime_host::ModelPublicationResolver for ScenarioHostModelResolver {
-    async fn resolve_models(
-        &self,
-        _workspace: &awaken_tenancy::ScopeId,
-        selection: &awaken_config_store::ModelSelection,
-        fallbacks: &[ModelBinding],
-    ) -> Result<
-        awaken_runtime_host::ResolvedPublicationModels,
-        awaken_runtime_host::PublicationResolutionError,
-    > {
-        let catalog = self.catalog.snapshot().await.map_err(|error| {
-            awaken_runtime_host::PublicationResolutionError::CatalogUnavailable(error.to_string())
-        })?;
-        let (primary, fallbacks) = if let Some(primary) = selection.resolved() {
-            (primary.clone(), fallbacks.to_vec())
-        } else {
-            let mut offerings = catalog.offerings.iter();
-            let primary = offerings
-                .next()
-                .ok_or(awaken_runtime_host::PublicationResolutionError::MissingPrimary)?;
-            let binding = |offering: &awaken_model_catalog::Offering| {
-                ModelBinding::new(&offering.provider_id.0, &offering.model_id, "genai")
-            };
-            (binding(primary), offerings.map(binding).collect())
-        };
-        let context_window = catalog.context_window(&primary.model_ref);
-        let max_output_tokens = catalog.max_output_tokens(&primary.model_ref);
-        Ok(awaken_runtime_host::ResolvedPublicationModels::host(
-            primary,
-            fallbacks,
-            context_window,
-            max_output_tokens,
-        ))
-    }
-}
-
 // The managed-agents service layer (`awaken-runtime-host`): the neutral host,
 // the two port adapters, the per-plane routers, and the authoring/transport
 // re-exports a composition root (and the integration tests) drive directly.
@@ -76,10 +36,9 @@ pub use awaken_managed_routers::{default_models, files_router, models_router};
 use awaken_run_executor_a2a::{A2aRemoteAgent, HttpTransport};
 pub use awaken_runtime_host::{
     ConfigService, ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost,
-    McpRefreshMaterial, ProtocolHost, SharedHost, SkillContext, SkillSpec, ThreadEvent,
-    ThreadEventHub, VaultRefresher, advertised_tools, capabilities_router, config_router,
-    content_fingerprint, durable_ops_router, memory_stores_router_with_catalog, parse_skill_md,
-    skills_router,
+    ProtocolHost, SharedHost, SkillContext, SkillSpec, ThreadEvent, ThreadEventHub, VaultRefresher,
+    advertised_tools, capabilities_router, config_router, content_fingerprint, durable_ops_router,
+    memory_stores_router_with_catalog, parse_skill_md, skills_router,
 };
 
 /// An [`InferenceExecutorMaterializer`] mapping a model ref to a labeled executor, so a
@@ -142,6 +101,7 @@ impl InferenceExecutorMaterializer for RouteProvider {
     fn materialize_pinned(
         &self,
         candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
+        _context: &awaken_runtime_contract::RuntimeRunContext,
     ) -> Option<Arc<dyn LlmExecutor>> {
         if !matches!(
             candidate.provisioning,
@@ -408,6 +368,7 @@ pub async fn run_echo_worker(
         fn materialize_pinned(
             &self,
             candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
+            _context: &awaken_runtime_contract::RuntimeRunContext,
         ) -> Option<Arc<dyn LlmExecutor>> {
             if !matches!(
                 candidate.provisioning,
@@ -506,13 +467,14 @@ impl awaken_run_executor_acp::AgentChannelSource for FailSecondAcpSource {
     async fn open(
         &self,
         activation: &awaken_runtime_contract::activation::RunActivation,
+        context: &awaken_runtime_contract::RuntimeRunContext,
     ) -> Result<awaken_run_executor_acp::AgentSession, awaken_run_executor_acp::OpenError> {
         if self.opens.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0 {
             return Err(awaken_run_executor_acp::OpenError(
                 "deliberate replacement launch failure".to_string(),
             ));
         }
-        awaken_run_executor_acp::AgentChannelSource::open(&self.inner, activation).await
+        awaken_run_executor_acp::AgentChannelSource::open(&self.inner, activation, context).await
     }
 }
 
@@ -644,52 +606,6 @@ const FAKE_ACP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_acp::A
     env: &[],
 };
 
-/// [`build_acp_router`]'s twin that drives the fake CLI through the projecting
-/// launch path with an explicit scenario-only resolver, so projection is exercised end to
-/// end. With `AWAKEN_ACP_GATEWAY_URL` + `AWAKEN_ACP_LEASE_TOKEN` in the environment,
-/// the resolver takes the cloud-managed gateway path (D-R2): the CLI is pointed at
-/// the gateway with a lease token, never a raw provider key. `AWAKEN_MODEL_MODE=acp-gateway`.
-pub fn build_acp_gateway_router() -> Router {
-    let store_dir = std::env::var("AWAKEN_STORAGE_DIR")
-        .ok()
-        .filter(|v| !v.is_empty())
-        .map(std::path::PathBuf::from);
-    let (model, model_ref) = scenario_model(Arc::new(EchoModel), "awaken");
-    mount(Arc::new(
-        SharedHost::new(model, model_ref).with_projected_acp(
-            FAKE_ACP_CLI,
-            Arc::new(ScenarioEnvAcpModel),
-            store_dir,
-        ),
-    ))
-}
-
-/// Explicit environment fixture for dev-only live scenarios. Product composition
-/// never installs this resolver; it uses publication-pinned database access.
-struct ScenarioEnvAcpModel;
-impl awaken_run_executor_acp::LaunchResolver for ScenarioEnvAcpModel {
-    fn model(
-        &self,
-        activation: &awaken_runtime_contract::activation::RunActivation,
-    ) -> Result<awaken_run_executor_acp::ResolvedModel, awaken_run_executor_acp::OpenError> {
-        Ok(awaken_run_executor_acp::ResolvedModel {
-            base_url: std::env::var("AWAKEN_ACP_GATEWAY_URL")
-                .ok()
-                .or_else(|| std::env::var("ANTHROPIC_BASE_URL").ok())
-                .ok_or_else(|| {
-                    awaken_run_executor_acp::OpenError("dev scenario has no endpoint".into())
-                })?,
-            model: activation.effective_model_ref().to_string(),
-            api_key: std::env::var("AWAKEN_ACP_LEASE_TOKEN")
-                .ok()
-                .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
-                .ok_or_else(|| {
-                    awaken_run_executor_acp::OpenError("dev scenario has no credential".into())
-                })?,
-        })
-    }
-}
-
 /// A fake ACP agent (JSON-RPC, shell builtins only) that reports whether the
 /// `session/new` request it received carried the session's MCP server and, if so,
 /// whether the endpoint is the host-owned loopback relay rather than a provider endpoint
@@ -749,6 +665,7 @@ impl awaken_run_executor_acp::LaunchResolver for FixedAcpModel {
     fn model(
         &self,
         _activation: &awaken_runtime_contract::activation::RunActivation,
+        _context: &awaken_runtime_contract::RuntimeRunContext,
     ) -> std::result::Result<
         awaken_run_executor_acp::ResolvedModel,
         awaken_run_executor_acp::OpenError,
@@ -756,7 +673,7 @@ impl awaken_run_executor_acp::LaunchResolver for FixedAcpModel {
         Ok(awaken_run_executor_acp::ResolvedModel {
             base_url: "http://fake".into(),
             model: "fake".into(),
-            api_key: "fake".into(), // awaken-allow: secret
+            process_secret: None,
         })
     }
 }
@@ -804,7 +721,9 @@ pub async fn build_acp_real_mcp_router() -> Router {
     awaken_cli::build_management_router_with_host_customizer(
         Arc::new(McpToolModel),
         model_ref,
-        move |host| host.with_projected_acp(cli, Arc::new(ScenarioEnvAcpModel), store_dir),
+        move |host| {
+            host.with_projected_acp(cli, Arc::new(acp_gateway::ScenarioEnvAcpModel), store_dir)
+        },
     )
     .await
 }
@@ -1124,8 +1043,9 @@ pub async fn build_resolved_real_router() -> Router {
     let materializer = awaken_server::inference_materializer::CredentialInferenceMaterializer::new(
         cred_repo, secrets,
     );
+    let context = attempt_credential::context(&published.primary);
     let executor = materializer
-        .materialize_candidate(&published.primary)
+        .materialize_candidate(&published.primary, &context)
         .await
         .expect("materialize published model candidate");
     build_router(executor, published.primary.binding.model_ref)
@@ -1223,8 +1143,9 @@ pub async fn build_oauth_resolved_router() -> Router {
     let materializer = awaken_server::inference_materializer::CredentialInferenceMaterializer::new(
         cred_repo, secrets,
     );
+    let context = attempt_credential::context(&published.primary);
     let executor = materializer
-        .materialize_candidate(&published.primary)
+        .materialize_candidate(&published.primary, &context)
         .await
         .expect("materialize published OAuth candidate");
     build_router(executor, published.primary.binding.model_ref)
@@ -1804,9 +1725,9 @@ pub async fn build_config_router() -> Router {
         .expect("put offering");
     // The service is scope-free (ADR-0051); `ConfigPlane` is the scope edge that binds
     // the request scope (a `ScopedConfig` registry + the scope's tool catalog) onto it.
-    let service = Arc::new(ConfigService::new(Arc::new(ScenarioHostModelResolver {
-        catalog: catalog_repo.clone(),
-    })));
+    let service = Arc::new(ConfigService::new(Arc::new(
+        model_publication::ScenarioHostModelResolver::new(catalog_repo.clone()),
+    )));
     let plane = awaken_runtime_host::ConfigPlane::new(service.clone(), store, tools);
     // The management tool executables, backed by real ports (D3/D4): the capability
     // reader reads the shared catalog + advertised tools; the validator runs the same

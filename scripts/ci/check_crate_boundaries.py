@@ -414,12 +414,12 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # mechanism, host path, wire, or runtime type, so concrete realizers (lexical /
     # namespace / container) depend on it without pulling anything upward (G2/G3).
     "awaken-provisioning-contract": {
+        "awaken-agent-contract",
         "async-trait",
         "serde",
         "serde_json",
         "thiserror",
-        # dev-only: a fake exercises the async ports in unit tests.
-        "tokio",
+        "tokio",  # dev-only: fake async ports
     },
     # Worker fleet vocabulary and pure placement kernel. It composes the existing
     # provisioning capability vocabulary; persistence and channels stay in server
@@ -1356,7 +1356,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "regex",
         "thiserror",
         "tokio",
-        "tracing",
+        "tracing", "uuid",  # unpredictable one-shot process-secret capability ids
     },
     "awaken-resource-reclaimer": {"awaken-resource-contract", "async-trait", "tokio"},
 "awaken-resource-store": {"awaken-resource-contract", "awaken-scoped-migration", "awaken-scoped-migration-sqlite", "async-trait", "parking_lot", "proptest", "rusqlite", "serde_json", "sqlx", "tempfile", "tokio"},
@@ -1924,7 +1924,6 @@ def check_bucket_direction() -> list[str]:
             )
     return errors
 
-
 def check_runtime_is_secret_resolution_free() -> list[str]:
     """D6/D9 (ADR-0043): the runtime and its extensions receive an already-resolved
     secret value (`RedactedString`) only — never a handle, a resolver, or a vault
@@ -1938,7 +1937,8 @@ def check_runtime_is_secret_resolution_free() -> list[str]:
     for path in runtime_dir.glob("**/*.rs"):
         text = path.read_text(encoding="utf-8")
         for token in banned:
-            if token in text:
+            # Ban exact identifiers, not compound secret-free execution facts.
+            if re.search(rf"\b{re.escape(token)}\b", text):
                 errors.append(
                     f"{path.relative_to(REPO_ROOT)}: runtime must be secret-resolution-free "
                     f"(D6/D9): found `{token}` — resolution lives in the host, not the runtime"

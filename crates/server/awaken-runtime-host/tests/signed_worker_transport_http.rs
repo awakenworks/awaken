@@ -67,7 +67,8 @@ impl awaken_protocol_managed::ApplicationSessionContributionPort
                     network: awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
                     credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
                         inference_holder: holder.clone(),
-                        mcp_holder: holder,
+                        mcp_holder: holder.clone(),
+                        resource_holder: holder,
                     },
                 },
                 mcp_authoring: Default::default(),
@@ -393,7 +394,12 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .await
         .expect("signed dispatch enqueue");
     let claimed = queue
-        .claim(&registered.snapshot.identity.lease_owner(), 30_000, 10_000)
+        .claim(
+            &registered.snapshot.identity.lease_owner(),
+            30_000,
+            10_000,
+            &Default::default(),
+        )
         .await
         .expect("signed dispatch claim")
         .expect("queued run is claimable");

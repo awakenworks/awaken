@@ -252,7 +252,7 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
         registered.snapshot.identity.clone(),
     );
     let claimed = client
-        .claim("ignored-local-owner", 99, 99)
+        .claim("ignored-local-owner", 99, 99, &Default::default())
         .await
         .unwrap()
         .expect("compatible work");
@@ -299,7 +299,10 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
         RegistryMutation::Applied
     );
     assert!(
-        client.claim("ignored", 99, 99).await.is_err(),
+        client
+            .claim("ignored", 99, 99, &Default::default())
+            .await
+            .is_err(),
         "a draining incarnation cannot receive new work"
     );
     assert!(checkpoints.get(&claim.run_id.0).await.is_some());
@@ -382,7 +385,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
     let wrong_queue = HttpDispatchQueue::new(format!("http://{address}"), wrong);
     assert!(
         wrong_queue
-            .claim("ignored", 1_000, 100)
+            .claim("ignored", 1_000, 100, &Default::default())
             .await
             .unwrap()
             .is_none(),
@@ -392,7 +395,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
     let exact = ready_worker(address, "worker-exact-revision", required).await;
     let exact_queue = HttpDispatchQueue::new(format!("http://{address}"), exact.clone());
     let claimed = exact_queue
-        .claim("ignored", 1_000, 100)
+        .claim("ignored", 1_000, 100, &Default::default())
         .await
         .unwrap()
         .expect("the worker reporting the exact revision can claim the run");

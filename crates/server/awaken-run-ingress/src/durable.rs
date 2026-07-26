@@ -144,6 +144,21 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         self.worker.clone()
     }
 
+    /// Install exact in-process materializer evidence before this worker is
+    /// shared. A database-less registered Worker omits this and is admitted from
+    /// its server-side immutable manifest instead.
+    #[must_use]
+    pub fn with_local_credential_capabilities(
+        mut self,
+        capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
+    ) -> Self {
+        let worker = Arc::into_inner(self.worker)
+            .expect("credential capabilities must be configured before sharing the worker")
+            .with_local_credential_capabilities(capabilities);
+        self.worker = Arc::new(worker);
+        self
+    }
+
     /// Install the Run-scoped extension context before the worker is shared.
     #[must_use]
     pub fn with_context(mut self, context: awaken_runtime_contract::RuntimeRunContext) -> Self {

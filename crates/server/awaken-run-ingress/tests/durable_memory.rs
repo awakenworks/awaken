@@ -327,7 +327,7 @@ async fn a_worker_routes_inference_through_the_resolved_model_executor() {
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let resolver: awaken_run_ingress::InferenceMaterializerFn =
-        Arc::new(|_activation| Some(Arc::new(Labeled) as Arc<dyn LlmExecutor>));
+        Arc::new(|_activation, _context| Ok(Some(Arc::new(Labeled) as Arc<dyn LlmExecutor>)));
     let ingress = DurableRunIngress::with_owner_and_resolver(
         text_runtime(), // its bound model would reply "done"
         store.clone(),
@@ -372,13 +372,18 @@ async fn a_secretless_worker_reads_the_snapshot_pinned_access() {
 
     let seen = Arc::new(Mutex::new(None));
     let capture = seen.clone();
-    let resolver: awaken_run_ingress::InferenceMaterializerFn = Arc::new(move |activation| {
-        *capture.lock().expect("grant capture mutex") =
-            Some(activation.snapshot.resolved_spec.model_binding.clone());
-        Some(Arc::new(Gateway) as Arc<dyn LlmExecutor>)
-    });
+    let resolver: awaken_run_ingress::InferenceMaterializerFn =
+        Arc::new(move |activation, _context| {
+            *capture.lock().expect("grant capture mutex") =
+                Some(activation.snapshot.resolved_spec.model_binding.clone());
+            Ok(Some(Arc::new(Gateway) as Arc<dyn LlmExecutor>))
+        });
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
+    let holder = awaken_runtime_contract::PlaintextHolder::new(
+        awaken_runtime_contract::PlaintextBoundary::Worker,
+        awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+    );
     let ingress = DurableRunIngress::with_owner_and_resolver(
         text_runtime(),
         store,
@@ -386,11 +391,26 @@ async fn a_secretless_worker_reads_the_snapshot_pinned_access() {
         "secretless-worker",
         None,
         Some(resolver),
+    )
+    .with_local_credential_capabilities(
+        awaken_runtime_contract::CredentialRealizationCapabilities {
+            holders: [holder.clone()].into_iter().collect(),
+            material_sources: [
+                awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+            ]
+            .into_iter()
+            .collect(),
+            realization_kinds: [
+                awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
+            ]
+            .into_iter()
+            .collect(),
+        },
     );
     let candidate = provider_candidate("grant-17");
     let mut activation = activation("run-gateway");
     activation.snapshot.resolved_spec.model_binding = candidate.clone();
-    let request = RunDispatch::new(activation);
+    let request = RunDispatch::new(activation).with_inference_plaintext_holder(holder);
     let (_, state) = ingress
         .worker()
         .start_run(request, 0)
@@ -437,10 +457,12 @@ async fn a_per_run_model_override_routes_the_worker_to_the_overridden_model() {
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let resolver: awaken_run_ingress::InferenceMaterializerFn =
-        Arc::new(|activation| match activation.effective_model_ref() {
-            "alt" => Some(Arc::new(Fixed("ALT")) as Arc<dyn LlmExecutor>),
-            _ => Some(Arc::new(Fixed("BOUND")) as Arc<dyn LlmExecutor>),
-        });
+        Arc::new(
+            |activation, _context| match activation.effective_model_ref() {
+                "alt" => Ok(Some(Arc::new(Fixed("ALT")) as Arc<dyn LlmExecutor>)),
+                _ => Ok(Some(Arc::new(Fixed("BOUND")) as Arc<dyn LlmExecutor>)),
+            },
+        );
     let ingress = DurableRunIngress::with_owner_and_resolver(
         text_runtime(),
         store.clone(),
@@ -675,16 +697,27 @@ async fn expired_lease_is_reclaimable_for_recovery() {
 
     // First claim takes a 1000ms lease at t=0.
     assert!(
-        store.claim("worker-a", 1_000, 0).await.unwrap().is_some(),
+        store
+            .claim("worker-a", 1_000, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_some(),
         "a fresh run is claimable"
     );
     // While the lease holds, the run is not re-claimable.
     assert!(
-        store.claim("worker-b", 1_000, 500).await.unwrap().is_none(),
+        store
+            .claim("worker-b", 1_000, 500, &Default::default())
+            .await
+            .unwrap()
+            .is_none(),
         "a held lease blocks a second claim"
     );
     // After the lease expires, recovery reclaims it.
-    let recovered = store.claim("worker-b", 1_000, 1_001).await.unwrap();
+    let recovered = store
+        .claim("worker-b", 1_000, 1_001, &Default::default())
+        .await
+        .unwrap();
     assert_eq!(
         recovered.map(|c| c.lease.owner),
         Some("worker-b".to_string()),
@@ -707,7 +740,7 @@ async fn worker_recovery_runs_a_crashed_dispatch_to_completion() {
         .unwrap();
     assert!(
         store
-            .claim("dead-worker", 1_000, 0)
+            .claim("dead-worker", 1_000, 0, &Default::default())
             .await
             .unwrap()
             .is_some()
@@ -754,7 +787,13 @@ async fn settle_done_clears_pending_and_dispatch() {
     // Settle is authority-bearing: obtain the exact claim epoch first. Epoch 0
     // means "never claimed" and is not execution authority.
     let claimed = store
-        .claim_run(&RunId("run-1".to_string()), "settle-test", 1_000, 0)
+        .claim_run(
+            &RunId("run-1".to_string()),
+            "settle-test",
+            1_000,
+            0,
+            &Default::default(),
+        )
         .await
         .unwrap()
         .expect("claim before settle");
@@ -803,7 +842,10 @@ async fn committed_resume_is_not_reapplied_after_a_crash(/* M1 */) {
 
     // Worker got partway: it claimed (took a lease) and committed the resume,
     // then crashed before settle. Drive those two steps by hand.
-    let _claimed = store.claim("dead-worker", 1_000, 0).await.unwrap();
+    let _claimed = store
+        .claim("dead-worker", 1_000, 0, &Default::default())
+        .await
+        .unwrap();
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let state = runtime
         .resume(allow_command(), commit.as_ref(), context)
@@ -1085,7 +1127,7 @@ async fn committed_cancel_is_settled_without_duplicate_after_crash() {
         .unwrap();
     store.cancel(&run).await.unwrap().expect("intent persisted");
     let crashed = store
-        .claim("dead-worker", 1_000, 0)
+        .claim("dead-worker", 1_000, 0, &Default::default())
         .await
         .unwrap()
         .expect("intent claimed");
@@ -1121,10 +1163,11 @@ async fn cancellation_does_not_materialize_the_model_or_credentials() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let materializations = Arc::new(AtomicUsize::new(0));
     let seen = materializations.clone();
-    let resolver: awaken_run_ingress::InferenceMaterializerFn = Arc::new(move |_activation| {
-        seen.fetch_add(1, Ordering::SeqCst);
-        None
-    });
+    let resolver: awaken_run_ingress::InferenceMaterializerFn =
+        Arc::new(move |_activation, _context| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        });
     let ingress = DurableRunIngress::with_owner_and_resolver(
         text_runtime(),
         store.clone(),
@@ -1243,7 +1286,13 @@ async fn ingress_dead_letter_and_purge_ops() {
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
-    assert!(store.claim("w", 1, 0).await.unwrap().is_some());
+    assert!(
+        store
+            .claim("w", 1, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
     assert_eq!(ingress.reap(0, 100).await.unwrap(), 1);
     assert_eq!(
         ingress.dead_letters().await.unwrap(),
@@ -1253,7 +1302,13 @@ async fn ingress_dead_letter_and_purge_ops() {
     // Requeue, re-reap, then GC through the ingress API.
     assert!(ingress.requeue(&RunId("run-1".to_string())).await.unwrap());
     assert!(ingress.dead_letters().await.unwrap().is_empty());
-    assert!(store.claim("w", 1, 0).await.unwrap().is_some());
+    assert!(
+        store
+            .claim("w", 1, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
     assert_eq!(ingress.reap(0, 200).await.unwrap(), 1);
     assert_eq!(ingress.purge_dead_letters().await.unwrap(), 1);
     assert!(ingress.dead_letters().await.unwrap().is_empty());
@@ -1315,7 +1370,10 @@ async fn a_recovered_scheduled_action_is_performed() {
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
-    store.claim("dead-worker", 10, 0).await.unwrap();
+    store
+        .claim("dead-worker", 10, 0, &Default::default())
+        .await
+        .unwrap();
 
     // A live worker recovers it after the lease expires and performs the action.
     let worker = DispatchWorker::new(runtime, store.clone(), commit, "live-worker");
@@ -1419,12 +1477,12 @@ async fn a_superseded_owners_commit_is_fenced_while_the_current_owners_lands() {
         .unwrap();
     // Owner A claims (epoch 1); its lease lapses; owner B reclaims (epoch 2).
     let a = store
-        .claim("owner-a", 100, 0)
+        .claim("owner-a", 100, 0, &Default::default())
         .await
         .unwrap()
         .expect("A claims");
     let b = store
-        .claim("owner-b", 100, 200)
+        .claim("owner-b", 100, 200, &Default::default())
         .await
         .unwrap()
         .expect("B reclaims");
@@ -1578,7 +1636,13 @@ async fn ingress_lists_dispatches_and_purges_aged_dead_letters() {
     assert_eq!(listed[0].run_id, RunId("run-1".to_string()));
 
     // Dead-letter it at t=1000, then age it out through the ingress.
-    assert!(store.claim("w", 1, 0).await.unwrap().is_some());
+    assert!(
+        store
+            .claim("w", 1, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
     assert_eq!(ingress.reap(0, 1_000).await.unwrap(), 1);
     assert_eq!(ingress.purge_dead_letters_before(999).await.unwrap(), 0);
     assert_eq!(ingress.purge_dead_letters_before(1_000).await.unwrap(), 1);

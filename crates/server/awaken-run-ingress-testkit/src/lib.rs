@@ -10,7 +10,8 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_run_ingress_contract::RunDispatch;
 use awaken_run_ingress_contract::dispatch::{
-    DispatchOutcome, DispatchQueue, PendingInput, RunClaim, SettleOutcome, SubmitOptions,
+    CredentialRealizationReceipt, DispatchOutcome, DispatchQueue, PendingInput, RunClaim,
+    SettleOutcome, SubmitOptions,
 };
 use awaken_run_ingress_contract::operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalFeed, LeaseLossReason,
@@ -24,6 +25,11 @@ use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, Resolv
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
+};
+use awaken_runtime_contract::{
+    CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource,
+    CredentialRealizationCapabilities, CredentialRealizationKind, CredentialRef, CredentialUsage,
+    InferenceEndpoint, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
 };
 
 const LEASE_MS: u64 = 1_000;
@@ -103,10 +109,217 @@ pub async fn assert_dispatch_conformance_with_clock(
         local_claims_skip_remote_only_work(store, namespace).await;
     }
     exact_claim_recovery_and_fencing(store, namespace, clock).await;
+    attempt_credentials_are_atomic_and_epoch_fenced(store, namespace, capabilities).await;
     parent_mediated_commands_are_atomic(store, namespace, clock).await;
     current_claim_guard_is_exact(store, namespace, capabilities, clock).await;
     sandbox_binding_survives_recovery(store, namespace, capabilities, clock).await;
     completion_is_atomic_and_prevents_resurrection(store, namespace, capabilities, clock).await;
+}
+
+/// Claim-credential cause-effect graph:
+///
+/// publication credential + exact holder + implemented backend cell + installed
+/// capability -> one binding committed with the lease epoch. Missing capability
+/// rejects without advancing the epoch; cancellation bypasses materialization and
+/// stores no binding; recovery advances the epoch and replaces the whole binding
+/// set. A receipt is accepted only for the current exact binding.
+///
+/// | Rule | credential | cancel | capability | claim | Result |
+/// |---|---|---|---|---|---|
+/// | A1 | none | F | - | fresh | empty binding set |
+/// | A2 | exact | F | exact local evidence | fresh | epoch-1 binding |
+/// | A3 | exact | F | missing local evidence | fresh | reject, no mutation |
+/// | A4 | exact | F | exact registered manifest after reject | fresh | epoch remains 1 |
+/// | A5 | exact | T | missing | fresh | claim, empty binding set |
+/// | A6 | exact | F | exact | recovery | replacement binding at epoch+1 |
+///
+/// | Rule | claim | receipt | Result |
+/// |---|---|---|---|
+/// | R1 | current | exact | applied and exact replay applied |
+/// | R2 | current | wrong mechanism | rejected |
+/// | R3 | stale after recovery | formerly exact | fenced |
+async fn attempt_credentials_are_atomic_and_epoch_fenced(
+    store: &dyn DispatchQueue,
+    ns: &str,
+    conformance: ConformanceCapabilities,
+) {
+    let holder = PlaintextHolder::new(
+        PlaintextBoundary::Worker,
+        format!("{ns}.worker.credentials"),
+    );
+    let exact_worker = credential_worker(ns, &holder, true);
+    let incapable_worker = credential_worker(ns, &holder, false);
+    let exact_capabilities = CredentialRealizationCapabilities::from_manifest_capabilities(
+        &exact_worker.manifest.capabilities,
+    )
+    .expect("exact Worker credential capabilities decode");
+    let incapable_capabilities = CredentialRealizationCapabilities::from_manifest_capabilities(
+        &incapable_worker.manifest.capabilities,
+    )
+    .expect("empty Worker credential capabilities decode");
+
+    let local = credential_dispatch(ns, "credential-local", "credential-local-thread", &holder);
+    let local_id = local.run_id().clone();
+    store
+        .enqueue(local)
+        .await
+        .expect("A2 enqueue local credential run");
+    if conformance.local_commit_guard {
+        assert!(
+            store
+                .claim_run(
+                    &local_id,
+                    "credential-incapable-local-owner",
+                    LEASE_MS,
+                    50_000,
+                    &incapable_capabilities,
+                )
+                .await
+                .is_err(),
+            "A3 local claim cannot synthesize capability evidence from the request"
+        );
+    }
+    let first = store
+        .claim_run(
+            &local_id,
+            "credential-local-owner",
+            LEASE_MS,
+            50_000,
+            &exact_capabilities,
+        )
+        .await
+        .expect("A2 local claim succeeds")
+        .expect("A2 credential run is runnable");
+    assert_eq!(first.credential_bindings.len(), 1, "A2 one exact binding");
+    assert_eq!(
+        first.lease.epoch, 1,
+        "A3 rejected admission did not mutate the durable lease epoch"
+    );
+    let first_binding = &first.credential_bindings[0];
+    assert_eq!(first_binding.claim_epoch, first.lease.epoch);
+    assert_eq!(
+        first_binding.selected_realization_kind,
+        CredentialRealizationKind::WorkerProviderAdapter
+    );
+    let receipt = CredentialRealizationReceipt::new(
+        first_binding,
+        CredentialRealizationKind::WorkerProviderAdapter,
+    )
+    .expect("R1 exact receipt builds");
+    assert_eq!(
+        store
+            .record_credential_realization(&RunClaim::from(&first.lease), receipt.clone())
+            .await
+            .expect("R1 receipt persists"),
+        SettleOutcome::Applied
+    );
+    assert_eq!(
+        store
+            .record_credential_realization(&RunClaim::from(&first.lease), receipt.clone())
+            .await
+            .expect("R1 exact retry is idempotent"),
+        SettleOutcome::Applied
+    );
+    let mut wrong_mechanism = receipt.clone();
+    wrong_mechanism.actual_realization_kind = CredentialRealizationKind::WorkerRelay;
+    assert!(
+        store
+            .record_credential_realization(&RunClaim::from(&first.lease), wrong_mechanism)
+            .await
+            .is_err(),
+        "R2 a mechanism mismatch is rejected"
+    );
+
+    let recovered = store
+        .claim_run(
+            &local_id,
+            "credential-recovery-owner",
+            LEASE_MS,
+            first.lease.expires_ms + 1,
+            &exact_capabilities,
+        )
+        .await
+        .expect("A6 recovery succeeds")
+        .expect("A6 expired credential run is recoverable");
+    assert_eq!(recovered.lease.epoch, first.lease.epoch + 1);
+    assert_eq!(recovered.credential_bindings.len(), 1);
+    assert_eq!(
+        recovered.credential_bindings[0].claim_epoch, recovered.lease.epoch,
+        "A6 the binding set is replaced under the new claim epoch"
+    );
+    assert_eq!(
+        store
+            .record_credential_realization(&RunClaim::from(&first.lease), receipt)
+            .await
+            .expect("R3 stale receipt returns a fence verdict"),
+        SettleOutcome::Fenced
+    );
+    store
+        .settle(&local_id, recovered.lease.epoch, DispatchOutcome::Done, &[])
+        .await
+        .expect("settle recovered credential run");
+
+    let remote = credential_dispatch(ns, "credential-remote", "credential-remote-thread", &holder)
+        .with_placement(PlacementRequirements::remote_required());
+    let remote_id = remote.run_id().clone();
+    store
+        .enqueue(remote)
+        .await
+        .expect("A3 enqueue remote credential run");
+    assert!(
+        store
+            .claim_run_compatible(&remote_id, &incapable_worker, LEASE_MS, 60_000)
+            .await
+            .is_err(),
+        "A3 immutable Worker capability evidence rejects the claim"
+    );
+    let admitted = store
+        .claim_run_compatible(&remote_id, &exact_worker, LEASE_MS, 60_000)
+        .await
+        .expect("A4 exact-capability claim succeeds")
+        .expect("A4 failed admission did not consume the runnable row");
+    assert_eq!(
+        admitted.lease.epoch, 1,
+        "A4 failed admission did not advance the durable epoch"
+    );
+    assert_eq!(admitted.credential_bindings.len(), 1);
+    store
+        .settle(&remote_id, admitted.lease.epoch, DispatchOutcome::Done, &[])
+        .await
+        .expect("settle exact-capability run");
+
+    let mut cancellation =
+        credential_dispatch(ns, "credential-cancel", "credential-cancel-thread", &holder)
+            .with_placement(PlacementRequirements::remote_required());
+    cancellation.inference_plaintext_holder = None;
+    let cancellation_id = cancellation.run_id().clone();
+    store
+        .enqueue(cancellation)
+        .await
+        .expect("A5 enqueue cancellation control run");
+    store
+        .cancel(&cancellation_id)
+        .await
+        .expect("A5 cancellation becomes durable");
+    let cancellation_claim = store
+        .claim_run_compatible(&cancellation_id, &incapable_worker, LEASE_MS, 70_000)
+        .await
+        .expect("A5 control claim bypasses credential admission")
+        .expect("A5 cancellation is runnable");
+    assert!(cancellation_claim.cancellation_requested);
+    assert!(
+        cancellation_claim.credential_bindings.is_empty(),
+        "A5 terminal control never materializes a credential"
+    );
+    store
+        .settle(
+            &cancellation_id,
+            cancellation_claim.lease.epoch,
+            DispatchOutcome::Done,
+            &[],
+        )
+        .await
+        .expect("settle cancellation control run");
 }
 
 /// Verify the durable operational feed independently from Run lifecycle truth.
@@ -134,12 +347,24 @@ where
         .await
         .expect("enqueue settled operational run");
     let first = store
-        .claim_run(&settled_run, "operations-a", LEASE_MS, 0)
+        .claim_run(
+            &settled_run,
+            "operations-a",
+            LEASE_MS,
+            0,
+            &Default::default(),
+        )
         .await
         .expect("first operational claim")
         .expect("settled run is runnable");
     let recovered = store
-        .claim_run(&settled_run, "operations-b", LEASE_MS, LEASE_MS + 1)
+        .claim_run(
+            &settled_run,
+            "operations-b",
+            LEASE_MS,
+            LEASE_MS + 1,
+            &Default::default(),
+        )
         .await
         .expect("operational recovery")
         .expect("expired run is recoverable");
@@ -173,7 +398,13 @@ where
         .await
         .expect("enqueue dead-letter operational run");
     let dead_first = store
-        .claim_run(&dead_run, "operations-c", LEASE_MS, 2_000)
+        .claim_run(
+            &dead_run,
+            "operations-c",
+            LEASE_MS,
+            2_000,
+            &Default::default(),
+        )
         .await
         .expect("dead-letter first claim")
         .expect("dead-letter run is runnable");
@@ -183,6 +414,7 @@ where
             "operations-d",
             LEASE_MS,
             dead_first.lease.expires_ms + 1,
+            &Default::default(),
         )
         .await
         .expect("dead-letter recovery")
@@ -205,7 +437,13 @@ where
         .await
         .expect("enqueue cancellation operational run");
     store
-        .claim_run(&cancelled_run, "operations-e", LEASE_MS, 5_000)
+        .claim_run(
+            &cancelled_run,
+            "operations-e",
+            LEASE_MS,
+            5_000,
+            &Default::default(),
+        )
         .await
         .expect("cancellation claim")
         .expect("cancellation run is runnable");
@@ -343,7 +581,7 @@ async fn local_claims_skip_remote_only_work(store: &dyn DispatchQueue, ns: &str)
         .expect("enqueue local fallback run");
 
     let local = store
-        .claim("conformance-local", LEASE_MS, 0)
+        .claim("conformance-local", LEASE_MS, 0, &Default::default())
         .await
         .expect("local claim succeeds")
         .expect("local-compatible work is available");
@@ -411,7 +649,7 @@ async fn exact_claim_recovery_and_fencing(
     }
 
     let first = store
-        .claim_run(&target, "conformance-a", LEASE_MS, 0)
+        .claim_run(&target, "conformance-a", LEASE_MS, 0, &Default::default())
         .await
         .expect("exact claim succeeds")
         .expect("target is runnable");
@@ -419,9 +657,13 @@ async fn exact_claim_recovery_and_fencing(
     assert_eq!(first.lease.owner, "conformance-a");
     assert!(!first.recovered, "a fresh exact claim is not recovery");
     assert!(first.lease.epoch > 0, "a claimed lease has a fence epoch");
+    assert!(
+        first.credential_bindings.is_empty(),
+        "A1 a credential-free publication carries no attempt binding"
+    );
 
     let other = store
-        .claim("conformance-pool", LEASE_MS, 0)
+        .claim("conformance-pool", LEASE_MS, 0, &Default::default())
         .await
         .expect("general claim succeeds")
         .expect("exact claim leaves unrelated work available");
@@ -437,7 +679,13 @@ async fn exact_claim_recovery_and_fencing(
     clock.set(LEASE_MS);
     assert!(
         store
-            .claim_run(&target, "conformance-b", LEASE_MS, LEASE_MS)
+            .claim_run(
+                &target,
+                "conformance-b",
+                LEASE_MS,
+                LEASE_MS,
+                &Default::default(),
+            )
             .await
             .expect("live-boundary claim")
             .is_none(),
@@ -445,7 +693,13 @@ async fn exact_claim_recovery_and_fencing(
     );
     clock.set(LEASE_MS + 1);
     let recovered = store
-        .claim_run(&target, "conformance-b", LEASE_MS, LEASE_MS + 1)
+        .claim_run(
+            &target,
+            "conformance-b",
+            LEASE_MS,
+            LEASE_MS + 1,
+            &Default::default(),
+        )
         .await
         .expect("recovery claim succeeds")
         .expect("expired target is recoverable");
@@ -481,6 +735,7 @@ async fn parent_mediated_commands_are_atomic(
             "conformance-parent",
             LEASE_MS,
             10_000,
+            &Default::default(),
         )
         .await
         .expect("claim_new_run succeeds")
@@ -488,7 +743,7 @@ async fn parent_mediated_commands_are_atomic(
     assert_eq!(claimed.request.run_id(), &child);
     assert!(
         store
-            .claim("conformance-pool", LEASE_MS, 10_000)
+            .claim("conformance-pool", LEASE_MS, 10_000, &Default::default(),)
             .await
             .expect("pool claim after atomic admission")
             .is_none(),
@@ -517,6 +772,7 @@ async fn parent_mediated_commands_are_atomic(
             "conformance-parent",
             LEASE_MS,
             10_001,
+            &Default::default(),
         )
         .await
         .expect("deliver_and_claim succeeds")
@@ -525,7 +781,7 @@ async fn parent_mediated_commands_are_atomic(
     assert_eq!(resumed.pending[0].message_id, message_id);
     assert!(
         store
-            .claim("conformance-pool", LEASE_MS, 10_001)
+            .claim("conformance-pool", LEASE_MS, 10_001, &Default::default(),)
             .await
             .expect("pool claim after atomic delivery")
             .is_none(),
@@ -562,7 +818,13 @@ async fn current_claim_guard_is_exact(
         .expect("enqueue guard run");
     let identity = WorkerIdentity::new(format!("{ns}-guard-worker"), "boot", 1);
     let claimed = store
-        .claim_run(&run, &identity.lease_owner(), LEASE_MS, 20_000)
+        .claim_run(
+            &run,
+            &identity.lease_owner(),
+            LEASE_MS,
+            20_000,
+            &Default::default(),
+        )
         .await
         .expect("claim guard run")
         .expect("guard run is runnable");
@@ -653,7 +915,13 @@ async fn sandbox_binding_survives_recovery(
         .await
         .expect("enqueue sandbox run");
     let first = store
-        .claim_run(&run, "conformance-sandbox-a", LEASE_MS, 30_000)
+        .claim_run(
+            &run,
+            "conformance-sandbox-a",
+            LEASE_MS,
+            30_000,
+            &Default::default(),
+        )
         .await
         .expect("claim sandbox run")
         .expect("sandbox run is runnable");
@@ -670,6 +938,7 @@ async fn sandbox_binding_survives_recovery(
             "conformance-sandbox-b",
             LEASE_MS,
             first.lease.expires_ms + 1,
+            &Default::default(),
         )
         .await
         .expect("recover sandbox run")
@@ -714,7 +983,13 @@ async fn completion_is_atomic_and_prevents_resurrection(
         .await
         .expect("enqueue awaiting control run");
     let awaiting_claim = store
-        .claim_run(&awaiting, "conformance-completion", LEASE_MS, 40_000)
+        .claim_run(
+            &awaiting,
+            "conformance-completion",
+            LEASE_MS,
+            40_000,
+            &Default::default(),
+        )
         .await
         .expect("claim awaiting control run")
         .expect("awaiting control run is runnable");
@@ -753,7 +1028,13 @@ async fn completion_is_atomic_and_prevents_resurrection(
         .await
         .expect("enqueue completion run");
     let claim = store
-        .claim_run(&done, "conformance-completion", LEASE_MS, 40_000)
+        .claim_run(
+            &done,
+            "conformance-completion",
+            LEASE_MS,
+            40_000,
+            &Default::default(),
+        )
         .await
         .expect("claim completion run")
         .expect("completion run is runnable");
@@ -809,7 +1090,13 @@ async fn completion_is_atomic_and_prevents_resurrection(
         .expect("replayed enqueue is accepted as a no-op");
     assert!(
         store
-            .claim_run(&done, "conformance-replay", LEASE_MS, 40_001)
+            .claim_run(
+                &done,
+                "conformance-replay",
+                LEASE_MS,
+                40_001,
+                &Default::default(),
+            )
             .await
             .expect("exact claim after replay")
             .is_none(),
@@ -817,7 +1104,13 @@ async fn completion_is_atomic_and_prevents_resurrection(
     );
     assert!(
         store
-            .claim_new_run(request.clone(), "conformance-replay", LEASE_MS, 40_001)
+            .claim_new_run(
+                request.clone(),
+                "conformance-replay",
+                LEASE_MS,
+                40_001,
+                &Default::default(),
+            )
             .await
             .expect("atomic admission after replay")
             .is_none(),
@@ -900,6 +1193,65 @@ fn dispatch(ns: &str, run: &str, thread: &str) -> RunDispatch {
             "run conformance",
         )],
     ))
+}
+
+fn credential_dispatch(ns: &str, run: &str, thread: &str, holder: &PlaintextHolder) -> RunDispatch {
+    let mut request = dispatch(ns, run, thread);
+    request.activation.snapshot.resolved_spec.model_binding =
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
+            ModelBinding::new(format!("{ns}-provider"), "model", "genai"),
+            format!("{ns}-provider@1"),
+            format!("{ns}-route@1"),
+            ns,
+            Some(CredentialAccess::new(
+                CredentialRef {
+                    id: format!("{ns}-credential"),
+                    revision: 7,
+                },
+                CredentialMaterialSource::ControlPlaneReference,
+                CredentialUsage::ProviderAdapter,
+                CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
+            )),
+            InferenceEndpoint {
+                adapter_kind: "openai".into(),
+                base_url: "https://provider.invalid/v1".into(),
+                upstream_model: "model".into(),
+            },
+        );
+    request.inference_plaintext_holder = Some(holder.clone());
+    request
+}
+
+fn credential_worker(ns: &str, holder: &PlaintextHolder, capable: bool) -> WorkerSnapshot {
+    let mut manifest = WorkerManifest::default();
+    if capable {
+        let realization = CredentialRealizationCapabilities {
+            holders: [holder.clone()].into_iter().collect(),
+            material_sources: [CredentialMaterialSource::ControlPlaneReference]
+                .into_iter()
+                .collect(),
+            realization_kinds: [CredentialRealizationKind::WorkerProviderAdapter]
+                .into_iter()
+                .collect(),
+        };
+        manifest.capabilities.insert(
+            realization
+                .manifest_capability()
+                .expect("credential capabilities serialize")
+                .expect("non-empty credential capabilities emit one manifest entry"),
+        );
+    }
+    WorkerSnapshot {
+        identity: WorkerIdentity::new(format!("{ns}-credential-worker-{capable}"), "boot", 1),
+        capability_fingerprint: manifest
+            .fingerprint()
+            .expect("credential Worker manifest fingerprints"),
+        manifest,
+        state: WorkerState::Ready,
+        in_flight: 0,
+        available_credentials: Default::default(),
+        expires_at_ms: 100_000,
+    }
 }
 
 fn run_id(ns: &str, suffix: &str) -> RunId {

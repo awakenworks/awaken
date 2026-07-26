@@ -326,12 +326,10 @@ impl LocalProvider {
             ))
         })?;
 
-        // Base env: non-secret literals only (a local provider has no egress broker).
-        for var in &spec.env {
-            if let pc::EnvValue::Inline { value } = &var.value {
-                sandbox.base_env.push((var.name.clone(), value.clone()));
-            }
-        }
+        // Keep only references/literals in the Session environment. Process
+        // secrets are opened afresh by `build_command`, never retained as base
+        // plaintext on the sandbox object.
+        sandbox.base_env.clone_from(&spec.env);
         // All-or-nothing: a failed mount reaps the whole environment (no partial dir).
         for req in &spec.mounts {
             match self.realize_mount(&sandbox.root, req).await {
@@ -381,7 +379,15 @@ impl LocalProvider {
             .and_then(|v| v.get("outputs_path"))
             .and_then(|v| v.as_str())
             .unwrap_or("/mnt/session/outputs");
-        Ok(self.build(&handle.sandbox_id, outputs_path))
+        let mut sandbox = self.build(&handle.sandbox_id, outputs_path);
+        sandbox.base_env = handle
+            .extra
+            .as_ref()
+            .and_then(|value| value.get("base_env"))
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default();
+        Ok(sandbox)
     }
 
     fn caps() -> pc::SandboxCapabilities {
@@ -391,6 +397,7 @@ impl LocalProvider {
             path_fidelity: false,
             enforced_readonly: false,
             network_isolation: false,
+            enforced_network_allowlist: false,
             secret_egress_substitution: false,
             resource_limits: false,
             custom_rootfs: false,
@@ -501,6 +508,7 @@ impl LocalProvider {
             outputs_path: outputs_path.to_string(),
             deny_egress: false,
             base_env: Vec::new(),
+            secret_broker: self.secret_broker.clone(),
             realized: Vec::new(),
             secret_paths: Vec::new(),
             memory_mounts: std::sync::Mutex::new(Vec::new()),
@@ -538,7 +546,9 @@ pub struct LocalSandbox {
     /// Egress denied for this sandbox's rooted in-process tools (derived from the
     /// spec's [`NetworkPolicy`](pc::NetworkPolicy)); threaded into [`rooted_tools`].
     deny_egress: bool,
-    base_env: Vec<(String, String)>,
+    base_env: Vec<pc::EnvVar>,
+    /// Shared broker installation; only opaque refs are retained in `base_env`.
+    secret_broker: Arc<std::sync::RwLock<Option<Arc<dyn pc::SecretBroker>>>>,
     realized: Vec<pc::RealizedMount>,
     /// Host paths of realized `Secret` mounts, **shredded** (overwritten) at
     /// [`dispose`](pc::Sandbox::dispose) before the directory is reaped so a
@@ -609,7 +619,14 @@ impl LocalSandbox {
 
     /// Build the child command (program, args, jailed cwd, reserved + declared env),
     /// leaving stdio for the caller to configure. Shared by `spawn`/`spawn_agent`.
-    fn build_command(&self, command: &pc::Command) -> Result<TokioCommand, pc::SandboxError> {
+    async fn build_command(&self, command: pc::Command) -> Result<TokioCommand, pc::SandboxError> {
+        let broker = self
+            .secret_broker
+            .read()
+            .expect("secret broker lock poisoned")
+            .clone();
+        let command =
+            pc::materialize_process_command(&self.base_env, command, broker.as_ref()).await?;
         let program = command
             .argv
             .first()
@@ -632,13 +649,8 @@ impl LocalSandbox {
         // has no path fidelity, so a process finds the outputs dir via this var).
         cmd.env("AWAKEN_OUTPUTS_DIR", &host_outputs);
         cmd.env("AWAKEN_PROJECT_DIR", &host_cwd);
-        for (k, v) in &self.base_env {
-            cmd.env(k, v);
-        }
         for var in &command.env {
-            if let pc::EnvValue::Inline { value } = &var.value {
-                cmd.env(&var.name, value);
-            }
+            cmd.env(&var.name, var.value.expose());
         }
         Ok(cmd)
     }
@@ -653,7 +665,7 @@ impl LocalSandbox {
         &self,
         command: pc::Command,
     ) -> Result<(Box<dyn pc::ProcessHandle>, Box<dyn AgentChannel>), pc::SandboxError> {
-        let mut cmd = self.build_command(&command)?;
+        let mut cmd = self.build_command(command).await?;
         let stderr = if std::env::var_os("AWAKEN_SANDBOX_AGENT_STDERR").is_some() {
             ProcStdio::inherit()
         } else {
@@ -766,7 +778,10 @@ impl pc::Sandbox for LocalSandbox {
 
     fn handle(&self) -> pc::SandboxHandle {
         let mut h = pc::SandboxHandle::new("local", &self.id);
-        h.extra = Some(json!({ "outputs_path": self.outputs_path }));
+        h.extra = Some(json!({
+            "outputs_path": self.outputs_path,
+            "base_env": self.base_env,
+        }));
         h
     }
 
@@ -774,8 +789,9 @@ impl pc::Sandbox for LocalSandbox {
         &self,
         command: pc::Command,
     ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
-        let mut cmd = self.build_command(&command)?;
-        let (out, e) = match command.stdio {
+        let stdio = command.stdio;
+        let mut cmd = self.build_command(command).await?;
+        let (out, e) = match stdio {
             pc::Stdio::Inherit => (ProcStdio::inherit(), ProcStdio::inherit()),
             pc::Stdio::Piped => (ProcStdio::piped(), ProcStdio::piped()),
             pc::Stdio::Null => (ProcStdio::null(), ProcStdio::null()),
@@ -928,6 +944,10 @@ mod shred_tests {
         async fn materialize(&self, reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
             assert_eq!(reference, "broker://k");
             Ok(b"broker-secret".to_vec())
+        }
+
+        async fn materialize_process(&self, _reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
+            Err(pc::SandboxError::new("process secrets are not supported"))
         }
 
         async fn write_back(
@@ -1244,10 +1264,10 @@ mod shred_tests {
             value: pc::EnvValue::Inline { value: "V".into() },
             visibility: pc::EnvVisibility::Process,
         }];
-        assert!(sandbox.build_command(&cmd).is_ok());
+        assert!(sandbox.build_command(cmd).await.is_ok());
 
         let empty = pc::Command::new(Vec::<String>::new());
-        assert!(sandbox.build_command(&empty).is_err());
+        assert!(sandbox.build_command(empty).await.is_err());
     }
 
     #[tokio::test]

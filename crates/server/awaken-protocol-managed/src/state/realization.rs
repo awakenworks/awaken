@@ -160,6 +160,10 @@ impl ManagedState {
             .get(session_id)
             .await
             .ok_or(SessionRealizationControlFailure::NotFound)?;
+        let session = self
+            .ensure_repository_credentials_pinned(&owner_scope, session)
+            .await
+            .map_err(unavailable)?;
         if session.frozen_baseline().is_none() {
             return Err(SessionRealizationControlFailure::NotReady);
         }
@@ -630,6 +634,10 @@ impl ManagedState {
                                         resources: directive.projection.resources.clone(),
                                         model: Some(baseline.model.clone()),
                                         runtime: baseline.runtime.clone(),
+                                        credential_realization: baseline
+                                            .environment
+                                            .credential_realization
+                                            .clone(),
                                         deny_egress: baseline.environment.network.is_restricted(),
                                         sandbox: Some(baseline.environment.sandbox.clone()),
                                     },
@@ -805,6 +813,7 @@ mod tests {
                 credential_realization: CredentialRealizationProfile {
                     inference_holder: holder(),
                     mcp_holder: holder(),
+                    resource_holder: holder(),
                 },
             },
             mcp_authoring: Default::default(),

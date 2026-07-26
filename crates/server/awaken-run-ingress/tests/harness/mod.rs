@@ -16,6 +16,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
+use awaken_runtime_contract::CredentialRealizationCapabilities;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
@@ -603,9 +604,10 @@ impl awaken_run_ingress::DispatchQueue for FlakyDispatchStore {
         owner: &str,
         lease_ms: u64,
         now_ms: u64,
+        capabilities: &CredentialRealizationCapabilities,
     ) -> Result<Option<awaken_run_ingress::Claimed>, awaken_run_ingress::DispatchError> {
         self.inner
-            .claim_new_run(request, owner, lease_ms, now_ms)
+            .claim_new_run(request, owner, lease_ms, now_ms, capabilities)
             .await
     }
     async fn deliver_and_claim(
@@ -614,9 +616,10 @@ impl awaken_run_ingress::DispatchQueue for FlakyDispatchStore {
         owner: &str,
         lease_ms: u64,
         now_ms: u64,
+        capabilities: &CredentialRealizationCapabilities,
     ) -> Result<Option<awaken_run_ingress::Claimed>, awaken_run_ingress::DispatchError> {
         self.inner
-            .deliver_and_claim(input, owner, lease_ms, now_ms)
+            .deliver_and_claim(input, owner, lease_ms, now_ms, capabilities)
             .await
     }
     async fn claim(
@@ -624,6 +627,7 @@ impl awaken_run_ingress::DispatchQueue for FlakyDispatchStore {
         owner: &str,
         lease_ms: u64,
         now_ms: u64,
+        capabilities: &CredentialRealizationCapabilities,
     ) -> Result<Option<awaken_run_ingress::Claimed>, awaken_run_ingress::DispatchError> {
         if self.fail_claims.load(Ordering::SeqCst) > 0 {
             self.fail_claims.fetch_sub(1, Ordering::SeqCst);
@@ -631,7 +635,9 @@ impl awaken_run_ingress::DispatchQueue for FlakyDispatchStore {
                 "injected transient claim failure".to_string(),
             ));
         }
-        self.inner.claim(owner, lease_ms, now_ms).await
+        self.inner
+            .claim(owner, lease_ms, now_ms, capabilities)
+            .await
     }
     async fn claim_run(
         &self,
@@ -639,8 +645,11 @@ impl awaken_run_ingress::DispatchQueue for FlakyDispatchStore {
         owner: &str,
         lease_ms: u64,
         now_ms: u64,
+        capabilities: &CredentialRealizationCapabilities,
     ) -> Result<Option<awaken_run_ingress::Claimed>, awaken_run_ingress::DispatchError> {
-        self.inner.claim_run(run_id, owner, lease_ms, now_ms).await
+        self.inner
+            .claim_run(run_id, owner, lease_ms, now_ms, capabilities)
+            .await
     }
     async fn renew_lease(
         &self,
@@ -912,7 +921,7 @@ pub async fn assert_scheduled_due<S: awaken_run_ingress::Dispatch>(store: &S) {
         .unwrap();
     // Claim the fresh run, then await it so it can be woken by a delivery.
     let claimed = store
-        .claim("w", 1_000, 0)
+        .claim("w", 1_000, 0, &Default::default())
         .await
         .unwrap()
         .expect("running owner");
@@ -940,11 +949,15 @@ pub async fn assert_scheduled_due<S: awaken_run_ingress::Dispatch>(store: &S) {
     // Before its time, the run is not claimable; at its time, it wakes with the
     // now-due input in hand.
     assert!(
-        store.claim("w", 1_000, 500).await.unwrap().is_none(),
+        store
+            .claim("w", 1_000, 500, &Default::default())
+            .await
+            .unwrap()
+            .is_none(),
         "a future delivery is not yet claimable"
     );
     let claimed = store
-        .claim("w", 1_000, 1_000)
+        .claim("w", 1_000, 1_000, &Default::default())
         .await
         .unwrap()
         .expect("a due delivery is claimable");
@@ -965,16 +978,38 @@ pub async fn assert_dead_letter<S: awaken_run_ingress::Dispatch>(store: &S) {
 
     // A fresh claim does not spend the budget; each later recovery (expired
     // lease) does. With max_attempts = 2, two recoveries exhaust it.
-    assert!(store.claim("w", 100, 0).await.unwrap().is_some());
+    assert!(
+        store
+            .claim("w", 100, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
     assert_eq!(store.reap(2, 200).await.unwrap(), 0, "still within budget");
-    assert!(store.claim("w", 100, 200).await.unwrap().is_some());
+    assert!(
+        store
+            .claim("w", 100, 200, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
     assert_eq!(store.reap(2, 400).await.unwrap(), 0);
-    assert!(store.claim("w", 100, 400).await.unwrap().is_some());
+    assert!(
+        store
+            .claim("w", 100, 400, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
 
     // Budget exhausted: reap dead-letters it; it is no longer claimable.
     assert_eq!(store.reap(2, 600).await.unwrap(), 1, "dead-lettered");
     assert!(
-        store.claim("w", 100, 700).await.unwrap().is_none(),
+        store
+            .claim("w", 100, 700, &Default::default())
+            .await
+            .unwrap()
+            .is_none(),
         "a dead-lettered run is not claimed"
     );
     assert_eq!(store.dead_letters().await.unwrap(), vec![run.clone()]);
@@ -983,7 +1018,11 @@ pub async fn assert_dead_letter<S: awaken_run_ingress::Dispatch>(store: &S) {
     assert!(store.requeue(&run).await.unwrap());
     assert!(store.dead_letters().await.unwrap().is_empty());
     assert!(
-        store.claim("w", 100, 800).await.unwrap().is_some(),
+        store
+            .claim("w", 100, 800, &Default::default())
+            .await
+            .unwrap()
+            .is_some(),
         "a requeued run is claimable again"
     );
 }
@@ -1020,7 +1059,7 @@ pub async fn assert_cancel<S: awaken_run_ingress::Dispatch>(store: &S) {
         "repeating an uncommitted intent is idempotent"
     );
     let cancelled = store
-        .claim("w", 100, 0)
+        .claim("w", 100, 0, &Default::default())
         .await
         .unwrap()
         .expect("cancellation intent is claimable");
@@ -1047,7 +1086,7 @@ pub async fn assert_cancel<S: awaken_run_ingress::Dispatch>(store: &S) {
         .await
         .unwrap();
     let old_owner = store
-        .claim("w", 1_000, 0)
+        .claim("w", 1_000, 0, &Default::default())
         .await
         .unwrap()
         .expect("running owner");
@@ -1065,7 +1104,7 @@ pub async fn assert_cancel<S: awaken_run_ingress::Dispatch>(store: &S) {
         "the revoked owner loses commit authority immediately"
     );
     let reclaimed = store
-        .claim("replacement", 100, 0)
+        .claim("replacement", 100, 0, &Default::default())
         .await
         .unwrap()
         .expect("revoked cancellation intent is immediately recovered");
@@ -1104,7 +1143,13 @@ pub async fn assert_cancel<S: awaken_run_ingress::Dispatch>(store: &S) {
         .enqueue(RunDispatch::new(activation("run-3")))
         .await
         .unwrap();
-    assert!(store.claim("w", 1_000, 0).await.unwrap().is_some());
+    assert!(
+        store
+            .claim("w", 1_000, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
     store
         .settle(
             &RunId("run-3".to_string()),
@@ -1127,7 +1172,7 @@ pub async fn assert_cancel<S: awaken_run_ingress::Dispatch>(store: &S) {
         "new input cannot target an awaiting run once cancellation is durable"
     );
     let awaiting_cancel = store
-        .claim("w", 100, 0)
+        .claim("w", 100, 0, &Default::default())
         .await
         .unwrap()
         .expect("awaiting cancellation is claimable without pending input");
@@ -1224,7 +1269,7 @@ pub async fn assert_priority_dedupe_gc<S: awaken_run_ingress::Dispatch>(store: &
         .unwrap();
     assert_eq!(
         store
-            .claim("w", 1_000, 0)
+            .claim("w", 1_000, 0, &Default::default())
             .await
             .unwrap()
             .unwrap()
@@ -1235,7 +1280,7 @@ pub async fn assert_priority_dedupe_gc<S: awaken_run_ingress::Dispatch>(store: &
     );
     assert_eq!(
         store
-            .claim("w", 1_000, 0)
+            .claim("w", 1_000, 0, &Default::default())
             .await
             .unwrap()
             .unwrap()
@@ -1262,7 +1307,7 @@ pub async fn assert_priority_dedupe_gc<S: awaken_run_ingress::Dispatch>(store: &
     store.enqueue_with(req("d2"), key).await.unwrap();
     assert_eq!(
         store
-            .claim("w", 1_000, 0)
+            .claim("w", 1_000, 0, &Default::default())
             .await
             .unwrap()
             .unwrap()
@@ -1272,7 +1317,11 @@ pub async fn assert_priority_dedupe_gc<S: awaken_run_ingress::Dispatch>(store: &
         "d1"
     );
     assert!(
-        store.claim("w", 1_000, 0).await.unwrap().is_none(),
+        store
+            .claim("w", 1_000, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_none(),
         "the duplicate was not enqueued"
     );
     store
@@ -1285,7 +1334,13 @@ pub async fn assert_priority_dedupe_gc<S: awaken_run_ingress::Dispatch>(store: &
         .enqueue_with(req("poison"), SubmitOptions::default())
         .await
         .unwrap();
-    assert!(store.claim("w", 1, 0).await.unwrap().is_some());
+    assert!(
+        store
+            .claim("w", 1, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
     assert_eq!(store.reap(0, 100).await.unwrap(), 1);
     assert_eq!(
         store.dead_letters().await.unwrap(),
@@ -1311,7 +1366,13 @@ pub async fn assert_list_dispatches<S: awaken_run_ingress::Dispatch>(store: &S) 
     assert_eq!(listed[0].state, DispatchState::Pending);
     assert_eq!(listed[0].attempt_count, 0);
 
-    assert!(store.claim("w", 1_000, 0).await.unwrap().is_some());
+    assert!(
+        store
+            .claim("w", 1_000, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
     let listed = store.list_dispatches().await.unwrap();
     assert_eq!(listed[0].state, DispatchState::Leased);
 }
@@ -1329,7 +1390,13 @@ pub async fn assert_renew_owned_leases<S: awaken_run_ingress::Dispatch>(store: &
             .enqueue(RunDispatch::new(activation_on(run, run)))
             .await
             .unwrap();
-        assert!(store.claim("owner-a", 100, 0).await.unwrap().is_some());
+        assert!(
+            store
+                .claim("owner-a", 100, 0, &Default::default())
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 
     // Renewing owner-a's leases at t=60 extends both to 160.
@@ -1339,11 +1406,21 @@ pub async fn assert_renew_owned_leases<S: awaken_run_ingress::Dispatch>(store: &
     );
     // At t=120 the original lease would have expired, but the renewed one has not.
     assert!(
-        store.claim("owner-b", 100, 120).await.unwrap().is_none(),
+        store
+            .claim("owner-b", 100, 120, &Default::default())
+            .await
+            .unwrap()
+            .is_none(),
         "renewed leases are not yet reclaimable"
     );
     // Past the renewed expiry, recovery reclaims.
-    assert!(store.claim("owner-b", 100, 200).await.unwrap().is_some());
+    assert!(
+        store
+            .claim("owner-b", 100, 200, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
 }
 
 /// Shared spec for the near-expiry heartbeat (ADR-0024, O3): a bulk renewal only
@@ -1358,7 +1435,13 @@ pub async fn assert_renew_skips_far_from_expiry<S: awaken_run_ingress::Dispatch>
         .enqueue(RunDispatch::new(activation("r1")))
         .await
         .unwrap();
-    assert!(store.claim("owner-a", 100, 0).await.unwrap().is_some());
+    assert!(
+        store
+            .claim("owner-a", 100, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
 
     // At t=10 the lease still has 90ms left — more than half the 100ms lease — so
     // the bulk renewal skips it and reports zero renewed.
@@ -1371,7 +1454,11 @@ pub async fn assert_renew_skips_far_from_expiry<S: awaken_run_ingress::Dispatch>
     // Because it was left untouched, the original lease still expires at 100, so at
     // t=101 recovery reclaims it — proving the skip did not silently extend it.
     assert!(
-        store.claim("owner-b", 100, 101).await.unwrap().is_some(),
+        store
+            .claim("owner-b", 100, 101, &Default::default())
+            .await
+            .unwrap()
+            .is_some(),
         "the skipped lease expired on its original schedule"
     );
 }
@@ -1387,7 +1474,13 @@ pub async fn assert_dead_letter_ttl_gc<S: awaken_run_ingress::Dispatch>(store: &
         .enqueue(RunDispatch::new(activation("poison")))
         .await
         .unwrap();
-    assert!(store.claim("w", 1, 0).await.unwrap().is_some());
+    assert!(
+        store
+            .claim("w", 1, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
     assert_eq!(store.reap(0, 1_000).await.unwrap(), 1);
     assert_eq!(
         store.dead_letters().await.unwrap(),
@@ -1416,7 +1509,13 @@ pub async fn assert_supersession<S: awaken_run_ingress::Dispatch>(store: &S) {
         .enqueue(RunDispatch::new(activation("old")))
         .await
         .unwrap();
-    assert!(store.claim("w", 1_000, 0).await.unwrap().is_some());
+    assert!(
+        store
+            .claim("w", 1_000, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
     store
         .settle(&RunId("old".to_string()), 1, DispatchOutcome::Awaiting, &[])
         .await
@@ -1439,7 +1538,11 @@ pub async fn assert_supersession<S: awaken_run_ingress::Dispatch>(store: &S) {
     );
 
     // Only the newest run is claimable; the superseded awaiting run is never woken.
-    let newest = store.claim("w", 1_000, 0).await.unwrap().unwrap();
+    let newest = store
+        .claim("w", 1_000, 0, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(newest.request.run_id().0, "new");
     store
         .settle(
@@ -1474,7 +1577,11 @@ pub async fn assert_supersession<S: awaken_run_ingress::Dispatch>(store: &S) {
         )
         .await
         .unwrap();
-    let cancellation = store.claim("w", 1_000, 0).await.unwrap().unwrap();
+    let cancellation = store
+        .claim("w", 1_000, 0, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(cancellation.request.run_id().0, "cancel-old");
     assert!(cancellation.cancellation_requested);
 }
@@ -1501,7 +1608,10 @@ pub async fn assert_idle_thread_inbox<S: awaken_run_ingress::Dispatch>(store: &S
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
-    store.claim("w", 1_000, 0).await.unwrap();
+    store
+        .claim("w", 1_000, 0, &Default::default())
+        .await
+        .unwrap();
     store
         .settle(
             &RunId("run-1".to_string()),
@@ -1532,13 +1642,23 @@ pub async fn assert_lease_renewal<S: awaken_run_ingress::Dispatch>(store: &S) {
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
-    assert!(store.claim("owner-a", 100, 0).await.unwrap().is_some());
+    assert!(
+        store
+            .claim("owner-a", 100, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
 
     // owner-a renews at t=50 (extends to 150); a recovery claim at t=120 cannot
     // steal it because the lease has not expired.
     assert!(store.renew_lease(&run, "owner-a", 100, 50).await.unwrap());
     assert!(
-        store.claim("owner-b", 100, 120).await.unwrap().is_none(),
+        store
+            .claim("owner-b", 100, 120, &Default::default())
+            .await
+            .unwrap()
+            .is_none(),
         "a renewed lease is not yet expired"
     );
     // A non-owner cannot renew.
@@ -1547,7 +1667,7 @@ pub async fn assert_lease_renewal<S: awaken_run_ingress::Dispatch>(store: &S) {
     // Once the renewed lease expires, recovery reclaims for the new owner.
     assert_eq!(
         store
-            .claim("owner-b", 100, 200)
+            .claim("owner-b", 100, 200, &Default::default())
             .await
             .unwrap()
             .map(|c| c.lease.owner),
@@ -1569,7 +1689,7 @@ pub async fn assert_settle_fences_stale_epoch<S: awaken_run_ingress::Dispatch>(s
 
     // Owner A claims: the fresh row's epoch bumps 0 -> 1.
     let a = store
-        .claim("owner-a", 100, 0)
+        .claim("owner-a", 100, 0, &Default::default())
         .await
         .unwrap()
         .expect("A claims");
@@ -1577,7 +1697,7 @@ pub async fn assert_settle_fences_stale_epoch<S: awaken_run_ingress::Dispatch>(s
 
     // A's lease lapses; owner B recovers it — the epoch bumps 1 -> 2.
     let b = store
-        .claim("owner-b", 100, 200)
+        .claim("owner-b", 100, 200, &Default::default())
         .await
         .unwrap()
         .expect("B reclaims the expired lease");
@@ -1599,7 +1719,11 @@ pub async fn assert_settle_fences_stale_epoch<S: awaken_run_ingress::Dispatch>(s
     // The dispatch is untouched — B (the current owner) still holds a live claim, so
     // a fresh claim before B's lease expires finds nothing runnable.
     assert!(
-        store.claim("owner-c", 100, 250).await.unwrap().is_none(),
+        store
+            .claim("owner-c", 100, 250, &Default::default())
+            .await
+            .unwrap()
+            .is_none(),
         "the fenced settle did not delete the row B is running"
     );
 
@@ -1613,7 +1737,11 @@ pub async fn assert_settle_fences_stale_epoch<S: awaken_run_ingress::Dispatch>(s
         "the current owner's settle applies"
     );
     assert!(
-        store.claim("owner-c", 100, 300).await.unwrap().is_none(),
+        store
+            .claim("owner-c", 100, 300, &Default::default())
+            .await
+            .unwrap()
+            .is_none(),
         "the run is gone after the applied settle"
     );
 
@@ -1647,7 +1775,13 @@ pub async fn assert_dedupe_ignores_dead_lettered<S: awaken_run_ingress::Dispatch
         .enqueue_with(RunDispatch::new(activation("run-1")), key())
         .await
         .unwrap();
-    assert!(store.claim("w", 1, 0).await.unwrap().is_some());
+    assert!(
+        store
+            .claim("w", 1, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
     assert_eq!(store.reap(0, 100).await.unwrap(), 1, "run-1 dead-lettered");
     assert_eq!(
         store.dead_letters().await.unwrap(),
@@ -1662,7 +1796,7 @@ pub async fn assert_dedupe_ignores_dead_lettered<S: awaken_run_ingress::Dispatch
         .unwrap();
     assert_eq!(
         store
-            .claim("w", 1_000, 200)
+            .claim("w", 1_000, 200, &Default::default())
             .await
             .unwrap()
             .expect("the re-submit is claimable, not deduped")
@@ -1689,7 +1823,13 @@ pub async fn assert_wake_suppressed_while_thread_running<S: awaken_run_ingress::
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
-    assert!(store.claim("w", 10_000, 0).await.unwrap().is_some());
+    assert!(
+        store
+            .claim("w", 10_000, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
     store
         .settle(
             &RunId("run-1".to_string()),
@@ -1706,7 +1846,11 @@ pub async fn assert_wake_suppressed_while_thread_running<S: awaken_run_ingress::
         .await
         .unwrap();
     assert!(
-        store.claim("w", 10_000, 1).await.unwrap().is_some(),
+        store
+            .claim("w", 10_000, 1, &Default::default())
+            .await
+            .unwrap()
+            .is_some(),
         "run-2 claims the free thread"
     );
 
@@ -1724,7 +1868,11 @@ pub async fn assert_wake_suppressed_while_thread_running<S: awaken_run_ingress::
             .unwrap()
     );
     assert!(
-        store.claim("w", 10_000, 2).await.unwrap().is_none(),
+        store
+            .claim("w", 10_000, 2, &Default::default())
+            .await
+            .unwrap()
+            .is_none(),
         "the awaiting run is not woken while its thread already runs another",
     );
 
@@ -1735,7 +1883,7 @@ pub async fn assert_wake_suppressed_while_thread_running<S: awaken_run_ingress::
         .await
         .unwrap();
     let claimed = store
-        .claim("w", 10_000, 3)
+        .claim("w", 10_000, 3, &Default::default())
         .await
         .unwrap()
         .expect("the freed thread lets run-1 wake");
@@ -1759,7 +1907,7 @@ where
         .unwrap();
     // Owner A claims with a short lease (ttl 100 from t=0); it has lapsed by t=200.
     let a = store
-        .claim("owner-a", 100, 0)
+        .claim("owner-a", 100, 0, &Default::default())
         .await
         .unwrap()
         .expect("A claims");
@@ -1769,8 +1917,8 @@ where
     let s1 = store.clone();
     let s2 = store.clone();
     let (r1, r2) = tokio::join!(
-        tokio::spawn(async move { s1.claim("owner-b", 100, 200).await }),
-        tokio::spawn(async move { s2.claim("owner-c", 100, 200).await }),
+        tokio::spawn(async move { s1.claim("owner-b", 100, 200, &Default::default()).await }),
+        tokio::spawn(async move { s2.claim("owner-c", 100, 200, &Default::default()).await }),
     );
     let winners: Vec<_> = [r1.unwrap().expect("claim b"), r2.unwrap().expect("claim c")]
         .into_iter()
@@ -1798,12 +1946,12 @@ pub async fn assert_awaiting_settle_fences_stale_epoch<S: awaken_run_ingress::Di
         .unwrap();
 
     let a = store
-        .claim("owner-a", 100, 0)
+        .claim("owner-a", 100, 0, &Default::default())
         .await
         .unwrap()
         .expect("A claims");
     let b = store
-        .claim("owner-b", 100, 200)
+        .claim("owner-b", 100, 200, &Default::default())
         .await
         .unwrap()
         .expect("B reclaims");
@@ -1819,7 +1967,11 @@ pub async fn assert_awaiting_settle_fences_stale_epoch<S: awaken_run_ingress::Di
         SettleOutcome::Fenced,
     );
     assert!(
-        store.claim("owner-c", 100, 250).await.unwrap().is_none(),
+        store
+            .claim("owner-c", 100, 250, &Default::default())
+            .await
+            .unwrap()
+            .is_none(),
         "the fenced Awaiting settle left B's running claim intact"
     );
 

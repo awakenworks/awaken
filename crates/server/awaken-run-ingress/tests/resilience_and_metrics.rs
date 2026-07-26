@@ -225,7 +225,11 @@ async fn an_expired_lease_reclaim_is_reported_as_recovery() {
         .enqueue(RunDispatch::new(activation("run-recovered")))
         .await
         .unwrap();
-    let abandoned = store.claim("crashed", 10, 0).await.unwrap().unwrap();
+    let abandoned = store
+        .claim("crashed", 10, 0, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
     assert!(!abandoned.recovered);
 
     let worker = DispatchWorker::new(runtime, store, commit, "replacement");
@@ -248,8 +252,16 @@ async fn a_stale_settlement_increments_the_fenced_metric() {
         .enqueue(RunDispatch::new(activation("run-fenced")))
         .await
         .unwrap();
-    let stale = store.claim("old", 10, 0).await.unwrap().unwrap();
-    let current = store.claim("new", 10, 11).await.unwrap().unwrap();
+    let stale = store
+        .claim("old", 10, 0, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
+    let current = store
+        .claim("new", 10, 11, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
     let worker = DispatchWorker::new(runtime, store, commit, "driver");
 
     worker

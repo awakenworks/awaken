@@ -69,7 +69,8 @@ Release gates are intentionally strict:
   `AWAKEN_ACP_CREDENTIAL_FILE` pointing to an operator-selected mode-`0600` Codex
   `auth.json`, and a backend built with `container-docker` and started with
   `AWAKEN_SANDBOX_TIER=docker`. Networks that require a forward proxy also set
-  `AWAKEN_CONTAINER_EGRESS_PROXY`. The runtime checkpoint observes a newly-created
+  `AWAKEN_CONTAINER_FORWARD_PROXY`. This is connectivity configuration, not an
+  allowlist boundary. The runtime checkpoint observes a newly-created
   non-root `awaken.sandbox` container, a writable native credential mount, no API-key
   environment, and one committed live reply; a local or synthetic ACP process is not
   release evidence.

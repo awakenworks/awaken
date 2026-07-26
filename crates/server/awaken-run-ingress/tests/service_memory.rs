@@ -119,7 +119,7 @@ async fn service_recovers_a_crashed_lease_on_its_clock() {
         .unwrap();
     assert!(
         store
-            .claim("dead-worker", 1_000, 0)
+            .claim("dead-worker", 1_000, 0, &Default::default())
             .await
             .unwrap()
             .is_some()
@@ -268,8 +268,20 @@ async fn service_dead_letters_a_poison_run() {
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
-    assert!(store.claim("w", 100, 0).await.unwrap().is_some()); // fresh
-    assert!(store.claim("w", 100, 200).await.unwrap().is_some()); // recovery -> attempt 1
+    assert!(
+        store
+            .claim("w", 100, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    ); // fresh
+    assert!(
+        store
+            .claim("w", 100, 200, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    ); // recovery -> attempt 1
 
     let clock = Arc::new(ManualClock::new(400));
     let service = ingress.spawn_service(

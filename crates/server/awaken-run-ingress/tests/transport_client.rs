@@ -65,14 +65,32 @@ fn provider_candidate(
 struct TransportState {
     store: Arc<MemoryDispatchStore>,
     now_ms: Arc<AtomicU64>,
+    credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
 }
 
 async fn spawn_transport_server() -> (String, Arc<MemoryDispatchStore>, Arc<AtomicU64>) {
     let store = Arc::new(MemoryDispatchStore::new());
     let now_ms = Arc::new(AtomicU64::new(0));
+    let holder = awaken_runtime_contract::PlaintextHolder::new(
+        awaken_runtime_contract::PlaintextBoundary::Worker,
+        awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+    );
     let state = Arc::new(TransportState {
         store: store.clone(),
         now_ms: now_ms.clone(),
+        credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities {
+            holders: [holder].into_iter().collect(),
+            material_sources: [
+                awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+            ]
+            .into_iter()
+            .collect(),
+            realization_kinds: [
+                awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
+            ]
+            .into_iter()
+            .collect(),
+        },
     });
     let app = Router::new()
         .route("/v1/worker/dispatch/enqueue", post(enqueue))
@@ -139,6 +157,7 @@ async fn claim(
             worker_id(&headers),
             1_000,
             state.now_ms.load(Ordering::SeqCst),
+            &state.credential_capabilities,
         )
         .await
         .expect("claim");
@@ -158,6 +177,7 @@ async fn claim_run(
             worker_id(&headers),
             1_000,
             state.now_ms.load(Ordering::SeqCst),
+            &state.credential_capabilities,
         )
         .await
         .expect("claim_run");
@@ -253,7 +273,14 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
     let mut activation = activation("run-1");
     activation.snapshot.resolved_spec.model_binding = candidate.clone();
     queue
-        .enqueue(RunDispatch::new(activation))
+        .enqueue(
+            RunDispatch::new(activation).with_inference_plaintext_holder(
+                awaken_runtime_contract::PlaintextHolder::new(
+                    awaken_runtime_contract::PlaintextBoundary::Worker,
+                    awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+                ),
+            ),
+        )
         .await
         .expect("enqueue over transport");
     assert_eq!(
@@ -266,7 +293,7 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
     // fresh lease (epoch 1) — the whole payload survived the JSON round-trip.
     clock.store(0, Ordering::SeqCst);
     let claimed = queue
-        .claim("worker-A", 1_000, 0)
+        .claim("worker-A", 1_000, 0, &Default::default())
         .await
         .expect("claim ok")
         .expect("a runnable dispatch");
@@ -295,7 +322,7 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
     clock.store(10, Ordering::SeqCst);
     assert!(
         queue
-            .claim("worker-A", 1_000, 10)
+            .claim("worker-A", 1_000, 10, &Default::default())
             .await
             .expect("claim")
             .is_none()
@@ -348,7 +375,7 @@ async fn renew_lease_returns_false_over_the_wire_when_the_lease_was_stolen() {
     // Worker A claims at t=0 with a 1s lease (epoch 1).
     clock.store(0, Ordering::SeqCst);
     let a = queue_a
-        .claim("worker-A", 1_000, 0)
+        .claim("worker-A", 1_000, 0, &Default::default())
         .await
         .unwrap()
         .expect("A claims");
@@ -366,7 +393,7 @@ async fn renew_lease_returns_false_over_the_wire_when_the_lease_was_stolen() {
     // The lease lapses; worker B recovers the run at t=2s (epoch 2 — B now owns it).
     clock.store(2_000, Ordering::SeqCst);
     let b = queue_b
-        .claim("worker-B", 1_000, 2_000)
+        .claim("worker-B", 1_000, 2_000, &Default::default())
         .await
         .unwrap()
         .expect("B recovers the lapsed lease");

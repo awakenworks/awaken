@@ -174,15 +174,23 @@ struct ResolvedRepositoryInput {
     repository_id: RepositoryId,
     config_version: ConfigVersion,
     remote_url: RepositoryUrl,
-    credential_binding: CredentialBinding,
+    credential: Option<ResolvedRepositoryCredential>,
     initial_branch: Option<BranchName>,
     access: RepositoryAccess,
     mount_path: SandboxPath,
 }
+
+struct ResolvedRepositoryCredential {
+    access: CredentialAccess,
+    selected_plaintext_holder: PlaintextHolder,
+}
 ```
 
 The manifest is serializable and secret-free. It contains no host path, live
-handle, credential value, Memory entry version, or Git commit.
+handle, credential value, Memory entry version, or Git commit. The immutable
+Repository config retains its source binding; the optional resolved credential
+adds only an exact source revision, canonical usage, execution policy, and
+Environment-selected holder. An anonymous Repository has no credential pin.
 
 At the durable execution boundary it is wrapped, not copied into another model:
 
@@ -270,7 +278,8 @@ process-local handle.
 | `MemoryRuntime` | Existing, moving to extension ownership | `awaken-ext-memory` | recall Plugin, terminal extraction observer, selector/extractor capability, stable intent/receipt | resource identity, default store, IAM policy, Host lifecycle |
 | `BoundMemory` | Existing | Session Runtime | one resolved store handle + pinned policy + maximum access shared by recall/extraction | workspace lookup, current-config resolution, authorization |
 | `RepositoryRealizer` | Existing neutral port | Environment adapter | clone current remote config, construct working tree, publish Agent-authored commits with ephemeral transport credentials | remote repository ownership, authorization policy, or commit pinning |
-| `CredentialResolver`/Vault | Existing | Credential product domain | turn a credential binding into a short-lived lease and rotate/revoke it | Agent prompt, persisted Session secret material |
+| Repository credential pin compiler | Existing in Managed Session application service | Session application/Vault ACL | compile a Repository config binding once into exact active source revision, canonical usage, `Forbidden` exposure, and selected Resource holder before persistence | material opening, Runtime lookup, generic Service state |
+| `CredentialMaterialResolver` | Existing canonical port | Credential execution boundary | validate and open one exact access/holder pin for an installed adapter; shared by Model, MCP, and Repository | source enumeration, revision/holder selection, Agent prompt, persisted plaintext |
 | `SandboxProvider` | Existing | Environment provisioning | realize validated mounts/working trees and dispose them | product resource authoring and policy |
 | `ResourceReclaimer` | Existing, durable and per-resource | Product/session operations | reconcile crashed activations and purge intents; retention, reference checks, fenced claims, per-kind receipts | authorization decisions, remote Git deletion |
 | `ResourceReclamationFence` | Existing resource lifecycle port | Resource consistency | atomically prove zero physical references, fence `(kind, resource_id)`, and reject racing reference writes | principal, role, policy, API key, Org/Project/WorkUnit |
@@ -293,10 +302,10 @@ resource-specific repositories enforce their own intrinsic invariants.
 | Configure Repo | Resource Catalog service | Repository config repository, Vault | `Repository` + config v1 referencing credential binding |
 | Bind Agent default | Agent Configuration service | `AgentInputBindingRepository`, PEP/PDP | identity-only `InputBinding`, authoring revision increments |
 | Attach to Session | Managed Session adapter | PEP/PDP | temporary `SessionInputAttachment` |
-| Resolve | `SessionInputResolver` | Agent binding repo, Resource Catalog, PEP result | `ResolvedSessionResources`; Memory/Repo config versions selected once |
+| Resolve | `SessionInputResolver` + Repository credential pin compiler | Agent binding repo, Resource Catalog, Vault source metadata, frozen Environment | `ResolvedSessionResources`; Memory/Repo config versions and exact Repository credential execution pin selected once |
 | Activate File | `SessionResourceCoordinator` | `FileStore`, `SandboxProvider` | immutable-source working copy with no write-back + activation `Active` |
 | Activate Memory | `SessionResourceCoordinator` | `MemoryRepository`, Memory realizer | `ScopedMemoryStore`/mount + activation `Active` |
-| Activate Repo | `SessionResourceCoordinator` | Repository realizer, Vault, Sandbox | current clone + working tree; credential lease not persisted |
+| Activate Repo | `SessionResourceCoordinator` | Repository realizer, exact material resolver, Sandbox | current clone + working tree; exact pin persists, material does not |
 | Use | sandbox/tool adapters | File/Memory/Git domain ports | domain writes and receipts; no second config resolve |
 | Recall for Run | Memory Recall Plugin | scoped Memory handle, optional Selector Agent | Run-scoped request-only `ContextMessages`; query derives from current `RunInput` |
 | Extract after terminal Run | Memory Extraction terminal observer | committed Run/Thread facts, Extractor Agent, Memory repository | stable extraction intent and receipt; at-least-once delivery is idempotent |
@@ -492,10 +501,19 @@ No commit, tree, or branch-head SHA is resolved or persisted.
 
 ### Activate and use
 
-The coordinator asks the Vault for a short-lived credential lease and asks the
-Repository realizer to clone the current remote state into the Session sandbox.
-The credential is held by the transport/broker and not written into the prompt,
-remote URL, durable manifest, or working tree.
+The coordinator validates the Session-persisted exact credential access/holder
+pin and asks the common material resolver to open that revision for the
+host-mediated Git transport. A bound Repository without a pin, an anonymous
+Repository with one, or a source/usage/holder/revision mismatch fails before Git
+I/O. The Runtime never opens a bare Vault source id or reselects the current
+revision. Material is held by the transport/broker and is not written into the
+prompt, remote URL, durable manifest, or working tree.
+
+Rows retained from before the exact pin existed are migrated through that same
+Session application compiler under the root Session CAS before any recovery
+effect. This is a one-time schema-semantic migration, not a second Runtime
+compatibility path; an unavailable Vault compiler or invalid live source leaves
+the row unchanged and realization fails closed.
 
 The Agent may use natural language to drive authorized Git/MCP operations inside
 the bound repository: checkout, branch, edit, commit, fetch, push, and pull
@@ -722,6 +740,10 @@ internal config version remains an awaken governance detail.
 - `RepoStage` and LocalSandbox-specific orchestration are replaced by
   `RepositoryActivation { plan, credential }` plus the neutral, secret-free
   `RepositoryRealizationPlan` / `RepositoryRealizer` environment port;
+- Repository Vault bindings are compiled before Session persistence into one
+  exact secret-free `ResolvedRepositoryCredential`; Model, MCP, and Repository
+  now share `CredentialMaterialResolver`, and the bare-source Runtime
+  materialization path is removed;
 - Repository publication and authored-Skill persistence run only at binding
   replacement or Session release; `GET /v1/files` is a read-only artifact
   projection and no longer triggers unrelated resource writes.
@@ -806,7 +828,7 @@ reconciler. It never silently marks the resource released.
 | Binding | Agent defaults and Session attachments merge once; explicit replacement only; mount collision fails |
 | File | binary round-trip; content-id validation; edited Session copy cannot mutate original FileId; shared-blob ownership isolation; safe GC |
 | Memory | config update affects only later Sessions; current content remains shared; read-only extraction denied; CAS conflict loses no update |
-| Repository | config update affects later Sessions; no commit pin in manifest; credentials absent from logs/prompt/disk; remote is never deleted by GC |
+| Repository | config update affects later Sessions; no commit pin; exact source revision/usage/holder pin; anonymous/missing/stale/inactive/cross-Workspace/mismatched cases fail closed; retained pre-pin row migrates once before I/O; material absent from manifest/logs/prompt/disk; remote is never deleted by GC |
 | Skill | binary bundle round-trip; traversal rejected; restart preserves history; v1 Session keeps v1 after v2 publication; hash mismatch fails closed |
 | Scope/auth | cross-Workspace File/Memory/Repo access fails closed; old config cannot bypass suspension/deletion/revocation |
 | Recovery | stale Prepared/Active/Releasing activations converge idempotently after restart |

@@ -120,10 +120,18 @@ async fn dedupe_key_blocks_a_duplicate_dispatch_on_sqlite() {
         .await
         .unwrap();
 
-    let first = store.claim("w", LEASE, 0).await.unwrap().expect("first");
+    let first = store
+        .claim("w", LEASE, 0, &Default::default())
+        .await
+        .unwrap()
+        .expect("first");
     assert_eq!(first.request.run_id().0, "d1");
     assert!(
-        store.claim("w", LEASE, 0).await.unwrap().is_none(),
+        store
+            .claim("w", LEASE, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_none(),
         "the duplicate dedupe key was never enqueued (V0008)"
     );
 }

@@ -23,9 +23,9 @@ use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
 use awaken_runtime_contract::resume::ResumeResult;
 
 use crate::dispatch::{
-    CasOutcome, Claimed, CommitEpochGuard, Dispatch, DispatchCompletion, DispatchError,
-    DispatchOutcome, DispatchQueue, DispatchSummary, Inbox, Outbox, PendingInput, PendingRecord,
-    RunClaim, SettleOutcome, SubmitOptions,
+    CasOutcome, Claimed, CommitEpochGuard, CredentialRealizationReceipt, Dispatch,
+    DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue, DispatchSummary, Inbox,
+    Outbox, PendingInput, PendingRecord, RunClaim, SettleOutcome, SubmitOptions,
 };
 use crate::postgres::PostgresDispatchStore;
 use crate::sqlite::SqliteDispatchStore;
@@ -150,6 +150,14 @@ impl DispatchQueue for AnyDispatchStore {
         delegate!(self, claim_is_current(claim, now_ms))
     }
 
+    async fn record_credential_realization(
+        &self,
+        claim: &RunClaim,
+        receipt: CredentialRealizationReceipt,
+    ) -> Result<SettleOutcome, DispatchError> {
+        delegate!(self, record_credential_realization(claim, receipt))
+    }
+
     async fn lock_commit_epoch(
         &self,
         claim: &RunClaim,
@@ -201,8 +209,12 @@ impl DispatchQueue for AnyDispatchStore {
         owner: &str,
         lease_ms: u64,
         now_ms: u64,
+        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
-        delegate!(self, claim_new_run(request, owner, lease_ms, now_ms))
+        delegate!(
+            self,
+            claim_new_run(request, owner, lease_ms, now_ms, capabilities)
+        )
     }
 
     async fn claim_new_run_compatible(
@@ -224,8 +236,12 @@ impl DispatchQueue for AnyDispatchStore {
         owner: &str,
         lease_ms: u64,
         now_ms: u64,
+        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
-        delegate!(self, deliver_and_claim(input, owner, lease_ms, now_ms))
+        delegate!(
+            self,
+            deliver_and_claim(input, owner, lease_ms, now_ms, capabilities)
+        )
     }
 
     async fn deliver_and_claim_compatible(
@@ -246,8 +262,9 @@ impl DispatchQueue for AnyDispatchStore {
         owner: &str,
         lease_ms: u64,
         now_ms: u64,
+        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
-        delegate!(self, claim(owner, lease_ms, now_ms))
+        delegate!(self, claim(owner, lease_ms, now_ms, capabilities))
     }
 
     async fn claim_compatible(
@@ -279,8 +296,12 @@ impl DispatchQueue for AnyDispatchStore {
         owner: &str,
         lease_ms: u64,
         now_ms: u64,
+        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
-        delegate!(self, claim_run(run_id, owner, lease_ms, now_ms))
+        delegate!(
+            self,
+            claim_run(run_id, owner, lease_ms, now_ms, capabilities)
+        )
     }
 
     async fn claim_run_compatible(

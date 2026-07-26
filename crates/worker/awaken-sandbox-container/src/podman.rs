@@ -244,7 +244,7 @@ impl PodmanRuntime {
     fn exec_process(
         &self,
         container_id: &str,
-        command: pc::Command,
+        command: pc::MaterializedCommand,
         attached_agent: bool,
     ) -> Result<(String, String, Child), RuntimeError> {
         if command.argv.is_empty() {
@@ -269,13 +269,10 @@ impl PodmanRuntime {
             args.extend(["--workdir".into(), command.cwd.clone()]);
         }
         for var in &command.env {
-            let pc::EnvValue::Inline { value } = &var.value else {
-                return Err(backend(format!(
-                    "exec env {} is not materialized inline",
-                    var.name
-                )));
-            };
-            args.extend(["--env".into(), format!("{}={value}", var.name)]);
+            // Podman copies a named variable from its own environment into the
+            // container. Keep the value out of the CLI argv, where `ps` and
+            // `/proc/*/cmdline` would otherwise expose process credentials.
+            args.extend(["--env".into(), var.name.clone()]);
         }
         args.extend([
             container_id.to_string(),
@@ -288,6 +285,9 @@ impl PodmanRuntime {
         args.extend(command.argv);
         let mut process = OsCommand::new(&self.bin);
         process.args(args);
+        for var in &command.env {
+            process.env(&var.name, var.value.expose());
+        }
         if attached_agent {
             process
                 .stdin(Stdio::piped())
@@ -317,6 +317,10 @@ impl PodmanRuntime {
 
 #[async_trait]
 impl ContainerRuntime for PodmanRuntime {
+    fn enforces_network_none(&self) -> bool {
+        true
+    }
+
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {
         let name = runtime_container_name(&self.owner_id, id);
         // Idempotent: clear any stale container of this scope first.
@@ -343,7 +347,7 @@ impl ContainerRuntime for PodmanRuntime {
     async fn spawn(
         &self,
         container_id: &str,
-        command: pc::Command,
+        command: pc::MaterializedCommand,
     ) -> Result<Box<dyn pc::ProcessHandle>, RuntimeError> {
         let (id, pid_file, child) = self.exec_process(container_id, command, false)?;
         Ok(Box::new(PodmanExecProcess {
@@ -361,7 +365,7 @@ impl ContainerRuntime for PodmanRuntime {
     async fn spawn_agent(
         &self,
         container_id: &str,
-        command: pc::Command,
+        command: pc::MaterializedCommand,
     ) -> Result<RuntimeAgentProcess, RuntimeError> {
         let (id, pid_file, mut child) = self.exec_process(container_id, command, true)?;
         let stdin = child
@@ -593,6 +597,7 @@ impl ContainerRuntime for PodmanRuntime {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use std::sync::Mutex;
 
     use awaken_provisioning_contract::ProcessHandle;
@@ -600,6 +605,33 @@ mod tests {
     use crate::{NetworkMode, RootfsPlan};
 
     use super::*;
+
+    struct FixedBroker;
+
+    #[async_trait]
+    impl pc::SecretBroker for FixedBroker {
+        async fn materialize(&self, _reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
+            Ok(b"podman-secret".to_vec())
+        }
+
+        async fn materialize_process(&self, reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
+            self.materialize(reference).await
+        }
+
+        async fn write_back(
+            &self,
+            _reference: &str,
+            _bytes: Vec<u8>,
+        ) -> Result<(), pc::SandboxError> {
+            Err(pc::SandboxError::new("not supported"))
+        }
+    }
+
+    async fn materialized(command: pc::Command) -> pc::MaterializedCommand {
+        pc::materialize_process_command(&[], command, None)
+            .await
+            .unwrap()
+    }
 
     /// A scripted [`CommandExec`]: a handler maps `(bin, args)` to a canned output,
     /// and every invocation's argv is recorded so tests can assert what was run.
@@ -886,27 +918,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exec_admission_rejects_empty_piped_and_unmaterialized_commands() {
+    async fn exec_admission_rejects_empty_and_unsupported_piped_commands() {
         let (rt, _) = runtime_with(9000, |_| ok(""));
 
         assert!(
-            rt.exec_process("cid", pc::Command::new(Vec::<String>::new()), false)
-                .is_err()
+            rt.exec_process(
+                "cid",
+                pc::MaterializedCommand::new(Vec::<String>::new()),
+                false
+            )
+            .is_err()
         );
 
-        let mut piped = pc::Command::new(["echo", "value"]);
+        let mut piped = pc::MaterializedCommand::new(["echo", "value"]);
         piped.stdio = pc::Stdio::Piped;
         assert!(rt.exec_process("cid", piped, false).is_err());
-
-        let mut secret = pc::Command::new(["echo", "value"]);
-        secret.env.push(pc::EnvVar {
-            name: "TOKEN".into(),
-            value: pc::EnvValue::Secret {
-                reference: "credential://test".into(),
-            },
-            visibility: pc::EnvVisibility::Process,
-        });
-        assert!(rt.exec_process("cid", secret, false).is_err());
     }
 
     #[tokio::test]
@@ -925,17 +951,67 @@ mod tests {
             },
             visibility: pc::EnvVisibility::Process,
         });
+        let inherited = materialized(inherited).await;
         let inherited = rt.spawn("cid", inherited).await.unwrap();
         assert_eq!(inherited.wait().await.unwrap().code, Some(0));
 
-        let mut null = pc::Command::new(["echo", "discarded"]);
+        let mut null = pc::MaterializedCommand::new(["echo", "discarded"]);
         null.stdio = pc::Stdio::Null;
         let null = rt.spawn("cid", null).await.unwrap();
         assert_eq!(null.wait().await.unwrap().code, Some(0));
 
-        let mut piped = pc::Command::new(["agent", "--stdio"]);
+        let mut piped = pc::MaterializedCommand::new(["agent", "--stdio"]);
         piped.stdio = pc::Stdio::Piped;
         let attached = rt.spawn_agent("cid", piped).await.unwrap();
         assert_eq!(attached.process.wait().await.unwrap().code, Some(0));
+    }
+
+    /// Podman secret-delivery cause graph:
+    ///
+    /// C1 command contains a brokered process secret -> C2 the Worker resolves it
+    /// -> C3 the Podman adapter forwards only the variable name in argv and places
+    /// the value in the child environment -> E1 the target receives the value while
+    /// the host command line remains secret-free. Any value in argv is E2/failure.
+    ///
+    /// | Rule | C1 | C2 | value in argv | value in child env | Result |
+    /// |---|---|---|---|---|---|
+    /// | D1 | T | T | F | T | launch succeeds |
+    /// | D2 | T | T | T | * | helper rejects observation |
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn process_secret_is_forwarded_by_name_without_entering_podman_argv() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let script = std::env::temp_dir().join(format!(
+            "awaken-podman-secret-check-{}-{}",
+            std::process::id(),
+            EXEC_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(
+            &script,
+            "#!/bin/sh\ncase \" $* \" in *podman-secret*) exit 91;; esac\n[ \"$TOKEN\" = podman-secret ] || exit 92\nexit 0\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let (mut rt, _) = runtime_with(9000, |_| ok(""));
+        rt.bin = script.to_string_lossy().into_owned();
+        let mut command = pc::Command::new(["echo", "value"]);
+        command.stdio = pc::Stdio::Null;
+        command.env.push(pc::EnvVar {
+            name: "TOKEN".into(),
+            value: pc::EnvValue::Secret {
+                reference: "lease://exact".into(),
+            },
+            visibility: pc::EnvVisibility::Process,
+        });
+        let broker: Arc<dyn pc::SecretBroker> = Arc::new(FixedBroker);
+        let command = pc::materialize_process_command(&[], command, Some(&broker))
+            .await
+            .unwrap();
+        let process = rt.spawn("cid", command).await.unwrap();
+        assert_eq!(process.wait().await.unwrap().code, Some(0));
+
+        std::fs::remove_file(script).unwrap();
     }
 }

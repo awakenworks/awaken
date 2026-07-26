@@ -128,6 +128,13 @@ snapshot fingerprint covers those normalized fields. Later Environment edits
 affect only new Sessions; Runtime Host and providers never re-read the latest
 Environment record for an existing Session.
 
+The credential realization profile freezes separate exact holders for inference,
+MCP, and Resource execution. This does not make Resource state part of the
+immutable baseline: the baseline supplies the holder decision, while each
+Repository generation persists its own exact credential access/holder pin in
+`SessionResourceState`. A hot Resource replacement changes only that generation
+and the root Session revision; it never mutates or recompiles the baseline.
+
 The initial insert persists a temporary `Preparing(SessionCreationIntent)` so a
 claim-time registered application can contribute before any external
 realization. That intent is not an alternative runtime specification: only the
@@ -823,9 +830,11 @@ temporary implementation layer.
 - ACP hot-swap conformance or explicit capability rejection;
 - TypeScript add/call/replace/remove/restart E2E.
 
-Generic Service authoring, HTTP/WebSocket/Git transports, public realizer
-injection, and downstream platform custody are explicitly deferred. Each requires
-a concrete second implementation and a separate accepted slice.
+Generic Service authoring, dynamic HTTP/WebSocket service attachments, general
+Git service attachments, public generic-realizer injection, and downstream
+platform custody are explicitly deferred. Existing Repository Git activation
+remains a Resource lifecycle and is not deferred by this decision. Each deferred
+item requires a concrete second implementation and a separate accepted slice.
 
 ## Consequences
 

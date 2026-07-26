@@ -6,6 +6,7 @@
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_runtime_contract::PlaintextHolder;
 use awaken_runtime_contract::activation::RunActivation;
 pub use awaken_tenancy::ExecutionScopeRef;
 pub use awaken_worker_contract::PlacementRequirements;
@@ -66,6 +67,13 @@ pub struct RunDispatch {
     /// the Session environment; it must never re-read current Agent bindings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_resources: Option<SessionResourceEnvelope>,
+    /// Exact Environment/deployment request for inference credential plaintext.
+    /// Claim admission validates it against every selected published candidate
+    /// and the selected Worker's installed capabilities before persisting the
+    /// attempt-epoch bindings. `None` is valid only when no selected candidate
+    /// carries a credential.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inference_plaintext_holder: Option<PlaintextHolder>,
     /// Hard worker requirements pinned at admission. Older durable rows omit this
     /// field and deserialize through the contract's explicit legacy posture;
     /// strict remote callers attach `PlacementRequirements::remote_required()`.
@@ -84,6 +92,7 @@ impl RunDispatch {
             traceparent: None,
             execution_scope: None,
             session_resources: None,
+            inference_plaintext_holder: None,
             placement: PlacementRequirements::default(),
         }
     }
@@ -112,6 +121,14 @@ impl RunDispatch {
     #[must_use]
     pub fn with_session_resources(mut self, resources: SessionResourceEnvelope) -> Self {
         self.session_resources = Some(resources);
+        self
+    }
+
+    /// Attach the trusted Environment/deployment's exact inference holder
+    /// request. This is one request, never a preference list or fallback order.
+    #[must_use]
+    pub fn with_inference_plaintext_holder(mut self, holder: PlaintextHolder) -> Self {
+        self.inference_plaintext_holder = Some(holder);
         self
     }
 

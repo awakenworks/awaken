@@ -126,12 +126,18 @@ impl LaunchSource {
         &self,
         activation: &RunActivation,
         backend: &awaken_runtime_contract::resolved::Backend,
+        context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
     ) -> Result<AcpLaunch, OpenError> {
         match self {
             LaunchSource::Fixed(launch) => Ok(launch.clone()),
             LaunchSource::Projected(registry) => {
                 let selected = registry.selected(backend)?;
-                project_launch(&selected.cli, selected.resolver.as_ref(), activation)
+                project_launch(
+                    &selected.cli,
+                    selected.resolver.as_ref(),
+                    activation,
+                    context,
+                )
             }
         }
     }
@@ -532,17 +538,7 @@ impl SandboxChannelSource {
         pc::Command {
             argv: launch.argv.clone(),
             cwd: String::new(),
-            env: launch
-                .env
-                .iter()
-                .map(|(name, value)| pc::EnvVar {
-                    name: name.clone(),
-                    value: pc::EnvValue::Inline {
-                        value: value.clone(),
-                    },
-                    visibility: pc::EnvVisibility::Process,
-                })
-                .collect(),
+            env: launch.env.clone(),
             stdio: pc::Stdio::Piped,
         }
     }
@@ -550,13 +546,17 @@ impl SandboxChannelSource {
 
 #[async_trait]
 impl AgentChannelSource for SandboxChannelSource {
-    async fn open(&self, activation: &RunActivation) -> Result<AgentSession, OpenError> {
+    async fn open(
+        &self,
+        activation: &RunActivation,
+        context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
+    ) -> Result<AgentSession, OpenError> {
         let thread = activation.thread_id.0.as_str();
         // The launch is fixed, or projected from this run's config-plane-selected CLI.
         let backend = awaken_runtime_contract::resolved::Backend::from_ref(
             &activation.snapshot.resolved_spec.model_binding.backend_ref,
         );
-        let mut launch = self.launch.resolve(activation, &backend)?;
+        let mut launch = self.launch.resolve(activation, &backend, context)?;
         // Project the run's declared MCP servers once. `session/new` servers ride in-band
         // over the ACP wire the executor drives (claude/gemini/opencode); a config-file
         // CLI (codex) gets its config.toml. Fail-closed on an inline-secret credential
@@ -583,8 +583,12 @@ impl AgentChannelSource for SandboxChannelSource {
             )
         {
             spec.mounts.push(mount);
-            launch.env.retain(|(k, _)| *k != env_key);
-            launch.env.push((env_key, env_val));
+            launch.env.retain(|var| var.name != env_key);
+            launch.env.push(pc::EnvVar {
+                name: env_key,
+                value: pc::EnvValue::Inline { value: env_val },
+                visibility: pc::EnvVisibility::Process,
+            });
         }
         let (process, channel) = self
             .provider
@@ -645,8 +649,12 @@ impl BoundLocalChannelSource {
 
 #[async_trait]
 impl AgentChannelSource for BoundLocalChannelSource {
-    async fn open(&self, activation: &RunActivation) -> Result<AgentSession, OpenError> {
-        let mut launch = self.launch.resolve(activation, &self.backend)?;
+    async fn open(
+        &self,
+        activation: &RunActivation,
+        context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
+    ) -> Result<AgentSession, OpenError> {
+        let mut launch = self.launch.resolve(activation, &self.backend, context)?;
         let cli = self.launch.cli(&self.backend)?;
         if let Some(cli) = cli {
             if self.sandbox.is_container() {
@@ -665,20 +673,32 @@ impl AgentChannelSource for BoundLocalChannelSource {
                 .materialize_inline(&format!("{config_home}/.awaken-config-home"), b"")
                 .await
                 .map_err(|error| OpenError(format!("materialize ACP config home: {error}")))?;
-            launch.env.retain(|(key, _)| key != cli.config_home_env);
-            launch
-                .env
-                .push((cli.config_home_env.to_string(), config_home.to_string()));
+            launch.env.retain(|var| var.name != cli.config_home_env);
+            launch.env.push(pc::EnvVar {
+                name: cli.config_home_env.to_string(),
+                value: pc::EnvValue::Inline {
+                    value: config_home.to_string(),
+                },
+                visibility: pc::EnvVisibility::Process,
+            });
             for alias in cli.config_home_aliases {
-                launch.env.retain(|(key, _)| key != alias);
-                launch
-                    .env
-                    .push(((*alias).to_string(), config_home.to_string()));
+                launch.env.retain(|var| var.name != *alias);
+                launch.env.push(pc::EnvVar {
+                    name: (*alias).to_string(),
+                    value: pc::EnvValue::Inline {
+                        value: config_home.to_string(),
+                    },
+                    visibility: pc::EnvVisibility::Process,
+                });
             }
             // Do not expose the operator's home to an opaque CLI. This also gives
             // dynamic launchers such as npx a writable, Session-isolated cache.
-            launch.env.retain(|(key, _)| key != "HOME");
-            launch.env.push(("HOME".to_string(), config_home));
+            launch.env.retain(|var| var.name != "HOME");
+            launch.env.push(pc::EnvVar {
+                name: "HOME".to_string(),
+                value: pc::EnvValue::Inline { value: config_home },
+                visibility: pc::EnvVisibility::Process,
+            });
         }
         let injection = match cli {
             Some(cli) => {
@@ -700,8 +720,12 @@ impl AgentChannelSource for BoundLocalChannelSource {
                 .materialize_inline(&mount.mount_path, contents.as_bytes())
                 .await
                 .map_err(|error| OpenError(format!("materialize ACP config: {error}")))?;
-            launch.env.retain(|(key, _)| *key != env_key);
-            launch.env.push((env_key, env_val));
+            launch.env.retain(|var| var.name != env_key);
+            launch.env.push(pc::EnvVar {
+                name: env_key,
+                value: pc::EnvValue::Inline { value: env_val },
+                visibility: pc::EnvVisibility::Process,
+            });
         }
         let (process, channel) = self
             .sandbox
@@ -917,11 +941,12 @@ pub(crate) fn warm_pool_size() -> usize {
     feature = "container-podman",
     feature = "container-k8s"
 ))]
-pub(crate) fn configured_container_egress_proxy() -> Option<awaken_sandbox_container::EgressProxy> {
-    std::env::var("AWAKEN_CONTAINER_EGRESS_PROXY")
+pub(crate) fn configured_container_forward_proxy() -> Option<awaken_sandbox_container::ForwardProxy>
+{
+    std::env::var("AWAKEN_CONTAINER_FORWARD_PROXY")
         .ok()
         .filter(|url| !url.trim().is_empty())
-        .map(|url| awaken_sandbox_container::EgressProxy { url })
+        .map(|url| awaken_sandbox_container::ForwardProxy { url })
 }
 
 /// Spawn the cross-restart container reaper on `runtime` (docker/podman): a background
@@ -1001,11 +1026,12 @@ mod tests {
         fn model(
             &self,
             _activation: &RunActivation,
+            _context: &awaken_runtime_contract::RuntimeRunContext,
         ) -> Result<awaken_run_executor_acp::ResolvedModel, OpenError> {
             Ok(awaken_run_executor_acp::ResolvedModel {
                 base_url: "http://model.invalid".into(),
                 model: "model".into(),
-                api_key: "leased-token".into(), // awaken-allow: secret
+                process_secret: None,
             })
         }
     }
@@ -1160,7 +1186,10 @@ mod tests {
         let source = bound_projecting_source(sandbox.clone(), "claude");
 
         source
-            .open(&acp_activation("acp:claude"))
+            .open(
+                &acp_activation("acp:claude"),
+                &awaken_runtime_contract::RuntimeRunContext::new(),
+            )
             .await
             .expect("open the bound container agent");
 
@@ -1193,7 +1222,10 @@ mod tests {
         .mcp_servers;
 
         let session = source
-            .open(&activation)
+            .open(
+                &activation,
+                &awaken_runtime_contract::RuntimeRunContext::new(),
+            )
             .await
             .expect("open bound ACP agent");
         assert_eq!(
@@ -1237,7 +1269,10 @@ mod tests {
         };
 
         let error = source
-            .open(&acp_activation("acp:codex"))
+            .open(
+                &acp_activation("acp:codex"),
+                &awaken_runtime_contract::RuntimeRunContext::new(),
+            )
             .await
             .err()
             .expect("a mismatched CLI must fail closed");
@@ -1370,7 +1405,10 @@ mod tests {
         // open() realizes the mount via LocalProvider and spawns — no bwrap required.
         let act = acp_activation("genai");
         assert!(
-            source.open(&act).await.is_ok(),
+            source
+                .open(&act, &awaken_runtime_contract::RuntimeRunContext::new())
+                .await
+                .is_ok(),
             "the Workdir backend opens without an OS-native sandbox"
         );
     }
@@ -1385,7 +1423,13 @@ mod tests {
             LaunchSource::Fixed(AcpLaunch::custom(successful_command(), vec![])),
         );
         assert!(
-            plain.open(&acp_activation("genai")).await.is_ok(),
+            plain
+                .open(
+                    &acp_activation("genai"),
+                    &awaken_runtime_contract::RuntimeRunContext::new(),
+                )
+                .await
+                .is_ok(),
             "the ACP CLI launches on the Local tier without bwrap"
         );
 
@@ -1412,7 +1456,13 @@ mod tests {
         // CLOSED — it never silently runs with the egress it promised to deny. So bwrap-less
         // is fully usable for what it CAN enforce, and honest about what it can't.
         assert!(
-            strict.open(&acp_activation("genai")).await.is_err(),
+            strict
+                .open(
+                    &acp_activation("genai"),
+                    &awaken_runtime_contract::RuntimeRunContext::new(),
+                )
+                .await
+                .is_err(),
             "unenforceable no-egress fails closed on the Local tier"
         );
     }

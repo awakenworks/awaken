@@ -82,6 +82,7 @@ regex = "1"
 # Host turn span (`#[instrument]`) exported through the global subscriber the service
 # binary installs; this crate emits spans, never wires an exporter.
 tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
 
 [features]
 # Cross-node dispatch wake over NATS: passes through to awaken-run-ingress so the

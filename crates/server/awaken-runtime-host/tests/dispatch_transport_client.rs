@@ -12,8 +12,8 @@ use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_run_ingress::{
-    DispatchOutcome, DispatchQueue, MemoryDispatchStore, PendingInput, RunClaim, RunDispatch,
-    WorkerIdentity,
+    CredentialRealizationReceipt, DispatchOutcome, DispatchQueue, MemoryDispatchStore,
+    PendingInput, RunClaim, RunDispatch, WorkerIdentity,
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
@@ -21,6 +21,11 @@ use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, Resolv
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
+};
+use awaken_runtime_contract::{
+    CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource,
+    CredentialRealizationCapabilities, CredentialRealizationKind, CredentialRef, CredentialUsage,
+    InferenceEndpoint, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
 };
 use awaken_runtime_host::{
     FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, HttpDispatchQueue, ManualWorkerClock,
@@ -53,6 +58,52 @@ fn activation(run: &str, thread: &str) -> RunActivation {
             fingerprint: CatalogFingerprint("fp".into()),
         },
         vec![Message::text(MessageId("u1".into()), Role::User, "go")],
+    )
+}
+
+fn credential_dispatch(
+    run: &str,
+    thread: &str,
+) -> (RunDispatch, CredentialRealizationCapabilities) {
+    let holder = PlaintextHolder::new(
+        PlaintextBoundary::Worker,
+        awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+    );
+    let mut activation = activation(run, thread);
+    activation.snapshot.resolved_spec.model_binding =
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
+            ModelBinding::new("provider", "model", "native"),
+            "provider@1",
+            "route@1",
+            "workspace",
+            Some(CredentialAccess::new(
+                CredentialRef {
+                    id: "credential".into(),
+                    revision: 7,
+                },
+                CredentialMaterialSource::ControlPlaneReference,
+                CredentialUsage::ProviderAdapter,
+                CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
+            )),
+            InferenceEndpoint {
+                adapter_kind: "openai".into(),
+                base_url: "https://provider.invalid/v1".into(),
+                upstream_model: "model".into(),
+            },
+        );
+    let mut dispatch = RunDispatch::new(activation);
+    dispatch.inference_plaintext_holder = Some(holder.clone());
+    (
+        dispatch,
+        CredentialRealizationCapabilities {
+            holders: [holder].into_iter().collect(),
+            material_sources: [CredentialMaterialSource::ControlPlaneReference]
+                .into_iter()
+                .collect(),
+            realization_kinds: [CredentialRealizationKind::WorkerProviderAdapter]
+                .into_iter()
+                .collect(),
+        },
     )
 }
 
@@ -109,7 +160,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
 
     clock.set(0);
     let claimed = queue
-        .claim("worker-1", 30_000, 0)
+        .claim("worker-1", 30_000, 0, &Default::default())
         .await
         .expect("claim over http")
         .expect("a run is claimable");
@@ -148,7 +199,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
     // epoch is fenced server-side and changes nothing.
     clock.set(40_000);
     let reclaimed = recovery_queue
-        .claim("worker-2", 30_000, 40_000)
+        .claim("worker-2", 30_000, 40_000, &Default::default())
         .await
         .expect("reclaim over http")
         .expect("the lapsed lease is reclaimable");
@@ -190,7 +241,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
 
     assert!(
         queue
-            .claim("worker-1", 30_000, 60_000)
+            .claim("worker-1", 30_000, 60_000, &Default::default())
             .await
             .expect("claim over http")
             .is_none(),
@@ -207,6 +258,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
             "worker-1",
             30_000,
             70_000,
+            &Default::default(),
         )
         .await
         .expect("atomic child admission over http")
@@ -235,6 +287,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
             "worker-1",
             30_000,
             70_001,
+            &Default::default(),
         )
         .await
         .expect("atomic child input over http")
@@ -256,5 +309,106 @@ async fn db_less_worker_drives_runs_over_real_http() {
     assert!(
         queue.cancel(&RunId("no-such-run".into())).await.is_err(),
         "cancel is not available on the worker dispatch transport"
+    );
+}
+
+/// Receipt transport cause graph:
+///
+/// authenticated exact owner + current claim + exact attempt binding -> durable
+/// receipt. A mechanism mismatch is rejected and recovery fences the old receipt.
+///
+/// | Rule | owner | epoch | mechanism | Result |
+/// |---|---|---:|---|---|
+/// | R1 | exact | current | exact | applied; replay applied |
+/// | R2 | exact | current | mismatch | rejected |
+/// | R3 | old owner | stale | exact | fenced |
+#[tokio::test(flavor = "multi_thread")]
+async fn credential_receipt_is_verified_and_fenced_over_real_http() {
+    let mem = Arc::new(MemoryDispatchStore::new());
+    let clock = Arc::new(ManualWorkerClock::new(0));
+    let (dispatch, capabilities) = credential_dispatch("credential-run", "credential-thread");
+    let service = Arc::new(
+        WorkerDispatchService::new(
+            mem,
+            Arc::new(HeaderWorkerAuthenticator),
+            clock.clone(),
+            Arc::new(FixedWorkerLeasePolicy::new(1_000)),
+        )
+        .with_local_credential_capabilities(capabilities),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, dispatch_transport_router_with_service(service))
+            .await
+            .unwrap();
+    });
+    let first_worker = HttpDispatchQueue::new(
+        format!("http://{addr}"),
+        WorkerIdentity::new("worker-1", "boot-1", 1),
+    );
+    let recovery_worker = HttpDispatchQueue::new(
+        format!("http://{addr}"),
+        WorkerIdentity::new("worker-2", "boot-2", 1),
+    );
+    first_worker.enqueue(dispatch).await.unwrap();
+    let first = first_worker
+        .claim("ignored", 30_000, 0, &Default::default())
+        .await
+        .unwrap()
+        .expect("credential run claims");
+    let first_claim = RunClaim::from(&first.lease);
+    let binding = first
+        .credential_bindings
+        .first()
+        .expect("claim carries exact attempt binding");
+    let receipt = CredentialRealizationReceipt::new(
+        binding,
+        CredentialRealizationKind::WorkerProviderAdapter,
+    )
+    .expect("exact receipt builds");
+    assert!(
+        first_worker
+            .record_credential_realization(&first_claim, receipt.clone())
+            .await
+            .expect("R1 receipt crosses HTTP")
+            .applied()
+    );
+    assert!(
+        first_worker
+            .record_credential_realization(&first_claim, receipt.clone())
+            .await
+            .expect("R1 retry is idempotent")
+            .applied()
+    );
+    let mut wrong = receipt.clone();
+    wrong.actual_realization_kind = CredentialRealizationKind::WorkerRelay;
+    assert!(
+        first_worker
+            .record_credential_realization(&first_claim, wrong)
+            .await
+            .is_err(),
+        "R2 mechanism mismatch is rejected over HTTP"
+    );
+
+    clock.set(first.lease.expires_ms + 1);
+    let recovered = recovery_worker
+        .claim(
+            "ignored",
+            30_000,
+            first.lease.expires_ms + 1,
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .expect("recovery advances the fence");
+    assert_eq!(recovered.lease.epoch, first.lease.epoch + 1);
+    assert!(
+        !first_worker
+            .record_credential_realization(&first_claim, receipt)
+            .await
+            .expect("R3 stale receipt returns a verdict")
+            .applied(),
+        "R3 stale receipt is fenced over HTTP"
     );
 }

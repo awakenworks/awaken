@@ -123,7 +123,10 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
         .await
         .unwrap();
     assert!(
-        mem.claim("worker", 1, 0).await.unwrap().is_some(),
+        mem.claim("worker", 1, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_some(),
         "the run is claimable"
     );
 

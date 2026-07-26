@@ -653,6 +653,25 @@ impl SharedHost {
             .update(thread, |slot| slot.delegates = delegates);
     }
 
+    /// Project the frozen Environment credential decision for durable dispatch.
+    pub fn register_thread_credential_realization(
+        &self,
+        thread: &str,
+        profile: awaken_runtime_contract::CredentialRealizationProfile,
+    ) {
+        self.session_slots
+            .update(thread, |slot| slot.credential_realization = Some(profile));
+    }
+
+    pub(crate) fn thread_credential_realization(
+        &self,
+        thread: &str,
+    ) -> Option<awaken_runtime_contract::CredentialRealizationProfile> {
+        self.session_slots
+            .read(thread, |slot| slot.credential_realization.clone())
+            .flatten()
+    }
+
     pub(crate) fn thread_delegate_ids(&self, thread: &str) -> Option<Vec<String>> {
         self.session_slots
             .read(thread, |slot| slot.delegates.clone())

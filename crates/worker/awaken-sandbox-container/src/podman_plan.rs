@@ -72,7 +72,6 @@ pub fn podman_run_argv(name: &str, plan: &ContainerPlan, rootfs: &RootfsPlan) ->
     match &plan.network {
         NetworkMode::Open => {}
         NetworkMode::None => argv.extend(["--network".into(), "none".into()]),
-        NetworkMode::Allowlist(_) => argv.extend(["--network".into(), "bridge".into()]),
     }
     let caps = CgroupCaps::from_limits(&plan.limits);
     if let Some(memory) = caps.memory_bytes {

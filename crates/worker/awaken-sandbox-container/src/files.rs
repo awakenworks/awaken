@@ -162,7 +162,7 @@ mod tests {
         async fn spawn_agent(
             &self,
             _container_id: &str,
-            _command: pc::Command,
+            _command: pc::MaterializedCommand,
         ) -> Result<crate::RuntimeAgentProcess, crate::RuntimeError> {
             let (channel, mut writer) = tokio::io::duplex(self.archive.len().max(1));
             let archive = self.archive.clone();
@@ -243,9 +243,10 @@ mod tests {
             id: "scan-sandbox".into(),
             container_id: "scan-container".into(),
             outputs_path: "/outputs".into(),
+            base_env: Vec::new(),
             realized: Vec::new(),
             recovered: false,
-            lifecycle: Arc::new(crate::ContainerLifecycle::completed()),
+            lifecycle: Arc::new(crate::ContainerLifecycle::completed(None)),
         }
     }
 

@@ -54,9 +54,7 @@ fn spec(scope: &str) -> pc::SandboxSpec {
                 visibility: pc::EnvVisibility::Process,
             },
         ],
-        network: pc::NetworkPolicy::Allowlist {
-            hosts: vec!["api.anthropic.com".into()],
-        },
+        network: pc::NetworkPolicy::Unrestricted,
         outputs_path: "/mnt/session/outputs".into(),
         limits: pc::ResourceLimits {
             cpu_millis: Some(2000),
@@ -74,10 +72,11 @@ fn spec(scope: &str) -> pc::SandboxSpec {
 
 #[test]
 fn container_capabilities_are_the_strongest_tier() {
-    let c = container_capabilities();
+    let c = container_capabilities(true);
     assert_eq!(c.isolation, pc::IsolationClass::Container);
     assert!(c.tool_transparent && c.enforced_readonly && c.network_isolation);
     assert!(c.resource_limits && c.custom_rootfs);
+    assert!(!c.enforced_network_allowlist);
     assert!(
         !c.secret_egress_substitution,
         "the current container provider must not advertise an unimplemented secret guarantee"
@@ -95,7 +94,7 @@ fn current_container_provider_rejects_egress_only_secret_injection() {
     let mut requested = spec("egress-only");
     requested.env[1].visibility = pc::EnvVisibility::EgressOnly;
     assert_eq!(
-        pc::prepare_environment(&requested, &container_capabilities()),
+        pc::prepare_environment(&requested, &container_capabilities(true)),
         Err(pc::PrepareError::EgressSecretUnsupported("API_KEY".into())),
         "an unsupported provider must fail before materializing or launching the sandbox"
     );
@@ -115,7 +114,7 @@ fn command_of_reads_the_agent_argv_or_defaults_empty() {
 #[test]
 fn container_plan_maps_command_image_env_binds_network_and_outputs() {
     let cmd = command_of(&spec("s1"));
-    let plan = container_plan(&spec("s1"), "ghcr.io/awaken/sandbox:latest", &cmd);
+    let plan = container_plan(&spec("s1"), "ghcr.io/awaken/sandbox:latest", &cmd, None).unwrap();
     assert_eq!(
         plan.command,
         vec!["claude".to_string(), "--acp".to_string()]
@@ -129,10 +128,7 @@ fn container_plan_maps_command_image_env_binds_network_and_outputs() {
     assert_eq!(plan.binds[0].source_ref, "file-1");
     assert_eq!(plan.binds[1].source_ref, "res-9");
     assert_eq!(plan.outputs_volume, "/mnt/session/outputs");
-    assert_eq!(
-        plan.network,
-        NetworkMode::Allowlist(vec!["api.anthropic.com".into()])
-    );
+    assert_eq!(plan.network, NetworkMode::Open);
     assert_eq!(plan.limits.cpu_millis, Some(2000));
 }
 
@@ -141,17 +137,26 @@ fn container_plan_honors_an_image_override_and_network_variants() {
     let mut s = spec("s2");
     s.extra = Some(serde_json::json!({ "image": "custom:1" }));
     s.network = pc::NetworkPolicy::None;
-    assert_eq!(container_plan(&s, "def", &[]).image, "custom:1");
-    assert_eq!(container_plan(&s, "def", &[]).network, NetworkMode::None);
+    assert_eq!(
+        container_plan(&s, "def", &[], None).unwrap().image,
+        "custom:1"
+    );
+    assert_eq!(
+        container_plan(&s, "def", &[], None).unwrap().network,
+        NetworkMode::None
+    );
 
     s.network = pc::NetworkPolicy::Unrestricted;
-    assert_eq!(container_plan(&s, "def", &[]).network, NetworkMode::Open);
+    assert_eq!(
+        container_plan(&s, "def", &[], None).unwrap().network,
+        NetworkMode::Open
+    );
 }
 
 #[test]
 fn container_plan_resolves_rootfs_from_a_declared_environment_or_falls_back_to_image() {
     // No `environment` declared → the container runs its resolved image.
-    let plan = container_plan(&spec("s"), "def:img", &["x".to_string()]);
+    let plan = container_plan(&spec("s"), "def:img", &["x".to_string()], None).unwrap();
     assert_eq!(plan.rootfs, RootfsPlan::Image("def:img".into()));
 
     // A declared Image environment is honored as the rootfs.
@@ -161,7 +166,9 @@ fn container_plan_resolves_rootfs_from_a_declared_environment_or_falls_back_to_i
         "environment": { "kind": "image", "reference": "ghcr.io/x:2" }
     }));
     assert_eq!(
-        container_plan(&img, "def:img", &["x".to_string()]).rootfs,
+        container_plan(&img, "def:img", &["x".to_string()], None)
+            .unwrap()
+            .rootfs,
         RootfsPlan::Image("ghcr.io/x:2".into())
     );
 
@@ -176,7 +183,9 @@ fn container_plan_resolves_rootfs_from_a_declared_environment_or_falls_back_to_i
         }
     }));
     assert_eq!(
-        container_plan(&iso, "def:img", &["x".to_string()]).rootfs,
+        container_plan(&iso, "def:img", &["x".to_string()], None)
+            .unwrap()
+            .rootfs,
         RootfsPlan::RootDir {
             path_template: "/roots/{scope}".into(),
             writable: true,
@@ -191,7 +200,9 @@ fn container_plan_resolves_rootfs_from_a_declared_environment_or_falls_back_to_i
         "environment": { "kind": "scope" }
     }));
     assert_eq!(
-        container_plan(&scope, "def:img", &["x".to_string()]).rootfs,
+        container_plan(&scope, "def:img", &["x".to_string()], None)
+            .unwrap()
+            .rootfs,
         RootfsPlan::Image("def:img".into())
     );
 }
@@ -242,7 +253,7 @@ fn memory_store_mounts_are_pulled_out_of_binds_into_memory_mounts() {
         lifetime: pc::MountLifetime::Session,
         required: true,
     });
-    let plan = container_plan(&s, "img", &["x".to_string()]);
+    let plan = container_plan(&s, "img", &["x".to_string()], None).unwrap();
     // The memory store is NOT a byte bind — binds stay the 2 file/resource mounts.
     assert_eq!(plan.binds.len(), 2);
     assert!(plan.binds.iter().all(|b| b.source_ref != "store-42"));
@@ -331,7 +342,7 @@ impl pc::MemoryMount for FakeMemoryMount {
 #[test]
 fn pod_plan_is_process_as_container_with_native_gc() {
     let cmd = pc::Command::new(["claude", "--acp"]);
-    let plan = pod_plan(&spec("run-7"), &cmd, "img:1", "owner-uid-123");
+    let plan = pod_plan(&spec("run-7"), &cmd, "img:1", "owner-uid-123", None).unwrap();
     assert_eq!(plan.name, "awaken-run-7");
     // The agent argv IS the container command (not exec-into-idle).
     assert_eq!(
@@ -364,7 +375,8 @@ struct FakeState {
     refreshed_credential: Option<Vec<u8>>,
     live_credential: Option<Vec<u8>>,
     credential_source: Option<std::path::PathBuf>,
-    spawned: Vec<(String, pc::Command)>,
+    spawned: Vec<(String, Vec<String>)>,
+    process_secret_observations: Vec<(bool, bool)>,
 }
 
 #[derive(Default)]
@@ -429,6 +441,10 @@ impl FakeRuntime {
 
 #[async_trait]
 impl ContainerRuntime for FakeRuntime {
+    fn enforces_network_none(&self) -> bool {
+        true
+    }
+
     async fn read_live_file(
         &self,
         _container_id: &str,
@@ -476,21 +492,35 @@ impl ContainerRuntime for FakeRuntime {
     async fn spawn(
         &self,
         container_id: &str,
-        command: pc::Command,
+        command: pc::MaterializedCommand,
     ) -> Result<Box<dyn pc::ProcessHandle>, RuntimeError> {
         if !self.st.lock().unwrap().alive.contains_key(container_id) {
             return Err(RuntimeError::NotFound(container_id.into()));
         }
         let mut state = self.st.lock().unwrap();
         let id = format!("exec-{}", state.spawned.len());
-        state.spawned.push((container_id.to_string(), command));
+        if let Some(value) = command
+            .env
+            .iter()
+            .find(|value| value.name == "API_KEY")
+            .map(|value| {
+                (
+                    value.value.is_secret(),
+                    value.value.expose() == "container-process-secret",
+                )
+            })
+        {
+            // Retain only the security observation, never the material itself.
+            state.process_secret_observations.push(value);
+        }
+        state.spawned.push((container_id.to_string(), command.argv));
         Ok(Box::new(FakeExecProcess { id }))
     }
 
     async fn spawn_agent(
         &self,
         container_id: &str,
-        command: pc::Command,
+        command: pc::MaterializedCommand,
     ) -> Result<RuntimeAgentProcess, RuntimeError> {
         let process = self.spawn(container_id, command).await?;
         let (ours, _peer) = tokio::io::duplex(64);
@@ -592,6 +622,10 @@ impl pc::SecretBroker for RecordingSecretBroker {
         Ok(self.current.lock().unwrap().clone())
     }
 
+    async fn materialize_process(&self, _reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
+        Ok(self.current.lock().unwrap().clone())
+    }
+
     async fn write_back(&self, _reference: &str, bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
         *self.current.lock().unwrap() = bytes.clone();
         self.writes.lock().unwrap().push(bytes);
@@ -599,17 +633,104 @@ impl pc::SecretBroker for RecordingSecretBroker {
     }
 }
 
-fn provider(runtime: Arc<FakeRuntime>) -> ContainerProvider<FakeRuntime> {
-    // The default `spec()` requests Allowlist egress, so the provider is configured
-    // with a brokered proxy (as a real allowlist deployment would be), and it seeds the
-    // bytes for `spec()`'s required File/Resource mounts (a required mount with no
-    // resolvable bytes fails closed at create).
+fn provider_without_broker(runtime: Arc<FakeRuntime>) -> ContainerProvider<FakeRuntime> {
+    // A conventional forward proxy exercises connectivity configuration without
+    // claiming to enforce a host allowlist. Required mounts are seeded because a
+    // missing required source fails closed at create.
     ContainerProvider::new(runtime, "ghcr.io/awaken/sandbox:latest")
-        .with_egress_proxy(EgressProxy {
+        .with_forward_proxy(ForwardProxy {
             url: "http://gw.internal:8888".into(),
         })
         .with_blob("file-1", b"in-bytes".to_vec())
         .with_blob("res-9", b"work-bytes".to_vec())
+}
+
+fn provider(runtime: Arc<FakeRuntime>) -> ContainerProvider<FakeRuntime> {
+    let broker = Arc::new(RecordingSecretBroker::default());
+    *broker.current.lock().unwrap() = b"container-process-secret".to_vec();
+    provider_without_broker(runtime).with_secret_broker(broker)
+}
+
+struct RejectingSecretBroker;
+
+#[async_trait]
+impl pc::SecretBroker for RejectingSecretBroker {
+    async fn materialize(&self, _reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
+        Err(pc::SandboxError::new("claim expired"))
+    }
+
+    async fn materialize_process(&self, _reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
+        Err(pc::SandboxError::new("claim expired"))
+    }
+
+    async fn write_back(&self, _reference: &str, _bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
+        Err(pc::SandboxError::new("not supported"))
+    }
+}
+
+/// Container process-secret cause graph:
+///
+/// C1 a Process-visible secret is effective -> C2 a broker is installed -> C3
+/// the exact reference resolves -> E1 the runtime receives a non-serializable,
+/// redacted materialized secret. Failure of C2/C3 produces E2 before runtime
+/// invocation. With no C1, launch remains independent of a broker.
+///
+/// | Rule | C1 secret | C2 broker | C3 resolves | Runtime called | Result |
+/// |---|---|---|---|---|---|
+/// | C1 | F | F | - | T | public launch |
+/// | C2 | T | F | - | F | reject |
+/// | C3 | T | T | F | F | reject |
+/// | C4 | T | T | T | T | typed secret launch |
+#[tokio::test]
+async fn process_secret_decision_table_fences_container_runtime_invocation() {
+    let public_runtime = Arc::new(FakeRuntime::default());
+    let mut public_spec = spec("public-process");
+    public_spec.env.retain(|value| value.name != "API_KEY");
+    let public = provider_without_broker(public_runtime.clone())
+        .create_container(&public_spec)
+        .await
+        .unwrap();
+    pc::Sandbox::spawn(&public, pc::Command::new(["true"]))
+        .await
+        .unwrap();
+    assert_eq!(public_runtime.st.lock().unwrap().spawned.len(), 1);
+
+    let missing_runtime = Arc::new(FakeRuntime::default());
+    let missing = provider_without_broker(missing_runtime.clone())
+        .create_container(&spec("missing-broker"))
+        .await
+        .unwrap();
+    assert!(
+        pc::Sandbox::spawn(&missing, pc::Command::new(["true"]))
+            .await
+            .is_err()
+    );
+    assert!(missing_runtime.st.lock().unwrap().spawned.is_empty());
+
+    let rejected_runtime = Arc::new(FakeRuntime::default());
+    let rejected = provider_without_broker(rejected_runtime.clone())
+        .with_secret_broker(Arc::new(RejectingSecretBroker))
+        .create_container(&spec("rejected-claim"))
+        .await
+        .unwrap();
+    assert!(
+        pc::Sandbox::spawn(&rejected, pc::Command::new(["true"]))
+            .await
+            .is_err()
+    );
+    assert!(rejected_runtime.st.lock().unwrap().spawned.is_empty());
+
+    let admitted_runtime = Arc::new(FakeRuntime::default());
+    let admitted = provider(admitted_runtime.clone())
+        .create_container(&spec("admitted-secret"))
+        .await
+        .unwrap();
+    pc::Sandbox::spawn(&admitted, pc::Command::new(["true"]))
+        .await
+        .unwrap();
+    let admitted_state = admitted_runtime.st.lock().unwrap();
+    assert_eq!(admitted_state.spawned.len(), 1);
+    assert_eq!(admitted_state.process_secret_observations, [(true, true)]);
 }
 
 #[tokio::test]
@@ -641,7 +762,7 @@ async fn full_lifecycle_create_channel_process_artifacts_lease_dispose() {
     assert_eq!(proc.id(), "exec-0");
     assert_eq!(
         rt.st.lock().unwrap().spawned,
-        vec![("cid-run-1".into(), pc::Command::new(["ignored"]))]
+        vec![("cid-run-1".into(), vec!["ignored".into()])]
     );
     assert_eq!(proc.wait().await.unwrap().code, Some(0));
     assert!(proc.poll().await.unwrap().is_some());
@@ -785,39 +906,35 @@ fn runtime_error_messages_render() {
 }
 
 #[tokio::test]
-async fn allowlist_egress_injects_the_brokered_proxy_env_at_create() {
-    let rt = Arc::new(FakeRuntime::default());
-    // `provider()` carries a proxy; the Allowlist spec routes through it.
-    provider(rt.clone())
-        .create(&spec("run-egress"))
-        .await
-        .unwrap();
-
-    let st = rt.st.lock().unwrap();
-    let env = st
-        .created_env
-        .get("cid-run-egress")
-        .expect("container was created");
-    assert!(
-        env.contains(&("HTTPS_PROXY".into(), "http://gw.internal:8888".into())),
-        "the sandbox must route egress through the brokered proxy: {env:?}"
-    );
-    assert!(env.iter().any(|(k, _)| k == "NO_PROXY"));
-    // The spec's own inline env is preserved alongside the injected proxy vars.
-    assert!(env.contains(&("TZ".into(), "UTC".into())));
-}
-
-#[tokio::test]
-async fn allowlist_without_a_proxy_fails_create_closed() {
-    // A provider with no configured chokepoint cannot enforce an allowlist, so it
-    // rejects the spec rather than silently opening egress.
-    let rt = Arc::new(FakeRuntime::default());
-    let p = ContainerProvider::new(rt.clone(), "ghcr.io/awaken/sandbox:latest")
-        .with_blob("file-1", b"in-bytes".to_vec())
-        .with_blob("res-9", b"work-bytes".to_vec());
-    assert!(p.create(&spec("run-noproxy")).await.is_err());
-    // Fail-closed BEFORE the runtime is touched: nothing was created.
-    assert!(rt.st.lock().unwrap().created_env.is_empty());
+async fn allowlist_fails_before_runtime_with_or_without_a_forward_proxy() {
+    for with_proxy in [false, true] {
+        let rt = Arc::new(FakeRuntime::default());
+        let mut request = spec(if with_proxy {
+            "run-allowlist-proxy"
+        } else {
+            "run-allowlist-direct"
+        });
+        request.network = pc::NetworkPolicy::Allowlist {
+            hosts: vec!["api.anthropic.com".into()],
+        };
+        let base = ContainerProvider::new(rt.clone(), "ghcr.io/awaken/sandbox:latest")
+            .with_blob("file-1", b"in-bytes".to_vec())
+            .with_blob("res-9", b"work-bytes".to_vec());
+        let result = if with_proxy {
+            base.with_forward_proxy(ForwardProxy {
+                url: "http://gw.internal:8888".into(),
+            })
+            .create(&request)
+            .await
+        } else {
+            base.create(&request).await
+        };
+        assert!(result.is_err());
+        assert!(
+            rt.st.lock().unwrap().created_env.is_empty(),
+            "a process proxy must not turn an allowlist into a runnable open-network container"
+        );
+    }
 }
 
 #[tokio::test]
@@ -834,6 +951,20 @@ async fn unrestricted_egress_injects_no_proxy_env() {
     let st = rt.st.lock().unwrap();
     let env = st.created_env.get("cid-run-open").unwrap();
     assert!(env.iter().all(|(k, _)| k != "HTTPS_PROXY"));
+}
+
+#[tokio::test]
+async fn unrestricted_egress_may_use_a_forward_proxy_for_connectivity() {
+    let rt = Arc::new(FakeRuntime::default());
+    provider(rt.clone())
+        .create(&spec("run-forward-proxy"))
+        .await
+        .unwrap();
+    let st = rt.st.lock().unwrap();
+    let env = st.created_env.get("cid-run-forward-proxy").unwrap();
+    assert!(env.contains(&("HTTPS_PROXY".into(), "http://gw.internal:8888".into())));
+    assert!(env.contains(&("HTTP_PROXY".into(), "http://gw.internal:8888".into())));
+    assert!(env.iter().any(|(key, _)| key == "NO_PROXY"));
 }
 
 #[tokio::test]
@@ -873,7 +1004,7 @@ async fn open_agent_creates_the_container_and_returns_its_channel_and_process() 
         Some(&environment_keepalive_command())
     );
     assert_eq!(
-        rt.st.lock().unwrap().spawned[0].1.argv,
+        rt.st.lock().unwrap().spawned[0].1,
         ["claude", "--acp"].map(str::to_string)
     );
 }
@@ -909,13 +1040,10 @@ async fn one_container_environment_executes_native_and_agent_processes_without_r
             .all(|(container, _)| container == "cid-shared-session")
     );
     assert_eq!(
-        state.spawned[0].1.argv,
+        state.spawned[0].1,
         ["sh", "-c", "touch marker"].map(str::to_string)
     );
-    assert_eq!(
-        state.spawned[1].1.argv,
-        ["codex", "--acp"].map(str::to_string)
-    );
+    assert_eq!(state.spawned[1].1, ["codex", "--acp"].map(str::to_string));
     assert_eq!(state.alive.get("cid-shared-session"), Some(&true));
 }
 
@@ -1066,7 +1194,7 @@ async fn resolve_and_stage_realizes_a_file_from_the_seed() {
         },
         true,
     );
-    let mut plan = container_plan(&spec, "img", &["x".to_string()]);
+    let mut plan = container_plan(&spec, "img", &["x".to_string()], None).unwrap();
     let mut seed = HashMap::new();
     seed.insert("blob-1".to_string(), b"resolved-file-bytes".to_vec());
 
@@ -1102,7 +1230,7 @@ async fn resolve_and_stage_makes_declared_read_write_content_writable_by_contain
         true,
     );
     spec.mounts[0].access = pc::MountAccess::ReadWrite;
-    let mut plan = container_plan(&spec, "img", &["x".to_string()]);
+    let mut plan = container_plan(&spec, "img", &["x".to_string()], None).unwrap();
     let mut seed = HashMap::new();
     seed.insert("blob-rw".to_string(), b"writable".to_vec());
 
@@ -1128,7 +1256,7 @@ async fn resolve_and_stage_resolves_a_resource_from_the_injected_store() {
         },
         true,
     );
-    let mut plan = container_plan(&spec, "img", &["x".to_string()]);
+    let mut plan = container_plan(&spec, "img", &["x".to_string()], None).unwrap();
     let store: Option<std::sync::Arc<dyn pc::BlobSource>> = Some(std::sync::Arc::new(OneBlob(
         "res-9",
         b"from-the-store".to_vec(),
@@ -1150,7 +1278,7 @@ async fn resolve_and_stage_fails_closed_on_a_required_unresolved_mount() {
         },
         true,
     );
-    let mut plan = container_plan(&spec, "img", &["x".to_string()]);
+    let mut plan = container_plan(&spec, "img", &["x".to_string()], None).unwrap();
     let e = resolve_and_stage(&spec, &mut plan.binds, &HashMap::new(), &None, &None)
         .await
         .expect_err("a required mount with no bytes must fail closed");
@@ -1167,7 +1295,7 @@ async fn resolve_and_stage_rejects_a_content_hash_mismatch() {
         },
         true,
     );
-    let mut plan = container_plan(&spec, "img", &["x".to_string()]);
+    let mut plan = container_plan(&spec, "img", &["x".to_string()], None).unwrap();
     let mut seed = HashMap::new();
     seed.insert("blob-1".to_string(), b"whatever".to_vec());
     let e = resolve_and_stage(&spec, &mut plan.binds, &seed, &None, &None)
@@ -1188,7 +1316,7 @@ async fn resolve_and_stage_verifies_a_matching_content_hash() {
         },
         true,
     );
-    let mut plan = container_plan(&spec, "img", &["x".to_string()]);
+    let mut plan = container_plan(&spec, "img", &["x".to_string()], None).unwrap();
     let mut seed = HashMap::new();
     seed.insert("blob-1".to_string(), bytes);
     resolve_and_stage(&spec, &mut plan.binds, &seed, &None, &None)
@@ -1208,7 +1336,7 @@ async fn inline_bytes_are_staged_binary_safe_and_hash_verified() {
         },
         true,
     );
-    let mut plan = container_plan(&spec, "img", &["x".to_string()]);
+    let mut plan = container_plan(&spec, "img", &["x".to_string()], None).unwrap();
 
     let staged = resolve_and_stage(&spec, &mut plan.binds, &HashMap::new(), &None, &None)
         .await
@@ -1233,7 +1361,7 @@ async fn inline_bytes_hash_mismatch_fails_before_container_start() {
         },
         true,
     );
-    let mut plan = container_plan(&spec, "img", &["x".to_string()]);
+    let mut plan = container_plan(&spec, "img", &["x".to_string()], None).unwrap();
 
     let error = resolve_and_stage(&spec, &mut plan.binds, &HashMap::new(), &None, &None)
         .await
