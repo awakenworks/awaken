@@ -591,6 +591,12 @@ impl WorkerNodeBuilder {
             }
             self.credential_materializer = Some(materializer);
         }
+        // A WorkerNode is, by definition, the database-less remote drain of the
+        // Control Node's durable queue. Product deployment input may still carry
+        // coordinator defaults; normalize those two process-role axes here so a
+        // successfully registered Worker cannot report Ready without a claim pool.
+        self.deployment.durable = true;
+        self.deployment.disable_local_pool = false;
         let resource_support = ResourceManifestSupport::from(self.resources.as_ref());
         let manifest = match self.manifest {
             ManifestSelection::Selected(ManifestSource::Explicit(manifest)) => *manifest,
