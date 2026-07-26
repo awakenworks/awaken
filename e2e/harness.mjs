@@ -35,7 +35,7 @@ process.on('exit', () => fs.rmSync(E2E_HOME_ROOT, { recursive: true, force: true
 // authoritative ~/.awaken/config.toml below.
 export function deploymentEnv(
   dataDir,
-  { identityMode, iamWorkspaces = [], controlSealKey, cloudIam, databases = {} } = {},
+  { identityMode, iamWorkspaces = [], controlSealKey, cloudIam, databases = {}, fields = {} } = {},
 ) {
   const home = path.join(dataDir, 'e2e-home');
   const configDir = path.join(home, '.awaken');
@@ -46,6 +46,9 @@ export function deploymentEnv(
   if (controlSealKey) lines.push(`control_seal_key = ${JSON.stringify(controlSealKey)}`);
   for (const [field, value] of Object.entries(databases)) {
     if (value) lines.push(`${field} = ${JSON.stringify(value)}`);
+  }
+  for (const [field, value] of Object.entries(fields)) {
+    if (value !== undefined) lines.push(`${field} = ${JSON.stringify(value)}`);
   }
   if (cloudIam) {
     lines.push(`cloud_iam_url = ${JSON.stringify(cloudIam.url)}`);

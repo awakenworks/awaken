@@ -69,8 +69,8 @@ impl OperatingMode {
     }
 }
 
-/// CLI values have the highest precedence. `None` leaves resolution to the
-/// environment, config file, and defaults.
+/// CLI presentation values have the highest precedence. `None` leaves
+/// resolution to the typed config file and defaults.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConfigOverrides {
     pub config_path: Option<PathBuf>,
@@ -138,7 +138,7 @@ impl std::fmt::Debug for SealKeySource {
 impl SealKeySource {
     pub fn description(&self) -> String {
         match self {
-            Self::Inline(_) => "environment (redacted)".to_owned(),
+            Self::Inline(_) => "config.toml (redacted)".to_owned(),
             Self::File(path) | Self::LocalFile(path) => path.display().to_string(),
         }
     }

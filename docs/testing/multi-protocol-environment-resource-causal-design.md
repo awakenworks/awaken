@@ -497,3 +497,20 @@ one typed deployment file
 `spawnProduction` accepts the same database map already owned by
 `deploymentEnv`; per-component tests no longer duplicate binary discovery,
 process shutdown, port precedence, or a legacy environment-variable topology.
+
+## Phase 23: environment-independent deployment gate
+
+| Rule | Typed configuration | Conflicting process environment | Expected |
+|---|---|---|---|
+| C1 | Worker without server | any | reject before config file access |
+| C2 | no local pool, no Postgres dispatch | any | reject |
+| C3 | path-shaped resource database | any | reject; only embedded root or Postgres |
+| C4 | Postgres dispatch, local resource/catalog | any | reject before adapter connection |
+| C5 | local Serve at P1/root A | Worker/P2/root B/database/key values | report Serve/P1/root A/SQLite only |
+| C6 | business P1 + admin P2 | stale `AWAKEN_HTTP_ADDR` | both typed ports; admin-only drain transition |
+
+The former compatibility test explicitly requiring legacy deployment variables
+has been removed. The real binary now proves the opposite invariant: CLI
+presentation overrides plus typed config and defaults are the only deployment
+causes. Inline seal-key reporting names `config.toml`, never an environment
+source, and remains redacted.
