@@ -8,7 +8,7 @@
 //      The adapter carries no vault secret; the host relay authenticates upstream and KIMI
 //      drives the tool. The upstream MCP fixture records the requests it actually served.
 //   2. CONFIG-HOME ISOLATION: the adapter is pointed at an isolated per-thread config
-//      home under AWAKEN_STORAGE_DIR; the host's real ~/.claude is NEVER touched. We run
+//      home under SESSION_DEPLOYMENT_STORAGE_DIR; the host's real ~/.claude is NEVER touched. We run
 //      the whole server under a throwaway $HOME so even a misbehaving CLI cannot reach it.
 //
 // Gated: skips unless a KIMI Anthropic-dialect key is discoverable in ~/.bashrc. It needs
@@ -59,7 +59,7 @@ async function main() {
     CARGO_HOME: process.env.CARGO_HOME ?? path.join(realHome, '.cargo'),
     RUSTUP_HOME: process.env.RUSTUP_HOME ?? path.join(realHome, '.rustup'),
     HOME: sandboxHome,
-    AWAKEN_STORAGE_DIR: storageDir,
+    SESSION_DEPLOYMENT_STORAGE_DIR: storageDir,
     ANTHROPIC_BASE_URL: kimi.anthropicBase,
     ANTHROPIC_API_KEY: kimi.anthropicKey ?? kimi.key,
     ANTHROPIC_MODEL: kimi.anthropicModel,

@@ -345,9 +345,9 @@ async function main(): Promise<void> {
   const peer = await startA2aPeer();
   const proxy = await startFaultProxy();
   const control = spawnServer('config', CONTROL_PORT, {
-    AWAKEN_INGRESS: 'durable',
-    AWAKEN_STORAGE_DIR: storage,
-    AWAKEN_DISABLE_LOCAL_POOL: '1',
+    SESSION_DEPLOYMENT_INGRESS: 'durable',
+    SESSION_DEPLOYMENT_STORAGE_DIR: storage,
+    SESSION_DEPLOYMENT_DISABLE_LOCAL_POOL: '1',
   }).server;
   let workerA: ReturnType<typeof spawnServer>['server'] | undefined;
   let workerB: ReturnType<typeof spawnServer>['server'] | undefined;
@@ -368,7 +368,7 @@ async function main(): Promise<void> {
     const capability = `a2a:${peer.endpoint}`;
 
     workerA = spawnServer('echo', 0, {
-      AWAKEN_INGRESS: 'durable',
+      SESSION_DEPLOYMENT_INGRESS: 'durable',
       AWAKEN_UPSTREAM_URL: proxy.url,
       AWAKEN_SCENARIO_ROLE: 'worker',
       AWAKEN_WORKER_ID: 'recovery-worker-a',
@@ -417,7 +417,7 @@ async function main(): Promise<void> {
     }
 
     workerB = spawnServer('echo', 0, {
-      AWAKEN_INGRESS: 'durable',
+      SESSION_DEPLOYMENT_INGRESS: 'durable',
       AWAKEN_UPSTREAM_URL: CONTROL,
       AWAKEN_SCENARIO_ROLE: 'worker',
       AWAKEN_WORKER_ID: 'recovery-worker-b',

@@ -161,7 +161,7 @@ async function recoverAfterJudgeCrash(port) {
   const environment = {
     ...realServerEnv('revise', upstream, { mode: 'outcome-matrix' }),
     AWAKEN_OUTCOME_JUDGE_RUNTIME: 'native',
-    AWAKEN_STORAGE_DIR: storage,
+    SESSION_DEPLOYMENT_STORAGE_DIR: storage,
   };
   let spawned = spawnServer('outcome-matrix', port, environment);
   try {

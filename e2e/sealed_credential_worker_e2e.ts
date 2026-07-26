@@ -120,9 +120,9 @@ async function main() {
   const storage = mkdtempSync(path.join(tmpdir(), 'awaken-sealed-worker-'));
   const upstream = await startFakeAnthropic(PROVIDER_SECRET);
   const cell = spawnServer('echo', PORT, {
-    AWAKEN_INGRESS: 'durable',
-    AWAKEN_STORAGE_DIR: storage,
-    AWAKEN_DISABLE_LOCAL_POOL: '1',
+    SESSION_DEPLOYMENT_INGRESS: 'durable',
+    SESSION_DEPLOYMENT_STORAGE_DIR: storage,
+    SESSION_DEPLOYMENT_DISABLE_LOCAL_POOL: '1',
   }).server;
   let worker: ChildProcessWithoutNullStreams | undefined;
   let workerOutput = '';

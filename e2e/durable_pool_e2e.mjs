@@ -16,7 +16,7 @@ const PORT = Number(process.env.E2E_PORT ?? 38790);
 const THREAD = 'durable-pool-1';
 const BASE = `http://127.0.0.1:${PORT}`;
 // Durable ingress (which spawns the pool) over a shared SQLite dispatch queue.
-const ENV = { AWAKEN_INGRESS: 'durable', AWAKEN_STORAGE_DIR: mkdtempSync(path.join(tmpdir(), 'awaken-durable-pool-')) };
+const ENV = { SESSION_DEPLOYMENT_INGRESS: 'durable', SESSION_DEPLOYMENT_STORAGE_DIR: mkdtempSync(path.join(tmpdir(), 'awaken-durable-pool-')) };
 
 async function submitBackground(text) {
   const res = await fetch(`${BASE}/v1/durable/threads/${THREAD}/submit_background`, {

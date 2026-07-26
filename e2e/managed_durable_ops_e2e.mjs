@@ -32,7 +32,7 @@ async function main() {
 
   // ---- durable server: the ops verbs operate on a live durable thread ----
   const upstream = await startUpstream('echo');
-  const durable = spawnServer('real', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR, AWAKEN_INGRESS: 'durable', ...realServerEnv('echo', upstream) });
+  const durable = spawnServer('real', PORT, { SESSION_DEPLOYMENT_STORAGE_DIR: STORE_DIR, SESSION_DEPLOYMENT_INGRESS: 'durable', ...realServerEnv('echo', upstream) });
   await waitForPort(PORT);
   try {
     // A normal turn creates the session and its durable dispatch queue.
@@ -81,7 +81,7 @@ async function main() {
       const r = await req(method, path);
       assert.equal(r.status, 400, `${method} ${path} fails closed without durable ingress`);
     }
-    pass('every durable ops verb fails closed (400) when AWAKEN_INGRESS is unset');
+    pass('every durable ops verb fails closed (400) when SESSION_DEPLOYMENT_INGRESS is unset');
 
     console.log('E2E PASS: durable operations surface (ADR-0011 reconcile / ADR-0015 dead-letter GC) via HTTP.');
   } finally {

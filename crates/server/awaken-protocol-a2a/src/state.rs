@@ -77,7 +77,7 @@ impl A2aState {
         let persistence_path = std::env::var_os("AWAKEN_A2A_STATE_PATH")
             .map(PathBuf::from)
             .or_else(|| {
-                std::env::var_os("AWAKEN_STORAGE_DIR")
+                std::env::var_os("DeploymentConfig::storage_dir")
                     .map(PathBuf::from)
                     .map(|directory| directory.join("a2a-state.json"))
             });

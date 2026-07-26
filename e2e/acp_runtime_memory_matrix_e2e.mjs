@@ -161,7 +161,7 @@ async function main() {
     CARGO_HOME: process.env.CARGO_HOME ?? path.join(realHome, '.cargo'),
     RUSTUP_HOME: process.env.RUSTUP_HOME ?? path.join(realHome, '.rustup'),
     HOME: sandboxHome,
-    AWAKEN_STORAGE_DIR: storageDir,
+    SESSION_DEPLOYMENT_STORAGE_DIR: storageDir,
     AWAKEN_SANDBOX_DIR: sandboxDir,
     AWAKEN_SANDBOX_TIER: 'local',
   });

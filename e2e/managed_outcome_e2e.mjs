@@ -55,7 +55,7 @@ async function main() {
       console.log('  ok: unsatisfiable rubric -> max_iterations_reached');
 
       console.log('E2E PASS: define_outcome satisfied + max_iterations paths via TS SDK.');
-    }, { extraEnv: { AWAKEN_STORAGE_DIR: STORE_DIR } });
+    }, { extraEnv: { SESSION_DEPLOYMENT_STORAGE_DIR: STORE_DIR } });
   } finally {
     fs.rmSync(STORE_DIR, { recursive: true, force: true });
   }

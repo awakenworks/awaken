@@ -71,7 +71,7 @@ async function main(): Promise<void> {
   const upstream = await startUpstream('mcp');
   const env = {
     AWAKEN_MGMT_DIR: path.join(root, 'management'),
-    AWAKEN_STORAGE_DIR: path.join(root, 'runtime'),
+    SESSION_DEPLOYMENT_STORAGE_DIR: path.join(root, 'runtime'),
     AWAKEN_MGMT_SEAL_KEY: SEAL_KEY,
     ...realServerEnv('mcp', upstream, { mode: 'management' }),
   };

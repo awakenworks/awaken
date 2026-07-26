@@ -2,7 +2,7 @@
 //! place its memory entrypoint (`CLAUDE.md`), MCP config file, and self-written auth
 //! live. Keyed by `thread_id`, so a resumed session on the same thread mounts the
 //! *same* directory at a stable path (the cross-session / cross-environment
-//! migration seam). Durable under `AWAKEN_STORAGE_DIR/threads/<t>/config_home` when
+//! migration seam). Durable under `DeploymentConfig::storage_dir/threads/<t>/config_home` when
 //! a storage dir is set; a process-lifetime temp dir otherwise — matching how the
 //! host picks durability for the commit and memory stores.
 //!
@@ -60,7 +60,7 @@ pub struct ConfigHome {
 
 impl ConfigHome {
     /// Open (creating) the config home for `thread_id`. `store_dir` is the durable
-    /// root (`AWAKEN_STORAGE_DIR`) when set; otherwise a per-process temp dir keeps
+    /// root (`DeploymentConfig::storage_dir`) when set; otherwise a per-process temp dir keeps
     /// it in-run only. The path is stable across sessions for a given thread, so a
     /// warm resume reuses whatever the CLI persisted here.
     pub fn open(store_dir: Option<&Path>, thread_id: &str) -> io::Result<Self> {

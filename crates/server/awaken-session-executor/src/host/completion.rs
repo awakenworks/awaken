@@ -202,7 +202,7 @@ impl SharedHost {
     ) -> Result<&Arc<DispatchPool<AnyDispatchStore>>, HostError> {
         self.dispatch_pool.get().ok_or_else(|| {
             HostError::bad_request(
-                "durable dispatch not enabled (set AWAKEN_INGRESS=durable to run the pool)",
+                "durable dispatch not enabled (set typed durable ingress to run the pool)",
             )
         })
     }

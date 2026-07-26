@@ -6,7 +6,7 @@
 //! reach the process-shared dispatch queue and project it onto the wire shape the
 //! `durable_ops_router` returns.
 //!
-//! Its own test binary: it flips the process-global `AWAKEN_INGRESS=durable` and
+//! Its own test binary: it flips the process-global `SESSION_DEPLOYMENT_INGRESS=durable` and
 //! installs the one-shot shared dispatch store, so it must not share a process with
 //! the direct-ingress unit tests. One test drives the whole lifecycle sequentially
 //! over a single injected in-memory store — no cross-test races on the global state.
@@ -103,7 +103,7 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
     // SAFETY: this dedicated test binary sets the process-global durable flag once,
     // before any host is built; no other thread reads it concurrently here.
     unsafe {
-        std::env::set_var("AWAKEN_INGRESS", "durable");
+        std::env::set_var("SESSION_DEPLOYMENT_INGRESS", "durable");
     }
 
     // Inject one in-memory dispatch store we also keep a handle to, so we can drive

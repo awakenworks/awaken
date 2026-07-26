@@ -736,7 +736,7 @@ impl WorkerLifecycle {
 /// 6. Start the dispatch pool and drain in the background until SIGINT / SIGTERM.
 ///
 /// The injected remote dispatch store is the durable-ingress authority and enables
-/// the pool directly; embedding does not require `AWAKEN_INGRESS=durable`.
+/// the pool directly; embedding does not require `typed durable ingress`.
 pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let _ = upstream;
     Err("standalone awaken-worker configuration was removed; run `awaken worker --config <PATH> --server <URL>`".into())

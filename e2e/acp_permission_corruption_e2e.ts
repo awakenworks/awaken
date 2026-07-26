@@ -80,7 +80,7 @@ async function expectDecisionFailure(client: Anthropic, sessionId: string, statu
 
 async function main(): Promise<void> {
   const storage = mkdtempSync(path.join(tmpdir(), 'awaken-acp-ticket-'));
-  const environment = { AWAKEN_STORAGE_DIR: storage, AWAKEN_INGRESS: 'durable' };
+  const environment = { SESSION_DEPLOYMENT_STORAGE_DIR: storage, SESSION_DEPLOYMENT_INGRESS: 'durable' };
   let server = spawnServer('acp-permission', PORT, environment).server;
   try {
     await waitForPort(PORT, 180_000, server);

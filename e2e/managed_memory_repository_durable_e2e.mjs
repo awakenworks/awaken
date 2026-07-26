@@ -36,7 +36,7 @@ async function rejectsStatus(operation, status, message) {
 
 async function main() {
   fs.rmSync(STORE_DIR, { recursive: true, force: true });
-  let { server } = spawnServer('echo', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR });
+  let { server } = spawnServer('echo', PORT, { SESSION_DEPLOYMENT_STORAGE_DIR: STORE_DIR });
   try {
     await waitForPort(PORT);
     let c = client();
@@ -296,7 +296,7 @@ async function main() {
 
     // -- RESTART over the same storage dir ------------------------------------
     await stopServer(server);
-    ({ server } = spawnServer('echo', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR }));
+    ({ server } = spawnServer('echo', PORT, { SESSION_DEPLOYMENT_STORAGE_DIR: STORE_DIR }));
     await waitForPort(PORT);
     c = client();
 

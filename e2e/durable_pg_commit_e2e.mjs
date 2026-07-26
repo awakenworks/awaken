@@ -2,13 +2,13 @@
 // any node warm-reloads any thread — not a per-thread local SQLite file that pins a
 // thread to a node.
 //
-// Proves it end to end: run the server with AWAKEN_STORE=postgres, drive a durable
+// Proves it end to end: run the server with SESSION_DEPLOYMENT_STORE=postgres, drive a durable
 // run to a committed assistant reply, then restart the server with a DIFFERENT local
 // storage dir. Because the thread history lives in Postgres (not the local dir), it
 // survives — a per-thread SQLite file under the old dir could not.
 //
-// Requires AWAKEN_DATABASE_URL. Run:
-//   AWAKEN_DATABASE_URL=postgres://postgres:test@127.0.0.1:5432/awaken \
+// Requires SESSION_DEPLOYMENT_DATABASE_URL. Run:
+//   SESSION_DEPLOYMENT_DATABASE_URL=postgres://postgres:test@127.0.0.1:5432/awaken \
 //     node e2e/durable_pg_commit_e2e.mjs
 
 import { mkdtempSync } from 'node:fs';
@@ -20,9 +20,9 @@ const PORT = Number(process.env.E2E_PORT ?? 38797);
 const THREAD = 'pg-commit-1';
 const BASE = `http://127.0.0.1:${PORT}`;
 
-const DB_URL = process.env.AWAKEN_DATABASE_URL;
+const DB_URL = process.env.SESSION_DEPLOYMENT_DATABASE_URL;
 if (!DB_URL) {
-  console.error('SKIP: durable_pg_commit_e2e requires AWAKEN_DATABASE_URL');
+  console.error('SKIP: durable_pg_commit_e2e requires SESSION_DEPLOYMENT_DATABASE_URL');
   process.exit(0);
 }
 
@@ -31,11 +31,11 @@ if (!DB_URL) {
 // source of the surviving history.
 function env(storageDir) {
   return {
-    AWAKEN_INGRESS: 'durable',
-    AWAKEN_DISPATCH_BACKEND: 'postgres',
-    AWAKEN_STORE: 'postgres',
-    AWAKEN_DATABASE_URL: DB_URL,
-    AWAKEN_STORAGE_DIR: storageDir,
+    SESSION_DEPLOYMENT_INGRESS: 'durable',
+    SESSION_DEPLOYMENT_DISPATCH_BACKEND: 'postgres',
+    SESSION_DEPLOYMENT_STORE: 'postgres',
+    SESSION_DEPLOYMENT_DATABASE_URL: DB_URL,
+    SESSION_DEPLOYMENT_STORAGE_DIR: storageDir,
   };
 }
 

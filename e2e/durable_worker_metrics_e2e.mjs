@@ -12,7 +12,7 @@
 //   2. `awaken_brain_draining` — the scale-in lifecycle signal.
 //
 // So this test does NOT fabricate dispatch counters. It boots a DURABLE server
-// (AWAKEN_INGRESS=durable), drives real runs through the enqueue→claim→worker→commit
+// (SESSION_DEPLOYMENT_INGRESS=durable), drives real runs through the enqueue→claim→worker→commit
 // path, and asserts the metrics that GENUINELY exist MOVE as durable work flows:
 //   - the two gauges are exported and well-formed at baseline (both 0),
 //   - `awaken_brain_active_streams` rises above 0 while durable runs are in flight
@@ -72,13 +72,13 @@ async function main() {
   fs.rmSync(STORE, { recursive: true, force: true });
   fs.mkdirSync(STORE, { recursive: true });
 
-  // A DURABLE server: AWAKEN_INGRESS=durable makes the managed host deliver every
+  // A DURABLE server: SESSION_DEPLOYMENT_INGRESS=durable makes the managed host deliver every
   // turn through the persistent dispatch queue driven by the process dispatch pool
   // (enqueue → claim → lease → worker execute → commit). echo is a deterministic
   // in-process stub, so no upstream/API key needed and the run is CI-safe.
   const { server } = spawnServer('echo', PORT, {
-    AWAKEN_INGRESS: 'durable',
-    AWAKEN_STORAGE_DIR: STORE,
+    SESSION_DEPLOYMENT_INGRESS: 'durable',
+    SESSION_DEPLOYMENT_STORAGE_DIR: STORE,
   });
 
   try {

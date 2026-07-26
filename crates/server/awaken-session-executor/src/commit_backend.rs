@@ -16,7 +16,7 @@ static SHARED_POSTGRES_COMMIT: std::sync::OnceLock<Arc<PostgresCommitCoordinator
     std::sync::OnceLock::new();
 
 /// Connect the process-wide Postgres commit coordinator at `url` and publish it for
-/// `AWAKEN_STORE=postgres`. Call this ONCE at startup (the server does so before it
+/// `DeploymentConfig::store=Postgres`. Call this ONCE at startup (the server does so before it
 /// serves) — it must run here, not in the per-thread run path. Idempotent: a second
 /// call keeps the first coordinator.
 pub async fn init_shared_postgres_commit(url: &str) -> Result<(), String> {
@@ -32,7 +32,7 @@ pub async fn init_shared_postgres_commit(url: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The shared Postgres commit coordinator, or `None` when `AWAKEN_STORE=postgres`
+/// The shared Postgres commit coordinator, or `None` when `DeploymentConfig::store=Postgres`
 /// was not selected / [`init_shared_postgres_commit`] was not called.
 pub(crate) fn shared_postgres_commit() -> Option<Arc<PostgresCommitCoordinator>> {
     SHARED_POSTGRES_COMMIT.get().cloned()

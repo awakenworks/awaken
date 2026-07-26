@@ -79,9 +79,9 @@ impl AcpWorkerProfile {
 pub enum StoreKind {
     /// Per-thread SQLite databases under the storage dir (the default durable store).
     Sqlite,
-    /// Per-thread filesystem append-log directories (`AWAKEN_STORE=fs`).
+    /// Per-thread filesystem append-log directories (`DeploymentConfig::store=Fs`).
     Fs,
-    /// One shared Postgres coordinator keyed by thread (`AWAKEN_STORE=postgres`).
+    /// One shared Postgres coordinator keyed by thread (`DeploymentConfig::store=Postgres`).
     Postgres,
 }
 
@@ -91,7 +91,7 @@ pub enum DispatchBackend {
     /// One local SQLite queue file (`dispatch.db`) under the storage dir, or an
     /// in-memory queue when there is no dir. The default.
     Sqlite,
-    /// One shared Postgres queue across the fleet (`AWAKEN_DISPATCH_BACKEND=postgres`).
+    /// One shared Postgres queue across the fleet (`DeploymentConfig::dispatch_backend=Postgres`).
     Postgres,
 }
 
@@ -156,14 +156,14 @@ impl SandboxTier {
 /// the runtime rather than re-read from the environment at each call site.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeploymentConfig {
-    /// Durable ingress (`AWAKEN_INGRESS=durable`): spawn the standing dispatch pool
+    /// Durable ingress (`typed durable ingress`): spawn the standing dispatch pool
     /// and route runs through the durable queue. Direct otherwise.
     pub durable: bool,
-    /// The durable storage root (`AWAKEN_STORAGE_DIR`); `None` = in-memory/ephemeral.
+    /// The durable storage root (`DeploymentConfig::storage_dir`); `None` = in-memory/ephemeral.
     pub storage_dir: Option<PathBuf>,
-    /// The commit-store backend (`AWAKEN_STORE`).
+    /// The commit-store backend (`DeploymentConfig::store`).
     pub store: StoreKind,
-    /// The dispatch-queue backend (`AWAKEN_DISPATCH_BACKEND`).
+    /// The dispatch-queue backend (`DeploymentConfig::dispatch_backend`).
     pub dispatch_backend: DispatchBackend,
     /// The cross-node wake (`AWAKEN_DISPATCH_WAKE`).
     pub wake: Wake,
@@ -171,7 +171,7 @@ pub struct DeploymentConfig {
     pub wake_channel: String,
     /// The NATS broker url for `Wake::Nats` (`AWAKEN_NATS_URL`).
     pub nats_url: Option<String>,
-    /// The shared database url for Postgres backends (`AWAKEN_DATABASE_URL`).
+    /// The shared database url for Postgres backends (`DeploymentConfig::database_url`).
     pub database_url: Option<String>,
     /// The dispatch lease owner (`AWAKEN_DISPATCH_OWNER`), distinct per process/node.
     pub dispatch_owner: String,
@@ -193,7 +193,7 @@ pub struct DeploymentConfig {
     /// The container image an ACP agent runs in on a container tier
     /// (`AWAKEN_CONTAINER_IMAGE`); `None` on the namespace tier / when unset.
     pub container_image: Option<String>,
-    /// A coordinator-only server (`AWAKEN_DISABLE_LOCAL_POOL=1`): own the store + HTTP
+    /// A coordinator-only server (`DeploymentConfig::disable_local_pool=1`): own the store + HTTP
     /// but run no local pool, so remote workers are the sole drainers.
     pub disable_local_pool: bool,
 }
@@ -307,12 +307,12 @@ impl DeploymentConfig {
         let has_storage_dir = self.storage_dir.is_some();
         if self.durable && !postgres_backend && !has_storage_dir && !injected {
             return Some(
-                "AWAKEN_INGRESS=durable needs a persistent dispatch queue, but none is \
-                 configured: the default SQLite backend has no AWAKEN_STORAGE_DIR, so the \
+                "typed durable ingress needs a persistent dispatch queue, but none is \
+                 configured: the default SQLite backend has no DeploymentConfig::storage_dir, so the \
                  queue would be in-memory and a restart would silently drop every queued, \
-                 crashed, dead-lettered, and scheduled run. Set AWAKEN_STORAGE_DIR for the \
-                 durable on-disk queue (<dir>/dispatch.db), or AWAKEN_DISPATCH_BACKEND=postgres \
-                 with AWAKEN_DATABASE_URL for the shared queue. Refusing to serve a 'durable' \
+                 crashed, dead-lettered, and scheduled run. Set DeploymentConfig::storage_dir for the \
+                 durable on-disk queue (<dir>/dispatch.db), or DeploymentConfig::dispatch_backend=Postgres \
+                 with DeploymentConfig::database_url for the shared queue. Refusing to serve a 'durable' \
                  ingress on a volatile queue.",
             );
         }
@@ -457,7 +457,7 @@ mod tests {
             ..base()
         };
         let err = cfg.durable_needs_persistence_error(false).unwrap();
-        assert!(err.contains("AWAKEN_STORAGE_DIR"), "{err}");
+        assert!(err.contains("DeploymentConfig::storage_dir"), "{err}");
         assert!(err.contains("durable"), "{err}");
     }
 

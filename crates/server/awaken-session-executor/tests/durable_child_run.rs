@@ -80,7 +80,7 @@ async fn child_run_uses_the_durable_scheduler_and_returns_to_its_parent() {
     // Dedicated integration-test process: set deployment before constructing the
     // host and inject its one shared queue.
     unsafe {
-        std::env::set_var("AWAKEN_INGRESS", "durable");
+        std::env::set_var("SESSION_DEPLOYMENT_INGRESS", "durable");
     }
     let storage = tempfile::tempdir().expect("storage");
     let memory = Arc::new(MemoryDispatchStore::new());

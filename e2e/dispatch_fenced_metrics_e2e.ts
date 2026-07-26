@@ -42,8 +42,8 @@ async function main() {
   const upstream = await startUpstream('echo', { firstDelayMs: 4_000 });
   const { server, baseUrl } = spawnServer('real', PORT, {
     ...realServerEnv('echo', upstream),
-    AWAKEN_INGRESS: 'durable',
-    AWAKEN_STORAGE_DIR: STORE,
+    SESSION_DEPLOYMENT_INGRESS: 'durable',
+    SESSION_DEPLOYMENT_STORAGE_DIR: STORE,
     OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${collectorPort}`,
     OTEL_EXPORTER_OTLP_PROTOCOL: 'http/protobuf',
     OTEL_METRIC_EXPORT_INTERVAL: '200',
