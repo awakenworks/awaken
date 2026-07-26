@@ -908,6 +908,26 @@ impl ManagedState {
                     "resource activation has Releasing records without a pending manifest",
                 )));
             }
+            // Cause graph:
+            //   pending -> realize pending generation
+            //   no pending + active inputs -> replay/adopt the retained generation
+            //   no pending + no active inputs -> no external resource effect
+            //
+            // Decision table:
+            // | Rule | pending | active inputs | activations | Runtime apply |
+            // | R1   | yes     | any           | any         | desired       |
+            // | R2   | no      | nonempty      | empty       | active+adopt  |
+            // | R3   | no      | nonempty      | present     | active        |
+            // | R4   | no      | empty         | empty       | none          |
+            //
+            // R4 is important for retained pre-ADR-66 rows: manufacturing an
+            // empty "activation" before prepare_session is both redundant and
+            // invalid for a fresh Runtime incarnation.
+            if session.resources.active.inputs.is_empty()
+                && session.resources.activations.is_empty()
+            {
+                return Ok(session);
+            }
             self.runtime
                 .apply_session_inputs(&session_id, owner_scope, &session.resources.active)
                 .await?;
@@ -1208,6 +1228,8 @@ impl ManagedState {
             ),
             None => None,
         };
+        // Terminated Sessions remain readable tombstones; deleted and failed
+        // activation rows are hidden from the public read model.
         if persisted.as_ref().is_some_and(|session| {
             matches!(session.status.as_str(), "deleted" | "activation_failed")
         }) {

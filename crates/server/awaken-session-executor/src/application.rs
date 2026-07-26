@@ -43,6 +43,21 @@ impl ApplicationSessionPlan {
         }
     }
 
+    /// Author one URL-based MCP input without requiring the embedding Worker
+    /// application to depend on Managed wire or JSON crates. This is only a
+    /// boundary value constructor: the Managed application compiler remains the
+    /// sole owner of URL canonicalization, precedence, credential selection, and
+    /// attachment generation allocation.
+    #[must_use]
+    pub fn with_mcp_url(mut self, name: impl Into<String>, url: impl Into<String>) -> Self {
+        self.mcp_inputs.push(serde_json::json!({
+            "name": name.into(),
+            "type": "url",
+            "url": url.into(),
+        }));
+        self
+    }
+
     fn into_contribution(
         self,
         session_id: String,

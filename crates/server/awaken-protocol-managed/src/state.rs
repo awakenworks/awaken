@@ -1173,6 +1173,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn terminal_root_fences_mcp_recovery_before_runtime_effects() {
+        // Cause graph: repository index hit + MCP nonterminal + root terminal
+        // -> skip realization. The lifecycle classification table lives on
+        // PersistedSession; this integration rule proves the scanner consumes it.
+        let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
+        let mut failed = sample_persisted("sesn_failed_mcp");
+        failed.status = "activation_failed".into();
+        create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, failed).await;
+        assert_eq!(repo.reconcilable_sessions().await.len(), 1, "T1 indexed");
+
+        let runtime = RehydrateFake::default();
+        let runtime_effects = runtime.restored_runtimes.clone();
+        let restarted = ManagedState::new_with_mcp(runtime).with_session_repo(repo);
+        assert_eq!(restarted.reconcile_mcp_attachments().await, 0, "T1 skip");
+        assert!(
+            runtime_effects.lock().unwrap().is_empty(),
+            "T1 terminal root creates no MCP Runtime effect"
+        );
+    }
+
+    #[tokio::test]
     async fn live_input_mutations_survive_restart_without_changing_resource_identity() {
         let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
         let catalog = Arc::new(ephemeral_resource_catalog());

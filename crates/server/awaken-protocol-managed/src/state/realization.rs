@@ -201,13 +201,13 @@ impl ManagedState {
             .get(session_id)
             .await
             .ok_or(SessionRealizationControlFailure::NotFound)?;
+        if session.frozen_baseline().is_none() {
+            return Err(SessionRealizationControlFailure::NotReady);
+        }
         let session = self
             .ensure_repository_credentials_pinned(&owner_scope, session)
             .await
             .map_err(unavailable)?;
-        if session.frozen_baseline().is_none() {
-            return Err(SessionRealizationControlFailure::NotReady);
-        }
         Ok((owner_scope, session))
     }
 }

@@ -81,8 +81,15 @@ impl awaken_session_executor::ApplicationSessionProvisioner for ApplicationProvi
         ownership.verify_current().await.map_err(|error| {
             awaken_session_executor::ApplicationSessionError::new(error.to_string())
         })?;
-        let mut plan =
-            awaken_session_executor::ApplicationSessionPlan::empty("application-session-e2e-v1");
+        let mcp_url = std::env::var("AWAKEN_TEST_MCP_URL").map_err(|error| {
+            awaken_session_executor::ApplicationSessionError::new(format!(
+                "AWAKEN_TEST_MCP_URL is required: {error}"
+            ))
+        })?;
+        let mut plan = awaken_session_executor::ApplicationSessionPlan::empty(format!(
+            "application-session-e2e-v2:{mcp_url}"
+        ))
+        .with_mcp_url("application-calc", mcp_url);
         plan.prompts.push(APPLICATION_PROMPT.to_string());
         Ok(plan)
     }
