@@ -119,7 +119,7 @@ pub async fn open_inference_materialization_stores_from_env() -> InferenceMateri
         });
     match root {
         Some(dir) => {
-            let key = mgmt_seal_key_from_env();
+            let key = control_seal_key_from_env();
             let cfg = ControlStoreConfig::from_env(&dir);
             open_inference_materialization_stores(&cfg, &key).await
         }
@@ -135,18 +135,37 @@ pub async fn open_shared_resource_validator_from_env() -> Result<
     Option<Arc<dyn awaken_protocol_managed::resource_plane::ResourceBindingValidator>>,
     String,
 > {
-    let Some(url) = std::env::var("AWAKEN_ADMIN_DB")
+    let url = std::env::var("AWAKEN_ADMIN_DB")
         .ok()
-        .filter(|value| !value.trim().is_empty())
-    else {
+        .filter(|value| !value.trim().is_empty());
+    let backend = url.map(|value| {
+        if value.starts_with("postgres://") || value.starts_with("postgresql://") {
+            StoreBackend::Postgres(value)
+        } else {
+            StoreBackend::Sqlite(value.into())
+        }
+    });
+    open_shared_resource_validator(backend.as_ref()).await
+}
+
+/// Open the narrow Resource Catalog validation port from an explicitly
+/// resolved control-store backend.
+pub async fn open_shared_resource_validator(
+    backend: Option<&StoreBackend>,
+) -> Result<
+    Option<Arc<dyn awaken_protocol_managed::resource_plane::ResourceBindingValidator>>,
+    String,
+> {
+    let Some(backend) = backend else {
         return Ok(None);
     };
-    if !(url.starts_with("postgres://") || url.starts_with("postgresql://")) {
+    let StoreBackend::Postgres(url) = backend else {
         return Err(
             "a remote resource worker requires AWAKEN_ADMIN_DB to be a shared postgres URL"
                 .to_string(),
         );
-    }
+    };
+    let url = url.clone();
     let store = tokio::task::spawn_blocking(move || {
         awaken_admin_config_api::PostgresAdminStore::connect(&url)
     })
@@ -160,7 +179,7 @@ pub async fn open_shared_resource_validator_from_env() -> Result<
 /// their one-release management aliases follow the same precedence as the Serve
 /// composition. A worker that reads the wrong key is worse than one that refuses
 /// to start, so missing, conflicting, unreadable, and malformed input fails closed.
-fn mgmt_seal_key_from_env() -> [u8; 32] {
+pub fn control_seal_key_from_env() -> [u8; 32] {
     let hex = awaken_credential_vault::resolve_seal_key_hex(
         std::env::var("AWAKEN_CONTROL_SEAL_KEY")
             .ok()

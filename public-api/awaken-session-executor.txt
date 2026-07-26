@@ -325,7 +325,9 @@ pub fn awaken_session_executor::SharedHost::hub(&self) -> &alloc::sync::Arc<awak
 pub fn awaken_session_executor::SharedHost::local_workspace(&self) -> &str
 pub fn awaken_session_executor::SharedHost::model(&self) -> alloc::string::String
 pub fn awaken_session_executor::SharedHost::new(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_session_executor::SharedHost::new_with_deployment(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>, awaken_session_executor::DeploymentConfig) -> Self
 pub fn awaken_session_executor::SharedHost::new_with_resource_plane(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>, awaken_session_executor::ResourcePlanePorts) -> Self
+pub fn awaken_session_executor::SharedHost::new_with_resource_plane_and_deployment(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>, awaken_session_executor::ResourcePlanePorts, awaken_session_executor::DeploymentConfig) -> Self
 pub fn awaken_session_executor::SharedHost::pool_accepting_work(&self) -> bool
 pub fn awaken_session_executor::SharedHost::pool_in_flight(&self) -> u32
 pub fn awaken_session_executor::SharedHost::provision_local_workspace() -> alloc::string::String
@@ -537,6 +539,7 @@ pub fn awaken_session_executor::ensure_durable_backend() -> core::result::Result
 pub fn awaken_session_executor::erasure_router(alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::DataSubjectResolver>) -> axum::routing::Router
 pub async fn awaken_session_executor::init_shared_postgres_commit(&str) -> core::result::Result<(), alloc::string::String>
 pub async fn awaken_session_executor::init_shared_postgres_dispatch(&str) -> core::result::Result<(), alloc::string::String>
+pub async fn awaken_session_executor::init_shared_postgres_dispatch_with_config(&str, &awaken_session_executor::DeploymentConfig) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_session_executor::install_capture_sink(alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>)
 pub fn awaken_session_executor::local_managed_session_repository(core::option::Option<&std::path::Path>) -> alloc::sync::Arc<dyn awaken_session_contract::session_repo::ManagedSessionRepository>
 pub fn awaken_session_executor::memory_stores_router_with_catalog(alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>, alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceCatalog>, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeScheduler>) -> axum::routing::Router
