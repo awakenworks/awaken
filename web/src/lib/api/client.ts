@@ -4,13 +4,16 @@
 // { type: "error", error: { type, message } } (sessions/vaults).
 
 const TOKEN_KEY = "awaken.console.token";
+const CLOUD_SESSION_TOKEN_KEY = "awaken.product.session-bearer";
 
 export function getToken(): string {
-  return localStorage.getItem(TOKEN_KEY) ?? "";
+  return globalThis.sessionStorage?.getItem(CLOUD_SESSION_TOKEN_KEY)
+    ?? globalThis.localStorage?.getItem(TOKEN_KEY)
+    ?? "";
 }
 export function setToken(token: string): void {
-  if (token) localStorage.setItem(TOKEN_KEY, token);
-  else localStorage.removeItem(TOKEN_KEY);
+  if (token) globalThis.localStorage?.setItem(TOKEN_KEY, token);
+  else globalThis.localStorage?.removeItem(TOKEN_KEY);
 }
 
 // ---- workspace scope seam (ADR-0048 path addressing / ADR-0051 tenancy) ----
