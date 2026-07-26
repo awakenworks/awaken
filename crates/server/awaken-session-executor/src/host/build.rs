@@ -910,11 +910,6 @@ impl SharedHost {
 }
 
 fn resolve_local_workspace(store_dir: Option<&std::path::Path>) -> String {
-    if let Ok(configured) = std::env::var("AWAKEN_LOCAL_WORKSPACE_ID")
-        && !configured.trim().is_empty()
-    {
-        return configured;
-    }
     let path = store_dir.map(|dir| dir.join("platform-workspace-id"));
     if let Some(path) = &path
         && let Ok(existing) = std::fs::read_to_string(path)
