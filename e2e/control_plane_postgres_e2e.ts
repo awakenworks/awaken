@@ -14,6 +14,7 @@ import { execFileSync, execSync, spawn, type ChildProcess } from 'node:child_pro
 import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
+import { deploymentEnv } from './harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 39413);
@@ -82,27 +83,20 @@ function awakenBin(): string {
 }
 
 function start(bin: string, directory: string, databaseUrl: string): ChildProcess {
-  const inherited = { ...process.env };
-  for (const name of [
-    'AWAKEN_DATABASE_URL',
-    'AWAKEN_E2E_POSTGRES_CONTAINER',
-    'AWAKEN_DISPATCH_BACKEND',
-    'AWAKEN_STORE',
-  ]) {
-    delete inherited[name];
-  }
-  return spawn(bin, {
+  return spawn(bin, ['serve', '--port', String(PORT)], {
     env: {
-      ...inherited,
-      AWAKEN_HTTP_ADDR: `127.0.0.1:${PORT}`,
+      ...process.env,
+      ...deploymentEnv(directory, {
+        controlSealKey: SEAL_KEY,
+        databases: {
+          catalog_db: databaseUrl,
+          credential_db: databaseUrl,
+          config_db: databaseUrl,
+          admin_db: databaseUrl,
+          sessions_db: databaseUrl,
+        },
+      }),
       AWAKEN_SCENARIO_WORKSPACE: WORKSPACE,
-      AWAKEN_DEPLOYMENT_DATA_DIR: directory,
-      AWAKEN_CONTROL_SEAL_KEY: SEAL_KEY,
-      AWAKEN_CATALOG_DB: databaseUrl,
-      AWAKEN_CREDENTIAL_DB: databaseUrl,
-      AWAKEN_CONFIG_DB: databaseUrl,
-      AWAKEN_ADMIN_DB: databaseUrl,
-      AWAKEN_SESSIONS_DB: databaseUrl,
     },
     stdio: ['ignore', 'ignore', 'inherit'],
   });
