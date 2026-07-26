@@ -10,6 +10,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { spawnProduction, stopServer, waitForPort } from './harness.mjs';
+import { sqliteRows, sqliteScalar } from './sqlite.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38435);
@@ -60,14 +61,8 @@ async function upload(workspace, content, filename = 'input.txt') {
 function receipts(directory) {
   const database = path.join(directory, 'resource-lifecycle.db');
   if (!fs.existsSync(database)) return [];
-  const raw = execFileSync('sqlite3', [
-    '-json',
-    database,
-    'SELECT data FROM resource_lifecycle_purge_intents',
-  ])
-    .toString()
-    .trim();
-  return raw ? JSON.parse(raw).map((row) => JSON.parse(row.data)) : [];
+  return sqliteRows(database, 'SELECT data FROM resource_lifecycle_purge_intents')
+    .map((row) => JSON.parse(row.data));
 }
 
 async function waitReceipt(directory, kind, resourceId, timeoutMs = 20_000) {
@@ -85,7 +80,27 @@ async function waitReceipt(directory, kind, resourceId, timeoutMs = 20_000) {
 }
 
 function scalar(database, sql) {
-  return Number(execFileSync('sqlite3', [database, sql]).toString().trim());
+  return Number(sqliteScalar(database, sql));
+}
+
+async function waitForLifecycleSchema(directory, timeoutMs = 20_000) {
+  const database = path.join(directory, 'resource-lifecycle.db');
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const version = scalar(
+        database,
+        `SELECT count(*) FROM resource_lifecycle_schema_migrations
+           WHERE bundle_id='awaken.resource_lifecycle' AND version=1`,
+      );
+      if (version === 1) return version;
+    } catch {
+      // TCP readiness can precede optional resource-plane migration visibility.
+      // A read-only open intentionally does not create a misleading empty DB.
+    }
+    await sleep(50);
+  }
+  throw new Error('resource lifecycle migration did not become visible');
 }
 
 function seedRepository(root) {
@@ -109,11 +124,10 @@ async function main() {
   try {
     await ready();
     assert.equal(
-      scalar(
-        path.join(directory, 'resource-lifecycle.db'),
-        `SELECT count(*) FROM resource_lifecycle_schema_migrations
-           WHERE bundle_id='awaken.resource_lifecycle' AND version=1`,
-      ),
+      // Readiness cause graph: C1 TCP listener ready; C2 resource-plane DB exists;
+      // C3 scoped migration is committed. Only C1+C2+C3 means the API composition
+      // is fully observable; TCP alone must not let the fixture create an empty DB.
+      await waitForLifecycleSchema(directory),
       1,
       'resource lifecycle schema is applied through its scoped migration ledger',
     );

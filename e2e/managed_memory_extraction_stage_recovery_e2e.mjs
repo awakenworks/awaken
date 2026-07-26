@@ -6,7 +6,6 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
 import {
   realServerEnv,
@@ -15,6 +14,7 @@ import {
   stopServer,
   waitForPort,
 } from './harness.mjs';
+import { sqliteExec, sqliteRows } from './sqlite.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38244);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -32,18 +32,14 @@ function sqlQuote(value) {
 }
 
 function sqlite(database, sql) {
-  return execFileSync('sqlite3', [database], { input: sql, encoding: 'utf8' });
+  return sqliteExec(database, sql);
 }
 
 function extractionRows(database) {
-  const output = execFileSync('sqlite3', [
-    '-cmd',
-    '.timeout 5000',
-    '-json',
+  return sqliteRows(
     database,
     'SELECT intent_id, status, data FROM managed_memory_extraction ORDER BY intent_id',
-  ]).toString().trim();
-  return output ? JSON.parse(output).map((row) => ({ ...row, intent: JSON.parse(row.data) })) : [];
+  ).map((row) => ({ ...row, intent: JSON.parse(row.data) }));
 }
 
 function persistIntent(database, intent, insert) {
@@ -79,12 +75,10 @@ function persistRecoverableRaw(database, intentId, data) {
 }
 
 function rawIntent(database, intentId) {
-  const output = execFileSync('sqlite3', [
-    '-json',
+  const rows = sqliteRows(
     database,
     `SELECT data FROM managed_memory_extraction WHERE intent_id=${sqlQuote(intentId)}`,
-  ]).toString().trim();
-  const rows = output ? JSON.parse(output) : [];
+  );
   assert.equal(rows.length, 1, `missing extraction ${intentId}`);
   return rows[0].data;
 }

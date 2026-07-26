@@ -64,8 +64,9 @@ async function startGeneration(binary, storeDir, mountPath, { requestFuse = fals
       AWAKEN_MEMORY_STORE_DIR: storeDir,
       AWAKEN_MOUNT_PATH: mountPath,
       AWAKEN_MEMORY_MODE: requestFuse ? 'fuse' : 'copy',
+      AWAKEN_MEMORY_SHUTDOWN_ON_STDIN_EOF: '1',
     },
-    stdio: ['ignore', 'ignore', 'pipe'],
+    stdio: ['pipe', 'ignore', 'pipe'],
   });
   let stderr = '';
   child.stderr.setEncoding('utf8');
@@ -89,7 +90,16 @@ async function startGeneration(binary, storeDir, mountPath, { requestFuse = fals
     mountPath,
     stderr: () => stderr,
     stop: async () => {
-      child.kill('SIGTERM');
+      // Graceful-stop cause graph:
+      // C1 the sidecar owns unharvested copy writes; C2 the supervisor requests a
+      // graceful stop. C1+C2 must harvest and exit 0. A forced Windows SIGTERM
+      // supplies only process death, so stdin EOF is the explicit portable C2.
+      //
+      // | Rule | C1 dirty copy | C2 graceful EOF | Expected |
+      // |---|---|---|---|
+      // | S1 | F | T | exit 0, zero changes |
+      // | S2 | T | T | harvest changes, exit 0 |
+      child.stdin.end();
       const result = await exited;
       assert.equal(result.code, 0, `memoryd must stop cleanly: ${stderr}`);
       assert.match(stderr, /harvested \d+ changed memories/);

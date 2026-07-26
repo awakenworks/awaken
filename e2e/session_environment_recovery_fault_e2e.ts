@@ -11,7 +11,10 @@ import fs, { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
+// @ts-ignore -- shared JavaScript harness intentionally serves TS scenarios.
 import { REPO_ROOT, stopServer, waitForPort } from './harness.mjs';
+// @ts-ignore -- shared JavaScript SQLite fixture intentionally serves TS scenarios.
+import { sqliteRun, sqliteScalar } from './sqlite.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 39774);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -68,18 +71,12 @@ function spawnBrain(binary: string, storage: string) {
   });
 }
 
-function sqlite(storage: string, statement: string): string {
-  return execFileSync('sqlite3', ['-cmd', '.timeout 5000', path.join(storage, 'sessions.db'), statement], {
-    encoding: 'utf8',
-  }).trim();
-}
-
 function binding(storage: string, sessionId: string): Binding {
   const escaped = sessionId.replaceAll("'", "''");
-  const aggregate = JSON.parse(sqlite(
-    storage,
+  const aggregate = JSON.parse(String(sqliteScalar(
+    path.join(storage, 'sessions.db'),
     `SELECT aggregate_json FROM managed_session WHERE session_id = '${escaped}'`,
-  ));
+  )));
   const encoded = aggregate.environment_binding;
   assert.ok(encoded, `Session ${sessionId} has a durable environment binding`);
   return JSON.parse(encoded);
@@ -87,10 +84,11 @@ function binding(storage: string, sessionId: string): Binding {
 
 function rewriteBinding(storage: string, sessionId: string, encoded: string): void {
   const id = sessionId.replaceAll("'", "''");
-  const aggregate = JSON.parse(sqlite(
-    storage,
+  const database = path.join(storage, 'sessions.db');
+  const aggregate = JSON.parse(String(sqliteScalar(
+    database,
     `SELECT aggregate_json FROM managed_session WHERE session_id = '${id}'`,
-  ));
+  )));
   aggregate.environment_binding = encoded;
   const value = JSON.stringify(aggregate).replaceAll("'", "''");
   // Cause/effect graph / decision table for durable corruption injection:
@@ -102,11 +100,11 @@ function rewriteBinding(storage: string, sessionId: string, encoded: string): vo
   // | A1   | valid             | stale/null    | adopt          |
   // | A2   | corrupt           | any           | fail closed    |
   assert.equal(
-    sqlite(
-      storage,
-      `UPDATE managed_session SET aggregate_json = '${value}' WHERE session_id = '${id}'; SELECT changes();`,
-    ),
-    '1',
+    Number(sqliteRun(
+      database,
+      `UPDATE managed_session SET aggregate_json = '${value}' WHERE session_id = '${id}'`,
+    ).changes),
+    1,
   );
 }
 
