@@ -566,6 +566,21 @@ Signed assertions must still travel over TLS. They can be layered over mTLS when
 both proof-of-possession at the transport edge and application-level replay
 fencing are required.
 
+The composition decision table is:
+
+| Input at composition root | Registration result | Later lifecycle transport | Decision |
+|---|---|---|---|
+| complete `WorkerUpstream` with custom client and Worker id | accepted | the same clone-shared client and allocated identity serve heartbeat, claim, recovery, commit, settle, drain, and deregister | allow |
+| URL only through the CLI helper | accepted | helper constructs one default `WorkerUpstream`, then delegates to `WorkerNodeBuilder` | allow for CLI/local use |
+| empty upstream URL | none | none | reject at `build()` |
+| application attempts a second manifest source | none | none | reject topology conflict |
+| registered identity is lost or replaced | registration/liveness fence fails | claims and mutations fail closed | stop admission and drain |
+
+Tests attach a caller-defined signed request authorizer to the complete upstream
+and require its assertion on every observed lifecycle request. The production
+mTLS test separately proves the TLS peer identity and custom client behavior at
+the acceptor.
+
 Authentication does not replace claim authorization: every state-changing
 request still validates owner, epoch, and operation semantics.
 
