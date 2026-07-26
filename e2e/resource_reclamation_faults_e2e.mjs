@@ -9,6 +9,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { spawnProduction, stopServer, waitForPort } from './harness.mjs';
+import { sqliteExec, sqliteRows, sqliteScalar } from './sqlite.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38440);
@@ -71,22 +72,15 @@ function sqlQuote(value) {
 }
 
 function sqlite(database, sql) {
-  return execFileSync('sqlite3', ['-cmd', '.timeout 10000', database], {
-    input: sql,
-    encoding: 'utf8',
-  });
+  return sqliteExec(database, sql);
 }
 
 function intents(directory) {
   const database = path.join(directory, 'resource-lifecycle.db');
-  const output = execFileSync('sqlite3', [
-    '-cmd',
-    '.timeout 10000',
-    '-json',
+  return sqliteRows(
     database,
     'SELECT data FROM resource_lifecycle_purge_intents ORDER BY intent_id',
-  ]).toString().trim();
-  return output ? JSON.parse(output).map((row) => JSON.parse(row.data)) : [];
+  ).map((row) => JSON.parse(row.data));
 }
 
 function intentFor(directory, resourceId) {
@@ -329,13 +323,13 @@ async function main() {
     assert.equal(projected.status, 200, JSON.stringify(projected.body));
     assert.deepEqual(projected.body.data, []);
     assert.equal(
-      sqlite(
+      Number(sqliteScalar(
         lifecycle,
         `SELECT count(*) FROM resource_lifecycle_references
           WHERE resource_kind = 'file' AND resource_id = ${sqlQuote(fencedBinding)}
             AND reference_kind = 'session_binding';`,
-      ).trim(),
-      '0',
+      )),
+      0,
     );
     sqlite(
       lifecycle,

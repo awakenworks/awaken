@@ -6,9 +6,10 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
-import { execFileSync } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
 import { Chat } from '@ai-sdk/react';
 import { DefaultChatTransport } from 'ai';
+// @ts-ignore -- shared JavaScript harness intentionally serves TS scenarios.
 import { realServerEnv, spawnServer, startUpstream, stopServer, waitForPort } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38321);
@@ -59,11 +60,26 @@ async function main() {
     await waitUntil('attempt A to enter provider inference', () => upstream.received >= 1);
 
     const database = `${STORE}/dispatch.db`;
-    execFileSync(
-      'sqlite3',
-      [database, "PRAGMA busy_timeout=10000; UPDATE runtime_dispatch SET lease_until = 0 WHERE status = 'running'"],
-      { timeout: 15_000 },
-    );
+    // Fencing cause graph and decision table:
+    // C1 attempt A is running; C2 its lease expires; C3 a replacement claims the
+    // next epoch; C4 attempt A returns late. C1+C2+C3+C4 => the old settlement is
+    // rejected and awaken.dispatch.commits.fenced is exported.
+    //
+    // | Rule | C1 | C2 | C3 | C4 | Expected |
+    // |---|---|---|---|---|---|
+    // | F1 | T | F | F | T | ordinary attempt A commit |
+    // | F2 | T | T | T | F | attempt B owns current epoch |
+    // | F3 | T | T | T | T | B commits; A fenced; metric emitted |
+    //
+    // Node's in-process SQLite keeps lease-boundary control portable and avoids
+    // making an external sqlite3 executable part of the E2E environment contract.
+    const connection = new DatabaseSync(database);
+    try {
+      connection.exec('PRAGMA busy_timeout = 10000');
+      connection.exec("UPDATE runtime_dispatch SET lease_until = 0 WHERE status = 'running'");
+    } finally {
+      connection.close();
+    }
     const recovery = await fetch(`${baseUrl}/v1/durable/threads/${THREAD}/reconcile`, { method: 'POST' });
     const recoveryBody = await recovery.text();
     assert.equal(recovery.status, 200, recoveryBody);

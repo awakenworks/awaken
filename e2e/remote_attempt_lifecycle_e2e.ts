@@ -4,12 +4,14 @@
 // durable dispatch, A2aRunExecutor, commit/readback, resume and cancellation.
 
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import fs, { mkdtempSync } from 'node:fs';
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+// @ts-ignore -- shared JavaScript harness intentionally serves TS scenarios.
 import { spawnServer, stopServer, waitForPort } from './harness.mjs';
+// @ts-ignore -- shared JavaScript SQLite fixture intentionally serves TS scenarios.
+import { sqliteExec, sqliteRows, sqliteRun } from './sqlite.mjs';
 
 type SeenMessage = { messageId?: string; contextId?: string; text?: string };
 
@@ -264,11 +266,10 @@ function dispatchDatabases(root: string): string[] {
 
 function committedState(root: string, thread: string): string {
   const database = path.join(root, `${thread}.db`);
-  return execFileSync(
-    'sqlite3',
-    [database, `SELECT data FROM runtime_state_command WHERE thread_id = '${thread.replaceAll("'", "''")}' ORDER BY id`],
-    { encoding: 'utf8' },
-  );
+  return sqliteRows(
+    database,
+    `SELECT data FROM runtime_state_command WHERE thread_id = '${thread.replaceAll("'", "''")}' ORDER BY id`,
+  ).map((row: { data: string }) => row.data).join('\n');
 }
 
 function rewriteLatestTaskReference(
@@ -277,30 +278,26 @@ function rewriteLatestTaskReference(
   rewrite: (command: any) => void,
 ): void {
   const database = path.join(root, `${thread}.db`);
-  const encoded = execFileSync(
-    'sqlite3',
-    [
-      database,
+  const row = sqliteRows(
+    database,
       `SELECT id || char(9) || data FROM runtime_state_command
        WHERE thread_id = '${thread.replaceAll("'", "''")}'
          AND json_extract(data, '$.key') = '__a2a_task'
          AND json_type(data, '$.action.Set') = 'object'
        ORDER BY id DESC LIMIT 1`,
-    ],
-    { encoding: 'utf8' },
-  ).trim();
+  )[0] as Record<string, unknown> | undefined;
+  const encoded = row ? String(Object.values(row)[0]) : '';
   const separator = encoded.indexOf('\t');
   assert.ok(separator > 0, `durable A2A task reference exists for ${thread}: ${encoded}`);
   const id = Number(encoded.slice(0, separator));
   const command = JSON.parse(encoded.slice(separator + 1));
   rewrite(command);
   const data = JSON.stringify(command).replaceAll("'", "''");
-  const changed = execFileSync(
-    'sqlite3',
-    [database, `UPDATE runtime_state_command SET data = '${data}' WHERE id = ${id}; SELECT changes();`],
-    { encoding: 'utf8' },
-  ).trim();
-  assert.equal(changed, '1', `rewrote exactly one A2A task reference for ${thread}`);
+  const changed = sqliteRun(
+    database,
+    `UPDATE runtime_state_command SET data = '${data}' WHERE id = ${id}`,
+  );
+  assert.equal(Number(changed.changes), 1, `rewrote exactly one A2A task reference for ${thread}`);
 }
 
 async function expectResumeFailure(thread: string, marker: string): Promise<void> {
@@ -398,7 +395,7 @@ async function main(): Promise<void> {
     const databases = dispatchDatabases(storage);
     assert.ok(databases.length > 0, 'durable dispatch database exists');
     for (const database of databases) {
-      execFileSync('sqlite3', [database, "UPDATE runtime_dispatch SET lease_until = 0 WHERE status = 'running'"]);
+      sqliteExec(database, "UPDATE runtime_dispatch SET lease_until = 0 WHERE status = 'running'");
     }
     peer.completeCrash();
     server = spawnServer('config', PORT, environment).server;
@@ -465,7 +462,7 @@ async function main(): Promise<void> {
     server.kill('SIGKILL');
     await cancelKilled;
     for (const database of dispatchDatabases(storage)) {
-      execFileSync('sqlite3', [database, "UPDATE runtime_dispatch SET lease_until = 0 WHERE status IN ('running', 'awaiting')"]);
+      sqliteExec(database, "UPDATE runtime_dispatch SET lease_until = 0 WHERE status IN ('running', 'awaiting')");
     }
     server = spawnServer('config', PORT, environment).server;
     await waitForPort(PORT, 180_000, server);

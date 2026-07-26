@@ -193,7 +193,7 @@ const obligations: Obligation[] = [
   { id: 'D7-12b', stage: '7 resource persistence', behavior: 'a replacement process ignores stale retained Session columns once the canonical aggregate exists', scenario: 'managed_session_legacy_upgrade' },
   { id: 'D7-13', stage: '7 resource persistence', behavior: 'Postgres Memory behavior config publishes with CAS and is shared across nodes', scenario: 'resource_plane_postgres' },
   { id: 'D7-13a', stage: '7 resource persistence', behavior: 'Postgres legacy Memory identities migrate without inferring ownership or replacing canonical history', scenario: 'resource_plane_postgres' },
-  { id: 'D7-14', stage: '7 resource persistence', behavior: 'no-login/no-storage mode composes the volatile File, Memory, Skill, and lifecycle adapters under one explicit Workspace', scenario: 'resource_ephemeral' },
+  { id: 'D7-14', stage: '7 resource persistence', behavior: 'local no-login mode composes isolated embedded File, Memory, Skill, and lifecycle adapters under one explicit Workspace', scenario: 'resource_ephemeral' },
   { id: 'D7-15', stage: '7 resource persistence', behavior: 'one Memory API request atomically applies content plus rename-replace, while invalid paths and stale CAS leave head and history untouched', scenario: 'resource_ephemeral' },
   { id: 'D7-16', stage: '7 resource persistence', behavior: 'File, MemoryStore, and Skill adapters reject a missing trusted Workspace instead of inferring one from the Host', scenario: 'resource_scope_boundary' },
   { id: 'D7-17', stage: '7 resource persistence', behavior: 'persisted Prepared and Releasing Session resource generations converge after process death', scenario: 'resource_activation_recovery' },
@@ -255,6 +255,26 @@ const obligations: Obligation[] = [
 
 function docker(...args: string[]): string {
   return execFileSync('docker', args, { cwd: ROOT, encoding: 'utf8' }).trim();
+}
+
+function unavailableOptionalInfrastructure(scenario: Scenario): string | undefined {
+  if (process.env.AWAKEN_E2E_ALLOW_MISSING_CONTAINER_ENGINES !== '1') return undefined;
+
+  // Infrastructure cause graph: C1 scenario needs an external engine; C2 the
+  // engine is installed; C3 the developer explicitly allows a local gap.
+  // Only C1+!C2+C3 skips execution, and the scenario remains absent from `passed`
+  // so its obligations are reported as uncovered. Default CI (!C3) stays strict.
+  //
+  // | Rule | engine needed | available | allow gap | Result |
+  // |---|---|---|---|---|
+  // | I1 | T | T | any | run and count only on success |
+  // | I2 | T | F | F | run/fail strict |
+  // | I3 | T | F | T | explicit uncovered gap; continue |
+  if (scenario.id === 'container_podman') {
+    const probe = spawnSync('podman', ['version'], { cwd: ROOT, stdio: 'ignore' });
+    if (probe.status !== 0) return 'Podman runtime is unavailable';
+  }
+  return undefined;
 }
 
 async function startPostgres(): Promise<{ container: string; url: string }> {
@@ -344,6 +364,11 @@ async function main(): Promise<void> {
   try {
     for (const [index, scenario] of scenarios.entries()) {
       console.log(`\n[stage-e2e ${index + 1}/${scenarios.length}] ${scenario.id}`);
+      const infrastructureGap = unavailableOptionalInfrastructure(scenario);
+      if (infrastructureGap) {
+        console.log(`  explicit infrastructure gap: ${infrastructureGap}`);
+        continue;
+      }
       const port = await nextStagePort();
       const workerPort = await nextStagePort();
       const configPort = await nextStagePort();

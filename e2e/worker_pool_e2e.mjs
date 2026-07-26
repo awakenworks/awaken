@@ -3,12 +3,14 @@
 //   C2 coordinator exits pre-ready   -> E2 readiness fails with process status
 //   C3 coordinator has no local pool -> E3 only the remote worker can claim
 //   C4 remote worker is connected    -> E4 drive and commit exactly one reply
+//   C5 shutdown is sequential        -> E5 worker/coordinator long-poll deadlock
 //
 // Decision table:
-//   Rule  C1  C2  C3  C4  Expected
-//   T1    Y   N   -   -   E1
-//   T2    -   Y   -   -   E2
-//   T3    -   N   Y   Y   E3 + E4
+//   Rule  C1  C2  C3  C4  C5  Expected
+//   T1    Y   N   -   -   -   E1
+//   T2    -   Y   -   -   -   E2
+//   T3    -   N   Y   Y   -   E3 + E4
+//   T4    -   N   Y   Y   N   stop both concurrently; no E5
 //
 // The cross-node db-less worker, POOL-DRIVEN, over two real processes.
 //
@@ -102,8 +104,14 @@ async function main() {
     assert.equal(replies.length, 1, 'the remote worker committed exactly one assistant reply');
     pass('pool-driven cross-node worker: a coordinator-only server enqueued a run, a db-less worker claimed/drove/committed it, the reply read back from the server');
   } finally {
-    if (worker) await stopServer(worker);
-    await stopServer(server);
+    // The remote worker may have an in-flight long poll against the coordinator.
+    // Closing the worker first can therefore wait for the still-live coordinator,
+    // while closing the coordinator first can wait for that same client request.
+    // Trigger both graceful shutdowns before awaiting either side.
+    await Promise.all([
+      worker ? stopServer(worker) : Promise.resolve(),
+      stopServer(server),
+    ]);
   }
 
   console.log('\nE2E PASS: the full pool-driven cross-node db-less worker path works over two real processes.');

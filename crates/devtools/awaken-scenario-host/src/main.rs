@@ -191,6 +191,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 /// flush below. Background/queued pool work not tied to a live request is not
 /// covered here; it relies on lease-expiry recovery on the next start.
 async fn shutdown_signal() {
+    if std::env::var("AWAKEN_E2E_SHUTDOWN_ON_STDIN_EOF").as_deref() == Ok("1") {
+        use tokio::io::{AsyncReadExt, stdin};
+
+        let mut byte = [0_u8; 1];
+        let _ = stdin().read(&mut byte).await;
+        return;
+    }
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};

@@ -3,6 +3,11 @@
 // Covers HTTP preflight, auth/session lifecycle, notification 202, protocol
 // version validation, JSON and SSE final envelopes, ordered progress, and the
 // standing tools/list_changed stream from one real axum process.
+//
+// Shutdown decision table (the subprocess contract is part of this E2E):
+// | stdin EOF | server terminal | expected result |
+// | true      | false           | graceful HTTP drain and zero exit |
+// | any       | true            | cleanup observes the existing exit |
 
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';

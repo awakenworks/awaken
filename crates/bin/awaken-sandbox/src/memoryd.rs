@@ -14,6 +14,8 @@
 //! (emptyDir) for an ephemeral scratch store. The env contract mirrors exactly what
 //! `awaken-sandbox-container`'s `pod_plan` sets on the `memoryd-<i>` sidecar:
 //! `AWAKEN_MEMORY_STORE_ID`, `AWAKEN_MOUNT_PATH`, `AWAKEN_MEMORY_MODE`.
+//! Local process supervisors may additionally set
+//! `AWAKEN_MEMORY_SHUTDOWN_ON_STDIN_EOF=1` for a portable graceful-stop channel.
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -90,21 +92,27 @@ pub async fn serve(cfg: &MemorydConfig, shutdown: impl Future<Output = ()>) -> R
 
     // FUSE only when both requested AND the node exposes it; otherwise fall back to the
     // portable copy path (never silently mount nothing, never hard-fail a locked node).
-    if cfg.want_fuse && !fuse_available() {
+    let fuse_available = fuse_available();
+    if cfg.want_fuse && !fuse_available {
         eprintln!(
             "awaken-sandbox memoryd: FUSE requested but /dev/fuse + fusermount are unavailable — \
              falling back to copy mode"
         );
     }
-    if cfg.want_fuse && fuse_available() {
+    if should_serve_fuse(cfg.want_fuse, fuse_available) {
         serve_fuse(fs, &cfg.store_id, cfg.mount_path.clone(), shutdown).await
     } else {
         serve_copy(fs.as_ref(), &cfg.store_id, &cfg.mount_path, shutdown).await
     }
 }
 
+fn should_serve_fuse(want_fuse: bool, fuse_available: bool) -> bool {
+    want_fuse && fuse_available
+}
+
 /// FUSE realization: mount the store live at `mount_path`, hold until `shutdown`,
 /// then drain open fds and unmount.
+#[cfg(target_os = "linux")]
 async fn serve_fuse(
     fs: Arc<dyn MemoryRepository>,
     store_id: &str,
@@ -127,6 +135,19 @@ async fn serve_fuse(
     handle.unmount();
     eprintln!("awaken-sandbox memoryd: unmounted store {store_id}");
     Ok(())
+}
+
+// The copy realization is deliberately portable. Keep a non-Linux definition so
+// enabling the `memoryd` feature never requires Linux-only exports merely to build;
+// `fuse_available()` makes this branch unreachable through `serve`.
+#[cfg(not(target_os = "linux"))]
+async fn serve_fuse(
+    _fs: Arc<dyn MemoryRepository>,
+    _store_id: &str,
+    _mount_path: PathBuf,
+    _shutdown: impl Future<Output = ()>,
+) -> Result<(), String> {
+    Err("FUSE realization is unavailable on this platform".to_string())
 }
 
 /// Copy realization: materialize the store to files, hold until `shutdown`, then
@@ -168,6 +189,13 @@ pub async fn serve_copy(
 /// SIGINT (a developer's foreground stop), so the copy harvest / FUSE unmount runs
 /// before exit rather than being lost to an abrupt kill.
 async fn shutdown_signal() {
+    if std::env::var("AWAKEN_MEMORY_SHUTDOWN_ON_STDIN_EOF").as_deref() == Ok("1") {
+        use tokio::io::{AsyncReadExt, stdin};
+
+        let mut byte = [0_u8; 1];
+        let _ = stdin().read(&mut byte).await;
+        return;
+    }
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
@@ -186,5 +214,27 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_serve_fuse;
+
+    #[test]
+    fn fuse_selection_cause_graph_decision_table() {
+        // Cause graph: C1 FUSE requested, C2 FUSE available. Only C1 AND C2
+        // selects the live mount; every other rule must select portable copy.
+        //
+        // | Rule | C1 requested | C2 available | Result |
+        // |---|---|---|---|
+        // | M1 | F | F | copy |
+        // | M2 | F | T | copy |
+        // | M3 | T | F | copy + fallback diagnostic |
+        // | M4 | T | T | FUSE |
+        assert!(!should_serve_fuse(false, false), "M1");
+        assert!(!should_serve_fuse(false, true), "M2");
+        assert!(!should_serve_fuse(true, false), "M3");
+        assert!(should_serve_fuse(true, true), "M4");
     }
 }
