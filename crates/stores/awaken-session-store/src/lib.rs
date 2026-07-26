@@ -13,6 +13,7 @@
 //! values, per the port's contract (G3).
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
@@ -25,13 +26,14 @@ use awaken_session_contract::{
 mod extraction;
 mod row_codec;
 use row_codec::{EncodedSessionRow, decode};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use sqlx::Row;
 use sqlx::postgres::PgPool;
 
 /// The session store's table namespace / bundle prefix: the table is
 /// `managed_session`, the ledger `managed_schema_migrations`.
 const NS: &str = "managed";
+const SQLITE_WRITE_WAIT: Duration = Duration::from_secs(30);
 
 /// The versioned schema bundle (ADR-0043 scoped migration). One migration: the
 /// `managed_session` row. All columns are portable — the JSON payloads live in
@@ -196,6 +198,11 @@ impl SqliteManagedSessionRepository {
     }
 
     fn from_connection(conn: Connection) -> Result<Self, String> {
+        // Embedded compositions intentionally colocate several aggregate stores
+        // in one WAL database. A busy timeout is connection-local, so the
+        // bootstrap connection cannot configure this repository's connection.
+        conn.busy_timeout(SQLITE_WRITE_WAIT)
+            .map_err(|e| e.to_string())?;
         let bundle = session_bundle().map_err(|e| e.to_string())?;
         awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
             .map_err(|e| e.to_string())?
@@ -229,7 +236,12 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
             ));
         }
         let mut conn = self.conn.lock().map_err(storage)?;
-        let tx = conn.transaction().map_err(storage)?;
+        // Acquire the SQLite writer reservation before reading the expected
+        // revision. A deferred read-then-write transaction can otherwise fail
+        // its upgrade immediately when another aggregate writes concurrently.
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage)?;
         if let Some((stored_hash, committed_revision)) = tx
             .query_row(
                 "SELECT payload_hash, committed_revision FROM managed_session_idempotency
@@ -315,7 +327,9 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
             .map_err(|error| SessionRepositoryError::InvalidMutation(error.to_string()))?;
         let session_id = mutation.payload.session_id().to_string();
         let mut conn = self.conn.lock().map_err(storage)?;
-        let tx = conn.transaction().map_err(storage)?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage)?;
         if let Some((stored_hash, committed_revision)) = tx
             .query_row(
                 "SELECT payload_hash, committed_revision FROM managed_session_idempotency
@@ -1032,6 +1046,51 @@ mod tests {
     };
 
     use super::*;
+
+    /// Shared-file write-admission causal graph:
+    /// another aggregate owns the SQLite writer reservation × wait budget.
+    ///
+    /// | Rule | competing writer | wait budget | Result |
+    /// |---|---|---|---|
+    /// | W1 | no | any | commit immediately |
+    /// | W2 | yes | sufficient | wait, then commit once |
+    /// | W3 | yes | exhausted | storage failure |
+    ///
+    /// W1 is covered by every SQLite repository test; this case protects W2.
+    /// SQLite itself owns W3 and returns the typed storage failure after the
+    /// configured bound, so the repository does not add a parallel retry loop.
+    #[test]
+    fn sqlite_create_waits_for_a_competing_aggregate_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shared.db");
+        let path = path.to_string_lossy().to_string();
+        let repo = Arc::new(SqliteManagedSessionRepository::open(&path).unwrap());
+        let mut blocker = Connection::open(&path).unwrap();
+        let blocker_tx = blocker
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let writer = {
+            let repo = repo.clone();
+            std::thread::spawn(move || {
+                started_tx.send(()).unwrap();
+                tokio::runtime::Runtime::new()
+                    .unwrap()
+                    .block_on(create_fixture(
+                        repo.as_ref(),
+                        "default",
+                        sample("sesn_waiting_writer"),
+                        Vec::new(),
+                    ))
+            })
+        };
+        started_rx.recv().unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        blocker_tx.commit().unwrap();
+
+        let created = writer.join().unwrap();
+        assert_eq!(created.session_id, "sesn_waiting_writer", "W2");
+    }
 
     fn sample(id: &str) -> PersistedSession {
         let mut metadata = BTreeMap::new();
