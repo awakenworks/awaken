@@ -15,6 +15,8 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::agent::{AgentSkill, AgentTool, UrlMcpServer};
+
 /// The Anthropic error envelope: `{ "type": "error", "error": { "type", "message" } }`.
 /// The SDK parses this shape to populate `err.error.type` / `err.error.message`;
 /// `error.type` is the status-keyed discriminator (`not_found_error`,
@@ -91,11 +93,11 @@ pub struct AgentRefObject {
     #[serde(default, deserialize_with = "deserialize_double_option")]
     pub system: Option<Option<String>>,
     #[serde(default, deserialize_with = "deserialize_double_option")]
-    pub tools: Option<Option<Vec<Value>>>,
+    pub tools: Option<Option<Vec<AgentTool>>>,
     #[serde(default, deserialize_with = "deserialize_double_option")]
-    pub mcp_servers: Option<Option<Vec<Value>>>,
+    pub mcp_servers: Option<Option<Vec<UrlMcpServer>>>,
     #[serde(default, deserialize_with = "deserialize_double_option")]
-    pub skills: Option<Option<Vec<Value>>>,
+    pub skills: Option<Option<Vec<AgentSkill>>>,
     /// Outer `None` = `model` omitted; `Some(None)` = `model: null`; `Some(Some(_))` =
     /// a value. Only meaningful when `kind` is `agent_with_overrides`.
     #[serde(default, deserialize_with = "deserialize_double_option")]
@@ -899,6 +901,51 @@ mod tests {
             serde_json::from_str(r#"{"id":"a","type":"agent_with_overrides","model":null}"#)
                 .unwrap();
         assert!(matches!(cleared.model_override(), ModelOverride::Cleared));
+    }
+
+    #[test]
+    fn agent_overrides_reuse_the_typed_agent_composite_contract() {
+        // Causal graph:
+        // known SDK discriminator + exact fields -> typed override -> normalization
+        // unknown discriminator / misspelled field -> admission error -> no Session
+        //
+        // Decision table:
+        // | tool/skill/MCP shape                    | admission |
+        // | all known tags and exact fields         | accept    |
+        // | unknown tag                             | reject    |
+        // | known tag with misspelled required key  | reject    |
+        let valid = serde_json::json!({
+            "id": "assistant",
+            "type": "agent_with_overrides",
+            "mcp_servers": [{"type":"url", "name":"docs", "url":"https://mcp.test"}],
+            "tools": [{"type":"mcp_toolset", "mcp_server_name":"docs"}],
+            "skills": [{"type":"custom", "skill_id":"skill_1", "version":"2"}]
+        });
+        let parsed: AgentRef = serde_json::from_value(valid).expect("typed composites parse");
+        let AgentRef::Object(object) = parsed else {
+            panic!("object form retained")
+        };
+        assert!(matches!(
+            object.tools.as_ref(),
+            Some(Some(tools)) if matches!(tools[0], AgentTool::McpToolset { .. })
+        ));
+
+        for invalid in [
+            serde_json::json!({
+                "id":"a", "type":"agent_with_overrides",
+                "skills":[{"type":"unknown", "skill_id":"s"}]
+            }),
+            serde_json::json!({
+                "id":"a", "type":"agent_with_overrides",
+                "mcp_servers":[{"type":"url", "name":"s", "uri":"https://mcp.test"}]
+            }),
+            serde_json::json!({
+                "id":"a", "type":"agent_with_overrides",
+                "tools":[{"type":"mcp_toolset", "mcp_server":"s"}]
+            }),
+        ] {
+            assert!(serde_json::from_value::<AgentRef>(invalid).is_err());
+        }
     }
 
     #[test]

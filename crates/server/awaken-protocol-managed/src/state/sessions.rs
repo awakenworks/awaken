@@ -493,12 +493,16 @@ impl ManagedState {
         {
             let declared = mcp_servers
                 .iter()
-                .filter_map(|v| v.get("name").and_then(|n| n.as_str()))
+                .map(|server| server.name.as_str())
                 .collect::<std::collections::BTreeSet<_>>();
             let toolset_names = tools
                 .iter()
-                .filter(|v| v.get("type").and_then(|t| t.as_str()) == Some("mcp_toolset"))
-                .filter_map(|v| v.get("mcp_server_name").and_then(|n| n.as_str()))
+                .filter_map(|tool| match tool {
+                    crate::types::agent::AgentTool::McpToolset {
+                        mcp_server_name, ..
+                    } => Some(mcp_server_name.as_str()),
+                    _ => None,
+                })
                 .collect::<std::collections::BTreeSet<_>>();
             if declared != toolset_names {
                 return Err(StateError::Run(RunError::bad_request(
@@ -507,27 +511,17 @@ impl ManagedState {
             }
         }
         let agent_mcp_override = match &req.agent {
-            AgentRef::Object(override_ref) => override_ref
-                .mcp_servers
-                .as_ref()
-                .map(|servers| {
-                    servers
-                        .as_deref()
-                        .unwrap_or_default()
-                        .iter()
-                        .cloned()
-                        .map(|server| {
-                            serde_json::from_value::<crate::types::McpServer>(server).map_err(
-                                |error| {
-                                    StateError::Run(RunError::bad_request(format!(
-                                        "invalid agent MCP server override: {error}"
-                                    )))
-                                },
-                            )
-                        })
-                        .collect::<Result<Vec<_>, _>>()
-                })
-                .transpose()?,
+            AgentRef::Object(override_ref) => override_ref.mcp_servers.as_ref().map(|servers| {
+                servers
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|server| crate::types::McpServer {
+                        name: server.name.clone(),
+                        url: server.url.clone(),
+                    })
+                    .collect::<Vec<_>>()
+            }),
             AgentRef::Id(_) => None,
         };
         let mcp_drafts = self
@@ -830,10 +824,30 @@ impl ManagedState {
                         "cannot clear tools while skills are configured",
                     )));
                 }
-                session.agent.tools = tools.clone().unwrap_or_default();
+                session.agent.tools = tools
+                    .as_ref()
+                    .map(|tools| {
+                        tools
+                            .iter()
+                            .map(|tool| {
+                                serde_json::to_value(tool).expect("typed AgentTool serializes")
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
             }
             if let Some(skills) = &override_ref.skills {
-                session.agent.skills = skills.clone().unwrap_or_default();
+                session.agent.skills = skills
+                    .as_ref()
+                    .map(|skills| {
+                        skills
+                            .iter()
+                            .map(|skill| {
+                                serde_json::to_value(skill).expect("typed AgentSkill serializes")
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
             }
         }
         persisted.agent_tools = Some(session.agent.tools.clone());
