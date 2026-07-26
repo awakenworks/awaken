@@ -156,9 +156,11 @@ impl WorkerResourcePlane {
 
 async fn shared_resource_wiring(
     credentials: Option<awaken_control::InferenceMaterializationStores>,
+    resource_url: Option<&str>,
+    admin_backend: Option<&awaken_control::StoreBackend>,
 ) -> Result<Option<WorkerResourcePlane>, Box<dyn std::error::Error + Send + Sync>> {
-    let ports = awaken_server::shared_worker_resource_plane_from_env().await?;
-    let validator = awaken_control::open_shared_resource_validator_from_env().await?;
+    let ports = awaken_server::shared_worker_resource_plane(resource_url).await?;
+    let validator = awaken_control::open_shared_resource_validator(admin_backend).await?;
     match (ports, validator) {
         (None, None) => Ok(None),
         (Some(ports), Some(validator)) => {
@@ -179,6 +181,25 @@ async fn shared_resource_wiring(
     }
 }
 
+async fn shared_resource_wiring_from_env(
+    credentials: Option<awaken_control::InferenceMaterializationStores>,
+) -> Result<Option<WorkerResourcePlane>, Box<dyn std::error::Error + Send + Sync>> {
+    let resource_url = std::env::var("AWAKEN_RESOURCE_DATABASE_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let admin_value = std::env::var("AWAKEN_ADMIN_DB")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let admin_backend = admin_value.map(|value| {
+        if value.starts_with("postgres://") || value.starts_with("postgresql://") {
+            awaken_control::StoreBackend::Postgres(value)
+        } else {
+            awaken_control::StoreBackend::Sqlite(value.into())
+        }
+    });
+    shared_resource_wiring(credentials, resource_url.as_deref(), admin_backend.as_ref()).await
+}
+
 fn shared_credential_backend(value: Option<&str>) -> bool {
     value
         .is_some_and(|value| value.starts_with("postgres://") || value.starts_with("postgresql://"))
@@ -190,6 +211,14 @@ struct WorkerProcessConfig {
     admin_listen: Option<String>,
     graceful_drain: std::time::Duration,
     repository_credentials: bool,
+}
+
+/// Product-command presentation and manifest values resolved at its one config
+/// boundary.
+pub struct WorkerRunOptions {
+    pub admin_listen: Option<String>,
+    pub drain_grace: std::time::Duration,
+    pub manifest: StandardManifestConfig,
 }
 
 impl WorkerProcessConfig {
@@ -762,6 +791,45 @@ pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error + Send 
         .await
 }
 
+/// Run a Worker from the product command's already-resolved deployment and
+/// store configuration. This path performs no deployment rediscovery.
+pub async fn run_with_config(
+    upstream: &str,
+    deployment: awaken_runtime_host::DeploymentConfig,
+    control: awaken_control::ControlStoreConfig,
+    resource_url: Option<String>,
+    seal_key: [u8; 32],
+    options: WorkerRunOptions,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let repository_credentials = matches!(
+        &control.credential,
+        awaken_control::StoreBackend::Postgres(_)
+    );
+    let process = WorkerProcessConfig {
+        deployment,
+        manifest: options.manifest,
+        admin_listen: options.admin_listen,
+        graceful_drain: options.drain_grace,
+        repository_credentials,
+    };
+    let stores = awaken_control::open_inference_materialization_stores(&control, &seal_key).await;
+    let resource_credentials = process.repository_credentials.then(|| stores.clone());
+    let resources = shared_resource_wiring(
+        resource_credentials,
+        resource_url.as_deref(),
+        Some(&control.admin),
+    )
+    .await?;
+    let mut builder = WorkerNodeBuilder::new(WorkerUpstream::new(upstream))
+        .with_process_config(process)
+        .with_credential_stores(stores.credentials, stores.secrets)
+        .with_standard_manifest(Default::default());
+    if let Some(resources) = resources {
+        builder = builder.with_resource_plane(resources);
+    }
+    builder.build()?.run_until_shutdown().await
+}
+
 async fn build_standard_worker(
     upstream: WorkerUpstream,
 ) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
@@ -776,7 +844,7 @@ async fn build_worker_with_materialization_stores(
     stores: awaken_control::InferenceMaterializationStores,
 ) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
     let resource_credentials = process.repository_credentials.then(|| stores.clone());
-    let resources = shared_resource_wiring(resource_credentials).await?;
+    let resources = shared_resource_wiring_from_env(resource_credentials).await?;
     let mut builder = WorkerNodeBuilder::new(upstream)
         .with_process_config(process)
         .with_credential_stores(stores.credentials, stores.secrets)
@@ -810,7 +878,7 @@ async fn build_secretless_worker(
     process: WorkerProcessConfig,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
 ) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
-    let resources = shared_resource_wiring(None).await?;
+    let resources = shared_resource_wiring_from_env(None).await?;
     let mut builder = WorkerNodeBuilder::new(upstream)
         .with_process_config(process)
         .with_inference_materializer(materializer)
@@ -906,15 +974,19 @@ impl WorkerNode {
             .map(|resources| resources.validator.clone());
         let managed_credential_materializer = self.credential_materializer.clone();
         let host = match self.resources {
-            Some(resources) => SharedHost::new_with_resource_plane(
+            Some(resources) => SharedHost::new_with_resource_plane_and_deployment(
                 Arc::new(NoModelConfiguredExecutor),
                 "worker",
                 resources.ports,
+                self.deployment,
             ),
-            None => SharedHost::new(Arc::new(NoModelConfiguredExecutor), "worker"),
+            None => SharedHost::new_with_deployment(
+                Arc::new(NoModelConfiguredExecutor),
+                "worker",
+                self.deployment,
+            ),
         };
         let mut host = host
-            .with_deployment_config(self.deployment)
             .with_worker_upstream(upstream)
             .with_dispatch_store(dispatch_store)
             .with_remote_attempt_executor(awaken_server::a2a_attempt_executor());

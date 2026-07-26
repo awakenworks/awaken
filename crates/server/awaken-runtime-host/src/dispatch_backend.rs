@@ -11,15 +11,6 @@ use awaken_run_ingress::{AnyDispatchStore, WakeSignal};
 
 use crate::host::HostError;
 
-/// The dispatch claim owner for this process. Must be unique per process across a
-/// fleet sharing one Postgres queue: the lease is owner-scoped, so a shared owner
-/// lets peers renew each other's leases and breaks single-owner-per-run
-/// (ADR-0019/0024). `AWAKEN_DISPATCH_OWNER` overrides; the default
-/// `<hostname>-<pid>` is distinct per process and per node.
-pub(crate) fn dispatch_owner() -> String {
-    crate::deployment_config::DeploymentConfig::from_env().dispatch_owner
-}
-
 /// The lease-renewal heartbeat cadence for the standing daemon: a third of the
 /// 30s default lease, so a renewal always lands before expiry (ADR-0024). Without
 /// it a long run in a multi-node fleet would be reclaimed by a peer mid-flight.
@@ -64,6 +55,16 @@ static SHARED_SQLITE_DISPATCH: std::sync::OnceLock<Arc<AnyDispatchStore>> =
 /// non-`Send` sqlx connect future never enters the run loop's future. Idempotent:
 /// a second call keeps the first pool.
 pub async fn init_shared_postgres_dispatch(url: &str) -> Result<(), String> {
+    let deployment = crate::deployment_config::DeploymentConfig::from_env();
+    init_shared_postgres_dispatch_with_config(url, &deployment).await
+}
+
+/// Initialize the process-shared Postgres dispatch from an explicitly resolved
+/// deployment snapshot.
+pub async fn init_shared_postgres_dispatch_with_config(
+    url: &str,
+    deployment: &crate::DeploymentConfig,
+) -> Result<(), String> {
     if SHARED_POSTGRES_DISPATCH.get().is_some() {
         return Ok(());
     }
@@ -74,14 +75,14 @@ pub async fn init_shared_postgres_dispatch(url: &str) -> Result<(), String> {
     // Either way the durable STORE stays Postgres; the wake is a best-effort hint and
     // the poll fallback stays authoritative. With no selection the pool keeps its
     // in-process `LocalWakeSignal` + poll, so SQLite/single-node Postgres are unaffected.
-    let store = match dispatch_wake_kind() {
+    let store = match dispatch_wake_kind(deployment) {
         DispatchWake::PgNotify => {
             let (store, wake) =
-                AnyDispatchStore::connect_postgres_with_wake(url, &dispatch_wake_channel()).await?;
+                AnyDispatchStore::connect_postgres_with_wake(url, &deployment.wake_channel).await?;
             let _ = SHARED_PG_WAKE.set(wake);
             Arc::new(store)
         }
-        DispatchWake::Nats => connect_postgres_with_nats_wake(url).await?,
+        DispatchWake::Nats => connect_postgres_with_nats_wake(url, deployment).await?,
         DispatchWake::None => Arc::new(AnyDispatchStore::connect_postgres(url).await?),
     };
     let _ = SHARED_POSTGRES_DISPATCH.set(store);
@@ -92,12 +93,16 @@ pub async fn init_shared_postgres_dispatch(url: &str) -> Result<(), String> {
 /// url from `AWAKEN_NATS_URL` and the subject from `AWAKEN_DISPATCH_WAKE_CHANNEL`,
 /// then publishes the ready wake into [`SHARED_NATS_WAKE`].
 #[cfg(feature = "nats")]
-async fn connect_postgres_with_nats_wake(url: &str) -> Result<Arc<AnyDispatchStore>, String> {
-    let nats_url = crate::deployment_config::DeploymentConfig::from_env()
+async fn connect_postgres_with_nats_wake(
+    url: &str,
+    deployment: &crate::DeploymentConfig,
+) -> Result<Arc<AnyDispatchStore>, String> {
+    let nats_url = deployment
         .nats_url
+        .as_deref()
         .ok_or_else(|| "AWAKEN_DISPATCH_WAKE=nats requires AWAKEN_NATS_URL".to_string())?;
     let (store, wake) =
-        AnyDispatchStore::connect_postgres_with_nats_wake(url, &nats_url, &dispatch_wake_channel())
+        AnyDispatchStore::connect_postgres_with_nats_wake(url, nats_url, &deployment.wake_channel)
             .await?;
     let _ = SHARED_NATS_WAKE.set(wake);
     Ok(Arc::new(store))
@@ -107,18 +112,15 @@ async fn connect_postgres_with_nats_wake(url: &str) -> Result<Arc<AnyDispatchSto
 /// is a hard configuration error: fail loudly at startup rather than silently degrade to
 /// poll-only (which would look identical to a working wake but never nudge a peer).
 #[cfg(not(feature = "nats"))]
-async fn connect_postgres_with_nats_wake(_url: &str) -> Result<Arc<AnyDispatchStore>, String> {
+async fn connect_postgres_with_nats_wake(
+    _url: &str,
+    _deployment: &crate::DeploymentConfig,
+) -> Result<Arc<AnyDispatchStore>, String> {
     Err(
         "AWAKEN_DISPATCH_WAKE=nats requested but binary built without --features nats \
          (rebuild awaken-server with --features nats to enable the NATS wake)"
             .to_string(),
     )
-}
-
-/// The cross-node wake channel/subject for the served pool. Shared by both the
-/// `pg_notify` channel and the NATS subject (default `awaken_dispatch_wake`).
-fn dispatch_wake_channel() -> String {
-    crate::deployment_config::DeploymentConfig::from_env().wake_channel
 }
 
 /// The cross-node wake backend selected by `AWAKEN_DISPATCH_WAKE`, if any.
@@ -132,9 +134,9 @@ enum DispatchWake {
 }
 
 /// Which cross-node wake, if any, `AWAKEN_DISPATCH_WAKE` selects for the served pool.
-fn dispatch_wake_kind() -> DispatchWake {
+fn dispatch_wake_kind(deployment: &crate::DeploymentConfig) -> DispatchWake {
     use crate::deployment_config::Wake;
-    match crate::deployment_config::DeploymentConfig::from_env().wake {
+    match deployment.wake {
         Wake::PgNotify => DispatchWake::PgNotify,
         Wake::Nats => DispatchWake::Nats,
         Wake::None => DispatchWake::None,
@@ -176,10 +178,11 @@ pub(crate) fn shared_dispatch_wake() -> Option<Arc<dyn WakeSignal>> {
 /// single queue file `store_dir/dispatch.db` (survives a restart), or a private
 /// in-memory queue when no store dir is set. Either way the concrete type is
 /// `AnyDispatchStore`, so the ingress keeps its operational verbs reachable.
-pub(crate) fn shared_durable_store(
+pub(crate) fn shared_durable_store_for(
+    deployment: &crate::DeploymentConfig,
     store_dir: Option<&Path>,
 ) -> Result<Arc<AnyDispatchStore>, HostError> {
-    match crate::deployment_config::DeploymentConfig::from_env().dispatch_backend {
+    match deployment.dispatch_backend {
         crate::deployment_config::DispatchBackend::Postgres => {
             SHARED_POSTGRES_DISPATCH.get().cloned().ok_or_else(|| {
                 HostError::internal(
@@ -224,7 +227,9 @@ mod nats_feature_gate_tests {
         // The no-feature variant returns the error before touching Postgres, so the URL
         // is never dialed — a bad DSN here is fine. (`AnyDispatchStore` is not `Debug`, so
         // match rather than `expect_err`.)
-        let err = match connect_postgres_with_nats_wake("postgres://ignored/db").await {
+        let deployment = crate::DeploymentConfig::ephemeral();
+        let err = match connect_postgres_with_nats_wake("postgres://ignored/db", &deployment).await
+        {
             Ok(_) => panic!("nats wake without --features nats must fail closed, got Ok"),
             Err(e) => e,
         };

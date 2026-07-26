@@ -128,10 +128,18 @@ pub fn embedded_resource_plane(root: &std::path::Path) -> awaken_runtime_host::R
 /// resource-ineligible; an explicitly configured non-Postgres value is rejected.
 pub async fn shared_worker_resource_plane_from_env()
 -> Result<Option<awaken_runtime_host::ResourcePlanePorts>, String> {
-    let Some(url) = std::env::var("AWAKEN_RESOURCE_DATABASE_URL")
+    let url = std::env::var("AWAKEN_RESOURCE_DATABASE_URL")
         .ok()
-        .filter(|value| !value.trim().is_empty())
-    else {
+        .filter(|value| !value.trim().is_empty());
+    shared_worker_resource_plane(url.as_deref()).await
+}
+
+/// Open a remote Worker's shared resource ports from an explicitly resolved
+/// backend URL. `None` means that Worker is resource-ineligible.
+pub async fn shared_worker_resource_plane(
+    url: Option<&str>,
+) -> Result<Option<awaken_runtime_host::ResourcePlanePorts>, String> {
+    let Some(url) = url else {
         return Ok(None);
     };
     if !(url.starts_with("postgres://") || url.starts_with("postgresql://")) {
@@ -142,22 +150,22 @@ pub async fn shared_worker_resource_plane_from_env()
     }
     Ok(Some(awaken_runtime_host::ResourcePlanePorts::new(
         Arc::new(
-            awaken_file_store::postgres::PgFileStore::connect(&url)
+            awaken_file_store::postgres::PgFileStore::connect(url)
                 .await
                 .map_err(|error| format!("connect shared FileStore: {error}"))?,
         ),
         Arc::new(
-            awaken_memory_store::PostgresMemoryRepository::connect(&url)
+            awaken_memory_store::PostgresMemoryRepository::connect(url)
                 .await
                 .map_err(|error| format!("connect shared MemoryRepository: {error}"))?,
         ),
         Arc::new(
-            awaken_skill_store::PgSkillStore::connect(&url)
+            awaken_skill_store::PgSkillStore::connect(url)
                 .await
                 .map_err(|error| format!("connect shared SkillStore: {error}"))?,
         ),
         Arc::new(
-            awaken_resource_store::PostgresResourceStore::connect(&url)
+            awaken_resource_store::PostgresResourceStore::connect(url)
                 .await
                 .map_err(|error| format!("connect shared resource lifecycle store: {error}"))?,
         ),

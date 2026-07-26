@@ -381,13 +381,7 @@ pub(crate) fn plan_commit(
 /// dir = nothing durable). Session-id minting probes through this so a
 /// candidate id is never materialized as a side effect (a prematurely built
 /// session context would lack the session's agent config and MCP tools).
-pub(crate) fn durable_thread_exists(store_dir: Option<&std::path::Path>, thread: &str) -> bool {
-    use crate::deployment_config::DeploymentConfig;
-    let store = DeploymentConfig::from_env().store;
-    durable_thread_exists_with_store(store, store_dir, thread)
-}
-
-fn durable_thread_exists_with_store(
+pub(crate) fn durable_thread_exists_with_store(
     store: crate::deployment_config::StoreKind,
     store_dir: Option<&std::path::Path>,
     thread: &str,

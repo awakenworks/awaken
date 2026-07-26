@@ -136,6 +136,19 @@ struct ManagementModelWiring {
     materializer: Option<Arc<dyn awaken_runtime_host::InferenceExecutorMaterializer>>,
 }
 
+#[derive(Default)]
+struct AssemblyOverrides {
+    deployment: Option<awaken_runtime_host::DeploymentConfig>,
+    org_id: Option<String>,
+    mcp_bearer_token: Option<String>,
+    resolved: bool,
+}
+
+type IdentityWiring = (
+    Option<Arc<ManagementAuthz>>,
+    Option<Arc<RemoteManagementAuthz>>,
+);
+
 struct ExactHostModelPublicationResolver {
     binding: awaken_runtime_contract::resolved::ModelBinding,
 }
@@ -239,31 +252,31 @@ impl ResourcePlaneStores {
         }
     }
 
-    async fn open(backend: config::ResourcePlaneStoreBackend) -> Self {
+    async fn open(backend: config::ResourcePlaneStoreBackend) -> Result<Self, String> {
         match backend {
-            config::ResourcePlaneStoreBackend::Embedded(root) => Self::embedded(&root),
-            config::ResourcePlaneStoreBackend::Postgres(url) => Self {
+            config::ResourcePlaneStoreBackend::Embedded(root) => Ok(Self::embedded(&root)),
+            config::ResourcePlaneStoreBackend::Postgres(url) => Ok(Self {
                 lifecycle: Arc::new(
                     awaken_resource_store::PostgresResourceStore::connect(&url)
                         .await
-                        .expect("connect resource lifecycle postgres"),
+                        .map_err(|error| format!("connect resource lifecycle Postgres: {error}"))?,
                 ),
                 files: Arc::new(
                     awaken_file_store::postgres::PgFileStore::connect(&url)
                         .await
-                        .expect("connect resource file postgres"),
+                        .map_err(|error| format!("connect resource file Postgres: {error}"))?,
                 ),
                 memory: Arc::new(
                     awaken_memory_store::PostgresMemoryRepository::connect(&url)
                         .await
-                        .expect("connect resource memory postgres"),
+                        .map_err(|error| format!("connect resource memory Postgres: {error}"))?,
                 ),
                 skills: Arc::new(
                     awaken_skill_store::PgSkillStore::connect(&url)
                         .await
-                        .expect("connect resource skill postgres"),
+                        .map_err(|error| format!("connect resource skill Postgres: {error}"))?,
                 ),
-            },
+            }),
         }
     }
 }
@@ -353,79 +366,10 @@ fn management_stores_for_runtime_storage(
     stores
 }
 
-/// Durable management stores under `dir` (created if absent), ADR-0043
-/// sqlite-repos: one SQLite file per domain bundle (`catalog.db` / `credential.db`
-/// / `admin.db` / `sessions.db` / `config.db`), secrets AEAD-sealed under `key`.
-///
-/// Panics on open/migrate failure: the binary's mode selection has no error
-/// channel, and a management server that silently fell back to ephemeral stores
-/// would be worse than one that refuses to start.
-fn durable_management_stores(dir: &std::path::Path, key: &[u8; 32]) -> ManagementStores {
-    std::fs::create_dir_all(dir).expect("create AWAKEN_MGMT_DIR");
-    let db = |name: &str| dir.join(name).to_string_lossy().into_owned();
-    let catalog = awaken_model_catalog::sqlite::SqliteCatalogRepo::open(&db("catalog.db"))
-        .expect("open catalog.db under AWAKEN_MGMT_DIR");
-    let credentials = awaken_credential_vault::SqliteCredentialRepo::open(&db("credential.db"))
-        .expect("open credential.db under AWAKEN_MGMT_DIR");
-    let blobs = awaken_credential_vault::SqliteSealedBlobStore::open(&db("credential.db"))
-        .expect("open credential.db sealed-blob store under AWAKEN_MGMT_DIR");
-    let admin = awaken_admin_config_api::SqliteAdminStore::open(&db("admin.db"))
-        .expect("open admin.db under AWAKEN_MGMT_DIR");
-    admin
-        .migrate_legacy_memory_stores()
-        .expect("migrate legacy MemoryStore catalog rows");
-    let admin = Arc::new(admin);
-    let sessions = Arc::new(
-        awaken_runtime_host::SqliteManagedSessionRepository::open(&db("sessions.db"))
-            .expect("open sessions.db under AWAKEN_MGMT_DIR"),
-    );
-    ManagementStores {
-        workspace_root: Some(dir.to_path_buf()),
-        resource_plane: ResourcePlaneStores::embedded(dir),
-        catalog: Arc::new(catalog),
-        credentials: Arc::new(credentials),
-        // The only durable secret path is sealed: `nonce ‖ ciphertext` under the
-        // operator-held key — plaintext never reaches the disk.
-        secrets: Arc::new(awaken_credential_vault::SealedAeadSecretStore::over(
-            key,
-            Arc::new(blobs),
-        )),
-        profiles: admin.clone(),
-        resources: admin.clone(),
-        resource_catalog: admin.clone(),
-        // Webhook endpoints share admin.db (one more secret-free table under the
-        // `admin` bundle) — a config resource like the profiles/MCP defs above.
-        webhooks: admin,
-        // A separate `sessions.db` (not a table in admin.db): a live session
-        // instance is a different aggregate from the agent/MCP definitions admin.db
-        // holds (ADR-0039 one-repository-per-aggregate).
-        sessions: sessions.clone(),
-        memory_extractions: sessions,
-        // The config authoring plane persists agent drafts/publications under its
-        // own `config.db` (ADR-0029/0031 `config` namespace).
-        config: Arc::new(
-            awaken_config_store::SqliteConfigStore::open(&db("config.db"))
-                .expect("open config.db under AWAKEN_MGMT_DIR"),
-        ),
-        // Self-hosted env registry + work queue, their own sqlite files beside the
-        // session store (durable so a self-hosted worker survives a restart).
-        environments: Arc::new(EnvironmentState::with_stores(
-            Arc::new(
-                awaken_runtime_host::SqliteEnvRegistry::open(&db("environments.db"))
-                    .expect("open environments.db under AWAKEN_MGMT_DIR"),
-            ),
-            Arc::new(
-                awaken_runtime_host::SqliteWorkQueue::open(&db("work_queue.db"))
-                    .expect("open work_queue.db under AWAKEN_MGMT_DIR"),
-            ),
-        )),
-    }
-}
-
 /// Open the control-plane stores per the [`ControlStoreConfig`](awaken_control::ControlStoreConfig)
 /// — each component on its own database (SQLite file or shared Postgres). This
-/// generalizes [`durable_management_stores`] (the all-SQLite bundle special case):
-/// each store independently honors its `AWAKEN_<COMPONENT>_DB` override, so a
+/// is the one durable store assembly: each store independently honors its
+/// `AWAKEN_<COMPONENT>_DB` override, so a
 /// separate control / server process can share the same per-component databases
 /// (Option A, shared-DB).
 async fn open_management_stores(
@@ -433,35 +377,42 @@ async fn open_management_stores(
     resource_backend: config::ResourcePlaneStoreBackend,
     workspace_root: std::path::PathBuf,
     key: &[u8; 32],
-) -> ManagementStores {
+) -> Result<ManagementStores, String> {
     use awaken_control::StoreBackend;
 
     // Create the parent directory for any SQLite path (a bundle dir or a custom path).
-    fn ensure_parent(backend: &StoreBackend) {
+    fn ensure_parent(backend: &StoreBackend) -> Result<(), String> {
         if let StoreBackend::Sqlite(path) = backend
             && let Some(parent) = path.parent()
         {
-            std::fs::create_dir_all(parent).expect("create control-store directory");
+            std::fs::create_dir_all(parent).map_err(|error| {
+                format!(
+                    "create control-store directory {}: {error}",
+                    parent.display()
+                )
+            })?;
         }
+        Ok(())
     }
     let path = |p: &std::path::Path| p.to_string_lossy().into_owned();
 
-    let resource_plane = ResourcePlaneStores::open(resource_backend).await;
+    let resource_plane = ResourcePlaneStores::open(resource_backend).await?;
 
-    ensure_parent(&cfg.catalog);
+    ensure_parent(&cfg.catalog)?;
     let catalog: Arc<dyn awaken_model_catalog::repo::CatalogRepo> = match &cfg.catalog {
         StoreBackend::Sqlite(p) => Arc::new(
-            awaken_model_catalog::SqliteCatalogRepo::open(&path(p)).expect("open catalog sqlite"),
+            awaken_model_catalog::SqliteCatalogRepo::open(&path(p))
+                .map_err(|error| format!("open catalog SQLite {}: {error}", p.display()))?,
         ),
         StoreBackend::Postgres(url) => Arc::new(
             awaken_model_catalog::PostgresCatalogRepo::connect(url)
                 .await
-                .expect("connect catalog postgres"),
+                .map_err(|error| format!("connect catalog Postgres: {error}"))?,
         ),
     };
 
     // The credential repo and its sealed-secret blobs share the one credential backend.
-    ensure_parent(&cfg.credential);
+    ensure_parent(&cfg.credential)?;
     let (credentials, secrets): (
         Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
         Arc<dyn awaken_credential_vault::SecretStore>,
@@ -470,10 +421,12 @@ async fn open_management_stores(
             let file = path(p);
             let creds = Arc::new(
                 awaken_credential_vault::SqliteCredentialRepo::open(&file)
-                    .expect("open credential sqlite"),
+                    .map_err(|error| format!("open credential SQLite {}: {error}", p.display()))?,
             );
-            let blobs = awaken_credential_vault::SqliteSealedBlobStore::open(&file)
-                .expect("open credential sealed-blob sqlite");
+            let blobs =
+                awaken_credential_vault::SqliteSealedBlobStore::open(&file).map_err(|error| {
+                    format!("open sealed credential SQLite {}: {error}", p.display())
+                })?;
             (
                 creds,
                 Arc::new(awaken_credential_vault::SealedAeadSecretStore::over(
@@ -486,11 +439,11 @@ async fn open_management_stores(
             let creds = Arc::new(
                 awaken_credential_vault::PostgresCredentialRepo::connect(url)
                     .await
-                    .expect("connect credential postgres"),
+                    .map_err(|error| format!("connect credential Postgres: {error}"))?,
             );
             let blobs = awaken_credential_vault::PostgresSealedBlobStore::connect(url)
                 .await
-                .expect("connect credential sealed-blob postgres");
+                .map_err(|error| format!("connect sealed credential Postgres: {error}"))?;
             (
                 creds,
                 Arc::new(awaken_credential_vault::SealedAeadSecretStore::over(
@@ -502,7 +455,7 @@ async fn open_management_stores(
     };
 
     // The admin aggregate backs three ports (profiles / MCP / webhooks) off one store.
-    ensure_parent(&cfg.admin);
+    ensure_parent(&cfg.admin)?;
     let admin_profiles: Arc<dyn awaken_admin_config_api::InferenceProfileStore>;
     let admin_webhooks: Arc<dyn awaken_admin_config_api::WebhookStore>;
     let admin_resources: Arc<dyn awaken_config_resolver::AgentInputBindingRepository>;
@@ -510,10 +463,10 @@ async fn open_management_stores(
     match &cfg.admin {
         StoreBackend::Sqlite(p) => {
             let admin = awaken_admin_config_api::SqliteAdminStore::open(&path(p))
-                .expect("open admin sqlite");
+                .map_err(|error| format!("open admin SQLite {}: {error}", p.display()))?;
             admin
                 .migrate_legacy_memory_stores()
-                .expect("migrate legacy MemoryStore catalog rows");
+                .map_err(|error| format!("migrate legacy MemoryStore rows: {error}"))?;
             let admin = Arc::new(admin);
             admin_profiles = admin.clone();
             admin_resources = admin.clone();
@@ -529,12 +482,12 @@ async fn open_management_stores(
                     awaken_admin_config_api::PostgresAdminStore::connect(&url)
                 })
                 .await
-                .expect("join admin postgres connect")
-                .expect("connect admin postgres"),
+                .map_err(|error| format!("join admin Postgres connection: {error}"))?
+                .map_err(|error| format!("connect admin Postgres: {error}"))?,
             );
             admin
                 .migrate_legacy_memory_stores()
-                .expect("migrate legacy MemoryStore catalog rows");
+                .map_err(|error| format!("migrate legacy MemoryStore rows: {error}"))?;
             admin_profiles = admin.clone();
             admin_resources = admin.clone();
             admin_catalog = admin.clone();
@@ -542,7 +495,7 @@ async fn open_management_stores(
         }
     }
 
-    ensure_parent(&cfg.sessions);
+    ensure_parent(&cfg.sessions)?;
     let (sessions, memory_extractions): (
         Arc<dyn awaken_protocol_managed::ManagedSessionRepository>,
         Arc<dyn awaken_protocol_managed::MemoryExtractionRepository>,
@@ -550,7 +503,7 @@ async fn open_management_stores(
         StoreBackend::Sqlite(p) => {
             let repository = Arc::new(
                 awaken_runtime_host::SqliteManagedSessionRepository::open(&path(p))
-                    .expect("open sessions sqlite"),
+                    .map_err(|error| format!("open sessions SQLite {}: {error}", p.display()))?,
             );
             (repository.clone(), repository)
         }
@@ -558,21 +511,22 @@ async fn open_management_stores(
             let repository = Arc::new(
                 awaken_runtime_host::PostgresManagedSessionRepository::connect(url)
                     .await
-                    .expect("connect sessions postgres"),
+                    .map_err(|error| format!("connect sessions Postgres: {error}"))?,
             );
             (repository.clone(), repository)
         }
     };
 
-    ensure_parent(&cfg.config);
+    ensure_parent(&cfg.config)?;
     let config: Arc<dyn awaken_config_store::ScopedConfigRegistry> = match &cfg.config {
         StoreBackend::Sqlite(p) => Arc::new(
-            awaken_config_store::SqliteConfigStore::open(&path(p)).expect("open config sqlite"),
+            awaken_config_store::SqliteConfigStore::open(&path(p))
+                .map_err(|error| format!("open config SQLite {}: {error}", p.display()))?,
         ),
         StoreBackend::Postgres(url) => Arc::new(
             awaken_config_store::PostgresConfigStore::connect(url)
                 .await
-                .expect("connect config postgres"),
+                .map_err(|error| format!("connect config Postgres: {error}"))?,
         ),
     };
 
@@ -584,30 +538,30 @@ async fn open_management_stores(
                 awaken_runtime_host::SqliteEnvRegistry::open(&path(
                     &sp.with_file_name("environments.db"),
                 ))
-                .expect("open environments sqlite"),
+                .map_err(|error| format!("open environments SQLite: {error}"))?,
             ),
             Arc::new(
                 awaken_runtime_host::SqliteWorkQueue::open(&path(
                     &sp.with_file_name("work_queue.db"),
                 ))
-                .expect("open work_queue sqlite"),
+                .map_err(|error| format!("open work queue SQLite: {error}"))?,
             ),
         )),
         StoreBackend::Postgres(url) => Arc::new(EnvironmentState::with_stores(
             Arc::new(
                 awaken_runtime_host::PostgresEnvRegistry::connect(url)
                     .await
-                    .expect("connect environments postgres"),
+                    .map_err(|error| format!("connect environments Postgres: {error}"))?,
             ),
             Arc::new(
                 awaken_runtime_host::PostgresWorkQueue::connect(url)
                     .await
-                    .expect("connect work_queue postgres"),
+                    .map_err(|error| format!("connect work queue Postgres: {error}"))?,
             ),
         )),
     };
 
-    ManagementStores {
+    Ok(ManagementStores {
         workspace_root: Some(workspace_root),
         resource_plane,
         catalog,
@@ -621,30 +575,24 @@ async fn open_management_stores(
         memory_extractions,
         config,
         environments,
-    }
-}
-
-/// The AEAD key for the durable control plane, from `AWAKEN_CONTROL_SEAL_KEY` (inline)
-/// **or** `AWAKEN_CONTROL_SEAL_KEY_FILE` (a path to a file holding it). Exactly one must
-/// be set. Fails loudly when unset, both-set, unreadable, or malformed. The pure
-/// resolution lives once in `awaken_credential_vault` (shared with the worker); this
-/// only wires the env.
-fn mgmt_seal_key_from_env() -> [u8; 32] {
-    let hex = awaken_credential_vault::resolve_seal_key_hex(
-        std::env::var("AWAKEN_CONTROL_SEAL_KEY")
-            .ok()
-            .or_else(|| std::env::var("AWAKEN_MGMT_SEAL_KEY").ok()),
-        std::env::var("AWAKEN_CONTROL_SEAL_KEY_FILE")
-            .ok()
-            .or_else(|| std::env::var("AWAKEN_MGMT_SEAL_KEY_FILE").ok()),
-        |p| std::fs::read_to_string(p),
-    )
-    .unwrap_or_else(|reason| panic!("{reason}."));
-    awaken_credential_vault::parse_seal_key(&hex).unwrap_or_else(|reason| {
-        panic!("the management seal key is malformed: {reason}. Provide 64 hex characters (a 32-byte key).")
     })
 }
 
+/// Local SQLite is a backend selection, not a second store assembly.
+async fn open_local_management_stores(
+    dir: &std::path::Path,
+    key: &[u8; 32],
+) -> Result<ManagementStores, String> {
+    open_management_stores(
+        awaken_control::ControlStoreConfig::resolve(dir, |_| None),
+        config::ResourcePlaneStoreBackend::Embedded(dir.to_path_buf()),
+        dir.to_path_buf(),
+        key,
+    )
+    .await
+}
+
+/// Compatibility data-root adapter for the legacy embedding entrypoint below.
 fn deployment_data_dir_from_env() -> Option<String> {
     std::env::var("AWAKEN_DEPLOYMENT_DATA_DIR")
         .ok()
@@ -671,6 +619,41 @@ fn deployment_data_dir_from_env() -> Option<String> {
 /// default — is today's open behavior, byte-identical.
 pub async fn build_management_router() -> Router {
     build_management_router_with_composition(ManagementModelComposition::PublishedProviders).await
+}
+
+/// Canonical product assembly from the command's one resolved configuration.
+pub async fn build_management_router_with_deployment(
+    deployment: &config::ResolvedDeployment,
+    key: &[u8; 32],
+) -> Result<Router, String> {
+    let (iam, remote_iam) = identity_wiring(
+        deployment.identity_mode,
+        Some(&deployment.data_dir),
+        &deployment.org_id,
+        &deployment.iam_workspaces,
+        &deployment.cloud_iam,
+    )?;
+    let stores = open_management_stores(
+        deployment.control.clone(),
+        deployment.resources.clone(),
+        deployment.data_dir.clone(),
+        key,
+    )
+    .await?;
+    Ok(management_router_over(
+        stores,
+        iam,
+        remote_iam,
+        ManagementModelComposition::PublishedProviders,
+        AssemblyOverrides {
+            deployment: Some(deployment.runtime.clone()),
+            org_id: Some(deployment.org_id.clone()),
+            mcp_bearer_token: deployment.mcp_bearer_token.clone(),
+            resolved: true,
+        },
+        None,
+    )
+    .await)
 }
 
 /// Build the real env-selected management surface with one explicit in-process
@@ -704,49 +687,24 @@ async fn build_management_router_with_composition(
                 .and_then(ManagementIdentityMode::parse)
         })
         .unwrap_or(ManagementIdentityMode::NoLogin);
-    let (iam, remote_iam) = match identity_mode {
-        ManagementIdentityMode::SelfManaged => {
-            let dir = deployment_data_dir_from_env().unwrap_or_else(|| {
-                panic!(
-                    "self-managed IAM requires AWAKEN_DEPLOYMENT_DATA_DIR: the embedded \
-                     IAM persists its API tokens and role bindings under \
-                     <AWAKEN_DEPLOYMENT_DATA_DIR>/iam.sqlite; an in-memory token directory would \
-                     mint a fresh bootstrap admin token on every restart."
-                )
-            });
-            let workspace = SharedHost::provision_local_workspace_at(std::path::Path::new(&dir));
-            let iam = awaken_control::embedded_iam_for_tenant(
-                std::path::Path::new(&dir),
-                &local_org_id(),
-                &workspace,
-            );
-            // Workspace membership is platform topology (PIP), not an implicit side
-            // effect of token minting. A self-managed composition may explicitly
-            // declare additional workspaces; registering them grants no permissions,
-            // it only makes them valid policy scopes under the hidden local org.
-            if let Ok(configured) = std::env::var("AWAKEN_IAM_WORKSPACES") {
-                for workspace_id in configured
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|workspace_id| !workspace_id.is_empty())
-                {
-                    iam.register_workspace(workspace_id);
-                }
-            }
-            (Some(iam), None)
-        }
-        ManagementIdentityMode::AwakenCloud => (
-            None,
-            Some(
-                awaken_cloud_authz_from_env()
-                    .unwrap_or_else(|error| panic!("Awaken Cloud identity: {error}")),
-            ),
-        ),
-        ManagementIdentityMode::NoLogin => (None, None),
-    };
-    match deployment_data_dir_from_env() {
+    let deployment_data_dir = deployment_data_dir_from_env();
+    let (iam, remote_iam) = identity_wiring(
+        identity_mode,
+        deployment_data_dir.as_deref().map(std::path::Path::new),
+        &local_org_id(),
+        &std::env::var("AWAKEN_IAM_WORKSPACES")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .collect::<Vec<_>>(),
+        &legacy_cloud_iam_config(),
+    )
+    .unwrap_or_else(|error| panic!("identity configuration: {error}"));
+    match deployment_data_dir {
         Some(dir) => {
-            let key = mgmt_seal_key_from_env();
+            let key = awaken_control::control_seal_key_from_env();
             // Each control-plane store honors its own `AWAKEN_<COMPONENT>_DB` override
             // (SQLite path or shared Postgres), defaulting to `<dir>/<name>.db`.
             let cfg = awaken_control::ControlStoreConfig::from_env(std::path::Path::new(&dir));
@@ -764,10 +722,12 @@ async fn build_management_router_with_composition(
                 .unwrap_or_else(|error| panic!("{error}"));
             management_router_over(
                 open_management_stores(cfg, resource_backend, std::path::PathBuf::from(&dir), &key)
-                    .await,
+                    .await
+                    .unwrap_or_else(|error| panic!("open management stores: {error}")),
                 iam,
                 remote_iam,
                 model_composition,
+                AssemblyOverrides::default(),
                 None,
             )
             .await
@@ -779,6 +739,10 @@ async fn build_management_router_with_composition(
                 iam,
                 remote_iam,
                 model_composition,
+                AssemblyOverrides {
+                    deployment: Some(deployment),
+                    ..Default::default()
+                },
                 None,
             )
             .await
@@ -786,25 +750,62 @@ async fn build_management_router_with_composition(
     }
 }
 
-fn awaken_cloud_authz_from_env() -> Result<Arc<RemoteManagementAuthz>, String> {
-    let base_url = std::env::var("AWAKEN_CLOUD_IAM_URL")
-        .unwrap_or_else(|_| "https://accounts.awakenworks.com".to_string());
-    let user_token = std::env::var("AWAKEN_CLOUD_ACCESS_TOKEN")
-        .ok()
+fn identity_wiring(
+    identity_mode: ManagementIdentityMode,
+    data_dir: Option<&std::path::Path>,
+    org_id: &str,
+    iam_workspaces: &[String],
+    cloud_iam: &config::CloudIamConfig,
+) -> Result<IdentityWiring, String> {
+    match identity_mode {
+        ManagementIdentityMode::SelfManaged => {
+            let dir = data_dir.ok_or_else(|| {
+                "self-managed IAM requires a persistent data directory".to_owned()
+            })?;
+            let workspace = SharedHost::provision_local_workspace_at(dir);
+            let iam = awaken_control::embedded_iam_for_tenant(dir, org_id, &workspace);
+            for workspace_id in iam_workspaces {
+                iam.register_workspace(workspace_id);
+            }
+            Ok((Some(iam), None))
+        }
+        ManagementIdentityMode::AwakenCloud => Ok((None, Some(awaken_cloud_authz(cloud_iam)?))),
+        ManagementIdentityMode::NoLogin => Ok((None, None)),
+    }
+}
+
+fn awaken_cloud_authz(
+    config: &config::CloudIamConfig,
+) -> Result<Arc<RemoteManagementAuthz>, String> {
+    let user_token = config
+        .access_token
+        .clone()
         .or_else(|| {
             awaken_iam_client::CredentialCache::open()
-                .load(&base_url)
+                .load(&config.base_url)
                 .map(|entry| entry.token.expose().to_owned())
         })
         .ok_or_else(|| "Awaken Cloud login credential is missing or expired".to_string())?;
     RemoteManagementAuthz::connect(
-        base_url,
-        std::env::var("AWAKEN_CLOUD_IAM_AUDIENCE").unwrap_or_else(|_| "awaken-runtime".to_string()),
-        std::env::var("AWAKEN_CLOUD_IAM_ISSUER")
-            .unwrap_or_else(|_| "https://accounts.awakenworks.com".to_string()),
+        config.base_url.clone(),
+        config.audience.clone(),
+        config.issuer.clone(),
         user_token,
-        std::env::var("AWAKEN_CLOUD_IAM_SERVICE_TOKEN").ok(),
+        config.service_token.clone(),
     )
+}
+
+fn legacy_cloud_iam_config() -> config::CloudIamConfig {
+    config::CloudIamConfig {
+        base_url: std::env::var("AWAKEN_CLOUD_IAM_URL")
+            .unwrap_or_else(|_| "https://accounts.awakenworks.com".to_owned()),
+        audience: std::env::var("AWAKEN_CLOUD_IAM_AUDIENCE")
+            .unwrap_or_else(|_| "awaken-runtime".to_owned()),
+        issuer: std::env::var("AWAKEN_CLOUD_IAM_ISSUER")
+            .unwrap_or_else(|_| "https://accounts.awakenworks.com".to_owned()),
+        access_token: std::env::var("AWAKEN_CLOUD_ACCESS_TOKEN").ok(),
+        service_token: std::env::var("AWAKEN_CLOUD_IAM_SERVICE_TOKEN").ok(),
+    }
 }
 
 /// [`build_management_router_with_model`] plus a last-mile hook on the assembled host
@@ -827,6 +828,7 @@ pub async fn build_management_router_with_host_customizer(
                 "default", model_ref, "default",
             ),
         },
+        AssemblyOverrides::default(),
         Some(Box::new(customize_host)),
     )
     .await
@@ -846,7 +848,9 @@ pub async fn build_durable_management_router_with_host_customizer(
     customize_host: impl FnOnce(SharedHost) -> SharedHost + Send + 'static,
 ) -> Router {
     management_router_over(
-        durable_management_stores(dir, key),
+        open_local_management_stores(dir, key)
+            .await
+            .unwrap_or_else(|error| panic!("open local management stores: {error}")),
         None,
         None,
         ManagementModelComposition::Host {
@@ -855,6 +859,7 @@ pub async fn build_durable_management_router_with_host_customizer(
                 "default", model_ref, "default",
             ),
         },
+        AssemblyOverrides::default(),
         Some(Box::new(customize_host)),
     )
     .await
@@ -878,6 +883,7 @@ pub async fn build_management_router_with_model(
                 "default", model_ref, "default",
             ),
         },
+        AssemblyOverrides::default(),
         None,
     )
     .await
@@ -890,10 +896,13 @@ pub async fn build_management_router_with_model(
 /// No IAM guard — the open (default) management plane.
 pub async fn build_durable_management_router(dir: &std::path::Path, key: &[u8; 32]) -> Router {
     management_router_over(
-        durable_management_stores(dir, key),
+        open_local_management_stores(dir, key)
+            .await
+            .unwrap_or_else(|error| panic!("open local management stores: {error}")),
         None,
         None,
         ManagementModelComposition::PublishedProviders,
+        AssemblyOverrides::default(),
         None,
     )
     .await
@@ -909,10 +918,13 @@ pub async fn build_secured_management_router(
 ) -> (Router, Arc<ManagementAuthz>) {
     let iam = embedded_iam(dir);
     let router = management_router_over(
-        durable_management_stores(dir, key),
+        open_local_management_stores(dir, key)
+            .await
+            .unwrap_or_else(|error| panic!("open local management stores: {error}")),
         Some(iam.clone()),
         None,
         ManagementModelComposition::PublishedProviders,
+        AssemblyOverrides::default(),
         None,
     )
     .await;
@@ -929,6 +941,7 @@ async fn management_router_over(
     iam: Option<Arc<ManagementAuthz>>,
     remote_iam: Option<Arc<RemoteManagementAuthz>>,
     model_composition: ManagementModelComposition,
+    assembly: AssemblyOverrides,
     // An optional last-mile hook on the assembled data-plane host, applied before it is
     // shared. The composition root uses it to wire a runtime backend the management plane
     // does not assemble itself (e.g. an ACP executor for `acp:*` threads) without this
@@ -936,6 +949,16 @@ async fn management_router_over(
     // serves external-CLI sessions.
     customize_host: Option<Box<dyn FnOnce(SharedHost) -> SharedHost + Send>>,
 ) -> Router {
+    let resolved = assembly.resolved;
+    let deployment = assembly.deployment;
+    let org_id = assembly.org_id.unwrap_or_else(local_org_id);
+    let mcp_bearer_token = if resolved {
+        assembly.mcp_bearer_token
+    } else {
+        assembly
+            .mcp_bearer_token
+            .or_else(|| std::env::var("AWAKEN_MCP_BEARER_TOKEN").ok())
+    };
     let ManagementStores {
         workspace_root,
         resource_plane,
@@ -1142,7 +1165,7 @@ async fn management_router_over(
     let mcp_export = awaken_server::mcp_export::router(
         awaken_admin_assistant::admin_tool_descriptors(),
         admin_execs.clone(),
-        std::env::var("AWAKEN_MCP_BEARER_TOKEN").ok(),
+        mcp_bearer_token,
     );
 
     // The authoring / authz plane (admin + vault + webhooks + user profiles +
@@ -1173,7 +1196,7 @@ async fn management_router_over(
         deployment_state: deployment_state.clone(),
         plane,
         global_tools: global,
-        org_id: Some(local_org_id()),
+        org_id: Some(org_id),
         iam,
         remote_iam,
         application_access: application_access.clone(),
@@ -1191,15 +1214,24 @@ async fn management_router_over(
         skill_store,
         resource_lifecycle,
     );
-    let mut host_builder = SharedHost::new_with_resource_plane(
-        model_wiring.executor,
-        model_wiring.model_ref,
-        resource_ports,
-    )
-    .with_local_workspace(platform_workspace.clone())
-    .with_remote_attempt_executor(awaken_server::a2a_attempt_executor())
-    .with_config_service(config_service.clone())
-    .with_admin_tools(admin_execs);
+    let mut host_builder = match deployment {
+        Some(deployment) => SharedHost::new_with_resource_plane_and_deployment(
+            model_wiring.executor,
+            model_wiring.model_ref,
+            resource_ports,
+            deployment,
+        ),
+        None => SharedHost::new_with_resource_plane(
+            model_wiring.executor,
+            model_wiring.model_ref,
+            resource_ports,
+        ),
+    };
+    host_builder = host_builder
+        .with_local_workspace(platform_workspace.clone())
+        .with_remote_attempt_executor(awaken_server::a2a_attempt_executor())
+        .with_config_service(config_service.clone())
+        .with_admin_tools(admin_execs);
     if let Some(materializer) = model_wiring.materializer {
         host_builder = host_builder.with_inference_materializer(materializer);
     }

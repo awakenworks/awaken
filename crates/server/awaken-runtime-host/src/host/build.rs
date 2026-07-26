@@ -73,7 +73,22 @@ impl SharedHost {
     /// A host over `llm`. Configure it with the chainable `with_*` builders
     /// (client tools, delegates, a judge grader, a durable store).
     pub fn new(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Self {
-        Self::build(llm, model_ref.into(), None)
+        Self::build(
+            llm,
+            model_ref.into(),
+            None,
+            crate::deployment_config::DeploymentConfig::from_env(),
+        )
+    }
+
+    /// Construct without resource overrides from an explicitly resolved
+    /// deployment snapshot.
+    pub fn new_with_deployment(
+        llm: Arc<dyn LlmExecutor>,
+        model_ref: impl Into<String>,
+        deployment: crate::DeploymentConfig,
+    ) -> Self {
+        Self::build(llm, model_ref.into(), None, deployment)
     }
 
     /// Replace the environment-derived deployment value with the exact typed
@@ -103,7 +118,12 @@ impl SharedHost {
         &self,
     ) -> Result<Arc<awaken_run_ingress::AnyDispatchStore>, HostError> {
         self.dispatch_store_override.clone().map_or_else(
-            || crate::dispatch_backend::shared_durable_store(self.store_dir.as_deref()),
+            || {
+                crate::dispatch_backend::shared_durable_store_for(
+                    &self.deployment,
+                    self.store_dir.as_deref(),
+                )
+            },
             Ok,
         )
     }
@@ -116,18 +136,34 @@ impl SharedHost {
         model_ref: impl Into<String>,
         resources: ResourcePlanePorts,
     ) -> Self {
-        Self::build(llm, model_ref.into(), Some(resources))
+        Self::build(
+            llm,
+            model_ref.into(),
+            Some(resources),
+            crate::deployment_config::DeploymentConfig::from_env(),
+        )
+    }
+
+    /// Construct directly from the composition root's resolved deployment.
+    /// No resource or runtime backend is opened from process-global state first.
+    pub fn new_with_resource_plane_and_deployment(
+        llm: Arc<dyn LlmExecutor>,
+        model_ref: impl Into<String>,
+        resources: ResourcePlanePorts,
+        deployment: crate::DeploymentConfig,
+    ) -> Self {
+        Self::build(llm, model_ref.into(), Some(resources), deployment)
     }
 
     fn build(
         llm: Arc<dyn LlmExecutor>,
         model_ref: String,
         resources: Option<ResourcePlanePorts>,
+        deployment: crate::DeploymentConfig,
     ) -> Self {
         // Composition root: the deployment axes are parsed once from the environment
         // into one typed config. `AWAKEN_STORAGE_DIR` set → durable SQLite commit
         // and resource adapters (all survive a restart); unset → ephemeral adapters.
-        let deployment = crate::deployment_config::DeploymentConfig::from_env();
         let store_dir = deployment.storage_dir.clone();
         let local_workspace = resolve_local_workspace(store_dir.as_deref());
         let sandbox_root = store_dir
@@ -774,7 +810,7 @@ impl SharedHost {
                 store: self.dispatch_store()?,
                 commit: commit.clone(),
                 reader: commit,
-                owner: crate::dispatch_backend::dispatch_owner(),
+                owner: self.deployment.dispatch_owner.clone(),
                 claimed_commit,
                 recovery_projection,
                 session_resources: self.thread_resource_manifest(thread),
@@ -829,7 +865,7 @@ impl SharedHost {
             Some(wake) => DispatchPool::spawn_with_wake_and_completion(
                 store,
                 Arc::new(SystemClock),
-                crate::dispatch_backend::dispatch_owner(),
+                self.deployment.dispatch_owner.clone(),
                 DEFAULT_LEASE_MS,
                 config,
                 resolver,
@@ -840,7 +876,7 @@ impl SharedHost {
             None => DispatchPool::spawn_with_completion(
                 store,
                 Arc::new(SystemClock),
-                crate::dispatch_backend::dispatch_owner(),
+                self.deployment.dispatch_owner.clone(),
                 DEFAULT_LEASE_MS,
                 config,
                 resolver,

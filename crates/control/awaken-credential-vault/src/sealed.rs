@@ -92,6 +92,20 @@ impl SecretStore for SealedAeadSecretStore {
     }
 }
 
+/// Generate a fresh 256-bit seal key with the same OS-backed CSPRNG used for
+/// AEAD nonces and return its canonical lowercase hex representation. Key
+/// generation belongs beside seal-key parsing so composition roots do not each
+/// choose their own entropy source or encoding.
+#[must_use]
+pub fn generate_seal_key_hex() -> String {
+    let key = ChaCha20Poly1305::generate_key(&mut OsRng);
+    key.iter().fold(String::with_capacity(64), |mut hex, byte| {
+        use std::fmt::Write as _;
+        write!(hex, "{byte:02x}").expect("writing to a String cannot fail");
+        hex
+    })
+}
+
 /// Parse a seal-key hex string into the 32-byte AEAD key
 /// [`SealedAeadSecretStore`] uses: exactly 64 hex characters. The single home for
 /// this so the Serve composition root and the worker share one implementation.
@@ -145,7 +159,7 @@ pub fn resolve_seal_key_hex(
 
 #[cfg(test)]
 mod seal_key_tests {
-    use super::{parse_seal_key, resolve_seal_key_hex};
+    use super::{generate_seal_key_hex, parse_seal_key, resolve_seal_key_hex};
 
     fn no_read(_p: &str) -> std::io::Result<String> {
         Err(std::io::Error::other("no file read expected"))
@@ -159,6 +173,13 @@ mod seal_key_tests {
         );
         assert!(parse_seal_key("abc").is_err(), "too short");
         assert!(parse_seal_key(&"zz".repeat(32)).is_err(), "non-hex");
+    }
+
+    #[test]
+    fn generated_key_has_the_canonical_parseable_shape() {
+        let generated = generate_seal_key_hex();
+        assert_eq!(generated.len(), 64);
+        assert!(parse_seal_key(&generated).is_ok());
     }
 
     #[test]
