@@ -42,6 +42,7 @@ fn session() -> PersistedSession {
                     runtime: None,
                     application: None,
                     delegate_ids: Vec::new(),
+                    toolsets: Vec::new(),
                     mounts: Vec::new(),
                     env: Vec::new(),
                     prompts: Vec::new(),

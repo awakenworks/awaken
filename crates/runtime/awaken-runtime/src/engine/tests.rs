@@ -86,6 +86,89 @@ fn published_inference_controls_reach_each_model_call_unchanged() {
     assert_eq!(defaults.inference, InferenceOptions::default());
 }
 
+#[test]
+fn toolset_policy_changes_the_actual_model_tool_surface() {
+    // Cause graph: exact published/session toolset policy -> the one request
+    // assembly seam for static + dynamic tools -> provider-facing ChatRequest.
+    // Disabled tools must disappear; permission is deliberately enforced later
+    // by the gate and must not change visibility by itself.
+    //
+    // Decision table:
+    // | source | enabled | permission    | model-visible |
+    // | Agent | false   | always_allow  | no            |
+    // | Agent | true    | always_ask    | yes           |
+    // | MCP   | false   | always_allow  | no            |
+    // | MCP   | true    | always_allow  | yes           |
+    use awaken_runtime_contract::agent_bindings::{
+        ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+        ToolsetSource,
+    };
+
+    let descriptor = |id: &str| {
+        awaken_runtime_contract::resolved::ToolDescriptor::pinned(
+            "test",
+            id,
+            "behavior probe",
+            serde_json::json!({"type": "object"}),
+        )
+    };
+    let mut configured = spec("");
+    configured.tool_descriptors = vec![descriptor("alpha"), descriptor("omega")];
+    configured.plugin_config.agent.toolsets = vec![
+        ToolsetPolicy {
+            source: ToolsetSource::Agent,
+            default: ToolExecutionPolicy::default(),
+            overrides: vec![
+                ToolPolicyOverride {
+                    name: "alpha".into(),
+                    policy: ToolExecutionPolicy {
+                        enabled: false,
+                        permission: ToolPermissionRequirement::AlwaysAllow,
+                    },
+                },
+                ToolPolicyOverride {
+                    name: "omega".into(),
+                    policy: ToolExecutionPolicy {
+                        enabled: true,
+                        permission: ToolPermissionRequirement::AlwaysAsk,
+                    },
+                },
+            ],
+        },
+        ToolsetPolicy {
+            source: ToolsetSource::Mcp {
+                server_name: "docs".into(),
+            },
+            default: ToolExecutionPolicy::default(),
+            overrides: vec![ToolPolicyOverride {
+                name: "search".into(),
+                policy: ToolExecutionPolicy {
+                    enabled: false,
+                    permission: ToolPermissionRequirement::AlwaysAllow,
+                },
+            }],
+        },
+    ];
+    let dynamic = vec![
+        descriptor("mcp__docs__search"),
+        descriptor("mcp__docs__fetch"),
+    ];
+
+    let request = build_chat_request(
+        &configured,
+        &[],
+        &[user_message()],
+        &dynamic,
+        &Default::default(),
+    );
+    let visible = request
+        .tools
+        .iter()
+        .map(|tool| tool.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(visible, vec!["omega", "mcp__docs__fetch"]);
+}
+
 fn numbered(n: usize) -> Message {
     Message::text(MessageId(format!("m{n}")), Role::User, n.to_string())
 }

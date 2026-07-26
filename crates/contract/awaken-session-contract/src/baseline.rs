@@ -111,6 +111,8 @@ pub struct ControlSessionCreationInputs {
     #[serde(default)]
     pub delegate_ids: Vec<String>,
     #[serde(default)]
+    pub toolsets: Vec<awaken_agent_contract::ToolsetPolicy>,
+    #[serde(default)]
     pub mounts: Vec<serde_json::Value>,
     #[serde(default)]
     pub env: Vec<serde_json::Value>,
@@ -303,6 +305,7 @@ impl SessionCreationIntent {
             runtime,
             mcp_authoring,
             delegate_ids,
+            toolsets,
             mut mounts,
             mut env,
             mut prompts,
@@ -326,6 +329,7 @@ impl SessionCreationIntent {
             runtime,
             application: receipt,
             delegate_ids,
+            toolsets,
             mounts,
             env,
             prompts,
@@ -351,6 +355,8 @@ pub struct SessionBaseline {
     #[serde(default)]
     pub delegate_ids: Vec<String>,
     #[serde(default)]
+    pub toolsets: Vec<awaken_agent_contract::ToolsetPolicy>,
+    #[serde(default)]
     pub mounts: Vec<serde_json::Value>,
     #[serde(default)]
     pub env: Vec<serde_json::Value>,
@@ -366,6 +372,7 @@ pub struct SessionBaselineInputs {
     pub runtime: Option<String>,
     pub application: Option<ApplicationContributionReceipt>,
     pub delegate_ids: Vec<String>,
+    pub toolsets: Vec<awaken_agent_contract::ToolsetPolicy>,
     pub mounts: Vec<serde_json::Value>,
     pub env: Vec<serde_json::Value>,
     pub prompts: Vec<String>,
@@ -390,6 +397,7 @@ impl SessionBaseline {
             runtime: &'a Option<String>,
             application: &'a Option<ApplicationContributionReceipt>,
             delegate_ids: &'a [String],
+            toolsets: &'a [awaken_agent_contract::ToolsetPolicy],
             mounts: &'a [serde_json::Value],
             env: &'a [serde_json::Value],
             prompts: &'a [String],
@@ -402,6 +410,7 @@ impl SessionBaseline {
             runtime,
             application,
             delegate_ids,
+            toolsets,
             mounts,
             env,
             prompts,
@@ -414,6 +423,7 @@ impl SessionBaseline {
             runtime: &runtime,
             application: &application,
             delegate_ids: &delegate_ids,
+            toolsets: &toolsets,
             mounts: &mounts,
             env: &env,
             prompts: &prompts,
@@ -427,6 +437,7 @@ impl SessionBaseline {
             runtime,
             application,
             delegate_ids,
+            toolsets,
             mounts,
             env,
             prompts,
@@ -466,6 +477,7 @@ mod tests {
             runtime: None,
             application: None,
             delegate_ids: Vec::new(),
+            toolsets: Vec::new(),
             mounts: Vec::new(),
             env: Vec::new(),
             prompts: Vec::new(),
@@ -484,6 +496,7 @@ mod tests {
             runtime: Some("native".into()),
             mcp_authoring: SessionMcpAuthoringContext::default(),
             delegate_ids: vec!["delegate".into()],
+            toolsets: Vec::new(),
             mounts: vec![serde_json::json!({"source": "control"})],
             env: vec![serde_json::json!({"name": "CONTROL"})],
             prompts: vec!["control".into()],

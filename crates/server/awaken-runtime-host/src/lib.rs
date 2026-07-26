@@ -1315,10 +1315,25 @@ impl SessionRuntime for ManagedHost {
             .map_err(to_run_error)?;
         self.host
             .register_thread_delegates(thread, init.delegate_ids.clone());
+        self.host
+            .session_slots
+            .update(thread, |slot| slot.toolsets = init.toolsets.clone());
         // Stage only the already-resolved manifest. Runtime never reads the Agent
         // binding repository or composes defaults again.
         self.stage_resource_manifest(thread, &init.workspace_id, &init.resources)
             .await?;
+        Ok(())
+    }
+
+    async fn replace_session_toolsets(
+        &self,
+        thread: &str,
+        toolsets: Vec<awaken_agent_contract::ToolsetPolicy>,
+    ) -> Result<(), RunError> {
+        self.host
+            .session_slots
+            .update(thread, |slot| slot.toolsets = Some(toolsets));
+        self.host.evict_session_for_rebuild(thread).await;
         Ok(())
     }
 

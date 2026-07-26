@@ -9,6 +9,10 @@ use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
 
 use crate::snapshot::AgentId;
+pub use awaken_agent_contract::{
+    ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+    ToolsetSource,
+};
 use serde::{Deserialize, Serialize};
 
 /// Provider-neutral inference controls frozen into an Agent publication.
@@ -72,6 +76,43 @@ pub struct AgentBindings {
     /// Published Agent ids this Agent may invoke through `agent_run`.
     #[serde(default)]
     pub delegate_ids: Vec<AgentId>,
+    /// Exact tool availability/confirmation policy compiled from authoring.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub toolsets: Vec<ToolsetPolicy>,
+}
+
+impl AgentBindings {
+    /// Resolve a concrete runtime tool id against the exact matching toolset.
+    /// `None` means the tool is outside all authored toolsets and retains its
+    /// ordinary exact-id capability behavior.
+    #[must_use]
+    pub fn tool_policy(&self, tool_id: &str) -> Option<ToolExecutionPolicy> {
+        if let Some(policy) = self
+            .toolsets
+            .iter()
+            .find(|policy| policy.source == ToolsetSource::Agent)
+            .and_then(|policy| {
+                policy
+                    .overrides
+                    .iter()
+                    .find(|entry| entry.name == tool_id)
+                    .map(|entry| entry.policy)
+            })
+        {
+            return Some(policy);
+        }
+        let suffix = tool_id.strip_prefix("mcp__")?;
+        let (server_name, name) = suffix.split_once("__")?;
+        self.toolsets
+            .iter()
+            .find(|policy| {
+                matches!(
+                    &policy.source,
+                    ToolsetSource::Mcp { server_name: configured } if configured == server_name
+                )
+            })
+            .map(|policy| policy.policy_for(name))
+    }
 }
 
 /// Strongly typed resolved configuration carried by an executable snapshot.

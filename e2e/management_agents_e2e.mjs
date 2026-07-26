@@ -159,6 +159,8 @@ async function main() {
       // | model speed + bare/tagged effort        | exact revision + execution controls |
       // | URL MCP/custom skill/custom tools       | 200 + typed projection |
       // | unknown/misspelled union member         | 400, no Agent created  |
+      // | MCP declaration/toolset not bijective   | 400, no revision       |
+      // | duplicate/unknown toolset member        | 400, no revision       |
       // | update field omitted                    | preserve current value |
       // | nullable update field = null            | clear exact field/bag  |
       // | metadata value = null                   | delete only that key   |
@@ -172,12 +174,28 @@ async function main() {
         metadata: { team: 'platform' },
         mcp_servers: [{ name: 'docs', type: 'url', url: 'https://example.invalid/mcp' }],
         skills: [{ type: 'custom', skill_id: 'skill-a' }],
-        tools: ['bash', 'glob', 'read'].map((name) => ({
-          type: 'custom',
-          name,
-          description: `${name} tool`,
-          input_schema: { type: 'object', properties: {} },
-        })),
+        tools: [
+          {
+            type: 'agent_toolset_20260401',
+            configs: [{
+              name: 'write',
+              enabled: false,
+              permission_policy: { type: 'always_allow' },
+            }],
+            default_config: { enabled: true, permission_policy: { type: 'always_ask' } },
+          },
+          {
+            type: 'mcp_toolset',
+            mcp_server_name: 'docs',
+            default_config: { enabled: true, permission_policy: { type: 'always_ask' } },
+          },
+          ...['bash', 'glob', 'read'].map((name) => ({
+            type: 'custom',
+            name,
+            description: `${name} tool`,
+            input_schema: { type: 'object', properties: {} },
+          })),
+        ],
         multiagent: { type: 'coordinator', agents: ['researcher'] },
       });
       assert.equal(rich.status, 200, JSON.stringify(rich.body));
@@ -188,12 +206,29 @@ async function main() {
       });
       assert.deepEqual(
         rich.body.tools,
-        ['bash', 'glob', 'read'].map((name) => ({
-          type: 'custom',
-          name,
-          description: `${name} tool`,
-          input_schema: { type: 'object', properties: {} },
-        })),
+        [
+          {
+            type: 'agent_toolset_20260401',
+            configs: [{
+              name: 'write',
+              enabled: false,
+              permission_policy: { type: 'always_allow' },
+            }],
+            default_config: { enabled: true, permission_policy: { type: 'always_ask' } },
+          },
+          {
+            type: 'mcp_toolset',
+            mcp_server_name: 'docs',
+            configs: [],
+            default_config: { enabled: true, permission_policy: { type: 'always_ask' } },
+          },
+          ...['bash', 'glob', 'read'].map((name) => ({
+            type: 'custom',
+            name,
+            description: `${name} tool`,
+            input_schema: { type: 'object', properties: {} },
+          })),
+        ],
         'create preserves the complete client-tool behavior contract',
       );
       assert.deepEqual(rich.body.multiagent, { type: 'coordinator', agents: ['researcher'] });
@@ -267,18 +302,57 @@ async function main() {
       assert.equal(richV2.description, 'replaced', 'later null clear does not rewrite history');
       assert.deepEqual(richV2.metadata, { team: 'runtime' });
 
-      for (const invalid of [
-        { skills: [{ type: 'mystery', skill_id: 'skill-a' }] },
-        { mcp_servers: [{ type: 'url', name: 'docs', uri: 'https://wrong-field.test' }] },
-        { tools: [{ type: 'mcp_toolset', mcp_server: 'docs' }] },
+      const countBeforeRejectedCreates = (await drain(client.beta.agents.list({
+        include_archived: true,
+        betas: BETAS,
+      }))).length;
+      for (const [name, invalid] of [
+        ['invalid-skill-tag', { skills: [{ type: 'mystery', skill_id: 'skill-a' }] }],
+        ['invalid-mcp-field', { mcp_servers: [{ type: 'url', name: 'docs', uri: 'https://wrong-field.test' }] }],
+        ['invalid-toolset-field', { tools: [{ type: 'mcp_toolset', mcp_server: 'docs' }] }],
+        ['unpaired-mcp-server', {
+          mcp_servers: [{ name: 'docs', type: 'url', url: 'https://example.invalid/mcp' }],
+        }],
+        ['undeclared-mcp-toolset', {
+          tools: [{ type: 'mcp_toolset', mcp_server_name: 'docs' }],
+        }],
+        ['duplicate-agent-toolset', {
+          tools: [
+            { type: 'agent_toolset_20260401' },
+            { type: 'agent_toolset_20260401' },
+          ],
+        }],
+        ['unknown-agent-tool', {
+          tools: [{
+            type: 'agent_toolset_20260401',
+            configs: [{ name: 'not_a_tool', enabled: true }],
+          }],
+        }],
       ]) {
         const rejected = await json(baseUrl, 'POST', '/v1/agents', {
-          name: 'must-not-persist',
+          name,
           model: 'claude-sonnet-5',
           ...invalid,
         });
         assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
       }
+      assert.equal(
+        (await drain(client.beta.agents.list({ include_archived: true, betas: BETAS }))).length,
+        countBeforeRejectedCreates,
+        'rejected admission has no Agent persistence side effect',
+      );
+
+      const rejectedRevision = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}`, {
+        version: cleared.version,
+        mcp_servers: [{ name: 'docs', type: 'url', url: 'https://example.invalid/mcp' }],
+        tools: [],
+      });
+      assert.equal(rejectedRevision.status, 400, JSON.stringify(rejectedRevision.body));
+      assert.equal(
+        (await client.beta.agents.retrieve(rich.body.id, { betas: BETAS })).version,
+        cleared.version,
+        'rejected update creates no revision',
+      );
 
       const richArchived = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}/archive`);
       assert.equal(richArchived.status, 200);

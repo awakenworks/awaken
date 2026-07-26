@@ -563,6 +563,7 @@ mod tests {
                         ),
                     ),
                     delegate_ids: Vec::new(),
+                    toolsets: Vec::new(),
                     mounts: input.mounts,
                     env: input.env,
                     prompts: input.prompts,
@@ -593,6 +594,7 @@ mod tests {
                 baseline,
                 resources: Default::default(),
                 mcp,
+                toolsets: Vec::new(),
             };
             *self.projection.lock().unwrap() = Some(projection.clone());
             let lease = awaken_protocol_managed::SessionRealizationLease {

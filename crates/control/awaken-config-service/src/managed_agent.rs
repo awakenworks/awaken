@@ -145,6 +145,7 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
         model_binding: ModelSelection::pinned(provider_identity_ref, model_ref, backend_ref),
         inference: Default::default(),
         tool_ids: tools.iter().filter_map(managed_tool_id).collect(),
+        toolsets: Vec::new(),
         client_tools,
         plugin_ids: array("plugins")
             .iter()

@@ -1123,6 +1123,7 @@ mod tests {
                     },
                     mcp_authoring: SessionMcpAuthoringContext::default(),
                     agent_id: "coder".into(),
+                    toolsets: Vec::new(),
                     model: "kimi-k2".into(),
                     runtime: None,
                     application: None,

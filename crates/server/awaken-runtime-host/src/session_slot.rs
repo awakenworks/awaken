@@ -83,6 +83,8 @@ pub(crate) struct SessionRuntimeSlot {
     pub baseline: Option<FrozenBaselineRuntimeProjection>,
     /// Exact published delegation targets projected by a managed Session.
     pub delegates: Vec<String>,
+    /// Session-local exact toolset replacement; `None` inherits publication.
+    pub toolsets: Option<Vec<awaken_agent_contract::ToolsetPolicy>>,
     /// `Some([])` means the frozen manifest delivers no Skills; `None` means this
     /// embedded Session has no frozen Skill manifest.
     pub skills: Option<Vec<awaken_skill_store::SkillVersion>>,

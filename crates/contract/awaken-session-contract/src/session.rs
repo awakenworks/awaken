@@ -181,6 +181,9 @@ pub struct SessionInit {
     pub agent_id: String,
     /// Exact roster frozen by the published Agent.
     pub delegate_ids: Vec<String>,
+    /// Session-local replacement of the published toolset policy. `None`
+    /// inherits the Agent snapshot; `Some([])` explicitly clears all toolsets.
+    pub toolsets: Option<Vec<awaken_agent_contract::ToolsetPolicy>>,
     /// The session's mounted resources (ADR-0038), parsed from the wire `resources[]`:
     /// files, memory stores, repos. The host realizes each into the run's sandbox and
     /// appends a prompt fragment to the system prompt (A3a). Empty = no mounts.
@@ -344,6 +347,17 @@ pub trait SessionRuntime: Send + Sync {
     /// wiring is unaffected.
     async fn prepare_session(&self, _thread: &str, _init: SessionInit) -> Result<(), RunError> {
         Ok(())
+    }
+
+    /// Replace the Session-local toolset policy after an idle-session update.
+    /// Implementations rebuild the disposable runtime context; durable desired
+    /// state has already committed before this projection call.
+    async fn replace_session_toolsets(
+        &self,
+        _thread: &str,
+        _toolsets: Vec<awaken_agent_contract::ToolsetPolicy>,
+    ) -> Result<(), RunError> {
+        Err(RunError::internal("session toolset runtime is unsupported"))
     }
 
     /// Return the runtime-owned, secret-free binding for the Session's live
@@ -776,6 +790,7 @@ mod tests {
             workspace_id: "ws_test".into(),
             agent_id: "a".into(),
             delegate_ids: Vec::new(),
+            toolsets: None,
             resources: crate::ResolvedSessionResources::default(),
             model: None,
             runtime: None,

@@ -418,6 +418,7 @@ mod mutation_tests {
                     model: "model".into(),
                     runtime: None,
                     mcp_authoring: Default::default(),
+                    toolsets: Vec::new(),
                     delegate_ids: Vec::new(),
                     mounts: Vec::new(),
                     env: Vec::new(),

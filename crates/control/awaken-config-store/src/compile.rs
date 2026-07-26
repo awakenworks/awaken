@@ -126,6 +126,23 @@ fn compile_with_models(
         descriptors.push(descriptor.clone());
         seen.insert(id.clone());
     }
+    // Toolsets are resolved against the exact publication catalog. Unsupported
+    // built-ins become disabled in the snapshot; enabled supported members join
+    // the same descriptor set as exact `tool_ids` (one execution path).
+    let resolved_toolsets = resolve_toolsets(config, tools)?;
+    for toolset in &resolved_toolsets {
+        if toolset.source != awaken_runtime_contract::agent_bindings::ToolsetSource::Agent {
+            continue;
+        }
+        for entry in &toolset.overrides {
+            if !entry.policy.enabled || !seen.insert(entry.name.clone()) {
+                continue;
+            }
+            if let Some(descriptor) = tools.iter().find(|tool| tool.id == entry.name) {
+                descriptors.push(descriptor.clone());
+            }
+        }
+    }
     // Client-executed tools are exact inline capabilities, never aliases for a
     // host executor. Reject identity overlap instead of choosing one execution
     // owner based on insertion order.
@@ -322,7 +339,7 @@ fn compile_with_models(
         }
     }
 
-    let bindings = normalize_agent_bindings(config)?;
+    let bindings = normalize_agent_bindings(config, resolved_toolsets)?;
 
     if !metadata.is_legacy_default() {
         let mut inputs = std::mem::take(&mut metadata.resolution.inputs);
@@ -362,7 +379,10 @@ fn compile_with_models(
         .build())
 }
 
-fn normalize_agent_bindings(config: &AgentConfig) -> Result<AgentBindings, CompileError> {
+fn normalize_agent_bindings(
+    config: &AgentConfig,
+    toolsets: Vec<awaken_runtime_contract::agent_bindings::ToolsetPolicy>,
+) -> Result<AgentBindings, CompileError> {
     let invalid = |axis, reason| CompileError::InvalidBinding {
         agent: config.id.clone(),
         axis,
@@ -457,7 +477,69 @@ fn normalize_agent_bindings(config: &AgentConfig) -> Result<AgentBindings, Compi
                     .collect()
             })
             .unwrap_or_default(),
+        toolsets,
     })
+}
+
+fn resolve_toolsets(
+    config: &AgentConfig,
+    catalog: &[ToolDescriptor],
+) -> Result<Vec<awaken_runtime_contract::agent_bindings::ToolsetPolicy>, CompileError> {
+    use awaken_runtime_contract::agent_bindings::ToolsetSource;
+
+    if !config.toolsets.is_empty() && config.plugin_config.contains_key("permission") {
+        return Err(CompileError::InvalidBinding {
+            agent: config.id.clone(),
+            axis: "tools",
+            reason: "toolsets and plugin_config.permission are competing permission sources".into(),
+        });
+    }
+    let mut resolved = config.toolsets.clone();
+    let mut seen_sources = std::collections::BTreeSet::new();
+    for toolset in &mut resolved {
+        let source_key = match &toolset.source {
+            ToolsetSource::Agent => "agent".to_string(),
+            ToolsetSource::Mcp { server_name } => {
+                if !config
+                    .mcp_servers
+                    .iter()
+                    .any(|server| server.name == *server_name)
+                {
+                    return Err(CompileError::InvalidBinding {
+                        agent: config.id.clone(),
+                        axis: "tools",
+                        reason: format!("MCP toolset references undeclared server {server_name:?}"),
+                    });
+                }
+                format!("mcp:{server_name}")
+            }
+        };
+        if !seen_sources.insert(source_key.clone()) {
+            return Err(CompileError::InvalidBinding {
+                agent: config.id.clone(),
+                axis: "tools",
+                reason: format!("toolset source {source_key:?} is duplicated"),
+            });
+        }
+        let mut names = std::collections::BTreeSet::new();
+        for entry in &toolset.overrides {
+            if entry.name.trim().is_empty() || !names.insert(entry.name.clone()) {
+                return Err(CompileError::InvalidBinding {
+                    agent: config.id.clone(),
+                    axis: "tools",
+                    reason: format!("invalid or duplicate tool override {:?}", entry.name),
+                });
+            }
+        }
+        if toolset.source == ToolsetSource::Agent {
+            for entry in &mut toolset.overrides {
+                if !catalog.iter().any(|tool| tool.id == entry.name) {
+                    entry.policy.enabled = false;
+                }
+            }
+        }
+    }
+    Ok(resolved)
 }
 
 /// Match a tool id against a glob `pattern` whose only metacharacter is `*` (each
@@ -606,6 +688,111 @@ mod tests {
             url: url.to_string(),
             credential: None,
         }
+    }
+
+    #[test]
+    fn toolsets_compile_into_one_exact_executable_capability_path() {
+        // Cause graph: typed authoring policy + exact publication catalog ->
+        // normalized policy -> ordinary pinned descriptors + snapshot fingerprint.
+        // There is no synthetic `agent_toolset_*` executable id.
+        //
+        // Decision table:
+        // | catalog member | authored enabled | compiled descriptor | resolved policy |
+        // | read present   | true             | read                | enabled         |
+        // | write present  | false            | absent              | disabled        |
+        // | bash absent    | true/default     | absent              | disabled        |
+        use awaken_runtime_contract::agent_bindings::{
+            ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+            ToolsetSource,
+        };
+        let mut cfg = config(&[]);
+        cfg.toolsets = vec![ToolsetPolicy {
+            source: ToolsetSource::Agent,
+            default: ToolExecutionPolicy::default(),
+            overrides: vec![
+                ToolPolicyOverride {
+                    name: "read".into(),
+                    policy: ToolExecutionPolicy::default(),
+                },
+                ToolPolicyOverride {
+                    name: "write".into(),
+                    policy: ToolExecutionPolicy {
+                        enabled: false,
+                        permission: ToolPermissionRequirement::AlwaysAsk,
+                    },
+                },
+            ],
+        }];
+        let snapshot = compile(&cfg, &[tool("read"), tool("write")]).unwrap();
+        let ids = snapshot
+            .resolved_spec
+            .tool_descriptors
+            .iter()
+            .map(|tool| tool.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["read"]);
+        let policy = &snapshot.resolved_spec.plugin_config.agent.toolsets[0];
+        assert!(policy.policy_for("read").enabled);
+        assert!(!policy.policy_for("write").enabled);
+        assert!(
+            snapshot
+                .resolved_spec
+                .plugin_config
+                .agent
+                .tool_policy("unlisted")
+                .is_none()
+        );
+
+        let mut changed = cfg;
+        changed.toolsets[0].overrides[1].policy.enabled = true;
+        assert_ne!(
+            snapshot.fingerprint,
+            compile(&changed, &[tool("read"), tool("write")])
+                .unwrap()
+                .fingerprint,
+            "execution policy is part of the immutable snapshot identity"
+        );
+    }
+
+    #[test]
+    fn competing_or_unresolvable_toolset_authoring_fails_closed() {
+        // Decision table:
+        // | cause                         | result |
+        // | duplicate source              | invalid tools binding |
+        // | MCP source undeclared         | invalid tools binding |
+        // | legacy permission + toolsets  | reject competing owner |
+        use awaken_runtime_contract::agent_bindings::{
+            ToolExecutionPolicy, ToolsetPolicy, ToolsetSource,
+        };
+        let agent = ToolsetPolicy {
+            source: ToolsetSource::Agent,
+            default: ToolExecutionPolicy::default(),
+            overrides: Vec::new(),
+        };
+        let invalid = |cfg: &AgentConfig| {
+            assert!(matches!(
+                compile(cfg, &[]),
+                Err(CompileError::InvalidBinding { axis: "tools", .. })
+            ));
+        };
+
+        let mut cfg = config(&[]);
+        cfg.toolsets = vec![agent.clone(), agent.clone()];
+        invalid(&cfg);
+
+        cfg.toolsets = vec![ToolsetPolicy {
+            source: ToolsetSource::Mcp {
+                server_name: "docs".into(),
+            },
+            default: ToolExecutionPolicy::default(),
+            overrides: Vec::new(),
+        }];
+        invalid(&cfg);
+
+        cfg.toolsets = vec![agent];
+        cfg.plugin_config
+            .insert("permission".into(), serde_json::json!({"rules": []}));
+        invalid(&cfg);
     }
 
     #[test]

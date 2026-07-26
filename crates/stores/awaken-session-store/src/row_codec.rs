@@ -127,6 +127,7 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
         runtime: runtime.runtime,
         application: None,
         delegate_ids: runtime.delegate_ids,
+        toolsets: Vec::new(),
         mounts: Vec::new(),
         env: Vec::new(),
         prompts: Vec::new(),

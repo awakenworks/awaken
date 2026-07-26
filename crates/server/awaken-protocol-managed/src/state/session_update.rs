@@ -241,7 +241,7 @@ impl ManagedState {
             }
         }
         if let Some(tools) = &command.tools {
-            persisted.agent_tools = tools.clone();
+            persisted.agent_tools = crate::project::resolved_tools(tools);
         }
         let title_changed = persisted.title != initial_title;
         let metadata_changed = persisted.metadata != initial_metadata;
@@ -286,33 +286,51 @@ impl ManagedState {
                 })?
                 .committed_revision
         };
-        if !semantic_changed || !command_applied {
-            return Ok((self.get_session(id)?, response_revision));
+        // The durable aggregate is authoritative. Project it before touching the
+        // disposable runtime so a rebuild failure cannot leave reads serving the
+        // pre-commit tool policy. Replays repair this projection without emitting
+        // a duplicate SessionUpdated event.
+        if semantic_changed || !command_applied {
+            let mut sessions = self.sessions.lock().unwrap();
+            let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
+            let visible_mcp_servers = mcp_in_request.then(|| persisted.visible_mcp_servers());
+            record.session.title = persisted.title.clone();
+            record.session.metadata = persisted.metadata.clone();
+            let agent_changed = tools_changed || mcp_changed;
+            if command.tools.is_some() {
+                record.session.agent.tools = crate::project::resolved_tools(&persisted.agent_tools);
+            }
+            if let Some(visible_mcp_servers) = visible_mcp_servers {
+                record.session.agent.mcp_servers =
+                    super::sessions::typed_mcp_servers(visible_mcp_servers);
+            }
+            if semantic_changed && command_applied {
+                record.events.push(Event {
+                    id: self.next_event_id(),
+                    kind: OutboundKind::SessionUpdated {
+                        title: title_in_request
+                            .then(|| record.session.title.clone())
+                            .flatten(),
+                        metadata: record.session.metadata.clone(),
+                        agent: agent_changed.then(|| record.session.agent.clone()),
+                    },
+                    processed_at: Some(PROCESSED_AT.to_string()),
+                });
+            }
         }
-        let mut sessions = self.sessions.lock().unwrap();
-        let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
-        let visible_mcp_servers = mcp_in_request.then(|| persisted.visible_mcp_servers());
-        record.session.title = persisted.title;
-        record.session.metadata = persisted.metadata;
-        let agent_changed = tools_changed || mcp_changed;
-        if let Some(tools) = command.tools.clone() {
-            record.session.agent.tools = tools;
+        // Runtime reconciliation follows the durable commit. An idempotent replay
+        // repeats this step when the first attempt committed but the runtime adapter
+        // failed, so a transient rebuild failure cannot leave a permanently stale
+        // tool policy behind the successful command receipt.
+        if command.tools.is_some() && (tools_changed || !command_applied) {
+            self.runtime
+                .replace_session_toolsets(
+                    id,
+                    crate::project::toolset_policies(&persisted.agent_tools),
+                )
+                .await
+                .map_err(StateError::Run)?;
         }
-        if let Some(visible_mcp_servers) = visible_mcp_servers {
-            record.session.agent.mcp_servers =
-                super::sessions::typed_mcp_servers(visible_mcp_servers);
-        }
-        record.events.push(Event {
-            id: self.next_event_id(),
-            kind: OutboundKind::SessionUpdated {
-                title: title_in_request
-                    .then(|| record.session.title.clone())
-                    .flatten(),
-                metadata: record.session.metadata.clone(),
-                agent: agent_changed.then(|| record.session.agent.clone()),
-            },
-            processed_at: Some(PROCESSED_AT.to_string()),
-        });
-        Ok((record.session_projection(), response_revision))
+        Ok((self.get_session(id)?, response_revision))
     }
 }

@@ -84,6 +84,7 @@ impl ConfigServiceAgentSource {
                 })
                 .map(|descriptor| descriptor.id.clone())
                 .collect(),
+            toolsets: bindings.toolsets.clone(),
             client_tools: spec
                 .tool_descriptors
                 .iter()

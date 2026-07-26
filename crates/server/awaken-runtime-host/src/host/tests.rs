@@ -723,6 +723,7 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
                     ),
                 ),
                 delegate_ids: Vec::new(),
+                toolsets: Vec::new(),
                 mounts: input.mounts,
                 env: input.env,
                 prompts: input.prompts,
@@ -734,6 +735,7 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
             baseline,
             resources: Default::default(),
             mcp: Vec::new(),
+            toolsets: Vec::new(),
         }
     }
 
@@ -1289,6 +1291,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
             workspace_id: host.local_workspace().into(),
             agent_id: "agent".into(),
             delegate_ids: Vec::new(),
+            toolsets: None,
             resources: effective_resources(
                 store
                     .map(|id| TestInput {
@@ -1889,6 +1892,7 @@ async fn frozen_environment_network_follows_the_decision_table() {
                     workspace_id: host.local_workspace().into(),
                     agent_id: "a".into(),
                     delegate_ids: Vec::new(),
+                    toolsets: None,
                     resources: Default::default(),
                     model: None,
                     runtime: None,
@@ -1917,6 +1921,7 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
         workspace_id: "ws".into(),
         agent_id: "a".into(),
         delegate_ids: Vec::new(),
+        toolsets: None,
         resources: Default::default(),
         model: None,
         runtime: None,
@@ -1960,6 +1965,7 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
         workspace_id: "ws".into(),
         agent_id: "a".into(),
         delegate_ids: Vec::new(),
+        toolsets: None,
         resources: Default::default(),
         model: None,
         runtime: None,
@@ -1997,6 +2003,7 @@ async fn prepare_session_mounts_an_effective_memory_resource() {
         workspace_id: host.local_workspace().into(),
         agent_id: agent.into(),
         delegate_ids: Vec::new(),
+        toolsets: None,
         resources: effective_resources(
             (agent == "a")
                 .then(|| TestInput {
@@ -2187,6 +2194,7 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
                 workspace_id: host.local_workspace().into(),
                 agent_id: "a".into(),
                 delegate_ids: Vec::new(),
+                toolsets: None,
                 resources: effective_resources(vec![
                     TestInput {
                         kind: "file".into(),
@@ -3100,6 +3108,7 @@ async fn a_github_repository_resource_does_not_create_a_parallel_mcp_projection(
                 workspace_id: host.local_workspace().into(),
                 agent_id: "a".into(),
                 delegate_ids: Vec::new(),
+                toolsets: None,
                 resources: effective_repository(
                     "repo-1",
                     "https://github.com/awaken/example.git",
@@ -3431,6 +3440,7 @@ async fn repository_credential_realization_follows_the_decision_table() {
                     workspace_id: host.local_workspace().into(),
                     agent_id: "a".into(),
                     delegate_ids: Vec::new(),
+                    toolsets: None,
                     resources,
                     model: None,
                     runtime: None,
@@ -3494,6 +3504,7 @@ async fn rotating_a_github_repository_token_re_keys_only_the_clone() {
                 workspace_id: host.local_workspace().into(),
                 agent_id: "a".into(),
                 delegate_ids: Vec::new(),
+                toolsets: None,
                 resources: effective_repository(
                     "repo-1",
                     "https://github.com/awaken/example.git",
@@ -3572,6 +3583,7 @@ fn bare_session(agent: &str, workspace: &str) -> awaken_protocol_managed::Sessio
         workspace_id: workspace.into(),
         agent_id: agent.into(),
         delegate_ids: Vec::new(),
+        toolsets: None,
         resources: Default::default(),
         model: None,
         runtime: None,

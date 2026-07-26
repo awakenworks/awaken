@@ -152,6 +152,7 @@ struct HotRuntimeState {
     mode: HotStageMode,
     fail_publish_next: bool,
     fail_drain_next: bool,
+    replaced_toolsets: Vec<(String, Vec<awaken_agent_contract::ToolsetPolicy>)>,
 }
 
 struct HotRuntime {
@@ -191,6 +192,18 @@ impl SessionRuntime for HotRuntime {
         Err(RunError::internal("unused"))
     }
     async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+        Ok(())
+    }
+    async fn replace_session_toolsets(
+        &self,
+        thread: &str,
+        toolsets: Vec<awaken_agent_contract::ToolsetPolicy>,
+    ) -> Result<(), RunError> {
+        self.state
+            .lock()
+            .unwrap()
+            .replaced_toolsets
+            .push((thread.to_string(), toolsets));
         Ok(())
     }
     async fn define_outcome(
@@ -1591,11 +1604,25 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
     assert_eq!(status, StatusCode::BAD_REQUEST, "I5");
 
     let current_etag = later_headers["etag"].to_str().unwrap();
+    // Cause graph: Session toolset update -> durable exact projection -> runtime
+    // policy replacement -> disposable runtime rebuild on the next turn.
+    //
+    // Decision table:
+    // | update field | durable revision | runtime replacement |
+    // | omitted      | unchanged        | none                |
+    // | exact value  | incremented      | exact policy once   |
+    // | replay       | original receipt | none duplicated     |
     let tools = json!([{
-        "type": "custom",
-        "name": "client_tool",
-        "description": "durable",
-        "input_schema": { "type": "object" }
+        "type": "agent_toolset_20260401",
+        "configs": [{
+            "name": "write",
+            "enabled": false,
+            "permission_policy": { "type": "always_allow" }
+        }],
+        "default_config": {
+            "enabled": true,
+            "permission_policy": { "type": "always_ask" }
+        }
     }]);
     let (status, _, updated) = call_with_headers(
         &h.app,
@@ -1612,6 +1639,11 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
         serde_json::from_value::<Vec<awaken_session_contract::AgentTool>>(tools).unwrap(),
         "I6"
     );
+    let state = h.state.lock().unwrap();
+    assert_eq!(state.replaced_toolsets.len(), 1, "I6 runtime effect");
+    assert_eq!(state.replaced_toolsets[0].0, id, "I6 exact Session");
+    let write = state.replaced_toolsets[0].1[0].policy_for("write");
+    assert!(!write.enabled, "I6 exact disabled policy reaches runtime");
 }
 
 /// CAS retry decisions are generated from `conflict × explicit precondition`:

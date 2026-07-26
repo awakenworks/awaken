@@ -52,6 +52,7 @@ fn session_init(network: SessionNetworkPolicy) -> SessionInit {
         workspace_id: "workspace".into(),
         agent_id: "agent".into(),
         delegate_ids: Vec::new(),
+        toolsets: None,
         resources: Default::default(),
         model: None,
         runtime: Some("acp:test".into()),

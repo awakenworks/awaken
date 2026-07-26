@@ -13,16 +13,16 @@ use awaken_config_store::{
 };
 use awaken_protocol_managed::types::agent::{
     Agent, AgentCreateParams, AgentListParams, AgentSkill, AgentTool, AgentUpdateParams,
-    CustomToolInputSchema, MultiagentConfig as WireMultiagent, MultiagentRosterEntry,
-    ToolDefaultConfig, UrlMcpServer, UrlMcpServerKind,
+    CustomToolInputSchema, MultiagentConfig as WireMultiagent, MultiagentRosterEntry, UrlMcpServer,
+    UrlMcpServerKind,
 };
 use awaken_protocol_managed::types::{ModelConfig, ModelEffort, ModelSpeed};
 use awaken_protocol_managed::{ManagedAgentError, ManagedAgentRepository};
 use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
 use awaken_runtime_contract::agent_bindings::{InferenceOptions, InferenceSpeed, ReasoningEffort};
+use awaken_runtime_contract::agent_bindings::{ToolsetPolicy, ToolsetSource};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_tenancy::ScopeId;
-use serde_json::json;
 use sha2::{Digest, Sha256};
 
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
@@ -120,14 +120,6 @@ impl ConfigPlaneManagedAgentRepository {
     }
 }
 
-fn tool_id(tool: &AgentTool) -> Option<String> {
-    match tool {
-        AgentTool::AgentToolset20260401 { .. } => Some("agent_toolset_20260401".into()),
-        AgentTool::McpToolset { .. } => None,
-        AgentTool::Custom { .. } => None,
-    }
-}
-
 fn client_tools(tools: &[AgentTool]) -> Vec<ToolDescriptor> {
     tools
         .iter()
@@ -189,14 +181,15 @@ fn config_from_create(
     let model = params.model.into_config();
     let inference = inference_from_wire(model.speed, model.effort.map(|value| value.resolved()));
     let multiagent = params.multiagent.map(|value| typed_multiagent(&id, value));
-    Ok(AgentConfig {
+    let config = AgentConfig {
         id,
         instructions: params.system.unwrap_or_default(),
         max_steps: 8,
         delegation_limits: Default::default(),
         model_binding: ModelSelection::pinned("", model.id, ""),
         inference,
-        tool_ids: params.tools.iter().filter_map(tool_id).collect(),
+        tool_ids: Vec::new(),
+        toolsets: awaken_protocol_managed::project::toolset_policies(&params.tools),
         client_tools: client_tools(&params.tools),
         plugin_ids: Vec::new(),
         plugin_config: BTreeMap::new(),
@@ -213,7 +206,91 @@ fn config_from_create(
         tool_overrides: Vec::new(),
         recovery_policies: BTreeMap::new(),
         compaction: None,
-    })
+    };
+    validate_managed_tool_bindings(&config)?;
+    Ok(config)
+}
+
+fn validate_managed_tool_bindings(config: &AgentConfig) -> Result<(), ManagedAgentError> {
+    if config.mcp_servers.len() > 20 {
+        return Err(ManagedAgentError::Invalid(
+            "mcp_servers supports at most 20 entries".into(),
+        ));
+    }
+    let server_names = config
+        .mcp_servers
+        .iter()
+        .map(|server| server.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    if server_names.len() != config.mcp_servers.len() {
+        return Err(ManagedAgentError::Invalid(
+            "mcp_servers names must be unique".into(),
+        ));
+    }
+    let mut sources = std::collections::BTreeSet::new();
+    let mut referenced_mcp = std::collections::BTreeSet::new();
+    for toolset in &config.toolsets {
+        let source = match &toolset.source {
+            ToolsetSource::Agent => "agent".to_string(),
+            ToolsetSource::Mcp { server_name } => {
+                if !server_names.contains(server_name.as_str()) {
+                    return Err(ManagedAgentError::Invalid(format!(
+                        "mcp_toolset references undeclared server `{server_name}`"
+                    )));
+                }
+                referenced_mcp.insert(server_name.as_str());
+                format!("mcp:{server_name}")
+            }
+        };
+        if !sources.insert(source.clone()) {
+            return Err(ManagedAgentError::Invalid(format!(
+                "toolset source `{source}` is duplicated"
+            )));
+        }
+        let mut names = std::collections::BTreeSet::new();
+        for entry in &toolset.overrides {
+            if entry.name.is_empty() || !names.insert(entry.name.as_str()) {
+                return Err(ManagedAgentError::Invalid(format!(
+                    "tool config name {:?} is empty or duplicated",
+                    entry.name
+                )));
+            }
+            if toolset.source == ToolsetSource::Agent
+                && !awaken_protocol_managed::project::is_agent_toolset_member(&entry.name)
+            {
+                return Err(ManagedAgentError::Invalid(format!(
+                    "unknown agent tool `{}`",
+                    entry.name
+                )));
+            }
+        }
+    }
+    if referenced_mcp != server_names {
+        let missing = server_names
+            .difference(&referenced_mcp)
+            .copied()
+            .collect::<Vec<_>>();
+        return Err(ManagedAgentError::Invalid(format!(
+            "every MCP server must have one mcp_toolset; missing {missing:?}"
+        )));
+    }
+    let declared_count = config.client_tools.len()
+        + config
+            .toolsets
+            .iter()
+            .map(|toolset| match toolset.source {
+                ToolsetSource::Agent => {
+                    awaken_protocol_managed::project::AGENT_TOOLSET_TOOL_IDS.len()
+                }
+                ToolsetSource::Mcp { .. } => toolset.overrides.len(),
+            })
+            .sum::<usize>();
+    if declared_count > 128 {
+        return Err(ManagedAgentError::Invalid(
+            "tools supports at most 128 declared entries".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn inference_from_wire(speed: Option<ModelSpeed>, effort: Option<ModelEffort>) -> InferenceOptions {
@@ -249,28 +326,8 @@ fn model_config(model: String, inference: InferenceOptions) -> ModelConfig {
     }
 }
 
-fn wire_tools(ids: &[String], client_tools: &[ToolDescriptor]) -> Vec<AgentTool> {
-    let mut tools = ids
-        .iter()
-        .map(|id| {
-            if id == "agent_toolset_20260401" {
-                AgentTool::AgentToolset20260401 {
-                    configs: Vec::new(),
-                    default_config: Some(ToolDefaultConfig {
-                        enabled: Some(true),
-                        permission_policy: None,
-                    }),
-                }
-            } else {
-                AgentTool::Custom {
-                    name: id.clone(),
-                    description: format!("Client-executed tool `{id}`"),
-                    input_schema: CustomToolInputSchema::from_value(json!({"type":"object"}))
-                        .expect("object schema"),
-                }
-            }
-        })
-        .collect::<Vec<_>>();
+fn wire_tools(toolsets: &[ToolsetPolicy], client_tools: &[ToolDescriptor]) -> Vec<AgentTool> {
+    let mut tools = awaken_protocol_managed::project::resolved_toolsets(toolsets);
     tools.extend(client_tools.iter().map(|tool| {
         AgentTool::Custom {
             name: tool.id.clone(),
@@ -290,7 +347,7 @@ fn project(revision: AgentConfigRevision) -> Agent {
         .resolved()
         .map(|binding| binding.model_ref.clone())
         .unwrap_or_default();
-    let tools = wire_tools(&config.tool_ids, &config.client_tools);
+    let tools = wire_tools(&config.toolsets, &config.client_tools);
     Agent {
         id: id.clone(),
         object_type: "agent",
@@ -496,12 +553,14 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         }
         if let Some(tools) = params.tools {
             let tools = tools.unwrap_or_default();
-            config.tool_ids = tools.iter().filter_map(tool_id).collect();
+            config.tool_ids.clear();
+            config.toolsets = awaken_protocol_managed::project::toolset_policies(&tools);
             config.client_tools = client_tools(&tools);
         }
         if let Some(multiagent) = params.multiagent {
             config.multiagent = multiagent.map(|multiagent| typed_multiagent(id, multiagent));
         }
+        validate_managed_tool_bindings(&config)?;
         match self
             .plane
             .put_if_revision(&scope, &config, current.revision)
@@ -598,6 +657,7 @@ mod tests {
     use awaken_config_store::{ModelSelection, SqliteConfigStore};
     use awaken_protocol_managed::types::agent::{AgentCreateParams, AgentUpdateParams, ModelInput};
     use awaken_runtime_contract::resolved::ModelBinding;
+    use serde_json::json;
 
     use super::*;
 
@@ -647,7 +707,13 @@ mod tests {
                 }))
                 .unwrap(),
             ],
-            tools: Vec::new(),
+            tools: vec![
+                serde_json::from_value(json!({
+                    "type": "mcp_toolset",
+                    "mcp_server_name": "docs"
+                }))
+                .unwrap(),
+            ],
             multiagent: None,
         }
     }

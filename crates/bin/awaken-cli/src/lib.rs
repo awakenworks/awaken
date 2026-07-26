@@ -1393,6 +1393,7 @@ mod runtime_session_store_tests {
                 runtime: None,
                 mcp_authoring: Default::default(),
                 delegate_ids: Vec::new(),
+                toolsets: Vec::new(),
                 mounts: Vec::new(),
                 env: Vec::new(),
                 prompts: Vec::new(),

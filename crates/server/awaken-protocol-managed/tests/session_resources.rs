@@ -94,6 +94,7 @@ impl AgentConfigSource for AgentWithResources {
             model: None,
             system: None,
             tool_ids: Vec::new(),
+            toolsets: Vec::new(),
             client_tools: Vec::new(),
             mcp_servers: Vec::new(),
             skill_ids: Vec::new(),
@@ -117,6 +118,7 @@ impl AgentConfigSource for AgentWithIntegrations {
             model: None,
             system: None,
             tool_ids: Vec::new(),
+            toolsets: Vec::new(),
             client_tools: Vec::new(),
             mcp_servers: vec![
                 awaken_protocol_managed::AgentMcpServerView {
@@ -148,6 +150,7 @@ impl AgentConfigSource for AgentWithClientTool {
             model: None,
             system: None,
             tool_ids: Vec::new(),
+            toolsets: Vec::new(),
             client_tools: vec![AgentClientToolView {
                 name: "lookup".into(),
                 description: "exact client lookup".into(),
@@ -174,6 +177,7 @@ impl AgentConfigSource for AgentWithPlatformRepository {
             model: None,
             system: None,
             tool_ids: Vec::new(),
+            toolsets: Vec::new(),
             client_tools: Vec::new(),
             mcp_servers: Vec::new(),
             skill_ids: Vec::new(),
@@ -197,6 +201,7 @@ impl AgentConfigSource for WorkspaceScopedAgent {
             model: None,
             system: None,
             tool_ids: Vec::new(),
+            toolsets: Vec::new(),
             client_tools: Vec::new(),
             mcp_servers: Vec::new(),
             skill_ids: Vec::new(),
@@ -234,6 +239,7 @@ impl AgentConfigSource for AgentWithEnvironment {
             model: None,
             system: None,
             tool_ids: Vec::new(),
+            toolsets: Vec::new(),
             client_tools: Vec::new(),
             mcp_servers: Vec::new(),
             skill_ids: Vec::new(),

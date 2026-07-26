@@ -36,14 +36,14 @@ pub struct AgentClientToolView {
 pub enum AgentTool {
     #[serde(rename = "agent_toolset_20260401")]
     AgentToolset20260401 {
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[serde(default)]
         configs: Vec<AgentToolConfig>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         default_config: Option<AgentToolDefaultConfig>,
     },
     McpToolset {
         mcp_server_name: String,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[serde(default)]
         configs: Vec<AgentToolConfig>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         default_config: Option<AgentToolDefaultConfig>,
@@ -105,6 +105,8 @@ pub struct AgentConfigView {
     pub model: Option<String>,
     pub system: Option<String>,
     pub tool_ids: Vec<String>,
+    /// Resolved availability/confirmation policies frozen in the publication.
+    pub toolsets: Vec<awaken_agent_contract::ToolsetPolicy>,
     pub client_tools: Vec<AgentClientToolView>,
     /// Direct MCP servers inherited by Sessions of this published Agent.
     pub mcp_servers: Vec<AgentMcpServerView>,

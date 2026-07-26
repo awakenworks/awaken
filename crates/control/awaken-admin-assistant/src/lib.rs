@@ -956,6 +956,7 @@ impl RawTool for DraftAgent {
             model_binding,
             inference: Default::default(),
             tool_ids: args.tool_ids,
+            toolsets: Vec::new(),
             client_tools: Vec::new(),
             plugin_ids,
             plugin_config: args.plugin_config,

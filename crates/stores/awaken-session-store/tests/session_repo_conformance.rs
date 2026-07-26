@@ -64,6 +64,7 @@ fn session(id: &str, title: &str) -> PersistedSession {
                     runtime: Some("acp:custom".into()),
                     application: None,
                     delegate_ids: vec!["researcher".into()],
+                    toolsets: Vec::new(),
                     mounts: Vec::new(),
                     env: Vec::new(),
                     prompts: Vec::new(),

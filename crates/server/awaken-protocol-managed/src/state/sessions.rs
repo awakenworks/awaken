@@ -697,6 +697,20 @@ impl ManagedState {
             project::validate_custom_tool(tool)
                 .map_err(|msg| StateError::Run(RunError::bad_request(msg)))?;
         }
+        let inherited_toolsets = config_view
+            .as_ref()
+            .filter(|view| !view.toolsets.is_empty())
+            .map(|view| view.toolsets.clone())
+            .unwrap_or_else(|| project::toolset_policies(&project::agent_tools(&caps)));
+        let effective_toolsets = match &req.agent {
+            AgentRef::Object(reference) => reference
+                .tools
+                .as_ref()
+                .map(|tools| project::toolset_policies(tools.as_deref().unwrap_or_default()))
+                .unwrap_or(inherited_toolsets),
+            AgentRef::Id(_) => inherited_toolsets,
+        };
+        let initial_agent_toolsets = project::resolved_toolsets(&effective_toolsets);
         let resolved_model = selected_model
             .clone()
             .unwrap_or_else(|| ModelConfig::new(self.runtime.model()));
@@ -711,6 +725,7 @@ impl ManagedState {
                 model: resolved_model.id.clone(),
                 runtime: req.awaken_runtime().map(str::to_string),
                 delegate_ids: delegate_ids.clone(),
+                toolsets: effective_toolsets,
                 mounts: Vec::new(),
                 env: Vec::new(),
                 prompts: Vec::new(),
@@ -742,7 +757,7 @@ impl ManagedState {
             baseline: awaken_session_contract::SessionBaselineState::Preparing(creation_intent),
             title: req.title.clone(),
             metadata: req.metadata.clone(),
-            agent_tools: Vec::new(),
+            agent_tools: initial_agent_toolsets,
             environment_binding: None,
             mcp: Default::default(),
             resources: Default::default(),
@@ -772,7 +787,11 @@ impl ManagedState {
         }
         let deployment_id = req.metadata.get("awaken.deployment_id").cloned();
         let session_tools = if let Some(view) = &config_view {
-            let mut tools = project::agent_tools(&caps);
+            let mut tools = if view.toolsets.is_empty() {
+                project::agent_tools(&caps)
+            } else {
+                project::resolved_toolsets(&view.toolsets)
+            };
             let client_tools = project::agent_client_tools(&view.client_tools)
                 .map_err(|error| StateError::Run(RunError::bad_request(error)))?;
             tools.retain(|candidate| match candidate {
@@ -853,7 +872,7 @@ impl ManagedState {
                         "cannot clear tools while skills are configured",
                     )));
                 }
-                session.agent.tools = tools.clone().unwrap_or_default();
+                session.agent.tools = project::resolved_tools(tools.as_deref().unwrap_or_default());
             }
             if let Some(skills) = &override_ref.skills {
                 session.agent.skills = skills.clone().unwrap_or_default();
@@ -1356,6 +1375,7 @@ impl ManagedState {
                             workspace_id: owner_scope.clone(),
                             agent_id: baseline.agent_id.clone(),
                             delegate_ids: baseline.delegate_ids.clone(),
+                            toolsets: Some(project::toolset_policies(&session.agent_tools)),
                             resources: session.resources.active.clone(),
                             model: Some(baseline.model.clone()),
                             runtime: baseline.runtime.clone(),

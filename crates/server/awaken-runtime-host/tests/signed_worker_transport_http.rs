@@ -78,6 +78,7 @@ impl awaken_protocol_managed::ApplicationSessionContributionPort
                 runtime: None,
                 application: Some(input_receipt),
                 delegate_ids: Vec::new(),
+                toolsets: Vec::new(),
                 mounts: contribution.input.mounts,
                 env: contribution.input.env,
                 prompts: contribution.input.prompts,
@@ -89,6 +90,7 @@ impl awaken_protocol_managed::ApplicationSessionContributionPort
             baseline,
             resources: Default::default(),
             mcp: Vec::new(),
+            toolsets: Vec::new(),
         };
         *self.projection.lock().unwrap() = Some(projection.clone());
         Ok(

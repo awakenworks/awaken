@@ -374,6 +374,15 @@ impl SharedHost {
                 .map(|c| c.resolved_spec.plugin_config.plugins())
                 .unwrap_or(&self.plugin_config),
         );
+        let published_toolsets = installed
+            .as_ref()
+            .map(|snapshot| snapshot.resolved_spec.plugin_config.agent.toolsets.clone())
+            .unwrap_or_default();
+        let toolsets = self
+            .session_slots
+            .read(thread, |slot| slot.toolsets.clone())
+            .flatten()
+            .unwrap_or(published_toolsets);
         // Management tools (ADR-0052) remain pre-authorized: they are read-only,
         // and only the reserved-scope assistant's config names them.
         let admin_ids: Vec<String> = self
@@ -381,8 +390,9 @@ impl SharedHost {
             .iter()
             .map(|t| t.id().to_string())
             .collect();
+        let has_explicit_tool_policy = authored_permission.is_some() || !toolsets.is_empty();
         let pre_authorized =
-            pre_authorized_tool_ids(&mcp.tool_ids, &admin_ids, authored_permission.is_some());
+            pre_authorized_tool_ids(&mcp.tool_ids, &admin_ids, has_explicit_tool_policy);
         // The workspace skill dir is negotiated by the agent/hand definition: its
         // `plugin_config.skills_dir` (ADR-0036) overrides the default `skills` subdir,
         // so a hand that authors skills elsewhere is discovered where it says — not a
@@ -398,10 +408,13 @@ impl SharedHost {
             })
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| crate::skills::DEFAULT_SKILLS_SUBDIR.to_string());
-        let apply_base_gate = !pre_authorized.is_empty() || authored_permission.is_some();
-        let permission =
-            crate::config::server_permission_policy(authored_permission.clone(), &pre_authorized);
-        let base_gate = server_gate_with(authored_permission, &pre_authorized);
+        let apply_base_gate = !pre_authorized.is_empty() || has_explicit_tool_policy;
+        let permission = crate::config::server_permission_policy_with_toolsets(
+            authored_permission.clone(),
+            &pre_authorized,
+            &toolsets,
+        );
+        let base_gate = server_gate_with_toolsets(authored_permission, &pre_authorized, &toolsets);
         // R1/R2: the runtime is built with the host default executor; each run then
         // resolves its *effective* model (its `model_ref_override`, else its snapshot
         // binding) to an executor at the resolve seam and sets it on the run context.
@@ -588,6 +601,13 @@ impl SharedHost {
                 context_policy,
             )
         });
+        if self
+            .session_slots
+            .read(thread, |slot| slot.toolsets.is_some())
+            .unwrap_or(false)
+        {
+            config.resolved_spec.plugin_config.agent.toolsets = toolsets;
+        }
         // A session-selected ACP/A2A runtime is an execution backend choice, not
         // merely an environment hint. Reflect it into the neutral resolved
         // snapshot so the shared AttemptExecutorRegistry routes the activation

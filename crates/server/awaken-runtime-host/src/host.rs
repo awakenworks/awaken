@@ -57,7 +57,9 @@ use crate::background::BackgroundRuns;
 use crate::compact::{
     compact_backend as build_compact_backend, compact_runner as build_compact_runner,
 };
-use crate::config::{build_runtime, config_permission_ruleset, server_config, server_gate_with};
+use crate::config::{
+    build_runtime, config_permission_ruleset, server_config, server_gate_with_toolsets,
+};
 use crate::delegate::HostRunDelegationService;
 use crate::hub::{ThreadEvent, ThreadEventHub};
 use crate::memory::{DEFAULT_MEMORY_INSTRUCTIONS, default_memory_agent};

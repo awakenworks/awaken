@@ -129,6 +129,7 @@ impl ManagedState {
             revision: session.revision,
             baseline,
             resources,
+            toolsets: crate::project::toolset_policies(&session.agent_tools),
             mcp: session.mcp.attachments.clone(),
         })
     }
@@ -384,6 +385,7 @@ mod tests {
                 runtime: None,
                 mcp_authoring: Default::default(),
                 delegate_ids: Vec::new(),
+                toolsets: Vec::new(),
                 mounts: Vec::new(),
                 env: Vec::new(),
                 prompts: Vec::new(),
@@ -652,6 +654,7 @@ mod tests {
             model: None,
             system: None,
             tool_ids: Vec::new(),
+            toolsets: Vec::new(),
             client_tools: Vec::new(),
             mcp_servers: vec![
                 agent_server("secured", "https://secured.example", Some(("cred", 7))),
