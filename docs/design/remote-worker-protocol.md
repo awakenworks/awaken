@@ -114,7 +114,7 @@ Awaken Worker Node
 │       └── a2a:<endpoint-or-profile>
 └── registered application
     ├── ApplicationSessionProvisioner
-    │   └── neutral mounts / env / prompt / MCP / egress plan
+    │   └── Environment snapshot / provisioning spec / service attachments
     └── RunAttemptExecutor decorator
         └── Flow envelope / ownership / output adapter
 ```
@@ -336,11 +336,14 @@ use the same `WorkerNode::run_until` state machine with an injected shutdown
 future. Registration creates one immutable `RegisteredWorkerContext` from the
 returned `RegisteredWorker` and the identity-bound `WorkerUpstream`; the factory
 then creates one `RegisteredWorkerApplication`. Its claim-time provisioner
-contributes a frozen neutral plan before Session realization, and `SharedHost`
-merges that plan with its built-in resources into one Session environment.
-`SharedHost` then constructs its complete per-Session Native/ACP/A2A router and
-applies the application decorator around it. There is no public Worker/Host path
-that replaces the complete router or creates another Session environment.
+produces a frozen neutral plan before Session realization. The Worker submits it
+over the identity-bound transport as a claim-fenced contribution; the
+Control-owned Session compiler consumes the preparation intent, freezes one
+baseline, and creates generation 1 state. The Worker then realizes that
+authoritative Session projection and constructs its complete per-Session
+Native/ACP/A2A router before applying the application decorator. There is no
+public Worker/Host path that replaces the complete router or creates another
+Session environment.
 
 `WorkerNode` owns:
 
@@ -356,10 +359,13 @@ The decorated executor receives only a validated attempt context. Run ingress
 captures the exact `RunClaim` in an `AttemptOwnershipVerifier`. The Host supplies
 the same verifier to claim-time application provisioning and later carries it
 in `RuntimeRunContext`, allowing application code to recheck live ownership
-without learning dispatch vocabulary. A provisioner may project Flow bindings
-and Run-scoped MCP into the one Session; a decorator may parse the Flow envelope
-and project outputs. Neither can bypass claim, recovery, backend routing,
-Session realization, commit, or settlement.
+without learning dispatch vocabulary. A provisioner produces one secret-free
+plan; the Worker submits it through the identity-bound transport as a
+claim-fenced `ApplicationSessionContribution` to the Control-owned Session
+application service. Only Control finalizes the baseline and Resource/MCP
+generation 1 state. A decorator may parse the application envelope and project
+outputs. Neither can bypass claim, recovery, backend routing, Session
+realization, commit, or settlement.
 
 ### 4.6 Topology validation
 
@@ -421,7 +427,9 @@ Worker             Control transport       Dispatch       Coordinator/Store
   |<-- consistent snapshot|<---------------------------------------|
   | load RecoveryProjection                                     |
   | verify ownership; prepare application Session plan           |
-  | merge plan; realize one SessionEnvironment                    |
+  | contribute(plan,claim,fp) -->| Session root CAS/finalize       |
+  |<-- finalized Session projection + realization lease ----------|
+  | realize one SessionEnvironment under Session lease            |
   | select exact backend_ref; enter executor                     |
   | renew --------------->|------------------->| extend same epoch  |
   | commit(op,ver,hash) -->|-------------------------------------->|
@@ -805,7 +813,23 @@ helpers and CLI parsing do not belong here.
 | `WorkerNodeBuilder` | assembly API | validated Worker dependency assembly, mutually exclusive explicit/standard manifest selection, and one post-registration application factory | typed deployment, materializers/resources, application capabilities/factory | complete executor/environment replacement, process environment parsing, hidden global stores, or a second capability derivation | application duplicates Worker/router lifecycle or advertises capabilities absent from the installed topology | construction, manifest-source, capability-derivation, and registered-context lifecycle tests |
 | `RegisteredWorkerContext` | immutable assembly value | one allocated Worker incarnation plus its identity-bound request transport | `RegisteredWorker`, `WorkerUpstream` | mutable liveness truth, product ACL, or a second credential | application uses an unsigned/stale identity or parallel trust path | signed transport and registration-order tests |
 | `RegisteredWorkerApplication` | immutable assembly value | the one provisioner/decorator pair installed after registration | registered context and neutral Host ports | Worker lifecycle or a second execution router | application hooks are assembled under different identities | registered-context lifecycle tests |
-| `ApplicationSessionProvisioner` | Worker application port | claim-bound projection into the authoritative Session environment | activation and neutral ownership verifier | sandbox creation, Session cache, claim vocabulary, or product persistence | Native and ACP receive different resources or a stale claim materializes secrets | application-plan ordering, merge, and stale-claim tests |
+| `ApplicationSessionProvisioner` | Worker application port | produce one claim-bound, secret-free neutral plan | activation and neutral ownership verifier | Sandbox creation, Session cache, product persistence, materialized credential, or a second environment plan | Native and ACP receive different inputs or a stale claim contributes effects | application-input ordering, fingerprint, and stale-claim tests |
+| `ApplicationSessionContribution` *(target)* | Worker-to-Control command | carry the complete plan fingerprint and secret-free mounts/env/prompts/network/MCP inputs before Session finalization | identity-bound Worker transport and exact Run claim/epoch | desired state, plaintext, live handles, or direct database write | Worker-local overlay diverges from Control or response loss duplicates creation input | target G42; replay/conflict/stale-claim/no-application tests |
+| `EnvironmentSnapshot` *(target)* | Session value object | exact reusable Managed Environment revision/fingerprint frozen for one Session, including the sole effective `NetworkPolicy` | normalized Environment definition | live Sandbox handles, mutable latest-config lookup, plaintext credentials, or MCP routes | Environment edits or compatibility network fields mutate an existing Session | target G42; pin/fingerprint, safe-policy-meet, and update-affects-new-Session tests |
+| `SessionCreationIntent` *(target)* | temporary Session aggregate state | durably collect Control inputs plus absent/required/exact claim-fenced application contribution until one finalization CAS consumes it | Session root mutation and creation compiler | runtime specification, external realization, indefinite authoring history, or post-finalization mutation | claim-time input cannot join creation or survives as a second Session authority | target G42; absent/replay/conflict/finalization-consumption tests |
+| `SessionBaseline` *(target)* | Session value object | immutable Environment, Agent/runtime, Skill, env, prompt, and baseline fingerprint facts | one creation compiler over Managed/Session/application inputs | Resource/MCP dynamic state, live handles, protocol DTOs, or a second network authority | a hot attachment mutates a supposedly frozen specification | target G42; immutable-baseline and creation-projection tests |
+| `SessionMcpAuthoringContext` *(target)* | Session baseline value | freeze ordered secret-free compatibility Vault references needed by later canonical full replacement | Session creation request | MCP desired state, material, authorization decision, or mutable Vault snapshot | hot definitions cannot use original compatibility scope or store a second desired list | target G42; ordered resolution, new-generation, and no-reselection tests |
+| `SessionMcpAttachmentSet` *(target)* | Session entity state | one revisioned authority for initial and hot MCP generations and lifecycle | exact output of the one Managed MCP normalizer | plaintext, Model/Repository access, independent registry, or Runtime extension vocabulary | initial and hot MCP diverge or stale tool calls reach replacements | target G42; root-CAS, generation, add/replace/remove, and recovery tests |
+| `McpAttachmentNormalizer` *(target)* | Managed anti-corruption/domain service | deterministic Agent/Session/application MCP precedence, canonical target, exact credential revision, usage, policy, and payload fingerprint | published Agent binding, compatibility Vault input, secret-free application input | plaintext, Host lookup, realization, or durable state | different ingress paths select different credentials or silently merge collisions | target G42; normalization table, ambiguity, revision, and fingerprint tests |
+| `SessionMutation` / root-CAS repository operation *(target)* | Session repository contract | one atomic expected-revision replace/tombstone update of aggregate, idempotency receipt, and lifecycle/outbox facts | `ManagedSessionRepository`, SQLite/Postgres adapters | direct field updates, authorization policy, or per-subaggregate commit authority | Resource/MCP/environment writes overwrite each other, delete loses receipts, or response loss duplicates a command | target G42; shared store conformance, delete replay, and two-Control conflict tests |
+| `SessionRealizationLease` / `McpRealizationClaim` *(target)* | Session application state | fence continuing Session projection by opaque Runtime owner/incarnation/epoch independently of a transient Run claim | Session repository; local Host or registered Worker adapter supplies the owner mapping | Run business ownership, Worker protocol vocabulary, credential choice, or live connection | an expired/replaced Host/Worker stages or publishes a generation | target G42; local/remote replacement/expiry/restage/orphan tests |
+| MCP stage/publish/drain methods on `SessionRuntime` *(target)* | Session application port | one local-or-remote port for invisible exact-generation staging, post-CAS safe-boundary publication, and idempotent drain | durable generation, Session realization lease, existing relay/transport/Runtime refresh | desired-state persistence, credential selection, or generation fallback | a staged route leaks before commit or an old call reaches replacement credentials | target G42; local/remote parity, stage-crash, stale-CAS disposal, replacement, and stale-call tests |
+| `CredentialExecutionPolicy` *(target)* | published value object | exact allowed plaintext-holder trust domains plus `Forbidden`/`VirtualOnly` exposure | existing `CredentialAccess` and `CredentialUsage` | authorization grant, holder ordering/fallback, secret bytes, or protocol-specific duplication | an adapter treats a different trust domain as automatically stronger | target G43; allowed-set, serialization, exposure, and no-fallback tests |
+| `PlaintextHolder` *(target)* | credential value object | one exact Workload/Worker/Platform boundary plus opaque trust-domain identity | publication policy and Environment/adapter admission | IAM role/principal, global strength rank, or delivery mechanism | plaintext moves to an unauthorized deployment boundary | target G43; trust-domain mismatch and capability-conformance tests |
+| `CredentialRealizationProfile` *(target)* | Environment/deployment execution value | exact inference and MCP holders requested by trusted composition and frozen into Session/attempt execution | Environment definition and installed adapter/provider facts | credential policy, runtime ranking, fallback, or secret material | a runtime iterates allowed holders or changes boundary after failure | target G43; deterministic profile, unsupported-holder, and retry-pin tests |
+| `CredentialMaterialSource` / `CredentialEnvelope` / resolver *(target)* | credential value objects and port | material resolver location separately from recipient-bound sealed payload reference | exact credential ref, payload fingerprint, and trust-domain recipient | usage semantics, holder authorization, plaintext persistence, or fallback | an envelope is treated as permission, lacks a payload identity, or opens at the wrong boundary | target G43; resolver conformance, schema/fingerprint, recipient, expiry, and replay tests |
+| `CredentialRefreshAccess` *(target)* | credential execution value | exact revision/fingerprint and opaque access/refresh/client-secret references for OAuth refresh and reseal | credential publication and material store | MCP URL rediscovery, current-Vault scan, plaintext persistence, or newer-revision adoption | migration deletes refresh support or a reconnect silently changes credentials | target G43; public/confidential refresh, reseal, restart, and exact-revision tests |
+| `AttemptCredentialBinding` / realization receipt *(target)* | dispatch attempt-epoch value and execution receipt | atomically pin candidate, revision, holder, planned mechanism, Worker/lease epoch before materialization; record actual mechanism after | published candidate, frozen execution profile, and claim transaction | Model/credential selection, allowed-holder policy authorship, or failure fallback | one attempt changes plaintext boundary after response loss or a stale epoch materializes | target G43; claim atomicity, Native/ACP parity, retry/reclaim, and no-fallback tests |
 | `AttemptOwnershipVerifier` | Runtime live port | claim-bound current-attempt verdict | private run-ingress adapter over `DispatchQueue` | claim/epoch, Worker registry, HTTP, database, or product vocabulary | application performs an external effect after losing ownership | cross-backend current/expired/stale tests; signed HTTP test |
 | `AttemptExecutorRegistry` | public registry | exact frozen backend-ref to executor mapping and capability export | Native/ACP/A2A executors | arbitrary advertised capability or routing policy | manifest drifts from real execution support | G40; registry/manifest conformance |
 | `RunLifecycleFeed` | boundary port | durable cursor over committed Run lifecycle | commit outbox/projection | dispatch lease operations or product status | consumers infer store tables or miss reconnect events | cursor/redelivery tests |
@@ -819,6 +843,29 @@ helpers and CLI parsing do not belong here.
 | P1 | exact Session executor registry, registered application provisioning/decoration, neutral ownership verification, production identity, separated lifecycle feeds | fleet is extensible and production-operable |
 | P2 | PostgreSQL active-active with authoritative recovery/lifecycle reads and multi-process failure injection | the physical Control singleton and sticky-routing constraint are removed |
 | Deferred | recovery cache/deltas, snapshot compaction, optional streaming, cell sharding/rebalancing, alternative primary stores, merged business event feed | requires measured scale or a separate accepted ADR |
+
+Accepted ADR-0066 defines a target plus a mandatory contract-closure Slice 0
+before feature coding. The target Session has one root revision, a temporary
+consumed preparation intent, immutable finalized `SessionBaseline`, existing
+`SessionResourceState`, and one `SessionMcpAttachmentSet`. A claim-time
+application submits one secret-free contribution through the identity-bound
+Worker-to-Control transport; only Control finalizes the baseline and generation
+1 state. Initial and hot MCP normalize into the same set; one
+`SessionRealizationLease` fences local/remote stage/publish/drain projection.
+Managed networking, legacy Sandbox networking, and `deny_egress` normalize once
+by safe intersection into the baseline `NetworkPolicy`.
+
+Accepted ADR-0067 extends existing `CredentialAccess`/`CredentialUsage` with a
+material source, recipient-bound sealed payload reference, exact resolver,
+optional OAuth refresh/reseal access, and explicit allowed plaintext-holder trust
+domains. Holders are not ordered; model exposure is `Forbidden` or
+`VirtualOnly`; inference stays authoritative in `ResolvedModelCandidate`, while
+the dispatch claim transaction pins each attempt epoch's exact holder and
+planned realization before materialization. These contracts are part of Slice
+0 and are not yet implementation-ready. Generic Service, public realizer,
+automatic LLM Vault authoring, HTTP/WebSocket/Git transports, and downstream
+platform custody remain deferred until concrete second implementations justify
+their boundaries.
 
 The first vertical slice is one Worker, one Control Node, one claimed Run that
 Awaits, crashes, is reclaimed by another Worker, resumes from a consistent
