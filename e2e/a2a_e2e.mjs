@@ -40,7 +40,33 @@ async function main() {
       },
     });
     assert.ok(replyText(r2).includes('second message'), `turn 2: ${replyText(r2)}`);
-    pass('a2a multi-turn conversation');
+
+    // Causal graph:
+    // A2A data JSON -> typed A2A Part -> runtime ACL (no generic JSON block)
+    //                               `-> adjacent text -> model -> task reply
+    // Decision table:
+    // | part | accepted by A2A | reaches neutral prompt | observable reply |
+    // | data | yes             | no                     | marker absent    |
+    // | text | yes             | yes                    | text present     |
+    // This drives the complete protocol/runtime path; it is not a DTO-only check.
+    const withData = await client.sendMessage({
+      message: {
+        messageId: 'm3',
+        contextId: 'a2a-data',
+        role: 'user',
+        kind: 'message',
+        parts: [
+          { kind: 'data', data: { nested: [1, true, null], marker: 'must-not-be-prompted' } },
+          { kind: 'text', text: 'visible text' },
+        ],
+      },
+    });
+    assert.ok(replyText(withData).includes('visible text'), `text was lost: ${replyText(withData)}`);
+    assert.ok(
+      !replyText(withData).includes('must-not-be-prompted'),
+      `A2A-owned JSON leaked into the neutral prompt: ${replyText(withData)}`,
+    );
+    pass('a2a multi-turn + data-part isolation');
   });
 
   // --- HITL: a tool needing approval awaits the task (input-required); a follow-up
@@ -94,7 +120,7 @@ async function main() {
     pass('a2a multimodal (image reached the model)');
   });
 
-  console.log('E2E PASS: A2A multi-turn + multimodal + HITL via @a2a-js/sdk.');
+  console.log('E2E PASS: A2A multi-turn + data isolation + multimodal + HITL via @a2a-js/sdk.');
 }
 
 main().catch((err) => {
