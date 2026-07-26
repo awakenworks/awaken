@@ -326,7 +326,20 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         }
     }
 
-    async fn retrieve(&self, workspace_id: &str, id: &str) -> Result<Agent, ManagedAgentError> {
+    async fn retrieve(
+        &self,
+        workspace_id: &str,
+        id: &str,
+        version: Option<u64>,
+    ) -> Result<Agent, ManagedAgentError> {
+        if let Some(version) = version {
+            return self
+                .versions(workspace_id, id)
+                .await?
+                .into_iter()
+                .find(|revision| revision.version == version)
+                .ok_or(ManagedAgentError::NotFound);
+        }
         self.versioned_for_read(workspace_id, id)
             .await?
             .map(|revision| self.project_current(workspace_id, revision))
@@ -372,10 +385,14 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             .await
             .map_err(ManagedAgentError::Storage)?
             .ok_or(ManagedAgentError::NotFound)?;
-        if current.revision != params.version {
+        if params
+            .version
+            .is_some_and(|version| current.revision != version)
+        {
             return Err(ManagedAgentError::Conflict(format!(
                 "version mismatch: expected {}, got {}",
-                current.revision, params.version
+                current.revision,
+                params.version.unwrap_or_default()
             )));
         }
         if current.config.archived_at.is_some() {
@@ -391,26 +408,41 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             config.model_binding = ModelSelection::pinned("", model.into_config().id, "");
         }
         if let Some(description) = params.description {
-            config.description = Some(description);
+            config.description = description;
         }
         if let Some(system) = params.system {
-            config.instructions = system;
+            config.instructions = system.unwrap_or_default();
         }
         if let Some(metadata) = params.metadata {
-            config.metadata = metadata;
+            match metadata {
+                None => config.metadata.clear(),
+                Some(patch) => {
+                    for (key, value) in patch {
+                        match value {
+                            Some(value) => {
+                                config.metadata.insert(key, value);
+                            }
+                            None => {
+                                config.metadata.remove(&key);
+                            }
+                        }
+                    }
+                }
+            }
         }
         if let Some(mcp_servers) = params.mcp_servers {
-            config.mcp_servers = typed_mcp_servers(mcp_servers);
+            config.mcp_servers = typed_mcp_servers(mcp_servers.unwrap_or_default());
         }
         if let Some(skills) = params.skills {
-            config.skill_ids = typed_skill_ids(skills);
+            config.skill_ids = typed_skill_ids(skills.unwrap_or_default());
         }
         if let Some(tools) = params.tools {
+            let tools = tools.unwrap_or_default();
             config.tool_ids = tools.iter().filter_map(tool_id).collect();
             config.client_tools = client_tools(&tools);
         }
         if let Some(multiagent) = params.multiagent {
-            config.multiagent = Some(typed_multiagent(id, multiagent));
+            config.multiagent = multiagent.map(|multiagent| typed_multiagent(id, multiagent));
         }
         match self
             .plane
@@ -564,7 +596,7 @@ mod tests {
 
     fn update_params(version: u64) -> AgentUpdateParams {
         AgentUpdateParams {
-            version,
+            version: Some(version),
             name: Some("renamed".into()),
             model: None,
             description: None,
@@ -645,7 +677,7 @@ mod tests {
 
         let repository =
             ConfigPlaneManagedAgentRepository::new(plane(path.to_str().unwrap()), "workspace-a");
-        let current = repository.retrieve("workspace-a", &id).await.unwrap();
+        let current = repository.retrieve("workspace-a", &id, None).await.unwrap();
         assert_eq!(current.name, "renamed");
         assert_eq!(current.version, 2);
         let versions = repository.versions("workspace-a", &id).await.unwrap();
@@ -653,7 +685,7 @@ mod tests {
         assert_eq!(versions[0].name, "assistant");
         assert_eq!(versions[1].name, "renamed");
         assert!(matches!(
-            repository.retrieve("workspace-b", &id).await,
+            repository.retrieve("workspace-b", &id, None).await,
             Err(ManagedAgentError::NotFound)
         ));
         assert!(matches!(
@@ -688,6 +720,7 @@ mod tests {
             .retrieve(
                 "workspace-a",
                 awaken_admin_assistant::ADMIN_ASSISTANT_AGENT_ID,
+                None,
             )
             .await
             .unwrap();
@@ -699,7 +732,8 @@ mod tests {
             repository
                 .retrieve(
                     "workspace-b",
-                    awaken_admin_assistant::ADMIN_ASSISTANT_AGENT_ID
+                    awaken_admin_assistant::ADMIN_ASSISTANT_AGENT_ID,
+                    None,
                 )
                 .await,
             Err(ManagedAgentError::NotFound)

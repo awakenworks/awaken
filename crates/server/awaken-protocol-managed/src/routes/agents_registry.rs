@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::routes::{ManagedJson, WorkspaceScope};
 use crate::state::DEFAULT_SCOPE;
-use crate::types::agent::{Agent, AgentCreateParams, AgentUpdateParams};
+use crate::types::agent::{Agent, AgentCreateParams, AgentRetrieveParams, AgentUpdateParams};
 use crate::types::{ErrorResponse, Page, PageQuery, paginate, paginate_by};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -45,7 +45,12 @@ pub trait ManagedAgentRepository: Send + Sync {
         workspace_id: &str,
         params: AgentCreateParams,
     ) -> Result<Agent, ManagedAgentError>;
-    async fn retrieve(&self, workspace_id: &str, id: &str) -> Result<Agent, ManagedAgentError>;
+    async fn retrieve(
+        &self,
+        workspace_id: &str,
+        id: &str,
+        version: Option<u64>,
+    ) -> Result<Agent, ManagedAgentError>;
     async fn list(&self, workspace_id: &str) -> Result<Vec<Agent>, ManagedAgentError>;
     async fn update(
         &self,
@@ -126,10 +131,11 @@ async fn retrieve_agent(
     State(state): State<Arc<AgentRegistryState>>,
     Path(id): Path<String>,
     scope: Option<Extension<WorkspaceScope>>,
+    Query(query): Query<AgentRetrieveParams>,
 ) -> Result<Json<Agent>, WireError> {
     state
         .repository
-        .retrieve(&request_scope(&scope), &id)
+        .retrieve(&request_scope(&scope), &id, query.version)
         .await
         .map(Json)
         .map_err(wire_error)

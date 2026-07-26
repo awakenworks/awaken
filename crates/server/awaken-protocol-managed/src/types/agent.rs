@@ -111,6 +111,7 @@ impl ModelInput {
 /// `AgentCreateParams` — the `POST /v1/agents` body. Every statically-known SDK
 /// union is decoded before the repository is called.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentCreateParams {
     pub name: String,
     pub model: ModelInput,
@@ -133,26 +134,34 @@ pub struct AgentCreateParams {
 /// `AgentUpdateParams` — a partial update under optimistic concurrency: `version`
 /// must match the agent's current version. Other fields replace when present.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentUpdateParams {
-    pub version: u64,
+    #[serde(default)]
+    pub version: Option<u64>,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
     pub model: Option<ModelInput>,
+    #[serde(default, deserialize_with = "super::presence::double_option")]
+    pub description: Option<Option<String>>,
+    #[serde(default, deserialize_with = "super::presence::double_option")]
+    pub system: Option<Option<String>>,
+    #[serde(default, deserialize_with = "super::presence::double_option")]
+    pub metadata: Option<Option<BTreeMap<String, Option<String>>>>,
+    #[serde(default, deserialize_with = "super::presence::double_option")]
+    pub mcp_servers: Option<Option<Vec<UrlMcpServer>>>,
+    #[serde(default, deserialize_with = "super::presence::double_option")]
+    pub skills: Option<Option<Vec<AgentSkill>>>,
+    #[serde(default, deserialize_with = "super::presence::double_option")]
+    pub tools: Option<Option<Vec<AgentTool>>>,
+    #[serde(default, deserialize_with = "super::presence::double_option")]
+    pub multiagent: Option<Option<MultiagentConfig>>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct AgentRetrieveParams {
     #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub system: Option<String>,
-    #[serde(default)]
-    pub metadata: Option<BTreeMap<String, String>>,
-    #[serde(default)]
-    pub mcp_servers: Option<Vec<UrlMcpServer>>,
-    #[serde(default)]
-    pub skills: Option<Vec<AgentSkill>>,
-    #[serde(default)]
-    pub tools: Option<Vec<AgentTool>>,
-    #[serde(default)]
-    pub multiagent: Option<MultiagentConfig>,
+    pub version: Option<u64>,
 }
 
 /// `BetaManagedAgentsAgentReference` — how an agent is *referenced* (by a

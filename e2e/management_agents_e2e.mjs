@@ -62,6 +62,16 @@ async function main() {
       assert.equal(updated.name, 'assistant-2');
       pass('beta.agents.update -> version bumped to 2');
 
+      const historical = await client.beta.agents.retrieve(agent.id, {
+        version: 1,
+        betas: BETAS,
+      });
+      assert.equal(historical.name, 'assistant', 'version query returns immutable revision 1');
+      await assert.rejects(
+        () => client.beta.agents.retrieve(agent.id, { version: 999, betas: BETAS }),
+        (error) => error.status === 404,
+      );
+
       // A stale version conflicts.
       await assert.rejects(
         () => client.beta.agents.update(agent.id, { version: 1, name: 'nope', betas: BETAS }),
@@ -113,15 +123,20 @@ async function main() {
       assert.ok(archivedVersions[2].archived_at, 'V3 terminal revision records archive');
       pass('beta.agents.archive -> archived_at set');
 
+      // [SDK:resources/beta/agents/agents.d.ts]
       // Cause/effect graph:
       // official tagged SDK unions -> Managed admission -> config normalization
-      // -> Agent projection. Unknown tags/fields fail before persistence.
+      // -> Agent projection. Updates distinguish omission, null, and value;
+      // unknown tags/fields fail before persistence.
       //
       // Decision table:
       // | composite input                        | result |
       // | URL MCP/custom skill/custom tools      | 200 + typed projection |
       // | unknown/misspelled union member        | 400, no Agent created  |
-      // | update multiagent:null                 | preserve current value |
+      // | update field omitted                   | preserve current value |
+      // | nullable update field = null           | clear exact field/bag  |
+      // | metadata value = null                  | delete only that key   |
+      // | update version omitted                 | unconditional CAS write|
       const rich = await json(baseUrl, 'POST', '/v1/agents', {
         name: 'rich-agent',
         model: { id: 'claude-sonnet-5', speed: 'fast' },
@@ -180,8 +195,34 @@ async function main() {
       }], 'replacement preserves the complete client-tool behavior contract');
       assert.deepEqual(
         richUpdated.body.multiagent,
-        { type: 'coordinator', agents: ['researcher'] },
+        null,
+        'explicit null clears the coordinator topology',
       );
+
+      const cleared = await client.beta.agents.update(rich.body.id, {
+        description: null,
+        system: null,
+        metadata: { team: null, retained: 'yes' },
+        mcp_servers: null,
+        skills: null,
+        tools: null,
+        multiagent: null,
+        betas: BETAS,
+      });
+      assert.equal(cleared.version, richUpdated.body.version + 1);
+      assert.equal(cleared.description, null);
+      assert.equal(cleared.system, null);
+      assert.deepEqual(cleared.metadata, { retained: 'yes' });
+      assert.deepEqual(cleared.mcp_servers, []);
+      assert.deepEqual(cleared.skills, []);
+      assert.deepEqual(cleared.tools, []);
+      assert.equal(cleared.multiagent, null);
+      const richV2 = await client.beta.agents.retrieve(rich.body.id, {
+        version: richUpdated.body.version,
+        betas: BETAS,
+      });
+      assert.equal(richV2.description, 'replaced', 'later null clear does not rewrite history');
+      assert.deepEqual(richV2.metadata, { team: 'runtime' });
 
       for (const invalid of [
         { skills: [{ type: 'mystery', skill_id: 'skill-a' }] },

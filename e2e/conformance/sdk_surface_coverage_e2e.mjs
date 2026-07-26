@@ -70,7 +70,15 @@ const surfaces = [
         'management_agents_e2e.mjs',
         '[SDK:resources/beta/agents/versions.d.ts]',
       ],
-      [/resources\/beta\/agents(?!\/versions\.d\.ts$)/, 'management_agents_e2e.mjs'],
+      [
+        /^resources\/beta\/agents\/agents\.d\.ts$/,
+        'management_agents_e2e.mjs',
+        '[SDK:resources/beta/agents/agents.d.ts]',
+      ],
+      [
+        /resources\/beta\/agents(?!\/(?:versions|agents)\.d\.ts$)/,
+        'management_agents_e2e.mjs',
+      ],
       [/resources\/beta\/environments/, 'management_environments_e2e.mjs'],
       [/resources\/beta\/deployment/, 'management_deployments_e2e.mjs'],
       [/resources\/beta\/sessions/, 'management_sessions_family_e2e.mjs'],
