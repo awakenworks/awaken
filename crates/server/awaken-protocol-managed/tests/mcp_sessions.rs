@@ -1082,7 +1082,7 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
         "H5"
     );
     assert_eq!(
-        durable.visible_mcp_servers()[0]["url"],
+        durable.visible_mcp_servers()[0].url,
         "https://old.example/mcp",
         "H5"
     );

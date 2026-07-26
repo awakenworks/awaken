@@ -86,5 +86,5 @@ pub use session_repo::{
     IdempotencyRecord, ManagedSessionRepository, PersistedSession, ScopedPersistedSession,
     SessionIdempotencyReceipt, SessionMutation, SessionMutationPayload, SessionMutationResult,
     SessionMutationValidationError, SessionRealizationLease, SessionRepositoryError,
-    SessionRevision, SessionTombstone,
+    SessionRevision, SessionTombstone, VisibleMcpServer,
 };

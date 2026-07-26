@@ -18,6 +18,14 @@ use std::collections::BTreeMap;
 
 use crate::SessionLifecycleFact;
 
+/// Secret-free active MCP projection consumed by protocol adapters. It is
+/// derived from the typed attachment aggregate without a JSON serialization hop.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VisibleMcpServer {
+    pub name: String,
+    pub url: String,
+}
+
 /// Monotonic root revision for every mutation of one Session aggregate.
 #[derive(
     Clone,
@@ -125,16 +133,13 @@ impl PersistedSession {
 
     /// Managed wire projection derived from durably active generations only.
     #[must_use]
-    pub fn visible_mcp_servers(&self) -> Vec<serde_json::Value> {
+    pub fn visible_mcp_servers(&self) -> Vec<VisibleMcpServer> {
         self.mcp
             .visible()
             .into_iter()
-            .map(|attachment| {
-                serde_json::json!({
-                    "name": attachment.name,
-                    "type": "url",
-                    "url": attachment.target.url,
-                })
+            .map(|attachment| VisibleMcpServer {
+                name: attachment.name.clone(),
+                url: attachment.target.url.clone(),
             })
             .collect()
     }

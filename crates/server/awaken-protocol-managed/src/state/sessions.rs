@@ -5,17 +5,14 @@ use super::application::{ManagedMcpCandidate, initial_mcp_candidates};
 use super::*;
 
 pub(super) fn typed_mcp_servers(
-    values: Vec<serde_json::Value>,
-) -> Result<Vec<crate::types::agent::UrlMcpServer>, StateError> {
+    values: Vec<awaken_session_contract::VisibleMcpServer>,
+) -> Vec<crate::types::agent::UrlMcpServer> {
     values
         .into_iter()
-        .enumerate()
-        .map(|(index, value)| {
-            serde_json::from_value(value).map_err(|error| {
-                StateError::Run(RunError::internal(format!(
-                    "persisted_session_projection_invalid: agent.mcp_servers[{index}]: {error}"
-                )))
-            })
+        .map(|server| crate::types::agent::UrlMcpServer {
+            name: server.name,
+            url: server.url,
+            kind: crate::types::agent::UrlMcpServerKind::Url,
         })
         .collect()
 }
@@ -114,7 +111,7 @@ impl ManagedState {
     /// Every mutation crosses this seam, so realization, update, archive, and
     /// recovery cannot each invent a second cache-synchronization path.
     fn refresh_cached_projection(&self, persisted: &PersistedSession) -> Result<(), StateError> {
-        let mcp_servers = typed_mcp_servers(persisted.visible_mcp_servers())?;
+        let mcp_servers = typed_mcp_servers(persisted.visible_mcp_servers());
         let mut sessions = self.sessions.lock().unwrap();
         let Some(record) = sessions.get_mut(&persisted.session_id) else {
             return Ok(());
@@ -805,7 +802,7 @@ impl ManagedState {
                 system: config_view.as_ref().and_then(|view| view.system.clone()),
                 tools: session_tools,
                 // Echo the accepted servers in the SDK's `{name, type:"url", url}` shape.
-                mcp_servers: typed_mcp_servers(persisted.visible_mcp_servers())?,
+                mcp_servers: typed_mcp_servers(persisted.visible_mcp_servers()),
                 skills: config_view.as_ref().map_or_else(
                     || project::agent_skills(&caps),
                     |view| {
@@ -1248,7 +1245,7 @@ impl ManagedState {
                             p.environment_id().to_string(),
                         )
                     });
-                let mcp_servers = typed_mcp_servers(p.visible_mcp_servers())?;
+                let mcp_servers = typed_mcp_servers(p.visible_mcp_servers());
                 (
                     agent_id,
                     model,
