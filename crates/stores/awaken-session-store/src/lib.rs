@@ -15,20 +15,16 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use awaken_credential_contract::{
-    CredentialRealizationProfile, PlaintextBoundary, PlaintextHolder,
-};
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use awaken_session_contract::{
-    EnvironmentFingerprint, EnvironmentSnapshot, IdempotencyRecord, ManagedSessionRepository,
-    McpAttachmentDraft, McpAttachmentOrigin, McpAttachmentState, McpTarget, PersistedSession,
-    ResolvedSessionResources, ScopedPersistedSession, SessionBaseline, SessionBaselineState,
-    SessionLifecycleFact, SessionMcpAttachmentSet, SessionMcpAuthoringContext, SessionMutation,
-    SessionMutationPayload, SessionMutationResult, SessionNetworkPolicy, SessionRepositoryError,
-    SessionResourceState, SessionRevision,
+    IdempotencyRecord, ManagedSessionRepository, PersistedSession, ScopedPersistedSession,
+    SessionLifecycleFact, SessionMutation, SessionMutationPayload, SessionMutationResult,
+    SessionRepositoryError, SessionRevision,
 };
 
 mod extraction;
+mod row_codec;
+use row_codec::{EncodedSessionRow, decode};
 use rusqlite::{Connection, OptionalExtension, params};
 use sqlx::Row;
 use sqlx::postgres::PgPool;
@@ -179,223 +175,6 @@ fn decode_lifecycle(data: &str) -> Result<SessionLifecycleFact, serde_json::Erro
         event_type: value["event_type"].as_str().unwrap_or_default().to_string(),
         timestamp: value["timestamp"].as_i64().unwrap_or_default(),
     })
-}
-
-/// Decode a persisted row's JSON payload columns. A corrupt column (truncated
-/// write, manual edit, schema drift) surfaces as `Err` rather than silently
-/// folding to an empty `metadata`/`mcp_servers` — that fail-open masked data loss
-/// on read. Callers within this module treat it like any other unreadable row
-/// (the module's `.expect` convention for read failures), so a corrupt row fails
-/// loudly instead of returning a hollow session.
-struct EncodedSessionRow {
-    aggregate_json: Option<String>,
-    session_id: String,
-    agent_id: String,
-    model: String,
-    title: Option<String>,
-    metadata_json: String,
-    environment_id: String,
-    environment_binding: Option<String>,
-    runtime_json: String,
-    effective_inputs_json: String,
-    status: String,
-    archived_at: Option<String>,
-    revision: i64,
-}
-
-#[derive(serde::Deserialize)]
-struct LegacyPersistedSessionRuntime {
-    #[serde(default)]
-    mcp_servers: Vec<LegacyMcpServerBinding>,
-    #[serde(default)]
-    delegate_ids: Vec<String>,
-    runtime: Option<String>,
-    #[serde(default)]
-    deny_egress: bool,
-    sandbox: Option<serde_json::Value>,
-}
-
-/// Decode-only shape for rows written before MCP generations became the sole
-/// authority. It is deliberately private so no production caller can revive
-/// the removed SessionInit binding path.
-#[derive(serde::Deserialize)]
-struct LegacyMcpServerBinding {
-    name: String,
-    url: String,
-    credential_source_id: Option<String>,
-    credential_revision: Option<u64>,
-    refresh: Option<LegacyMcpRefreshBinding>,
-}
-
-/// Decode-only compatibility shape for the refresh DTO removed when exact
-/// `CredentialRefreshAccess` became the sole execution authority.
-#[derive(serde::Deserialize)]
-struct LegacyMcpRefreshBinding {
-    token_endpoint: String,
-    client_id: String,
-    refresh_token_ref: String,
-    token_endpoint_auth: LegacyTokenEndpointAuthBinding,
-    scope: Option<String>,
-    resource: Option<String>,
-}
-
-#[derive(serde::Deserialize)]
-enum LegacyTokenEndpointAuthBinding {
-    None,
-    ClientSecretBasic { secret_ref: String },
-    ClientSecretPost { secret_ref: String },
-}
-
-fn decode_resource_state(data: &str) -> Result<SessionResourceState, serde_json::Error> {
-    let value: serde_json::Value = serde_json::from_str(data)?;
-    if value.get("inputs").is_some() {
-        return serde_json::from_value::<ResolvedSessionResources>(value)
-            .map(SessionResourceState::from_legacy);
-    }
-    serde_json::from_value(value)
-}
-
-fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_json::Error> {
-    let revision = SessionRevision(
-        u64::try_from(row.revision).expect("managed Session revision is non-negative"),
-    );
-    if let Some(aggregate_json) = row.aggregate_json {
-        let mut aggregate: PersistedSession = serde_json::from_str(&aggregate_json)?;
-        aggregate.revision = revision;
-        return Ok(aggregate);
-    }
-    let runtime: LegacyPersistedSessionRuntime = serde_json::from_str(&row.runtime_json)?;
-    let resources = decode_resource_state(&row.effective_inputs_json)?;
-    let holder = if runtime
-        .runtime
-        .as_deref()
-        .is_some_and(|runtime| runtime.starts_with("acp:"))
-    {
-        PlaintextHolder::new(PlaintextBoundary::Workload, "awaken.workload.acp")
-    } else {
-        PlaintextHolder::new(PlaintextBoundary::Worker, "awaken.worker")
-    };
-    let mcp_holder = PlaintextHolder::new(PlaintextBoundary::Worker, "awaken.worker");
-    let credential_realization = CredentialRealizationProfile {
-        inference_holder: holder.clone(),
-        mcp_holder: mcp_holder.clone(),
-        resource_holder: mcp_holder.clone(),
-    };
-    let sandbox = runtime.sandbox.unwrap_or_else(|| serde_json::json!({}));
-    let network = if runtime.deny_egress {
-        SessionNetworkPolicy::None
-    } else {
-        SessionNetworkPolicy::Unrestricted
-    };
-    let environment = EnvironmentSnapshot {
-        environment_id: row.environment_id,
-        revision: awaken_session_contract::env_registry::EnvironmentRevision(0),
-        config_fingerprint: EnvironmentFingerprint(awaken_session_contract::stable_fingerprint(&(
-            &sandbox,
-            &network,
-            &credential_realization,
-        ))),
-        sandbox,
-        network,
-        credential_realization,
-    };
-    let baseline = SessionBaseline::compile(awaken_session_contract::SessionBaselineInputs {
-        environment,
-        mcp_authoring: SessionMcpAuthoringContext::default(),
-        agent_id: row.agent_id,
-        model: row.model,
-        runtime: runtime.runtime,
-        application: None,
-        delegate_ids: runtime.delegate_ids,
-        mounts: Vec::new(),
-        env: Vec::new(),
-        prompts: Vec::new(),
-    });
-    let mut drafts = Vec::with_capacity(runtime.mcp_servers.len());
-    for server in runtime.mcp_servers {
-        let credential = match (server.credential_source_id, server.credential_revision) {
-            (None, None) => None,
-            (Some(id), Some(revision)) => {
-                Some(legacy_credential_access(id, revision, server.refresh))
-            }
-            _ => {
-                return Err(<serde_json::Error as serde::de::Error>::custom(
-                    "legacy protected MCP attachment has no exact credential revision",
-                ));
-            }
-        };
-        drafts.push(McpAttachmentDraft {
-            name: server.name,
-            target: McpTarget::parse_http(server.url).map_err(|error| {
-                <serde_json::Error as serde::de::Error>::custom(error.to_string())
-            })?,
-            credential,
-            origin: McpAttachmentOrigin::Session,
-        });
-    }
-    let mut mcp = SessionMcpAttachmentSet::from_initial(drafts, Some(mcp_holder))
-        .map_err(<serde_json::Error as serde::de::Error>::custom)?;
-    for attachment in &mut mcp.attachments {
-        attachment.state = McpAttachmentState::Active;
-    }
-    Ok(PersistedSession {
-        session_id: row.session_id,
-        revision,
-        baseline: SessionBaselineState::Frozen(baseline),
-        title: row.title,
-        metadata: serde_json::from_str(&row.metadata_json)?,
-        agent_tools: None,
-        environment_binding: row.environment_binding,
-        mcp,
-        resources,
-        realization: None,
-        status: row.status,
-        archived_at: row.archived_at,
-    })
-}
-
-fn legacy_credential_access(
-    id: String,
-    revision: u64,
-    refresh: Option<LegacyMcpRefreshBinding>,
-) -> awaken_credential_contract::CredentialAccess {
-    use awaken_credential_contract::{
-        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
-        CredentialRefreshAccess, CredentialUsage, TokenEndpointAuth,
-    };
-
-    let mut access = CredentialAccess::new(
-        CredentialRef { id, revision },
-        CredentialMaterialSource::ControlPlaneReference,
-        CredentialUsage::HttpHeader {
-            name: "authorization".into(),
-            scheme: Some("Bearer".into()),
-        },
-        CredentialExecutionPolicy::self_hosted_provider(),
-    );
-    if let Some(refresh) = refresh {
-        let (token_endpoint_auth, client_secret_ref) = match refresh.token_endpoint_auth {
-            LegacyTokenEndpointAuthBinding::None => (TokenEndpointAuth::None, None),
-            LegacyTokenEndpointAuthBinding::ClientSecretBasic { secret_ref } => {
-                (TokenEndpointAuth::ClientSecretBasic, Some(secret_ref))
-            }
-            LegacyTokenEndpointAuthBinding::ClientSecretPost { secret_ref } => {
-                (TokenEndpointAuth::ClientSecretPost, Some(secret_ref))
-            }
-        };
-        access = access.with_refresh(CredentialRefreshAccess::new(
-            revision,
-            refresh.token_endpoint,
-            refresh.client_id,
-            token_endpoint_auth,
-            client_secret_ref,
-            refresh.refresh_token_ref,
-            format!("credential:{revision}:access"),
-            refresh.scope,
-            refresh.resource,
-        ));
-    }
-    access
 }
 
 /// SQLite persistence for [`PersistedSession`]. One row per session, keyed by id.
@@ -1243,6 +1022,15 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
 mod tests {
     use std::collections::BTreeMap;
 
+    use awaken_credential_contract::{
+        CredentialRealizationProfile, PlaintextBoundary, PlaintextHolder,
+    };
+    use awaken_session_contract::{
+        EnvironmentFingerprint, EnvironmentSnapshot, McpAttachmentDraft, McpAttachmentOrigin,
+        McpTarget, SessionBaseline, SessionBaselineState, SessionMcpAttachmentSet,
+        SessionMcpAuthoringContext, SessionNetworkPolicy,
+    };
+
     use super::*;
 
     fn sample(id: &str) -> PersistedSession {
@@ -1413,6 +1201,119 @@ mod tests {
             .unwrap(),
             SessionMutationResult::Applied { .. }
         ));
+    }
+
+    /// Root-mutation cause graph shared by every durable backend:
+    /// C1=idempotency key exists, C2=payload hash matches, C3=root revision
+    /// matches, C4=aggregate was tombstoned. Key/hash resolution precedes CAS,
+    /// so response-loss replay remains deterministic after delete.
+    ///
+    /// | Rule | C1 | C2 | C3 | C4 | effect |
+    /// |---|---|---|---|---|---|
+    /// | R1 | F | - | T | F | apply |
+    /// | R2 | T | T | - | F/T | replay |
+    /// | R3 | T | F | - | F/T | idempotency mismatch |
+    /// | R4 | F | - | F | F | revision conflict |
+    /// | R5 | F | - | - | T | tombstone conflict |
+    async fn root_mutation_decision_table<R: ManagedSessionRepository>(repo: &R, id: &str) {
+        let created = create_fixture(repo, "ws_a", sample(id), Vec::new()).await;
+        let mut replacement = created.clone();
+        replacement.title = Some("winner".into());
+        let replace_payload = SessionMutationPayload::Replace(replacement);
+        let replace_hash = replace_payload.stable_hash();
+        let replace = || SessionMutation {
+            expected_revision: created.revision,
+            idempotency: IdempotencyRecord {
+                key: format!("decision:{id}:replace"),
+                payload_hash: replace_hash.clone(),
+            },
+            payload: replace_payload.clone(),
+            lifecycle_facts: Vec::new(),
+        };
+        assert!(
+            matches!(
+                repo.commit_mutation("ws_a", replace()).await.unwrap(),
+                SessionMutationResult::Applied {
+                    new_revision: SessionRevision(2)
+                }
+            ),
+            "R1"
+        );
+        assert!(
+            matches!(
+                repo.commit_mutation("ws_a", replace()).await.unwrap(),
+                SessionMutationResult::Replayed {
+                    new_revision: SessionRevision(2)
+                }
+            ),
+            "R2"
+        );
+
+        let mut mismatched = replace();
+        mismatched.idempotency.payload_hash = "another-hash".into();
+        assert_eq!(
+            repo.commit_mutation("ws_a", mismatched).await.unwrap(),
+            SessionMutationResult::IdempotencyMismatch,
+            "R3"
+        );
+        let mut stale = replace();
+        stale.idempotency.key = format!("decision:{id}:stale");
+        assert_eq!(
+            repo.commit_mutation("ws_a", stale).await.unwrap(),
+            SessionMutationResult::Conflict {
+                current_revision: SessionRevision(2)
+            },
+            "R4"
+        );
+
+        let delete_payload =
+            SessionMutationPayload::Delete(awaken_session_contract::SessionTombstone {
+                session_id: id.into(),
+                deleted_revision: SessionRevision(3),
+                deleted_at: "3".into(),
+            });
+        let delete_hash = delete_payload.stable_hash();
+        let delete = || SessionMutation {
+            expected_revision: SessionRevision(2),
+            idempotency: IdempotencyRecord {
+                key: format!("decision:{id}:delete"),
+                payload_hash: delete_hash.clone(),
+            },
+            payload: delete_payload.clone(),
+            lifecycle_facts: Vec::new(),
+        };
+        assert!(
+            matches!(
+                repo.commit_mutation("ws_a", delete()).await.unwrap(),
+                SessionMutationResult::Applied {
+                    new_revision: SessionRevision(3)
+                }
+            ),
+            "R1 delete"
+        );
+        assert!(
+            matches!(
+                repo.commit_mutation("ws_a", delete()).await.unwrap(),
+                SessionMutationResult::Replayed {
+                    new_revision: SessionRevision(3)
+                }
+            ),
+            "R2 tombstone replay"
+        );
+        let mut after_delete = replace();
+        after_delete.expected_revision = SessionRevision(3);
+        after_delete.idempotency.key = format!("decision:{id}:after-delete");
+        if let SessionMutationPayload::Replace(session) = &mut after_delete.payload {
+            session.revision = SessionRevision(3);
+        }
+        after_delete.idempotency.payload_hash = after_delete.payload.stable_hash();
+        assert_eq!(
+            repo.commit_mutation("ws_a", after_delete).await.unwrap(),
+            SessionMutationResult::Conflict {
+                current_revision: SessionRevision(3)
+            },
+            "R5"
+        );
     }
 
     fn extraction(id: &str, key: &str) -> awaken_ext_memory::MemoryExtractionIntent {
@@ -1588,6 +1489,12 @@ mod tests {
         .await;
         assert!(repo.get("sesn_terminal").await.is_none());
         assert_eq!(repo.pending_lifecycle().await[0].id, "deleted");
+    }
+
+    #[tokio::test]
+    async fn sqlite_root_mutation_decision_table_is_atomic() {
+        let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
+        root_mutation_decision_table(&repo, "sesn_sqlite_decisions").await;
     }
 
     #[tokio::test]
@@ -1775,6 +1682,8 @@ mod tests {
         let repo = PostgresManagedSessionRepository::with_pool(pool)
             .await
             .expect("store");
+
+        root_mutation_decision_table(&repo, "sesn_pg_decisions").await;
 
         let created = create_fixture(&repo, "default", sample("sesn_1"), Vec::new()).await;
         assert_eq!(repo.get("sesn_1").await, Some(created));

@@ -172,24 +172,30 @@ impl SessionAttemptExecutor {
         native: Arc<awaken_runtime::Runtime>,
         acp: Option<Arc<awaken_run_executor_acp::AcpRunExecutor>>,
         remote: Option<Arc<dyn RunAttemptExecutor>>,
-        resolved: &awaken_runtime_contract::resolved::ResolvedSpec,
+        worker: &awaken_runtime_contract::resolved::ResolvedSpec,
+        grader: Option<&awaken_runtime_contract::resolved::ResolvedSpec>,
     ) -> Self {
         let native: Arc<dyn RunAttemptExecutor> = native;
         let acp = acp.map(|executor| executor as Arc<dyn RunAttemptExecutor>);
-        Self::from_executors(native, acp, remote, resolved)
+        let mut snapshots = vec![worker];
+        snapshots.extend(grader);
+        Self::from_executors(native, acp, remote, &snapshots)
     }
 
     fn from_executors(
         native: Arc<dyn RunAttemptExecutor>,
         acp: Option<Arc<dyn RunAttemptExecutor>>,
         a2a: Option<Arc<dyn RunAttemptExecutor>>,
-        resolved: &awaken_runtime_contract::resolved::ResolvedSpec,
+        resolved: &[&awaken_runtime_contract::resolved::ResolvedSpec],
     ) -> Self {
         let mut registry = AttemptExecutorRegistry::new();
         registry
             .register_native(native)
             .expect("fresh Session registry has one native slot");
-        for binding in resolved.candidate_bindings() {
+        for binding in resolved
+            .iter()
+            .flat_map(|resolved| resolved.candidate_bindings())
+        {
             let executor = match Backend::from_ref(&binding.backend_ref) {
                 Backend::Native => continue,
                 Backend::Acp { .. } => acp.clone(),
@@ -283,14 +289,7 @@ impl SharedHost {
                 .snapshot
                 .resolved_spec
                 .execution_candidates(activation.model_ref_override.as_deref());
-            let holder = self
-                .session_slots
-                .read(&ctx.thread_id.0, |slot| {
-                    slot.environment_projection.as_ref().map(|environment| {
-                        environment.credential_realization.inference_holder.clone()
-                    })
-                })
-                .flatten();
+            let holder = self.inference_plaintext_holder(&activation)?;
             let epoch = LOCAL_ATTEMPT_EPOCH
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 .max(1);
@@ -506,15 +505,25 @@ mod tests {
 
     #[tokio::test]
     async fn session_backend_routes_fresh_and_resume_attempts() {
+        // Cause graph: C1=backend is named by the Worker snapshot,
+        // C2=backend is named only by the frozen Outcome Grader snapshot,
+        // C3=matching topology adapter is installed. One exact registry consumes
+        // both authorities; it never substitutes Native for a missing adapter.
+        //
+        // | Rule | C1 | C2 | C3 | result |
+        // | R1 | T | F | T | route Worker backend |
+        // | R2 | F | T | T | route Grader backend |
+        // | R3 | T/F | T/F | F | fail closed (covered below) |
         let native = Arc::new(RecordingExecutor::new("native"));
         let acp = Arc::new(RecordingExecutor::new("acp"));
         let a2a = Arc::new(RecordingExecutor::new("a2a"));
-        let resolved = resolved_with(&["awaken", "acp:claude", "a2a:https://agent.example"]);
+        let worker = resolved_with(&["awaken", "a2a:https://agent.example"]);
+        let grader = resolved_with(&["acp:claude"]);
         let router = SessionAttemptExecutor::from_executors(
             native.clone(),
             Some(acp.clone() as Arc<dyn RunAttemptExecutor>),
             Some(a2a.clone() as Arc<dyn RunAttemptExecutor>),
-            &resolved,
+            &[&worker, &grader],
         );
 
         let native_activation = activation("awaken");
@@ -570,7 +579,7 @@ mod tests {
     async fn unavailable_snapshot_backend_fails_closed() {
         let native = Arc::new(RecordingExecutor::new("native"));
         let resolved = resolved_with(&["acp:claude", "a2a:https://agent.example"]);
-        let router = SessionAttemptExecutor::from_executors(native, None, None, &resolved);
+        let router = SessionAttemptExecutor::from_executors(native, None, None, &[&resolved]);
 
         let error = router
             .execute(activation("acp:claude"), RuntimeRunContext::new())

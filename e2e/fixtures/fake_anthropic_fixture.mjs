@@ -471,7 +471,12 @@ export function startFakeAnthropic(apiKey, opts = {}) {
         res.end(JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'fake upstream is overloaded' } }));
         return;
       }
-      state.requests.push({ url: req.url, model: parsed.model, stream: !!parsed.stream });
+      state.requests.push({
+        url: req.url,
+        model: parsed.model,
+        stream: !!parsed.stream,
+        memoryExtractor: systemText(parsed).includes('memory extraction Agent'),
+      });
       const reply = reply_of(parsed);
       const id = `msg_${state.requests.length}`;
       const model = parsed.model ?? 'fake-model';

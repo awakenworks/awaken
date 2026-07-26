@@ -1,7 +1,7 @@
 //! The memory-extractor agent: id, instructions (Claude Code's memory taxonomy),
 //! its default config, and the per-run extraction prompt.
 
-use awaken_runtime_contract::resolved::ModelBinding;
+use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 
 use crate::tool::write_memory_descriptor;
@@ -52,10 +52,13 @@ pub const EXTRACT_PROMPT: &str = "Extract durable memories from the conversation
 /// A default `memory-extractor` agent config: advertises only `write_memory` and
 /// carries the extraction instructions. A host may override by registering its own
 /// config under [`MEMORY_AGENT_ID`].
-pub fn default_memory_agent(model_ref: &str, instructions: &str) -> ExecutableAgentSnapshot {
+pub fn default_memory_agent(
+    model: ResolvedModelCandidate,
+    instructions: &str,
+) -> ExecutableAgentSnapshot {
     ExecutableAgentSnapshot::builder(MEMORY_AGENT_ID)
         .instructions(instructions)
-        .model(ModelBinding::new("default", model_ref, "default"))
+        .resolved_model(model)
         .max_steps(6)
         .tools([write_memory_descriptor()])
         .build()
@@ -91,7 +94,9 @@ mod tests {
 
     #[test]
     fn default_agent_carries_id_instructions_and_the_write_tool() {
-        let cfg = default_memory_agent("stub", DEFAULT_MEMORY_INSTRUCTIONS);
+        let candidate =
+            ResolvedModelCandidate::host(ModelBinding::new("default", "stub", "default"));
+        let cfg = default_memory_agent(candidate.clone(), DEFAULT_MEMORY_INSTRUCTIONS);
         assert_eq!(cfg.root_agent_id.0, MEMORY_AGENT_ID);
         let spec = &cfg.resolved_spec;
         assert!(spec.instructions.contains("memory extraction Agent"));
@@ -99,6 +104,7 @@ mod tests {
         assert!(spec.instructions.contains("Secrets, credentials"));
         assert_eq!(spec.tool_descriptors.len(), 1);
         assert_eq!(spec.tool_descriptors[0].id, "write_memory");
+        assert_eq!(spec.model_binding, candidate);
     }
 
     #[test]

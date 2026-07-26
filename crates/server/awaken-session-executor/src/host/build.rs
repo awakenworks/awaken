@@ -145,7 +145,11 @@ impl SharedHost {
             },
         );
         let memory_catalog = Arc::new(AgentCatalog::new().with_agent(default_memory_agent(
-            &model_ref,
+            awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                awaken_runtime_contract::resolved::ModelBinding::new(
+                    "default", &model_ref, "default",
+                ),
+            ),
             DEFAULT_MEMORY_INSTRUCTIONS,
         )));
         let extraction_repository: Arc<dyn awaken_protocol_managed::MemoryExtractionRepository> =

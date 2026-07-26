@@ -1658,6 +1658,11 @@ async fn exact_mcp_access_compiles_public_and_confidential_refresh() {
         .mcp_access_for_source(&source_id)
         .await
         .expect("exact MCP access compiles");
+    assert_eq!(
+        access.policy.model_exposure,
+        awaken_credential_contract::ModelExposurePolicy::VirtualOnly,
+        "the sole MCP compiler explicitly authorizes only a synthetic relay capability"
+    );
     let binding = access.refresh.expect("public-client refresh is pinned");
     assert_eq!(binding.token_endpoint, "https://auth.example.com/token");
     assert_eq!(binding.client_id, "cli_pub");

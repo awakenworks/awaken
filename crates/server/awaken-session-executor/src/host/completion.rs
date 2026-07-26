@@ -137,16 +137,27 @@ pub(crate) fn remote_worker_placement(
 }
 
 impl SharedHost {
+    /// Resolve the one exact inference plaintext holder used by both direct and
+    /// dispatched attempts. A prepared Environment projection is authoritative;
+    /// a cold/restarted host derives the same self-hosted boundary from the
+    /// immutable candidate backend instead of silently omitting admission input.
+    pub(crate) fn inference_plaintext_holder(
+        &self,
+        activation: &RunActivation,
+    ) -> Result<Option<awaken_runtime_contract::PlaintextHolder>, HostError> {
+        match self.thread_credential_realization(&activation.thread_id.0) {
+            Some(profile) => Ok(Some(profile.inference_holder)),
+            None => self_hosted_inference_holder(activation),
+        }
+    }
+
     pub(crate) fn resolved_dispatch(
         &self,
         activation: RunActivation,
     ) -> Result<RunDispatch, HostError> {
         let thread = activation.thread_id.0.clone();
         let resources = self.thread_resource_manifest(&thread);
-        let inference_holder = match self.thread_credential_realization(&thread) {
-            Some(profile) => Some(profile.inference_holder),
-            None => self_hosted_inference_holder(&activation)?,
-        };
+        let inference_holder = self.inference_plaintext_holder(&activation)?;
         // A mixed deployment may have both the local pool and remote workers.
         // Any carried manifest still needs capability admission: an explicit empty
         // successor can be the operation that removes a prior projection.

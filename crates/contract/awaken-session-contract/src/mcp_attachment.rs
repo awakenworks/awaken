@@ -972,7 +972,7 @@ mod tests {
                 name: "authorization".into(),
                 scheme: Some("Bearer".into()),
             },
-            CredentialExecutionPolicy::exact(allowed, ModelExposurePolicy::Forbidden),
+            CredentialExecutionPolicy::exact(allowed, ModelExposurePolicy::VirtualOnly),
         )
     }
 
