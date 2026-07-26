@@ -16,6 +16,7 @@ import { useApp } from "../lib/app-state";
 
 export interface ProfileDraftCandidate {
   targetKey: string;
+  accessMode: "none" | "brokered" | "exact";
   credentialId: string;
 }
 
@@ -41,9 +42,15 @@ export function targetFromKey(key: string): ModelTarget {
 }
 
 export function profileCandidateOf(draft: ProfileDraftCandidate): ProfileCandidate {
-  const credential_binding: CredentialBinding = draft.credentialId
-    ? { type: "exact", credential_source_id: draft.credentialId }
-    : { type: "none" };
+  if (draft.accessMode === "exact" && !draft.credentialId) {
+    throw new Error("Choose a BYOK credential for this model step");
+  }
+  const credential_binding: CredentialBinding =
+    draft.accessMode === "brokered"
+      ? { type: "brokered" }
+      : draft.accessMode === "exact"
+        ? { type: "exact", credential_source_id: draft.credentialId }
+        : { type: "none" };
   return { target: targetFromKey(draft.targetKey), credential_binding };
 }
 
@@ -51,6 +58,7 @@ export function appendFallback(
   current: ProfileDraftCandidate[],
   target: string,
   primary: string,
+  accessMode: ProfileDraftCandidate["accessMode"] = "none",
 ): ProfileDraftCandidate[] {
   if (
     !target ||
@@ -60,7 +68,11 @@ export function appendFallback(
   ) {
     return current;
   }
-  return [...current, { targetKey: target, credentialId: "" }];
+  return [...current, { targetKey: target, accessMode, credentialId: "" }];
+}
+
+function accessModeOf(binding: CredentialBinding): ProfileDraftCandidate["accessMode"] {
+  return binding.type === "brokered" || binding.type === "exact" ? binding.type : "none";
 }
 
 export function moveFallback(
@@ -111,6 +123,7 @@ export default function ModelProfileEditor({
   const profileId = "workspace-default";
   const offeringOptions = offerings.filter((offering) => (offering.status ?? "active") === "active");
   const [primaryTargetKey, setPrimaryTargetKey] = useState("");
+  const [primaryAccessMode, setPrimaryAccessMode] = useState<ProfileDraftCandidate["accessMode"]>("none");
   const [primaryCredentialId, setPrimaryCredentialId] = useState("");
   const [profileFallbacks, setProfileFallbacks] = useState<ProfileDraftCandidate[]>([]);
   const profileHydrated = useRef<string | null>(null);
@@ -135,9 +148,11 @@ export default function ModelProfileEditor({
           ? profile.data.primary.credential_binding.credential_source_id
           : "",
       );
+      setPrimaryAccessMode(accessModeOf(profile.data.primary.credential_binding));
       setProfileFallbacks(
         profile.data.fallbacks.map((candidate) => ({
           targetKey: targetKey(candidate.target),
+          accessMode: accessModeOf(candidate.credential_binding),
           credentialId:
             candidate.credential_binding.type === "exact"
               ? candidate.credential_binding.credential_source_id
@@ -147,6 +162,7 @@ export default function ModelProfileEditor({
       profileHydrated.current = workspace;
     } else if (offeringOptions[0]) {
       setPrimaryTargetKey(targetKey(offeringTarget(offeringOptions[0])));
+      setPrimaryAccessMode(offeringOptions[0].source === "brokered" ? "brokered" : "none");
       profileHydrated.current = workspace;
     }
   }, [offeringOptions, profile.data, profile.isLoading, workspace]);
@@ -155,7 +171,7 @@ export default function ModelProfileEditor({
       if (!primaryTargetKey) throw new Error("Choose a primary model");
       return api.put<InferenceProfile>(ws(`/v1/config/inference-profiles/${profileId}`), {
         workspace_id: workspace,
-        primary: profileCandidateOf({ targetKey: primaryTargetKey, credentialId: primaryCredentialId }),
+        primary: profileCandidateOf({ targetKey: primaryTargetKey, accessMode: primaryAccessMode, credentialId: primaryCredentialId }),
         fallbacks: profileFallbacks.map(profileCandidateOf),
         disabled_endpoint_ids: [],
       });
@@ -185,6 +201,17 @@ export default function ModelProfileEditor({
         (credential.provider_id == null || credential.provider_id === provider),
     );
   };
+  const offeringFor = (key: string) =>
+    offeringEntries.find((entry) => entry.key === key)?.offering;
+  const defaultAccessFor = (key: string): ProfileDraftCandidate["accessMode"] =>
+    offeringFor(key)?.source === "brokered" ? "brokered" : "none";
+  const accessOptions = (key: string) =>
+    offeringFor(key)?.source === "brokered"
+      ? [{ value: "brokered", label: app.t("Awaken Cloud subscription", "Awaken Cloud 订阅") }]
+      : [
+          { value: "exact", label: app.t("BYOK credential", "BYOK 凭证") },
+          { value: "none", label: app.t("No authentication", "无需认证") },
+        ];
   const updateFallback = (index: number, patch: Partial<ProfileDraftCandidate>) =>
     setProfileFallbacks((current) =>
       current.map((candidate, candidateIndex) =>
@@ -210,34 +237,41 @@ export default function ModelProfileEditor({
         <SelectField label={app.t("Primary model", "主模型")} value={primaryTargetKey} onChange={(event) => {
           const next = event.target.value;
           setPrimaryTargetKey(next);
+          setPrimaryAccessMode(defaultAccessFor(next));
           setPrimaryCredentialId("");
           setProfileFallbacks((current) => current.filter((candidate) => candidate.targetKey !== next));
         }}>
           <option value="">{app.t("Choose an offering", "选择模型 Offering")}</option>
           {offeringEntries.map(({ offering, key }) => <option key={key} value={key}>{offering.model_id} · {offering.provider_id} · {offering.protocol_endpoint_id} · {offering.source ?? "manual"}</option>)}
         </SelectField>
-        <SelectField label={app.t("Primary credential", "主模型凭证")} value={primaryCredentialId} onChange={(event) => setPrimaryCredentialId(event.target.value)}>
-          <option value="">{app.t("Managed / no BYOK credential", "云端托管 / 不使用 BYOK 凭证")}</option>
-          {credentialsFor(primaryTargetKey).map((credential) => <option key={credential.id} value={credential.id}>{credential.id} · {credential.provider_id ?? "unscoped"}</option>)}
+        <SelectField label={app.t("Access", "访问方式")} value={primaryAccessMode} onChange={(event) => { setPrimaryAccessMode(event.target.value as ProfileDraftCandidate["accessMode"]); setPrimaryCredentialId(""); }}>
+          {accessOptions(primaryTargetKey).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
         </SelectField>
+        {primaryAccessMode === "exact" && <SelectField label={app.t("BYOK credential", "BYOK 凭证")} value={primaryCredentialId} onChange={(event) => setPrimaryCredentialId(event.target.value)}>
+          <option value="">{app.t("Choose a credential", "选择凭证")}</option>
+          {credentialsFor(primaryTargetKey).map((credential) => <option key={credential.id} value={credential.id}>{credential.id} · {credential.provider_id ?? "unscoped"}</option>)}
+        </SelectField>}
       </div>
       {profileFallbacks.map((candidate, index) => (
         <div className="row" key={`${candidate.targetKey}-${index}`} style={{ marginTop: 10, alignItems: "flex-end" }}>
           <Pill tone="neutral">Fallback {index + 1}</Pill>
-          <SelectField label={app.t("Exact model offering", "精确模型 Offering")} value={candidate.targetKey} onChange={(event) => updateFallback(index, { targetKey: event.target.value, credentialId: "" })}>
+          <SelectField label={app.t("Exact model offering", "精确模型 Offering")} value={candidate.targetKey} onChange={(event) => updateFallback(index, { targetKey: event.target.value, accessMode: defaultAccessFor(event.target.value), credentialId: "" })}>
             {offeringEntries.map(({ offering, key }) => <option key={key} value={key} disabled={key === primaryTargetKey || profileFallbacks.some((other, otherIndex) => otherIndex !== index && other.targetKey === key)}>{offering.model_id} · {offering.provider_id} · {offering.protocol_endpoint_id} · {offering.source ?? "manual"}</option>)}
           </SelectField>
-          <SelectField label={app.t("Credential for this step", "本步骤凭证")} value={candidate.credentialId} onChange={(event) => updateFallback(index, { credentialId: event.target.value })}>
-            <option value="">{app.t("Managed / no BYOK credential", "云端托管 / 不使用 BYOK 凭证")}</option>
-            {credentialsFor(candidate.targetKey).map((credential) => <option key={credential.id} value={credential.id}>{credential.id} · {credential.provider_id ?? "unscoped"}</option>)}
+          <SelectField label={app.t("Access", "访问方式")} value={candidate.accessMode} onChange={(event) => updateFallback(index, { accessMode: event.target.value as ProfileDraftCandidate["accessMode"], credentialId: "" })}>
+            {accessOptions(candidate.targetKey).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </SelectField>
+          {candidate.accessMode === "exact" && <SelectField label={app.t("BYOK credential", "BYOK 凭证")} value={candidate.credentialId} onChange={(event) => updateFallback(index, { credentialId: event.target.value })}>
+            <option value="">{app.t("Choose a credential", "选择凭证")}</option>
+            {credentialsFor(candidate.targetKey).map((credential) => <option key={credential.id} value={credential.id}>{credential.id} · {credential.provider_id ?? "unscoped"}</option>)}
+          </SelectField>}
           <Button disabled={index === 0} onClick={() => setProfileFallbacks((current) => moveFallback(current, index, -1))}>↑</Button>
           <Button disabled={index === profileFallbacks.length - 1} onClick={() => setProfileFallbacks((current) => moveFallback(current, index, 1))}>↓</Button>
           <Button onClick={() => setProfileFallbacks((current) => current.filter((_, itemIndex) => itemIndex !== index))}>{app.t("Remove", "移除")}</Button>
         </div>
       ))}
       <div className="row" style={{ marginTop: 12 }}>
-        <Button disabled={!firstUnusedFallback || profileFallbacks.length >= 8} onClick={() => firstUnusedFallback && setProfileFallbacks((current) => appendFallback(current, firstUnusedFallback, primaryTargetKey))}>{app.t("Add fallback", "添加 fallback")}</Button>
+        <Button disabled={!firstUnusedFallback || profileFallbacks.length >= 8} onClick={() => firstUnusedFallback && setProfileFallbacks((current) => appendFallback(current, firstUnusedFallback, primaryTargetKey, defaultAccessFor(firstUnusedFallback)))}>{app.t("Add fallback", "添加 fallback")}</Button>
         <Button variant="primary" disabled={!primaryTargetKey || saveProfile.isPending} onClick={() => saveProfile.mutate()}>{saveProfile.isPending ? app.t("Saving…", "保存中…") : app.t("Save profile", "保存配置")}</Button>
         <Button disabled={previewProfile.isPending || !profile.data} onClick={() => previewProfile.mutate()}>{app.t("Validate failover chain", "验证 fallback 链")}</Button>
         {saveProfile.isSuccess && <span className="mut">✓ {app.t("Saved", "已保存")}</span>}

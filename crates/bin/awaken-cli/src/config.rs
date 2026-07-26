@@ -191,6 +191,7 @@ pub struct ResolvedDeployment {
 #[derive(Clone)]
 pub struct CloudIamConfig {
     pub base_url: String,
+    pub inference_base_url: String,
     pub audience: String,
     pub issuer: String,
     pub access_token: Option<String>,
@@ -203,6 +204,7 @@ impl std::fmt::Debug for CloudIamConfig {
         formatter
             .debug_struct("CloudIamConfig")
             .field("base_url", &self.base_url)
+            .field("inference_base_url", &self.inference_base_url)
             .field("audience", &self.audience)
             .field("issuer", &self.issuer)
             .field(
@@ -487,6 +489,10 @@ impl ResolvedDeployment {
                 .cloud_iam_url
                 .clone()
                 .unwrap_or_else(|| "https://accounts.awakenworks.com".to_owned()),
+            inference_base_url: file
+                .cloud_api_url
+                .clone()
+                .unwrap_or_else(|| "https://api.awakenworks.com".to_owned()),
             audience: file
                 .cloud_iam_audience
                 .clone()
@@ -641,6 +647,7 @@ struct FileConfig {
     org_id: Option<String>,
     iam_workspaces: Option<Vec<String>>,
     cloud_iam_url: Option<String>,
+    cloud_api_url: Option<String>,
     cloud_iam_audience: Option<String>,
     cloud_iam_issuer: Option<String>,
     cloud_access_token: Option<String>,
@@ -781,6 +788,27 @@ mod tests {
         );
         assert_eq!(config.data_dir, PathBuf::from("/cli"));
         assert_eq!(config.bind, "127.0.0.1:9100");
+    }
+
+    #[test]
+    fn cloud_inference_url_is_independent_from_identity_url() {
+        let config = resolve(
+            FileConfig {
+                cloud_api_url: Some("https://file.cloud.example".into()),
+                ..FileConfig::default()
+            },
+            ConfigOverrides::default(),
+        );
+        assert_eq!(
+            config.cloud_iam.inference_base_url,
+            "https://file.cloud.example"
+        );
+        assert_eq!(
+            resolve(FileConfig::default(), ConfigOverrides::default())
+                .cloud_iam
+                .inference_base_url,
+            "https://api.awakenworks.com"
+        );
     }
 
     #[test]

@@ -24,7 +24,7 @@ pub use postgres::PostgresCatalogRepo;
 #[cfg(feature = "sqlite")]
 pub use sqlite::SqliteCatalogRepo;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 macro_rules! id_newtype {
     ($(#[$m:meta])* $name:ident) => {
@@ -322,6 +322,7 @@ pub enum ModelAttributeSource {
     Manual,
     ProviderApi,
     Curated,
+    Brokered,
 }
 
 /// Explainability metadata for one field in [`ModelAttributes`].
@@ -434,6 +435,10 @@ pub enum OfferingSource {
     Manual,
     /// Observed from the configured endpoint's provider API.
     ProviderApi,
+    /// Rebuildable projection of an authenticated managed model service. Access
+    /// is authorized just in time; the catalog row carries no entitlement,
+    /// Provider credential, internal route, or pricing fact.
+    Brokered,
 }
 
 impl OfferingSource {
@@ -467,6 +472,27 @@ pub struct DiscoveredModel {
     pub model_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream_model: Option<String>,
+}
+
+/// One public Provider-native model returned by an authenticated managed model
+/// service. It deliberately excludes entitlement, price, internal route,
+/// Provider account and credential coordinates.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BrokeredModelProjection {
+    pub provider_id: String,
+    pub model_id: String,
+    pub dialect: ApiDialect,
+    pub context_window: Option<u32>,
+    pub max_output_tokens: Option<u32>,
+    pub publication_revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrokeredCatalogProjection {
+    pub broker_id: String,
+    pub control_base_url: String,
+    pub models: Vec<BrokeredModelProjection>,
+    pub observed_at_unix_ms: u64,
 }
 
 /// Durable outcome of reconciling one complete provider model listing.
@@ -541,6 +567,8 @@ pub enum CatalogError {
     EmptyDiscoveredModelId,
     #[error("provider discovery references unknown endpoint `{0}`")]
     DiscoveryEndpointUnknown(String),
+    #[error("managed model projection is invalid: {0}")]
+    InvalidBrokeredProjection(String),
     #[error("model `{model}` has invalid attributes: {reason}")]
     InvalidModelAttributes { model: String, reason: String },
     /// Not an invariant: a durable-backend failure (I/O, serde, poisoned lock)
@@ -677,6 +705,206 @@ impl ProviderCatalog {
         self.validate()?;
         Ok(result)
     }
+
+    /// Atomically replace one broker's rebuildable public model projection.
+    /// Existing direct/manual/provider-discovered facts are untouched. Missing
+    /// brokered rows become unavailable so immutable publications remain
+    /// explainable without permitting new use.
+    pub fn reconcile_brokered_projection(
+        &mut self,
+        projection: BrokeredCatalogProjection,
+    ) -> Result<CatalogSyncResult, CatalogError> {
+        let broker_id = projection.broker_id.trim();
+        if broker_id.is_empty() || projection.control_base_url.trim().is_empty() {
+            return Err(CatalogError::InvalidBrokeredProjection(
+                "broker id and control base URL are required".into(),
+            ));
+        }
+        let endpoint_prefix = format!("brokered:{broker_id}:");
+        let mut normalized = BTreeMap::new();
+        let previous_model_ids = self
+            .offerings
+            .iter()
+            .filter(|offering| {
+                offering.source == OfferingSource::Brokered
+                    && offering
+                        .protocol_endpoint_id
+                        .0
+                        .starts_with(&endpoint_prefix)
+            })
+            .map(|offering| offering.model_id.clone())
+            .collect::<BTreeSet<_>>();
+        let mut projected_attributes = BTreeMap::new();
+        for model in projection.models {
+            let provider = model.provider_id.trim();
+            let model_id = model.model_id.trim();
+            if provider.is_empty() || model_id.is_empty() || model.publication_revision == 0 {
+                return Err(CatalogError::InvalidBrokeredProjection(
+                    "provider, model and positive publication revision are required".into(),
+                ));
+            }
+            let endpoint_id = ProtocolEndpointId::new(format!(
+                "{endpoint_prefix}{}:{}",
+                provider,
+                model.dialect.as_str()
+            ));
+            let revision = i64::try_from(model.publication_revision).map_err(|_| {
+                CatalogError::InvalidBrokeredProjection(
+                    "publication revision exceeds the local catalog range".into(),
+                )
+            })?;
+            let attributes = projected_attributes
+                .entry(model_id.to_owned())
+                .or_insert((None, None));
+            attributes.0 = minimum_known(attributes.0, model.context_window);
+            attributes.1 = minimum_known(attributes.1, model.max_output_tokens);
+            self.providers
+                .entry(provider.into())
+                .or_insert_with(|| Provider {
+                    id: ProviderId::new(provider),
+                    slug: provider.into(),
+                    display_name: provider.into(),
+                    version: 1,
+                });
+            self.endpoints.insert(
+                endpoint_id.0.clone(),
+                ProtocolEndpoint {
+                    id: endpoint_id.clone(),
+                    provider_id: ProviderId::new(provider),
+                    dialect: model.dialect,
+                    base_url: Some(projection.control_base_url.clone()),
+                    timeout_secs: 300,
+                    display_name: format!("Awaken Cloud · {provider}"),
+                    version: revision,
+                },
+            );
+            normalized.insert(
+                (model_id.to_owned(), endpoint_id.0),
+                (provider.to_owned(), model.dialect),
+            );
+        }
+        let mut result = CatalogSyncResult {
+            discovered: normalized.len(),
+            observed_at_unix_ms: projection.observed_at_unix_ms,
+            ..CatalogSyncResult::default()
+        };
+        for offering in self.offerings.iter_mut().filter(|offering| {
+            offering.source == OfferingSource::Brokered
+                && offering
+                    .protocol_endpoint_id
+                    .0
+                    .starts_with(&endpoint_prefix)
+        }) {
+            let key = (
+                offering.model_id.clone(),
+                offering.protocol_endpoint_id.0.clone(),
+            );
+            if normalized.remove(&key).is_some() {
+                if offering.status != OfferingStatus::Active {
+                    result.activated += 1;
+                }
+                offering.status = OfferingStatus::Active;
+                offering.last_seen_at_unix_ms = Some(projection.observed_at_unix_ms);
+            } else if offering.status == OfferingStatus::Active {
+                offering.status = OfferingStatus::Unavailable;
+                result.marked_unavailable += 1;
+            }
+        }
+        for ((model_id, endpoint_id), (provider_id, dialect)) in normalized {
+            self.offerings.push(Offering {
+                model_id,
+                provider_id: ProviderId::new(provider_id),
+                protocol_endpoint_id: ProtocolEndpointId::new(endpoint_id),
+                dialect,
+                upstream_model: None,
+                source: OfferingSource::Brokered,
+                status: OfferingStatus::Active,
+                last_seen_at_unix_ms: Some(projection.observed_at_unix_ms),
+            });
+            result.activated += 1;
+        }
+        let projected_model_ids = projected_attributes
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        for (model_id, (context_window, max_output_tokens)) in projected_attributes {
+            let attributes = self.model_attributes.entry(model_id).or_default();
+            merge_brokered_attribute(
+                attributes,
+                "context_window",
+                context_window,
+                projection.observed_at_unix_ms,
+            );
+            merge_brokered_attribute(
+                attributes,
+                "max_output_tokens",
+                max_output_tokens,
+                projection.observed_at_unix_ms,
+            );
+        }
+        for model_id in previous_model_ids.difference(&projected_model_ids) {
+            if let Some(attributes) = self.model_attributes.get_mut(model_id) {
+                merge_brokered_attribute(
+                    attributes,
+                    "context_window",
+                    None,
+                    projection.observed_at_unix_ms,
+                );
+                merge_brokered_attribute(
+                    attributes,
+                    "max_output_tokens",
+                    None,
+                    projection.observed_at_unix_ms,
+                );
+            }
+        }
+        self.model_attributes.retain(|_, attributes| {
+            attributes.context_window.is_some() || attributes.max_output_tokens.is_some()
+        });
+        self.validate()?;
+        Ok(result)
+    }
+}
+
+fn minimum_known(current: Option<u32>, incoming: Option<u32>) -> Option<u32> {
+    match (current, incoming) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (known @ Some(_), None) | (None, known @ Some(_)) => known,
+        (None, None) => None,
+    }
+}
+
+fn merge_brokered_attribute(
+    attributes: &mut ModelAttributes,
+    field: &str,
+    incoming: Option<u32>,
+    observed_at_unix_ms: u64,
+) {
+    let existing_source = attributes.provenance.get(field).map(|value| value.source);
+    let field_is_empty = match field {
+        "context_window" => attributes.context_window.is_none(),
+        "max_output_tokens" => attributes.max_output_tokens.is_none(),
+        _ => return,
+    };
+    if !field_is_empty && existing_source != Some(ModelAttributeSource::Brokered) {
+        return;
+    }
+    match field {
+        "context_window" => attributes.context_window = incoming,
+        "max_output_tokens" => attributes.max_output_tokens = incoming,
+        _ => return,
+    }
+    if incoming.is_some() {
+        attributes.provenance.insert(
+            field.into(),
+            ModelAttributeProvenance {
+                source: ModelAttributeSource::Brokered,
+                observed_at_unix_ms,
+            },
+        );
+    } else {
+        attributes.provenance.remove(field);
+    }
 }
 
 /// A provider catalog whose reference integrity has been checked. The ONLY way
@@ -713,6 +941,17 @@ impl ValidCatalog {
 
 #[cfg(test)]
 mod tests {
+    //! Brokered projection cause graph: C1 authenticated listing is structurally
+    //! valid; C2 a prior brokered row is present in the new complete listing;
+    //! C3 direct/manual facts share the catalog. E1 activate/upsert public facts;
+    //! E2 retain missing brokered rows as unavailable; E3 leave direct facts
+    //! byte-equivalent; E4 reject the replacement with no valid aggregate.
+    //!
+    //! Decision table:
+    //! | Rule | C1 | C2 | C3 | Effect |
+    //! | B1   | Y  | Y  | Y  | E1+E3 |
+    //! | B2   | Y  | N  | Y  | E2+E3 |
+    //! | B3   | N  | -  | -  | E4 |
     use super::*;
 
     fn provider(id: &str) -> Provider {
@@ -1002,6 +1241,136 @@ mod tests {
             "https://api.openai.com/v1"
         );
         assert!(openai.supports_model_discovery);
+    }
+
+    fn brokered(models: &[(&str, &str, ApiDialect, u64)]) -> BrokeredCatalogProjection {
+        BrokeredCatalogProjection {
+            broker_id: "awaken-cloud".into(),
+            control_base_url: "https://cloud.invalid".into(),
+            models: models
+                .iter()
+                .map(
+                    |(provider, model, dialect, revision)| BrokeredModelProjection {
+                        provider_id: (*provider).into(),
+                        model_id: (*model).into(),
+                        dialect: *dialect,
+                        context_window: None,
+                        max_output_tokens: None,
+                        publication_revision: *revision,
+                    },
+                )
+                .collect(),
+            observed_at_unix_ms: 100,
+        }
+    }
+
+    #[test]
+    fn b1_b2_brokered_replacement_is_non_destructive_and_marks_missing_unavailable() {
+        let mut catalog = catalog();
+        let direct_before = catalog.offerings[0].clone();
+        let first = catalog
+            .reconcile_brokered_projection(brokered(&[
+                ("openai", "gpt-5", ApiDialect::OpenAiResponses, 7),
+                ("openai", "gpt-5-mini", ApiDialect::OpenAiResponses, 7),
+            ]))
+            .unwrap();
+        assert_eq!(first.discovered, 2);
+        assert_eq!(first.activated, 2);
+
+        let second = catalog
+            .reconcile_brokered_projection(brokered(&[(
+                "openai",
+                "gpt-5",
+                ApiDialect::OpenAiResponses,
+                8,
+            )]))
+            .unwrap();
+        assert_eq!(second.marked_unavailable, 1);
+        assert_eq!(catalog.offerings[0], direct_before);
+        let managed = catalog
+            .offerings
+            .iter()
+            .filter(|offering| offering.source == OfferingSource::Brokered)
+            .map(|offering| (offering.model_id.as_str(), offering.status))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(managed["gpt-5"], OfferingStatus::Active);
+        assert_eq!(managed["gpt-5-mini"], OfferingStatus::Unavailable);
+    }
+
+    #[test]
+    fn b3_invalid_brokered_projection_is_rejected() {
+        let mut catalog = ProviderCatalog::default();
+        let error = catalog
+            .reconcile_brokered_projection(brokered(&[(
+                "openai",
+                "",
+                ApiDialect::OpenAiResponses,
+                7,
+            )]))
+            .unwrap_err();
+        assert!(matches!(error, CatalogError::InvalidBrokeredProjection(_)));
+        assert!(catalog.offerings.is_empty());
+    }
+
+    #[test]
+    fn b4_brokered_attributes_are_explainable_stale_safe_and_never_override_manual() {
+        // B4 decision table: known Cloud value + no local fact -> brokered fact;
+        // later Cloud unknown/removal -> clear only brokered fact; manual fact -> preserve.
+        let mut catalog = catalog();
+        let projection = |models| BrokeredCatalogProjection {
+            broker_id: "awaken-cloud".into(),
+            control_base_url: "https://cloud.invalid".into(),
+            models,
+            observed_at_unix_ms: 200,
+        };
+        catalog
+            .reconcile_brokered_projection(projection(vec![
+                BrokeredModelProjection {
+                    provider_id: "openai".into(),
+                    model_id: "cloud-only".into(),
+                    dialect: ApiDialect::OpenAiResponses,
+                    context_window: Some(400_000),
+                    max_output_tokens: Some(128_000),
+                    publication_revision: 7,
+                },
+                BrokeredModelProjection {
+                    provider_id: "openai".into(),
+                    model_id: "ephemeral".into(),
+                    dialect: ApiDialect::OpenAiResponses,
+                    context_window: Some(128_000),
+                    max_output_tokens: None,
+                    publication_revision: 7,
+                },
+            ]))
+            .unwrap();
+        let attributes = &catalog.model_attributes["cloud-only"];
+        assert_eq!(attributes.context_window, Some(400_000));
+        assert_eq!(
+            attributes.provenance["context_window"].source,
+            ModelAttributeSource::Brokered
+        );
+
+        catalog.model_attributes.insert(
+            "cloud-only".into(),
+            ModelAttributes {
+                context_window: Some(300_000),
+                max_output_tokens: Some(64_000),
+                provenance: BTreeMap::new(),
+            }
+            .stamped(ModelAttributeSource::Manual, 201),
+        );
+        catalog
+            .reconcile_brokered_projection(projection(Vec::new()))
+            .unwrap();
+        assert!(!catalog.model_attributes.contains_key("ephemeral"));
+        assert_eq!(
+            catalog.model_attributes["cloud-only"].context_window,
+            Some(300_000)
+        );
+        assert_eq!(
+            catalog.model_attributes["cloud-only"].provenance["context_window"].source,
+            ModelAttributeSource::Manual
+        );
     }
 
     #[test]

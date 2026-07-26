@@ -68,6 +68,7 @@ fn harness_with(probe: Option<Arc<dyn CredentialProbe>>) -> Harness {
         resources: Arc::new(awaken_admin_config_api::InMemoryAgentInputBindingRepository::new()),
         probe,
         model_discovery: None,
+        brokered_catalog: None,
         availability: Arc::new(AvailabilityLedger::new()),
     });
     Harness { app }

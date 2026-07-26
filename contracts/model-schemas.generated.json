@@ -429,6 +429,19 @@
           "type": "object"
         },
         {
+          "description": "Obtain short-lived, exact-model access from the platform broker at\nexecution time. No Provider credential or Cloud capability is persisted\nin the local profile or publication.",
+          "properties": {
+            "type": {
+              "const": "brokered",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Use exactly one source.",
           "properties": {
             "credential_source_id": {
@@ -974,6 +987,19 @@
               "type": "object"
             },
             {
+              "description": "Obtain short-lived, exact-model access from the platform broker at\nexecution time. No Provider credential or Cloud capability is persisted\nin the local profile or publication.",
+              "properties": {
+                "type": {
+                  "const": "brokered",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
               "description": "Use exactly one source.",
               "properties": {
                 "credential_source_id": {
@@ -1117,7 +1143,8 @@
           "enum": [
             "manual",
             "provider_api",
-            "curated"
+            "curated",
+            "brokered"
           ],
           "type": "string"
         }
@@ -1223,6 +1250,11 @@
             {
               "const": "provider_api",
               "description": "Observed from the configured endpoint's provider API.",
+              "type": "string"
+            },
+            {
+              "const": "brokered",
+              "description": "Rebuildable projection of an authenticated managed model service. Access\nis authorized just in time; the catalog row carries no entitlement,\nProvider credential, internal route, or pricing fact.",
               "type": "string"
             }
           ]
@@ -1493,7 +1525,8 @@
           "enum": [
             "manual",
             "provider_api",
-            "curated"
+            "curated",
+            "brokered"
           ],
           "type": "string"
         },
@@ -1588,6 +1621,11 @@
             {
               "const": "provider_api",
               "description": "Observed from the configured endpoint's provider API.",
+              "type": "string"
+            },
+            {
+              "const": "brokered",
+              "description": "Rebuildable projection of an authenticated managed model service. Access\nis authorized just in time; the catalog row carries no entitlement,\nProvider credential, internal route, or pricing fact.",
               "type": "string"
             }
           ]
@@ -2258,6 +2296,19 @@
               "properties": {
                 "type": {
                   "const": "none",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Obtain short-lived, exact-model access from the platform broker at\nexecution time. No Provider credential or Cloud capability is persisted\nin the local profile or publication.",
+              "properties": {
+                "type": {
+                  "const": "brokered",
                   "type": "string"
                 }
               },

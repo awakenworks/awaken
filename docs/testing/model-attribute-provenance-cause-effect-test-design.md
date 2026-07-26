@@ -21,6 +21,9 @@ offering/billing contract rather than intrinsic model metadata.
 | C7 | HTTP client supplies a provenance field |
 | C8 | A legacy stored value has no provenance |
 | C9 | PUT omits a field that was previously present |
+| C10 | Signed-in Cloud projection supplies a token attribute |
+| C11 | A later Cloud projection omits or removes that model |
+| C12 | A manual value already exists when Cloud refreshes |
 
 | ID | Effect |
 | --- | --- |
@@ -30,6 +33,9 @@ offering/billing contract rather than intrinsic model metadata.
 | E4 | Forged provenance is rejected at the JSON boundary |
 | E5 | Legacy value remains readable with unknown provenance |
 | E6 | PUT replacement clears the omitted value and its provenance |
+| E7 | Cloud value is cached with `brokered` provenance and observation time |
+| E8 | Only stale `brokered` values are cleared |
+| E9 | Manual value remains authoritative |
 
 ## Cause-effect graph and constraints
 
@@ -40,6 +46,9 @@ C1 -> E1
 C7 -> E4
 C8 -> E5
 C9 -> E6
+C10 -> E7
+C11 -> E8
+C12 -> E9
 ```
 
 - **I**: C1, C2, C3, and C4 describe mutually exclusive valid input classes.
@@ -69,8 +78,21 @@ C9 -> E6
 | E5 legacy readable | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 |
 | E6 omitted field cleared | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 |
 
+Cloud projection extension:
+
+| Cause/effect | B1 | B2 | B3 |
+| --- | --- | --- | --- |
+| C10 Cloud known value | 1 | 0 | 1 |
+| C11 later absent | 0 | 1 | 0 |
+| C12 manual exists | 0 | 0 | 1 |
+| E7 brokered stamp | 1 | 0 | 0 |
+| E8 clear only brokered | 0 | 1 | 0 |
+| E9 preserve manual | 0 | 0 | 1 |
+
 Automated evidence:
 
 - T1-T4, T8: model-catalog unit tests.
 - T5-T7, T9: admin-config HTTP tests and repository validation.
 - Contract/UI alignment: generated-contract freshness and Web typecheck/build.
+- B1-B3: brokered aggregate and admin refresh tests; Cloud owns the upstream
+  route-publication projection test.

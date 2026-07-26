@@ -527,7 +527,10 @@ async fn resolve_credential(
     expected_workspace: Option<&str>,
 ) -> Result<Option<RedactedString>, ResolveError> {
     match binding {
-        CredentialBinding::None => Ok(None),
+        // Brokered access has no locally materializable Provider secret. The
+        // management preview resolves the public model/protocol shape only; the
+        // runtime broker materializer performs live entitlement admission.
+        CredentialBinding::None | CredentialBinding::Brokered => Ok(None),
         CredentialBinding::Exact {
             credential_source_id,
         } => {

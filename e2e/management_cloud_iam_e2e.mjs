@@ -2,6 +2,13 @@
 // fixture is an IAM service boundary (JWKS + PDP), not an awaken test endpoint:
 // the spawned product still performs real JWT verification, workspace routing,
 // PEP enforcement, and remote authorization over HTTP.
+//
+// Brokered model cause graph / decision table:
+// C1 valid cached Cloud login, C2 Cloud readiness, C3 native model projection,
+// C4 explicit brokered Profile binding, C5 later model removal.
+// T1 C1+C2+C3 -> active brokered Offering + Cloud-provenance token metadata.
+// T2 C1+C2+C3+C4 -> exact credential-free publication preview (never `none`).
+// T3 C1+C2+C5 -> Offering unavailable and only stale brokered metadata removed.
 
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign } from 'node:crypto';
@@ -41,7 +48,17 @@ async function startIamFixture() {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   const publicJwk = publicKey.export({ format: 'jwk' });
   const calls = [];
+  const cloudCalls = [];
   let decision = 'allow';
+  let cloudModels = [{
+    provider: 'openai',
+    original_model_id: 'gpt-5-e2e',
+    native_protocol: 'openai_responses',
+    context_window: 400000,
+    max_output_tokens: 128000,
+    capabilities: ['responses'],
+    route_publication_revision: 7,
+  }];
   const server = http.createServer(async (request, response) => {
     if (request.method === 'GET' && request.url === '/.well-known/jwks.json') {
       response.setHeader('content-type', 'application/json');
@@ -50,6 +67,18 @@ async function startIamFixture() {
           kty: 'OKP', crv: 'Ed25519', x: publicJwk.x, kid: KEY_ID, use: 'sig', alg: 'EdDSA',
         }],
       }));
+      return;
+    }
+    if (request.method === 'GET' && request.url === '/v1/inference/readiness') {
+      cloudCalls.push({ path: request.url, authorization: request.headers.authorization });
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({ ready: true }));
+      return;
+    }
+    if (request.method === 'GET' && request.url === '/v1/inference/models') {
+      cloudCalls.push({ path: request.url, authorization: request.headers.authorization });
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({ data: cloudModels }));
       return;
     }
     if (request.method === 'POST' && request.url === '/v1/authorize') {
@@ -79,7 +108,9 @@ async function startIamFixture() {
     url: `http://127.0.0.1:${address.port}`,
     token: (subject, options) => accessToken(privateKey, subject, options),
     calls,
+    cloudCalls,
     decide(value) { decision = value; },
+    setCloudModels(value) { cloudModels = value; },
     close: () => new Promise((resolve) => server.close(resolve)),
   };
 }
@@ -110,6 +141,7 @@ async function main() {
     const env = deploymentEnv(directory, {
       identityMode: 'awaken-cloud',
       controlSealKey: SEAL_KEY,
+      fields: { cloud_api_url: iam.url },
       cloudIam: {
         url: iam.url,
         issuer: ISSUER,
@@ -157,6 +189,65 @@ async function main() {
     assert.equal(call.body.action, 'awaken.runtime.management::workspace.read');
     assert.deepEqual(call.body.scope, { kind: 'workspace', workspace_id: selectedWorkspace });
     pass('management PEP uses the same remote IAM protocol and trusted workspace');
+
+    result = await req(base, 'POST', '/v1/config/brokered-models/refresh');
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.equal(result.body.activated, 1);
+    assert.deepEqual(
+      iam.cloudCalls.map((entry) => entry.path),
+      ['/v1/inference/readiness', '/v1/inference/models'],
+    );
+    assert.ok(iam.cloudCalls.every((entry) => entry.authorization === `Bearer ${cachedToken}`));
+    result = await req(base, 'GET', '/v1/config/catalog');
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    const brokered = result.body.offerings.find((offering) => offering.source === 'brokered');
+    assert.ok(brokered, JSON.stringify(result.body));
+    assert.equal(brokered.model_id, 'gpt-5-e2e');
+    assert.equal(result.body.model_attributes['gpt-5-e2e'].context_window, 400000);
+    assert.equal(
+      result.body.model_attributes['gpt-5-e2e'].provenance.context_window.source,
+      'brokered',
+    );
+
+    result = await req(base, 'PUT', '/v1/config/inference-profiles/workspace-default', cachedToken, {
+      body: {
+        workspace_id: localWorkspace,
+        primary: {
+          target: {
+            model_id: brokered.model_id,
+            provider_id: brokered.provider_id,
+            protocol_endpoint_id: brokered.protocol_endpoint_id,
+          },
+          credential_binding: { type: 'brokered' },
+        },
+        fallbacks: [],
+        disabled_endpoint_ids: [],
+      },
+    });
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    result = await req(
+      base,
+      'POST',
+      '/v1/config/inference-profiles/workspace-default/resolve-candidates',
+      cachedToken,
+      { body: { workspace_id: localWorkspace } },
+    );
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.equal(result.body.candidates[0].model_id, 'gpt-5-e2e');
+    assert.equal(result.body.candidates[0].credential_present, false);
+    pass('Cloud model refresh and explicit brokered Profile preserve exact public identity');
+
+    iam.setCloudModels([]);
+    result = await req(base, 'POST', '/v1/config/brokered-models/refresh');
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.equal(result.body.marked_unavailable, 1);
+    result = await req(base, 'GET', '/v1/config/catalog');
+    assert.equal(
+      result.body.offerings.find((offering) => offering.model_id === 'gpt-5-e2e').status,
+      'unavailable',
+    );
+  assert.equal(result.body.model_attributes?.['gpt-5-e2e'], undefined);
+    pass('on-demand refresh marks removed Cloud models unavailable and clears only Cloud metadata');
 
     // Cloud identity never exposes the self-managed API-token administration
     // surface, even when the remote PDP would otherwise allow it.

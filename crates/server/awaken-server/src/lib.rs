@@ -19,6 +19,7 @@
 //! `awaken-runtime-host`.
 
 pub mod admin;
+pub mod brokered_inference;
 pub mod console;
 pub mod dynamic_placement;
 pub mod inference_materializer;
@@ -649,13 +650,15 @@ mod executor_seam_tests {
             ),
             Err(ResolvedExecutorError::DialectAdapterMismatch { .. })
         ));
-        assert!(executor_from_materialized_endpoint(
-            "open_ai_chat",
-            "openai",
-            Some("https://provider.invalid"),
-            Some(&credential),
-        )
-        .is_ok());
+        assert!(
+            executor_from_materialized_endpoint(
+                "open_ai_chat",
+                "openai",
+                Some("https://provider.invalid"),
+                Some(&credential),
+            )
+            .is_ok()
+        );
     }
 
     /// `MissingBaseUrl` is a reachable fail-closed arm: a resolved inference whose

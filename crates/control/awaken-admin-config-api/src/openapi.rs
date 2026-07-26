@@ -275,6 +275,10 @@ fn paths() -> Value {
             "get": op("get_catalog", "catalog", "Snapshot the full authored catalog (what the resolver binds against)",
                 &[], None, 200, schema_ref("ProviderCatalog"))
         },
+        "/v1/config/brokered-models/refresh": {
+            "post": op("refresh_brokered_models", "catalog", "Fetch the signed-in tenant's current Awaken Cloud model entitlement and atomically reconcile brokered offerings",
+                &[], None, 200, schema_ref("CatalogSyncResult"))
+        },
         "/v1/config/model-attributes/{model_id}": {
             "put": op("put_model_attributes", "catalog", "Author (upsert) a model's intrinsic attributes; published independently of offerings",
                 &[path_param("model_id", "Model id")], Some(schema_ref("PutModelAttributesRequest")), 200, schema_ref("ModelAttributes"))

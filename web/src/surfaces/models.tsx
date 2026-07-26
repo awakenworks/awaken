@@ -262,19 +262,39 @@ export default function ModelsSurface() {
           : { type: "none" },
       }),
   });
+  const refreshCloudModels = useMutation({
+    mutationFn: () =>
+      api.post<CatalogSyncResult>(ws("/v1/config/brokered-models/refresh")),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["catalog"] });
+      void qc.invalidateQueries({ queryKey: ["provider-connections", workspace] });
+    },
+  });
 
   const c = catalog.data;
   return (
     <>
       <Card style={{ padding: 0 }}>
-        <div className="row" style={{ padding: "13px 16px" }}>
+        <div className="row" style={{ padding: "13px 16px", justifyContent: "space-between" }}>
+          <div className="row">
           <h2 style={{ margin: 0, fontSize: 14 }}>{app.t("Catalog", "模型目录")}</h2>
           <span className="mut">
             {c
               ? `${Object.keys(c.providers).length} providers · ${Object.keys(c.endpoints).length} endpoints · ${c.offerings.length} offerings`
               : "…"}
           </span>
+          </div>
+          <Button disabled={refreshCloudModels.isPending} onClick={() => refreshCloudModels.mutate()}>
+            {refreshCloudModels.isPending
+              ? app.t("Refreshing Cloud…", "正在刷新云端模型…")
+              : app.t("Refresh Cloud models", "刷新云端模型")}
+          </Button>
         </div>
+        {refreshCloudModels.error instanceof Error && (
+          <div className="err" style={{ margin: "0 16px 12px" }}>
+            {refreshCloudModels.error.message}
+          </div>
+        )}
         <table className="table">
           <thead>
             <tr>

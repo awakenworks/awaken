@@ -32,6 +32,7 @@ fn state() -> AdminState {
         resources: Arc::new(InMemoryAgentInputBindingRepository::new()),
         probe: None,
         model_discovery: None,
+        brokered_catalog: None,
         availability: Default::default(),
     }
 }
@@ -158,6 +159,7 @@ fn every_mounted_route_is_documented() {
         ("post", "/v1/config/offerings"),
         ("put", "/v1/config/model-attributes/{model_id}"),
         ("get", "/v1/config/catalog"),
+        ("post", "/v1/config/brokered-models/refresh"),
         ("post", "/v1/config/credentials"),
         ("get", "/v1/config/credentials"),
         ("get", "/v1/config/credentials/{id}"),

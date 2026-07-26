@@ -29,6 +29,7 @@ use crate::executor_from_materialized_endpoint;
 #[derive(Clone)]
 pub struct CredentialInferenceMaterializer {
     credentials: awaken_runtime_host::PinnedCredentialMaterializer,
+    brokered: Option<Arc<dyn crate::brokered_inference::BrokeredInferenceClient>>,
 }
 
 struct PinnedModelExecutor {
@@ -71,17 +72,54 @@ impl CredentialInferenceMaterializer {
     /// ACP, MCP and Repository realization on a Worker.
     #[must_use]
     pub fn from_pinned(credentials: awaken_runtime_host::PinnedCredentialMaterializer) -> Self {
-        Self { credentials }
+        Self {
+            credentials,
+            brokered: None,
+        }
+    }
+
+    /// Add managed inference without changing the direct/BYOK realization path.
+    /// The injected client owns account-token custody and Cloud HTTP behavior.
+    #[must_use]
+    pub fn with_brokered_client(
+        mut self,
+        client: Arc<dyn crate::brokered_inference::BrokeredInferenceClient>,
+    ) -> Self {
+        self.brokered = Some(client);
+        self
     }
 
     async fn materialize_secret(
         &self,
         candidate: &ResolvedModelCandidate,
         context: &RuntimeRunContext,
+        local_run_correlation: Option<String>,
     ) -> Result<Option<Arc<dyn LlmExecutor>>, String> {
-        let ModelProvisioning::Provider { endpoint, .. } = &candidate.provisioning else {
+        let ModelProvisioning::Provider {
+            provider_ref,
+            route_ref,
+            endpoint,
+            ..
+        } = &candidate.provisioning
+        else {
             return Ok(None);
         };
+        if route_ref.starts_with(crate::brokered_inference::BROKERED_ROUTE_PREFIX) {
+            let client = self
+                .brokered
+                .clone()
+                .ok_or_else(|| "brokered inference client is not installed".to_string())?;
+            return crate::brokered_inference::BrokeredCandidateExecutor::new(
+                client,
+                provider_ref,
+                &candidate.binding.model_ref,
+                &endpoint.api_dialect,
+                &endpoint.adapter_kind,
+                local_run_correlation,
+                context.ownership.clone(),
+            )
+            .map(|executor| Some(Arc::new(executor) as Arc<dyn LlmExecutor>));
+        }
         let secret = self
             .credentials
             .materialize_claimed_provider(
@@ -114,7 +152,7 @@ impl CredentialInferenceMaterializer {
         candidate: &ResolvedModelCandidate,
         context: &RuntimeRunContext,
     ) -> Option<Arc<dyn LlmExecutor>> {
-        self.materialize_secret(candidate, context)
+        self.materialize_secret(candidate, context, None)
             .await
             .ok()
             .flatten()
@@ -126,6 +164,7 @@ struct PinnedCandidateExecutor {
     candidates: Vec<ResolvedModelCandidate>,
     realization: Option<awaken_runtime_contract::AttemptCredentialRealization>,
     ownership: Option<Arc<dyn awaken_runtime_contract::AttemptOwnershipVerifier>>,
+    local_run_correlation: Option<String>,
 }
 
 impl PinnedCandidateExecutor {
@@ -150,7 +189,7 @@ impl PinnedCandidateExecutor {
         };
         let executor = self
             .provider
-            .materialize_secret(candidate, &context)
+            .materialize_secret(candidate, &context, self.local_run_correlation.clone())
             .await
             .map_err(LlmError::Binding)?
             .ok_or_else(|| {
@@ -182,7 +221,14 @@ impl LlmExecutor for PinnedCandidateExecutor {
 
 impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
     fn supported_access_schemes(&self) -> &'static [&'static str] {
-        &[awaken_runtime_host::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY]
+        if self.brokered.is_some() {
+            &[
+                awaken_runtime_host::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
+                crate::brokered_inference::BROKERED_INFERENCE_ACCESS_CAPABILITY,
+            ]
+        } else {
+            &[awaken_runtime_host::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY]
+        }
     }
 
     fn credential_realization_capabilities(
@@ -263,6 +309,7 @@ impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
             candidates,
             realization: context.credential_realization.clone(),
             ownership: context.ownership.clone(),
+            local_run_correlation: Some(activation.run_id.0.clone()),
         }) as Arc<dyn LlmExecutor>))
     }
 
@@ -280,6 +327,7 @@ impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
             candidates: vec![candidate.clone()],
             realization: context.credential_realization.clone(),
             ownership: context.ownership.clone(),
+            local_run_correlation: None,
         }) as Arc<dyn LlmExecutor>)
         .filter(|_| {
             !matches!(
@@ -340,6 +388,84 @@ mod tests {
         ) -> Result<(), awaken_runtime_contract::AttemptOwnershipError> {
             Ok(())
         }
+    }
+
+    struct NeverGrantClient;
+
+    #[async_trait::async_trait]
+    impl crate::brokered_inference::BrokeredInferenceClient for NeverGrantClient {
+        async fn create_grant(
+            &self,
+            _request: crate::brokered_inference::BrokeredInferenceRequest,
+        ) -> Result<
+            crate::brokered_inference::BrokeredInferenceLease,
+            crate::brokered_inference::BrokeredInferenceError,
+        > {
+            panic!("materialization must not acquire a grant before a Provider request")
+        }
+
+        async fn close_grant(
+            &self,
+            _grant_id: &str,
+        ) -> Result<(), crate::brokered_inference::BrokeredInferenceError> {
+            panic!("no grant was acquired")
+        }
+
+        async fn renew_grant(
+            &self,
+            _grant_id: &str,
+        ) -> Result<
+            crate::brokered_inference::BrokeredInferenceLease,
+            crate::brokered_inference::BrokeredInferenceError,
+        > {
+            panic!("no grant was acquired")
+        }
+    }
+
+    fn brokered_candidate() -> ResolvedModelCandidate {
+        ResolvedModelCandidate::provider(
+            ModelBinding::new("openai", "gpt-5", "openai"),
+            "openai@1",
+            "brokered:awaken-cloud:openai:open_ai_responses@7",
+            "ws",
+            None,
+            awaken_runtime_contract::InferenceEndpoint {
+                adapter_kind: "openai".into(),
+                api_dialect: "open_ai_responses".into(),
+                base_url: "https://api.awakenworks.com".into(),
+                upstream_model: "gpt-5".into(),
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn brokered_materialization_requires_the_explicit_cloud_client() {
+        // Decision table: B1 marker + client -> lazy executor, zero grant calls;
+        // B2 marker + no client -> unavailable; a direct route never enters B1.
+        let credentials = Arc::new(InMemoryCredentialRepo::new());
+        let secrets = Arc::new(InMemorySecretStore::new());
+        let materializer = CredentialInferenceMaterializer::new(credentials, secrets);
+        let candidate = brokered_candidate();
+        let context = RuntimeRunContext::new().with_ownership(Arc::new(CurrentOwnership));
+        assert!(
+            materializer
+                .materialize_candidate(&candidate, &context)
+                .await
+                .is_none()
+        );
+
+        let materializer = materializer.with_brokered_client(Arc::new(NeverGrantClient));
+        assert!(
+            materializer
+                .materialize_candidate(&candidate, &context)
+                .await
+                .is_some()
+        );
+        assert!(
+            materializer
+                .supported_access_schemes()
+                .contains(&crate::brokered_inference::BROKERED_INFERENCE_ACCESS_CAPABILITY)
+        );
     }
 
     struct AcceptReceipt;
@@ -1147,6 +1273,7 @@ mod tests {
                 &fallback_candidate,
             ])),
             ownership: Some(Arc::new(CurrentOwnership)),
+            local_run_correlation: Some("test-run".into()),
         };
         assert!(
             router
