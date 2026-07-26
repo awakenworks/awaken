@@ -490,11 +490,20 @@ async fn lease_renewal_on_postgres() {
 
 #[tokio::test]
 async fn two_workers_claim_distinct_runs_on_postgres() {
-    // The durable store is already a distributed queue: two concurrent claims
-    // (FOR UPDATE SKIP LOCKED) take different runs, never the same one. The two runs
-    // are on DISTINCT threads — the single-writer-per-thread invariant (ADR-0022)
-    // makes at most one run per thread claimable at a time, so two claimable runs must
-    // live on different threads for this concurrency property to be meaningful.
+    // Cause graph:
+    // C1 = two claims overlap; C2 = the preferred row is locked by the other
+    // transaction; C3 = another eligible row exists on a distinct Thread.
+    // E1 = the second claim skips the locked row and claims the other row;
+    // E2 = no duplicate run id is returned.
+    //
+    // | Rule | C1 | C2 | C3 | E1 | E2 |
+    // | D1   | 0  | 0  | 1  |  - |  1 |
+    // | D2   | 1  | 1  | 0  |  0 |  1 |
+    // | D3   | 1  | 1  | 1  |  1 |  1 |
+    //
+    // This test is D3. The ordinary sequential claim tests cover D1 and the
+    // empty-queue conformance cases cover D2. Runs use distinct Threads because
+    // ADR-0022 intentionally permits only one active run per Thread.
     let Some(pool) = harness::schema_pool("t_pg_multi").await else {
         return;
     };
