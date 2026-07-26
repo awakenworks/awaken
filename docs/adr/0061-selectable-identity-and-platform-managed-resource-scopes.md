@@ -227,5 +227,8 @@ subject + exact Workspace + action -> IAM decision
 
 Server mode rejects an inline service token, a missing token file, and dual
 inline/file configuration before serving. Management never mounts a Flow token
-or an IAM signing key, and Runtime/resource stores remain unaware of this
-deployment credential.
+or an IAM signing key. The `awaken management` process mounts only the existing
+authoring/control router; it does not mount Session, protocol, Run ingress,
+Worker transport, or local dispatch routes and therefore cannot become a second
+Runtime authority beside a hosted Coordinator. Runtime/resource stores remain
+unaware of the deployment credential.
