@@ -538,3 +538,17 @@ as compatibility fallbacks. Within the scenario host, storage is read by the
 single resolver and reused by Skill, Resource, ACP, container, commit, and
 dispatch composition; production runtime diagnostics refer only to typed
 `DeploymentConfig` fields.
+
+## Phase 25: typed server seal-key custody
+
+| Rule | Mode | Typed key source | Retired environment key | Expected |
+|---|---|---|---|---|
+| K1 | local | absent | any | create/reuse owner-only local key |
+| K2 | server | inline | any | use exact redacted typed value |
+| K3 | server | file | any | read exact operator-owned file |
+| K4 | server | absent | valid-looking | reject before bind |
+| K5 | any | inline and file | any | reject ambiguous custody |
+
+The E2E exercises K4 against the production composition. It no longer asks a
+scenario host to infer durable management mode from an old environment variable,
+and explicitly proves that the removed key variable cannot bypass typed parsing.
