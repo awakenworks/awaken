@@ -273,16 +273,49 @@ async fn scripted_bind(State(state): State<Arc<ScriptedBindState>>) -> (StatusCo
     if call == 0 && state.first_status != StatusCode::OK {
         return (state.first_status, Json(json!({ "error": "injected" })));
     }
-    (StatusCode::OK, Json(json!({ "applied": true })))
+    (
+        StatusCode::OK,
+        Json(json!({ "applied": true, "settled": true })),
+    )
 }
 
-async fn spawn_scripted_bind_server(first_status: StatusCode) -> (String, Arc<ScriptedBindState>) {
+async fn scripted_recovery(
+    State(state): State<Arc<ScriptedBindState>>,
+) -> (StatusCode, Json<Value>) {
+    let call = state.calls.fetch_add(1, Ordering::SeqCst);
+    if call == 0 && state.first_status != StatusCode::OK {
+        return (state.first_status, Json(json!({ "error": "injected" })));
+    }
+    (
+        StatusCode::OK,
+        Json(json!({
+            "snapshot": {
+                "thread_id": "recovery-thread",
+                "claimed_run_id": "recovery-retry",
+                "runs": [],
+                "latest_run_id": null,
+                "messages": [],
+                "state": [],
+                "resume_tickets": [],
+                "thread_version": 0,
+                "store_cursor": 0,
+                "next_commit_ordinal": 0
+            }
+        })),
+    )
+}
+
+async fn spawn_scripted_idempotent_server(
+    first_status: StatusCode,
+) -> (String, Arc<ScriptedBindState>) {
     let state = Arc::new(ScriptedBindState {
         first_status,
         calls: AtomicUsize::new(0),
     });
     let app = Router::new()
         .route("/v1/worker/dispatch/bind_sandbox", post(scripted_bind))
+        .route("/v1/worker/dispatch/settle", post(scripted_bind))
+        .route("/v1/worker/recovery/snapshot", post(scripted_recovery))
         .with_state(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -315,7 +348,7 @@ async fn sandbox_bind_retries_only_ambiguous_transport_outcomes() {
     };
 
     let (retry_base, retry_state) =
-        spawn_scripted_bind_server(StatusCode::SERVICE_UNAVAILABLE).await;
+        spawn_scripted_idempotent_server(StatusCode::SERVICE_UNAVAILABLE).await;
     let retrying = HttpDispatchQueue::new(retry_base, WorkerIdentity::new("worker-A", "boot-A", 1));
     assert!(
         retrying
@@ -326,7 +359,8 @@ async fn sandbox_bind_retries_only_ambiguous_transport_outcomes() {
     );
     assert_eq!(retry_state.calls.load(Ordering::SeqCst), 2);
 
-    let (reject_base, reject_state) = spawn_scripted_bind_server(StatusCode::BAD_REQUEST).await;
+    let (reject_base, reject_state) =
+        spawn_scripted_idempotent_server(StatusCode::BAD_REQUEST).await;
     let rejecting =
         HttpDispatchQueue::new(reject_base, WorkerIdentity::new("worker-A", "boot-A", 1));
     assert!(
@@ -335,6 +369,77 @@ async fn sandbox_bind_retries_only_ambiguous_transport_outcomes() {
             .await
             .is_err()
     );
+    assert_eq!(reject_state.calls.load(Ordering::SeqCst), 1);
+}
+
+/// Settle uses the same ambiguity partition as sandbox binding. Its exact epoch
+/// is the idempotency/fence key: replay after an applied-but-lost response is a
+/// harmless fenced response, while retry after a pre-apply 5xx completes it.
+///
+/// | Rule | first response | retry | result |
+/// |---|---|---|---|
+/// | T1 | 200 | no | applied (covered by the main transport test) |
+/// | T2 | 503 | yes, bounded | applied on the second response |
+/// | T3 | 400 | no | rejected immediately |
+#[tokio::test]
+async fn settle_retries_only_ambiguous_transport_outcomes() {
+    let run = RunId("settle-retry".into());
+    let (retry_base, retry_state) =
+        spawn_scripted_idempotent_server(StatusCode::SERVICE_UNAVAILABLE).await;
+    let retrying = HttpDispatchQueue::new(retry_base, WorkerIdentity::new("worker-A", "boot-A", 1));
+    assert_eq!(
+        retrying
+            .settle(&run, 7, DispatchOutcome::Done, &[])
+            .await
+            .expect("T2 retries the ambiguous settle response"),
+        SettleOutcome::Applied
+    );
+    assert_eq!(retry_state.calls.load(Ordering::SeqCst), 2);
+
+    let (reject_base, reject_state) =
+        spawn_scripted_idempotent_server(StatusCode::BAD_REQUEST).await;
+    let rejecting =
+        HttpDispatchQueue::new(reject_base, WorkerIdentity::new("worker-A", "boot-A", 1));
+    assert!(
+        rejecting
+            .settle(&run, 7, DispatchOutcome::Done, &[])
+            .await
+            .is_err()
+    );
+    assert_eq!(reject_state.calls.load(Ordering::SeqCst), 1);
+}
+
+/// Recovery is a claim-fenced read, so retry cannot duplicate a mutation. A
+/// transport/5xx ambiguity is retried, while an authoritative 4xx (stale claim,
+/// wrong owner, or invalid identity) remains final.
+///
+/// | Rule | first response | retry | result |
+/// |---|---|---|---|
+/// | T1 | 200 | no | snapshot returned (covered by runtime-host HTTP test) |
+/// | T2 | 503 | yes, bounded | snapshot returned on the second response |
+/// | T3 | 400 | no | rejected immediately |
+#[tokio::test]
+async fn recovery_snapshot_retries_only_ambiguous_transport_outcomes() {
+    let claim = RunClaim {
+        run_id: RunId("recovery-retry".into()),
+        owner: "worker-A:1:boot-A".into(),
+        epoch: 1,
+    };
+    let (retry_base, retry_state) =
+        spawn_scripted_idempotent_server(StatusCode::SERVICE_UNAVAILABLE).await;
+    let retrying = HttpDispatchQueue::new(retry_base, WorkerIdentity::new("worker-A", "boot-A", 1));
+    let snapshot = retrying
+        .load_recovery_snapshot(&claim)
+        .await
+        .expect("T2 retries the ambiguous recovery response");
+    assert_eq!(snapshot.claimed_run_id, claim.run_id);
+    assert_eq!(retry_state.calls.load(Ordering::SeqCst), 2);
+
+    let (reject_base, reject_state) =
+        spawn_scripted_idempotent_server(StatusCode::BAD_REQUEST).await;
+    let rejecting =
+        HttpDispatchQueue::new(reject_base, WorkerIdentity::new("worker-A", "boot-A", 1));
+    assert!(rejecting.load_recovery_snapshot(&claim).await.is_err());
     assert_eq!(reject_state.calls.load(Ordering::SeqCst), 1);
 }
 

@@ -497,6 +497,10 @@ pub struct WorkerUpstream {
 }
 
 impl WorkerUpstream {
+    /// Connect to the private Worker-to-Control plane without inheriting
+    /// workstation or container egress proxies. Deployments that intentionally
+    /// proxy this channel can still supply an explicit client with
+    /// [`Self::with_client`].
     #[must_use]
     pub fn new(base_url: impl Into<String>) -> Self {
         let worker_id = std::env::var("AWAKEN_WORKER_ID")
@@ -505,7 +509,10 @@ impl WorkerUpstream {
             .unwrap_or_else(|| "awaken-worker".to_string());
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .expect("the default Worker upstream HTTP client should build"),
             request_authorizer: Arc::new(HeaderWorkerRequestAuthorizer),
             worker_id,
             worker_identity: None,
