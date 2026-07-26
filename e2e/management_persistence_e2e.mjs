@@ -1,3 +1,15 @@
+// Cause graph (durable management restart):
+//   C1 domain aggregate is authored before restart -> E1 durable row is restored
+//   C2 secret is sealed with the same key          -> E2 credential materializes
+//   C3 wire-only vault object is process-local     -> E3 vault wire GET returns 404
+//   C4 restored Agent uses restored MCP binding    -> E4 authenticated tool call works
+//
+// Decision table:
+//   Rule  C1  C2  C3  C4  Expected
+//   T1    Y   -   -   -   E1 (catalog/pool/normalized profile/Agent)
+//   T2    Y   Y   -   Y   E2 + E4
+//   T3    -   -   Y   -   E3
+//
 // Restart-persistence e2e for the durable management plane (ADR-0043): spawn
 // awaken-server in `management` mode with a fixed typed data_dir + seal key,
 // author config through `/v1/config/*` AND enter an
@@ -161,7 +173,8 @@ async function main() {
 
     r = await req(base, 'GET', '/v1/config/inference-profiles/prof1');
     assert.equal(r.status, 200);
-    assert.equal(r.json.model_id, 'claude-opus-4-8');
+    assert.equal(r.json.primary.target.model_id, 'claude-opus-4-8');
+    assert.equal(r.json.primary.credential_binding.credential_source_id, credId);
 
     r = await req(base, 'GET', '/v1/config/agents/calc-agent');
     assert.equal(r.status, 200);

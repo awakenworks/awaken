@@ -326,6 +326,17 @@ impl ClaimedRunCommit for RemoteClaimedRunCommit {
                     break;
                 }
             };
+            if response.status().is_server_error() {
+                last_transport_error = Some(format!(
+                    "claimed commit server returned {}",
+                    response.status()
+                ));
+                if attempt < CLAIMED_COMMIT_TRANSPORT_ATTEMPTS {
+                    tokio::time::sleep(CLAIMED_COMMIT_RETRY_DELAY).await;
+                    continue;
+                }
+                break;
+            }
             if !response.status().is_success() {
                 return Err(CommitError::Rejected(format!(
                     "claimed commit server returned {}",

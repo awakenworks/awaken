@@ -133,16 +133,26 @@ async function waitForOutput(
   throw new Error(`worker output never contained ${expected}:\n${output()}`);
 }
 
-async function waitForNoDispatches(thread: string, timeoutMs = 10_000): Promise<void> {
+async function waitForDispatchSettlement(runId: string, timeoutMs = 30_000): Promise<void> {
+  // Cause/effect graph: C1=model result commit is visible; C2=the Worker has
+  // completed the following dispatch settle; E1=the exact Run disappears from
+  // dispatch observation. Commit causally precedes settle but is not atomic with
+  // it, so C1 alone must never be used as evidence for E1.
+  //
+  // | Rule | C1 reply visible | C2 settle complete | expected observation |
+  // | T1   | no               | no                 | Run may be leased     |
+  // | T2   | yes              | no                 | Run still present     |
+  // | T3   | yes              | yes                | exact Run absent      |
   const deadline = Date.now() + timeoutMs;
-  let observed = '';
+  let observed: any[] = [];
   while (Date.now() <= deadline) {
-    const response = await fetch(`${BASE}/v1/durable/threads/${thread}/dispatches`);
-    observed = await response.text();
-    if (response.status === 200 && (JSON.parse(observed) as any).dispatches?.length === 0) return;
+    const response = await fetch(`${BASE}/v1/durable/threads/${THREAD}/dispatches`);
+    assert.equal(response.status, 200);
+    observed = ((await response.json()) as any).dispatches ?? [];
+    if (!observed.some((dispatch) => dispatch.run_id === runId)) return;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  throw new Error(`thread ${thread} did not settle its dispatch: ${observed}`);
+  throw new Error(`gateway dispatch did not settle: ${JSON.stringify(observed)}`);
 }
 
 async function main(): Promise<void> {
@@ -168,7 +178,8 @@ async function main(): Promise<void> {
     ).claimed;
     assert.ok(seed, 'seed worker claimed the server-created activation');
     const request = structuredClone(seed.request);
-    request.activation.run_id = `${seed.request.activation.run_id}-gateway`;
+    const gatewayRunId = `${seed.request.activation.run_id}-gateway`;
+    request.activation.run_id = gatewayRunId;
     request.activation.thread_id = THREAD;
     request.session_thread_id = THREAD;
     request.activation.snapshot.resolved_spec.model_binding = {
@@ -247,7 +258,7 @@ async function main(): Promise<void> {
       'the provider-routed model result committed exactly once',
     );
     assert.ok(!workerOutput.includes('provider-key'), 'worker output contains no provider credential');
-    await waitForNoDispatches(THREAD);
+    await waitForDispatchSettlement(gatewayRunId);
 
     // Placement still sees a fresh Available observation, while the exact
     // use-time provider check reports logout. The attempt must stop before the

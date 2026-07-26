@@ -1,3 +1,20 @@
+// Cause graph (embedded management IAM):
+//   C1 request has no/invalid token -> E1 401 on config and resource surfaces
+//   C2 token is valid and scoped    -> E2 authorize only its Workspace actions
+//   C3 token is revoked             -> E3 reject immediately and after restart
+//   C4 bootstrap file is on POSIX   -> E4 owner-only mode 0600
+//   C5 bootstrap file is on Windows -> E5 regular file + exact persisted token
+//   C6 token crosses expires_at      -> E6 accept before, reject after expiry
+//
+// Decision table:
+//   Rule  C1  C2  C3  C4  C5  C6  Expected
+//   T1    Y   N   N   -   -   -   E1
+//   T2    N   Y   N   -   -   -   E2
+//   T3    N   -   Y   -   -   -   E3
+//   T4    -   -   -   Y   N   -   E4
+//   T5    -   -   -   N   Y   -   E5 (POSIX mode bits are not meaningful)
+//   T6    N   Y   N   -   -   Y   E6
+//
 // Embedded-IAM e2e for the management plane (ADR-0042/0043 P1): spawn
 // awaken-server in `management` mode with typed data_dir, control_seal_key, and
 // identity_mode=self-managed; read the bootstrap admin
@@ -70,8 +87,12 @@ async function main() {
     const tokenPath = path.join(dir, 'admin-token');
     const token = fs.readFileSync(tokenPath, 'utf8').trim();
     assert.ok(token.startsWith('sk-awaken-'), `bootstrap token shape: ${token.slice(0, 12)}…`);
-    assert.equal(fs.statSync(tokenPath).mode & 0o777, 0o600, 'admin-token is mode 0600');
-    pass('bootstrap admin token written to <dir>/admin-token (0600), sk-awaken-… shape');
+    const tokenStat = fs.statSync(tokenPath);
+    assert.ok(tokenStat.isFile(), 'admin-token is a regular file');
+    if (process.platform !== 'win32') {
+      assert.equal(tokenStat.mode & 0o777, 0o600, 'T4 admin-token is mode 0600');
+    }
+    pass(`T${process.platform === 'win32' ? '5' : '4'}: bootstrap admin token persisted safely, sk-awaken-… shape`);
 
     // Without a token: 401 in the Managed error envelope, on both surfaces.
     let r = await req(base, 'GET', '/v1/config/catalog');
@@ -182,7 +203,9 @@ async function main() {
 
     // An expiring token: valid before its expiry, refused after (the expired
     // arm of authentication — distinct from revocation).
-    const soon = new Date(Date.now() + 2000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+    // Keep enough pre-expiry budget for instrumented/slow CI, then derive the
+    // post-expiry wait from the authored timestamp instead of a timing guess.
+    const soon = new Date(Date.now() + 10_000).toISOString().replace(/\.\d{3}Z$/, 'Z');
     r = await req(base, 'POST', '/v1/config/iam/tokens', {
       workspace_id: workspace, role: 'workspace_admin', expires_at: soon,
     }, opToken);
@@ -190,12 +213,13 @@ async function main() {
     const shortLived = r.json.token;
     r = await req(base, 'GET', '/v1/config/catalog', undefined, shortLived);
     assert.equal(r.status, 200, 'short-lived token works before expiry');
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+    const afterExpiryDelay = Math.max(0, Date.parse(soon) - Date.now() + 1_100);
+    await new Promise((resolve) => setTimeout(resolve, afterExpiryDelay));
     r = await req(base, 'GET', '/v1/config/catalog', undefined, shortLived);
     assert.equal(r.status, 401, 'expired token is refused');
     r = await req(base, 'GET', '/v1/files', undefined, shortLived);
     assert.equal(r.status, 401, 'expired token is refused by the resource PEP too');
-    pass('expiring token: 200 before expiry, 401 after');
+    pass('T6 expiring token: 200 before expiry, 401 after');
 
     // ---- second restart: rotation and mint both persisted -----------------
     await stopServer(server);

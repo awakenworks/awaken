@@ -15,13 +15,15 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
 import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38221);
 const BETAS = ['managed-agents-2026-04-01'];
-const TMP = `/tmp/awaken-fullchain-e2e-${process.pid}`;
+const TMP = path.join(os.tmpdir(), `awaken-fullchain-e2e-${process.pid}`);
 const STORE_DIR = `${TMP}/storage`;
 const README = 'SEED_README_FULLCHAIN';
 const REPO_MARKER = 'REPO_FULLCHAIN_8830'; // must match the fullChain behavior
@@ -36,7 +38,8 @@ const git = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8' });
 function seedRemote() {
   const work = `${TMP}/seed`;
   fs.mkdirSync(work, { recursive: true });
-  git(['init', '-q', '-b', 'main'], work);
+  git(['init', '-q'], work);
+  git(['symbolic-ref', 'HEAD', 'refs/heads/main'], work);
   git(['config', 'user.email', 'seed@t'], work);
   git(['config', 'user.name', 'seed'], work);
   fs.writeFileSync(`${work}/README.md`, README);

@@ -92,7 +92,8 @@ function seedRepository(root) {
   const work = path.join(root, 'reclamation-repository-work');
   const remote = path.join(root, 'reclamation-repository.git');
   fs.mkdirSync(work, { recursive: true });
-  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: work });
+  execFileSync('git', ['init', '-q'], { cwd: work });
+  execFileSync('git', ['symbolic-ref', 'HEAD', 'refs/heads/main'], { cwd: work });
   execFileSync('git', ['config', 'user.email', 'resource-reclaim@example.invalid'], { cwd: work });
   execFileSync('git', ['config', 'user.name', 'resource-reclaim'], { cwd: work });
   fs.writeFileSync(path.join(work, 'README.md'), 'reclamation repository');

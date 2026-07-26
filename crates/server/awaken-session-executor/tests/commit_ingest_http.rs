@@ -1,6 +1,7 @@
 //! Canonical typed Worker commit transport over real HTTP.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
@@ -196,4 +197,83 @@ async fn registered_worker_commits_one_idempotent_versioned_operation() {
         ThreadReader::committed_messages(&*coordinator, &ThreadId("typed-commit-thread".into()));
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].text_content(), "typed commit");
+}
+
+/// Cause graph for ambiguous remote commit responses:
+/// C1=operation has stable identity, C2=server returns 5xx, C3=retry budget remains.
+///
+/// Decision table:
+/// | Rule | C1 | C2 | C3 | Result |
+/// | T1   | Y  | N  | -  | return receipt without retry |
+/// | T2   | Y  | Y  | Y  | retry identical operation and return durable receipt |
+/// | T3   | Y  | Y  | N  | fail after the bounded retry budget |
+#[tokio::test(flavor = "multi_thread")]
+async fn t2_retries_ambiguous_server_failure_with_the_same_operation() {
+    let identity = WorkerIdentity::new("retry-worker", "retry-boot", 1);
+    let commit = terminal_commit();
+    let operation = CommitOperation {
+        operation_id: CommitOperationId::new(RunId("typed-commit-run".into()), 0),
+        expected_thread_version: 0,
+        payload_hash: commit_payload_hash(&commit).unwrap(),
+        commit,
+    };
+    let receipt = awaken_agent_contract::thread::commit::operation::CommitReceipt {
+        operation_id: operation.operation_id.clone(),
+        commit_sequence: 1,
+        thread_version: 1,
+        payload_hash: operation.payload_hash.clone(),
+        duplicate: true,
+    };
+    let command = ClaimedCommitCommand {
+        claim: RunClaim {
+            run_id: RunId("typed-commit-run".into()),
+            owner: identity.lease_owner(),
+            epoch: 1,
+        },
+        operation: operation.clone(),
+    };
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let bodies = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let handler_receipt = receipt.clone();
+    let app = axum::Router::new().route(
+        "/v1/worker/commit-claimed",
+        axum::routing::post({
+            let attempts = attempts.clone();
+            let bodies = bodies.clone();
+            move |axum::Json(body): axum::Json<serde_json::Value>| {
+                let attempts = attempts.clone();
+                let bodies = bodies.clone();
+                let receipt = handler_receipt.clone();
+                async move {
+                    bodies.lock().await.push(body);
+                    if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                        (
+                            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                            axum::Json(serde_json::json!({"error": "receipt lost"})),
+                        )
+                    } else {
+                        (
+                            axum::http::StatusCode::OK,
+                            axum::Json(serde_json::to_value(receipt).unwrap()),
+                        )
+                    }
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let got = RemoteClaimedRunCommit::new(format!("http://{address}"), identity)
+        .commit_operation(command)
+        .await
+        .expect("T2 retries the ambiguous 5xx");
+
+    assert_eq!(got, receipt);
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    let bodies = bodies.lock().await;
+    assert_eq!(bodies.len(), 2);
+    assert_eq!(bodies[0], bodies[1], "retry preserves the exact operation");
+    assert_eq!(bodies[0]["operation"], serde_json::to_value(operation).unwrap());
 }

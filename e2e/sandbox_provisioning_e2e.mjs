@@ -20,20 +20,23 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import { withRealServer, pass } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT ?? 38291);
-const TMP = `/tmp/awaken-sbxprov-e2e-${process.pid}`;
+const TMP = path.join(os.tmpdir(), `awaken-sbxprov-e2e-${process.pid}`);
 const git = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8' });
 
 // A local bare repo (the "remote"), seeded with one commit — a git URL with no network.
 function seedRemote() {
   const work = `${TMP}/seed`;
   fs.mkdirSync(work, { recursive: true });
-  git(['init', '-q', '-b', 'main'], work);
+  git(['init', '-q'], work);
+  git(['symbolic-ref', 'HEAD', 'refs/heads/main'], work);
   git(['config', 'user.email', 'seed@t'], work);
   git(['config', 'user.name', 'seed'], work);
   fs.writeFileSync(`${work}/README.md`, 'SEED_PROVISION_CONTENT');
@@ -144,7 +147,7 @@ async function main() {
     pass('an unresolvable repo fails closed at sandbox realization (no clean turn)');
   });
 
-  fs.rmSync(TMP, { recursive: true, force: true });
+  fs.rmSync(TMP, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   console.log('E2E PASS: all sandbox resource types provision into one session + artifact projection + fail-closed.');
   process.exitCode = 0;
 }

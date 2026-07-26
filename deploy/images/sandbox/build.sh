@@ -14,9 +14,18 @@ staged="$repo/deploy/images/sandbox/.awaken-sandbox.bin"
 cleanup() { rm -f "$staged"; }
 trap cleanup EXIT
 
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import sys' >/dev/null 2>&1; then
+  build_python=python3
+elif command -v python >/dev/null 2>&1 && python -c 'import sys' >/dev/null 2>&1; then
+  build_python=python
+else
+  echo "a working Python 3 interpreter is required" >&2
+  exit 1
+fi
+
 cd "$repo"
 bin=$(cargo build --release -p awaken-sandbox --features hand --message-format=json 2>/dev/null \
-  | python3 -c "import sys,json
+  | "$build_python" -c "import sys,json
 for line in sys.stdin:
     try: m=json.loads(line)
     except Exception: continue

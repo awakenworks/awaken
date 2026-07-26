@@ -23,13 +23,15 @@
 // Run: (from e2e/)  node managed_git_repo_e2e.mjs
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
 import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38217);
 const BETAS = ['managed-agents-2026-04-01'];
-const TMP = `/tmp/awaken-gitrepo-e2e-${process.pid}`;
+const TMP = path.join(os.tmpdir(), `awaken-gitrepo-e2e-${process.pid}`);
 const README = 'SEED_README_CONTENT_7742';
 const FEATURE_README = 'FEATURE_BRANCH_CONTENT_5521';
 const FEATURE_LATEST = 'FEATURE_BRANCH_LATEST_9981';
@@ -44,7 +46,8 @@ const git = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8' });
 function seedRemote() {
   const work = `${TMP}/seed`;
   fs.mkdirSync(work, { recursive: true });
-  git(['init', '-q', '-b', 'main'], work);
+  git(['init', '-q'], work);
+  git(['symbolic-ref', 'HEAD', 'refs/heads/main'], work);
   git(['config', 'user.email', 'seed@t'], work);
   git(['config', 'user.name', 'seed'], work);
   fs.writeFileSync(`${work}/README.md`, README);
