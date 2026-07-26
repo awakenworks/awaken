@@ -1382,6 +1382,7 @@ mod runtime_session_store_tests {
     fn session(id: &str) -> PersistedSession {
         PersistedSession {
             session_id: id.to_string(),
+            revision: Default::default(),
             agent_id: "assistant".to_string(),
             model: "test-model".to_string(),
             title: None,

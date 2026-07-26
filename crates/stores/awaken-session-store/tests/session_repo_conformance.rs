@@ -7,8 +7,10 @@
 //! remains in the backend-specific suite.
 
 use awaken_session_contract::{
-    ManagedSessionRepository, McpServerBinding, PersistedSession, PersistedSessionRuntime,
-    ScopedPersistedSession, SessionLifecycleFact,
+    IdempotencyRecord, ManagedSessionRepository, McpServerBinding, PersistedSession,
+    PersistedSessionRuntime, ScopedPersistedSession, SessionLifecycleFact, SessionMutation,
+    SessionMutationPayload, SessionMutationResult, SessionRepositoryError, SessionRevision,
+    SessionTombstone,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
 use serde_json::json;
@@ -23,6 +25,7 @@ fn block<F: std::future::Future>(f: F) -> F::Output {
 fn session(id: &str, title: &str) -> PersistedSession {
     PersistedSession {
         session_id: id.to_string(),
+        revision: Default::default(),
         agent_id: "assistant".into(),
         model: "kimi".into(),
         title: Some(title.to_string()),
@@ -73,8 +76,9 @@ fn fact(id: &str, session_id: &str, event_type: &str) -> SessionLifecycleFact {
 
 /// Round-trip: a saved aggregate reads back byte-for-byte (every field persists).
 async fn save_get_round_trips<R: ManagedSessionRepository>(r: &R) {
-    let want = session("sesn_1", "hello");
+    let mut want = session("sesn_1", "hello");
     r.save(want.clone()).await;
+    want.revision = awaken_session_contract::SessionRevision(1);
     assert_eq!(
         r.get("sesn_1").await,
         Some(want),
@@ -104,11 +108,11 @@ async fn save_owned_is_one_atomic_repository_fact<R: ManagedSessionRepository>(r
     assert!(r.get("sesn_owned").await.is_some());
     assert_eq!(r.owner("sesn_owned").await.as_deref(), Some("ws_a"));
 
-    r.save_owned("ws_b", session("sesn_owned", "moved")).await;
-    assert_eq!(r.owner("sesn_owned").await.as_deref(), Some("ws_b"));
+    r.save_owned("ws_a", session("sesn_owned", "updated")).await;
+    assert_eq!(r.owner("sesn_owned").await.as_deref(), Some("ws_a"));
     assert_eq!(
         r.get("sesn_owned").await.and_then(|s| s.title),
-        Some("moved".into())
+        Some("updated".into())
     );
 }
 
@@ -128,6 +132,7 @@ async fn environment_binding_is_atomic_and_non_destructive<R: ManagedSessionRepo
         Some(r#"{"provider_kind":"bwrap"}"#)
     );
     got.environment_binding = None;
+    got.revision = Default::default();
     assert_eq!(got, want, "binding update preserves every other field");
     assert_eq!(r.owner("sesn_bound").await.as_deref(), Some("ws_a"));
 }
@@ -164,8 +169,7 @@ async fn lifecycle_outbox_tracks_every_committed_transition<R: ManagedSessionRep
     let deleted = fact("evt:delete", "sesn_lifecycle", "session.deleted");
     r.delete_with_lifecycle("sesn_lifecycle", deleted.clone())
         .await;
-    let durable = r.get("sesn_lifecycle").await.expect("delete tombstone");
-    assert_eq!(durable.status, "deleted");
+    assert!(r.get("sesn_lifecycle").await.is_none());
     assert_eq!(r.pending_lifecycle().await, vec![deleted]);
 }
 
@@ -180,6 +184,7 @@ async fn pending_resource_activation_index_is_durable<R: ManagedSessionRepositor
         .prepare(&pending.session_id, desired)
         .unwrap();
     r.save_owned("ws_a", pending.clone()).await;
+    pending.revision = awaken_session_contract::SessionRevision(1);
 
     assert_eq!(
         r.pending_resource_sessions().await,
@@ -195,6 +200,189 @@ async fn pending_resource_activation_index_is_durable<R: ManagedSessionRepositor
     assert!(r.pending_resource_sessions().await.is_empty());
 }
 
+#[derive(Clone, Copy)]
+enum CasRule {
+    Create,
+    CreateReplay,
+    CreateIdempotencyMismatch,
+    Replace,
+    ReplaceReplay,
+    ReplaceIdempotencyMismatch,
+    StaleRevision,
+    WrongOwner,
+    Delete,
+    DeleteReplay,
+}
+
+fn record(key: &str, payload: &SessionMutationPayload) -> IdempotencyRecord {
+    IdempotencyRecord {
+        key: key.into(),
+        payload_hash: payload.stable_hash(),
+    }
+}
+
+async fn root_cas_decision_table<R: ManagedSessionRepository>(repo: &R) {
+    // Cause-effect graph:
+    // C1 valid command -> C2 idempotency absent-or-equal -> C3 live row exists
+    // -> C4 owner exact -> C5 revision exact -> E1 atomic applied/replayed.
+    // Delete additionally yields E2 tombstone read-as-not-found. Any failed
+    // cause yields its typed result and changes neither aggregate nor outbox.
+    //
+    // | Rule | Operation | C2 | C3 | C4 | C5 | Result |
+    // |---|---|---|---|---|---|---|
+    // | R1 | create | absent | - | - | new | revision 1 |
+    // | R2 | create retry | equal | - | - | - | revision 1 |
+    // | R3 | create retry | mismatch | - | - | - | idempotency error |
+    // | R4 | replace | absent | T | T | T | applied revision 2 |
+    // | R5 | replace retry | equal | T | T | T | replayed revision 2 |
+    // | R6 | replace retry | mismatch | T | T | T | idempotency mismatch |
+    // | R7 | replace | absent | T | T | F | conflict revision 1 |
+    // | R8 | replace | absent | T | F | T | conflict revision 1 |
+    // | R9 | delete | absent | T | T | T | applied revision 2 + hidden |
+    // | R10 | delete retry | equal | tombstone | T | old | replayed revision 2 |
+    let rules = [
+        CasRule::Create,
+        CasRule::CreateReplay,
+        CasRule::CreateIdempotencyMismatch,
+        CasRule::Replace,
+        CasRule::ReplaceReplay,
+        CasRule::ReplaceIdempotencyMismatch,
+        CasRule::StaleRevision,
+        CasRule::WrongOwner,
+        CasRule::Delete,
+        CasRule::DeleteReplay,
+    ];
+    for (index, rule) in rules.into_iter().enumerate() {
+        let id = format!("sesn_cas_{index}");
+        let initial = session(&id, "initial");
+        let create_payload = SessionMutationPayload::Replace(initial.clone());
+        let create_record = record("create", &create_payload);
+        let created = repo
+            .create("ws_a", initial, create_record.clone(), Vec::new())
+            .await
+            .expect("initial CAS create");
+        assert_eq!(created, SessionRevision(1));
+
+        match rule {
+            CasRule::Create => {}
+            CasRule::CreateReplay => {
+                let mut replay = session(&id, "initial");
+                replay.revision = SessionRevision(0);
+                assert_eq!(
+                    repo.create("ws_a", replay, create_record, Vec::new())
+                        .await
+                        .unwrap(),
+                    SessionRevision(1)
+                );
+            }
+            CasRule::CreateIdempotencyMismatch => {
+                let error = repo
+                    .create(
+                        "ws_a",
+                        session(&id, "different"),
+                        IdempotencyRecord {
+                            key: "create".into(),
+                            payload_hash: "different".into(),
+                        },
+                        Vec::new(),
+                    )
+                    .await
+                    .unwrap_err();
+                assert_eq!(error, SessionRepositoryError::IdempotencyMismatch);
+            }
+            CasRule::Replace
+            | CasRule::ReplaceReplay
+            | CasRule::ReplaceIdempotencyMismatch
+            | CasRule::StaleRevision
+            | CasRule::WrongOwner => {
+                let mut replacement = repo.get(&id).await.unwrap();
+                replacement.title = Some("replacement".into());
+                if matches!(rule, CasRule::StaleRevision) {
+                    replacement.revision = SessionRevision(0);
+                }
+                let payload = SessionMutationPayload::Replace(replacement);
+                let key = if matches!(rule, CasRule::ReplaceIdempotencyMismatch) {
+                    "replace-mismatch"
+                } else {
+                    "replace"
+                };
+                let mutation = SessionMutation {
+                    expected_revision: if matches!(rule, CasRule::StaleRevision) {
+                        SessionRevision(0)
+                    } else {
+                        SessionRevision(1)
+                    },
+                    idempotency: record(key, &payload),
+                    payload: payload.clone(),
+                    lifecycle_facts: Vec::new(),
+                };
+                let owner = if matches!(rule, CasRule::WrongOwner) {
+                    "ws_b"
+                } else {
+                    "ws_a"
+                };
+                let first = repo.commit_mutation(owner, mutation.clone()).await.unwrap();
+                let expected = if matches!(rule, CasRule::StaleRevision | CasRule::WrongOwner) {
+                    SessionMutationResult::Conflict {
+                        current_revision: SessionRevision(1),
+                    }
+                } else {
+                    SessionMutationResult::Applied {
+                        new_revision: SessionRevision(2),
+                    }
+                };
+                assert_eq!(first, expected);
+                if matches!(rule, CasRule::ReplaceReplay) {
+                    assert_eq!(
+                        repo.commit_mutation(owner, mutation.clone()).await.unwrap(),
+                        SessionMutationResult::Replayed {
+                            new_revision: SessionRevision(2)
+                        }
+                    );
+                }
+                if matches!(rule, CasRule::ReplaceIdempotencyMismatch) {
+                    let mut mismatched = mutation;
+                    mismatched.idempotency.payload_hash = "different".into();
+                    assert_eq!(
+                        repo.commit_mutation(owner, mismatched).await.unwrap(),
+                        SessionMutationResult::IdempotencyMismatch
+                    );
+                }
+            }
+            CasRule::Delete | CasRule::DeleteReplay => {
+                let payload = SessionMutationPayload::Delete(SessionTombstone {
+                    session_id: id.clone(),
+                    deleted_revision: SessionRevision(2),
+                    deleted_at: "2026-07-25T00:00:00Z".into(),
+                });
+                let mutation = SessionMutation {
+                    expected_revision: SessionRevision(1),
+                    idempotency: record("delete", &payload),
+                    payload,
+                    lifecycle_facts: Vec::new(),
+                };
+                assert_eq!(
+                    repo.commit_mutation("ws_a", mutation.clone())
+                        .await
+                        .unwrap(),
+                    SessionMutationResult::Applied {
+                        new_revision: SessionRevision(2)
+                    }
+                );
+                assert!(repo.get(&id).await.is_none());
+                if matches!(rule, CasRule::DeleteReplay) {
+                    assert_eq!(
+                        repo.commit_mutation("ws_a", mutation).await.unwrap(),
+                        SessionMutationResult::Replayed {
+                            new_revision: SessionRevision(2)
+                        }
+                    );
+                }
+            }
+        }
+    }
+}
+
 async fn run_suite<R: ManagedSessionRepository>(fresh: impl Fn() -> R) {
     save_get_round_trips(&fresh()).await;
     absent_id_reads_none(&fresh()).await;
@@ -203,6 +391,8 @@ async fn run_suite<R: ManagedSessionRepository>(fresh: impl Fn() -> R) {
     environment_binding_is_atomic_and_non_destructive(&fresh()).await;
     lifecycle_outbox_tracks_every_committed_transition(&fresh()).await;
     pending_resource_activation_index_is_durable(&fresh()).await;
+    let cas_repo = fresh();
+    root_cas_decision_table(&cas_repo).await;
 }
 
 // ── Backend rows: each must pass the identical universal suite ───────────────────
@@ -212,4 +402,43 @@ fn sqlite_backend_conforms() {
     block(run_suite(|| {
         SqliteManagedSessionRepository::open_in_memory().expect("sqlite in-memory repo")
     }));
+}
+
+#[tokio::test]
+async fn postgres_root_cas_conforms_to_the_same_decision_table() {
+    use awaken_session_store::PostgresManagedSessionRepository;
+    use sqlx::Executor;
+    use sqlx::postgres::{PgPool, PgPoolOptions};
+
+    let url = std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
+        "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
+    });
+    let Ok(admin) = PgPool::connect(&url).await else {
+        println!("[skip] no Postgres reachable");
+        return;
+    };
+    let _ = admin
+        .execute("DROP SCHEMA IF EXISTS t_session_root_cas CASCADE")
+        .await;
+    admin
+        .execute("CREATE SCHEMA t_session_root_cas")
+        .await
+        .expect("create Session CAS schema");
+    admin.close().await;
+    let pool = PgPoolOptions::new()
+        .after_connect(|connection, _| {
+            Box::pin(async move {
+                connection
+                    .execute("SET search_path = t_session_root_cas")
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect(&url)
+        .await
+        .expect("connect Session CAS schema");
+    let repo = PostgresManagedSessionRepository::with_pool(pool)
+        .await
+        .expect("open Postgres Session repository");
+    root_cas_decision_table(&repo).await;
 }

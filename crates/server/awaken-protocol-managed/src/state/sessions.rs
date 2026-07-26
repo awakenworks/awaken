@@ -26,6 +26,124 @@ fn lifecycle_fact(
 }
 
 impl ManagedState {
+    /// The sole application-layer compiler for an existing Session write. Every
+    /// specialized command builds a complete replacement, then crosses this root
+    /// CAS seam; no caller retries by writing a stale aggregate snapshot.
+    pub(crate) async fn commit_session_snapshot(
+        &self,
+        owner_scope: &str,
+        mut session: PersistedSession,
+        operation: &str,
+        lifecycle_facts: Vec<SessionLifecycleFact>,
+    ) -> Result<PersistedSession, StateError> {
+        let expected_revision = session.revision;
+        let payload = awaken_session_contract::SessionMutationPayload::Replace(session.clone());
+        let payload_hash = payload.stable_hash();
+        let mutation = awaken_session_contract::SessionMutation {
+            expected_revision,
+            idempotency: awaken_session_contract::IdempotencyRecord {
+                key: format!(
+                    "managed:{operation}:{}:{}:{payload_hash}",
+                    session.session_id, expected_revision.0
+                ),
+                payload_hash,
+            },
+            payload,
+            lifecycle_facts,
+        };
+        match self
+            .sessions_repo
+            .commit_mutation(owner_scope, mutation)
+            .await
+            .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?
+        {
+            awaken_session_contract::SessionMutationResult::Applied { new_revision }
+            | awaken_session_contract::SessionMutationResult::Replayed { new_revision } => {
+                session.revision = new_revision;
+                Ok(session)
+            }
+            awaken_session_contract::SessionMutationResult::Conflict { .. } => {
+                Err(StateError::Conflict)
+            }
+            awaken_session_contract::SessionMutationResult::IdempotencyMismatch => Err(
+                StateError::Run(RunError::internal("Session idempotency mismatch")),
+            ),
+        }
+    }
+
+    async fn create_session_snapshot(
+        &self,
+        owner_scope: &str,
+        mut session: PersistedSession,
+    ) -> Result<PersistedSession, StateError> {
+        let payload = awaken_session_contract::SessionMutationPayload::Replace(session.clone());
+        let payload_hash = payload.stable_hash();
+        let revision = self
+            .sessions_repo
+            .create(
+                owner_scope,
+                session.clone(),
+                awaken_session_contract::IdempotencyRecord {
+                    key: format!("managed:create:{}:{payload_hash}", session.session_id),
+                    payload_hash,
+                },
+                Vec::new(),
+            )
+            .await
+            .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
+        session.revision = revision;
+        Ok(session)
+    }
+
+    async fn tombstone_session_snapshot(
+        &self,
+        owner_scope: &str,
+        session: &PersistedSession,
+        fact: SessionLifecycleFact,
+    ) -> Result<(), StateError> {
+        let deleted_revision =
+            awaken_session_contract::SessionRevision(
+                session.revision.0.checked_add(1).ok_or_else(|| {
+                    StateError::Run(RunError::internal("Session revision exhausted"))
+                })?,
+            );
+        let payload = awaken_session_contract::SessionMutationPayload::Delete(
+            awaken_session_contract::SessionTombstone {
+                session_id: session.session_id.clone(),
+                deleted_revision,
+                deleted_at: fact.timestamp.to_string(),
+            },
+        );
+        let payload_hash = payload.stable_hash();
+        let mutation = awaken_session_contract::SessionMutation {
+            expected_revision: session.revision,
+            idempotency: awaken_session_contract::IdempotencyRecord {
+                key: format!(
+                    "managed:delete:{}:{}:{payload_hash}",
+                    session.session_id, session.revision.0
+                ),
+                payload_hash,
+            },
+            payload,
+            lifecycle_facts: vec![fact],
+        };
+        match self
+            .sessions_repo
+            .commit_mutation(owner_scope, mutation)
+            .await
+            .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?
+        {
+            awaken_session_contract::SessionMutationResult::Applied { .. }
+            | awaken_session_contract::SessionMutationResult::Replayed { .. } => Ok(()),
+            awaken_session_contract::SessionMutationResult::Conflict { .. } => {
+                Err(StateError::Conflict)
+            }
+            awaken_session_contract::SessionMutationResult::IdempotencyMismatch => Err(
+                StateError::Run(RunError::internal("Session idempotency mismatch")),
+            ),
+        }
+    }
+
     /// `POST /v1/sessions`.
     ///
     /// MCP binding (ADR-0043 Phase 3): each requested server is bound to a vault
@@ -348,6 +466,7 @@ impl ManagedState {
             .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
         let mut persisted = PersistedSession {
             session_id: id.clone(),
+            revision: Default::default(),
             agent_id: agent_id.clone(),
             model: resolved_model.id.clone(),
             title: req.title.clone(),
@@ -372,9 +491,9 @@ impl ManagedState {
             archived_at: None,
         };
         // The activation intent and owner fence commit before Host/worker IO.
-        self.sessions_repo
-            .save_owned(&owner_scope, persisted.clone())
-            .await;
+        persisted = self
+            .create_session_snapshot(&owner_scope, persisted)
+            .await?;
         if let Err(error) = self
             .runtime
             .prepare_session(
@@ -400,10 +519,10 @@ impl ManagedState {
                 .map_err(|state_error| {
                     StateError::Run(RunError::internal(state_error.to_string()))
                 })?;
-            self.sessions_repo
-                .save_owned(&owner_scope, persisted.clone())
-                .await;
-            self.release_terminal_resources(&id, Some(&owner_scope), &[])
+            self.commit_session_snapshot(&owner_scope, persisted, "activation-failed", Vec::new())
+                .await?;
+            let _ = self
+                .release_terminal_resources(&id, Some(&owner_scope), &[])
                 .await;
             return Err(StateError::Run(error));
         }
@@ -497,9 +616,14 @@ impl ManagedState {
             workspace_id.clone(),
             lifecycle_event::SESSION_IDLED,
         );
-        self.sessions_repo
-            .save_owned_with_lifecycle(&owner_scope, persisted.clone(), created_fact.clone())
-            .await;
+        persisted = self
+            .commit_session_snapshot(
+                &owner_scope,
+                persisted,
+                "activate",
+                vec![created_fact.clone()],
+            )
+            .await?;
         self.owners.lock().unwrap().insert(id.clone(), owner_scope);
         let record = SessionRecord {
             agent_id,
@@ -597,9 +721,14 @@ impl ManagedState {
                     .resources
                     .start_attempt()
                     .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
-                self.sessions_repo
-                    .save_owned(owner_scope, session.clone())
-                    .await;
+                session = self
+                    .commit_session_snapshot(
+                        owner_scope,
+                        session,
+                        "resource-reconcile-attempt",
+                        Vec::new(),
+                    )
+                    .await?;
                 if let Err(error) = self
                     .runtime
                     .apply_session_inputs(&session_id, owner_scope, &desired)
@@ -611,16 +740,27 @@ impl ManagedState {
                         .map_err(|state_error| {
                             StateError::Run(RunError::internal(state_error.to_string()))
                         })?;
-                    self.sessions_repo.save_owned(owner_scope, session).await;
+                    self.commit_session_snapshot(
+                        owner_scope,
+                        session,
+                        "resource-reconcile-failed",
+                        Vec::new(),
+                    )
+                    .await?;
                     return Err(StateError::Run(error));
                 }
                 session
                     .resources
                     .commit()
                     .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
-                self.sessions_repo
-                    .save_owned(owner_scope, session.clone())
-                    .await;
+                session = self
+                    .commit_session_snapshot(
+                        owner_scope,
+                        session,
+                        "resource-reconcile-active",
+                        Vec::new(),
+                    )
+                    .await?;
                 return Ok(session);
             }
 
@@ -636,9 +776,14 @@ impl ManagedState {
                 .await?;
             if session.resources.activations.is_empty() {
                 session.resources.adopt_legacy_active(&session_id);
-                self.sessions_repo
-                    .save_owned(owner_scope, session.clone())
-                    .await;
+                session = self
+                    .commit_session_snapshot(
+                        owner_scope,
+                        session,
+                        "resource-adopt-legacy",
+                        Vec::new(),
+                    )
+                    .await?;
             }
             return Ok(session);
         }
@@ -651,9 +796,9 @@ impl ManagedState {
                 .begin_release()
                 .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
         }
-        self.sessions_repo
-            .save_owned(owner_scope, session.clone())
-            .await;
+        session = self
+            .commit_session_snapshot(owner_scope, session, "resource-release-intent", Vec::new())
+            .await?;
         self.runtime
             .end_session(&session_id)
             .await
@@ -669,9 +814,27 @@ impl ManagedState {
         session
             .resources
             .complete_terminal_release("Session terminated before activation completed");
-        self.sessions_repo
-            .save_owned(owner_scope, session.clone())
-            .await;
+        session = self
+            .commit_session_snapshot(
+                owner_scope,
+                session,
+                "resource-release-complete",
+                Vec::new(),
+            )
+            .await?;
+        if session.status == "deleted" {
+            self.tombstone_session_snapshot(
+                owner_scope,
+                &session,
+                lifecycle_fact(
+                    format!("session:{session_id}:deleted"),
+                    &session_id,
+                    Some(owner_scope.to_string()),
+                    lifecycle_event::SESSION_DELETED,
+                ),
+            )
+            .await?;
+        }
         Ok(session)
     }
 
@@ -1060,7 +1223,10 @@ impl ManagedState {
     pub async fn delete_session(&self, id: &str) -> Result<(), StateError> {
         let _resource_guard = self.resource_mutations.lock().await;
         // Snapshot before the durable commit, but do not remove the visible record
-        // until the repository has atomically stored its tombstone and outbox fact.
+        // until the repository has atomically stored the terminal state, cleanup
+        // intent, and outbox fact. The row becomes a tombstone only after every
+        // external cleanup succeeds; until then it is hidden application state for
+        // the ResourceReclaimer.
         let child_threads = {
             let sessions = self.sessions.lock().unwrap();
             sessions
@@ -1076,9 +1242,26 @@ impl ManagedState {
             owner.clone(),
             lifecycle_event::SESSION_DELETED,
         );
-        self.sessions_repo
-            .delete_with_lifecycle(id, deleted_fact.clone())
-            .await;
+        let mut persisted = self
+            .sessions_repo
+            .get(id)
+            .await
+            .ok_or(StateError::NotFound)?;
+        persisted.status = "deleted".into();
+        if persisted.resources.pending.is_none() {
+            persisted
+                .resources
+                .begin_release()
+                .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
+        }
+        let owner_scope = owner.as_deref().unwrap_or(DEFAULT_SCOPE);
+        self.commit_session_snapshot(
+            owner_scope,
+            persisted,
+            "delete-intent",
+            vec![deleted_fact.clone()],
+        )
+        .await?;
 
         {
             let deleted_id = self.next_event_id();
@@ -1097,8 +1280,18 @@ impl ManagedState {
         // thread is the session id, and each spawned child agent thread gets its own.
         // Best-effort teardown: the session IS deleted from the client's view
         // regardless, so a dispose failure must not resurrect a deleted session.
-        self.release_terminal_resources(id, owner.as_deref(), &child_threads)
-            .await;
+        if self
+            .release_terminal_resources(id, owner.as_deref(), &child_threads)
+            .await
+        {
+            let released = self
+                .sessions_repo
+                .get(id)
+                .await
+                .ok_or(StateError::NotFound)?;
+            self.tombstone_session_snapshot(owner_scope, &released, deleted_fact.clone())
+                .await?;
+        }
         // Project the deletion as a lifecycle fact so a webhook subscriber is
         // notified, mirroring create's `session.status_idled` and archive's
         // `session.status_terminated`. The owner is resolved from the persisted
@@ -1148,21 +1341,36 @@ impl ManagedState {
         id: &str,
         owner_scope: Option<&str>,
         child_threads: &[serde_json::Value],
-    ) {
+    ) -> bool {
         let Some(mut persisted) = self.sessions_repo.get(id).await else {
-            let _ = self.end_session_sandboxes(id, child_threads).await;
-            return;
+            return self.end_session_sandboxes(id, child_threads).await;
         };
         let owner_scope = owner_scope.unwrap_or(DEFAULT_SCOPE);
-        if persisted.resources.pending.is_none()
-            && let Err(error) = persisted.resources.begin_release()
-        {
-            tracing::warn!(session = id, error = ?error, "could not persist resource release intent");
-            return;
+        let needs_release_intent = persisted.resources.pending.is_none()
+            && persisted.resources.activations.iter().any(|activation| {
+                activation.state == awaken_session_contract::ActivationState::Active
+            });
+        if needs_release_intent {
+            if let Err(error) = persisted.resources.begin_release() {
+                tracing::warn!(session = id, error = ?error, "could not persist resource release intent");
+                return false;
+            }
+            persisted = match self
+                .commit_session_snapshot(
+                    owner_scope,
+                    persisted,
+                    "terminal-release-intent",
+                    Vec::new(),
+                )
+                .await
+            {
+                Ok(session) => session,
+                Err(error) => {
+                    tracing::warn!(session = id, error = ?error, "could not persist resource release intent");
+                    return false;
+                }
+            };
         }
-        self.sessions_repo
-            .save_owned(owner_scope, persisted.clone())
-            .await;
         if self.end_session_sandboxes(id, child_threads).await
             && self
                 .retire_session_repositories(owner_scope, id, &persisted.resources)
@@ -1171,7 +1379,23 @@ impl ManagedState {
             persisted
                 .resources
                 .complete_terminal_release("Session terminated");
-            self.sessions_repo.save_owned(owner_scope, persisted).await;
+            match self
+                .commit_session_snapshot(
+                    owner_scope,
+                    persisted,
+                    "terminal-release-complete",
+                    Vec::new(),
+                )
+                .await
+            {
+                Ok(_) => true,
+                Err(error) => {
+                    tracing::warn!(session = id, error = ?error, "could not persist resource release completion");
+                    false
+                }
+            }
+        } else {
+            false
         }
     }
 
@@ -1182,7 +1406,7 @@ impl ManagedState {
     /// re-archive returns the same terminal record without a second event.
     pub async fn archive_session(&self, id: &str) -> Result<Session, StateError> {
         let _resource_guard = self.resource_mutations.lock().await;
-        let (newly_terminated, child_threads) = {
+        let (mut newly_terminated, child_threads) = {
             let sessions = self.sessions.lock().unwrap();
             let record = sessions.get(id).ok_or(StateError::NotFound)?;
             (
@@ -1198,9 +1422,24 @@ impl ManagedState {
             lifecycle_event::SESSION_TERMINATED,
         );
         if newly_terminated {
-            self.sessions_repo
-                .archive_with_lifecycle(id, PROCESSED_AT, terminated_fact.clone())
-                .await;
+            let mut persisted = self
+                .sessions_repo
+                .get(id)
+                .await
+                .ok_or(StateError::NotFound)?;
+            if persisted.status == "terminated" {
+                newly_terminated = false;
+            } else {
+                persisted.status = "terminated".into();
+                persisted.archived_at = Some(PROCESSED_AT.into());
+                self.commit_session_snapshot(
+                    owner.as_deref().unwrap_or(DEFAULT_SCOPE),
+                    persisted,
+                    "archive",
+                    vec![terminated_fact.clone()],
+                )
+                .await?;
+            }
         }
         let session = {
             let terminated_id = self.next_event_id();
@@ -1221,7 +1460,8 @@ impl ManagedState {
         // sandbox — but only on the transition, so a re-archive (idempotent) does
         // not re-dispose. The record survives as a tombstone; only the sandbox goes.
         if newly_terminated {
-            self.release_terminal_resources(id, owner.as_deref(), &child_threads)
+            let _ = self
+                .release_terminal_resources(id, owner.as_deref(), &child_threads)
                 .await;
         }
         // Project the terminal transition as a lifecycle fact, mirroring create's

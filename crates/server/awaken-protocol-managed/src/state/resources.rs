@@ -8,32 +8,28 @@ use super::*;
 impl ManagedState {
     async fn activate_inputs(
         &self,
-        session_id: &str,
+        mut persisted: PersistedSession,
         owner_scope: &str,
         desired: awaken_session_contract::ResolvedSessionResources,
     ) -> Result<(), StateError> {
-        let mut persisted = self
-            .sessions_repo
-            .get(session_id)
-            .await
-            .ok_or(StateError::NotFound)?;
+        let session_id = persisted.session_id.clone();
         let previous = persisted.resources.active.clone();
         persisted
             .resources
-            .prepare(session_id, desired.clone())
+            .prepare(&session_id, desired.clone())
             .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
         persisted
             .resources
             .start_attempt()
             .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
         // Prepared/Releasing is durable before the first external side effect.
-        self.sessions_repo
-            .save_owned(owner_scope, persisted.clone())
-            .await;
+        persisted = self
+            .commit_session_snapshot(owner_scope, persisted, "resource-prepare", Vec::new())
+            .await?;
 
         if let Err(error) = self
             .runtime
-            .apply_session_inputs(session_id, owner_scope, &desired)
+            .apply_session_inputs(&session_id, owner_scope, &desired)
             .await
         {
             // Restore the prior projection before reporting synchronous failure.
@@ -41,7 +37,7 @@ impl ManagedState {
             // ResourceReclaimer instead of pretending either generation won.
             match self
                 .runtime
-                .apply_session_inputs(session_id, owner_scope, &previous)
+                .apply_session_inputs(&session_id, owner_scope, &previous)
                 .await
             {
                 Ok(()) => {
@@ -63,7 +59,8 @@ impl ManagedState {
                         })?;
                 }
             }
-            self.sessions_repo.save_owned(owner_scope, persisted).await;
+            self.commit_session_snapshot(owner_scope, persisted, "resource-rollback", Vec::new())
+                .await?;
             return Err(StateError::Run(error));
         }
 
@@ -73,11 +70,11 @@ impl ManagedState {
             .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
         // Active/Released is the second durable edge. A crash before it leaves
         // Prepared/Releasing and is safe to retry idempotently.
-        self.sessions_repo
-            .save_owned(owner_scope, persisted.clone())
-            .await;
+        persisted = self
+            .commit_session_snapshot(owner_scope, persisted, "resource-activate", Vec::new())
+            .await?;
         let mut sessions = self.sessions.lock().unwrap();
-        let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
+        let record = sessions.get_mut(&session_id).ok_or(StateError::NotFound)?;
         record.resource_state = persisted.resources;
         Ok(())
     }
@@ -197,15 +194,12 @@ impl ManagedState {
             return Err(StateError::Run(RunError::bad_request(MEMORY_CREATE_ONLY)));
         }
         let owner_scope = self.resolve_owner(id).await.ok_or(StateError::NotFound)?;
-        let current = self
-            .sessions
-            .lock()
-            .unwrap()
+        let persisted = self
+            .sessions_repo
             .get(id)
-            .ok_or(StateError::NotFound)?
-            .resource_state
-            .active
-            .clone();
+            .await
+            .ok_or(StateError::NotFound)?;
+        let current = persisted.resources.active.clone();
         let mut suffix = current.inputs.len();
         let binding_id = loop {
             let candidate = format!("session:{id}:live:{suffix}");
@@ -230,7 +224,7 @@ impl ManagedState {
         let next = current
             .attach(input.clone())
             .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        if let Err(error) = self.activate_inputs(id, &owner_scope, next).await {
+        if let Err(error) = self.activate_inputs(persisted, &owner_scope, next).await {
             if let awaken_session_contract::ResolvedInputSource::Repository {
                 repository_id, ..
             } = &input.source
@@ -271,10 +265,13 @@ impl ManagedState {
         let _guard = self.resource_mutations.lock().await;
         let owner_scope = self.resolve_owner(id).await.ok_or(StateError::NotFound)?;
         let binding_id = resource_binding_id(id, resource_id).ok_or(StateError::NotFound)?;
+        let persisted = self
+            .sessions_repo
+            .get(id)
+            .await
+            .ok_or(StateError::NotFound)?;
         let (current, previous) = {
-            let sessions = self.sessions.lock().unwrap();
-            let record = sessions.get(id).ok_or(StateError::NotFound)?;
-            let current = record.resource_state.active.clone();
+            let current = persisted.resources.active.clone();
             let previous = current
                 .inputs
                 .iter()
@@ -347,7 +344,7 @@ impl ManagedState {
         let next = current
             .replace(replacement.clone())
             .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        self.activate_inputs(id, &owner_scope, next).await?;
+        self.activate_inputs(persisted, &owner_scope, next).await?;
         self.get_resource(id, resource_id)
     }
 
@@ -355,10 +352,13 @@ impl ManagedState {
         let _guard = self.resource_mutations.lock().await;
         let owner_scope = self.resolve_owner(id).await.ok_or(StateError::NotFound)?;
         let binding_id = resource_binding_id(id, resource_id).ok_or(StateError::NotFound)?;
+        let persisted = self
+            .sessions_repo
+            .get(id)
+            .await
+            .ok_or(StateError::NotFound)?;
         let (current, input) = {
-            let sessions = self.sessions.lock().unwrap();
-            let record = sessions.get(id).ok_or(StateError::NotFound)?;
-            let current = record.resource_state.active.clone();
+            let current = persisted.resources.active.clone();
             let input = current
                 .inputs
                 .iter()
@@ -376,7 +376,7 @@ impl ManagedState {
         let (next, removed) = current
             .detach(&binding_id)
             .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        self.activate_inputs(id, &owner_scope, next).await?;
+        self.activate_inputs(persisted, &owner_scope, next).await?;
         if let awaken_session_contract::ResolvedInputSource::Repository { repository_id, .. } =
             removed.source
             && let Some(catalog) = &self.resource_catalog
