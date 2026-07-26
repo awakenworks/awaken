@@ -6,6 +6,29 @@ import assert from 'node:assert/strict';
 import { HttpAgent } from '@ag-ui/client';
 import { withRealServer, pass, RED_PNG_B64 } from './harness.mjs';
 
+/**
+ * Causal graph (official `HttpAgent` boundary)
+ *
+ *   text/history ------------> invoke same thread ---> assistant message
+ *   image + text ------------> neutral image block --> provider sees MIME
+ *   awaiting tool + exact id -> resume exact run ----> completed reply
+ *   streamed tool -----------> ordered tool events --> awaiting terminal
+ *   unsupported run context -> RUN_ERROR -----------> no successful result
+ *
+ * Decision table
+ *
+ * | case | history | media | pending | context | observable behavior |
+ * |------|---------|-------|---------|---------|---------------------|
+ * | A1   | 2 turns | none  | no      | empty   | second reply uses same thread |
+ * | A2   | none    | image | no      | empty   | provider receives image MIME |
+ * | A3   | none    | none  | yes     | empty   | exact result resumes to done |
+ * | A4   | none    | none  | tool    | empty   | START < ARGS < END |
+ * | A5   | none    | none  | no      | set     | SDK observes RUN_ERROR and no new message |
+ *
+ * These cases assert protocol effects and terminal outcomes, not merely that the
+ * request/response data can be decoded.
+ */
+
 function newAgent(base) {
   return new HttpAgent({ url: `${base}/v1/ag-ui/agents/assistant` });
 }
@@ -93,8 +116,24 @@ async function main() {
     pass('ag-ui streaming tool call (START -> ARGS -> END)');
   });
 
+  // --- unsupported semantics fail explicitly: accepting `context` and silently
+  // dropping it would make the SDK report a successful run with different behavior.
+  await withRealServer('echo', 38126, async (base) => {
+    const agent = newAgent(base);
+    agent.messages = [{ id: 'u1', role: 'user', content: 'must not run' }];
+    const seen = [];
+    const result = await agent.runAgent(
+      { context: [{ description: 'tenant', value: 'acme' }] },
+      { onEvent: ({ event }) => seen.push(event.type) },
+    );
+    assert.ok(seen.includes('RUN_ERROR'), `expected RUN_ERROR, got ${seen.join(' ')}`);
+    assert.ok(!seen.includes('RUN_FINISHED'), `unexpected success: ${seen.join(' ')}`);
+    assert.deepEqual(result.newMessages, [], 'a rejected run must commit no assistant message');
+    pass('ag-ui unsupported context fails explicitly through HttpAgent');
+  });
+
   console.log(
-    'E2E PASS: AG-UI multi-turn + multimodal + HITL + streaming tool calls via @ag-ui/client.',
+    'E2E PASS: AG-UI behavior matrix via @ag-ui/client.',
   );
 }
 

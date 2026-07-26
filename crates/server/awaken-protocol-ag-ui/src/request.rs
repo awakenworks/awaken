@@ -41,6 +41,10 @@ pub enum ProcessError {
     UnsupportedContent(&'static str),
     #[error("AG-UI per-run tools are not supported by the runtime")]
     PerRunToolsUnsupported,
+    #[error("AG-UI per-run context is not supported by the runtime")]
+    PerRunContextUnsupported,
+    #[error("AG-UI parentRunId is not supported by the runtime")]
+    ParentRunUnsupported,
     #[error("AG-UI state is not supported by the runtime")]
     StateUnsupported,
     #[error("AG-UI forwardedProps are not supported by the runtime")]
@@ -65,6 +69,16 @@ pub fn process(
 ) -> Result<Processed, ProcessError> {
     if !input.tools.is_empty() {
         return Err(ProcessError::PerRunToolsUnsupported);
+    }
+    if !input.context.is_empty() {
+        return Err(ProcessError::PerRunContextUnsupported);
+    }
+    if input
+        .parent_run_id
+        .as_deref()
+        .is_some_and(|id| !id.is_empty())
+    {
+        return Err(ProcessError::ParentRunUnsupported);
     }
     if !is_empty_extension_value(&input.state) {
         return Err(ProcessError::StateUnsupported);

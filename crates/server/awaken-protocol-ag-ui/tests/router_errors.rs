@@ -280,6 +280,7 @@ async fn a_non_matching_tool_result_cannot_resume_the_awaiting_tool() {
 /// | text    | empty | empty              | yes            | terminal  |
 /// | audio   | empty | empty              | no             | RUN_ERROR |
 /// | text    | set   | empty              | no             | RUN_ERROR |
+/// | text    | empty | context set        | no             | RUN_ERROR |
 ///
 /// This deliberately tests effects. Parsing an official SDK shape must never be
 /// mistaken for support when the runtime cannot honor its semantics.
@@ -374,6 +375,17 @@ async fn unimplemented_per_run_tools_fail_before_runtime_execution() {
             "description": "Look up a value",
             "parameters": { "type": "object" }
         }]
+    }))
+    .await;
+}
+
+#[tokio::test]
+async fn unimplemented_per_run_context_fails_before_runtime_execution() {
+    assert_admission_rejected_without_run(json!({
+        "threadId": "t1",
+        "runId": "r1",
+        "messages": [{ "role": "user", "content": "go" }],
+        "context": [{ "description": "tenant", "value": "acme" }]
     }))
     .await;
 }
