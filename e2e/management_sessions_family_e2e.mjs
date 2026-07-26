@@ -11,12 +11,16 @@
 //   C1 Session absent -> U1 404, no effect
 //   C2 fields equal current values + no command key -> U2 semantic no-op
 //   C3 metadata key carries null -> U3 delete key + one update event
+//   C4 malformed update body or command precondition -> U4 reject before mutation
+//   C5 wildcard precondition -> U5 apply against the current root revision
 //
 // | Rule | Session | semantic delta | key | Effect |
 // |---|---|---|---|---|
 // | U1 | absent | any | none | 404 |
 // | U2 | present | none | none | same ETag, no event |
 // | U3 | present | delete metadata | none | new ETag, key absent, one event |
+// | U4 | present | malformed agent/header | invalid | 400, unchanged root |
+// | U5 | present | title change | If-Match: * | apply, new title |
 
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
@@ -28,6 +32,18 @@ async function drain(pagePromise) {
   const items = [];
   for await (const item of pagePromise) items.push(item);
   return items;
+}
+
+async function rawUpdate(baseUrl, sessionId, body, headers = {}) {
+  return fetch(`${baseUrl}/v1/sessions/${sessionId}`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'anthropic-beta': BETAS[0],
+      ...headers,
+    },
+    body: JSON.stringify(body),
+  });
 }
 
 async function main() {
@@ -109,7 +125,28 @@ async function main() {
         () => client.beta.sessions.update(session.id, { agent: { system: 'forbidden-system' }, betas: BETAS }),
         (err) => err.status === 400,
       );
-      pass('session agent update gate: tools replace; model/system reject 400');
+      for (const [label, body, headers] of [
+        ['agent must be an object', { agent: 'not-an-object' }, {}],
+        ['empty idempotency key', { title: 'must-not-apply' }, { 'idempotency-key': '   ' }],
+        ['malformed If-Match', { title: 'must-not-apply' }, { 'if-match': '7' }],
+      ]) {
+        const response = await rawUpdate(baseUrl, session.id, body, headers);
+        assert.equal(response.status, 400, `${label} fails before root mutation: ${await response.text()}`);
+      }
+      const afterRejectedUpdates = await client.beta.sessions.retrieve(session.id, { betas: BETAS });
+      assert.notEqual(afterRejectedUpdates.title, 'must-not-apply', 'U4 rejected commands are effect-free');
+      const wildcardUpdate = await rawUpdate(
+        baseUrl,
+        session.id,
+        { title: 'wildcard-precondition' },
+        { 'if-match': '*' },
+      );
+      assert.equal(wildcardUpdate.status, 200, `U5 wildcard precondition applies: ${await wildcardUpdate.text()}`);
+      assert.equal(
+        (await client.beta.sessions.retrieve(session.id, { betas: BETAS })).title,
+        'wildcard-precondition',
+      );
+      pass('session agent/update decision gate: valid tools replace; immutable and malformed inputs reject 400');
 
       const listed = (await drain(client.beta.sessions.list({ betas: BETAS }))).map((s) => s.id);
       assert.ok(listed.includes(session.id));

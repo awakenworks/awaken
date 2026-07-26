@@ -89,8 +89,17 @@ impl awaken_runtime_host::ApplicationSessionProvisioner for ApplicationProvision
         let mut plan = awaken_runtime_host::ApplicationSessionPlan::empty(format!(
             "application-session-e2e-v2:{mcp_url}"
         ))
-        .with_mcp_url("application-calc", mcp_url);
+        .with_mcp_url("application-calc", mcp_url.clone())
+        .with_mcp_url("application-only", mcp_url)
+        .with_network_restriction(awaken_provisioning_contract::NetworkPolicy::Unrestricted);
         plan.prompts.push(APPLICATION_PROMPT.to_string());
+        plan.env.push(awaken_provisioning_contract::EnvVar {
+            name: "APPLICATION_CONTRIBUTION_VISIBLE".into(),
+            value: awaken_provisioning_contract::EnvValue::Inline {
+                value: "yes".into(),
+            },
+            visibility: awaken_provisioning_contract::EnvVisibility::Process,
+        });
         Ok(plan)
     }
 }

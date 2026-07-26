@@ -136,6 +136,9 @@ const obligations: Obligation[] = [
   { id: 'D4-A04', stage: '4 application Session contribution', behavior: 'realization acknowledgement makes durable and Managed wire status idle', scenario: 'application_session_worker' },
   { id: 'D4-A05', stage: '4 application Session contribution', behavior: 'loss of continuing Worker authority revokes every process-local Session projection', scenario: 'application_session_worker' },
   { id: 'D4-A06', stage: '4 application Session contribution', behavior: 'application-authored MCP crosses the frozen attachment and common remote realization path', scenario: 'application_session_worker' },
+  { id: 'D4-A07', stage: '4 application Session contribution', behavior: 'a due Worker Session lease restages and republishes its exact MCP generation through the common phase driver', scenario: 'application_session_worker' },
+  { id: 'D4-A08', stage: '4 application Session contribution', behavior: 'application-authored non-secret environment values cross the frozen baseline into the Worker projection', scenario: 'application_session_worker' },
+  { id: 'D4-A09', stage: '4 application Session contribution', behavior: 'Session MCP overrides a same-name Application input while unrelated Application MCP remains in the one attachment set', scenario: 'application_session_worker' },
 
   { id: 'D5-01', stage: '5 durable child lifecycle', behavior: 'child has a first-class stable run identity', scenario: 'child_recovery' },
   { id: 'D5-02', stage: '5 durable child lifecycle', behavior: 'hard process crash occurs while child inference is in flight', scenario: 'child_recovery' },

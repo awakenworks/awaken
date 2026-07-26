@@ -9,6 +9,8 @@
 //   C5 desired set empty -> E5 drain/remove, empty projection
 //   C6 new key but desired set already converged -> E6 receipt-only root CAS, no domain effect
 //   C7 two names resolve to one canonical target -> E7 reject before effect
+//   C8 name/target is empty or logical name repeats -> E8 reject before effect
+//   C9 stage fails -> E9 terminal new generation, previous Active remains visible
 //
 // Decision table:
 // | Rule | desired | key       | If-Match | Effect |
@@ -20,8 +22,14 @@
 // | H6   | add A   | new       | current  | new A generation and call A |
 // | H7   | same A  | new       | current  | receipt ETag only, no event/I/O |
 // | H8   | duplicate target | new | current | 400, A remains active |
+// | H9   | empty name | new | current | 400, A remains active |
+// | H10  | empty target | new | current | 400, A remains active |
+// | H11  | duplicate name | new | current | 400, A remains active |
+// | H12  | replace | new | absent | stage 500, A remains active |
+// | H13  | retry failed desired | new | absent | new stage attempt, A remains active |
 
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import Anthropic from '@anthropic-ai/sdk';
 // @ts-ignore -- shared JS harness deliberately serves both JS and TS scenarios.
 import { withScenarioServer, pass } from './harness.mjs';
@@ -71,9 +79,33 @@ function etag(response: Response): string {
   return value;
 }
 
+async function startRejectingMcp(): Promise<{
+  url: string;
+  requests: () => number;
+  close: () => Promise<void>;
+}> {
+  let requests = 0;
+  const server = http.createServer((_request, response) => {
+    requests += 1;
+    response.writeHead(500, { 'content-type': 'text/plain' });
+    response.end('intentional stage failure');
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  return {
+    url: `http://127.0.0.1:${address.port}/`,
+    requests: () => requests,
+    close: () => new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    }),
+  };
+}
+
 async function main(): Promise<void> {
   const fixtureA = await startCalcFixture(TOKEN_A);
   const fixtureB = await startCalcFixture(TOKEN_B);
+  const rejecting = await startRejectingMcp();
   try {
     await withScenarioServer('management', 'mcp', 38207, async (baseUrl: string) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
@@ -190,6 +222,68 @@ async function main(): Promise<void> {
       assert.equal(fixtureA.calls.length, beforeConvergedIo, 'H8 performs no MCP I/O');
       pass('H8 duplicate canonical targets fail before aggregate or Runtime effects');
 
+      const invalidDesiredSets: Array<[string, McpServer[]]> = [
+        ['H9', [{ name: '   ', type: 'url', url: fixtureA.url }]],
+        ['H10', [{ name: 'empty-target', type: 'url', url: '   ' }]],
+        ['H11', [serverA, { name: 'calc', type: 'url', url: fixtureB.url }]],
+      ];
+      for (const [rule, desired] of invalidDesiredSets) {
+        await assert.rejects(
+          update(client, sessionId, desired, {
+            'Idempotency-Key': `invalid-${rule.toLowerCase()}`,
+            'If-Match': convergedEtag,
+          }),
+          (error: any) => error?.status === 400,
+          `${rule} rejects malformed desired MCP state`,
+        );
+      }
+      assert.deepEqual(
+        (await client.beta.sessions.retrieve(sessionId, { betas: BETAS })).agent.mcp_servers,
+        [serverA],
+        'H9-H11 preserve the exact active set',
+      );
+      assert.equal(fixtureA.calls.length, beforeConvergedIo, 'H9-H11 perform no MCP I/O');
+      pass('H9-H11 malformed names and targets fail before aggregate or Runtime effects');
+
+      const rejectedServer: McpServer = {
+        name: 'calc',
+        type: 'url',
+        url: rejecting.url,
+      };
+      await assert.rejects(
+        update(client, sessionId, [rejectedServer], {
+          'Idempotency-Key': 'stage-fails-once',
+        }),
+        (error: any) => error?.status === 500,
+        'H12 surfaces the external stage failure',
+      );
+      const firstFailedRequests = rejecting.requests();
+      assert.ok(firstFailedRequests > 0, 'H12 reaches the rejecting MCP upstream');
+      assert.deepEqual(
+        (await client.beta.sessions.retrieve(sessionId, { betas: BETAS })).agent.mcp_servers,
+        [serverA],
+        'H12 keeps the previous Active generation visible',
+      );
+      pass('H12 a failed replacement is terminal for its generation and preserves A');
+
+      await assert.rejects(
+        update(client, sessionId, [rejectedServer], {
+          'Idempotency-Key': 'retry-failed-stage',
+        }),
+        (error: any) => error?.status === 500,
+        'H13 surfaces the retried external stage failure',
+      );
+      assert.ok(
+        rejecting.requests() > firstFailedRequests,
+        'H13 a new command retries external realization instead of treating Failed as converged',
+      );
+      assert.deepEqual(
+        (await client.beta.sessions.retrieve(sessionId, { betas: BETAS })).agent.mcp_servers,
+        [serverA],
+        'H13 keeps the previous Active generation visible after retry failure',
+      );
+      pass('H13 retry allocates and attempts a new failed generation without disturbing A');
+
       const serialized = JSON.stringify({ added: added.data, events: await events(client, sessionId) });
       assert.ok(!serialized.includes(TOKEN_A) && !serialized.includes(TOKEN_B), 'state/events remain secret-free');
       pass('H6 add after removal allocates a new generation and calls only A');
@@ -198,6 +292,7 @@ async function main(): Promise<void> {
   } finally {
     await fixtureA.close();
     await fixtureB.close();
+    await rejecting.close();
   }
 }
 

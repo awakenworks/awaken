@@ -44,6 +44,11 @@ const CONF_NEW_TOKEN = 'conf-new-token'; // awaken-allow: secret
 // this pins the encoding rather than mirroring the server).
 const CONF_BASIC_HEADER =
   `Basic ${Buffer.from('cli-conf-e2e:conf+s3cret%26e2e').toString('base64')}`;
+const POST_CLIENT_ID = 'cli-post-e2e';
+const POST_CLIENT_SECRET = 'post s3cret&e2e'; // awaken-allow: secret
+const POST_EXPIRED_TOKEN = 'post-expired-e2e'; // awaken-allow: secret
+const POST_REFRESH_TOKEN = 'rt-post-e2e'; // awaken-allow: secret
+const POST_NEW_TOKEN = 'post-new-token'; // awaken-allow: secret
 
 async function listEvents(client, sessionId) {
   const events = [];
@@ -97,6 +102,14 @@ async function main() {
     refreshToken: CONF_REFRESH_TOKEN,
     issueToken: CONF_NEW_TOKEN,
     clientAuth: { method: 'basic', clientId: CONF_CLIENT_ID, clientSecret: CONF_CLIENT_SECRET },
+  });
+  // Fixture D covers the other confidential-client decision-table arm:
+  // client_secret_post carries both client fields in the form and no Basic header.
+  const fixtureD = await startCalcFixture(POST_EXPIRED_TOKEN, {
+    expiredInitial: true,
+    refreshToken: POST_REFRESH_TOKEN,
+    issueToken: POST_NEW_TOKEN,
+    clientAuth: { method: 'post', clientId: POST_CLIENT_ID, clientSecret: POST_CLIENT_SECRET },
   });
   try {
     await withScenarioServer('management', 'mcp', 38192, async (baseUrl) => {
@@ -327,6 +340,47 @@ async function main() {
       assert.ok(!rawValidateBody.includes(CONF_NEW_TOKEN), rawValidateBody);
       assert.equal(JSON.parse(rawValidateBody).status, 'valid', 'the resealed token live-probes valid');
       pass('client_secret absent from raw credential retrieve + validate bodies; validate -> valid');
+
+      // --- (f) confidential client: client_secret_post refresh ---
+      // | token_endpoint_auth | Authorization | form client_id/secret | result |
+      // | none                | absent        | id only               | refresh |
+      // | client_secret_basic | Basic         | absent                | refresh |
+      // | client_secret_post  | absent        | both                  | refresh |
+      const vault4 = await client.beta.vaults.create({ display_name: 'MCP post-auth vault', betas: BETAS });
+      const postCred = await client.beta.vaults.credentials.create(vault4.id, {
+        type: 'mcp_oauth',
+        mcp_server_url: fixtureD.url,
+        access_token: POST_EXPIRED_TOKEN,
+        refresh: {
+          client_id: POST_CLIENT_ID,
+          refresh_token: POST_REFRESH_TOKEN,
+          token_endpoint: fixtureD.tokenUrl,
+          token_endpoint_auth: { type: 'client_secret_post', client_secret: POST_CLIENT_SECRET },
+        },
+        betas: BETAS,
+      });
+      assert.deepEqual(postCred.auth.refresh.token_endpoint_auth, { type: 'client_secret_post' });
+      assert.ok(!JSON.stringify(postCred).includes(POST_CLIENT_SECRET), 'post client secret is write-only');
+      const postSession = await client.beta.sessions.create({
+        agent: 'assistant',
+        mcp_servers: [{ name: 'calc', type: 'url', url: fixtureD.url }],
+        vault_ids: [vault4.id],
+        betas: BETAS,
+      });
+      await sendMessage(client, postSession.id, 'add 20 22');
+      assertAddTurn(await listEvents(client, postSession.id), 42);
+      assert.equal(fixtureD.grants.length, 1, 'post authentication performs one exact refresh');
+      const postGrant = fixtureD.grants[0];
+      assert.equal(postGrant.authorization, null, 'client_secret_post emits no Authorization header');
+      const postForm = new URLSearchParams(postGrant.body);
+      assert.equal(postForm.get('client_id'), POST_CLIENT_ID);
+      assert.equal(postForm.get('client_secret'), POST_CLIENT_SECRET);
+      assert.equal(postForm.get('refresh_token'), POST_REFRESH_TOKEN);
+      assert.equal(
+        fixtureD.calls.find((call) => call.method === 'tools/call')?.authorization,
+        `Bearer ${POST_NEW_TOKEN}`,
+      );
+      pass('client_secret_post refreshes through its exact form transform and remains secret-free on read-back');
     });
 
     console.log('E2E PASS: mcp_oauth refresh exchange (public + confidential client), reseal persistence, and live validate round-trip through the official @anthropic-ai/sdk.');
@@ -338,6 +392,7 @@ async function main() {
     await fixtureA.close();
     await fixtureB.close();
     await fixtureC.close();
+    await fixtureD.close();
   }
 }
 

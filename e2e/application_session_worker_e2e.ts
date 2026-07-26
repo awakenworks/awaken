@@ -7,17 +7,20 @@
 //   C4 = the exact realization generation is staged/activated/acknowledged
 //   C5 = the coordinator-only cell enqueues without a local claim loop
 //   C6 = authenticated remote settle wakes the foreground request from committed truth
-//   C7 = continuing Worker authority remains provable at the next heartbeat
+//   C7 = continuing Worker authority remains provable near lease expiry
+//   C8 = continuing Worker authority is later lost
+//   C9 = application network policy uses the neutral provisioning vocabulary
 //
 // Decision table:
-//   C1 C2 C3 C4 C5 C6 C7 | result
-//    1  1  1  1  1  1  1 | prompt visible; foreground returns; Session becomes idle
-//    0  *  *  *  1  *  * | worker transport rejects the request (worker_transport)
-//    1  1  0  *  1  *  * | no runtime projection / no successful turn
-//    1  1  1  0  1  *  * | realization fails closed / no successful turn
-//    1  1  1  1  0  *  * | local-pool topology uses the same dispatch (durable suites)
-//    1  1  1  1  1  0  * | committed state remains authoritative; no fabricated success
-//    1  1  1  1  1  1  0 | heartbeat fails closed; local Session projection is revoked
+//   C1 C2 C3 C4 C5 C6 C7 C8 | result
+//    1  1  1  1  1  1  1  0 | exact generation is renewed and republished
+//    0  *  *  *  1  *  *  * | worker transport rejects the request (worker_transport)
+//    1  1  0  *  1  *  *  * | no runtime projection / no successful turn
+//    1  1  1  0  1  *  *  * | realization fails closed / no successful turn
+//    1  1  1  1  0  *  *  * | local-pool topology uses the same dispatch (durable suites)
+//    1  1  1  1  1  0  *  * | committed state remains authoritative; no fabricated success
+//    1  1  1  1  1  1  1  1 | heartbeat fails closed; local Session projection is revoked
+//    1  1  1  1  1  1  1  0 + C9 | policy freezes without a parallel vocabulary/path
 
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -35,6 +38,13 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 39851);
 const BASE = `http://127.0.0.1:${PORT}`;
 const BETAS = ['managed-agents-2026-04-01'];
+
+function etagRevision(value: string | null): number {
+  assert.ok(value, 'Session response carries an ETag');
+  const revision = Number(value.replaceAll('"', ''));
+  assert.ok(Number.isSafeInteger(revision), `numeric Session ETag: ${value}`);
+  return revision;
+}
 
 function buildWorker(): string {
   const output = execFileSync(
@@ -89,7 +99,8 @@ async function waitForProjection(client: Anthropic, sessionId: string): Promise<
 
 async function main(): Promise<void> {
   const storage = mkdtempSync(path.join(tmpdir(), 'awaken-application-session-'));
-  const mcp = await startCalcFixture(undefined, { allowAnonymous: true });
+  const applicationMcp = await startCalcFixture(undefined, { allowAnonymous: true });
+  const sessionMcp = await startCalcFixture(undefined, { allowAnonymous: true });
   const cell = spawnServer('echo', PORT, {
     AWAKEN_INGRESS: 'durable',
     AWAKEN_STORAGE_DIR: storage,
@@ -105,6 +116,7 @@ async function main(): Promise<void> {
       agent: 'assistant',
       environment_id: 'env_local',
       application_contribution_required: true,
+      mcp_servers: [{ name: 'application-calc', type: 'url', url: sessionMcp.url }],
       betas: BETAS,
     } as any);
     assert.equal(session.status, 'preparing', 'required application leaves one durable preparation intent');
@@ -115,7 +127,7 @@ async function main(): Promise<void> {
         ...process.env,
         AWAKEN_UPSTREAM_URL: BASE,
         AWAKEN_WORKER_ID: `application-session-worker-${process.pid}`,
-        AWAKEN_TEST_MCP_URL: mcp.url,
+        AWAKEN_TEST_MCP_URL: applicationMcp.url,
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -123,10 +135,14 @@ async function main(): Promise<void> {
     runningWorker.stdout.on('data', (chunk) => { workerOutput += chunk.toString(); });
     runningWorker.stderr.on('data', (chunk) => { workerOutput += chunk.toString(); });
     await new Promise((resolve) => setTimeout(resolve, 500));
-    await client.beta.sessions.events.send(session.id, {
-      events: [{ type: 'user.message', content: [{ type: 'text', text: 'exercise application contribution' }] }],
-      betas: BETAS,
-    });
+    try {
+      await client.beta.sessions.events.send(session.id, {
+        events: [{ type: 'user.message', content: [{ type: 'text', text: 'exercise application contribution' }] }],
+        betas: BETAS,
+      });
+    } catch (error) {
+      throw new Error(`${error}\nWorker output:\n${workerOutput}`);
+    }
     let observed: any[];
     try {
       observed = await waitForProjection(client, session.id);
@@ -146,19 +162,54 @@ async function main(): Promise<void> {
         || String(event.text ?? '').includes('application-session-projection:visible')),
       'the claim-fenced application projection produced one committed model turn',
     );
-    const realized = await client.beta.sessions.retrieve(session.id, { betas: BETAS });
+    const realizedResponse = await client.beta.sessions
+      .retrieve(session.id, { betas: BETAS })
+      .withResponse();
+    const realized = realizedResponse.data;
+    const realizedEtag = realizedResponse.response.headers.get('etag');
+    assert.ok(realizedEtag, 'realized Session exposes its root revision');
+    const realizedRevision = etagRevision(realizedEtag);
     assert.equal(realized.status, 'idle', 'realization acknowledgement projects durable idle state');
+    assert.equal(
+      realized.environment_id,
+      'env_local',
+      'C9 the application network policy preserves the one frozen Environment identity',
+    );
     assert.deepEqual(
       realized.agent.mcp_servers,
-      [{ name: 'application-calc', type: 'url', url: mcp.url }],
-      'the application MCP input uses the same durable attachment projection',
+      [
+        { name: 'application-calc', type: 'url', url: sessionMcp.url },
+        { name: 'application-only', type: 'url', url: applicationMcp.url },
+      ],
+      'Session origin overrides the same-name Application input while the other Application attachment remains',
     );
     assert.ok(
-      mcp.calls.some((call: any) => call.method === 'initialize')
-      && mcp.calls.some((call: any) => call.method === 'tools/list'),
-      'the remote Worker stages and publishes the anonymous MCP generation',
+      applicationMcp.calls.some((call: any) => call.method === 'initialize')
+      && sessionMcp.calls.some((call: any) => call.method === 'initialize'),
+      'the remote Worker stages and publishes both selected MCP generations',
     );
     assert.equal(runningWorker.exitCode, null, `Worker stayed authoritative: ${workerOutput}`);
+
+    // Let foreground completion writes settle before measuring the independent
+    // Session-lease supervisor. The initial registry lease is not due at the
+    // first 10-second heartbeat; the second heartbeat crosses the 15-second
+    // renewal threshold.
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    const settled = await client.beta.sessions
+      .retrieve(session.id, { betas: BETAS })
+      .withResponse();
+    const settledRevision = etagRevision(settled.response.headers.get('etag'));
+    assert.ok(settledRevision >= realizedRevision, 'foreground Session writes are monotonic');
+    await new Promise((resolve) => setTimeout(resolve, 22_000));
+    const renewed = await client.beta.sessions
+      .retrieve(session.id, { betas: BETAS })
+      .withResponse();
+    const renewedRevision = etagRevision(renewed.response.headers.get('etag'));
+    assert.equal(renewed.data.status, 'idle', 'renewal does not reopen Session activation');
+    assert.ok(
+      renewedRevision >= settledRevision + 2,
+      `C7 the due Session lease advances through the same realization CAS protocol: ${workerOutput}`,
+    );
 
     await stopServer(cell);
     cellStopped = true;
@@ -172,13 +223,14 @@ async function main(): Promise<void> {
     assert.match(
       workerOutput,
       /worker heartbeat cannot prove continuing authority/,
-      'C7 loss of Control authority closes claims and revokes the local Session projection',
+      'C8 loss of Control authority closes claims and revokes the local Session projection',
     );
     console.log('APPLICATION SESSION WORKER TS E2E PASS: factory -> claim-fenced contribution -> exact realization -> prompt-visible model turn.');
   } finally {
     if (worker) await stopServer(worker);
     if (!cellStopped) await stopServer(cell);
-    await mcp.close();
+    await applicationMcp.close();
+    await sessionMcp.close();
     rmSync(storage, { recursive: true, force: true });
   }
 }
