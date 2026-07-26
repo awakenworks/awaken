@@ -122,10 +122,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             revision: credential_revision,
         },
     });
-    awaken_worker::run_with_inference_and_credential_resolver(
-        &upstream,
-        materializer.clone(),
-        materializer,
-    )
-    .await
+    let resource = std::env::var("AWAKEN_TEST_RESOURCE_DATABASE_URL").ok();
+    let admin = std::env::var("AWAKEN_TEST_ADMIN_DATABASE_URL").ok();
+    let storage = std::env::var("AWAKEN_TEST_WORKER_STORAGE_DIR").ok();
+    match (resource, admin, storage) {
+        (None, None, None) => {
+            awaken_worker::run_with_inference_and_credential_resolver(
+                &upstream,
+                materializer.clone(),
+                materializer,
+            )
+            .await
+        }
+        (Some(resource_url), Some(admin_url), Some(storage_dir)) => {
+            let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
+            deployment.durable = true;
+            deployment.storage_dir = Some(storage_dir.into());
+            awaken_worker::run_with_inference_and_credential_resolver_and_resources(
+                &upstream,
+                deployment,
+                &resource_url,
+                &awaken_control::StoreBackend::Postgres(admin_url),
+                materializer.clone(),
+                materializer,
+            )
+            .await
+        }
+        _ => Err("resource Worker fixture requires resource, admin, and storage together".into()),
+    }
 }
