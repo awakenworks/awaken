@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import { deploymentEnv, spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const PORT = 38257;
 const ISSUER = 'https://accounts.e2e.awakenworks.test';
@@ -107,16 +107,17 @@ async function main() {
   const wrongAudienceToken = iam.token('account-wrong-audience', { audience: 'other-service' });
   let server = null;
   try {
-    const env = {
-      AWAKEN_DEPLOYMENT_DATA_DIR: directory,
-      AWAKEN_CONTROL_SEAL_KEY: SEAL_KEY,
-      AWAKEN_IDENTITY_MODE: 'awaken-cloud',
-      AWAKEN_CLOUD_IAM_URL: iam.url,
-      AWAKEN_CLOUD_IAM_ISSUER: ISSUER,
-      AWAKEN_CLOUD_IAM_AUDIENCE: AUDIENCE,
-      AWAKEN_CLOUD_ACCESS_TOKEN: cachedToken,
-      AWAKEN_CLOUD_IAM_SERVICE_TOKEN: SERVICE_TOKEN,
-    };
+    const env = deploymentEnv(directory, {
+      identityMode: 'awaken-cloud',
+      controlSealKey: SEAL_KEY,
+      cloudIam: {
+        url: iam.url,
+        issuer: ISSUER,
+        audience: AUDIENCE,
+        accessToken: cachedToken,
+        serviceToken: SERVICE_TOKEN,
+      },
+    });
     ({ server } = spawnServer('management', PORT, {
       ...env,
       ...realServerEnv('mcp', upstream, { mode: 'management' }),
