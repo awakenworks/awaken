@@ -405,6 +405,7 @@ async fn a_secretless_worker_reads_the_snapshot_pinned_access() {
             ]
             .into_iter()
             .collect(),
+            recipient_bound_envelopes: false,
         },
     );
     let candidate = provider_candidate("grant-17");

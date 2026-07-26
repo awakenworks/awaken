@@ -216,6 +216,28 @@ impl StageMcpAttachment {
     pub fn fingerprint(&self) -> String {
         crate::stable_fingerprint(self)
     }
+
+    /// Stable desired/effect identity across lease renewal. Only the lease
+    /// expiry and its per-attempt idempotency key are excluded; target,
+    /// credential pin, holder, owner incarnation, epoch, and logical generation
+    /// remain fenced. Runtime adapters use this to distinguish an authorized
+    /// extension from a conflicting restage of the same generation.
+    #[must_use]
+    pub fn renewal_binding_fingerprint(&self) -> String {
+        crate::stable_fingerprint(&(
+            &self.workspace_id,
+            &self.generation.session_id,
+            &self.generation.attachment_id,
+            self.generation.generation,
+            &self.generation.runtime_incarnation,
+            self.generation.lease_epoch,
+            &self.realization_id,
+            &self.name,
+            &self.target,
+            &self.credential,
+            &self.selected_plaintext_holder,
+        ))
+    }
 }
 
 /// Secret-free evidence returned by the Runtime projection boundary. It records
@@ -634,6 +656,63 @@ impl SessionMcpAttachmentSet {
         }
         attachment.publication_acknowledged = true;
         self.bump_revision()
+    }
+
+    /// Extend every active projection owned by the same realization lease.
+    ///
+    /// Renewal deliberately reuses the existing generation and realization id:
+    /// it changes neither desired MCP state nor credential selection. Clearing
+    /// `publication_acknowledged` makes the sole realization phase protocol
+    /// restage and republish the extended exact fence before it reports
+    /// completion. A private relay-specific renewal registry is therefore not
+    /// needed.
+    pub fn renew_active_realizations(
+        &mut self,
+        runtime_incarnation: &str,
+        lease_epoch: u64,
+        lease_expires_at_unix_ms: u64,
+    ) -> Result<usize, McpAttachmentError> {
+        let active = self
+            .attachments
+            .iter()
+            .filter(|attachment| attachment.state == McpAttachmentState::Active)
+            .collect::<Vec<_>>();
+        for attachment in &active {
+            let claim = attachment
+                .realization
+                .as_ref()
+                .ok_or(McpAttachmentError::StaleRealizationClaim)?;
+            if claim.runtime_incarnation != runtime_incarnation
+                || claim.lease_epoch != lease_epoch
+                || lease_expires_at_unix_ms <= claim.lease_expires_at_unix_ms
+            {
+                return Err(McpAttachmentError::StaleRealizationClaim);
+            }
+        }
+        let renewed = active.len();
+        for attachment in &mut self.attachments {
+            if attachment.state != McpAttachmentState::Active {
+                continue;
+            }
+            let claim = attachment
+                .realization
+                .as_mut()
+                .expect("all active claims were validated");
+            claim.lease_expires_at_unix_ms = lease_expires_at_unix_ms;
+            claim.stage_idempotency_key = format!(
+                "renew:{}:{}:{}:{}:{}",
+                attachment.attachment_id.0,
+                attachment.generation.0,
+                runtime_incarnation,
+                lease_epoch,
+                lease_expires_at_unix_ms
+            );
+            attachment.publication_acknowledged = false;
+        }
+        if renewed > 0 {
+            self.bump_revision()?;
+        }
+        Ok(renewed)
     }
 
     pub fn fail_realization(
@@ -1160,6 +1239,90 @@ mod tests {
         assert_eq!(set.attachments[0].state, McpAttachmentState::Draining);
         set.finish_drain(&id, McpGeneration(1)).expect("L5");
         assert_eq!(set.attachments[0].state, McpAttachmentState::Removed);
+    }
+
+    #[test]
+    fn active_realization_renewal_cases_follow_the_decision_table() {
+        // Cause graph: Active AND exact incarnation AND exact epoch AND later
+        // expiry -> extend the existing claim and require republication. Any
+        // false fence fails without mutation; non-active generations are not a
+        // renewal target and remain unchanged.
+        //
+        // | Rule | State | Incarnation | Epoch | Expiry | Effect |
+        // |---|---|---|---|---|---|
+        // | N1 | Active | exact | exact | later | extend + unacknowledged |
+        // | N2 | Active | other | exact | later | reject/no mutation |
+        // | N3 | Active | exact | other | later | reject/no mutation |
+        // | N4 | Active | exact | exact | same/earlier | reject/no mutation |
+        // | N5 | Requested | exact | exact | later | unchanged |
+        let active = || {
+            let mut set = SessionMcpAttachmentSet::from_initial(
+                vec![draft("a", "https://a.test/mcp", None)],
+                None,
+            )
+            .unwrap();
+            let id = set.attachments[0].attachment_id.clone();
+            set.claim_realization(
+                &id,
+                McpGeneration(1),
+                McpRealizationClaim {
+                    realization_id: "realization-1".into(),
+                    runtime_incarnation: "runtime-1".into(),
+                    lease_epoch: 4,
+                    lease_expires_at_unix_ms: 100,
+                    stage_idempotency_key: "stage-1".into(),
+                },
+            )
+            .unwrap();
+            set.activate(&id, McpGeneration(1), "realization-1")
+                .unwrap();
+            set.acknowledge_publication(&id, McpGeneration(1), "realization-1")
+                .unwrap();
+            set
+        };
+
+        let mut renewed = active();
+        assert_eq!(
+            renewed
+                .renew_active_realizations("runtime-1", 4, 200)
+                .unwrap(),
+            1,
+            "N1"
+        );
+        let claim = renewed.attachments[0].realization.as_ref().unwrap();
+        assert_eq!(claim.lease_expires_at_unix_ms, 200, "N1");
+        assert!(claim.stage_idempotency_key.starts_with("renew:"), "N1");
+        assert!(!renewed.attachments[0].publication_acknowledged, "N1");
+
+        for (rule, incarnation, epoch, expiry) in [
+            ("N2", "runtime-2", 4, 200),
+            ("N3", "runtime-1", 5, 200),
+            ("N4", "runtime-1", 4, 100),
+        ] {
+            let mut set = active();
+            let before = set.clone();
+            assert_eq!(
+                set.renew_active_realizations(incarnation, epoch, expiry),
+                Err(McpAttachmentError::StaleRealizationClaim),
+                "{rule}"
+            );
+            assert_eq!(set, before, "{rule} no mutation");
+        }
+
+        let mut requested = SessionMcpAttachmentSet::from_initial(
+            vec![draft("a", "https://a.test/mcp", None)],
+            None,
+        )
+        .unwrap();
+        let before = requested.clone();
+        assert_eq!(
+            requested
+                .renew_active_realizations("runtime-1", 4, 200)
+                .unwrap(),
+            0,
+            "N5"
+        );
+        assert_eq!(requested, before, "N5");
     }
 
     #[test]

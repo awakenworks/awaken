@@ -6,10 +6,9 @@
 //! the executor is unchanged either way (ADR-0043 D6/D9: the adapter lives in the
 //! host plane, which sees both the executor port and the sandbox provider).
 //!
-//! Network egress follows the session's environment networking policy: a thread
-//! registered deny-egress launches under `bwrap --unshare-net` (no route out, not
-//! even to the host loopback), the same [`ThreadEgress`] registrations that drive
-//! the native path's bash-tool jail.
+//! Network egress follows the one frozen Environment projection: a no-network
+//! Session launches under `bwrap --unshare-net` (no route out, not even to the
+//! host loopback), and Native and ACP consume the same projection handle.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -155,74 +154,6 @@ impl LaunchSource {
     }
 }
 
-/// Shared per-thread deny-egress registrations: the host writes a thread's policy
-/// at `prepare_session` (from its environment's networking policy), and both
-/// consumers read it — `sandbox_spec` for the native bash-tool jail and
-/// [`SandboxChannelSource`] for the ACP agent launch. A thread with no entry
-/// shares the host network.
-#[derive(Clone, Default)]
-pub struct ThreadEgress(crate::session_slot::SessionRuntimeSlots);
-
-impl ThreadEgress {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub(crate) fn from_slots(slots: crate::session_slot::SessionRuntimeSlots) -> Self {
-        Self(slots)
-    }
-
-    /// Register `thread`'s deny-egress policy (replaces any prior registration).
-    pub fn set(&self, thread: &str, deny: bool) {
-        self.0.update(thread, |slot| slot.deny_egress = deny);
-    }
-
-    /// Whether `thread` is registered deny-egress.
-    pub fn denies(&self, thread: &str) -> bool {
-        self.0
-            .read(thread, |slot| {
-                slot.deny_egress
-                    || slot
-                        .baseline
-                        .as_ref()
-                        .is_some_and(|baseline| baseline.network.is_restricted())
-            })
-            .unwrap_or(false)
-    }
-}
-
-/// Shared per-thread sandbox overlays (isolation/network/limits), sourced from the
-/// session's environment `config.sandbox` at `prepare_session`. Read by BOTH the
-/// native `sandbox_spec` and [`SandboxChannelSource::spec`] (the ACP launch), so a
-/// UI-configured environment shapes the isolation of both. A thread with no entry
-/// keeps the host's synthesized spec. Mirrors [`ThreadEgress`] — the overlay's
-/// `NetworkPolicy` supersedes the coarse egress bool when both are present.
-#[derive(Clone, Default)]
-pub struct ThreadSandbox(crate::session_slot::SessionRuntimeSlots);
-
-impl ThreadSandbox {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub(crate) fn from_slots(slots: crate::session_slot::SessionRuntimeSlots) -> Self {
-        Self(slots)
-    }
-
-    /// Register `thread`'s sandbox overlay (replaces any prior registration).
-    pub fn set(&self, thread: &str, over: awaken_provisioning_contract::SandboxOverride) {
-        self.0.update(thread, |slot| slot.sandbox = Some(over));
-    }
-
-    /// Overlay `thread`'s override onto `spec` (no-op when unregistered).
-    pub fn apply(&self, thread: &str, spec: pc::SandboxSpec) -> pc::SandboxSpec {
-        self.0
-            .read(thread, |slot| slot.sandbox.clone())
-            .flatten()
-            .map_or(spec.clone(), |over| over.apply(spec))
-    }
-}
-
 /// The fixed interior path the namespace sandbox binds the workspace to and chdirs
 /// into (see `awaken-sandbox-local`), so a cwd-keyed CLI's session slug is stable
 /// across relaunches and machines regardless of the host workspace path.
@@ -239,13 +170,13 @@ pub(crate) const SANDBOX_CONFIG_HOME: &str = "/acp-config";
 const WORKDIR_CONFIG_HOME: &str = ".acp-config";
 
 /// A shared clone of the host's per-thread staged-resource registry (ADR-0038), so a
-/// sandboxed source carries the SAME file/resource mounts the native `sandbox_spec`
-/// does into the bwrap sandbox it launches the CLI in. Opaque like [`ThreadEgress`] —
-/// the internal `StagedResources` never crosses the public boundary.
+/// sandboxed source carries the same frozen Environment and file/resource projection
+/// the native `sandbox_spec` consumes. The internal Session slot never crosses this
+/// public composition boundary.
 #[derive(Clone, Default)]
-pub struct ThreadResources(crate::session_slot::SessionRuntimeSlots);
+pub struct SessionRuntimeProjectionSource(crate::session_slot::SessionRuntimeSlots);
 
-impl ThreadResources {
+impl SessionRuntimeProjectionSource {
     /// Wrap the host's registry handle (the same `Arc` `sandbox_spec` reads).
     pub(crate) fn new(inner: crate::session_slot::SessionRuntimeSlots) -> Self {
         Self(inner)
@@ -274,6 +205,28 @@ impl ThreadResources {
                     .unwrap_or_default()
             })
             .unwrap_or_default()
+    }
+
+    fn network_for(&self, thread: &str) -> pc::NetworkPolicy {
+        self.0
+            .read(thread, |slot| {
+                slot.environment_projection
+                    .as_ref()
+                    .map(|environment| environment.network.clone())
+            })
+            .flatten()
+            .unwrap_or(pc::NetworkPolicy::Unrestricted)
+    }
+
+    fn apply_sandbox(&self, thread: &str, spec: pc::SandboxSpec) -> pc::SandboxSpec {
+        self.0
+            .read(thread, |slot| {
+                slot.environment_projection
+                    .as_ref()
+                    .and_then(|environment| environment.sandbox.clone())
+            })
+            .flatten()
+            .map_or(spec.clone(), |sandbox| sandbox.apply(spec))
     }
 }
 
@@ -368,15 +321,10 @@ enum OpenPhase {
 pub struct SandboxChannelSource {
     provider: SandboxBackend,
     launch: LaunchSource,
-    egress: ThreadEgress,
     codec: awaken_run_executor_acp::Codec,
     /// The host's staged-resource registry (files/resources → sandbox mounts). `None`
     /// carries no resources (the trusted/test path); the production host wires it.
-    resources: Option<ThreadResources>,
-    /// The host's per-thread sandbox-override registry (environment `config.sandbox`).
-    /// `None` keeps the provider-default isolation/network/limits; the production host
-    /// wires it so a UI-configured environment shapes the ACP CLI's bwrap.
-    sandbox: Option<ThreadSandbox>,
+    resources: Option<SessionRuntimeProjectionSource>,
 }
 
 impl SandboxChannelSource {
@@ -397,10 +345,8 @@ impl SandboxChannelSource {
         Self {
             provider: SandboxBackend::Namespace(NamespaceProvider::new(base)),
             launch: LaunchSource::Fixed(launch),
-            egress: ThreadEgress::default(),
             codec: awaken_run_executor_acp::Codec::Newline,
             resources: None,
-            sandbox: None,
         }
     }
 
@@ -415,10 +361,8 @@ impl SandboxChannelSource {
         Self {
             provider: SandboxBackend::Namespace(NamespaceProvider::new(base)),
             launch: LaunchSource::Projected(AcpLaunchRegistry::single(cli, resolver)),
-            egress: ThreadEgress::default(),
             codec: awaken_run_executor_acp::Codec::Acp,
             resources: None,
-            sandbox: None,
         }
     }
 
@@ -431,10 +375,8 @@ impl SandboxChannelSource {
             LaunchSource::Projected(registry) => Self {
                 provider: SandboxBackend::Namespace(NamespaceProvider::new(base)),
                 launch: LaunchSource::Projected(registry),
-                egress: ThreadEgress::default(),
                 codec: awaken_run_executor_acp::Codec::Acp,
                 resources: None,
-                sandbox: None,
             },
         }
     }
@@ -447,21 +389,11 @@ impl SandboxChannelSource {
         Self {
             provider: SandboxBackend::Workdir(awaken_sandbox_local::LocalProvider::new(base)),
             launch: source,
-            egress: ThreadEgress::default(),
             // The Local tier serves a real CLI from the Worker profile, so it speaks official
             // ACP — matching the source it replaces (`local_source`), never the fixture wire.
             codec: awaken_run_executor_acp::Codec::Acp,
             resources: None,
-            sandbox: None,
         }
-    }
-
-    /// Follow per-thread egress registrations (the host's [`ThreadEgress`] handle).
-    /// Without it every launch shares the host network.
-    #[must_use]
-    pub fn with_thread_egress(mut self, egress: ThreadEgress) -> Self {
-        self.egress = egress;
-        self
     }
 
     /// The wire the sandboxed agent speaks (a real `claude --acp` → `Codec::Acp`).
@@ -475,16 +407,8 @@ impl SandboxChannelSource {
     /// bwrap sandbox — the SAME registry the native `sandbox_spec` reads, so a resource
     /// bound to a session reaches the isolated ACP CLI, not only the in-process Workdir.
     #[must_use]
-    pub fn with_thread_resources(mut self, resources: ThreadResources) -> Self {
+    pub fn with_session_projection(mut self, resources: SessionRuntimeProjectionSource) -> Self {
         self.resources = Some(resources);
-        self
-    }
-
-    /// Follow per-thread sandbox overrides (the host's [`ThreadSandbox`] handle), so a
-    /// UI-configured environment's isolation/network/limits shape the CLI's bwrap.
-    #[must_use]
-    pub fn with_thread_sandbox(mut self, sandbox: ThreadSandbox) -> Self {
-        self.sandbox = Some(sandbox);
         self
     }
 
@@ -509,11 +433,11 @@ impl SandboxChannelSource {
     /// The environment's `config.sandbox` overlay (if any) then supersedes isolation /
     /// network / limits — so a UI-authored sandbox shapes the ACP CLI's confinement.
     fn spec(&self, thread: &str) -> pc::SandboxSpec {
-        let network = if self.egress.denies(thread) {
-            pc::NetworkPolicy::None
-        } else {
-            pc::NetworkPolicy::Unrestricted
-        };
+        let network = self
+            .resources
+            .as_ref()
+            .map(|resources| resources.network_for(thread))
+            .unwrap_or(pc::NetworkPolicy::Unrestricted);
         let base = pc::SandboxSpec {
             scope: thread.to_string(),
             isolation: self.provider.isolation(),
@@ -525,10 +449,9 @@ impl SandboxChannelSource {
             lease_ttl_secs: None,
             extra: None,
         };
-        match &self.sandbox {
-            Some(sb) => sb.apply(thread, base),
-            None => base,
-        }
+        self.resources.as_ref().map_or(base.clone(), |resources| {
+            resources.apply_sandbox(thread, base)
+        })
     }
 
     /// A resolved `launch` projected into the neutral process vocabulary: argv + env as
@@ -559,14 +482,13 @@ impl AgentChannelSource for SandboxChannelSource {
         let mut launch = self.launch.resolve(activation, &backend, context)?;
         // Project the run's declared MCP servers once. `session/new` servers ride in-band
         // over the ACP wire the executor drives (claude/gemini/opencode); a config-file
-        // CLI (codex) gets its config.toml. Fail-closed on an inline-secret credential
-        // (only broker references are sandbox-safe).
+        // CLI (codex) gets its config.toml. The typed ACP contract has no credential
+        // channel; authenticated routes were already mediated by the Runtime Host.
         let cli = self.launch.cli(&backend)?;
         let injection = match cli {
             Some(cli) => awaken_run_executor_acp::mcp_injection(
                 cli,
                 &activation.snapshot.resolved_spec.plugin_config,
-                true,
             )?,
             None => awaken_run_executor_acp::McpInjection::default(),
         };
@@ -702,7 +624,7 @@ impl AgentChannelSource for BoundLocalChannelSource {
         }
         let injection = match cli {
             Some(cli) => {
-                awaken_run_executor_acp::mcp_injection_from_servers(cli, &self.mcp_servers, true)?
+                awaken_run_executor_acp::mcp_injection_from_servers(cli, &self.mcp_servers)?
             }
             None => awaken_run_executor_acp::McpInjection::default(),
         };
@@ -783,18 +705,14 @@ fn acp_config_mount(
 /// `AWAKEN_SANDBOX_TIER` — different workers pick different backends. A container tier
 /// whose backend feature is not compiled in, or with no image configured, fails closed.
 pub struct AcpSandboxBindings {
-    egress: ThreadEgress,
-    resources: ThreadResources,
-    sandbox: ThreadSandbox,
+    resources: SessionRuntimeProjectionSource,
     memory_mounter: Option<Arc<dyn pc::MemoryMounter>>,
 }
 
 impl AcpSandboxBindings {
-    pub fn new(egress: ThreadEgress, resources: ThreadResources, sandbox: ThreadSandbox) -> Self {
+    pub fn new(resources: SessionRuntimeProjectionSource) -> Self {
         Self {
-            egress,
             resources,
-            sandbox,
             memory_mounter: None,
         }
     }
@@ -818,9 +736,7 @@ pub async fn build_acp_channel_source(
 ) -> Result<Arc<dyn AgentChannelSource>, String> {
     use crate::deployment_config::SandboxTier;
     let AcpSandboxBindings {
-        egress,
         resources,
-        sandbox,
         memory_mounter,
     } = bindings;
     match tier {
@@ -829,9 +745,7 @@ pub async fn build_acp_channel_source(
         // codex config into a per-thread workdir (ADR-0057). The no-bwrap path.
         SandboxTier::Local => {
             let mut channel = SandboxChannelSource::workdir(namespace_base, source)
-                .with_thread_egress(egress)
-                .with_thread_resources(resources)
-                .with_thread_sandbox(sandbox);
+                .with_session_projection(resources);
             if let Some(mounter) = memory_mounter {
                 channel = channel.with_memory_mounter(mounter);
             }
@@ -839,9 +753,7 @@ pub async fn build_acp_channel_source(
         }
         SandboxTier::Namespace => {
             let mut channel = SandboxChannelSource::from_source(namespace_base, source)
-                .with_thread_egress(egress)
-                .with_thread_resources(resources)
-                .with_thread_sandbox(sandbox);
+                .with_session_projection(resources);
             if let Some(mounter) = memory_mounter {
                 channel = channel.with_memory_mounter(mounter);
             }
@@ -978,6 +890,27 @@ mod tests {
 
     fn base() -> std::path::PathBuf {
         std::env::temp_dir().join(format!("awaken-sbxsrc-ut-{}", std::process::id()))
+    }
+
+    fn frozen_resources(
+        thread: &str,
+        network: pc::NetworkPolicy,
+        sandbox: Option<pc::SandboxOverride>,
+    ) -> SessionRuntimeProjectionSource {
+        let slots = crate::session_slot::SessionRuntimeSlots::default();
+        slots.update(thread, |slot| {
+            slot.environment_projection =
+                Some(crate::session_slot::FrozenEnvironmentRuntimeProjection {
+                    fingerprint: awaken_protocol_managed::EnvironmentFingerprint(format!(
+                        "environment-{thread}"
+                    )),
+                    network,
+                    sandbox,
+                    credential_realization:
+                        awaken_runtime_contract::CredentialRealizationProfile::self_hosted_acp(),
+                });
+        });
+        SessionRuntimeProjectionSource::new(slots)
     }
 
     fn acp_activation(backend_ref: &str) -> RunActivation {
@@ -1304,7 +1237,7 @@ mod tests {
         // ADR-0038 resources bound to a session must reach the isolated ACP sandbox,
         // not only the in-process Workdir — the same registry the native sandbox_spec
         // reads, mapped to bwrap-realizable mounts.
-        let registry = ThreadResources::default();
+        let registry = SessionRuntimeProjectionSource::default();
         registry.0.update("t1", |slot| {
             slot.resources = crate::provisioning::StagedResources {
                 mounts: vec![pc::MountRequirement {
@@ -1322,7 +1255,7 @@ mod tests {
             }
         });
         let src = SandboxChannelSource::new(base(), AcpLaunch::custom(vec!["a".into()], vec![]))
-            .with_thread_resources(registry);
+            .with_session_projection(registry);
         let spec = src.spec("t1");
         assert_eq!(
             spec.mounts.len(),
@@ -1376,7 +1309,7 @@ mod tests {
         // The no-bwrap path (A): the Workdir backend (LocalProvider) needs no OS-native
         // sandbox, yet still materializes the session's staged resource mounts — so a
         // bwrap-less worker delivers resources, not only MCP.
-        let registry = ThreadResources::default();
+        let registry = SessionRuntimeProjectionSource::default();
         registry.0.update("t", |slot| {
             slot.resources = crate::provisioning::StagedResources {
                 mounts: vec![pc::MountRequirement {
@@ -1397,7 +1330,7 @@ mod tests {
             base(),
             LaunchSource::Fixed(AcpLaunch::custom(successful_command(), vec![])),
         )
-        .with_thread_resources(registry);
+        .with_session_projection(registry);
         // The Workdir spec declares the unsandboxed isolation class and carries the mount.
         let spec = source.spec("t");
         assert_eq!(spec.isolation, pc::IsolationClass::Workdir);
@@ -1433,20 +1366,13 @@ mod tests {
             "the ACP CLI launches on the Local tier without bwrap"
         );
 
-        // (2) An environment override still shapes the Local spec ...
-        let sandbox = ThreadSandbox::new();
-        sandbox.set(
-            "t",
-            awaken_provisioning_contract::SandboxOverride::from_config_value(
-                &serde_json::json!({ "network": { "mode": "none" } }),
-            )
-            .expect("override contributes"),
-        );
+        // (2) The frozen Environment network still shapes the Local spec ...
+        let resources = frozen_resources("t", pc::NetworkPolicy::None, None);
         let strict = SandboxChannelSource::workdir(
             base(),
             LaunchSource::Fixed(AcpLaunch::custom(vec!["true".into()], vec![])),
         )
-        .with_thread_sandbox(sandbox);
+        .with_session_projection(resources);
         assert_eq!(
             strict.spec("t").network,
             pc::NetworkPolicy::None,
@@ -1479,10 +1405,9 @@ mod tests {
 
     #[test]
     fn spec_maps_a_deny_egress_thread_to_no_network() {
-        let egress = ThreadEgress::new();
-        egress.set("iso", true);
+        let resources = frozen_resources("iso", pc::NetworkPolicy::None, None);
         let src = SandboxChannelSource::new(base(), AcpLaunch::custom(vec!["a".into()], vec![]))
-            .with_thread_egress(egress);
+            .with_session_projection(resources);
         assert!(matches!(src.spec("iso").network, pc::NetworkPolicy::None));
         // A sibling thread with no registration still shares the host network.
         assert!(matches!(
@@ -1506,19 +1431,6 @@ mod tests {
         assert!(matches!(cmd.env[0].visibility, pc::EnvVisibility::Process));
     }
 
-    #[test]
-    fn thread_egress_defaults_false_and_set_overwrites() {
-        let e = ThreadEgress::new();
-        assert!(
-            !e.denies("x"),
-            "an unregistered thread shares the host network"
-        );
-        e.set("x", true);
-        assert!(e.denies("x"));
-        e.set("x", false); // a later registration replaces the prior one
-        assert!(!e.denies("x"));
-    }
-
     #[tokio::test]
     async fn the_factory_builds_the_namespace_source_by_default() {
         use crate::deployment_config::SandboxTier;
@@ -1527,11 +1439,7 @@ mod tests {
             SandboxTier::Namespace,
             None,
             LaunchSource::Fixed(AcpLaunch::custom(vec!["claude".into()], vec![])),
-            AcpSandboxBindings::new(
-                ThreadEgress::new(),
-                ThreadResources::default(),
-                ThreadSandbox::new(),
-            ),
+            AcpSandboxBindings::new(SessionRuntimeProjectionSource::default()),
             base(),
         )
         .await;
@@ -1547,11 +1455,7 @@ mod tests {
             SandboxTier::Local,
             None,
             LaunchSource::Fixed(AcpLaunch::custom(vec!["claude".into()], vec![])),
-            AcpSandboxBindings::new(
-                ThreadEgress::new(),
-                ThreadResources::default(),
-                ThreadSandbox::new(),
-            ),
+            AcpSandboxBindings::new(SessionRuntimeProjectionSource::default()),
             base(),
         )
         .await;
@@ -1619,11 +1523,7 @@ mod tests {
                 tier,
                 Some("ghcr.io/x/agent:1"),
                 LaunchSource::Fixed(AcpLaunch::custom(vec!["claude".into()], vec![])),
-                AcpSandboxBindings::new(
-                    ThreadEgress::new(),
-                    ThreadResources::default(),
-                    ThreadSandbox::new(),
-                ),
+                AcpSandboxBindings::new(SessionRuntimeProjectionSource::default()),
                 base(),
             )
             .await;

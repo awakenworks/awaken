@@ -117,6 +117,11 @@ and its materializers/resource plane on `WorkerNodeBuilder`, then selects
 standard manifest derivation point; the same installed values configure Host
 routing, so advertised inference/resource capabilities, ACP routes, their
 default, and sandbox selection cannot drift through a second assembly path.
+Downstream deployments may additionally inject the existing
+`ContainerEnvironmentProvider` through
+`with_session_container_provider`; its backend id and capability evidence then
+replace deployment-derived Sandbox inference in both the manifest and Host. It
+is not a second credential or environment lifecycle port.
 Special deployments retain `with_manifest(explicit_manifest)`, but the two
 manifest sources are mutually exclusive and share contract validation.
 

@@ -51,6 +51,40 @@ fn exact_generation_key(generation: &McpGenerationRef) -> String {
     awaken_session_contract::stable_fingerprint(generation)
 }
 
+struct LocalProjectionSynchronizer<'a> {
+    runtime: &'a dyn SessionRuntime,
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionProjectionSynchronizer for LocalProjectionSynchronizer<'_> {
+    async fn synchronize_session_projection(
+        &self,
+        session_id: &str,
+        projection: &awaken_session_contract::FrozenSessionProjection,
+        _lease: &SessionRealizationLease,
+        prepare_session: bool,
+    ) -> Result<(), RunError> {
+        if !prepare_session {
+            return Ok(());
+        }
+        let baseline = &projection.baseline;
+        self.runtime
+            .prepare_session(
+                session_id,
+                SessionInit {
+                    workspace_id: projection.workspace_id.clone(),
+                    agent_id: baseline.agent_id.clone(),
+                    delegate_ids: baseline.delegate_ids.clone(),
+                    resources: projection.resources.clone(),
+                    model: Some(baseline.model.clone()),
+                    runtime: baseline.runtime.clone(),
+                    environment: baseline.environment.clone(),
+                },
+            )
+            .await
+    }
+}
+
 impl ManagedState {
     fn realization_stage_requests(
         owner_scope: &str,
@@ -186,12 +220,14 @@ impl SessionRealizationControl for ManagedState {
                 .realization
                 .as_ref()
                 .is_some_and(|lease| lease.expires_at_unix_ms >= now);
-            if existing_live
-                && session.realization.as_ref().is_some_and(|lease| {
-                    lease.owner != command.target.owner
-                        || lease.runtime_incarnation != command.target.runtime_incarnation
-                })
-            {
+            let same_owner = session
+                .realization
+                .as_ref()
+                .is_some_and(|lease| lease.owner == command.target.owner);
+            let same_incarnation = session.realization.as_ref().is_some_and(|lease| {
+                lease.runtime_incarnation == command.target.runtime_incarnation
+            });
+            if existing_live && !same_owner {
                 return Err(SessionRealizationControlFailure::StaleOwnership);
             }
 
@@ -202,8 +238,16 @@ impl SessionRealizationControl for ManagedState {
                 .filter(|attachment| attachment.state == McpAttachmentState::Requested)
                 .map(|attachment| (attachment.attachment_id.clone(), attachment.generation))
                 .collect::<Vec<_>>();
-            let needs_assignment = !existing_live;
-            if !needs_assignment && requested.is_empty() {
+            // One authenticated logical owner may immediately fence its prior
+            // process incarnation after restart. A different owner still waits
+            // for expiry or an explicit Control reassignment.
+            let needs_assignment = !existing_live || !same_incarnation;
+            let renews_assignment = command.target.renew_existing_lease
+                && !needs_assignment
+                && session.realization.as_ref().is_some_and(|lease| {
+                    command.target.lease_expires_at_unix_ms > lease.expires_at_unix_ms
+                });
+            if !needs_assignment && !renews_assignment && requested.is_empty() {
                 return Self::next_action(owner_scope, &session);
             }
 
@@ -223,10 +267,14 @@ impl SessionRealizationControl for ManagedState {
                     expires_at_unix_ms: command.target.lease_expires_at_unix_ms,
                 }
             } else {
-                session
+                let mut lease = session
                     .realization
                     .clone()
-                    .expect("a live assignment was checked")
+                    .expect("a live assignment was checked");
+                if renews_assignment {
+                    lease.expires_at_unix_ms = command.target.lease_expires_at_unix_ms;
+                }
+                lease
             };
             if session.resources.pending.is_some() {
                 session.resources.start_attempt().map_err(unavailable)?;
@@ -277,6 +325,16 @@ impl SessionRealizationControl for ManagedState {
                         .claim_realization(&attachment_id, generation, claim)
                 };
                 result.map_err(unavailable)?;
+            }
+            if renews_assignment {
+                session
+                    .mcp
+                    .renew_active_realizations(
+                        &lease.runtime_incarnation,
+                        lease.epoch,
+                        lease.expires_at_unix_ms,
+                    )
+                    .map_err(unavailable)?;
             }
             session.realization = Some(lease);
             match self
@@ -370,7 +428,13 @@ impl SessionRealizationControl for ManagedState {
             }
         }
         session.mcp.begin_obsolete_drains().map_err(unavailable)?;
-        session.status = "activating".into();
+        // Initial creation remains non-visible until publication acknowledgement.
+        // A hot mutation belongs to an already-idle Session, so keep that lifecycle
+        // status while its new generation is unacknowledged; a failed replacement
+        // must not turn the established Session into a failed create.
+        if session.status != "idle" {
+            session.status = "activating".into();
+        }
         let session = self
             .commit_session_snapshot(
                 &owner_scope,
@@ -539,7 +603,9 @@ impl SessionRealizationControl for ManagedState {
                 .note_retryable_failure(command.reason.clone())
                 .map_err(unavailable)?;
         }
-        session.status = "activation_failed".into();
+        if session.status != "idle" {
+            session.status = "activation_failed".into();
+        }
         self.commit_session_snapshot(
             &owner_scope,
             session,
@@ -567,28 +633,6 @@ impl ManagedState {
         }
     }
 
-    async fn fail_local_realization(
-        &self,
-        session_id: &str,
-        lease: SessionRealizationLease,
-        reason: &RunError,
-    ) {
-        if let Err(error) = self
-            .fail_session_realization(FailSessionRealization {
-                session_id: session_id.to_string(),
-                lease,
-                reason: reason.to_string(),
-            })
-            .await
-        {
-            tracing::warn!(
-                session = %session_id,
-                error = ?error,
-                "Session realization failure could not be recorded"
-            );
-        }
-    }
-
     /// Sole in-process topology adapter for the Control-owned realization
     /// protocol. Create, hot replacement, and recovery all call this driver;
     /// it owns Runtime I/O but never mutates Session desired state directly.
@@ -599,135 +643,125 @@ impl ManagedState {
         let lease_expires_at_unix_ms = now_unix_ms()
             .checked_add(300_000)
             .ok_or_else(|| StateError::Run(RunError::internal("lease expiry overflow")))?;
-        let mut directive = self
+        let directive = self
             .begin_session_realization(BeginSessionRealization {
                 session_id: session_id.to_string(),
                 target: awaken_session_contract::SessionRealizationTarget {
                     owner: "managed-runtime".into(),
                     runtime_incarnation: self.runtime_incarnation.clone(),
                     lease_expires_at_unix_ms,
+                    renew_existing_lease: false,
                 },
             })
             .await
             .map_err(Self::map_realization_failure)?;
+        self.drive_local_realization(session_id, directive).await?;
+        self.sessions_repo
+            .get(session_id)
+            .await
+            .ok_or(StateError::NotFound)
+    }
 
-        // The protocol advances monotonically Stage -> Publish -> Complete.
-        // Three actions are sufficient; the bound protects against a malformed
-        // implementation returning a non-progressing directive forever.
-        for _ in 0..4 {
-            match directive.action.clone() {
-                SessionRealizationAction::Stage {
-                    prepare_session,
-                    mcp_stages,
-                } => {
-                    let mut receipts = Vec::with_capacity(mcp_stages.len());
-                    let external_result = async {
-                        if prepare_session {
-                            let baseline = &directive.projection.baseline;
-                            self.runtime
-                                .prepare_session(
-                                    session_id,
-                                    SessionInit {
-                                        workspace_id: directive.projection.workspace_id.clone(),
-                                        agent_id: baseline.agent_id.clone(),
-                                        delegate_ids: baseline.delegate_ids.clone(),
-                                        resources: directive.projection.resources.clone(),
-                                        model: Some(baseline.model.clone()),
-                                        runtime: baseline.runtime.clone(),
-                                        credential_realization: baseline
-                                            .environment
-                                            .credential_realization
-                                            .clone(),
-                                        deny_egress: baseline.environment.network.is_restricted(),
-                                        sandbox: Some(baseline.environment.sandbox.clone()),
-                                    },
-                                )
-                                .await?;
-                        }
-                        for request in mcp_stages {
-                            let receipt =
-                                self.runtime.stage_mcp_attachment(request.clone()).await?;
-                            receipt.verify(&request).map_err(|_| {
-                                RunError::classified(
-                                    "mcp_receipt_mismatch",
-                                    "Runtime returned a receipt for another MCP realization",
-                                )
-                            })?;
-                            receipts.push(receipt);
-                        }
-                        Ok::<(), RunError>(())
-                    }
-                    .await;
-                    if let Err(error) = external_result {
-                        for receipt in &receipts {
-                            let _ = self
-                                .runtime
-                                .drain_mcp_generation(receipt.generation.clone())
-                                .await;
-                        }
-                        self.fail_local_realization(session_id, directive.lease, &error)
-                            .await;
-                        return Err(StateError::Run(error));
-                    }
-                    directive = match self
-                        .activate_session_realization(ActivateSessionRealization {
-                            session_id: session_id.to_string(),
-                            lease: directive.lease.clone(),
-                            mcp_receipts: receipts.clone(),
-                        })
-                        .await
-                    {
-                        Ok(next) => next,
-                        Err(error) => {
-                            for receipt in receipts {
-                                let _ = self.runtime.drain_mcp_generation(receipt.generation).await;
-                            }
-                            return Err(Self::map_realization_failure(error));
-                        }
-                    };
-                }
-                SessionRealizationAction::Publish { publish, drain } => {
-                    let external_result = async {
-                        for generation in &publish {
-                            self.runtime
-                                .publish_mcp_generation(generation.clone())
-                                .await?;
-                        }
-                        for generation in &drain {
-                            self.runtime
-                                .drain_mcp_generation(generation.clone())
-                                .await?;
-                        }
-                        Ok::<(), RunError>(())
-                    }
-                    .await;
-                    if let Err(error) = external_result {
-                        self.fail_local_realization(session_id, directive.lease, &error)
-                            .await;
-                        return Err(StateError::Run(error));
-                    }
-                    directive = self
-                        .acknowledge_session_realization(AcknowledgeSessionRealization {
-                            session_id: session_id.to_string(),
-                            lease: directive.lease,
-                            published: publish,
-                            drained: drain,
-                        })
-                        .await
-                        .map_err(Self::map_realization_failure)?;
-                }
-                SessionRealizationAction::Complete => {
-                    return self
-                        .sessions_repo
-                        .get(session_id)
-                        .await
-                        .ok_or(StateError::NotFound);
+    async fn drive_local_realization(
+        &self,
+        session_id: &str,
+        directive: awaken_session_contract::SessionRealizationDirective,
+    ) -> Result<(), StateError> {
+        awaken_session_contract::drive_session_realization(
+            session_id,
+            self,
+            &LocalProjectionSynchronizer {
+                runtime: self.runtime.as_ref(),
+            },
+            self.mcp_realizer.as_ref(),
+            directive,
+        )
+        .await
+        .map_err(|error| match error {
+            awaken_session_contract::SessionRealizationDriveError::Effect(error) => {
+                StateError::Run(error)
+            }
+            awaken_session_contract::SessionRealizationDriveError::Control(error) => {
+                Self::map_realization_failure(error)
+            }
+            awaken_session_contract::SessionRealizationDriveError::DidNotConverge => {
+                StateError::Run(RunError::internal(error.to_string()))
+            }
+        })
+    }
+
+    /// Renew due local projections through the same root-CAS phase protocol.
+    /// Composition roots call this periodically; it owns no second registry or
+    /// relay-specific timer.
+    pub async fn renew_due_session_realizations(
+        &self,
+        now_unix_ms: u64,
+    ) -> Result<usize, StateError> {
+        const RENEW_BEFORE_MS: u64 = 150_000;
+        const LEASE_MS: u64 = 300_000;
+        let renew_before = now_unix_ms.saturating_add(RENEW_BEFORE_MS);
+        let requested_expiry = now_unix_ms.saturating_add(LEASE_MS);
+        let sessions = self.sessions_repo.reconcilable_sessions().await;
+        let mut renewed = 0;
+        for scoped in sessions {
+            let Some(lease) = scoped.session.realization.clone() else {
+                continue;
+            };
+            if scoped.session.status == "deleted"
+                || lease.owner != "managed-runtime"
+                || lease.runtime_incarnation != self.runtime_incarnation
+                || lease.expires_at_unix_ms > renew_before
+                || !scoped
+                    .session
+                    .mcp
+                    .attachments
+                    .iter()
+                    .any(|attachment| attachment.state == McpAttachmentState::Active)
+            {
+                continue;
+            }
+            let directive = self
+                .begin_session_realization(BeginSessionRealization {
+                    session_id: scoped.session.session_id.clone(),
+                    target: awaken_session_contract::SessionRealizationTarget {
+                        owner: lease.owner,
+                        runtime_incarnation: lease.runtime_incarnation,
+                        lease_expires_at_unix_ms: requested_expiry,
+                        renew_existing_lease: true,
+                    },
+                })
+                .await
+                .map_err(Self::map_realization_failure)?;
+            self.drive_local_realization(&scoped.session.session_id, directive)
+                .await?;
+            renewed += 1;
+        }
+        Ok(renewed)
+    }
+
+    /// Start the local realization-lease supervisor when a Tokio runtime is
+    /// available. Composition roots call this once for the canonical
+    /// `ManagedState`; repeated MCP-specific timers are forbidden.
+    #[must_use]
+    pub fn spawn_realization_lease_supervisor(
+        self: &Arc<Self>,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        let runtime = tokio::runtime::Handle::try_current().ok()?;
+        let state = self.clone();
+        Some(runtime.spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                let now = now_unix_ms();
+                if let Err(error) = state.renew_due_session_realizations(now).await {
+                    tracing::warn!(
+                        error = ?error,
+                        "Session realization lease renewal remains pending"
+                    );
                 }
             }
-        }
-        Err(StateError::Run(RunError::internal(
-            "Session realization protocol did not converge",
-        )))
+        }))
     }
 }
 
@@ -794,6 +828,36 @@ mod tests {
 
         fn model(&self) -> String {
             "test-model".into()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_session_contract::McpAttachmentRealizer for NoopRuntime {
+        async fn stage_mcp_attachment(
+            &self,
+            request: StageMcpAttachment,
+        ) -> Result<McpRealizationReceipt, RunError> {
+            Ok(McpRealizationReceipt {
+                generation: request.generation.clone(),
+                realization_id: request.realization_id.clone(),
+                selected_plaintext_holder: request.selected_plaintext_holder.clone(),
+                actual_realization_kind: None,
+                receipt_fingerprint: request.fingerprint(),
+            })
+        }
+
+        async fn publish_mcp_generation(
+            &self,
+            _generation: McpGenerationRef,
+        ) -> Result<(), RunError> {
+            Ok(())
+        }
+
+        async fn drain_mcp_generation(
+            &self,
+            _generation: McpGenerationRef,
+        ) -> Result<(), RunError> {
+            Ok(())
         }
     }
 
@@ -880,7 +944,7 @@ mod tests {
         .await
         .unwrap();
         (
-            ManagedState::new(NoopRuntime).with_session_repo(repo.clone()),
+            ManagedState::new_with_mcp(NoopRuntime).with_session_repo(repo.clone()),
             repo,
         )
     }
@@ -926,11 +990,14 @@ mod tests {
         // | Q9 | acknowledge | exact | - | duplicate | invalid/no mutation |
         // | Q10 | acknowledge | exact | - | exact | Complete + durable idle |
         // | Q11 | acknowledge replay | exact | - | exact | Complete/no revision |
+        // | Q12 | renew | same owner/incarnation | - | later expiry | Stage same generation |
+        // | Q13 | renew complete | exact | exact | exact | Complete + extended fence |
         let (state, repo) = harness("session-phase").await;
         let target = awaken_session_contract::SessionRealizationTarget {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/incarnation-1".into(),
-            lease_expires_at_unix_ms: u64::MAX,
+            lease_expires_at_unix_ms: u64::MAX - 1,
+            renew_existing_lease: false,
         };
         let begin = BeginSessionRealization {
             session_id: "session-phase".into(),
@@ -1118,6 +1185,195 @@ mod tests {
             after_ack.revision,
             "Q11"
         );
+
+        let renewal = state
+            .begin_session_realization(BeginSessionRealization {
+                session_id: "session-phase".into(),
+                target: awaken_session_contract::SessionRealizationTarget {
+                    owner: "worker-a".into(),
+                    runtime_incarnation: "worker-a/incarnation-1".into(),
+                    lease_expires_at_unix_ms: u64::MAX,
+                    renew_existing_lease: true,
+                },
+            })
+            .await
+            .expect("Q12");
+        let SessionRealizationAction::Stage { mcp_stages, .. } = &renewal.action else {
+            panic!("Q12 expected renewal stage")
+        };
+        assert_eq!(mcp_stages.len(), 1, "Q12");
+        assert_eq!(
+            mcp_stages[0].generation.generation,
+            awaken_session_contract::McpGeneration(1),
+            "Q12"
+        );
+        assert_eq!(
+            mcp_stages[0].generation.lease_expires_at_unix_ms,
+            u64::MAX,
+            "Q12"
+        );
+        let publish = state
+            .activate_session_realization(ActivateSessionRealization {
+                session_id: "session-phase".into(),
+                lease: renewal.lease.clone(),
+                mcp_receipts: exact_receipts(&renewal.action),
+            })
+            .await
+            .expect("Q13 publish");
+        let SessionRealizationAction::Publish { publish, drain } = publish.action else {
+            panic!("Q13 expected publish")
+        };
+        let complete = state
+            .acknowledge_session_realization(AcknowledgeSessionRealization {
+                session_id: "session-phase".into(),
+                lease: renewal.lease,
+                published: publish,
+                drained: drain,
+            })
+            .await
+            .expect("Q13");
+        assert_eq!(complete.action, SessionRealizationAction::Complete, "Q13");
+        let renewed = repo.get("session-phase").await.unwrap();
+        assert_eq!(
+            renewed.realization.unwrap().expires_at_unix_ms,
+            u64::MAX,
+            "Q13"
+        );
+        assert!(renewed.mcp.attachments[0].publication_acknowledged, "Q13");
+    }
+
+    #[tokio::test]
+    async fn local_lease_supervision_cases_follow_the_decision_table() {
+        // Cause graph: active generation AND local owner/incarnation AND expiry
+        // within the renewal window -> run the canonical phase driver with a
+        // later exact fence. A false due-window cause is a no-op; there is no
+        // relay-local timer or second desired-state mutation.
+        //
+        // | Rule | Active | Owner/incarnation | Due | Effect |
+        // |---|---|---|---|---|
+        // | S1 | yes | exact local | yes | same generation/epoch, later expiry |
+        // | S2 | yes | exact local | no | no mutation |
+        let (state, repo) = harness("session-supervised").await;
+        state
+            .realize_session_locally("session-supervised")
+            .await
+            .expect("S1 setup");
+        let before = repo.get("session-supervised").await.unwrap();
+        let lease = before.realization.clone().unwrap();
+        let original_generation = before.mcp.attachments[0].generation;
+        let original_epoch = lease.epoch;
+        let supervision_now = lease.expires_at_unix_ms.saturating_sub(100_000);
+        assert_eq!(
+            state
+                .renew_due_session_realizations(supervision_now)
+                .await
+                .expect("S1"),
+            1,
+            "S1"
+        );
+        let renewed = repo.get("session-supervised").await.unwrap();
+        let renewed_lease = renewed.realization.as_ref().unwrap();
+        assert!(
+            renewed_lease.expires_at_unix_ms > lease.expires_at_unix_ms,
+            "S1"
+        );
+        assert_eq!(renewed_lease.epoch, original_epoch, "S1");
+        assert_eq!(
+            renewed.mcp.attachments[0].generation, original_generation,
+            "S1"
+        );
+        assert!(renewed.mcp.attachments[0].publication_acknowledged, "S1");
+        let revision = renewed.revision;
+        assert_eq!(
+            state
+                .renew_due_session_realizations(supervision_now)
+                .await
+                .expect("S2"),
+            0,
+            "S2"
+        );
+        assert_eq!(
+            repo.get("session-supervised").await.unwrap().revision,
+            revision,
+            "S2 no mutation"
+        );
+    }
+
+    #[tokio::test]
+    async fn live_lease_takeover_follows_owner_and_incarnation_decision_table() {
+        // Cause-effect graph:
+        // live lease + exact owner + exact incarnation -> replay;
+        // live lease + exact owner + new incarnation -> fence old process and
+        // allocate epoch N+1; live lease + different owner -> stale.
+        //
+        // | Rule | lease | owner | incarnation | Effect |
+        // | O1 | live | same | same | replay epoch N |
+        // | O2 | live | same | new | claim epoch N+1 |
+        // | O3 | live | other | any | StaleOwnership |
+        let (state, repo) = harness("session-owner-restart").await;
+        let target = awaken_session_contract::SessionRealizationTarget {
+            owner: "worker-a".into(),
+            runtime_incarnation: "worker-a/incarnation-1".into(),
+            lease_expires_at_unix_ms: u64::MAX,
+            renew_existing_lease: false,
+        };
+        let first = state
+            .begin_session_realization(BeginSessionRealization {
+                session_id: "session-owner-restart".into(),
+                target: target.clone(),
+            })
+            .await
+            .expect("O1 initial claim");
+        let replay = state
+            .begin_session_realization(BeginSessionRealization {
+                session_id: "session-owner-restart".into(),
+                target: target.clone(),
+            })
+            .await
+            .expect("O1 replay");
+        assert_eq!(replay.lease, first.lease, "O1");
+
+        let restarted = state
+            .begin_session_realization(BeginSessionRealization {
+                session_id: "session-owner-restart".into(),
+                target: awaken_session_contract::SessionRealizationTarget {
+                    runtime_incarnation: "worker-a/incarnation-2".into(),
+                    ..target.clone()
+                },
+            })
+            .await
+            .expect("O2");
+        assert_eq!(restarted.lease.epoch, first.lease.epoch + 1, "O2");
+        assert_eq!(
+            restarted.lease.runtime_incarnation, "worker-a/incarnation-2",
+            "O2"
+        );
+        let persisted = repo.get("session-owner-restart").await.unwrap();
+        assert_eq!(
+            persisted.mcp.attachments[0]
+                .realization
+                .as_ref()
+                .unwrap()
+                .runtime_incarnation,
+            "worker-a/incarnation-2",
+            "O2 exact generation was reclaimed"
+        );
+
+        let other = state
+            .begin_session_realization(BeginSessionRealization {
+                session_id: "session-owner-restart".into(),
+                target: awaken_session_contract::SessionRealizationTarget {
+                    owner: "worker-b".into(),
+                    runtime_incarnation: "worker-b/incarnation-1".into(),
+                    ..target
+                },
+            })
+            .await;
+        assert_eq!(
+            other.unwrap_err(),
+            SessionRealizationControlFailure::StaleOwnership,
+            "O3"
+        );
     }
 
     #[tokio::test]
@@ -1139,6 +1395,7 @@ mod tests {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/incarnation-1".into(),
             lease_expires_at_unix_ms: u64::MAX,
+            renew_existing_lease: false,
         };
         let staged = empty_state
             .begin_session_realization(BeginSessionRealization {

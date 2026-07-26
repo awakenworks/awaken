@@ -138,9 +138,11 @@ impl EnvironmentState {
                 awaken_session_contract::SessionNetworkPolicy::None
             }
         });
-        let network = sandbox_network.map_or(authored_network.clone(), |sandbox_network| {
-            authored_network.safe_intersection(&sandbox_network)
-        });
+        let network = sandbox_network
+            .map_or(authored_network.clone(), |sandbox_network| {
+                authored_network.safe_intersection(&sandbox_network)
+            })
+            .normalized();
         let acp = runtime.is_some_and(|value| value.starts_with("acp:"));
         let holder = if acp {
             awaken_credential_contract::PlaintextHolder::new(
@@ -180,29 +182,6 @@ impl EnvironmentState {
             network,
             credential_realization,
         })
-    }
-
-    /// Whether the local bwrap sandbox must deny egress for `env_id`. bwrap is a
-    /// binary (on/off) enforcer, so any restricted policy collapses to full deny;
-    /// `unrestricted`, absent networking (incl. `self_hosted`), or an unknown
-    /// environment share the host network.
-    pub async fn deny_egress(&self, env_id: &str) -> bool {
-        self.envs
-            .get(env_id)
-            .await
-            .is_some_and(|rec| crate::env_registry::env_network_policy(&rec.config).is_restricted())
-    }
-
-    /// The environment's raw `config.sandbox` blob (isolation/network/limits), staged
-    /// verbatim onto the session so the HOST parses it into a provisioning
-    /// `SandboxOverride`. `None` = no sandbox declared (host default spec). Richer than
-    /// [`Self::deny_egress`] (a bool): this carries the full policy + limits. Kept as a
-    /// `Value` so this crate need not name the provisioning contract for the passthrough.
-    pub async fn sandbox_config(&self, env_id: &str) -> Option<serde_json::Value> {
-        self.envs
-            .get(env_id)
-            .await
-            .and_then(|rec| rec.config.get("sandbox").cloned())
     }
 
     /// Create an environment named `name` with the opaque `config` blob
@@ -572,33 +551,6 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn deny_egress_reads_the_typed_policy_per_environment() {
-        let state = EnvironmentState::new();
-        let open = state
-            .envs
-            .create(
-                "o".into(),
-                String::new(),
-                BTreeMap::new(),
-                json!({ "networking": { "type": "unrestricted" } }),
-            )
-            .await;
-        let closed = state
-            .envs
-            .create(
-                "c".into(),
-                String::new(),
-                BTreeMap::new(),
-                json!({ "networking": { "type": "none" } }),
-            )
-            .await;
-        assert!(!state.deny_egress(&open.id).await);
-        assert!(state.deny_egress(&closed.id).await);
-        // Unknown environment shares the host network (no record → false).
-        assert!(!state.deny_egress("env_missing").await);
-    }
-
-    #[tokio::test]
     async fn with_stores_selects_self_hosted_and_handles_missing() {
         let state = EnvironmentState::with_stores(
             Arc::new(InMemoryEnvRegistry::new()),
@@ -635,6 +587,7 @@ mod tests {
         // | S3   | active | native  | T          | new rev/fingerprint; old frozen |
         // | S4   | missing/archived custom | any | - | None |
         // | S5   | implicit env_local | native/ACP | - | canonical local snapshot |
+        // | S6   | active empty limited allowlist | any | - | network None |
         let state = EnvironmentState::new();
         let item = state
             .envs
@@ -713,6 +666,20 @@ mod tests {
             local_acp,
             default_environment_snapshot("env_local".into(), Some("acp:claude")),
             "S5 ACP"
+        );
+        let closed = state
+            .envs
+            .create(
+                "closed".into(),
+                String::new(),
+                BTreeMap::new(),
+                json!({"networking": {"type": "limited"}}),
+            )
+            .await;
+        assert_eq!(
+            state.snapshot(&closed.id, None).await.expect("S6").network,
+            awaken_session_contract::SessionNetworkPolicy::None,
+            "S6"
         );
     }
 }

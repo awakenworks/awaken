@@ -26,6 +26,10 @@ pub(crate) struct McpGenerationProjection {
     pub generation: awaken_protocol_managed::McpGenerationRef,
     pub realization_id: String,
     pub stage_idempotency_key: String,
+    /// Exact immutable realization identity with only renewable expiry/key
+    /// excluded. It prevents a lease extension from changing target,
+    /// credential, holder, owner incarnation, epoch, or logical generation.
+    pub renewal_binding_fingerprint: String,
     pub receipt: awaken_protocol_managed::McpRealizationReceipt,
     pub server: Option<crate::mcp::McpTransportMaterial>,
     pub native_wiring: Option<crate::mcp::McpWiring>,
@@ -40,7 +44,17 @@ pub(crate) struct FrozenBaselineRuntimeProjection {
     pub mounts: Vec<awaken_provisioning_contract::MountRequirement>,
     pub env: Vec<awaken_provisioning_contract::EnvVar>,
     pub prompts: Vec<String>,
+}
+
+/// The sole process-local projection of the frozen Environment snapshot.
+/// Native and ACP provisioning both consume this value; no late network or
+/// Sandbox override is stored beside it.
+#[derive(Clone)]
+pub(crate) struct FrozenEnvironmentRuntimeProjection {
+    pub fingerprint: awaken_protocol_managed::EnvironmentFingerprint,
     pub network: awaken_provisioning_contract::NetworkPolicy,
+    pub sandbox: Option<awaken_provisioning_contract::SandboxOverride>,
+    pub credential_realization: awaken_runtime_contract::CredentialRealizationProfile,
 }
 
 #[derive(Default)]
@@ -53,10 +67,17 @@ pub(crate) struct SessionRuntimeSlot {
     pub workspace: Option<String>,
     pub model_ref: Option<String>,
     pub runtime_adapter: Option<String>,
-    /// Process-local projection of the frozen Environment credential decision.
-    pub credential_realization: Option<awaken_runtime_contract::CredentialRealizationProfile>,
+    /// Exact Environment projection shared by Native and ACP realization.
+    pub environment_projection: Option<FrozenEnvironmentRuntimeProjection>,
     pub memory: Option<Arc<BoundMemory>>,
     pub mcp: Vec<McpGenerationProjection>,
+    /// Current Control-issued projection authority. It is a live cache used to
+    /// request renewal; durable ownership remains in the Session aggregate.
+    pub realization_lease: Option<awaken_protocol_managed::SessionRealizationLease>,
+    /// Whether the last Control-frozen projection contains a nonterminal MCP
+    /// attachment. This supports lease supervision when effects live behind an
+    /// injected realizer and therefore are not stored in `mcp` locally.
+    pub has_mcp_projection: bool,
     /// Exact Control-frozen baseline projected for realization. It is never
     /// authored or mutated locally.
     pub baseline: Option<FrozenBaselineRuntimeProjection>,
@@ -67,8 +88,6 @@ pub(crate) struct SessionRuntimeSlot {
     pub skills: Option<Vec<awaken_skill_store::SkillVersion>>,
     pub resources: StagedResources,
     pub manifest: Option<awaken_protocol_managed::SessionResourceManifest>,
-    pub deny_egress: bool,
-    pub sandbox: Option<awaken_provisioning_contract::SandboxOverride>,
 }
 
 #[derive(Clone, Default)]
@@ -105,6 +124,31 @@ impl SessionRuntimeSlots {
             .lock()
             .expect("session runtime slots mutex poisoned")
             .remove(session)
+    }
+
+    pub fn realization_leases(
+        &self,
+    ) -> Vec<(String, awaken_protocol_managed::SessionRealizationLease)> {
+        self.0
+            .lock()
+            .expect("session runtime slots mutex poisoned")
+            .iter()
+            .filter(|(_, slot)| slot.has_mcp_projection)
+            .filter_map(|(session_id, slot)| {
+                slot.realization_lease
+                    .clone()
+                    .map(|lease| (session_id.clone(), lease))
+            })
+            .collect()
+    }
+
+    pub fn session_ids(&self) -> Vec<String> {
+        self.0
+            .lock()
+            .expect("session runtime slots mutex poisoned")
+            .keys()
+            .cloned()
+            .collect()
     }
 
     #[cfg(test)]

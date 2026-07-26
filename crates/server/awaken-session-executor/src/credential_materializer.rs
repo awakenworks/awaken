@@ -16,7 +16,8 @@ use awaken_credential_vault::{
 };
 use awaken_runtime_contract::resolved::{ModelProvisioning, ResolvedModelCandidate};
 use awaken_runtime_contract::{
-    AttemptCredentialBinding, CredentialAccess, CredentialAdmissionError, CredentialMaterialError,
+    AttemptCredentialBinding, CredentialAccess, CredentialAdmissionError,
+    CredentialMaterialBinding, CredentialMaterialError, CredentialMaterialRequest,
     CredentialMaterialResolver, CredentialMaterialSource, CredentialRealizationCapabilities,
     CredentialRealizationKind, CredentialUsage, PlaintextHolder, ResolvedCredentialMaterial,
 };
@@ -36,6 +37,7 @@ struct PendingProcessSecret {
 pub struct PinnedCredentialMaterializer {
     credentials: Arc<dyn CredentialRepo>,
     secrets: Arc<dyn SecretStore>,
+    external_material_resolver: Option<Arc<dyn CredentialMaterialResolver>>,
     pending_process_secrets: Arc<Mutex<HashMap<String, PendingProcessSecret>>>,
 }
 
@@ -45,8 +47,38 @@ impl PinnedCredentialMaterializer {
         Self {
             credentials,
             secrets,
+            external_material_resolver: None,
             pending_process_secrets: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Install the sole non-local material-source adapter. It handles exact
+    /// Worker references and recipient-bound envelopes through the same neutral
+    /// resolver contract; absence fails closed and never falls back to Vault.
+    #[must_use]
+    pub fn with_external_material_resolver(
+        mut self,
+        resolver: Arc<dyn CredentialMaterialResolver>,
+    ) -> Self {
+        self.external_material_resolver = Some(resolver);
+        self
+    }
+
+    /// Installed source evidence used by standard Worker manifest derivation.
+    #[must_use]
+    pub fn material_source_capabilities(
+        &self,
+    ) -> (std::collections::BTreeSet<CredentialMaterialSource>, bool) {
+        let mut sources =
+            std::collections::BTreeSet::from([CredentialMaterialSource::ControlPlaneReference]);
+        let envelopes = self
+            .external_material_resolver
+            .as_ref()
+            .is_some_and(|resolver| {
+                sources.extend(resolver.supported_material_sources());
+                resolver.supports_recipient_bound_envelopes()
+            });
+        (sources, envelopes)
     }
 
     fn claimed_provider_binding<'a>(
@@ -189,6 +221,7 @@ impl PinnedCredentialMaterializer {
             provider_ref,
             scope_id,
             credential,
+            endpoint,
             ..
         } = &candidate.provisioning
         else {
@@ -204,12 +237,23 @@ impl PinnedCredentialMaterializer {
         if credential.usage != CredentialUsage::ProviderAdapter {
             return Err("published credential injection contract is invalid".to_string());
         }
-        admit_exact_adapter(credential, selected_holder, realization)
-            .map_err(|error| error.to_string())?;
+        let (material_sources, recipient_bound_envelopes) = self.material_source_capabilities();
+        admit_exact_adapter(
+            credential,
+            selected_holder,
+            realization,
+            material_sources,
+            recipient_bound_envelopes,
+        )
+        .map_err(|error| error.to_string())?;
         self.resolve_validated(
             credential,
             selected_holder,
-            Some(scope_id.as_str()),
+            CredentialMaterialBinding::for_target(
+                scope_id.as_str(),
+                &(provider_ref, endpoint),
+                &credential.usage,
+            ),
             Some(provider),
         )
         .await
@@ -221,14 +265,10 @@ impl PinnedCredentialMaterializer {
         &self,
         access: &CredentialAccess,
         selected_holder: &PlaintextHolder,
-        expected_workspace: Option<&str>,
+        binding: CredentialMaterialBinding,
         expected_provider: Option<&str>,
     ) -> Result<ResolvedCredentialMaterial, CredentialMaterialError> {
-        if access.material_source != CredentialMaterialSource::ControlPlaneReference
-            || access.envelope.is_some()
-        {
-            return Err(CredentialMaterialError::Unavailable);
-        }
+        binding.validate()?;
         if !access
             .policy
             .allowed_plaintext_holders
@@ -236,13 +276,45 @@ impl PinnedCredentialMaterializer {
         {
             return Err(CredentialMaterialError::RecipientMismatch);
         }
+        if let Some(envelope) = &access.envelope {
+            envelope.validate_for_holder(selected_holder, unix_time_ms())?;
+        }
+        if access.envelope.is_some()
+            || access.material_source == CredentialMaterialSource::WorkerReference
+        {
+            let resolver = self
+                .external_material_resolver
+                .as_ref()
+                .ok_or(CredentialMaterialError::Unavailable)?;
+            if !resolver
+                .supported_material_sources()
+                .contains(&access.material_source)
+                || (access.envelope.is_some() && !resolver.supports_recipient_bound_envelopes())
+            {
+                return Err(CredentialMaterialError::Unavailable);
+            }
+            let resolved = resolver
+                .resolve_exact(CredentialMaterialRequest {
+                    access,
+                    selected_holder,
+                    binding: &binding,
+                })
+                .await?;
+            if resolved.credential != access.credential || resolved.holder != *selected_holder {
+                return Err(CredentialMaterialError::ResolverMismatch);
+            }
+            return Ok(resolved);
+        }
+        if access.material_source != CredentialMaterialSource::ControlPlaneReference {
+            return Err(CredentialMaterialError::Unavailable);
+        }
         let source = self.load_active_source(&access.credential.id).await?;
         let revision =
             u64::try_from(source.version).map_err(|_| CredentialMaterialError::RevisionMismatch)?;
         if revision != access.credential.revision {
             return Err(CredentialMaterialError::RevisionMismatch);
         }
-        if expected_workspace.is_some_and(|workspace| source.workspace_id != workspace) {
+        if source.workspace_id != binding.workspace_id {
             return Err(CredentialMaterialError::RecipientMismatch);
         }
         if expected_provider.is_some_and(|provider| {
@@ -267,11 +339,24 @@ impl PinnedCredentialMaterializer {
         selected_holder: &PlaintextHolder,
         realization: CredentialRealizationKind,
         workspace: &str,
+        target: &impl serde::Serialize,
     ) -> Result<ResolvedCredentialMaterial, CredentialMaterialError> {
-        admit_exact_adapter(access, selected_holder, realization)
-            .map_err(|_| CredentialMaterialError::Unavailable)?;
-        self.resolve_validated(access, selected_holder, Some(workspace), None)
-            .await
+        let (material_sources, recipient_bound_envelopes) = self.material_source_capabilities();
+        admit_exact_adapter(
+            access,
+            selected_holder,
+            realization,
+            material_sources,
+            recipient_bound_envelopes,
+        )
+        .map_err(|_| CredentialMaterialError::Unavailable)?;
+        self.resolve_validated(
+            access,
+            selected_holder,
+            CredentialMaterialBinding::for_target(workspace, target, &access.usage),
+            None,
+        )
+        .await
     }
 
     async fn load_active_source(
@@ -317,16 +402,17 @@ fn admit_exact_adapter(
     access: &CredentialAccess,
     selected_holder: &PlaintextHolder,
     realization: CredentialRealizationKind,
+    material_sources: std::collections::BTreeSet<CredentialMaterialSource>,
+    recipient_bound_envelopes: bool,
 ) -> Result<(), CredentialAdmissionError> {
     access.admit(
         selected_holder,
         realization,
         &CredentialRealizationCapabilities {
             holders: [selected_holder.clone()].into_iter().collect(),
-            material_sources: [CredentialMaterialSource::ControlPlaneReference]
-                .into_iter()
-                .collect(),
+            material_sources,
             realization_kinds: [realization].into_iter().collect(),
+            recipient_bound_envelopes,
         },
         unix_time_ms(),
     )?;
@@ -335,13 +421,25 @@ fn admit_exact_adapter(
 
 #[async_trait::async_trait]
 impl CredentialMaterialResolver for PinnedCredentialMaterializer {
+    fn supported_material_sources(&self) -> std::collections::BTreeSet<CredentialMaterialSource> {
+        self.material_source_capabilities().0
+    }
+
+    fn supports_recipient_bound_envelopes(&self) -> bool {
+        self.material_source_capabilities().1
+    }
+
     async fn resolve_exact(
         &self,
-        access: &CredentialAccess,
-        selected_holder: &PlaintextHolder,
+        request: CredentialMaterialRequest<'_>,
     ) -> Result<ResolvedCredentialMaterial, CredentialMaterialError> {
-        self.resolve_validated(access, selected_holder, None, None)
-            .await
+        self.resolve_validated(
+            request.access,
+            request.selected_holder,
+            request.binding.clone(),
+            None,
+        )
+        .await
     }
 }
 
@@ -440,6 +538,55 @@ mod tests {
         InferenceEndpoint, ModelBinding, ModelExposurePolicy, PlaintextBoundary,
         SealedCredentialEnvelopeRef,
     };
+
+    #[derive(Clone)]
+    struct ExactExternalResolver {
+        expected_binding: CredentialMaterialBinding,
+        expected_payload_fingerprint: &'static str,
+        returned_holder: PlaintextHolder,
+    }
+
+    #[async_trait::async_trait]
+    impl CredentialMaterialResolver for ExactExternalResolver {
+        fn supported_material_sources(
+            &self,
+        ) -> std::collections::BTreeSet<CredentialMaterialSource> {
+            std::collections::BTreeSet::from([
+                CredentialMaterialSource::ControlPlaneReference,
+                CredentialMaterialSource::WorkerReference,
+            ])
+        }
+
+        fn supports_recipient_bound_envelopes(&self) -> bool {
+            true
+        }
+
+        async fn resolve_exact(
+            &self,
+            request: CredentialMaterialRequest<'_>,
+        ) -> Result<ResolvedCredentialMaterial, CredentialMaterialError> {
+            request.binding.validate()?;
+            if request.binding != &self.expected_binding {
+                return Err(CredentialMaterialError::BindingMismatch);
+            }
+            if let Some(envelope) = &request.access.envelope {
+                let payload_fingerprint = match envelope {
+                    CredentialEnvelope::SealedForWorker { envelope_ref, .. }
+                    | CredentialEnvelope::SealedForWorkload { envelope_ref, .. } => {
+                        &envelope_ref.payload_fingerprint
+                    }
+                };
+                if payload_fingerprint != self.expected_payload_fingerprint {
+                    return Err(CredentialMaterialError::PayloadMismatch);
+                }
+            }
+            Ok(ResolvedCredentialMaterial {
+                credential: request.access.credential.clone(),
+                holder: self.returned_holder.clone(),
+                material: RedactedString::new("external-sealed-material"),
+            })
+        }
+    }
 
     #[derive(Clone)]
     struct ResolutionRule {
@@ -627,7 +774,16 @@ mod tests {
             }
             let resolver = PinnedCredentialMaterializer::new(credentials, secrets);
             let result = resolver
-                .resolve_validated(&access, &holder, Some("workspace-a"), Some("anthropic"))
+                .resolve_validated(
+                    &access,
+                    &holder,
+                    CredentialMaterialBinding::for_target(
+                        "workspace-a",
+                        &"anthropic",
+                        &access.usage,
+                    ),
+                    Some("anthropic"),
+                )
                 .await;
             assert!(
                 !format!("{result:?}").contains("decision-table-secret"),
@@ -648,6 +804,224 @@ mod tests {
                 ),
             }
         }
+    }
+
+    /// Cause-effect graph for the one external material-source path:
+    ///
+    /// C1 external resolver installed -> C2 envelope recipient/live
+    /// -> C3 exact target/use binding -> C4 exact payload fingerprint
+    /// -> C5 resolver returns the selected credential/holder -> E1 material.
+    /// A WorkerReference without an envelope uses the same C1/C3/C5 path. No
+    /// failed external cause falls back to the local Vault row.
+    ///
+    /// | Rule | C1 | C2 | C3 | C4 | C5 | Source | Result |
+    /// |---|---|---|---|---|---|---|---|
+    /// | S1 | T | T | T | T | T | envelope | material |
+    /// | S2 | F | - | - | - | - | envelope | unavailable |
+    /// | S3 | T | T | F | - | - | envelope | binding mismatch |
+    /// | S4 | T | T | T | F | - | envelope | payload mismatch |
+    /// | S5 | T | T | T | T | F | envelope | resolver mismatch |
+    /// | S6 | T | F(expired) | - | - | - | envelope | expired |
+    /// | S7 | T | F(recipient) | - | - | - | envelope | recipient mismatch |
+    /// | S8 | T | - | T | - | T | worker reference | material |
+    /// | S9 | T | T | T | T | T | inference envelope | material |
+    #[tokio::test]
+    async fn external_resolution_tests_are_generated_from_the_decision_table() {
+        let credentials = Arc::new(InMemoryCredentialRepo::new());
+        let secrets = Arc::new(InMemorySecretStore::new());
+        let source = enter_credential(
+            CredentialCreateParams {
+                workspace_id: "workspace-a".into(),
+                kind: CredentialKind::Vault,
+                provider_id: None,
+                env_key: None,
+                secret: Some(RedactedString::new("must-not-fallback-to-local")),
+                oauth_command: None,
+            },
+            secrets.as_ref(),
+            credentials.as_ref(),
+        )
+        .await
+        .expect("local fallback trap");
+        let holder = selected_holder();
+        let binding = CredentialMaterialBinding::for_target(
+            "workspace-a",
+            &"https://service.example/mcp",
+            &CredentialUsage::HttpHeader {
+                name: "authorization".into(),
+                scheme: Some("Bearer".into()),
+            },
+        );
+        let access = |recipient: &str, expiry: u64, fingerprint: &str| {
+            CredentialAccess::new(
+                CredentialRef {
+                    id: source.id.0.clone(),
+                    revision: 1,
+                },
+                CredentialMaterialSource::ControlPlaneReference,
+                CredentialUsage::HttpHeader {
+                    name: "authorization".into(),
+                    scheme: Some("Bearer".into()),
+                },
+                CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
+            )
+            .with_envelope(CredentialEnvelope::SealedForWorker {
+                envelope_ref: SealedCredentialEnvelopeRef {
+                    id: "sealed-1".into(),
+                    payload_fingerprint: fingerprint.into(),
+                },
+                recipient: awaken_runtime_contract::TrustDomainRef(recipient.into()),
+                expires_at_unix_ms: expiry,
+            })
+        };
+        let resolver = |expected_binding: CredentialMaterialBinding,
+                        expected_payload_fingerprint: &'static str,
+                        returned_holder: PlaintextHolder| {
+            Arc::new(ExactExternalResolver {
+                expected_binding,
+                expected_payload_fingerprint,
+                returned_holder,
+            }) as Arc<dyn CredentialMaterialResolver>
+        };
+        let base = PinnedCredentialMaterializer::new(credentials, secrets);
+
+        let exact_access = access(&holder.trust_domain.0, u64::MAX, "sha256:sealed-payload");
+        let exact = base.clone().with_external_material_resolver(resolver(
+            binding.clone(),
+            "sha256:sealed-payload",
+            holder.clone(),
+        ));
+        let resolved = exact
+            .resolve_validated(&exact_access, &holder, binding.clone(), None)
+            .await
+            .expect("S1 exact envelope");
+        assert_eq!(
+            resolved.material.expose_secret(),
+            "external-sealed-material"
+        );
+
+        assert_eq!(
+            base.resolve_validated(&exact_access, &holder, binding.clone(), None)
+                .await
+                .unwrap_err(),
+            CredentialMaterialError::Unavailable,
+            "S2"
+        );
+        let other_binding = CredentialMaterialBinding::for_target(
+            "workspace-a",
+            &"https://other.example/mcp",
+            &exact_access.usage,
+        );
+        assert_eq!(
+            exact
+                .resolve_validated(&exact_access, &holder, other_binding, None)
+                .await
+                .unwrap_err(),
+            CredentialMaterialError::BindingMismatch,
+            "S3"
+        );
+        let bad_payload = access(&holder.trust_domain.0, u64::MAX, "sha256:tampered");
+        assert_eq!(
+            exact
+                .resolve_validated(&bad_payload, &holder, binding.clone(), None)
+                .await
+                .unwrap_err(),
+            CredentialMaterialError::PayloadMismatch,
+            "S4"
+        );
+        let wrong_return = base.clone().with_external_material_resolver(resolver(
+            binding.clone(),
+            "sha256:sealed-payload",
+            PlaintextHolder::new(PlaintextBoundary::Worker, "another-worker"),
+        ));
+        assert_eq!(
+            wrong_return
+                .resolve_validated(&exact_access, &holder, binding.clone(), None)
+                .await
+                .unwrap_err(),
+            CredentialMaterialError::ResolverMismatch,
+            "S5"
+        );
+        let expired = access(&holder.trust_domain.0, 0, "sha256:sealed-payload");
+        assert_eq!(
+            exact
+                .resolve_validated(&expired, &holder, binding.clone(), None)
+                .await
+                .unwrap_err(),
+            CredentialMaterialError::EnvelopeExpired,
+            "S6"
+        );
+        let wrong_recipient = access("another-worker", u64::MAX, "sha256:sealed-payload");
+        assert_eq!(
+            exact
+                .resolve_validated(&wrong_recipient, &holder, binding.clone(), None)
+                .await
+                .unwrap_err(),
+            CredentialMaterialError::RecipientMismatch,
+            "S7"
+        );
+        let worker_access = CredentialAccess::new(
+            exact_access.credential.clone(),
+            CredentialMaterialSource::WorkerReference,
+            exact_access.usage.clone(),
+            exact_access.policy.clone(),
+        );
+        let worker_resolved = exact
+            .resolve_validated(&worker_access, &holder, binding, None)
+            .await
+            .expect("S8 WorkerReference delegates through the same port");
+        assert_eq!(
+            worker_resolved.material.expose_secret(),
+            "external-sealed-material"
+        );
+
+        let provider_access = CredentialAccess::new(
+            exact_access.credential.clone(),
+            CredentialMaterialSource::ControlPlaneReference,
+            CredentialUsage::ProviderAdapter,
+            exact_access.policy.clone(),
+        )
+        .with_envelope(CredentialEnvelope::SealedForWorker {
+            envelope_ref: SealedCredentialEnvelopeRef {
+                id: "sealed-provider".into(),
+                payload_fingerprint: "sha256:provider-payload".into(),
+            },
+            recipient: holder.trust_domain.clone(),
+            expires_at_unix_ms: u64::MAX,
+        });
+        let endpoint = InferenceEndpoint {
+            adapter_kind: "anthropic".into(),
+            base_url: "https://provider.example".into(),
+            upstream_model: "model".into(),
+        };
+        let provider_ref = "anthropic@1";
+        let provider_binding = CredentialMaterialBinding::for_target(
+            "workspace-a",
+            &(provider_ref, &endpoint),
+            &provider_access.usage,
+        );
+        let provider_materializer = base.with_external_material_resolver(resolver(
+            provider_binding,
+            "sha256:provider-payload",
+            holder,
+        ));
+        let candidate = ResolvedModelCandidate::provider(
+            ModelBinding::new("anthropic", "model", "native"),
+            provider_ref,
+            "endpoint@1",
+            "workspace-a",
+            Some(provider_access),
+            endpoint,
+        );
+        assert_eq!(
+            provider_materializer
+                .materialize_provider(&candidate)
+                .await
+                .expect("S9 inference uses the same exact resolver")
+                .expose_secret(),
+            "external-sealed-material",
+            "S9"
+        );
     }
 
     /// Adapter-admission cause graph: published source -> installed source

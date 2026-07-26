@@ -1,12 +1,7 @@
-// Managed-API ACP × MCP × vault e2e: a session that selects an external ACP CLI
-// runtime (`awaken.runtime: acp:*`) AND declares an inline `mcp_servers` bound to a
-// vault credential has its staged MCP server projected — secretless — into the CLI's
-// `session/new` request. Proves the whole D6→D5 chain end to end through the HTTP
-// managed API: session mcp_servers → prepare_session staging (vault-materialized bearer)
-// → host-owned loopback relay (never the raw token) → `plugin_config.acp`
-// → the ProjectingChannelSource's `session/new` injection over the REAL ACP JSON-RPC
-// codec. The fake CLI echoes what it saw on `session/new`, so the assertion is on the
-// secretless route that actually crossed to the agent. `AWAKEN_MODEL_MODE=acp-managed-mcp`.
+// Managed-API ACP × MCP credential-boundary e2e. It proves two adjacent rules:
+// an authenticated MCP fails closed without provider no-bypass evidence, while an
+// anonymous MCP crosses the REAL ACP `session/new` codec as a route with no auth field.
+// A credential reference or plaintext bearer is never an ACP compatibility fallback.
 //
 // Run: (from e2e/)  node acp_managed_mcp_e2e.mjs
 
@@ -30,7 +25,7 @@ async function main() {
   // The host connects to this MCP server in-process at prepare (tool discovery +
   // pre-authorization), so it must be reachable even though the ACP CLI has its own
   // MCP client; the vault-materialized bearer remains in the host-owned relay.
-  const fixture = await startCalcFixture(CALC_TOKEN);
+  const fixture = await startCalcFixture(CALC_TOKEN, { allowAnonymous: true });
   try {
     await withServer('acp-managed-mcp', 38196, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
@@ -45,29 +40,49 @@ async function main() {
       });
       assert.ok(!JSON.stringify(cred).includes(CALC_TOKEN), 'the access token is never echoed');
 
-      // A session that BOTH selects the ACP CLI runtime and binds the MCP server.
-      const session = await client.beta.sessions.create({
+      // Cause-effect graph:
+      // C1 MCP has a credential -> C2 selected holder is Worker
+      // C2 + C3 provider proves no-bypass -> E1 realize relay
+      // C2 + !C3 -> E2 reject before materialization
+      // !C1 -> E3 project direct route with no ACP auth
+      //
+      // | Rule | C1 credential | C3 no-bypass | Result |
+      // | A1   | yes           | no           | reject |
+      // | A2   | no            | -            | route-only session/new |
+      // A provider-backed success rule is covered by the provider conformance slice;
+      // this composition intentionally installs the Workdir provider.
+      await assert.rejects(
+        client.beta.sessions.create({
+          agent: 'assistant',
+          metadata: { 'awaken.runtime': 'acp:fake-mcp' },
+          mcp_servers: [{ name: 'calc', type: 'url', url: fixture.url }],
+          vault_ids: [vault.id],
+          betas: BETAS,
+        }),
+        (error) => error?.status === 500 &&
+          error?.message?.includes('provider-enforced secret substitution and no-bypass networking'),
+        'A1: authenticated ACP MCP must fail closed without provider evidence',
+      );
+
+      const anonymous = await client.beta.sessions.create({
         agent: 'assistant',
         metadata: { 'awaken.runtime': 'acp:fake-mcp' },
         mcp_servers: [{ name: 'calc', type: 'url', url: fixture.url }],
-        vault_ids: [vault.id],
         betas: BETAS,
       });
-      await client.beta.sessions.events.send(session.id, {
+      await client.beta.sessions.events.send(anonymous.id, {
         events: [{ type: 'user.message', content: [{ type: 'text', text: 'hello' }] }],
         betas: BETAS,
       });
 
-      const texts = await agentTexts(client, session.id);
+      const texts = await agentTexts(client, anonymous.id);
       const reply = texts.join(' ');
-      // The fake CLI reports what crossed on `session/new`: the server name reached it,
-      // and its URL is the host-owned loopback relay, not the provider URL plus raw token.
       assert.ok(
-        texts.includes('mcp saw-calc host-relay'),
-        `session/new carried the MCP server through the host relay to the ACP CLI, got ${JSON.stringify(texts)}`,
+        texts.includes('mcp saw-calc noref'),
+        `A2: session/new carried the anonymous route without auth, got ${JSON.stringify(texts)}`,
       );
       assert.ok(!reply.includes(CALC_TOKEN), 'the raw vault token never reached the CLI');
-      pass('managed session (runtime acp:* + vault-bound mcp_servers) → host relay on session/new, secretless');
+      pass('authenticated ACP MCP fails closed; anonymous MCP reaches session/new without auth');
     });
 
     // Compose the real-CLI twin through the same external API without launching the
@@ -87,7 +102,7 @@ async function main() {
       pass('real ACP factory composes behind the managed API without a trusted-inline MCP path');
     });
 
-    console.log('E2E PASS: managed ACP × MCP host-relayed injection and real-CLI factory wiring.');
+    console.log('E2E PASS: managed ACP × MCP credential boundary and real-CLI factory wiring.');
     process.exitCode = 0;
   } catch (err) {
     console.error('E2E FAIL:', err);

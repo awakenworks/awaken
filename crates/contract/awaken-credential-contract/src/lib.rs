@@ -225,6 +225,25 @@ impl CredentialEnvelope {
         }
     }
 
+    /// Revalidate the transport binding immediately before material resolution.
+    /// Admission may have happened earlier; expiry and recipient are therefore
+    /// checked again at the material boundary.
+    pub fn validate_for_holder(
+        &self,
+        selected_holder: &PlaintextHolder,
+        now_unix_ms: u64,
+    ) -> Result<(), CredentialMaterialError> {
+        if self.recipient() != &selected_holder.trust_domain
+            || self.required_boundary() != selected_holder.boundary
+        {
+            return Err(CredentialMaterialError::RecipientMismatch);
+        }
+        if self.expires_at_unix_ms() <= now_unix_ms {
+            return Err(CredentialMaterialError::EnvelopeExpired);
+        }
+        Ok(())
+    }
+
     fn required_boundary(&self) -> PlaintextBoundary {
         match self {
             Self::SealedForWorker { .. } => PlaintextBoundary::Worker,
@@ -347,8 +366,12 @@ pub struct CredentialAccess {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refresh: Option<CredentialRefreshAccess>,
     pub policy: CredentialExecutionPolicy,
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "is_false")]
     legacy_direct: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Deserialize)]
@@ -365,6 +388,8 @@ struct CredentialAccessWire {
     refresh: Option<CredentialRefreshAccess>,
     #[serde(default)]
     policy: Option<CredentialExecutionPolicy>,
+    #[serde(default)]
+    legacy_direct: bool,
 }
 
 impl<'de> Deserialize<'de> for CredentialAccess {
@@ -375,7 +400,7 @@ impl<'de> Deserialize<'de> for CredentialAccess {
         use serde::de::Error as _;
 
         let wire = CredentialAccessWire::deserialize(deserializer)?;
-        let (material_source, legacy_direct) = match (wire.material_source, wire.injection) {
+        let (material_source, decoded_direct) = match (wire.material_source, wire.injection) {
             (Some(source), None) => (source, false),
             (None, Some(LegacyCredentialInjection::Reference)) => {
                 (CredentialMaterialSource::ControlPlaneReference, false)
@@ -408,7 +433,7 @@ impl<'de> Deserialize<'de> for CredentialAccess {
             usage: wire.usage,
             refresh: wire.refresh,
             policy,
-            legacy_direct,
+            legacy_direct: decoded_direct || wire.legacy_direct,
         })
     }
 }
@@ -476,6 +501,9 @@ impl CredentialAccess {
         {
             return Err(CredentialAdmissionError::MaterialSourceUnsupported);
         }
+        if self.envelope.is_some() && !capabilities.recipient_bound_envelopes {
+            return Err(CredentialAdmissionError::EnvelopeUnsupported);
+        }
         if let Some(envelope) = &self.envelope {
             if envelope.envelope_ref().id.trim().is_empty() {
                 return Err(CredentialAdmissionError::EnvelopeReferenceEmpty);
@@ -541,6 +569,8 @@ pub struct CredentialRealizationCapabilities {
     pub holders: BTreeSet<PlaintextHolder>,
     pub material_sources: BTreeSet<CredentialMaterialSource>,
     pub realization_kinds: BTreeSet<CredentialRealizationKind>,
+    #[serde(default)]
+    pub recipient_bound_envelopes: bool,
 }
 
 /// WorkerManifest capability namespace for one canonical credential realization
@@ -555,6 +585,7 @@ impl CredentialRealizationCapabilities {
         self.holders.is_empty()
             && self.material_sources.is_empty()
             && self.realization_kinds.is_empty()
+            && !self.recipient_bound_envelopes
     }
 
     /// Encode this evidence as one canonical Worker capability. Empty evidence
@@ -606,6 +637,8 @@ pub enum CredentialAdmissionError {
     HolderUnsupported,
     #[error("credential material source is unsupported")]
     MaterialSourceUnsupported,
+    #[error("recipient-bound credential envelopes are unsupported")]
+    EnvelopeUnsupported,
     #[error("sealed credential envelope reference is empty")]
     EnvelopeReferenceEmpty,
     #[error("sealed credential envelope payload fingerprint is empty")]
@@ -632,6 +665,46 @@ pub struct ResolvedCredentialMaterial {
     pub material: RedactedString,
 }
 
+/// Exact non-secret execution binding supplied to the material-source adapter.
+/// The fingerprint is computed from the authoritative consumer target together
+/// with its [`CredentialUsage`]; adapters compare it with recipient-bound sealed
+/// claims and never infer or enumerate a target.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CredentialMaterialBinding {
+    pub workspace_id: String,
+    pub target_use_fingerprint: String,
+}
+
+impl CredentialMaterialBinding {
+    #[must_use]
+    pub fn for_target<T: Serialize>(
+        workspace_id: impl Into<String>,
+        target: &T,
+        usage: &CredentialUsage,
+    ) -> Self {
+        Self {
+            workspace_id: workspace_id.into(),
+            target_use_fingerprint: awaken_agent_contract::stable_fingerprint(&(target, usage)),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), CredentialMaterialError> {
+        if self.workspace_id.trim().is_empty() || self.target_use_fingerprint.trim().is_empty() {
+            return Err(CredentialMaterialError::BindingMismatch);
+        }
+        Ok(())
+    }
+}
+
+/// One already-selected resolution request. This is the complete input to every
+/// Control reference, Worker-private, or recipient-bound envelope adapter.
+#[derive(Debug, Clone, Copy)]
+pub struct CredentialMaterialRequest<'a> {
+    pub access: &'a CredentialAccess,
+    pub selected_holder: &'a PlaintextHolder,
+    pub binding: &'a CredentialMaterialBinding,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CredentialMaterialError {
     #[error("credential material unavailable")]
@@ -642,15 +715,30 @@ pub enum CredentialMaterialError {
     RecipientMismatch,
     #[error("credential material envelope expired")]
     EnvelopeExpired,
+    #[error("credential material target binding mismatch")]
+    BindingMismatch,
+    #[error("credential material payload fingerprint mismatch")]
+    PayloadMismatch,
+    #[error("credential material resolver returned another credential or holder")]
+    ResolverMismatch,
 }
 
 /// Sole neutral source port for an already-selected exact credential access.
 #[async_trait]
 pub trait CredentialMaterialResolver: Send + Sync {
+    /// Exact material sources this adapter can resolve. Empty is fail-closed.
+    fn supported_material_sources(&self) -> BTreeSet<CredentialMaterialSource> {
+        BTreeSet::new()
+    }
+
+    /// Whether this adapter validates and opens recipient-bound envelope claims.
+    fn supports_recipient_bound_envelopes(&self) -> bool {
+        false
+    }
+
     async fn resolve_exact(
         &self,
-        access: &CredentialAccess,
-        selected_holder: &PlaintextHolder,
+        request: CredentialMaterialRequest<'_>,
     ) -> Result<ResolvedCredentialMaterial, CredentialMaterialError>;
 }
 
@@ -683,6 +771,7 @@ mod tests {
             holders: BTreeSet::from([holder]),
             material_sources: BTreeSet::from([CredentialMaterialSource::WorkerReference]),
             realization_kinds: BTreeSet::from([CredentialRealizationKind::WorkerProviderAdapter]),
+            recipient_bound_envelopes: true,
         };
         let encoded = exact
             .manifest_capability()
@@ -797,6 +886,7 @@ mod tests {
             holders: BTreeSet::from([selected.clone()]),
             material_sources: BTreeSet::from([CredentialMaterialSource::ControlPlaneReference]),
             realization_kinds: BTreeSet::from([CredentialRealizationKind::WorkerProviderAdapter]),
+            recipient_bound_envelopes: true,
         }
     }
 
@@ -1033,7 +1123,8 @@ mod tests {
 
     /// Cause-effect graph for the recipient-bound envelope gate:
     ///
-    /// C1 envelope reference is nonempty
+    /// C0 installed adapter supports recipient-bound envelopes
+    ///  -> C1 envelope reference is nonempty
     ///  -> C2 payload fingerprint is nonempty
     ///  -> C3 recipient trust domain and boundary match the selected holder
     ///  -> C4 expiry is strictly after admission time
@@ -1043,13 +1134,14 @@ mod tests {
     /// prevents an empty opaque handle or an unverified payload identity from
     /// being treated as sealed transport evidence.
     ///
-    /// | Rule | C1 | C2 | C3 | C4 | Result |
-    /// |---|---|---|---|---|---|
-    /// | S1 | T | T | T | T | admitted |
-    /// | S2 | F | - | - | - | empty reference |
-    /// | S3 | T | F | - | - | empty fingerprint |
-    /// | S4 | T | T | F | - | recipient mismatch |
-    /// | S5 | T | T | T | F | expired at boundary |
+    /// | Rule | C0 | C1 | C2 | C3 | C4 | Result |
+    /// |---|---|---|---|---|---|---|
+    /// | S1 | T | T | T | T | T | admitted |
+    /// | S2 | T | F | - | - | - | empty reference |
+    /// | S3 | T | T | F | - | - | empty fingerprint |
+    /// | S4 | T | T | T | F | - | recipient mismatch |
+    /// | S5 | T | T | T | T | F | expired at boundary |
+    /// | S6 | F | - | - | - | - | unsupported adapter |
     #[test]
     fn sealed_envelope_admission_follows_the_decision_table() {
         struct Rule {
@@ -1058,6 +1150,7 @@ mod tests {
             fingerprint: &'static str,
             recipient: &'static str,
             expiry: u64,
+            adapter_support: bool,
             expected: Result<(), CredentialAdmissionError>,
         }
 
@@ -1068,6 +1161,7 @@ mod tests {
                 fingerprint: "sha256:payload",
                 recipient: "worker-a",
                 expiry: 11,
+                adapter_support: true,
                 expected: Ok(()),
             },
             Rule {
@@ -1076,6 +1170,7 @@ mod tests {
                 fingerprint: "sha256:payload",
                 recipient: "worker-a",
                 expiry: 11,
+                adapter_support: true,
                 expected: Err(CredentialAdmissionError::EnvelopeReferenceEmpty),
             },
             Rule {
@@ -1084,6 +1179,7 @@ mod tests {
                 fingerprint: " ",
                 recipient: "worker-a",
                 expiry: 11,
+                adapter_support: true,
                 expected: Err(CredentialAdmissionError::EnvelopeFingerprintEmpty),
             },
             Rule {
@@ -1092,6 +1188,7 @@ mod tests {
                 fingerprint: "sha256:payload",
                 recipient: "worker-b",
                 expiry: 11,
+                adapter_support: true,
                 expected: Err(CredentialAdmissionError::EnvelopeRecipientMismatch),
             },
             Rule {
@@ -1100,7 +1197,17 @@ mod tests {
                 fingerprint: "sha256:payload",
                 recipient: "worker-a",
                 expiry: 10,
+                adapter_support: true,
                 expected: Err(CredentialAdmissionError::EnvelopeExpired),
+            },
+            Rule {
+                id: "S6",
+                reference: "envelope-1",
+                fingerprint: "sha256:payload",
+                recipient: "worker-a",
+                expiry: 11,
+                adapter_support: false,
+                expected: Err(CredentialAdmissionError::EnvelopeUnsupported),
             },
         ];
 
@@ -1116,11 +1223,13 @@ mod tests {
                     expires_at_unix_ms: rule.expiry,
                 },
             );
+            let mut installed = capabilities(&selected);
+            installed.recipient_bound_envelopes = rule.adapter_support;
             let actual = access
                 .admit(
                     &selected,
                     CredentialRealizationKind::WorkerProviderAdapter,
-                    &capabilities(&selected),
+                    &installed,
                     10,
                 )
                 .map(|_| ());
@@ -1204,12 +1313,36 @@ mod tests {
             }
         }))
         .unwrap();
-        assert!(
-            serde_json::to_value(&decoded)
-                .unwrap()
-                .get("injection")
-                .is_none()
+        let persisted = serde_json::to_value(&decoded).unwrap();
+        assert!(persisted.get("injection").is_none());
+        assert_eq!(
+            persisted.get("legacy_direct"),
+            Some(&serde_json::Value::Bool(true))
         );
-        decoded
+        serde_json::from_value(persisted).expect("decode-only Direct provenance survives storage")
+    }
+
+    /// Cause-effect graph: legacy Direct wire value -> decode-only provenance
+    /// -> serialization/persistence -> decode -> admission rejection. Losing the
+    /// provenance at either serde edge would turn Direct into a Control reference.
+    ///
+    /// | Rule | Direct input | Persistence round trip | Result |
+    /// |---|---|---|---|
+    /// | D1 | T | T | DirectPublicationRejected |
+    #[test]
+    fn legacy_direct_provenance_survives_persistence_and_remains_rejected() {
+        let selected = holder(PlaintextBoundary::Worker, "worker-a");
+        let access = legacy_direct_access(&selected);
+        assert_eq!(
+            access
+                .admit(
+                    &selected,
+                    CredentialRealizationKind::WorkerProviderAdapter,
+                    &capabilities(&selected),
+                    10,
+                )
+                .unwrap_err(),
+            CredentialAdmissionError::DirectPublicationRejected
+        );
     }
 }

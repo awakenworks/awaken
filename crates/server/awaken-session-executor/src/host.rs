@@ -155,6 +155,9 @@ pub struct SharedHost {
     /// Provider for the Session-owned environment shared by Native/ACP/children.
     /// Kept separate from deliberately-fresh housekeeping sandboxes.
     pub(crate) session_provider: crate::session_environment::SessionEnvironmentProvider,
+    /// The composition root installed the authoritative Session provider. ACP
+    /// assembly must reuse it instead of constructing a deployment-derived peer.
+    pub(crate) session_provider_explicit: bool,
     pub(crate) judge_snapshot: Option<ExecutableAgentSnapshot>,
     pub(crate) client_tools: HashSet<String>,
     /// The skill offering (ADR-0036): the static configured set, the optional durable
@@ -224,17 +227,6 @@ pub struct SharedHost {
     /// host wiring plus Resource/credential ports, so installing it cannot create
     /// an `Arc<SharedHost>` cycle or a second Vault/materialization path.
     pub(crate) dispatch_session_runtime: std::sync::RwLock<Option<crate::DispatchSessionRuntime>>,
-    /// Per-thread network-egress denial, set by a session's `prepare_session` from its
-    /// environment's networking policy. A thread with no entry (or `false`) shares the
-    /// host network; `true` runs its `bash` under a `bwrap --unshare-net` namespace
-    /// with no egress. A shared handle, so a sandboxed ACP channel source can follow
-    /// the same registrations (see [`crate::SandboxChannelSource`]).
-    pub(crate) thread_egress: crate::sandbox_source::ThreadEgress,
-    /// Per-thread sandbox overlay (isolation/network/limits), set by `prepare_session`
-    /// from the session environment's `config.sandbox`. A thread with no entry keeps the
-    /// host's synthesized spec. A shared handle so both `sandbox_spec` and a sandboxed
-    /// ACP channel source apply the SAME environment override (see [`crate::SandboxChannelSource`]).
-    pub(crate) thread_sandbox: crate::sandbox_source::ThreadSandbox,
     /// Content-addressed blob store backing the Files API, file-resource mounts, and
     /// collected artifacts. In-memory by default (one server process).
     pub(crate) file_store: Arc<dyn FileStore>,

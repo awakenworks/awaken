@@ -164,8 +164,15 @@ async function main() {
         scope_id: credential.json.workspace_id,
         credential: {
           credential: { id: credential.json.id, revision: credential.json.version },
-          injection: 'reference',
+          material_source: 'control_plane_reference',
           usage: { type: 'provider_adapter' },
+          policy: {
+            allowed_plaintext_holders: [
+              { boundary: 'worker', trust_domain: 'awaken.worker' },
+              { boundary: 'workload', trust_domain: 'awaken.workload.acp' },
+            ],
+            model_exposure: 'forbidden',
+          },
         },
         endpoint: {
           adapter_kind: 'anthropic',
@@ -176,6 +183,9 @@ async function main() {
     };
     dispatch.activation.snapshot.resolved_spec.model_binding = publishedCandidate;
     dispatch.activation.snapshot.resolved_spec.model_candidates = [];
+    dispatch.inference_plaintext_holder = {
+      boundary: 'worker', trust_domain: 'awaken.worker',
+    };
     dispatch.placement.required_capabilities = ['credential-source/v1', 'native-runtime'];
 
     // The same production Worker must fail closed for malformed or stale pins
@@ -221,20 +231,30 @@ async function main() {
         provisioning: {
           ...structuredClone(publishedCandidate.provisioning),
           credential: {
-            ...structuredClone(publishedCandidate.provisioning.credential),
+            credential: structuredClone(
+              publishedCandidate.provisioning.credential.credential,
+            ),
             injection: 'direct',
+            usage: structuredClone(publishedCandidate.provisioning.credential.usage),
+            policy: structuredClone(publishedCandidate.provisioning.credential.policy),
           },
         },
       },
     ];
     for (const [index, candidate] of invalidCandidates.entries()) {
+      if (candidate.provisioning.endpoint.upstream_model !== '') {
+        candidate.provisioning.endpoint.upstream_model = `invalid-${index}`;
+      }
       const invalid = structuredClone(dispatch);
       const thread = `${THREAD}-invalid-${index}`;
       invalid.activation.run_id = `${claimed.request.activation.run_id}-invalid-${index}`;
       invalid.activation.thread_id = thread;
       invalid.session_thread_id = thread;
       invalid.activation.snapshot.resolved_spec.model_binding = candidate;
-      assert.equal((await request('POST', '/v1/worker/dispatch/enqueue', { request: invalid }, seed.id)).status, 200);
+      const invalidEnqueue = await request(
+        'POST', '/v1/worker/dispatch/enqueue', { request: invalid }, seed.id,
+      );
+      assert.equal(invalidEnqueue.status, 200, invalidEnqueue.text);
     }
     assert.equal((await request('POST', '/v1/worker/dispatch/enqueue', { request: dispatch }, seed.id)).status, 200);
     const settled = await request('POST', '/v1/worker/dispatch/settle', {
@@ -275,7 +295,11 @@ async function main() {
     });
     assert.equal(messages.filter((message: any) => String(message.text ?? '').includes('FAKE:seed activation')).length, 1);
     assert.ok(!output.includes(PROVIDER_KEY), 'plaintext provider credential never entered worker logs');
-    assert.equal(upstream.requests.length, 1, 'only the valid pin reached the provider endpoint');
+    assert.equal(
+      upstream.requests.length,
+      1,
+      `only the valid pin reached the provider endpoint: ${JSON.stringify(upstream.requests)}`,
+    );
     console.log('CREDENTIAL MATERIALIZATION WORKER TS E2E PASS: production worker opened credential stores, injected the exact pinned revision, called the pinned endpoint, and committed once.');
   } finally {
     if (worker) await stopServer(worker).catch(() => {});
