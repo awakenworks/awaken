@@ -228,8 +228,12 @@ async fn resume_step(
     let result = tool_results
         .iter()
         .find(|r| r.tool_call_id == pending.tool_use_id)
-        .or_else(|| tool_results.first())
-        .ok_or_else(|| DriverError::BadRequest("no tool result for the awaiting tool".into()))?;
+        .ok_or_else(|| {
+            DriverError::BadRequest(format!(
+                "no tool result matches the awaiting tool {}",
+                pending.tool_use_id
+            ))
+        })?;
     let resume = to_resume(&result.content, result.error.as_deref(), &pending);
     rt.resume(thread, &pending.tool_use_id, resume).await
 }

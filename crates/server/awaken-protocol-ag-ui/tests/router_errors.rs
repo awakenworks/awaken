@@ -2,6 +2,7 @@
 //! run is awaiting must produce a RUN_ERROR, not a silent success.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use awaken_agent_contract::agent::message::Message;
 use awaken_protocol_transport::{
@@ -171,6 +172,101 @@ async fn a_matching_tool_result_resumes_an_awaiting_run_to_completion() {
     assert!(!types.contains(&"RUN_ERROR".to_string()), "{types:?}");
 }
 
+/// Resume correlation behavior:
+///
+/// ```text
+/// awaiting(c1) + result(c1) -> resume(c1) -> RUN_FINISHED
+/// awaiting(c1) + result(c2) -> reject     -> RUN_ERROR
+///                                      \-> runtime.resume is never called
+/// ```
+///
+/// | awaiting id | supplied ids | resume called | terminal event |
+/// |--------------|--------------|---------------|----------------|
+/// | c1           | c1           | yes           | RUN_FINISHED   |
+/// | c1           | c2           | no            | RUN_ERROR      |
+///
+/// The second row prevents a different tool result from being substituted merely
+/// because it is first in the request. Identity is behavior, not DTO shape.
+struct ExactResumeRuntime {
+    resumed: Arc<AtomicBool>,
+}
+
+#[async_trait::async_trait]
+impl ProtocolRuntime for ExactResumeRuntime {
+    async fn run(
+        &self,
+        _thread: &str,
+        _agent: Option<String>,
+        _messages: Vec<Message>,
+    ) -> Result<StepOutcome, DriverError> {
+        unreachable!("this test drives only resume")
+    }
+
+    async fn resume(
+        &self,
+        _thread: &str,
+        _tool_use_id: &str,
+        _resume: Resume,
+    ) -> Result<StepOutcome, DriverError> {
+        self.resumed.store(true, Ordering::SeqCst);
+        Ok(StepOutcome::default())
+    }
+
+    async fn pending(&self, _thread: &str) -> Option<Pending> {
+        Some(Pending {
+            tool_use_id: "c1".into(),
+            name: "write".into(),
+            input: Value::Null,
+            client_executed: false,
+        })
+    }
+
+    async fn history(&self, _thread: &str) -> Vec<Message> {
+        Vec::new()
+    }
+
+    fn model(&self) -> String {
+        "test".into()
+    }
+}
+
+#[tokio::test]
+async fn a_non_matching_tool_result_cannot_resume_the_awaiting_tool() {
+    let resumed = Arc::new(AtomicBool::new(false));
+    let app = awaken_protocol_ag_ui::router::router(Arc::new(ExactResumeRuntime {
+        resumed: resumed.clone(),
+    }));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ag-ui")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "threadId": "t1",
+                        "runId": "r1",
+                        "messages": [
+                            { "role": "tool", "toolCallId": "c2", "content": "wrong result" }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let text = String::from_utf8(bytes.to_vec()).unwrap();
+
+    assert!(text.contains("RUN_ERROR"), "{text}");
+    assert!(!text.contains("RUN_FINISHED"), "{text}");
+    assert!(
+        !resumed.load(Ordering::SeqCst),
+        "a mismatched result must not invoke runtime.resume"
+    );
+}
+
 #[tokio::test]
 async fn the_scoped_agent_route_streams_a_fresh_turn() {
     let app = awaken_protocol_ag_ui::router::router(Arc::new(NoAwaitingRuntime));
@@ -196,8 +292,6 @@ async fn the_scoped_agent_route_streams_a_fresh_turn() {
         .collect();
     assert!(types.contains(&"RUN_FINISHED".to_string()), "{types:?}");
 }
-
-use std::sync::atomic::{AtomicBool, Ordering};
 
 /// A runtime awaiting on a built-in tool that records whether it was resumed denied.
 struct DenyRecordingRuntime {
