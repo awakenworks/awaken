@@ -39,11 +39,11 @@ impl CapabilityReader for FakeCaps {
 /// Records the last environment authored, so a test can assert the tool persisted it.
 #[derive(Default)]
 struct FakeEnvAuthor {
-    last: std::sync::Mutex<Option<(String, serde_json::Value)>>,
+    last: std::sync::Mutex<Option<(String, EnvironmentDraft)>>,
 }
 #[async_trait]
 impl EnvironmentAuthor for FakeEnvAuthor {
-    async fn create(&self, name: &str, config: serde_json::Value) -> Result<String, String> {
+    async fn create(&self, name: &str, config: EnvironmentDraft) -> Result<String, String> {
         *self.last.lock().unwrap() = Some((name.to_string(), config));
         Ok("env_test_0".to_string())
     }
@@ -849,7 +849,9 @@ async fn draft_environment_assembles_and_persists_the_config() {
     // | placement   | official options | unknown policy | outcome                 |
     // | cloud       | present          | absent         | exact cloud config      |
     // | self_hosted | absent           | absent         | exact self-hosted config|
-    // | self_hosted | absent           | present        | typed error; no persist |
+    // | self_hosted | present          | absent         | cross-field error; no persist |
+    // | cloud       | malformed/unknown| absent         | typed error; no persist |
+    // | either      | valid/absent      | present        | typed error; no persist |
     let author = Arc::new(FakeEnvAuthor::default());
     let tool = DraftEnvironment {
         author: author.clone(),
@@ -872,6 +874,7 @@ async fn draft_environment_assembles_and_persists_the_config() {
     assert!(!out.is_error, "created ok: {out:?}");
     let (name, config) = author.last.lock().unwrap().clone().expect("authored");
     assert_eq!(name, "cloud-box");
+    let config = serde_json::to_value(config).unwrap();
     assert_eq!(config["type"], "cloud");
     assert_eq!(config["networking"]["type"], "limited");
     assert_eq!(config["packages"]["npm"][0], "typescript");
@@ -885,7 +888,7 @@ async fn draft_environment_assembles_and_persists_the_config() {
         .unwrap();
     assert!(!out2.is_error);
     let (_, config2) = author.last.lock().unwrap().clone().unwrap();
-    assert_eq!(config2, serde_json::json!({ "type": "self_hosted" }));
+    assert_eq!(config2, EnvironmentDraft::SelfHosted);
 
     *author.last.lock().unwrap() = None;
     let rejected = tool
@@ -908,6 +911,49 @@ async fn draft_environment_assembles_and_persists_the_config() {
         author.last.lock().unwrap().is_none(),
         "rejected wire input must not author an Environment"
     );
+
+    // The remaining negative rows prove both typed nested admission and the
+    // cross-field placement rule fail before the EnvironmentAuthor port.
+    for (rule, arguments) in [
+        (
+            "self-hosted-with-network",
+            serde_json::json!({
+                "name": "bad-self-hosted",
+                "placement": "self_hosted",
+                "networking": { "type": "unrestricted" }
+            }),
+        ),
+        (
+            "unknown-network-field",
+            serde_json::json!({
+                "name": "bad-network",
+                "placement": "cloud",
+                "networking": { "type": "limited", "proxy": "implicit" }
+            }),
+        ),
+        (
+            "invalid-package-list",
+            serde_json::json!({
+                "name": "bad-packages",
+                "placement": "cloud",
+                "packages": { "npm": "typescript" }
+            }),
+        ),
+    ] {
+        let rejected = tool
+            .invoke(ToolCall {
+                call_id: rule.into(),
+                tool_id: CREATE_ENV_TOOL.into(),
+                arguments,
+            })
+            .await
+            .unwrap();
+        assert!(rejected.is_error, "{rule}");
+        assert!(
+            author.last.lock().unwrap().is_none(),
+            "{rule}: rejected input must have no Environment side effect"
+        );
+    }
 }
 
 #[test]

@@ -167,8 +167,14 @@ impl EnvironmentStateAuthor {
 
 #[async_trait]
 impl EnvironmentAuthor for EnvironmentStateAuthor {
-    async fn create(&self, name: &str, config: serde_json::Value) -> Result<String, String> {
-        self.env_state.author(name, config).await
+    async fn create(
+        &self,
+        name: &str,
+        config: awaken_admin_assistant::EnvironmentDraft,
+    ) -> Result<String, String> {
+        let wire = serde_json::to_value(config)
+            .map_err(|error| format!("Environment draft serialization failed: {error}"))?;
+        self.env_state.author(name, wire).await
     }
 }
 

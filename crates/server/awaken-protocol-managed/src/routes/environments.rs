@@ -216,7 +216,18 @@ impl EnvironmentState {
     pub async fn author(&self, name: &str, config: serde_json::Value) -> Result<String, String> {
         let typed = serde_json::from_value::<EnvironmentConfigParams>(config)
             .map_err(|error| format!("invalid Environment config: {error}"))?;
-        let config = canonical_environment_config(typed);
+        Ok(self
+            .author_config(name, canonical_environment_config(typed))
+            .await)
+    }
+
+    /// Persist an already-admitted canonical Environment config through the same
+    /// registry/work side effects as the HTTP route.
+    pub async fn author_config(
+        &self,
+        name: &str,
+        config: awaken_session_contract::env_registry::EnvironmentConfig,
+    ) -> String {
         let item = self
             .envs
             .create_scoped(
@@ -228,7 +239,7 @@ impl EnvironmentState {
             )
             .await;
         self.work.enqueue_healthcheck(&item.id).await;
-        Ok(item.id)
+        item.id
     }
 
     /// Whether `env_id` is a self-hosted environment. Sessions assigned to one are

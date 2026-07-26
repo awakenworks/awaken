@@ -257,9 +257,59 @@ pub trait DraftStore: Send + Sync {
 /// The impl lives at the composition root, which owns the `EnvironmentState`.
 #[async_trait]
 pub trait EnvironmentAuthor: Send + Sync {
-    /// Create an environment named `name` with the given opaque `config` blob
-    /// (`{type, runtime?, sandbox?}`). Returns the new environment id.
-    async fn create(&self, name: &str, config: serde_json::Value) -> Result<String, String>;
+    /// Create an environment from the closed, secret-free authoring command.
+    async fn create(&self, name: &str, config: EnvironmentDraft) -> Result<String, String>;
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum EnvironmentDraft {
+    Cloud {
+        networking: AdminEnvironmentNetworking,
+        packages: AdminEnvironmentPackages,
+    },
+    SelfHosted,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AdminEnvironmentNetworking {
+    #[default]
+    Unrestricted,
+    Limited {
+        #[serde(default)]
+        allowed_hosts: Vec<String>,
+        #[serde(default)]
+        allow_mcp_servers: bool,
+        #[serde(default)]
+        allow_package_managers: bool,
+    },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdminEnvironmentPackages {
+    #[serde(rename = "type", default)]
+    pub kind: AdminEnvironmentPackagesKind,
+    #[serde(default)]
+    pub apt: Vec<String>,
+    #[serde(default)]
+    pub cargo: Vec<String>,
+    #[serde(default)]
+    pub gem: Vec<String>,
+    #[serde(default)]
+    pub go: Vec<String>,
+    #[serde(default)]
+    pub npm: Vec<String>,
+    #[serde(default)]
+    pub pip: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdminEnvironmentPackagesKind {
+    #[default]
+    Packages,
 }
 
 /// A structured record of one mutating management operation (ADR-0052 D6). Read-only
@@ -526,8 +576,30 @@ pub fn admin_tool_descriptors() -> Vec<ToolDescriptor> {
                 "properties": {
                     "name": { "type": "string", "description": "A short environment name." },
                     "placement": { "type": "string", "enum": ["cloud", "self_hosted"], "description": "Where the worker runs; default self_hosted." },
-                    "networking": { "type": "object", "description": "Official cloud networking union; invalid for self_hosted." },
-                    "packages": { "type": "object", "description": "Official cloud package lists; invalid for self_hosted." }
+                    "networking": {
+                        "type": "object",
+                        "description": "Official cloud networking union; invalid for self_hosted.",
+                        "properties": {
+                            "type": { "type": "string", "enum": ["unrestricted", "limited"] },
+                            "allowed_hosts": { "type": "array", "items": { "type": "string" } },
+                            "allow_mcp_servers": { "type": "boolean" },
+                            "allow_package_managers": { "type": "boolean" }
+                        },
+                        "required": ["type"]
+                    },
+                    "packages": {
+                        "type": "object",
+                        "description": "Official cloud package lists; invalid for self_hosted.",
+                        "properties": {
+                            "type": { "type": "string", "enum": ["packages"] },
+                            "apt": { "type": "array", "items": { "type": "string" } },
+                            "cargo": { "type": "array", "items": { "type": "string" } },
+                            "gem": { "type": "array", "items": { "type": "string" } },
+                            "go": { "type": "array", "items": { "type": "string" } },
+                            "npm": { "type": "array", "items": { "type": "string" } },
+                            "pip": { "type": "array", "items": { "type": "string" } }
+                        }
+                    }
                 },
                 "required": ["name"]
             }),
@@ -584,11 +656,18 @@ struct DraftEnvironment {
 struct DraftEnvArgs {
     name: String,
     #[serde(default)]
-    placement: Option<String>,
+    placement: Option<EnvironmentPlacement>,
     #[serde(default)]
-    networking: Option<serde_json::Value>,
+    networking: Option<AdminEnvironmentNetworking>,
     #[serde(default)]
-    packages: Option<serde_json::Value>,
+    packages: Option<AdminEnvironmentPackages>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum EnvironmentPlacement {
+    Cloud,
+    SelfHosted,
 }
 
 #[async_trait]
@@ -603,17 +682,23 @@ impl RawTool for DraftEnvironment {
                 Ok(args) => args,
                 Err(output) => return Ok(output),
             };
-        // Assemble only the official Environment union. The real author adapter
-        // validates it through the same canonicalizer as POST /v1/environments.
-        let mut config = serde_json::json!({
-            "type": args.placement.as_deref().unwrap_or("self_hosted"),
-        });
-        if let Some(networking) = &args.networking {
-            config["networking"] = networking.clone();
-        }
-        if let Some(packages) = &args.packages {
-            config["packages"] = packages.clone();
-        }
+        let config = match args.placement.unwrap_or(EnvironmentPlacement::SelfHosted) {
+            EnvironmentPlacement::Cloud => EnvironmentDraft::Cloud {
+                networking: args.networking.unwrap_or_default(),
+                packages: args.packages.unwrap_or_default(),
+            },
+            EnvironmentPlacement::SelfHosted
+                if args.networking.is_none() && args.packages.is_none() =>
+            {
+                EnvironmentDraft::SelfHosted
+            }
+            EnvironmentPlacement::SelfHosted => {
+                return Ok(ToolOutput::error(
+                    call.call_id,
+                    "networking and packages are valid only for cloud environments",
+                ));
+            }
+        };
         audit(
             &self.store,
             &self.audit,
