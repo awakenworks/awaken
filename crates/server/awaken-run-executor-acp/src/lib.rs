@@ -32,9 +32,9 @@ use awaken_agent_contract::agent::state::{
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_protocol_acp::{
-    AcpError, AcpFailure, AgentEvent, AllowAll, AppendError, Injection, LaunchSink, PermissionAsk,
-    PermissionResolver, PermissionVerdict, RawAcpError, RunFactAppender, Stage, SupervisePolicy,
-    Supervisor, TerminationReason, TurnConfig, classify_error,
+    AcpError, AcpFailure, AcpProjectedEvent, AllowAll, AppendError, Injection, LaunchSink,
+    PermissionAsk, PermissionResolver, PermissionVerdict, RawAcpError, RunFactAppender, Stage,
+    SupervisePolicy, Supervisor, TerminationReason, TurnConfig, classify_error,
 };
 // Re-exported (not just `use`d) so a host composition root selects the wire and
 // observes agent bring-up without a direct dependency on the protocol crate. The
@@ -1194,7 +1194,7 @@ impl RunFactAppender for CollectingAppender {
     async fn append(
         &mut self,
         seq: u64,
-        event: &AgentEvent,
+        event: &AcpProjectedEvent,
     ) -> std::result::Result<(), AppendError> {
         use awaken_agent_contract::agent::content::ContentBlock;
 
@@ -1206,7 +1206,7 @@ impl RunFactAppender for CollectingAppender {
         }
         self.last = seq;
         match event {
-            AgentEvent::Message { text } => match self.open_text_message {
+            AcpProjectedEvent::Message { text } => match self.open_text_message {
                 Some(index) => match self.messages[index].content.last_mut() {
                     Some(ContentBlock::Text { text: buffered }) => buffered.push_str(text),
                     _ => unreachable!("open ACP text message must end in a text block"),
@@ -1220,7 +1220,7 @@ impl RunFactAppender for CollectingAppender {
                     self.open_text_message = Some(self.messages.len() - 1);
                 }
             },
-            AgentEvent::ToolCall { id, name, input } => {
+            AcpProjectedEvent::ToolCall { id, name, input } => {
                 self.open_text_message = None;
                 self.messages.push(Message {
                     id: MessageId(format!("acp-{seq}")),
@@ -1232,7 +1232,7 @@ impl RunFactAppender for CollectingAppender {
                     )],
                 });
             }
-            AgentEvent::ToolResult {
+            AcpProjectedEvent::ToolResult {
                 id,
                 content,
                 is_error,
@@ -1254,7 +1254,7 @@ impl RunFactAppender for CollectingAppender {
                     )],
                 });
             }
-            AgentEvent::Usage {
+            AcpProjectedEvent::Usage {
                 prompt_tokens,
                 completion_tokens,
                 cache_read_tokens,
@@ -1267,7 +1267,7 @@ impl RunFactAppender for CollectingAppender {
                     cache_creation_tokens: *cache_creation_tokens,
                 });
             }
-            AgentEvent::TurnEnd { .. } => self.open_text_message = None,
+            AcpProjectedEvent::TurnEnd { .. } => self.open_text_message = None,
         }
         Ok(())
     }
