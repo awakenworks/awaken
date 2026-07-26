@@ -552,3 +552,16 @@ dispatch composition; production runtime diagnostics refer only to typed
 The E2E exercises K4 against the production composition. It no longer asks a
 scenario host to infer durable management mode from an old environment variable,
 and explicitly proves that the removed key variable cannot bypass typed parsing.
+
+## Phase 26: restart-safe scenario port ownership
+
+| Rule | Preferred port | Availability at reservation | Restart | Expected |
+|---|---|---|---|---|
+| P1 | free | free | same process test | reserve P1 and reuse across boots |
+| P2 | occupied | occupied | same process test | reserve one OS-assigned port and reuse |
+| P3 | reserved port | becomes occupied by unrelated process | next boot | fail closed with child exit evidence |
+
+The MCP recovery fixture now consumes the harness's single availability resolver
+before its three-boot sequence. It also drops ignored `AWAKEN_MGMT_*` metadata;
+the isolated scenario HOME owns management persistence and the separately named
+Session deployment root owns runtime persistence.
