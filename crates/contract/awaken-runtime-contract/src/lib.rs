@@ -35,14 +35,15 @@ pub use control::LiveRunControl;
 pub use credential::{
     AttemptCredentialBinding, AttemptCredentialBindingError, AttemptCredentialRealization,
     CandidateFingerprint, CredentialAccess, CredentialAdmissionError, CredentialEnvelope,
-    CredentialExecutionPolicy, CredentialMaterialBinding, CredentialMaterialError,
-    CredentialMaterialRequest, CredentialMaterialResolver, CredentialMaterialSource,
+    CredentialExecutionPolicy, CredentialMaterial, CredentialMaterialBinding,
+    CredentialMaterialError, CredentialMaterialRequest, CredentialMaterialResolver,
+    CredentialMaterialSource, CredentialObservation, CredentialObservationState,
     CredentialRealizationCapabilities, CredentialRealizationKind, CredentialRealizationPlan,
     CredentialRealizationProfile, CredentialRealizationReceipt, CredentialRealizationRecordError,
     CredentialRealizationRecorder, CredentialReceiptError, CredentialRef, CredentialRefreshAccess,
-    CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
-    ResolvedCredentialMaterial, SealedCredentialEnvelopeRef, TokenEndpointAuth, TrustDomainRef,
-    candidate_fingerprint, compile_candidate_credential_bindings,
+    CredentialUsage, ModelExposurePolicy, OAuthCredentialMaterial, PlaintextBoundary,
+    PlaintextHolder, ResolvedCredentialMaterial, SealedCredentialEnvelopeRef, TokenEndpointAuth,
+    TrustDomainRef, candidate_fingerprint, compile_candidate_credential_bindings,
     verify_credential_realization_receipt,
 };
 pub use data_subject::{

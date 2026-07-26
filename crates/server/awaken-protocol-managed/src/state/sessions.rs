@@ -529,7 +529,6 @@ impl ManagedState {
         for (index, resource) in resources.iter().enumerate() {
             let repository_id = if let ParsedInputTarget::Repository {
                 remote_url,
-                authorization_token,
                 initial_branch,
             } = &resource.target
             {
@@ -539,27 +538,6 @@ impl ManagedState {
                     ))
                 })?;
                 let repository_id = format!("managed:{id}:repository:{index}");
-                let credential_binding = match authorization_token {
-                    Some(token) => {
-                        let vaults = self.vaults.as_ref().ok_or_else(|| {
-                            StateError::Run(RunError::bad_request(
-                                "repository authorization requires a configured credential vault",
-                            ))
-                        })?;
-                        Some(
-                            vaults
-                                .enter_session_bearer(&owner_scope, token.clone())
-                                .await
-                                .map_err(|error| {
-                                    StateError::Run(RunError::bad_request(format!(
-                                        "repository credential could not be stored: {error}"
-                                    )))
-                                })?
-                                .0,
-                        )
-                    }
-                    None => None,
-                };
                 catalog
                     .create_repository(
                         awaken_resource_contract::RepositoryDefinition {
@@ -577,7 +555,7 @@ impl ManagedState {
                             repository_id: repository_id.clone().into(),
                             version: awaken_resource_contract::ConfigVersion::INITIAL,
                             remote_url: remote_url.clone(),
-                            credential_binding,
+                            credential_binding: None,
                             initial_branch: initial_branch.clone(),
                             clone_policy: awaken_resource_contract::ClonePolicy::default(),
                         },

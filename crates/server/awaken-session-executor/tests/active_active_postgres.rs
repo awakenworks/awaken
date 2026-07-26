@@ -114,7 +114,7 @@ fn configured_worker() -> (WorkerIdentity, Arc<dyn WorkerDirectory>) {
             capability_fingerprint: manifest.fingerprint().expect("manifest fingerprint"),
             manifest,
             in_flight: 0,
-            available_credentials: Default::default(),
+            credential_observations: Default::default(),
             expires_at_ms: u64::MAX,
         },
         heartbeat_sequence: 1,

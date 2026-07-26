@@ -82,72 +82,10 @@ pub async fn open_inference_materialization_stores(
     }
 }
 
-/// Ephemeral in-process stores (dev / e2e default): a worker sharing an in-memory
-/// deployment resolves models from the same process-global stores an all-in-one
-/// server would — empty until a model is authored, so a run falls back to the
-/// no-model default.
-fn in_memory_inference_materialization_stores() -> InferenceMaterializationStores {
-    InferenceMaterializationStores {
-        credentials: Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
-        secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
-    }
-}
-
-/// Open the worker's shared stores **selected from the environment**, exactly the way
-/// the Serve composition selects persistence:
-///
-/// - `AWAKEN_MGMT_DIR=<dir>` — the per-component durable backends under `<dir>` (each
-///   honoring its `AWAKEN_<COMPONENT>_DB` override).
-/// - an explicit `AWAKEN_CREDENTIAL_DB` — open that credential backend even on a
-///   database-less remote worker that intentionally has no management directory.
-///
-/// Durable secrets use the control seal key (`AWAKEN_CONTROL_SEAL_KEY[_FILE]`, with
-/// the legacy `AWAKEN_MGMT_SEAL_KEY[_FILE]` alias).
-/// - unset — in-memory stores.
-pub async fn open_inference_materialization_stores_from_env() -> InferenceMaterializationStores {
-    let root = std::env::var("AWAKEN_MGMT_DIR")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var("AWAKEN_CREDENTIAL_DB")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-                // Only the explicit credential component is opened below; the
-                // fallback root is never used as a second resource/config truth.
-                .map(|_| std::path::PathBuf::from("."))
-        });
-    match root {
-        Some(dir) => {
-            let key = control_seal_key_from_env();
-            let cfg = ControlStoreConfig::from_env(&dir);
-            open_inference_materialization_stores(&cfg, &key).await
-        }
-        None => in_memory_inference_materialization_stores(),
-    }
-}
-
 /// Open only the shared Resource Catalog validation port required by a remote
 /// execution worker. The worker never opens authoring/session stores and never
 /// evaluates IAM policy; it checks intrinsic Workspace ownership, lifecycle state,
 /// and the config version already frozen in the dispatch manifest.
-pub async fn open_shared_resource_validator_from_env() -> Result<
-    Option<Arc<dyn awaken_protocol_managed::resource_plane::ResourceBindingValidator>>,
-    String,
-> {
-    let url = std::env::var("AWAKEN_ADMIN_DB")
-        .ok()
-        .filter(|value| !value.trim().is_empty());
-    let backend = url.map(|value| {
-        if value.starts_with("postgres://") || value.starts_with("postgresql://") {
-            StoreBackend::Postgres(value)
-        } else {
-            StoreBackend::Sqlite(value.into())
-        }
-    });
-    open_shared_resource_validator(backend.as_ref()).await
-}
-
 /// Open the narrow Resource Catalog validation port from an explicitly
 /// resolved control-store backend.
 pub async fn open_shared_resource_validator(
@@ -173,26 +111,6 @@ pub async fn open_shared_resource_validator(
     .map_err(|error| format!("join shared Resource Catalog connect: {error}"))?
     .map_err(|error| format!("connect shared Resource Catalog: {error}"))?;
     Ok(Some(Arc::new(store)))
-}
-
-/// The AEAD key for durable shared credentials. The canonical control names and
-/// their one-release management aliases follow the same precedence as the Serve
-/// composition. A worker that reads the wrong key is worse than one that refuses
-/// to start, so missing, conflicting, unreadable, and malformed input fails closed.
-pub fn control_seal_key_from_env() -> [u8; 32] {
-    let hex = awaken_credential_vault::resolve_seal_key_hex(
-        std::env::var("AWAKEN_CONTROL_SEAL_KEY")
-            .ok()
-            .or_else(|| std::env::var("AWAKEN_MGMT_SEAL_KEY").ok()),
-        std::env::var("AWAKEN_CONTROL_SEAL_KEY_FILE")
-            .ok()
-            .or_else(|| std::env::var("AWAKEN_MGMT_SEAL_KEY_FILE").ok()),
-        |p| std::fs::read_to_string(p),
-    )
-    .unwrap_or_else(|reason| panic!("{reason}."));
-    awaken_credential_vault::parse_seal_key(&hex).unwrap_or_else(|reason| {
-        panic!("the management seal key is malformed: {reason}. Provide 64 hex characters (a 32-byte key).")
-    })
 }
 
 #[cfg(test)]

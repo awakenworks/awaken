@@ -26,26 +26,25 @@ Useful operational commands:
 
 ```console
 awaken serve                         # foreground, headless/service-manager mode
-awaken worker --server http://host   # join a control plane
-awaken config                        # effective config, database paths, env reference
+awaken worker --config /etc/awaken/config.toml --server http://host
+awaken config                        # effective config and database paths
 awaken config --json                 # redacted machine-readable report
 awaken --version
 ```
 
-Configuration precedence is command line, then `AWAKEN_*` environment, then
-`~/.awaken/config.toml`, then defaults. `AWAKEN_DATA_DIR` and `AWAKEN_BIND` are
-the canonical environment names; the previous storage/listen names remain
-one-release aliases and print migration warnings.
+Production configuration comes only from an explicit `--config` path or the
+standard `~/.awaken/config.toml`, followed by typed defaults. `AWAKEN_*`
+environment variables are not deployment, model, business, or credential
+configuration sources.
 
 All embedded databases and the generated `control-seal.key` live under the one
 data directory. Database schema migrations run automatically, under the
 existing migration locks, before the server accepts traffic. Shared deployments
-select Postgres with `AWAKEN_RUNTIME_DISPATCH_DATABASE_URL`,
-`AWAKEN_RESOURCE_DATABASE_URL`, and the per-component control database settings
-shown by `awaken config`; database URLs and key material are always redacted.
+select Postgres with `runtime_database_url`, `resource_database_url`, and the
+per-component control database fields shown by `awaken config`; database URLs
+and key material are always redacted.
 
-An optional `~/.awaken/config.toml` can hold stable, non-secret bootstrap
-settings. For example:
+The typed configuration file can hold bootstrap settings. For example:
 
 ```toml
 data_dir = "/srv/awaken"

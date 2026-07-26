@@ -506,7 +506,7 @@ impl AcpRunExecutor {
                 adapter: cli,
             },
             SessionHomePlan {
-                config_home_env: row.config_home_env.to_string(),
+                config_home_env: row.config_home_env?.to_string(),
                 session_subpath: session_subpath.to_string(),
                 exclude: row
                     .retained_paths
@@ -1313,9 +1313,9 @@ mod config_home;
 mod session_home;
 mod subprocess;
 pub use acp_cli::{
-    AcpCli, McpDelivery, McpInterface, McpServerConfig, McpTransport, ModelDelivery,
-    ProcessSecretRequirement, ResolvedModel, SessionKey, SessionPersistence, acp_cli,
-    is_dynamic_install, known_acp_clis,
+    AcpCli, CredentialArtifactRequirement, McpDelivery, McpInterface, McpServerConfig,
+    McpTransport, ModelDelivery, ProcessSecretRequirement, ResolvedModel, SessionKey,
+    SessionPersistence, acp_cli, is_dynamic_install, known_acp_clis,
 };
 // The ACP config-home path convention (shared kernel) and the reference cross-machine
 // session-home provider over it — the host consumes these instead of owning them.

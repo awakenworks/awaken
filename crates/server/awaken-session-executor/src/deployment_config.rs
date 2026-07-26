@@ -1,4 +1,4 @@
-//! The deployment configuration surface, parsed once from the environment.
+//! The deployment configuration surface, built once by a typed composition root.
 //!
 //! Historically the deployment axes — durable ingress, the commit/dispatch store
 //! backends, the cross-node wake, the worker role — were read via scattered
@@ -7,10 +7,8 @@
 //! without mutating it and gives no single place to read a deployment's shape.
 //!
 //! [`DeploymentConfig`] is that single typed surface. The composition root builds
-//! one — from [`DeploymentConfig::from_env`] (backward-compatible with the historic
-//! `AWAKEN_*` variables) or explicitly in a test — and the library reads *it*, not
-//! the environment. This is step ① of the config-driven-deployment cleanup: pull
-//! env-reading out of the library; migrate call sites onto the injected config.
+//! one from a typed configuration file (or explicitly for an embedding), and the
+//! library reads it rather than process-global deployment configuration.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -134,6 +132,7 @@ pub enum SandboxTier {
 
 impl SandboxTier {
     /// Parse the `AWAKEN_SANDBOX_TIER` value; unknown/absent → the namespace default.
+    #[cfg(test)]
     fn from_env_str(value: Option<&str>) -> Self {
         match value {
             Some("local") | Some("none") => Self::Local,
@@ -297,65 +296,6 @@ impl DeploymentConfig {
         }
     }
 
-    /// Parse the deployment axes from the historic `AWAKEN_*` environment variables.
-    /// This is the backward-compatible bridge: every existing deployment keeps
-    /// working unchanged; the library now reads the parsed config instead of env.
-    pub fn from_env() -> Self {
-        let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-        let store = match env("AWAKEN_STORE").as_deref() {
-            Some("postgres") => StoreKind::Postgres,
-            Some("fs") => StoreKind::Fs,
-            _ => StoreKind::Sqlite,
-        };
-        let dispatch_backend = match env("AWAKEN_DISPATCH_BACKEND").as_deref() {
-            Some("postgres") => DispatchBackend::Postgres,
-            _ => DispatchBackend::Sqlite,
-        };
-        let wake = match env("AWAKEN_DISPATCH_WAKE").as_deref() {
-            Some("pg-notify") => Wake::PgNotify,
-            Some("nats") => Wake::Nats,
-            _ => Wake::None,
-        };
-        let sandbox_tier_value = env("AWAKEN_SANDBOX_TIER");
-        let sandbox_tier = SandboxTier::from_env_str(sandbox_tier_value.as_deref());
-        let acp_cli_ids = env("AWAKEN_ACP_CLIS")
-            .or_else(|| env("AWAKEN_ACP_CLI"))
-            .unwrap_or_default()
-            .split(',')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .collect::<Vec<_>>();
-        let acp = (!acp_cli_ids.is_empty()).then(|| {
-            AcpWorkerProfile::new(acp_cli_ids, env("AWAKEN_ACP_DEFAULT_CLI"))
-                .unwrap_or_else(|error| panic!("configure ACP Worker profile: {error}"))
-        });
-        let disable_local_pool = local_pool_disabled(
-            env("AWAKEN_SERVER_RUN_LOCAL_POOL").as_deref(),
-            env("AWAKEN_DISABLE_LOCAL_POOL").as_deref(),
-        );
-        Self {
-            durable: env("AWAKEN_INGRESS").as_deref() == Some("durable"),
-            storage_dir: env("AWAKEN_STORAGE_DIR").map(PathBuf::from),
-            store,
-            dispatch_backend,
-            wake,
-            wake_channel: env("AWAKEN_DISPATCH_WAKE_CHANNEL")
-                .unwrap_or_else(|| DEFAULT_WAKE_CHANNEL.to_string()),
-            nats_url: env("AWAKEN_NATS_URL"),
-            database_url: env("AWAKEN_DATABASE_URL"),
-            dispatch_owner: env("AWAKEN_DISPATCH_OWNER").unwrap_or_else(default_owner),
-            upstream: env("AWAKEN_UPSTREAM_URL"),
-            sandbox_tier,
-            sandbox_tier_explicit: sandbox_tier_value.is_some(),
-            sandbox_dir: env("AWAKEN_SANDBOX_DIR").map(PathBuf::from),
-            acp_session_blob_root: env("AWAKEN_ACP_SESSION_BLOBS").map(PathBuf::from),
-            acp,
-            container_image: env("AWAKEN_CONTAINER_IMAGE"),
-            disable_local_pool,
-        }
-    }
-
     /// Whether a durable ingress is backed by a persistent queue (Postgres, an
     /// on-disk SQLite dir, or an injected backend). A durable ingress on a volatile
     /// in-memory queue silently drops queued/crashed/scheduled runs on restart, so
@@ -382,6 +322,7 @@ impl DeploymentConfig {
 
 /// One parser for the positive deployment axis and its legacy negated alias.
 /// An explicit new value wins, matching the CLI validation layer.
+#[cfg(test)]
 fn local_pool_disabled(run_local_pool: Option<&str>, legacy_disable: Option<&str>) -> bool {
     match run_local_pool {
         Some(value) => matches!(
@@ -394,11 +335,6 @@ fn local_pool_disabled(run_local_pool: Option<&str>, legacy_disable: Option<&str
 
 /// The default dispatch owner: `<hostname>-<pid>`, distinct per process and node so
 /// the lease is owner-scoped (single-owner-per-run, ADR-0019/0024).
-fn default_owner() -> String {
-    let host = std::env::var("HOSTNAME").unwrap_or_else(|_| "host".to_string());
-    format!("{host}-{}", std::process::id())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

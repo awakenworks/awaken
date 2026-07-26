@@ -35,10 +35,6 @@ impl InferenceExecutorMaterializer for ReferenceMaterializer {
         &[awaken_worker_contract::WORKER_LOCAL_CREDENTIALS_CAPABILITY]
     }
 
-    fn available_credential_refs(&self) -> BTreeSet<awaken_runtime_contract::CredentialRef> {
-        BTreeSet::from([self.credential.clone()])
-    }
-
     fn credential_realization_capabilities(
         &self,
     ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
