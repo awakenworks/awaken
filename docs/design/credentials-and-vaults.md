@@ -229,6 +229,66 @@ more secure for network credentials **but only if egress is network-locked to th
 proxy** (sandbox netns/firewall); it composes with, and does not replace, network
 isolation.
 
+ADR-0066 limits the first convergence target to MCP and gates feature coding on
+contract-closure Slice 0. A scoped repository envelope first persists a consumed
+Session preparation intent. A claim-time application contributes one secret-free
+plan back to Control; the sole compiler then freezes the baseline and generation
+1 Resource/MCP state. Published Agent MCP, Session `vault_ids` compatibility,
+and application MCP normalize once into exact credential access. Later Managed
+`agent.mcp_servers` full replacement diffs into the same attachment set rather
+than rewriting a wire-only projection. Model and Repository remain in their own
+aggregates. There is no generic `ServiceDefinition`, inference Service
+projection, or public Service realizer in the first slice.
+
+A Worker-local relay is the first mediated MCP adapter. A future downstream
+deployment may return a gateway endpoint and opaque lease only after a concrete
+second implementation justifies extracting a public `McpAttachmentRealizer`
+from the Session boundary. Awaken never imports downstream gateway, route, IAM,
+or Vault-backend types. The Session's frozen `EnvironmentSnapshot.network` is
+authoritative: adding or replacing MCP may change a route behind an already
+admitted stable endpoint, but may not expand the live Sandbox allowlist. Direct
+access outside that policy fails closed and requires explicit Environment
+migration.
+
+The existing `SecretBroker` remains the one file materialization/write-back
+port. It is not widened into a network proxy. A separate neutral
+`CredentialMaterialResolver` consumes only exact `CredentialAccess`, selected
+holder, and sealed payload reference; it cannot enumerate or select. Exact
+`CredentialRefreshAccess` preserves OAuth refresh/reseal without URL or
+current-Vault rediscovery. Target binding, streaming lifecycle, and
+sandbox-facing MCP route projection remain Runtime Host adapter
+responsibilities. Failure never authorizes plaintext in another trust domain.
+
+## Credential Custody and Model Exposure
+
+[ADR-0067](../adr/0067-credential-custody-model-exposure-and-secret-delivery.md)
+defines explicit allowed plaintext-holder trust domains, the separate
+model-exposure policy, evidence requirements, and no-holder-fallback behavior.
+
+Vault describes storage at rest, not execution custody. Published access lists
+the exact Workload, Worker, or Platform trust domains allowed to hold plaintext;
+those holders are not ordered. Unsupported capabilities, route failure, or lease
+loss fail closed rather than selecting another holder.
+
+Model exposure is orthogonal and initially closed to `Forbidden` and
+`VirtualOnly`. A value that looks like a credential may be model-visible under
+`VirtualOnly` only when it is synthetic, target/Session/generation scoped,
+expiring, and substituted at the Worker/platform boundary. Real material in an
+ACP process environment can coexist with `Forbidden` model exposure.
+
+`CredentialAccess` and existing `CredentialUsage` are extended with a material
+source, optional recipient-bound sealed payload reference, one exact material
+resolver, optional exact OAuth refresh/reseal access, and execution policy; no
+parallel `CredentialDelivery` policy is added. The frozen Environment/execution
+profile requests one exact allowed holder. MCP persists it with the attachment
+generation, while the dispatch claim transaction persists Model execution's
+`AttemptCredentialBinding` atomically with Worker/lease epoch. The binding stores
+the planned mechanism; a secret-free receipt stores the actual mechanism.
+`ResolvedModelCandidate` remains the only Model access authority, and Session
+`vault_ids` never override it. Automatic LLM Vault authoring is deferred until a
+separate proposal defines its application service, transaction/saga,
+idempotency, compensation, outbox, and orphan cleanup.
+
 ## Staging
 
 Model the **full oversight-next entity graph** from the start (so no rework), but
@@ -240,7 +300,8 @@ wire only a subset in P0:
 - **P1 (managed):** `CredentialPool` + `CredentialBinding::OneOfCredentialPool` +
   `CredentialSelectionPolicy`; `ProviderIdentity.disabled_endpoint_ids`;
   sealed-AEAD `SecretStore`; Managed ACL; `credential.*` authz + workspace scope.
-- **P2:** `OAuth` refresh loop, `Networking.allowed_hosts` / `injection_location`
+- **P2:** generalized OAuth/background rotation beyond the existing MCP OAuth
+  refresh/reseal path, `Networking.allowed_hosts` / `injection_location`
   enforcement, `CredentialValidation` audit, egress-proxy secretless delivery.
 
 ## Guardrails

@@ -143,3 +143,5 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0063-resource-input-identity-configuration-pinning-and-lifecycle.md` | Decision record | Not required | n/a |
 | `adr/0064-runtime-owned-outcome-orchestration.md` | Decision record | Not required | n/a |
 | `adr/0065-recoverable-embeddable-remote-worker.md` | Decision record | Not required | n/a |
+| `adr/0066-session-service-binding-and-realization.md` | Accepted target; feature implementation gated by contract-closure Slice 0 | Delegated | [remote Worker component catalog](design/remote-worker-protocol.md#10-remote-worker-component-catalog) |
+| `adr/0067-credential-custody-model-exposure-and-secret-delivery.md` | Accepted target; feature implementation gated by contract-closure Slice 0 | Delegated | [remote Worker component catalog](design/remote-worker-protocol.md#10-remote-worker-component-catalog) |

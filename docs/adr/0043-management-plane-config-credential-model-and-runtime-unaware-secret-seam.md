@@ -141,6 +141,27 @@ commands; until then it cannot be published or executed.
 Environment values may be inspected only by the admin proposal adapter; they must be
 explicitly entered into the vault/catalog and published before any run can consume them.
 
+[ADR-0067](0067-credential-custody-model-exposure-and-secret-delivery.md)
+defines orthogonal execution-time plaintext-holder and model-exposure
+requirements. Vault persistence is not a custody grade: an exact credential may
+be opened by a workload, Worker, or downstream platform only when that exact
+trust domain appears in the published allowed-holder set and the frozen
+Environment and installed capabilities admit the mechanism. The holders are not
+ordered, and no adapter may switch trust domains after failure. ADR-0067 also
+preserves ADR-0062's `ResolvedModelCandidate` as the sole inference authority and
+defers automatic LLM Vault authoring to a separate application-workflow design.
+
+For avoidance of doubt, ADR-0062 supersedes this ADR's sections 1-3 wherever
+they place a materialized `RedactedString` inside an inference executable
+snapshot, and ADR-0067 supersedes their single-host delivery assumptions. The
+authoritative inference snapshot is secret-free `ResolvedModelCandidate` plus
+exact `CredentialAccess`; the atomic dispatch claim-epoch record pins the
+selected plaintext holder and planned realization before materialization, and a
+secret-free receipt records the actual mechanism. The selected adapter
+materializes only at the last supported boundary. The
+historical simple-design and staging text below remains background for the
+original proposal, not current inference implementation guidance.
+
 ### 5. Provider model discovery reconciles the existing catalog; it is not runtime resolution
 
 An operator may ask an authored `ProtocolEndpoint` to list models using one exact,
