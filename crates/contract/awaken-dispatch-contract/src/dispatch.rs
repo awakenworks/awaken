@@ -928,6 +928,7 @@ mod tests {
         MissingHolder,
         InvalidUsage,
         NativeWorker,
+        NativePlatform,
         AcpWorkload,
         AcpWorker,
         NativeWorkload,
@@ -974,16 +975,17 @@ mod tests {
     /// | B3 | T | T | F | - | - | - | - | missing holder |
     /// | B4 | T | T | T | F | - | - | - | invalid usage |
     /// | B5 | T | T | T | T | Native/Worker | T | T | provider adapter |
-    /// | B6 | T | T | T | T | ACP/Workload | T | T | process secret env |
-    /// | B7 | T | T | T | T | ACP/Worker | T | T | worker relay |
-    /// | B8 | T | T | T | T | Native/Workload | - | - | unsupported |
-    /// | B9 | T | T | T | T | Remote/Worker | - | - | unsupported |
-    /// | B10 | T | T | T | T | valid | F(holder) | - | unsupported holder |
-    /// | B11 | T | T | T | T | valid | F(source) | - | unsupported source |
-    /// | B12 | T | T | T | T | valid | F(policy) | - | forbidden holder |
-    /// | B13 | T | T | T | T | valid | F(expiry) | - | expired envelope |
-    /// | B14 | T | T | T | T | valid | F(revision) | - | refresh mismatch |
-    /// | B15 | T | T | T | T | valid | T | F | duplicate candidate |
+    /// | B6 | T | T | T | T | Native/Platform | T | T | platform adapter |
+    /// | B7 | T | T | T | T | ACP/Workload | T | T | process secret env |
+    /// | B8 | T | T | T | T | ACP/Worker | T | T | worker relay |
+    /// | B9 | T | T | T | T | Native/Workload | - | - | unsupported |
+    /// | B10 | T | T | T | T | Remote/Worker | - | - | unsupported |
+    /// | B11 | T | T | T | T | valid | F(holder) | - | unsupported holder |
+    /// | B12 | T | T | T | T | valid | F(source) | - | unsupported source |
+    /// | B13 | T | T | T | T | valid | F(policy) | - | forbidden holder |
+    /// | B14 | T | T | T | T | valid | F(expiry) | - | expired envelope |
+    /// | B15 | T | T | T | T | valid | F(revision) | - | refresh mismatch |
+    /// | B16 | T | T | T | T | valid | T | F | duplicate candidate |
     #[test]
     fn attempt_binding_cases_are_generated_from_the_decision_table() {
         let rules = [
@@ -1023,18 +1025,24 @@ mod tests {
             },
             BindingRule {
                 id: "B6",
+                fixture: BindingFixture::NativePlatform,
+                claim_epoch: 3,
+                expected: BindingExpected::One(CredentialRealizationKind::PlatformProviderAdapter),
+            },
+            BindingRule {
+                id: "B7",
                 fixture: BindingFixture::AcpWorkload,
                 claim_epoch: 3,
                 expected: BindingExpected::One(CredentialRealizationKind::ProcessSecretEnvironment),
             },
             BindingRule {
-                id: "B7",
+                id: "B8",
                 fixture: BindingFixture::AcpWorker,
                 claim_epoch: 3,
                 expected: BindingExpected::One(CredentialRealizationKind::WorkerRelay),
             },
             BindingRule {
-                id: "B8",
+                id: "B9",
                 fixture: BindingFixture::NativeWorkload,
                 claim_epoch: 3,
                 expected: BindingExpected::Error(
@@ -1045,7 +1053,7 @@ mod tests {
                 ),
             },
             BindingRule {
-                id: "B9",
+                id: "B10",
                 fixture: BindingFixture::RemoteWorker,
                 claim_epoch: 3,
                 expected: BindingExpected::Error(
@@ -1056,7 +1064,7 @@ mod tests {
                 ),
             },
             BindingRule {
-                id: "B10",
+                id: "B11",
                 fixture: BindingFixture::HolderUnsupported,
                 claim_epoch: 3,
                 expected: BindingExpected::Error(AttemptCredentialBindingError::Admission(
@@ -1064,7 +1072,7 @@ mod tests {
                 )),
             },
             BindingRule {
-                id: "B11",
+                id: "B12",
                 fixture: BindingFixture::SourceUnsupported,
                 claim_epoch: 3,
                 expected: BindingExpected::Error(AttemptCredentialBindingError::Admission(
@@ -1072,7 +1080,7 @@ mod tests {
                 )),
             },
             BindingRule {
-                id: "B12",
+                id: "B13",
                 fixture: BindingFixture::HolderForbidden,
                 claim_epoch: 3,
                 expected: BindingExpected::Error(AttemptCredentialBindingError::Admission(
@@ -1080,7 +1088,7 @@ mod tests {
                 )),
             },
             BindingRule {
-                id: "B13",
+                id: "B14",
                 fixture: BindingFixture::EnvelopeExpired,
                 claim_epoch: 3,
                 expected: BindingExpected::Error(AttemptCredentialBindingError::Admission(
@@ -1088,7 +1096,7 @@ mod tests {
                 )),
             },
             BindingRule {
-                id: "B14",
+                id: "B15",
                 fixture: BindingFixture::RefreshRevisionMismatch,
                 claim_epoch: 3,
                 expected: BindingExpected::Error(AttemptCredentialBindingError::Admission(
@@ -1096,7 +1104,7 @@ mod tests {
                 )),
             },
             BindingRule {
-                id: "B15",
+                id: "B16",
                 fixture: BindingFixture::DuplicateCandidate,
                 claim_epoch: 3,
                 expected: BindingExpected::Error(AttemptCredentialBindingError::DuplicateCandidate),
@@ -1106,7 +1114,13 @@ mod tests {
         for rule in rules {
             let worker_holder = holder(PlaintextBoundary::Worker, "worker-a");
             let workload_holder = holder(PlaintextBoundary::Workload, "workload-a");
+            let platform_holder = holder(PlaintextBoundary::Platform, "platform-a");
             let (backend, selected_holder, realization) = match rule.fixture {
+                BindingFixture::NativePlatform => (
+                    "genai",
+                    platform_holder.clone(),
+                    CredentialRealizationKind::PlatformProviderAdapter,
+                ),
                 BindingFixture::AcpWorkload | BindingFixture::NativeWorkload => (
                     if matches!(rule.fixture, BindingFixture::AcpWorkload) {
                         "acp:claude"

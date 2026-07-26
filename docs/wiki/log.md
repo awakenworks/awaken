@@ -1,5 +1,12 @@
 # Wiki Update Log
 
+## 2026-07-26
+
+- **Update**: Amended ADR-0067 with the neutral Native
+  `PlatformProviderAdapter` realization: downstream platforms can bind an exact
+  Platform trust-domain holder and claim-fenced receipt without adding cloud,
+  gateway, IAM, route, or secret-store vocabulary to Awaken.
+
 ## 2026-07-25
 
 - **Correction**: ADR-0066/0067 remain accepted target directions, but their
