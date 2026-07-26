@@ -151,3 +151,29 @@ The Cartesian decision table contains `2 × 2 × 2 × 3 = 24` rows. Every row mu
 produce an agent message containing its unique marker, preserve the selected
 Environment id, and preserve the Resource cardinality. There is no protocol-specific
 configuration input, resolver, or expected-result branch.
+
+## Phase 7: durable composition and restart
+
+```text
+typed deployment with storage root
+    -> one durable ResourcePlane + Host constructor
+    -> stable local Workspace id + Session repository + thread store
+    -> restart reconstructs the same owner and exact Session baseline
+```
+
+| Storage | Durable ingress | Restart | Session row | Owner scope | Expected |
+|---|---:|---:|---:|---:|---|
+| absent | no | no | process-local | process-local | normal ephemeral turn |
+| present | no | no | durable | persisted | normal durable turn |
+| present | yes | no | durable | persisted | durable operations enabled |
+| present | any | yes | durable | same persisted id | rehydrate and resume |
+
+Constructing an ephemeral Host and adding storage afterward is forbidden: it mints
+a process-specific owner before durability exists and creates a second resource
+composition path.
+
+Gate composition follows one ordering rule: ordinary authorization is built first,
+Skill wiring may decorate that base, and an explicit Host override is applied last.
+The resulting decision table is `base only -> base`, `base + Skills -> decorated
+base`, and `any default chain + explicit override -> override`; no later plugin may
+silently replace the explicit scheduling policy.
