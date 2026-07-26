@@ -6,10 +6,12 @@
 
 mod acp_gateway;
 mod attempt_credential;
+mod deployment;
 mod model_publication;
 mod models;
 pub use crate::models::*;
 pub use acp_gateway::build_acp_gateway_router;
+pub use deployment::scenario_deployment;
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -58,18 +60,6 @@ fn mount(host: Arc<SharedHost>) -> Router {
 
 fn resource_host(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> SharedHost {
     resource_host_with_deployment(llm, model_ref, scenario_deployment())
-}
-
-fn scenario_deployment() -> awaken_runtime_host::DeploymentConfig {
-    let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
-    deployment.storage_dir = std::env::var("AWAKEN_STORAGE_DIR")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .map(std::path::PathBuf::from);
-    deployment.durable = std::env::var("AWAKEN_INGRESS").as_deref() == Ok("durable");
-    deployment.disable_local_pool =
-        std::env::var("AWAKEN_DISABLE_LOCAL_POOL").as_deref() == Ok("1");
-    deployment
 }
 
 fn resource_host_with_deployment(

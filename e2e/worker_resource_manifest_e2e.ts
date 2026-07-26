@@ -325,7 +325,7 @@ function runRequest(
     'native-runtime',
     'session-resources/v1',
   ];
-  request.placement.required_credentials = [{ source_id: GRANT, revision: GRANT_REVISION }];
+  request.placement.required_credentials = [{ id: GRANT, revision: GRANT_REVISION }];
   return request;
 }
 
@@ -470,12 +470,10 @@ async function main(): Promise<void> {
       AWAKEN_TEST_CREDENTIAL_ID: GRANT,
       AWAKEN_TEST_CREDENTIAL_REVISION: String(GRANT_REVISION),
       AWAKEN_WORKER_ID: `resource-worker-${process.pid}`,
-      AWAKEN_WORKER_ADMIN_LISTEN: `127.0.0.1:${WORKER_ADMIN_PORT}`,
     });
     worker = spawn(buildWorker(), [], { cwd: ROOT, env, stdio: ['pipe', 'pipe', 'pipe'] });
     worker.stdout.on('data', (chunk) => (workerOutput += chunk.toString()));
     worker.stderr.on('data', (chunk) => (workerOutput += chunk.toString()));
-    await waitForPort(WORKER_ADMIN_PORT, 180_000, worker);
 
     const projectedFile = path.join(workerStorage, 'sandboxes', THREAD, '.mnt', MOUNT_PATH);
     const projectedSkill = path.join(

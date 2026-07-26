@@ -14,7 +14,6 @@ import { spawnServer, stopServer, waitForPort } from './harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38813);
-const WORKER_ADMIN_PORT = Number(process.env.E2E_WORKER_PORT ?? 39813);
 const BASE = `http://127.0.0.1:${PORT}`;
 const GRANT = 'grant-ts-provider-23';
 const GRANT_REVISION = 1;
@@ -174,7 +173,7 @@ async function main(): Promise<void> {
       boundary: 'worker', trust_domain: 'awaken.worker',
     };
     request.placement.required_capabilities = ['worker-local-credentials/v1', 'native-runtime'];
-    request.placement.required_credentials = [{ source_id: GRANT, revision: GRANT_REVISION }];
+    request.placement.required_credentials = [{ id: GRANT, revision: GRANT_REVISION }];
     await post('/v1/worker/dispatch/enqueue', { request }, 'seed-worker');
     const seedSettle = await post(
       '/v1/worker/dispatch/settle',
@@ -199,12 +198,10 @@ async function main(): Promise<void> {
       AWAKEN_TEST_CREDENTIAL_ID: GRANT,
       AWAKEN_TEST_CREDENTIAL_REVISION: String(GRANT_REVISION),
       AWAKEN_WORKER_ID: 'gateway-worker-ts',
-      AWAKEN_WORKER_ADMIN_LISTEN: `127.0.0.1:${WORKER_ADMIN_PORT}`,
     });
     worker = spawn(buildGatewayWorker(), [], { cwd: ROOT, env, stdio: ['pipe', 'pipe', 'pipe'] });
     worker.stdout.on('data', (chunk) => (workerOutput += chunk.toString()));
     worker.stderr.on('data', (chunk) => (workerOutput += chunk.toString()));
-    await waitForPort(WORKER_ADMIN_PORT);
 
     const messages = await waitForGatewayReply().catch((error) => {
       return fetch(`${BASE}/v1/durable/threads/${THREAD}/dispatches`)

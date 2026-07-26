@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // resolve to a volatile in-memory queue (durable + default sqlite backend + no
     // AWAKEN_STORAGE_DIR) — such a queue silently drops every queued/crashed/scheduled
     // run on restart, defeating the whole point of durable ingress (no-data-loss).
-    let deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
+    let deployment = awaken_scenario_host::scenario_deployment();
     if let Some(error) = deployment.durable_needs_persistence_error(false) {
         return Err(error.to_owned().into());
     }

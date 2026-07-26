@@ -79,20 +79,52 @@ impl InferenceExecutorMaterializer for ReferenceMaterializer {
     }
 }
 
+#[async_trait]
+impl awaken_runtime_contract::CredentialMaterialResolver for ReferenceMaterializer {
+    fn supported_material_sources(
+        &self,
+    ) -> BTreeSet<awaken_runtime_contract::CredentialMaterialSource> {
+        BTreeSet::from([awaken_runtime_contract::CredentialMaterialSource::WorkerReference])
+    }
+
+    async fn credential_observations(
+        &self,
+    ) -> Result<
+        BTreeSet<awaken_runtime_contract::CredentialObservation>,
+        awaken_runtime_contract::CredentialMaterialError,
+    > {
+        Ok(BTreeSet::from([
+            awaken_runtime_contract::CredentialObservation::available(self.credential.clone(), 1),
+        ]))
+    }
+
+    async fn resolve_exact(
+        &self,
+        _request: awaken_runtime_contract::CredentialMaterialRequest<'_>,
+    ) -> Result<
+        awaken_runtime_contract::ResolvedCredentialMaterial,
+        awaken_runtime_contract::CredentialMaterialError,
+    > {
+        Err(awaken_runtime_contract::CredentialMaterialError::Unavailable)
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     awaken_observability::init();
     let upstream = std::env::var("AWAKEN_UPSTREAM_URL")?;
     let credential_id = std::env::var("AWAKEN_TEST_CREDENTIAL_ID")?;
     let credential_revision = std::env::var("AWAKEN_TEST_CREDENTIAL_REVISION")?.parse()?;
-    awaken_worker::run_with_inference_materializer(
+    let materializer = Arc::new(ReferenceMaterializer {
+        credential: awaken_runtime_contract::CredentialRef {
+            id: credential_id,
+            revision: credential_revision,
+        },
+    });
+    awaken_worker::run_with_inference_and_credential_resolver(
         &upstream,
-        Arc::new(ReferenceMaterializer {
-            credential: awaken_runtime_contract::CredentialRef {
-                id: credential_id,
-                revision: credential_revision,
-            },
-        }),
+        materializer.clone(),
+        materializer,
     )
     .await
 }
