@@ -300,3 +300,23 @@ legacy resource-api.db -> canonical Memory/Skill import -> receipt -> old DB rem
 The test-only name prevents fixture metadata from becoming a second production
 deployment boundary. Legacy migration reuses the server's one migration function
 and writes only canonical Resource stores; it never installs a dual-read adapter.
+
+## Phase 13: retained Session upgrade under one data root
+
+```text
+standard typed data root -> Session repository + Runtime truth
+legacy row without aggregate_json -> decode frozen baseline
+first root mutation -> write canonical aggregate_json
+later legacy-column drift -> ignored
+```
+
+| Rule | Canonical aggregate | Legacy columns | Mutation | Expected |
+|---|---:|---:|---:|---|
+| L1 | absent | valid active | no | decode retained baseline |
+| L2 | absent | valid active | yes | write canonical aggregate once |
+| L3 | present | poisoned | any | canonical aggregate wins |
+| L4 | absent | terminal | no | no resurrection |
+
+Management and Runtime persistence use the same resolved data root. Removed
+`AWAKEN_MGMT_*` and runtime storage variables cannot recreate split Session
+authority in either production or process E2E.
