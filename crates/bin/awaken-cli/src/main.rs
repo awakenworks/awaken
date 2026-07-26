@@ -50,6 +50,17 @@ async fn run(command: console::Command) -> Result<(), String> {
             println!("{}", deployment.report(json).trim_end());
             Ok(())
         }
+        console::Command::DatabaseMigrate { config_path } => {
+            let deployment = ResolvedDeployment::load(ConfigOverrides {
+                config_path,
+                role: Some(Role::Serve),
+                ..Default::default()
+            })?;
+            warn_deprecations(&deployment);
+            deployment.ensure_data_layout()?;
+            let seal_key = deployment.seal_key.load_or_create()?;
+            awaken_cli::migrate_management_schema_with_deployment(&deployment, &seal_key).await
+        }
         console::Command::Worker {
             server,
             config_path,

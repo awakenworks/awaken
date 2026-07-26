@@ -1,8 +1,5 @@
 //! Postgres config-store adapter under the built-in `config` namespace.
 
-use std::collections::BTreeMap;
-
-use awaken_scoped_migration::{Dialect, LEDGER_VERSION};
 use sqlx::Row;
 use sqlx::postgres::PgPool;
 use sqlx::types::Json;
@@ -73,43 +70,12 @@ impl PostgresConfigStore {
 
     /// Build from a pool whose config migrations were applied out of process.
     pub async fn with_existing_pool(pool: PgPool) -> Result<Self, StoreError> {
-        let ledger_version: i64 =
-            sqlx::query_scalar("SELECT ledger_version FROM config_schema_migrations_meta LIMIT 1")
-                .fetch_one(&pool)
-                .await
-                .map_err(|err| StoreError::Schema(err.to_string()))?;
-        if ledger_version != LEDGER_VERSION {
-            return Err(StoreError::Schema(format!(
-                "config migration ledger version {ledger_version} does not match {LEDGER_VERSION}"
-            )));
-        }
-
         let bundle = config_bundle().map_err(|err| StoreError::Schema(err.to_string()))?;
-        let rows = sqlx::query(
-            "SELECT version, checksum FROM config_schema_migrations \
-             WHERE bundle_id = $1 ORDER BY version",
-        )
-        .bind(bundle.bundle_id())
-        .fetch_all(&pool)
-        .await
-        .map_err(|err| StoreError::Schema(err.to_string()))?;
-        let mut applied = BTreeMap::new();
-        for row in rows {
-            applied.insert(
-                row.try_get::<i64, _>("version")
-                    .map_err(|err| StoreError::Schema(err.to_string()))?,
-                row.try_get::<String, _>("checksum")
-                    .map_err(|err| StoreError::Schema(err.to_string()))?,
-            );
-        }
-        let pending = awaken_scoped_migration::plan(&bundle, &applied, Dialect::Postgres)
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+            .map_err(|err| StoreError::Schema(err.to_string()))?
+            .verify_bundle(&bundle)
+            .await
             .map_err(|err| StoreError::Schema(err.to_string()))?;
-        if let Some(migration) = pending.first() {
-            return Err(StoreError::Schema(format!(
-                "config migration V{:04} is pending",
-                migration.version()
-            )));
-        }
         Ok(Self { pool })
     }
 }

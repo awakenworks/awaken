@@ -303,6 +303,17 @@ impl PostgresEnvRegistry {
         Ok(Self { pool })
     }
 
+    pub async fn connect_existing(url: &str) -> Result<Self, String> {
+        let pool = PgPool::connect(url).await.map_err(|e| e.to_string())?;
+        let bundle = env_bundle().map_err(|e| e.to_string())?;
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+            .map_err(|e| e.to_string())?
+            .verify_bundle(&bundle)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(Self { pool })
+    }
+
     async fn read(&self, id: &str) -> Option<EnvItem> {
         sqlx::query(&format!(
             "SELECT {COLS} FROM env_registry_env WHERE env_id = $1"

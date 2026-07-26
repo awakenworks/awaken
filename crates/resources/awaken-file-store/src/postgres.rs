@@ -26,6 +26,11 @@ impl PgFileStore {
         Ok(store)
     }
 
+    /// Connect to an already-migrated schema without executing DDL.
+    pub async fn connect_existing(url: &str) -> Result<Self, FileStoreError> {
+        PgPool::connect(url).await.map(Self::with_pool).map_err(e)
+    }
+
     /// Wrap an existing pool (schema assumed present, or call [`Self::ensure_schema`]).
     pub fn with_pool(pool: PgPool) -> Self {
         Self { pool }

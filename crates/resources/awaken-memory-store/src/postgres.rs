@@ -57,6 +57,14 @@ impl PostgresMemoryRepository {
         Ok(store)
     }
 
+    /// Connect to an already-migrated schema without executing DDL.
+    pub async fn connect_existing(url: &str) -> Result<Self, PgStoreError> {
+        PgPool::connect(url)
+            .await
+            .map(Self::with_pool)
+            .map_err(|error| PgStoreError::Connect(error.to_string()))
+    }
+
     /// Wrap an existing pool **without migrating**, allowing a unified migration
     /// pipeline to own the shared database.
     pub fn with_pool(pool: PgPool) -> Self {

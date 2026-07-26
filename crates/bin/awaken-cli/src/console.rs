@@ -20,6 +20,9 @@ pub(crate) enum Command {
     Start(StartArgs),
     Serve(StartArgs),
     Management(StartArgs),
+    DatabaseMigrate {
+        config_path: Option<std::path::PathBuf>,
+    },
     Worker {
         server: String,
         config_path: Option<std::path::PathBuf>,
@@ -45,6 +48,7 @@ pub(crate) fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Comma
         "serve" => parse_start_args(&args).map(Command::Serve),
         "management" if args.iter().any(|arg| is_help(arg)) => Ok(Command::Help),
         "management" => parse_start_args(&args).map(Command::Management),
+        "database" => parse_database_args(&args),
         "worker" => parse_worker_args(&args),
         "config" => parse_config_args(&args),
         "version" | "-V" | "--version" if args.is_empty() => Ok(Command::Version),
@@ -150,6 +154,34 @@ fn parse_config_args(args: &[String]) -> Result<Command, String> {
     Ok(Command::Config { json, config_path })
 }
 
+fn parse_database_args(args: &[String]) -> Result<Command, String> {
+    if args.iter().any(|arg| is_help(arg)) {
+        return Ok(Command::Help);
+    }
+    let Some((subcommand, args)) = args.split_first() else {
+        return Err("database requires the `migrate` subcommand".to_owned());
+    };
+    if subcommand != "migrate" {
+        return Err("database requires the `migrate` subcommand".to_owned());
+    }
+    let mut config_path = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--config" => {
+                index += 1;
+                config_path = Some(parse_path(args.get(index).map(String::as_str), "--config")?);
+            }
+            value if value.starts_with("--config=") => {
+                config_path = Some(parse_path(Some(&value[9..]), "--config")?);
+            }
+            other => return Err(format!("unexpected database migrate argument {other:?}")),
+        }
+        index += 1;
+    }
+    Ok(Command::DatabaseMigrate { config_path })
+}
+
 fn parse_port(value: Option<&str>) -> Result<u16, String> {
     value
         .ok_or_else(|| "--port needs a value".to_owned())?
@@ -175,7 +207,7 @@ fn is_help(value: &str) -> bool {
 
 pub(crate) fn print_help() {
     println!(
-        "Awaken\n\nUSAGE:\n    awaken [COMMAND] [OPTIONS]\n\nRunning `awaken` without a command is the same as `awaken start`.\n\nCOMMANDS:\n    start                 Start locally, print readiness, and open the browser\n    serve                 Start headless for service managers\n    management            Start only the authoring/control surface (server mode)\n    worker --server URL   Join an Awaken server as a worker\n    config [--json]       Print effective, redacted configuration\n    version               Print the installed version\n\nOPTIONS:\n    --config PATH         Read typed configuration from PATH\n    --port PORT           Override the listen port\n    --data-dir PATH       Override the persistent data root (default ~/.awaken)\n    --no-browser          Do not open a browser\n    -h, --help            Print this help\n\nConfiguration sources: --config PATH or ~/.awaken/config.toml, then defaults."
+        "Awaken\n\nUSAGE:\n    awaken [COMMAND] [OPTIONS]\n\nRunning `awaken` without a command is the same as `awaken start`.\n\nCOMMANDS:\n    start                 Start locally, print readiness, and open the browser\n    serve                 Start headless for service managers\n    management            Start only the authoring/control surface (server mode)\n    database migrate      Apply management schema migrations and exit\n    worker --server URL   Join an Awaken server as a worker\n    config [--json]       Print effective, redacted configuration\n    version               Print the installed version\n\nOPTIONS:\n    --config PATH         Read typed configuration from PATH\n    --port PORT           Override the listen port\n    --data-dir PATH       Override the persistent data root (default ~/.awaken)\n    --no-browser          Do not open a browser\n    -h, --help            Print this help\n\nConfiguration sources: --config PATH or ~/.awaken/config.toml, then defaults."
     );
 }
 
@@ -255,6 +287,22 @@ mod tests {
         assert_eq!(
             parse_args(["management".into()]).unwrap(),
             Command::Management(StartArgs::default())
+        );
+        assert_eq!(
+            parse_args(["database".into(), "migrate".into()]).unwrap(),
+            Command::DatabaseMigrate { config_path: None }
+        );
+        assert_eq!(
+            parse_args([
+                "database".into(),
+                "migrate".into(),
+                "--config".into(),
+                "/etc/awaken/config.toml".into(),
+            ])
+            .unwrap(),
+            Command::DatabaseMigrate {
+                config_path: Some("/etc/awaken/config.toml".into())
+            }
         );
         assert_eq!(parse_args(["--help".into()]).unwrap(), Command::Help);
         assert_eq!(
