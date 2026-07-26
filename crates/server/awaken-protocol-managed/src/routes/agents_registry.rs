@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use crate::routes::{ManagedJson, WorkspaceScope};
 use crate::state::DEFAULT_SCOPE;
-use crate::types::agent::{Agent, AgentCreateParams, AgentRetrieveParams, AgentUpdateParams};
+use crate::types::agent::{
+    Agent, AgentCreateParams, AgentListParams, AgentRetrieveParams, AgentUpdateParams,
+};
 use crate::types::{ErrorResponse, Page, PageQuery, paginate, paginate_by};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -51,7 +53,11 @@ pub trait ManagedAgentRepository: Send + Sync {
         id: &str,
         version: Option<u64>,
     ) -> Result<Agent, ManagedAgentError>;
-    async fn list(&self, workspace_id: &str) -> Result<Vec<Agent>, ManagedAgentError>;
+    async fn list(
+        &self,
+        workspace_id: &str,
+        params: &AgentListParams,
+    ) -> Result<Vec<Agent>, ManagedAgentError>;
     async fn update(
         &self,
         workspace_id: &str,
@@ -144,13 +150,17 @@ async fn retrieve_agent(
 async fn list_agents(
     State(state): State<Arc<AgentRegistryState>>,
     scope: Option<Extension<WorkspaceScope>>,
-    Query(page): Query<PageQuery>,
+    Query(params): Query<AgentListParams>,
 ) -> Result<Json<Page<Agent>>, WireError> {
     state
         .repository
-        .list(&request_scope(&scope))
+        .list(&request_scope(&scope), &params)
         .await
-        .map(|agents| Json(paginate(agents, &page, |agent| agent.id.as_str())))
+        .map(|agents| {
+            Json(paginate(agents, &params.page_query(), |agent| {
+                agent.id.as_str()
+            }))
+        })
         .map_err(wire_error)
 }
 

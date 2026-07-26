@@ -13,9 +13,9 @@ use awaken_config_store::{
 };
 use awaken_protocol_managed::types::ModelConfig;
 use awaken_protocol_managed::types::agent::{
-    Agent, AgentCreateParams, AgentSkill, AgentTool, AgentUpdateParams, CustomToolInputSchema,
-    MultiagentConfig as WireMultiagent, MultiagentRosterEntry, ToolDefaultConfig, UrlMcpServer,
-    UrlMcpServerKind,
+    Agent, AgentCreateParams, AgentListParams, AgentSkill, AgentTool, AgentUpdateParams,
+    CustomToolInputSchema, MultiagentConfig as WireMultiagent, MultiagentRosterEntry,
+    ToolDefaultConfig, UrlMcpServer, UrlMcpServerKind,
 };
 use awaken_protocol_managed::{ManagedAgentError, ManagedAgentRepository};
 use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
@@ -346,7 +346,11 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             .ok_or(ManagedAgentError::NotFound)
     }
 
-    async fn list(&self, workspace_id: &str) -> Result<Vec<Agent>, ManagedAgentError> {
+    async fn list(
+        &self,
+        workspace_id: &str,
+        params: &AgentListParams,
+    ) -> Result<Vec<Agent>, ManagedAgentError> {
         if workspace_id == RESERVED_ADMIN_SCOPE {
             return Ok(Vec::new());
         }
@@ -364,7 +368,22 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
                 .await
                 .map_err(ManagedAgentError::Storage)?
                 .ok_or_else(|| ManagedAgentError::Storage("listed Agent disappeared".into()))?;
-            agents.push(self.project_current(workspace_id, versioned));
+            let agent = self.project_current(workspace_id, versioned);
+            if !params.include_archived && agent.archived_at.is_some() {
+                continue;
+            }
+            if params
+                .created_at_gte
+                .as_deref()
+                .is_some_and(|lower| agent.created_at.as_str() < lower)
+                || params
+                    .created_at_lte
+                    .as_deref()
+                    .is_some_and(|upper| agent.created_at.as_str() > upper)
+            {
+                continue;
+            }
+            agents.push(agent);
         }
         Ok(agents)
     }

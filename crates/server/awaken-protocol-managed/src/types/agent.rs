@@ -164,6 +164,30 @@ pub struct AgentRetrieveParams {
     pub version: Option<u64>,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct AgentListParams {
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub page: Option<String>,
+    #[serde(default, rename = "created_at[gte]")]
+    pub created_at_gte: Option<String>,
+    #[serde(default, rename = "created_at[lte]")]
+    pub created_at_lte: Option<String>,
+    #[serde(default)]
+    pub include_archived: bool,
+}
+
+impl AgentListParams {
+    #[must_use]
+    pub fn page_query(&self) -> crate::types::PageQuery {
+        crate::types::PageQuery {
+            limit: self.limit,
+            page: self.page.clone(),
+        }
+    }
+}
+
 /// `BetaManagedAgentsAgentReference` — how an agent is *referenced* (by a
 /// deployment, a session): `{ id, type: "agent", version }`. The single typed form
 /// of the normalized reference; the deserialize-only input form a client may send

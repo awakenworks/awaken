@@ -123,6 +123,31 @@ async function main() {
       assert.ok(archivedVersions[2].archived_at, 'V3 terminal revision records archive');
       pass('beta.agents.archive -> archived_at set');
 
+      const activeOnly = await drain(client.beta.agents.list({ betas: BETAS }));
+      assert.ok(!activeOnly.some((candidate) => candidate.id === agent.id));
+      const withArchived = await drain(client.beta.agents.list({
+        include_archived: true,
+        betas: BETAS,
+      }));
+      assert.ok(withArchived.some((candidate) => candidate.id === agent.id));
+      const exactCreated = await drain(client.beta.agents.list({
+        'created_at[gte]': agent.created_at,
+        'created_at[lte]': agent.created_at,
+        include_archived: true,
+        betas: BETAS,
+      }));
+      assert.ok(exactCreated.some((candidate) => candidate.id === agent.id));
+      assert.deepEqual(await drain(client.beta.agents.list({
+        'created_at[gte]': '9999-01-01T00:00:00Z',
+        include_archived: true,
+        betas: BETAS,
+      })), []);
+      assert.deepEqual(await drain(client.beta.agents.list({
+        'created_at[lte]': '2000-01-01T00:00:00Z',
+        include_archived: true,
+        betas: BETAS,
+      })), []);
+
       // [SDK:resources/beta/agents/agents.d.ts]
       // Cause/effect graph:
       // official tagged SDK unions -> Managed admission -> config normalization
@@ -137,6 +162,7 @@ async function main() {
       // | nullable update field = null           | clear exact field/bag  |
       // | metadata value = null                  | delete only that key   |
       // | update version omitted                 | unconditional CAS write|
+      // | list archived/time partition           | filter before paging   |
       const rich = await json(baseUrl, 'POST', '/v1/agents', {
         name: 'rich-agent',
         model: { id: 'claude-sonnet-5', speed: 'fast' },
@@ -267,14 +293,14 @@ async function main() {
         'V4',
       );
 
-      const firstPage = await json(baseUrl, 'GET', '/v1/agents?limit=1');
+      const firstPage = await json(baseUrl, 'GET', '/v1/agents?limit=1&include_archived=true');
       assert.equal(firstPage.status, 200);
       assert.equal(firstPage.body.data.length, 1);
       assert.equal(firstPage.body.has_more, true);
       const secondPage = await json(
         baseUrl,
         'GET',
-        `/v1/agents?limit=10&page=${encodeURIComponent(firstPage.body.next_page)}`,
+        `/v1/agents?limit=10&include_archived=true&page=${encodeURIComponent(firstPage.body.next_page)}`,
       );
       assert.equal(secondPage.status, 200);
       assert.ok(secondPage.body.data.length >= 1);
