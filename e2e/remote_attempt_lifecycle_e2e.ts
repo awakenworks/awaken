@@ -22,6 +22,7 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 
 function task(id: string, contextId: string, state: string, text?: string): Record<string, unknown> {
   return {
+    kind: 'task',
     id,
     contextId,
     status: {
@@ -29,9 +30,10 @@ function task(id: string, contextId: string, state: string, text?: string): Reco
       ...(text
         ? {
             message: {
+              kind: 'message',
               messageId: `reply-${id}`,
               role: 'agent',
-              parts: [{ text }],
+              parts: [{ kind: 'text', text }],
             },
           }
         : {}),
@@ -118,7 +120,7 @@ async function startPeer(): Promise<{
         });
       } else if (text.includes('completed artifact')) {
         const completed = task('artifact-task', 'terminal-context', 'completed');
-        completed.artifacts = [{ artifactId: 'artifact-1', parts: [{ text: 'REMOTE-ARTIFACT-DONE' }] }];
+        completed.artifacts = [{ artifactId: 'artifact-1', parts: [{ kind: 'text', text: 'REMOTE-ARTIFACT-DONE' }] }];
         json(response, 200, { task: completed });
       } else if (text.includes('failed terminal')) {
         json(response, 200, {
@@ -126,7 +128,12 @@ async function startPeer(): Promise<{
         });
       } else if (text.includes('rejected terminal')) {
         const rejected = task('rejected-task', 'terminal-context', 'rejected');
-        rejected.history = [{ messageId: 'rejected-history', role: 'agent', parts: [{ text: 'REMOTE-REJECTED-DONE' }] }];
+        rejected.history = [{
+          kind: 'message',
+          messageId: 'rejected-history',
+          role: 'agent',
+          parts: [{ kind: 'text', text: 'REMOTE-REJECTED-DONE' }],
+        }];
         json(response, 200, { task: rejected });
       } else if (text.includes('canceled terminal')) {
         json(response, 200, {
@@ -368,6 +375,20 @@ async function waitForDispatchGone(thread: string, runId: string): Promise<void>
   throw new Error(`cancelled run ${runId} remained dispatchable`);
 }
 
+async function within<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function main(): Promise<void> {
   const storage = mkdtempSync(path.join(tmpdir(), 'awaken-remote-attempt-'));
   const peer = await startPeer();
@@ -388,7 +409,10 @@ async function main(): Promise<void> {
       text: 'prove crash recovery',
     });
     assert.equal(submitted.status, 200);
-    await peer.crashPoll;
+    // Cause graph: valid A2A discriminators -> task reference commit -> tasks/get
+    // reaches the peer. A malformed response must fail this edge within 30s instead
+    // of leaving the whole stage runner waiting on a promise that can never resolve.
+    await within(peer.crashPoll, 30_000, 'the initial remote task poll');
     const killed = new Promise<void>((resolve) => server.once('exit', () => resolve()));
     server.kill('SIGKILL');
     await killed;
