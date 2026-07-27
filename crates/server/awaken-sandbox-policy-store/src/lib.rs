@@ -138,6 +138,14 @@ impl PostgresSandboxExecutionPolicyStore {
         }
         Ok(Self { pool })
     }
+
+    /// Connect to an already-provisioned schema without executing startup DDL.
+    pub async fn connect_existing(url: &str) -> Result<Self, String> {
+        PgPool::connect(url)
+            .await
+            .map(|pool| Self { pool })
+            .map_err(|error| error.to_string())
+    }
 }
 
 #[async_trait]
