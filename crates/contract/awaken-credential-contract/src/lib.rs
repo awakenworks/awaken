@@ -33,6 +33,7 @@ pub enum CredentialObservationState {
     Expired,
     Invalid,
     Disabled,
+    ProbeFailed,
 }
 
 /// A point-in-time Worker observation used by placement and diagnostics.
@@ -54,11 +55,6 @@ impl CredentialObservation {
             observed_at_ms,
             reason_code: None,
         }
-    }
-
-    #[must_use]
-    pub fn is_available_for(&self, credential: &CredentialRef) -> bool {
-        self.state == CredentialObservationState::Available && &self.credential == credential
     }
 }
 
@@ -939,6 +935,31 @@ pub trait CredentialMaterialResolver: Send + Sync {
         &self,
     ) -> Result<BTreeSet<CredentialObservation>, CredentialMaterialError> {
         Ok(BTreeSet::new())
+    }
+
+    /// Re-probe one already-selected exact Worker-local reference immediately
+    /// before launch. This is a liveness check, not credential selection. An
+    /// adapter may override it with a cheaper exact provider operation.
+    async fn revalidate_worker_reference(
+        &self,
+        credential: &CredentialRef,
+    ) -> Result<CredentialObservation, CredentialMaterialError> {
+        let observation = self
+            .credential_observations()
+            .await?
+            .into_iter()
+            .find(|observation| &observation.credential == credential)
+            .ok_or(CredentialMaterialError::Unavailable)?;
+        match observation.state {
+            CredentialObservationState::Available => Ok(observation),
+            CredentialObservationState::LoginRequired => {
+                Err(CredentialMaterialError::LoginRequired)
+            }
+            CredentialObservationState::Expired => Err(CredentialMaterialError::Expired),
+            CredentialObservationState::Invalid => Err(CredentialMaterialError::Invalid),
+            CredentialObservationState::Disabled => Err(CredentialMaterialError::Disabled),
+            CredentialObservationState::ProbeFailed => Err(CredentialMaterialError::ProbeFailed),
+        }
     }
 
     async fn resolve_exact(

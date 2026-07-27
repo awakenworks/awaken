@@ -54,7 +54,7 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
         id: "cred:worker".into(),
         revision: 9,
     };
-    let observation = WorkerCredentialObservation::available(observed, 110);
+    let observation = WorkerCredentialObservation::available(observed, 110, 140);
     assert_eq!(
         client
             .heartbeat(
@@ -336,7 +336,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
     let service = WorkerDispatchService::new(
         dispatch as Arc<dyn DispatchQueue>,
         Arc::new(HeaderWorkerAuthenticator),
-        clock,
+        clock.clone(),
         Arc::new(FixedWorkerLeasePolicy::new(1_000)),
     )
     .with_worker_directory(directory, 1_000);
@@ -369,7 +369,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
                     ready: true,
                     in_flight: 0,
                     credential_observations: [WorkerCredentialObservation::available(
-                        credential, 100,
+                        credential, 100, 130,
                     )]
                     .into_iter()
                     .collect(),
@@ -401,8 +401,44 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
 
     let exact = ready_worker(address, "worker-exact-revision", required).await;
     let exact_queue = HttpDispatchQueue::new(format!("http://{address}"), exact.clone());
+    clock.set(130);
+    assert!(
+        exact_queue
+            .claim("ignored", 1_000, 130, &Default::default())
+            .await
+            .unwrap()
+            .is_none(),
+        "an expired credential observation cannot claim while the worker lease is live"
+    );
+    let control = WorkerControlClient::new(
+        WorkerUpstream::new(format!("http://{address}")).with_worker_id("worker-exact-revision"),
+    );
+    assert_eq!(
+        control
+            .heartbeat(
+                &exact,
+                WorkerHeartbeat {
+                    sequence: 2,
+                    ready: true,
+                    in_flight: 0,
+                    credential_observations: [WorkerCredentialObservation::available(
+                        WorkerCredentialRevision {
+                            id: "credential-source-worker-private".to_string(),
+                            revision: 12,
+                        },
+                        130,
+                        160,
+                    )]
+                    .into_iter()
+                    .collect(),
+                },
+            )
+            .await
+            .unwrap(),
+        RegistryMutation::Applied
+    );
     let claimed = exact_queue
-        .claim("ignored", 1_000, 100, &Default::default())
+        .claim("ignored", 1_000, 130, &Default::default())
         .await
         .unwrap()
         .expect("the worker reporting the exact revision can claim the run");

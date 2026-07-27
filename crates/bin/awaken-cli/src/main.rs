@@ -100,6 +100,12 @@ async fn run(command: console::Command) -> Result<(), String> {
                 awaken_worker::WorkerRunOptions {
                     admin_listen: worker.admin_listen,
                     drain_grace: std::time::Duration::from_secs(worker.drain_grace_secs),
+                    credential_probe_interval: std::time::Duration::from_secs(
+                        worker.credential_probe_interval_secs,
+                    ),
+                    credential_observation_ttl: std::time::Duration::from_secs(
+                        worker.credential_observation_ttl_secs,
+                    ),
                     manifest,
                 },
             )

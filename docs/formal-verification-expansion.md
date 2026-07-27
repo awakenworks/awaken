@@ -79,9 +79,10 @@ pure kernels.
 - Memory CAS/rename (4): the existing atomic adapter operations are now modeled
   explicitly: one CAS winner per generation, stale-write rejection, generation
   stability for idempotent writes, and identity-preserving replace-rename.
-- Worker drain (2): claim admission and drain acknowledgement share a generation
-  gate. `begin_drain` linearizes against the short claim section, so no claim can
-  begin after it returns.
+- Worker drain (4): `begin_drain` linearizes against the short claim section, so
+  no claim can begin after it returns. The Worker lifecycle closes that local
+  gate before publishing `Draining` to the remote Registry; a blocked Control
+  acknowledgement cannot reopen admission or create a rejected claim window.
 - Config activation (2): publications carry their authoring generation; SQLite
   and PostgreSQL compare that generation in the publication transaction, and the
   live catalog never replaces a newer installed generation with an older one.
