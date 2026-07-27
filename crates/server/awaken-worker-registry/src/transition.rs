@@ -248,7 +248,7 @@ mod tests {
             revision: 3,
         };
         let observation =
-            awaken_worker_contract::WorkerCredentialObservation::available(credential, 20);
+            awaken_worker_contract::WorkerCredentialObservation::available(credential, 20, 120);
         let (updated, result) = heartbeat(
             Some(&first),
             &identity,

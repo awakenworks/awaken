@@ -28,6 +28,17 @@ impl LlmExecutor for GrantExecutor {
 
 struct ReferenceMaterializer {
     credential: awaken_runtime_contract::CredentialRef,
+    state_file: Option<std::path::PathBuf>,
+}
+
+impl ReferenceMaterializer {
+    fn state(&self) -> String {
+        self.state_file
+            .as_ref()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .map(|state| state.trim().to_string())
+            .unwrap_or_else(|| "available".to_string())
+    }
 }
 
 impl InferenceExecutorMaterializer for ReferenceMaterializer {
@@ -94,9 +105,56 @@ impl awaken_runtime_contract::CredentialMaterialResolver for ReferenceMaterializ
         BTreeSet<awaken_runtime_contract::CredentialObservation>,
         awaken_runtime_contract::CredentialMaterialError,
     > {
+        let state = self.state();
+        if state == "probe_failed" {
+            return Err(awaken_runtime_contract::CredentialMaterialError::ProbeFailed);
+        }
+        let state = match state.as_str() {
+            "available" | "available_then_login_required" => {
+                awaken_runtime_contract::CredentialObservationState::Available
+            }
+            "login_required" => awaken_runtime_contract::CredentialObservationState::LoginRequired,
+            "expired" => awaken_runtime_contract::CredentialObservationState::Expired,
+            "disabled" => awaken_runtime_contract::CredentialObservationState::Disabled,
+            "probe_failed_one" => awaken_runtime_contract::CredentialObservationState::ProbeFailed,
+            _ => awaken_runtime_contract::CredentialObservationState::Invalid,
+        };
         Ok(BTreeSet::from([
-            awaken_runtime_contract::CredentialObservation::available(self.credential.clone(), 1),
+            awaken_runtime_contract::CredentialObservation {
+                credential: self.credential.clone(),
+                state,
+                observed_at_ms: 1,
+                reason_code: (state
+                    != awaken_runtime_contract::CredentialObservationState::Available)
+                    .then(|| format!("fixture_{state:?}")),
+            },
         ]))
+    }
+
+    async fn revalidate_worker_reference(
+        &self,
+        credential: &awaken_runtime_contract::CredentialRef,
+    ) -> Result<
+        awaken_runtime_contract::CredentialObservation,
+        awaken_runtime_contract::CredentialMaterialError,
+    > {
+        if credential != &self.credential {
+            return Err(awaken_runtime_contract::CredentialMaterialError::RevisionMismatch);
+        }
+        if self.state() == "available_then_login_required" {
+            return Err(awaken_runtime_contract::CredentialMaterialError::LoginRequired);
+        }
+        let observation = self
+            .credential_observations()
+            .await?
+            .into_iter()
+            .next()
+            .ok_or(awaken_runtime_contract::CredentialMaterialError::Unavailable)?;
+        if observation.state == awaken_runtime_contract::CredentialObservationState::Available {
+            Ok(observation)
+        } else {
+            Err(awaken_runtime_contract::CredentialMaterialError::Unavailable)
+        }
     }
 
     async fn resolve_exact(
@@ -121,6 +179,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             id: credential_id,
             revision: credential_revision,
         },
+        state_file: std::env::var_os("AWAKEN_TEST_CREDENTIAL_STATE_FILE")
+            .map(std::path::PathBuf::from),
     });
     let resource = std::env::var("AWAKEN_TEST_RESOURCE_DATABASE_URL").ok();
     let admin = std::env::var("AWAKEN_TEST_ADMIN_DATABASE_URL").ok();

@@ -173,6 +173,9 @@ impl SharedHost {
         if let Some(capabilities) = local_credential_capabilities {
             ingress = ingress.with_local_credential_capabilities(capabilities);
         }
+        if let Some(resolver) = &self.worker_credential_resolver {
+            ingress = ingress.with_worker_credential_resolver(resolver.clone());
+        }
         ingress.install_attempt_executor(attempt_executor);
         if let Some(upstream) = &self.upstream {
             ingress =

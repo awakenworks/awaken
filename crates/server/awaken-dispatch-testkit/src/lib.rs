@@ -704,6 +704,7 @@ async fn local_claims_skip_remote_only_work(store: &dyn DispatchQueue, ns: &str)
         credential_observations: [WorkerCredentialObservation::available(
             required_credential,
             0,
+            10_000,
         )]
         .into_iter()
         .collect(),

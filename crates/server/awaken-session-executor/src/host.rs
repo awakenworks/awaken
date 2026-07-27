@@ -187,6 +187,10 @@ pub struct SharedHost {
     /// writes use the attempt's claim-fenced operation coordinator. Set via
     /// [`with_upstream`](Self::with_upstream); `None` is a store-owning server/host.
     pub(crate) upstream: Option<crate::worker_security::WorkerUpstream>,
+    /// Sole adapter for opaque credentials owned by this Worker process. Control
+    /// and Session code retain only exact non-secret references.
+    pub(crate) worker_credential_resolver:
+        Option<Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>>,
     /// The deployment axes (store/dispatch backend, durable ingress, wake), parsed
     /// once from the environment at construction. The runtime reads this typed
     /// config instead of reaching into process env at each call site.

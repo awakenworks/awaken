@@ -89,6 +89,8 @@ pub struct WorkerBootstrap {
     pub zone: Option<String>,
     pub capabilities: Vec<String>,
     pub max_concurrent: Option<u32>,
+    pub credential_probe_interval_secs: u64,
+    pub credential_observation_ttl_secs: u64,
 }
 
 /// One backend family for the complete resource plane.
@@ -304,7 +306,21 @@ impl ResolvedDeployment {
             zone: file.worker_zone.clone(),
             capabilities: file.worker_capabilities.clone().unwrap_or_default(),
             max_concurrent: file.worker_max_concurrent,
+            credential_probe_interval_secs: file
+                .worker_credential_probe_interval_secs
+                .unwrap_or(10),
+            credential_observation_ttl_secs: file
+                .worker_credential_observation_ttl_secs
+                .unwrap_or(30),
         };
+        if worker.credential_probe_interval_secs == 0
+            || worker.credential_observation_ttl_secs <= worker.credential_probe_interval_secs
+        {
+            return Err(
+                "worker credential observation TTL must be greater than the non-zero probe interval"
+                    .to_owned(),
+            );
+        }
         let run_local_pool = file.run_local_pool.unwrap_or(true);
         let dispatch_url = file.runtime_database_url.clone();
         if dispatch_url
@@ -609,6 +625,8 @@ struct FileConfig {
     worker_zone: Option<String>,
     worker_capabilities: Option<Vec<String>>,
     worker_max_concurrent: Option<u32>,
+    worker_credential_probe_interval_secs: Option<u64>,
+    worker_credential_observation_ttl_secs: Option<u64>,
     run_local_pool: Option<bool>,
     no_browser: Option<bool>,
     runtime_database_url: Option<String>,
@@ -778,6 +796,26 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("--server"));
+    }
+
+    #[test]
+    fn worker_credential_observation_window_fails_closed() {
+        let error = ResolvedDeployment::resolve_file(
+            ConfigOverrides {
+                role: Some(Role::Worker),
+                worker_server: Some("http://control".to_owned()),
+                ..Default::default()
+            },
+            Some(PathBuf::from("/home/dev")),
+            PathBuf::from("/home/dev/.awaken/config.toml"),
+            FileConfig {
+                worker_credential_probe_interval_secs: Some(10),
+                worker_credential_observation_ttl_secs: Some(10),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("TTL"));
     }
 
     #[test]
