@@ -1325,8 +1325,8 @@ pub use acp_cli::{
 // session-home provider over it — the host consumes these instead of owning them.
 pub use config_home::{ConfigHome, RetentionPolicy, SessionReuse};
 pub use host_discovery::{
-    AcpDetectionState, AcpDiscoverySpec, AcpHostDiscovery, AcpHostObservation, AcpLoginProbe,
-    AcpLoginRule, AcpProbeCommand, AcpProbePredicate,
+    AcpDetectionState, AcpDiscovery, AcpDiscoverySpec, AcpHostDiscovery, AcpHostObservation,
+    AcpLoginProbe, AcpLoginRule, AcpProbeCommand, AcpProbePredicate,
 };
 pub use session_home::{DirSessionHome, FsSessionBlobStore, SessionBlobStore};
 pub use subprocess::{
