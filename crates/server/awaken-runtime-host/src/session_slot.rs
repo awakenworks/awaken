@@ -67,7 +67,9 @@ pub(crate) struct SessionRuntimeSlot {
     pub environment: Option<Arc<crate::session_environment::SessionEnvironment>>,
     pub workspace: Option<String>,
     pub model_ref: Option<String>,
-    pub runtime_adapter: Option<String>,
+    /// Process-local copy of the backend frozen in the Session baseline. It is
+    /// validated against the immutable publication before runtime construction.
+    pub backend_ref: Option<String>,
     /// Exact Environment projection shared by Native and ACP realization.
     pub environment_projection: Option<FrozenEnvironmentRuntimeProjection>,
     pub memory: Option<Arc<BoundMemory>>,

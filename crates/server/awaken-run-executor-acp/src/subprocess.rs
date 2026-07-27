@@ -50,6 +50,7 @@ impl AcpLaunch {
     }
 }
 
+#[cfg(test)]
 fn inline_env(name: &str, value: &str) -> pc::EnvVar {
     pc::EnvVar {
         name: name.to_string(),

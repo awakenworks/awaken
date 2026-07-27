@@ -274,6 +274,7 @@ pub awaken_session_contract::AgentCapabilities::custom_tools: alloc::vec::Vec<aw
 pub awaken_session_contract::AgentCapabilities::delegates: alloc::vec::Vec<alloc::string::String>
 pub awaken_session_contract::AgentCapabilities::skills: alloc::vec::Vec<alloc::string::String>
 pub struct awaken_session_contract::AgentConfigView
+pub awaken_session_contract::AgentConfigView::backend_ref: alloc::string::String
 pub awaken_session_contract::AgentConfigView::delegate_ids: alloc::vec::Vec<alloc::string::String>
 pub awaken_session_contract::AgentConfigView::mcp_servers: alloc::vec::Vec<awaken_session_contract::AgentMcpServerView>
 pub awaken_session_contract::AgentConfigView::model: core::option::Option<alloc::string::String>

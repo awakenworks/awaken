@@ -2610,8 +2610,10 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         launch,
     ));
     let executor = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
-    let acp_host =
-        Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_acp_default(executor, "acp:test"));
+    let acp_host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_acp(executor));
+    acp_host.register_thread_backend_projection("mcp-acp-forbidden", "acp:test");
+    acp_host.register_thread_backend_projection("mcp-acp-protected", "acp:test");
+    acp_host.register_thread_backend_projection("mcp-acp-anonymous", "acp:test");
     // Deliberately install no credential resolver: the no-bypass failure must mask
     // material-source availability and prove no secret lookup was attempted.
     let acp_managed = crate::ManagedHost::new(acp_host.clone());
@@ -4806,5 +4808,70 @@ async fn rebuilt_host_redelivers_an_awaiting_remote_child_cancellation() {
         remote.cancellations.load(Ordering::SeqCst),
         2,
         "a new process has no ephemeral receipt and redelivers the durable intent"
+    );
+}
+
+#[tokio::test]
+async fn host_accepts_only_backend_projections_that_match_the_publication() {
+    // Cause graph:
+    // C1 immutable publication -> E1 execution backend authority.
+    // C2 frozen baseline projection -> E2 equality check only.
+    // C3 projection without publication -> E3 reject; a cache cannot become an
+    // authoring source merely because the publication is unavailable.
+    //
+    // | Rule | Publication | Projection | Result |
+    // | H1 | default | default | accept native |
+    // | H2 | default | acp:claude | reject mismatch |
+    // | H3 | default | absent | accept publication |
+    // | H4 | absent | acp:claude | reject missing authority |
+    let published_host = || {
+        let snapshot = crate::config::server_config(
+            "assistant",
+            "stub",
+            &HashSet::new(),
+            &HashSet::new(),
+            &[],
+            &Default::default(),
+            &[],
+            awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
+        );
+        let publications =
+            awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
+                .expect("valid publication");
+        SharedHost::new(Arc::new(OkModel), "stub").with_agent_publications(Arc::new(publications))
+    };
+
+    let matching = published_host();
+    matching.register_thread_backend_projection("backend-h1", "default");
+    matching
+        .ctx_for("backend-h1", Some("assistant"))
+        .await
+        .expect("H1 matching projection");
+
+    let mismatch = published_host();
+    mismatch.register_thread_backend_projection("backend-h2", "acp:claude");
+    let error = match mismatch.ctx_for("backend-h2", Some("assistant")).await {
+        Ok(_) => panic!("H2 accepted a mismatched backend projection"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("does not match publication"),
+        "H2"
+    );
+
+    published_host()
+        .ctx_for("backend-h3", Some("assistant"))
+        .await
+        .expect("H3 publication without redundant projection");
+
+    let orphan = SharedHost::new(Arc::new(OkModel), "stub");
+    orphan.register_thread_backend_projection("backend-h4", "acp:claude");
+    let error = match orphan.ctx_for("backend-h4", Some("assistant")).await {
+        Ok(_) => panic!("H4 accepted a backend projection without a publication"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("no immutable Agent publication"),
+        "H4"
     );
 }

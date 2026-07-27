@@ -628,6 +628,13 @@ impl ManagedState {
         let agent_environment = config_view
             .as_ref()
             .and_then(|view| view.environment.as_ref());
+        // The immutable Agent publication is the only backend authority.  The
+        // baseline persists this projection so recovery and Worker placement do
+        // not need to reopen the publication registry.
+        let published_backend_ref = config_view
+            .as_ref()
+            .map(|view| view.backend_ref.clone())
+            .filter(|backend_ref| !backend_ref.trim().is_empty());
         let environment_id = req
             .environment_id
             .clone()
@@ -645,7 +652,7 @@ impl ManagedState {
                             .snapshot_exact_for_session(
                                 &binding.environment_id,
                                 binding.revision,
-                                req.awaken_runtime(),
+                                published_backend_ref.as_deref(),
                                 &mcp_targets,
                             )
                             .await
@@ -654,7 +661,7 @@ impl ManagedState {
                         environments
                             .snapshot_for_session(
                                 &environment_id,
-                                req.awaken_runtime(),
+                                published_backend_ref.as_deref(),
                                 &mcp_targets,
                             )
                             .await
@@ -668,7 +675,7 @@ impl ManagedState {
             }
             None => crate::routes::environments::default_environment_snapshot(
                 environment_id.clone(),
-                req.awaken_runtime(),
+                published_backend_ref.as_deref(),
             ),
         };
         // Sole protocol-neutral composition/resolution point. Runtime receives this
@@ -732,7 +739,7 @@ impl ManagedState {
                 },
                 agent_id: agent_id.clone(),
                 model: resolved_model.id.clone(),
-                runtime: req.awaken_runtime().map(str::to_string),
+                runtime: published_backend_ref,
                 delegate_ids: delegate_ids.clone(),
                 toolsets: effective_toolsets,
                 mounts: Vec::new(),

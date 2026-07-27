@@ -1,10 +1,6 @@
-//! ACP backend routing for the managed host (R3/R4): which threads run on an
-//! external ACP CLI, and the executor that drives them.
-//!
-//! A session selects its runtime through the Managed API (`agent.runtime`), staged
-//! here per thread. `is_acp` decides the routing in `run_exec`; the executor is a
-//! peer `RunExecutor` that launches the CLI and commits through the same boundary
-//! as the native path.
+//! ACP execution for the managed host (R3/R4). Backend selection belongs to the
+//! immutable Agent publication and its frozen Session projection; this module
+//! owns only the executor that drives an already-selected ACP backend.
 
 use std::sync::Arc;
 
@@ -19,16 +15,10 @@ enum AcpExecutorSource {
     },
 }
 
-/// Holds the ACP executor and the per-thread runtime selection.
+/// Holds the ACP executor. Per-Session backend projections live in the common
+/// Session slot because Native, ACP, and A2A share that domain fact.
 pub(crate) struct AcpBackend {
     source: AcpExecutorSource,
-    slots: crate::session_slot::SessionRuntimeSlots,
-    /// The deployment's DEFAULT backend adapter (e.g. `"acp:claude"`), applied to a
-    /// thread that staged none. This is how a single-purpose ACP deployment routes
-    /// every session to the CLI WITHOUT a per-session `awaken.runtime` override — the
-    /// backend is a property of the deployment/agent, not a client-supplied knob. A
-    /// mixed host leaves it `None`, so only explicitly-selected `acp:*` threads route.
-    default_adapter: Option<String>,
 }
 
 impl AcpBackend {
@@ -55,20 +45,9 @@ impl AcpBackend {
         }
     }
 
-    /// Set the deployment default backend adapter (see [`Self::default_adapter`]).
-    fn with_default_adapter(mut self, adapter: String) -> Self {
-        self.default_adapter = Some(adapter);
-        self
-    }
-
-    pub(crate) fn new(
-        executor: Arc<AcpRunExecutor>,
-        slots: crate::session_slot::SessionRuntimeSlots,
-    ) -> Self {
+    pub(crate) fn new(executor: Arc<AcpRunExecutor>) -> Self {
         Self {
             source: AcpExecutorSource::Static(executor),
-            slots,
-            default_adapter: None,
         }
     }
 
@@ -76,7 +55,6 @@ impl AcpBackend {
         launch: crate::LaunchSource,
         observer: Option<Arc<dyn LaunchObserver>>,
         session_home: Option<Arc<dyn SessionHomeProvider>>,
-        slots: crate::session_slot::SessionRuntimeSlots,
     ) -> Self {
         Self {
             source: AcpExecutorSource::Bound {
@@ -84,8 +62,6 @@ impl AcpBackend {
                 observer,
                 session_home,
             },
-            slots,
-            default_adapter: None,
         }
     }
 
@@ -124,29 +100,6 @@ impl AcpBackend {
                 Arc::new(executor.with_permission_policy(permission))
             }
         }
-    }
-
-    /// Stage `thread`'s selected runtime adapter (e.g. `"acp:claude"` or `"awaken"`).
-    pub(crate) fn register(&self, thread: &str, adapter: &str) {
-        self.slots.update(thread, |slot| {
-            slot.runtime_adapter = Some(adapter.to_string());
-        });
-    }
-
-    /// Resolve the effective runtime selected for a thread. An explicit Session
-    /// selection wins over the deployment default.
-    pub(crate) fn adapter_for(&self, thread: &str) -> Option<String> {
-        self.slots
-            .read(thread, |slot| slot.runtime_adapter.clone())
-            .flatten()
-            .or_else(|| self.default_adapter.clone())
-    }
-
-    #[cfg(test)]
-    fn is_acp(&self, thread: &str) -> bool {
-        self.adapter_for(thread).is_some_and(|adapter| {
-            awaken_runtime_contract::resolved::Backend::from_ref(&adapter).is_acp()
-        })
     }
 }
 
@@ -189,10 +142,7 @@ impl crate::host::SharedHost {
     /// To publish bring-up progress to a UI, build the executor with
     /// `.with_launch_observer(host.acp_launch_observer())` before passing it here.
     pub fn with_acp(mut self, executor: Arc<AcpRunExecutor>) -> Self {
-        self.acp = Some(Arc::new(AcpBackend::new(
-            executor,
-            self.session_slots.clone(),
-        )));
+        self.acp = Some(Arc::new(AcpBackend::new(executor)));
         self
     }
 
@@ -206,25 +156,7 @@ impl crate::host::SharedHost {
             launch,
             Some(observer),
             session_home,
-            self.session_slots.clone(),
         )));
-        self
-    }
-
-    /// Serve `acp:*` sessions on `executor` AND make `default_adapter` (e.g.
-    /// `"acp:claude"`) the deployment's default backend: every session routes to the
-    /// ACP CLI unless it explicitly selects another runtime. This is the "backend
-    /// resolved from the deployment/agent, not from a client `awaken.runtime` knob"
-    /// path — for a single-purpose ACP deployment, sessions carry no runtime metadata.
-    pub fn with_acp_default(
-        mut self,
-        executor: Arc<AcpRunExecutor>,
-        default_adapter: impl Into<String>,
-    ) -> Self {
-        self.acp = Some(Arc::new(
-            AcpBackend::new(executor, self.session_slots.clone())
-                .with_default_adapter(default_adapter.into()),
-        ));
         self
     }
 
@@ -284,7 +216,7 @@ impl crate::host::SharedHost {
 
     /// Realize an explicitly supplied ACP launch source in the deployment's sandbox
     /// tier. Product code supplies a projected source backed by published access;
-    /// deterministic dev fixtures may supply [`LaunchSource::Fixed`] directly.
+    /// deterministic dev fixtures may supply [`crate::LaunchSource::Fixed`] directly.
     pub async fn with_acp_launch_source(
         self,
         hand_factory: Arc<dyn crate::HandExecutorFactory>,
@@ -385,11 +317,12 @@ impl crate::host::SharedHost {
         }
     }
 
-    /// Stage `thread`'s runtime adapter (R3): `"acp:*"` routes it to the ACP CLI.
-    pub fn register_thread_runtime(&self, thread: &str, adapter: &str) {
-        if let Some(acp) = &self.acp {
-            acp.register(thread, adapter);
-        }
+    /// Stage the exact backend copied from the frozen Session baseline. This is a
+    /// realization cache, not another selection API.
+    pub(crate) fn register_thread_backend_projection(&self, thread: &str, backend_ref: &str) {
+        self.session_slots.update(thread, |slot| {
+            slot.backend_ref = Some(backend_ref.to_string());
+        });
     }
 }
 
@@ -437,42 +370,36 @@ mod tests {
 
     #[test]
     fn with_projected_acp_wires_an_acp_backend_that_routes_acp_threads() {
+        // Cause graph: wiring an ACP executor provides execution capability only;
+        // a frozen Session projection supplies the backend fact. Neither creates a
+        // deployment-wide default.
+        //
+        // | Rule | Executor wired | Session projection | ACP selected |
+        // | A1 | yes | acp:claude | yes |
+        // | A2 | yes | absent | no |
         let cli = *awaken_run_executor_acp::acp_cli("claude").unwrap();
         let host = SharedHost::new(Arc::new(NoLlm), "test").with_projected_acp(
             cli,
             Arc::new(FixedModel),
             None,
         );
-        host.register_thread_runtime("t", "acp:claude");
-        let acp = host.acp.as_ref().expect("acp backend wired");
-        assert!(acp.is_acp("t"));
-        assert_eq!(acp.adapter_for("t").as_deref(), Some("acp:claude"));
-        assert!(!acp.is_acp("native-thread"));
-    }
-
-    #[test]
-    fn a_deployment_default_backend_routes_a_session_with_no_runtime_metadata() {
-        // A single-purpose ACP deployment declares its default backend, so a session
-        // carrying NO `awaken.runtime` override still routes to the ACP CLI — the
-        // backend comes from the deployment, not a per-session client knob.
-        let launch = awaken_run_executor_acp::AcpLaunch::custom(vec!["true".into()], vec![]);
-        let source = Arc::new(awaken_run_executor_acp::SubprocessChannelSource::new(
-            launch,
-        ));
-        let executor = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
-        let host =
-            SharedHost::new(Arc::new(NoLlm), "test").with_acp_default(executor, "acp:custom");
-        let acp = host.acp.as_ref().expect("acp backend wired");
-        // An unstaged thread inherits the deployment default → routes to ACP.
-        assert!(acp.is_acp("unstaged-thread"));
+        host.register_thread_backend_projection("t", "acp:claude");
+        assert!(host.acp.is_some(), "A1 executor");
         assert_eq!(
-            acp.adapter_for("unstaged-thread").as_deref(),
-            Some("acp:custom")
+            host.session_slots
+                .read("t", |slot| slot.backend_ref.clone())
+                .flatten()
+                .as_deref(),
+            Some("acp:claude"),
+            "A1"
         );
-        // An explicit non-ACP selection still overrides the default (native path).
-        host.register_thread_runtime("native-thread", "awaken");
-        assert!(!acp.is_acp("native-thread"));
-        assert_eq!(acp.adapter_for("native-thread").as_deref(), Some("awaken"));
+        assert_eq!(
+            host.session_slots
+                .read("unstaged-thread", |slot| slot.backend_ref.clone())
+                .flatten(),
+            None,
+            "A2"
+        );
     }
 
     #[test]
@@ -484,8 +411,15 @@ mod tests {
         let host = SharedHost::new(Arc::new(NoLlm), "test")
             .with_session_blob_root(blobs)
             .with_projected_acp(cli, Arc::new(FixedModel), None);
-        host.register_thread_runtime("t", "acp:claude");
-        assert!(host.acp.as_ref().expect("acp backend wired").is_acp("t"));
+        host.register_thread_backend_projection("t", "acp:claude");
+        assert!(host.acp.is_some());
+        assert_eq!(
+            host.session_slots
+                .read("t", |slot| slot.backend_ref.clone())
+                .flatten()
+                .as_deref(),
+            Some("acp:claude")
+        );
     }
 
     #[tokio::test]

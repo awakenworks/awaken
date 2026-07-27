@@ -87,24 +87,32 @@ struct AcceptingFake {
 
 struct AgentWithResources;
 
+fn empty_agent_view(backend_ref: &str) -> AgentConfigView {
+    AgentConfigView {
+        environment: None,
+        model: None,
+        backend_ref: backend_ref.into(),
+        system: None,
+        tool_ids: Vec::new(),
+        toolsets: Vec::new(),
+        client_tools: Vec::new(),
+        mcp_servers: Vec::new(),
+        skill_ids: Vec::new(),
+        delegate_ids: Vec::new(),
+        resources: Vec::new(),
+    }
+}
+
 impl AgentConfigSource for AgentWithResources {
     fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
         (agent_id == "a").then(|| AgentConfigView {
-            environment: None,
-            model: None,
-            system: None,
-            tool_ids: Vec::new(),
-            toolsets: Vec::new(),
-            client_tools: Vec::new(),
-            mcp_servers: Vec::new(),
-            skill_ids: Vec::new(),
-            delegate_ids: Vec::new(),
             resources: vec![input(
                 "release-notes",
                 InputResourceId::File(FileId::from("file-release")),
                 "/mnt/release.txt",
                 ResourceAccess::ReadOnly,
             )],
+            ..empty_agent_view("genai")
         })
     }
 }
@@ -114,12 +122,6 @@ struct AgentWithIntegrations;
 impl AgentConfigSource for AgentWithIntegrations {
     fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
         (agent_id == "integrated").then(|| AgentConfigView {
-            environment: None,
-            model: None,
-            system: None,
-            tool_ids: Vec::new(),
-            toolsets: Vec::new(),
-            client_tools: Vec::new(),
             mcp_servers: vec![
                 awaken_protocol_managed::AgentMcpServerView {
                     name: "docs".into(),
@@ -136,7 +138,7 @@ impl AgentConfigSource for AgentWithIntegrations {
             ],
             skill_ids: vec!["skill_release".into()],
             delegate_ids: vec!["researcher".into()],
-            resources: Vec::new(),
+            ..empty_agent_view("genai")
         })
     }
 }
@@ -146,11 +148,6 @@ struct AgentWithClientTool;
 impl AgentConfigSource for AgentWithClientTool {
     fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
         (agent_id == "client-tool-agent").then(|| AgentConfigView {
-            environment: None,
-            model: None,
-            system: None,
-            tool_ids: Vec::new(),
-            toolsets: Vec::new(),
             client_tools: vec![AgentClientToolView {
                 name: "lookup".into(),
                 description: "exact client lookup".into(),
@@ -160,10 +157,7 @@ impl AgentConfigSource for AgentWithClientTool {
                     "required": ["query"]
                 }),
             }],
-            mcp_servers: Vec::new(),
-            skill_ids: Vec::new(),
-            delegate_ids: Vec::new(),
-            resources: Vec::new(),
+            ..empty_agent_view("genai")
         })
     }
 }
@@ -173,21 +167,13 @@ struct AgentWithPlatformRepository;
 impl AgentConfigSource for AgentWithPlatformRepository {
     fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
         (agent_id == "repo-agent").then(|| AgentConfigView {
-            environment: None,
-            model: None,
-            system: None,
-            tool_ids: Vec::new(),
-            toolsets: Vec::new(),
-            client_tools: Vec::new(),
-            mcp_servers: Vec::new(),
-            skill_ids: Vec::new(),
-            delegate_ids: Vec::new(),
             resources: vec![input(
                 "platform-repository",
                 InputResourceId::Repository(RepositoryId::from("platform-repository")),
                 "/workspace/repository",
                 ResourceAccess::ReadWrite,
             )],
+            ..empty_agent_view("genai")
         })
     }
 }
@@ -197,15 +183,6 @@ struct WorkspaceScopedAgent;
 impl AgentConfigSource for WorkspaceScopedAgent {
     fn agent_view_in(&self, workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
         (workspace_id == "default" && agent_id == "scoped").then(|| AgentConfigView {
-            environment: None,
-            model: None,
-            system: None,
-            tool_ids: Vec::new(),
-            toolsets: Vec::new(),
-            client_tools: Vec::new(),
-            mcp_servers: Vec::new(),
-            skill_ids: Vec::new(),
-            delegate_ids: Vec::new(),
             resources: vec![
                 input(
                     "agent-memory",
@@ -220,6 +197,7 @@ impl AgentConfigSource for WorkspaceScopedAgent {
                     ResourceAccess::ReadOnly,
                 ),
             ],
+            ..empty_agent_view("genai")
         })
     }
 }
@@ -236,16 +214,94 @@ impl AgentConfigSource for AgentWithEnvironment {
                 environment_id: self.environment_id.clone(),
                 revision: self.revision,
             }),
-            model: None,
-            system: None,
-            tool_ids: Vec::new(),
-            toolsets: Vec::new(),
-            client_tools: Vec::new(),
-            mcp_servers: Vec::new(),
-            skill_ids: Vec::new(),
-            delegate_ids: Vec::new(),
-            resources: Vec::new(),
+            ..empty_agent_view("genai")
         })
+    }
+}
+
+struct AgentWithBackend(&'static str);
+
+impl AgentConfigSource for AgentWithBackend {
+    fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
+        (agent_id == "backend-agent").then(|| empty_agent_view(self.0))
+    }
+}
+
+#[tokio::test]
+async fn publication_backend_is_the_only_session_backend_authority() {
+    // Cause graph:
+    // C1 installed publication -> E1 exact backend is copied into the baseline
+    // and determines the Environment's inference holder.
+    // C2 request `awaken.runtime` metadata -> E2 no backend effect.
+    // C3 no installed publication -> E3 compatibility Session has no backend
+    // projection and uses the native Worker holder.
+    //
+    // Decision table:
+    // | Rule | Published backend | Metadata backend | Baseline | Inference boundary |
+    // | B1 | acp:claude | genai | acp:claude | Workload |
+    // | B2 | genai | acp:codex | genai | Worker |
+    // | B3 | absent | acp:codex | absent | Worker |
+    let cases = [
+        (
+            "B1",
+            Some("acp:claude"),
+            "genai",
+            Some("acp:claude"),
+            awaken_credential_contract::PlaintextBoundary::Workload,
+        ),
+        (
+            "B2",
+            Some("genai"),
+            "acp:codex",
+            Some("genai"),
+            awaken_credential_contract::PlaintextBoundary::Worker,
+        ),
+        (
+            "B3",
+            None,
+            "acp:codex",
+            None,
+            awaken_credential_contract::PlaintextBoundary::Worker,
+        ),
+    ];
+
+    for (rule, published, metadata, expected_runtime, expected_boundary) in cases {
+        let runtime = AcceptingFake::default();
+        let repo = std::sync::Arc::new(
+            SqliteManagedSessionRepository::open_in_memory().expect("session repository"),
+        );
+        let mut state = ManagedState::new(runtime.clone()).with_session_repo(repo.clone());
+        if let Some(backend_ref) = published {
+            state = state.with_config_source(std::sync::Arc::new(AgentWithBackend(backend_ref)));
+        }
+        let agent = if published.is_some() {
+            "backend-agent"
+        } else {
+            "unmanaged-agent"
+        };
+        let request = serde_json::from_value(json!({
+            "agent": agent,
+            "metadata": {"awaken.runtime": metadata}
+        }))
+        .unwrap();
+        let id = state.create_session(request, None).await.unwrap().id;
+        let durable = repo.get(&id).await.unwrap();
+        let baseline = durable.frozen_baseline().expect("frozen baseline");
+        assert_eq!(baseline.runtime.as_deref(), expected_runtime, "{rule}");
+        assert_eq!(
+            baseline
+                .environment
+                .credential_realization
+                .inference_holder
+                .boundary,
+            expected_boundary,
+            "{rule}"
+        );
+        assert_eq!(
+            runtime.prepared.lock().unwrap()[0].runtime.as_deref(),
+            expected_runtime,
+            "{rule} runtime receives only the persisted projection"
+        );
     }
 }
 
