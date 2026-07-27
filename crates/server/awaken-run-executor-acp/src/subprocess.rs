@@ -26,10 +26,18 @@ use crate::{AcpCli, AgentChannelSource, AgentSession, OpenError, ResolvedModel};
 /// A resolved launch for an ACP CLI: the argv plus the env to set (model, base
 /// URL, key). Runtime-specific projection lives only in the [`AcpCli`] catalog;
 /// this value is its mechanism-neutral output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcpLaunchIdentity {
+    Managed,
+    BackendOwned,
+}
+
 #[derive(Debug, Clone)]
 pub struct AcpLaunch {
     pub argv: Vec<String>,
     pub env: Vec<pc::EnvVar>,
+    pub identity: AcpLaunchIdentity,
+    pub session_config_option: Option<awaken_protocol_acp::SessionConfigOptionSelection>,
 }
 
 impl AcpLaunch {
@@ -46,6 +54,8 @@ impl AcpLaunch {
                     visibility: pc::EnvVisibility::Process,
                 })
                 .collect(),
+            identity: AcpLaunchIdentity::Managed,
+            session_config_option: None,
         }
     }
 }
@@ -99,6 +109,21 @@ fn with_host_passthrough(
 #[must_use]
 pub fn with_local_host_launch_environment(env: Vec<pc::EnvVar>) -> Vec<pc::EnvVar> {
     with_host_passthrough(env, |key| std::env::var(key).ok())
+}
+
+/// Bind a backend-owned launch to the actual host user's PATH/HOME. Resolver
+/// passthrough cannot replace either identity coordinate.
+#[must_use]
+pub fn with_backend_owned_host_environment(env: Vec<pc::EnvVar>) -> Vec<pc::EnvVar> {
+    with_backend_owned_host_environment_from(env, |key| std::env::var(key).ok())
+}
+
+fn with_backend_owned_host_environment_from(
+    mut env: Vec<pc::EnvVar>,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Vec<pc::EnvVar> {
+    env.retain(|var| !HOST_PASSTHROUGH_ENV.contains(&var.name.as_str()));
+    with_host_passthrough(env, lookup)
 }
 
 /// Launches an ACP CLI as a local child (`env_clear` + only the projected env, so
@@ -157,7 +182,10 @@ async fn spawn(
         .kill_on_drop(true);
     // Projected model/secret env plus the PATH/HOME allowlist, so `npx`/`node`/the
     // CLI resolve and `npx` finds its cache — everything else stays cleared.
-    let env = with_local_host_launch_environment(launch.env.clone());
+    let env = match launch.identity {
+        AcpLaunchIdentity::Managed => with_local_host_launch_environment(launch.env.clone()),
+        AcpLaunchIdentity::BackendOwned => with_backend_owned_host_environment(launch.env.clone()),
+    };
     let mut planned = pc::Command::new(launch.argv.clone());
     planned.env = env;
     planned.stdio = pc::Stdio::Piped;
@@ -191,6 +219,7 @@ async fn spawn(
         workspace_cwd: None,
         // Populated by `ProjectingChannelSource::open` for an `AcpSession` CLI.
         mcp_session_servers: Vec::new(),
+        session_config_option: launch.session_config_option.clone(),
     })
 }
 
@@ -358,20 +387,6 @@ impl AcpSettings {
     }
 }
 
-/// Project the run's declared MCP servers onto its CLI's delivery mechanism — a config
-/// file for a legacy `ConfigFileToml` CLI, `session/new` params for an `AcpSession`
-/// CLI (claude/gemini/opencode). `None` when the run declares none. The host consumes
-/// this before/at launch: writing [`crate::McpDelivery::ConfigFile`] into the config
-/// home, or threading [`crate::McpDelivery::SessionServers`] into `session/new`. This
-/// is the seam that finally carries config-plane MCP servers to the projection core.
-pub(crate) fn mcp_delivery(
-    cli: &AcpCli,
-    plugin_config: &BTreeMap<String, serde_json::Value>,
-) -> Option<crate::McpDelivery> {
-    let servers = AcpSettings::from_plugin_config(plugin_config).mcp_servers;
-    (!servers.is_empty()).then(|| cli.project_mcp(&servers))
-}
-
 /// A run's MCP servers projected into host-neutral, environment-agnostic delivery: the
 /// `session/new` params to thread in-band (`AcpSession` CLIs) and/or a config file to
 /// write (`ConfigFileToml` CLIs, delivered as [`crate::McpDelivery::ConfigFile`]). The
@@ -416,17 +431,31 @@ pub fn mcp_injection_from_servers(
     })
 }
 
+/// Admit one already-projected MCP delivery against the launch identity. A
+/// backend-owned CLI must keep its host config home intact, so only in-band ACP
+/// Session delivery is compatible. All channel sources share this one rule.
+pub fn admit_mcp_injection(
+    identity: AcpLaunchIdentity,
+    injection: &McpInjection,
+) -> std::result::Result<(), OpenError> {
+    if identity == AcpLaunchIdentity::BackendOwned && injection.config_file.is_some() {
+        return Err(OpenError(
+            "backend-owned local ACP identity requires in-band ACP MCP configuration".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Write a legacy `ConfigFileToml` CLI's MCP config into its isolated config home.
 /// The config-home dir is the value the projection put in the launch env
 /// under the CLI's `config_home_env`. No-op when the run declares no MCP servers, the CLI
 /// uses the `session/new` interface, or no config home was resolved.
 fn write_mcp_config(
     cli: &AcpCli,
-    plugin_config: &std::collections::BTreeMap<String, serde_json::Value>,
+    injection: &McpInjection,
     launch_env: &[pc::EnvVar],
 ) -> std::result::Result<(), OpenError> {
-    let Some(crate::McpDelivery::ConfigFile { path, contents }) = mcp_delivery(cli, plugin_config)
-    else {
+    let Some((path, contents)) = &injection.config_file else {
         return Ok(());
     };
     let config_home_env = cli
@@ -453,7 +482,7 @@ fn write_mcp_config(
 #[cfg(test)]
 mod mcp_wiring_tests {
     use super::*;
-    use crate::{McpDelivery, acp_cli};
+    use crate::acp_cli;
 
     fn plugin_config_with_mcp() -> std::collections::BTreeMap<String, serde_json::Value> {
         let mut pc = std::collections::BTreeMap::new();
@@ -470,25 +499,18 @@ mod mcp_wiring_tests {
     }
 
     #[test]
-    fn mcp_delivery_reads_the_config_plane_and_projects_to_the_cli() {
+    fn mcp_injection_reads_the_config_plane_and_projects_to_the_cli() {
         let pc = plugin_config_with_mcp();
         // A ConfigFileToml driver gets a secret-free config.toml carrying the route.
-        match mcp_delivery(&crate::acp_cli::legacy_config_file_cli(), &pc) {
-            Some(McpDelivery::ConfigFile { path, contents }) => {
-                assert_eq!(path, "config.toml");
-                assert!(contents.contains("[mcp_servers.github]"));
-                assert!(!contents.to_ascii_lowercase().contains("credential"));
-            }
-            other => panic!("config-file CLI should deliver a config file, got {other:?}"),
-        }
+        let config = mcp_injection(&crate::acp_cli::legacy_config_file_cli(), &pc).unwrap();
+        let (path, contents) = config.config_file.expect("config-file projection");
+        assert_eq!(path, "config.toml");
+        assert!(contents.contains("[mcp_servers.github]"));
+        assert!(!contents.to_ascii_lowercase().contains("credential"));
         // claude (AcpSession) → the servers pass through for session/new.
-        match mcp_delivery(acp_cli("claude").unwrap(), &pc) {
-            Some(McpDelivery::SessionServers(s)) => {
-                assert_eq!(s.len(), 1);
-                assert_eq!(s[0].name, "github");
-            }
-            other => panic!("claude should deliver session servers, got {other:?}"),
-        }
+        let session = mcp_injection(acp_cli("claude").unwrap(), &pc).unwrap();
+        assert_eq!(session.session_servers.len(), 1);
+        assert_eq!(session.session_servers[0].name, "github");
     }
 
     #[test]
@@ -532,7 +554,10 @@ mod mcp_wiring_tests {
     #[test]
     fn no_declared_servers_yields_no_delivery() {
         let empty = std::collections::BTreeMap::new();
-        assert!(mcp_delivery(&crate::acp_cli::legacy_config_file_cli(), &empty).is_none());
+        assert_eq!(
+            mcp_injection(&crate::acp_cli::legacy_config_file_cli(), &empty).unwrap(),
+            McpInjection::default()
+        );
     }
 
     #[test]
@@ -544,7 +569,11 @@ mod mcp_wiring_tests {
 
         write_mcp_config(
             &crate::acp_cli::legacy_config_file_cli(),
-            &plugin_config_with_mcp(),
+            &mcp_injection(
+                &crate::acp_cli::legacy_config_file_cli(),
+                &plugin_config_with_mcp(),
+            )
+            .unwrap(),
             &env,
         )
         .unwrap();
@@ -576,7 +605,11 @@ mod mcp_wiring_tests {
         let env = vec![inline_env("TEST_CONFIG_HOME", &isolated.to_string_lossy())];
         write_mcp_config(
             &crate::acp_cli::legacy_config_file_cli(),
-            &plugin_config_with_mcp(),
+            &mcp_injection(
+                &crate::acp_cli::legacy_config_file_cli(),
+                &plugin_config_with_mcp(),
+            )
+            .unwrap(),
             &env,
         )
         .unwrap();
@@ -611,7 +644,11 @@ mod mcp_wiring_tests {
 
         let error = write_mcp_config(
             &crate::acp_cli::legacy_config_file_cli(),
-            &plugin_config_with_mcp(),
+            &mcp_injection(
+                &crate::acp_cli::legacy_config_file_cli(),
+                &plugin_config_with_mcp(),
+            )
+            .unwrap(),
             &[],
         )
         .unwrap_err();
@@ -632,7 +669,12 @@ mod mcp_wiring_tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let env = vec![inline_env("CLAUDE_CONFIG_DIR", &dir.to_string_lossy())];
-        write_mcp_config(acp_cli("claude").unwrap(), &plugin_config_with_mcp(), &env).unwrap();
+        write_mcp_config(
+            acp_cli("claude").unwrap(),
+            &mcp_injection(acp_cli("claude").unwrap(), &plugin_config_with_mcp()).unwrap(),
+            &env,
+        )
+        .unwrap();
         assert!(!dir.join("config.toml").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -650,16 +692,14 @@ impl AgentChannelSource for ProjectingChannelSource {
         // A legacy `ConfigFileToml` CLI gets its MCP servers written into the config
         // home before launch; an `AcpSession` CLI carries them at `session/new` instead.
         let plugin_config = &activation.snapshot.resolved_spec.plugin_config;
-        write_mcp_config(&self.cli, plugin_config, &launch.env)?;
+        let injection = mcp_injection(&self.cli, plugin_config)?;
+        admit_mcp_injection(launch.identity, &injection)?;
+        write_mcp_config(&self.cli, &injection, &launch.env)?;
         let broker = self.resolver.secret_broker();
         let mut session = spawn(&launch, CLI_CODEC, broker.as_ref()).await?;
         // An `AcpSession` CLI (claude/gemini/opencode) carries its MCP servers at
         // `session/new`; the driver reads them off the session into the turn config.
-        if let Some(crate::McpDelivery::SessionServers(servers)) =
-            mcp_delivery(&self.cli, plugin_config)
-        {
-            session.mcp_session_servers = servers.iter().map(to_session_mcp_server).collect();
-        }
+        session.mcp_session_servers = injection.session_servers;
         Ok(session)
     }
 }
@@ -838,6 +878,30 @@ mod tests {
     }
 
     #[test]
+    fn mcp_injection_admission_has_one_identity_rule() {
+        use crate::{McpServerConfig, McpTransport};
+        // Cause graph / decision table: managed accepts either mechanism;
+        // backend-owned accepts Session delivery and rejects config-file delivery
+        // so its host config/login home is never replaced.
+        let config_file = McpInjection {
+            config_file: Some(("config.toml".into(), "x".into())),
+            session_servers: Vec::new(),
+        };
+        let session = McpInjection {
+            config_file: None,
+            session_servers: vec![to_session_mcp_server(&McpServerConfig {
+                name: "mcp".into(),
+                transport: McpTransport::Http {
+                    url: "https://mcp.invalid".into(),
+                },
+            })],
+        };
+        assert!(admit_mcp_injection(AcpLaunchIdentity::Managed, &config_file).is_ok());
+        assert!(admit_mcp_injection(AcpLaunchIdentity::BackendOwned, &session).is_ok());
+        assert!(admit_mcp_injection(AcpLaunchIdentity::BackendOwned, &config_file).is_err());
+    }
+
+    #[test]
     fn acp_settings_round_trips_through_json() {
         let s = AcpSettings {
             compact_window: Some(8192),
@@ -882,6 +946,23 @@ mod tests {
             !env.iter().any(|var| var.name == "HOME"),
             "absent host key omitted"
         );
+    }
+
+    #[test]
+    fn backend_owned_host_identity_cannot_be_overridden_by_projection() {
+        // Cause graph / decision table: a projected PATH/HOME is removed; a host
+        // value replaces it. Non-identity env remains untouched.
+        let env = with_backend_owned_host_environment_from(
+            vec![
+                inline_env("PATH", "/projected/bin"),
+                inline_env("HOME", "/projected/home"),
+                inline_env("LANG", "C"),
+            ],
+            |key| Some(format!("/host/{key}")),
+        );
+        assert_eq!(env_value(&env, "PATH"), Some("/host/PATH"));
+        assert_eq!(env_value(&env, "HOME"), Some("/host/HOME"));
+        assert_eq!(env_value(&env, "LANG"), Some("C"));
     }
 
     #[tokio::test]
@@ -1000,6 +1081,8 @@ mod tests {
                 },
                 visibility: pc::EnvVisibility::Process,
             }],
+            identity: AcpLaunchIdentity::Managed,
+            session_config_option: None,
         };
         let debug = format!("{launch:?}");
         assert!(!debug.contains("lease://acp-exact"));

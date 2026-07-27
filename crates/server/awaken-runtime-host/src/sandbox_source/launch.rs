@@ -1,4 +1,8 @@
-//! Exact ACP launch-route selection and projection.
+//! ACP launch-route selection for sandbox-backed channel sources.
+//!
+//! This module owns the configuration-plane decision of which registered ACP
+//! CLI serves a run and projects that route into one concrete launch. Sandbox
+//! realization remains in the parent module.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -96,7 +100,6 @@ impl AcpLaunchRegistry {
             .resolver
             .credential_realization_capabilities())
     }
-
     pub(super) fn combined_credential_realization_capabilities(
         &self,
     ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
@@ -108,7 +111,12 @@ impl AcpLaunchRegistry {
     }
 }
 
-/// How a sandboxed/containerized ACP source obtains a run's CLI launch.
+/// How a sandboxed/containerized ACP source obtains a run's CLI launch: a fixed
+/// test argv, or an exact per-run route from the Worker's launch registry.
+///
+/// This is the public factory input to the parent module's channel-source
+/// builder: a composition root picks `Projected` to serve each run's
+/// config-plane-selected CLI, or `Fixed` for a trusted/test single argv.
 #[derive(Clone)]
 pub enum LaunchSource {
     /// One CLI for every `acp:*` thread (explicit trusted/test composition only).
@@ -143,7 +151,7 @@ impl LaunchSource {
         }
     }
 
-    /// Resolve the fixed launch or the run's exact projected ACP route.
+    /// Projects the run's exact selected route into one concrete launch.
     pub(super) fn resolve(
         &self,
         activation: &RunActivation,
@@ -159,7 +167,7 @@ impl LaunchSource {
             LaunchSource::Projected(registry) => {
                 let selected = registry.selected(backend)?;
                 let model = selected.resolver.model(activation, context)?;
-                let credential_artifact = model.credential_artifact.clone();
+                let credential_artifact = model.credential_artifact().cloned();
                 let extra_env = selected.resolver.extra_env(activation)?;
                 let window = awaken_run_executor_acp::AcpSettings::from_plugin_config(
                     &activation.snapshot.resolved_spec.plugin_config,
@@ -185,5 +193,79 @@ impl LaunchSource {
                 registry.selected(backend).map(|route| Some(&route.cli))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct FakeResolver;
+
+    impl LaunchResolver for FakeResolver {
+        fn model(
+            &self,
+            _activation: &RunActivation,
+            _context: &awaken_runtime_contract::RuntimeRunContext,
+        ) -> Result<awaken_run_executor_acp::ResolvedModel, OpenError> {
+            unreachable!("route-selection tests do not resolve a model")
+        }
+    }
+
+    #[test]
+    fn exact_routes_multiple_clis_and_requires_a_default_for_bare_acp() {
+        // Cause graph: explicit cli -> exact route; bare acp -> configured
+        // default; unknown cli or missing default -> closed failure.
+        // Decision table:
+        // explicit/known | any default     | selected route
+        // explicit/other | any default     | error
+        // bare           | known default   | default route
+        // bare           | missing default | error
+        let routes = ["claude", "codex"]
+            .into_iter()
+            .map(|id| {
+                (
+                    *awaken_run_executor_acp::acp_cli(id).unwrap(),
+                    Arc::new(FakeResolver) as Arc<dyn LaunchResolver>,
+                )
+            })
+            .collect();
+        let registry = AcpLaunchRegistry::new(routes, Some("codex".to_string())).unwrap();
+        let selected = registry
+            .selected(&awaken_runtime_contract::resolved::Backend::Acp {
+                cli: "claude".to_string(),
+            })
+            .unwrap();
+        assert_eq!(selected.cli.id, "claude");
+        let selected = registry
+            .selected(&awaken_runtime_contract::resolved::Backend::Acp { cli: String::new() })
+            .unwrap();
+        assert_eq!(selected.cli.id, "codex");
+        assert!(
+            registry
+                .selected(&awaken_runtime_contract::resolved::Backend::Acp {
+                    cli: "gemini".to_string(),
+                })
+                .is_err()
+        );
+
+        let no_default = AcpLaunchRegistry::new(
+            ["claude", "codex"]
+                .into_iter()
+                .map(|id| {
+                    (
+                        *awaken_run_executor_acp::acp_cli(id).unwrap(),
+                        Arc::new(FakeResolver) as Arc<dyn LaunchResolver>,
+                    )
+                })
+                .collect(),
+            None,
+        )
+        .unwrap();
+        assert!(
+            no_default
+                .selected(&awaken_runtime_contract::resolved::Backend::Acp { cli: String::new() })
+                .is_err()
+        );
     }
 }

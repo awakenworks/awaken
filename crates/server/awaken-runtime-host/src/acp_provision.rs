@@ -1,8 +1,8 @@
 //! Host-side provisioning for a launched ACP CLI: the [`LaunchResolver`] that turns
-//! publication-pinned inference access into concrete launch inputs. Endpoint/model
-//! coordinates come only from the immutable snapshot and the exact credential is
-//! materialized from the persisted vault. Process environment may advertise which
-//! CLI a worker can host, but never supplies provider execution facts.
+//! publication-pinned inference access into concrete launch inputs. Managed
+//! candidates project their exact endpoint and claimed vault credential;
+//! backend-owned candidates project only their model policy and leave account,
+//! endpoint, refresh, and login material to the local CLI.
 
 use awaken_run_executor_acp::{
     AcpCli, ConfigHome, LaunchResolver, OpenError, ProcessSecretRequirement, ResolvedModel,
@@ -10,7 +10,9 @@ use awaken_run_executor_acp::{
 #[cfg(test)]
 use awaken_runtime_contract::CredentialRealizationKind;
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::resolved::ModelProvisioning;
+use awaken_runtime_contract::resolved::{
+    BackendModelSelection, ModelProvisioning, ResolvedModelCandidate,
+};
 use std::path::PathBuf;
 
 /// Resolves an ACP run from its published access and a worker-side exact credential
@@ -35,13 +37,12 @@ impl PublishedAcpLaunchResolver {
         }
     }
 
-    fn resolve_model(
+    fn candidate<'a>(
         &self,
-        activation: &RunActivation,
-        context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
-    ) -> Result<ResolvedModel, OpenError> {
+        activation: &'a RunActivation,
+    ) -> Result<&'a ResolvedModelCandidate, OpenError> {
         let model_ref = activation.effective_model_ref();
-        let candidate = activation
+        activation
             .snapshot
             .resolved_spec
             .candidate_for_model(model_ref)
@@ -49,13 +50,40 @@ impl PublishedAcpLaunchResolver {
                 OpenError(format!(
                     "model {model_ref} is outside the publication-pinned candidate set"
                 ))
-            })?;
+            })
+    }
+
+    fn resolve_model(
+        &self,
+        activation: &RunActivation,
+        context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
+    ) -> Result<ResolvedModel, OpenError> {
+        let model_ref = activation.effective_model_ref();
+        let candidate = self.candidate(activation)?;
         let ModelProvisioning::Provider {
             endpoint,
             credential,
             ..
         } = &candidate.provisioning
         else {
+            if let ModelProvisioning::BackendOwned {
+                model_selection, ..
+            } = &candidate.provisioning
+            {
+                let coherent = match model_selection {
+                    BackendModelSelection::Default => candidate.binding.model_ref.is_empty(),
+                    BackendModelSelection::Exact => !candidate.binding.model_ref.trim().is_empty(),
+                };
+                if !coherent {
+                    return Err(OpenError(
+                        "published backend model policy is incoherent".into(),
+                    ));
+                }
+                return Ok(ResolvedModel::backend_owned(
+                    *model_selection,
+                    candidate.binding.model_ref.clone(),
+                ));
+            }
             return Err(OpenError(format!(
                 "published model {model_ref} has no provider endpoint"
             )));
@@ -90,12 +118,12 @@ impl PublishedAcpLaunchResolver {
                     .into(),
             ));
         }
-        Ok(ResolvedModel {
-            base_url: endpoint.base_url,
-            model: endpoint.upstream_model,
+        Ok(ResolvedModel::managed(
+            endpoint.base_url,
+            endpoint.upstream_model,
             process_secret,
             credential_artifact,
-        })
+        ))
     }
 
     /// Open the exact thread config home. Failure is terminal: allowing the CLI
@@ -123,7 +151,13 @@ impl LaunchResolver for PublishedAcpLaunchResolver {
     }
 
     fn extra_env(&self, activation: &RunActivation) -> Result<Vec<(String, String)>, OpenError> {
-        self.config_home_env(&activation.thread_id.0)
+        match &self.candidate(activation)?.provisioning {
+            ModelProvisioning::BackendOwned { .. } => Ok(Vec::new()),
+            ModelProvisioning::Provider { .. } => self.config_home_env(&activation.thread_id.0),
+            ModelProvisioning::HostExecutor => Err(OpenError(
+                "host-executor model cannot be projected as ACP".into(),
+            )),
+        }
     }
 
     fn secret_broker(
@@ -402,10 +436,18 @@ mod tests {
         let resolved = resolver
             .model(&activation(Some(model.clone())), &context)
             .unwrap();
-        assert_eq!(resolved.base_url, "https://db.example/v1");
-        assert_eq!(resolved.model, "upstream-model");
-        let reference = resolved
-            .process_secret
+        let ResolvedModel::Managed {
+            base_url,
+            model,
+            process_secret,
+            ..
+        } = &resolved
+        else {
+            panic!("provider candidate must resolve as managed")
+        };
+        assert_eq!(base_url, "https://db.example/v1");
+        assert_eq!(model, "upstream-model");
+        let reference = process_secret
             .as_ref()
             .expect("credential-bearing model has process requirement")
             .reference();
@@ -594,8 +636,10 @@ mod tests {
             );
             let result = match plan {
                 Ok(model) => {
-                    let reference = model
-                        .process_secret
+                    let ResolvedModel::Managed { process_secret, .. } = &model else {
+                        panic!("provider candidate must resolve as managed")
+                    };
+                    let reference = process_secret
                         .as_ref()
                         .expect("planned credential requirement")
                         .reference();
@@ -625,6 +669,60 @@ mod tests {
                 rule.expected_records,
                 "{} receipt attempts",
                 rule.id
+            );
+        }
+    }
+
+    #[test]
+    fn backend_owned_resolution_never_opens_managed_config_or_material() {
+        // Cause graph: published BackendOwned candidate -> explicit model policy
+        // -> CLI projection. The managed config-home/materializer branches have no
+        // edge from this variant.
+        //
+        // Decision table:
+        // L1 Default + empty model -> BackendOwned(Default), empty extra env
+        // L2 Exact + model id      -> BackendOwned(Exact), empty extra env
+        for (rule, selection, model) in [
+            ("L1", BackendModelSelection::Default, ""),
+            ("L2", BackendModelSelection::Exact, "gpt-exact"),
+        ] {
+            let candidate =
+                awaken_runtime_contract::resolved::ResolvedModelCandidate::backend_owned(
+                    ModelBinding::new("local-codex", model, "acp:codex"),
+                    CredentialRef {
+                        id: "local-codex".into(),
+                        revision: 9,
+                    },
+                    selection,
+                );
+            let resolver = PublishedAcpLaunchResolver::new(
+                *awaken_run_executor_acp::acp_cli("codex").unwrap(),
+                Some(std::path::PathBuf::from("/path/that/must/not/be/opened")),
+                crate::PinnedCredentialMaterializer::new(
+                    Arc::new(InMemoryCredentialRepo::new()),
+                    Arc::new(InMemorySecretStore::new()),
+                ),
+            );
+            let activation = activation(Some(candidate));
+            let resolved = resolver
+                .model(
+                    &activation,
+                    &awaken_runtime_contract::RuntimeRunContext::new(),
+                )
+                .unwrap_or_else(|error| panic!("{rule}: {error}"));
+            assert!(
+                matches!(
+                    resolved,
+                    ResolvedModel::BackendOwned {
+                        model_selection,
+                        ref model,
+                    } if model_selection == selection && model == activation.effective_model_ref()
+                ),
+                "{rule}"
+            );
+            assert!(
+                resolver.extra_env(&activation).unwrap().is_empty(),
+                "{rule}"
             );
         }
     }

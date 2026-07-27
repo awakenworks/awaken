@@ -223,6 +223,15 @@ impl CatalogModelPublicationResolver {
                 reason: format!("incoherent {selection:?} backend model selection"),
             });
         }
+        if selection == BackendModelSelection::Exact
+            && profile.backend_model_interface
+                == awaken_run_executor_acp::BackendModelInterface::Unsupported
+        {
+            return Err(PublicationResolutionError::CandidateUnavailable {
+                binding: binding.clone(),
+                reason: format!("ACP backend {cli} cannot guarantee an exact model selection"),
+            });
+        }
         Ok(profile)
     }
 
@@ -1383,6 +1392,7 @@ mod tests {
         // B4 default + many        -> CandidateUnavailable (never random)
         // B5 exact source id + many-> selected exact source
         // B6 unknown ACP backend   -> CandidateUnavailable
+        // B7 unsupported exact     -> CandidateUnavailable at publication
         let credentials = Arc::new(InMemoryCredentialRepo::new());
         let codex = ensure_worker_local(
             credentials.as_ref(),
@@ -1513,5 +1523,14 @@ mod tests {
             ),
             "B6"
         );
+        let error = resolver
+            .resolve_models(
+                &ScopeId::from("workspace-a"),
+                &ModelSelection::Pinned(ModelBinding::new("", "model-x", "acp:opencode")),
+                &[],
+            )
+            .await
+            .expect_err("B7");
+        assert!(error.to_string().contains("cannot guarantee"), "B7");
     }
 }

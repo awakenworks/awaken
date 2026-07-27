@@ -599,6 +599,7 @@ const FAKE_ACP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_acp::A
         key: "ANTHROPIC_API_KEY",
         aliases: &[],
     }),
+    backend_model_interface: awaken_run_executor_acp::BackendModelInterface::Unsupported,
     managed_credential_delivery: awaken_run_executor_acp::ManagedCredentialDelivery::ProcessSecret,
     auth_method_id: None,
     mcp_interface: awaken_run_executor_acp::McpInterface::AcpSession,
@@ -656,6 +657,7 @@ const FAKE_ACP_MCP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_ac
         key: "ANTHROPIC_API_KEY",
         aliases: &[],
     }),
+    backend_model_interface: awaken_run_executor_acp::BackendModelInterface::Unsupported,
     managed_credential_delivery: awaken_run_executor_acp::ManagedCredentialDelivery::ProcessSecret,
     auth_method_id: None,
     mcp_interface: awaken_run_executor_acp::McpInterface::AcpSession,
@@ -681,12 +683,12 @@ impl awaken_run_executor_acp::LaunchResolver for FixedAcpModel {
         awaken_run_executor_acp::ResolvedModel,
         awaken_run_executor_acp::OpenError,
     > {
-        Ok(awaken_run_executor_acp::ResolvedModel {
-            base_url: "http://fake".into(),
-            model: "fake".into(),
-            process_secret: None,
-            credential_artifact: None,
-        })
+        Ok(awaken_run_executor_acp::ResolvedModel::managed(
+            "http://fake",
+            "fake",
+            None,
+            None,
+        ))
     }
 }
 

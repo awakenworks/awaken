@@ -37,6 +37,11 @@ pub trait HandExecutorFactory: Send + Sync {
 pub(crate) trait AgentSandbox: Send + Sync {
     fn is_container(&self) -> bool;
 
+    /// Whether a child runs as the trusted host user and can consume that user's
+    /// PATH/HOME-owned CLI identity. Namespace and container environments cannot
+    /// truthfully provide this without mounting/copying credentials.
+    fn supports_host_identity(&self) -> bool;
+
     fn config_home(&self) -> String;
 
     /// Jail-relative/interior path used to materialize the config home. This is
@@ -363,6 +368,10 @@ impl pc::RepositoryRealizer for SessionEnvironment {
 impl AgentSandbox for SessionEnvironment {
     fn is_container(&self) -> bool {
         matches!(self, Self::Container { .. })
+    }
+
+    fn supports_host_identity(&self) -> bool {
+        matches!(self, Self::Workdir(_))
     }
 
     fn config_home(&self) -> String {

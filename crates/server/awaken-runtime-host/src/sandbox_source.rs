@@ -28,9 +28,9 @@ pub use launch::{AcpLaunchRegistry, LaunchSource};
 /// across relaunches and machines regardless of the host workspace path.
 const SANDBOX_WORKSPACE: &str = "/workspace";
 
-/// The fixed interior config-home a `ConfigFileToml` CLI (codex) reads its MCP config
-/// from: the projected `config.toml` is mounted here (`MountSource::Inline`) and the
-/// the legacy CLI's isolated config-home setting points at it.
+/// The fixed interior config-home a legacy config-file ACP adapter reads its MCP
+/// config from. Its projected configuration is mounted here and its isolated
+/// config-home setting points at this directory.
 pub(crate) const SANDBOX_CONFIG_HOME: &str = "/acp-config";
 
 /// The workdir-relative config-home for the unsandboxed Workdir tier: the CLI runs on
@@ -139,6 +139,10 @@ impl SandboxBackend {
     /// a read-only mount is rejected at prepare on the Workdir tier).
     fn enforces_read_only(&self) -> bool {
         matches!(self, SandboxBackend::Namespace(_))
+    }
+
+    fn supports_host_identity(&self) -> bool {
+        matches!(self, SandboxBackend::Workdir(_))
     }
 
     /// The config-home a `ConfigFileToml` CLI reads: a fixed **interior absolute** path
@@ -372,9 +376,19 @@ impl AgentChannelSource for SandboxChannelSource {
         );
         let resolved = self.launch.resolve(activation, &backend, context)?;
         let mut launch = resolved.launch;
+        let backend_owned =
+            launch.identity == awaken_run_executor_acp::AcpLaunchIdentity::BackendOwned;
+        if backend_owned {
+            if !self.provider.supports_host_identity() {
+                return Err(OpenError(
+                    "backend-owned local ACP identity requires the Workdir isolation tier".into(),
+                ));
+            }
+            launch.env = awaken_run_executor_acp::with_backend_owned_host_environment(launch.env);
+        }
         // Project the run's declared MCP servers once. `session/new` servers ride in-band
         // over the ACP wire the executor drives (claude/gemini/opencode); a config-file
-        // CLI (codex) gets its config.toml. The typed ACP contract has no credential
+        // legacy config-file CLI gets its TOML projection. The typed ACP contract has no credential
         // channel; authenticated routes were already mediated by the Runtime Host.
         let cli = self.launch.cli(&backend)?;
         let injection = match cli {
@@ -384,6 +398,7 @@ impl AgentChannelSource for SandboxChannelSource {
             )?,
             None => awaken_run_executor_acp::McpInjection::default(),
         };
+        awaken_run_executor_acp::admit_mcp_injection(launch.identity, &injection)?;
         // The session's staged resource mounts, plus — for a config-file CLI — the
         // projected config as an inline, read-only, never-harvested mount at the fixed
         // interior config home, with the CLI's config-home env pointed there.
@@ -472,6 +487,7 @@ impl AgentChannelSource for SandboxChannelSource {
                 SandboxBackend::Workdir(_) => None,
             },
             mcp_session_servers: injection.session_servers,
+            session_config_option: launch.session_config_option,
         })
     }
 }
@@ -518,6 +534,13 @@ impl AgentChannelSource for BoundLocalChannelSource {
         let resolved = self.launch.resolve(activation, &self.backend, context)?;
         let mut launch = resolved.launch;
         let cli = self.launch.cli(&self.backend)?;
+        let backend_owned =
+            launch.identity == awaken_run_executor_acp::AcpLaunchIdentity::BackendOwned;
+        if backend_owned && !self.sandbox.supports_host_identity() {
+            return Err(OpenError(
+                "backend-owned local ACP identity requires the Workdir isolation tier".into(),
+            ));
+        }
         // Cause/decision table for executable lookup and ambient isolation:
         //
         // | rule | container | projected CLI | result |
@@ -530,10 +553,14 @@ impl AgentChannelSource for BoundLocalChannelSource {
         // C3=an opaque projected CLI requires an isolated home. L1/L2 satisfy
         // C1 through the one ACP allowlist, L3/L4 exclude host PATH because C2,
         // and L2/L4 replace any admitted host HOME because C3.
-        if !self.sandbox.is_container() {
+        if backend_owned {
+            launch.env = awaken_run_executor_acp::with_backend_owned_host_environment(launch.env);
+        } else if !self.sandbox.is_container() {
             launch.env = awaken_run_executor_acp::with_local_host_launch_environment(launch.env);
         }
-        if let Some(cli) = cli {
+        if let Some(cli) = cli
+            && !backend_owned
+        {
             if self.sandbox.is_container() {
                 launch.argv = cli
                     .container_argv
@@ -604,6 +631,7 @@ impl AgentChannelSource for BoundLocalChannelSource {
             }
             None => awaken_run_executor_acp::McpInjection::default(),
         };
+        awaken_run_executor_acp::admit_mcp_injection(launch.identity, &injection)?;
         let config_home = self.sandbox.config_home();
         let config_home_logical = self.sandbox.config_home_logical();
         if let Some(cli) = cli
@@ -645,12 +673,13 @@ impl AgentChannelSource for BoundLocalChannelSource {
             // that owns the staged File/Repository/MemoryStore projections.
             workspace_cwd: Some(self.sandbox.workspace_cwd()),
             mcp_session_servers: injection.session_servers,
+            session_config_option: launch.session_config_option,
         })
     }
 }
 
 /// The interior config mount + config-home env override for a config-file CLI's
-/// projected MCP config (codex `config.toml`): an inline, per-run, never-harvested
+/// projected MCP config: an inline, per-run, never-harvested
 /// mount at the fixed interior config home, plus `(config_home_env, path)` to point the
 /// CLI there. `None` for a session-server CLI. `read_only` when the backend can enforce
 /// it (bwrap); the Workdir tier cannot, so it takes a read-write copy — the never-harvest
@@ -945,12 +974,30 @@ mod tests {
             _activation: &RunActivation,
             _context: &awaken_runtime_contract::RuntimeRunContext,
         ) -> Result<awaken_run_executor_acp::ResolvedModel, OpenError> {
-            Ok(awaken_run_executor_acp::ResolvedModel {
+            Ok(awaken_run_executor_acp::ResolvedModel::Managed {
                 base_url: "http://model.invalid".into(),
                 model: "model".into(),
                 process_secret: None,
                 credential_artifact: None,
             })
+        }
+    }
+
+    struct BackendOwnedResolver {
+        selection: awaken_runtime_contract::resolved::BackendModelSelection,
+        model: &'static str,
+    }
+
+    impl LaunchResolver for BackendOwnedResolver {
+        fn model(
+            &self,
+            _activation: &RunActivation,
+            _context: &awaken_runtime_contract::RuntimeRunContext,
+        ) -> Result<awaken_run_executor_acp::ResolvedModel, OpenError> {
+            Ok(awaken_run_executor_acp::ResolvedModel::backend_owned(
+                self.selection,
+                self.model,
+            ))
         }
     }
 
@@ -964,7 +1011,7 @@ mod tests {
             _activation: &RunActivation,
             _context: &awaken_runtime_contract::RuntimeRunContext,
         ) -> Result<awaken_run_executor_acp::ResolvedModel, OpenError> {
-            Ok(awaken_run_executor_acp::ResolvedModel {
+            Ok(awaken_run_executor_acp::ResolvedModel::Managed {
                 base_url: "http://model.invalid".into(),
                 model: "model".into(),
                 process_secret: None,
@@ -1014,7 +1061,7 @@ mod tests {
             _activation: &RunActivation,
             _context: &awaken_runtime_contract::RuntimeRunContext,
         ) -> Result<awaken_run_executor_acp::ResolvedModel, OpenError> {
-            Ok(awaken_run_executor_acp::ResolvedModel {
+            Ok(awaken_run_executor_acp::ResolvedModel::Managed {
                 base_url: "http://model.invalid".into(),
                 model: "model".into(),
                 process_secret: None,
@@ -1126,53 +1173,18 @@ mod tests {
     }
 
     #[test]
-    fn acp_launch_registry_exact_routes_multiple_clis_and_requires_a_default_for_bare_acp() {
-        let routes = ["claude", "codex"]
-            .into_iter()
-            .map(|id| {
-                (
-                    *awaken_run_executor_acp::acp_cli(id).unwrap(),
-                    Arc::new(FakeResolver) as Arc<dyn LaunchResolver>,
-                )
-            })
-            .collect();
-        let registry = AcpLaunchRegistry::new(routes, Some("codex".to_string())).unwrap();
-        let selected = registry
-            .selected(&awaken_runtime_contract::resolved::Backend::Acp {
-                cli: "claude".to_string(),
-            })
-            .unwrap();
-        assert_eq!(selected.cli.id, "claude");
-        let selected = registry
-            .selected(&awaken_runtime_contract::resolved::Backend::Acp { cli: String::new() })
-            .unwrap();
-        assert_eq!(selected.cli.id, "codex");
-        assert!(
-            registry
-                .selected(&awaken_runtime_contract::resolved::Backend::Acp {
-                    cli: "gemini".to_string(),
-                })
-                .is_err()
-        );
-
-        let no_default = AcpLaunchRegistry::new(
-            ["claude", "codex"]
-                .into_iter()
-                .map(|id| {
-                    (
-                        *awaken_run_executor_acp::acp_cli(id).unwrap(),
-                        Arc::new(FakeResolver) as Arc<dyn LaunchResolver>,
-                    )
-                })
-                .collect(),
-            None,
-        )
-        .unwrap();
-        assert!(
-            no_default
-                .selected(&awaken_runtime_contract::resolved::Backend::Acp { cli: String::new() })
-                .is_err()
-        );
+    fn one_shot_source_exposes_host_identity_only_in_workdir() {
+        // Cause graph/decision table: Workdir -> trusted host process -> true;
+        // Namespace -> different filesystem identity -> false. `open` consumes this
+        // same predicate before any backend-owned launch can create a sandbox.
+        let base =
+            std::env::temp_dir().join(format!("awaken-acp-identity-tier-{}", std::process::id()));
+        let workdir = SandboxBackend::Workdir(awaken_sandbox_local::LocalProvider::new(
+            base.join("workdir"),
+        ));
+        let namespace = SandboxBackend::Namespace(NamespaceProvider::new(base.join("namespace")));
+        assert!(workdir.supports_host_identity());
+        assert!(!namespace.supports_host_identity());
     }
 
     struct FakeProcess;
@@ -1201,6 +1213,7 @@ mod tests {
 
     struct CapturingAgentSandbox {
         container: bool,
+        host_identity: bool,
         command: Mutex<Option<pc::Command>>,
         materialized: Mutex<Vec<(String, Vec<u8>)>>,
     }
@@ -1209,6 +1222,7 @@ mod tests {
         fn default() -> Self {
             Self {
                 container: true,
+                host_identity: false,
                 command: Mutex::new(None),
                 materialized: Mutex::new(Vec::new()),
             }
@@ -1219,6 +1233,15 @@ mod tests {
         fn local() -> Self {
             Self {
                 container: false,
+                host_identity: true,
+                ..Self::default()
+            }
+        }
+
+        fn namespace() -> Self {
+            Self {
+                container: false,
+                host_identity: false,
                 ..Self::default()
             }
         }
@@ -1228,6 +1251,10 @@ mod tests {
     impl crate::session_environment::AgentSandbox for CapturingAgentSandbox {
         fn is_container(&self) -> bool {
             self.container
+        }
+
+        fn supports_host_identity(&self) -> bool {
+            self.host_identity
         }
 
         fn config_home(&self) -> String {
@@ -1287,6 +1314,27 @@ mod tests {
             launch: LaunchSource::Projected(AcpLaunchRegistry::single(
                 *cli,
                 Arc::new(FakeResolver),
+            )),
+            codec: awaken_run_executor_acp::Codec::Acp,
+            backend: awaken_runtime_contract::resolved::Backend::Acp {
+                cli: cli_id.to_string(),
+            },
+            mcp_servers: Vec::new(),
+        }
+    }
+
+    fn bound_backend_owned_source(
+        sandbox: Arc<CapturingAgentSandbox>,
+        cli_id: &str,
+        selection: awaken_runtime_contract::resolved::BackendModelSelection,
+        model: &'static str,
+    ) -> BoundLocalChannelSource {
+        let cli = awaken_run_executor_acp::acp_cli(cli_id).expect("known ACP CLI");
+        BoundLocalChannelSource {
+            sandbox,
+            launch: LaunchSource::Projected(AcpLaunchRegistry::single(
+                *cli,
+                Arc::new(BackendOwnedResolver { selection, model }),
             )),
             codec: awaken_run_executor_acp::Codec::Acp,
             backend: awaken_runtime_contract::resolved::Backend::Acp {
@@ -1363,6 +1411,102 @@ mod tests {
             "L2: the Session config home replaces any admitted host HOME"
         );
         assert_eq!(command.argv.first().map(String::as_str), Some("gemini"));
+    }
+
+    #[tokio::test]
+    async fn backend_owned_identity_is_host_only_and_never_materialized() {
+        // Cause graph: BackendOwned -> Workdir host identity -> PATH/HOME + CLI.
+        // Namespace/container cannot make host identity available without copying
+        // credentials, so both terminate before materialization or spawn.
+        //
+        // Decision table:
+        // H1 Workdir + Default     -> host HOME, no provider env/files, spawn
+        // H2 Workdir + Codex Exact -> same identity + ACP Session model option
+        // H3 Namespace + any       -> reject before spawn/materialization
+        // H4 Container + any       -> reject before spawn/materialization
+        let sandbox = Arc::new(CapturingAgentSandbox::local());
+        let source = bound_backend_owned_source(
+            sandbox.clone(),
+            "gemini",
+            awaken_runtime_contract::resolved::BackendModelSelection::Default,
+            "",
+        );
+        let session = source
+            .open(
+                &acp_activation("acp:gemini"),
+                &awaken_runtime_contract::RuntimeRunContext::new(),
+            )
+            .await
+            .expect("H1");
+        assert!(session.session_config_option.is_none(), "H1");
+        assert!(sandbox.materialized.lock().unwrap().is_empty(), "H1");
+        {
+            let command = sandbox.command.lock().unwrap();
+            let command = command.as_ref().expect("H1 spawned");
+            let inline = |name: &str| {
+                command.env.iter().find_map(|entry| {
+                    if entry.name != name {
+                        return None;
+                    }
+                    match &entry.value {
+                        pc::EnvValue::Inline { value } => Some(value.as_str()),
+                        pc::EnvValue::Secret { .. } => None,
+                    }
+                })
+            };
+            assert_eq!(inline("HOME"), std::env::var("HOME").ok().as_deref(), "H1");
+            assert!(
+                command.env.iter().all(|entry| {
+                    !matches!(&entry.value, pc::EnvValue::Secret { .. })
+                        && !entry.name.contains("API_KEY")
+                        && !entry.name.ends_with("_MODEL")
+                        && entry.name != "GEMINI_DIR"
+                }),
+                "H1"
+            );
+        }
+
+        let sandbox = Arc::new(CapturingAgentSandbox::local());
+        let source = bound_backend_owned_source(
+            sandbox.clone(),
+            "codex",
+            awaken_runtime_contract::resolved::BackendModelSelection::Exact,
+            "gpt-exact",
+        );
+        let session = source
+            .open(
+                &acp_activation("acp:codex"),
+                &awaken_runtime_contract::RuntimeRunContext::new(),
+            )
+            .await
+            .expect("H2");
+        let selection = session.session_config_option.as_ref().expect("H2");
+        assert_eq!(selection.config_id, "model", "H2");
+        assert_eq!(selection.value, "gpt-exact", "H2");
+        assert!(sandbox.materialized.lock().unwrap().is_empty(), "H2");
+
+        for (rule, sandbox) in [
+            ("H3", Arc::new(CapturingAgentSandbox::namespace())),
+            ("H4", Arc::new(CapturingAgentSandbox::default())),
+        ] {
+            let source = bound_backend_owned_source(
+                sandbox.clone(),
+                "claude",
+                awaken_runtime_contract::resolved::BackendModelSelection::Default,
+                "",
+            );
+            let error = source
+                .open(
+                    &acp_activation("acp:claude"),
+                    &awaken_runtime_contract::RuntimeRunContext::new(),
+                )
+                .await
+                .err()
+                .unwrap_or_else(|| panic!("{rule}: expected rejection"));
+            assert!(error.0.contains("Workdir isolation tier"), "{rule}");
+            assert!(sandbox.command.lock().unwrap().is_none(), "{rule}");
+            assert!(sandbox.materialized.lock().unwrap().is_empty(), "{rule}");
+        }
     }
 
     #[tokio::test]

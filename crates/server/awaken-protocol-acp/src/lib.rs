@@ -232,6 +232,15 @@ pub struct SessionMcpServer {
     pub auth: Option<(String, String)>,
 }
 
+/// One exact backend-owned model selection delivered through ACP after a
+/// session is opened. It contains only the catalog-owned option id and published
+/// value; provider credentials and endpoints cannot enter this contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionConfigOptionSelection {
+    pub config_id: String,
+    pub value: String,
+}
+
 /// The per-turn cross-cutting inputs the driver needs beyond the prompt, bundled
 /// so a turn threads as one value rather than a widening parameter list. The Acp
 /// codec reads/updates it across the handshake; the newline stand-in ignores all
@@ -242,7 +251,7 @@ pub struct TurnConfig<'a> {
     pub resolver: &'a dyn PermissionResolver,
     /// MCP servers to hand the CLI at `session/new` (the `AcpSession` interface, for
     /// claude/gemini/opencode). Empty for the newline stand-in and for config-file CLIs
-    /// (codex gets a `config.toml` instead).
+    /// (legacy config-file adapters receive no in-band servers).
     pub mcp_servers: Vec<SessionMcpServer>,
     /// In: an ACP session id to resume via `session/load` (a relaunched CLI reloads
     /// its own session, so context survives the per-turn relaunch). Out: the id the
@@ -253,6 +262,9 @@ pub struct TurnConfig<'a> {
     /// adapter-local datum — `None` leaves the agent's default). Validated
     /// fail-closed against the modes the agent advertised for the session.
     pub session_mode: Option<String>,
+    /// Exact backend-owned model option to set after session creation/loading and
+    /// before the first prompt. `None` preserves the CLI's own default.
+    pub session_config_option: Option<SessionConfigOptionSelection>,
     /// In: the interior working directory the CLI runs the session under (the
     /// sandbox's fixed workspace path). For a CLI that keys sessions by cwd (Claude
     /// Code), holding this stable across relaunches/machines is what lets
@@ -274,6 +286,7 @@ impl<'a> TurnConfig<'a> {
             mcp_servers: Vec::new(),
             session_id: None,
             session_mode: None,
+            session_config_option: None,
             session_cwd: None,
             auth_method_id: None,
         }

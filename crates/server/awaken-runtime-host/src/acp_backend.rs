@@ -359,7 +359,7 @@ mod tests {
             _context: &awaken_runtime_contract::RuntimeRunContext,
         ) -> Result<awaken_run_executor_acp::ResolvedModel, awaken_run_executor_acp::OpenError>
         {
-            Ok(awaken_run_executor_acp::ResolvedModel {
+            Ok(awaken_run_executor_acp::ResolvedModel::Managed {
                 base_url: "http://example.invalid".into(),
                 model: "test".into(),
                 process_secret: None,
