@@ -573,7 +573,9 @@ const FAKE_ACP_DISCOVERY: awaken_run_executor_acp::AcpDiscoverySpec =
                 state: awaken_runtime_contract::CredentialObservationState::Available,
                 reason_code: "scenario_fixture_available",
             }],
+            remediation: "scenario fixture requires no login",
         },
+        install_remediation: "scenario fixture is built in",
     };
 
 /// The [`FAKE_ACP_GATEWAY_JSONRPC_SCRIPT`] wired as a real [`AcpCli`] row, so the

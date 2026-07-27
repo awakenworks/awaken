@@ -239,6 +239,29 @@ pub struct AcpCli {
     pub env: &'static [(&'static str, &'static str)],
 }
 
+impl AcpCli {
+    /// Operator remediation for one canonical discovery reason. The catalog row
+    /// owns adapter-specific commands; diagnostics and capabilities merely
+    /// project them and therefore cannot drift.
+    #[must_use]
+    pub fn remediation(self, reason_code: Option<&str>) -> Option<&'static str> {
+        match reason_code? {
+            "acp_agent_missing" => Some(self.discovery.install_remediation),
+            "acp_runner_missing" => {
+                Some("Install Node.js/npm so the pinned ACP wrapper is available.")
+            }
+            "acp_login_required" => Some(self.discovery.login.remediation),
+            "acp_runner_probe_failed"
+            | "acp_version_probe_failed"
+            | "acp_login_probe_failed"
+            | "acp_login_probe_unrecognized" => {
+                Some("Run `awaken doctor acp` after checking the CLI installation and login.")
+            }
+            _ => None,
+        }
+    }
+}
+
 /// One already-selected process-secret requirement. The opaque reference is
 /// resolved only by the final launch provider through `SecretBroker`; this type
 /// carries no material, policy, or credential-selection behavior.
@@ -682,7 +705,9 @@ const CLAUDE: AcpCli = AcpCli {
                     reason_code: "acp_login_required",
                 },
             ],
+            remediation: "Run `claude auth login` and complete the Claude Code login flow.",
         },
+        install_remediation: "Install Claude Code and Node.js/npm, then rerun discovery.",
     },
     container_argv: &["claude-agent-acp"],
     model_delivery: Some(ModelDelivery {
@@ -757,7 +782,9 @@ const CODEX: AcpCli = AcpCli {
                     reason_code: "acp_login_available",
                 },
             ],
+            remediation: "Run `codex login` and complete the Codex login flow.",
         },
+        install_remediation: "Install Codex and Node.js/npm, then rerun discovery.",
     },
     container_argv: &["codex-acp"],
     model_delivery: None,
@@ -813,7 +840,9 @@ const GEMINI: AcpCli = AcpCli {
                     reason_code: "acp_login_available",
                 },
             ],
+            remediation: "Run `gemini` and complete the Gemini CLI login flow.",
         },
+        install_remediation: "Install Gemini CLI, then rerun discovery.",
     },
     container_argv: &["gemini", "--acp"],
     model_delivery: Some(ModelDelivery {
@@ -877,7 +906,9 @@ const OPENCODE: AcpCli = AcpCli {
                     reason_code: "acp_login_available",
                 },
             ],
+            remediation: "Run `opencode auth login` and complete the OpenCode login flow.",
         },
+        install_remediation: "Install OpenCode, then rerun discovery.",
     },
     container_argv: &["opencode", "acp"],
     model_delivery: Some(ModelDelivery {

@@ -44,6 +44,7 @@ pub struct AcpLoginRule {
 pub struct AcpLoginProbe {
     pub command: AcpProbeCommand,
     pub rules: &'static [AcpLoginRule],
+    pub remediation: &'static str,
 }
 
 /// Static host-discovery facts for one catalog row.
@@ -51,6 +52,7 @@ pub struct AcpLoginProbe {
 pub struct AcpDiscoverySpec {
     pub version: AcpProbeCommand,
     pub login: AcpLoginProbe,
+    pub install_remediation: &'static str,
 }
 
 /// Raw, bounded output from the process-probe port.

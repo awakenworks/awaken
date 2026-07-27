@@ -50,6 +50,13 @@ async fn run(command: console::Command) -> Result<(), String> {
             println!("{}", deployment.report(json).trim_end());
             Ok(())
         }
+        console::Command::DoctorAcp { json } => {
+            println!(
+                "{}",
+                awaken_cli::local_acp_diagnostics(json).await.trim_end()
+            );
+            Ok(())
+        }
         console::Command::DatabaseMigrate { config_path } => {
             let deployment = ResolvedDeployment::load(ConfigOverrides {
                 config_path,
@@ -125,7 +132,7 @@ async fn serve(
     presentation: Presentation,
     management_only: bool,
 ) -> Result<(), String> {
-    let deployment = ResolvedDeployment::load(ConfigOverrides {
+    let mut deployment = ResolvedDeployment::load(ConfigOverrides {
         config_path: args.config_path,
         role: Some(Role::Serve),
         data_dir: args.data_dir,
@@ -141,6 +148,11 @@ async fn serve(
     warn_deprecations(&deployment);
     deployment.ensure_data_layout()?;
     let seal_key = deployment.seal_key.load_or_create()?;
+    let local_acp = if management_only {
+        None
+    } else {
+        awaken_cli::prepare_local_acp(&mut deployment, &seal_key).await?
+    };
     if !management_only
         && let Some(error) = deployment.runtime.durable_needs_persistence_error(false)
     {
@@ -148,7 +160,14 @@ async fn serve(
     }
 
     awaken_observability::init();
-    let result = serve_resolved(deployment, seal_key, presentation, management_only).await;
+    let result = serve_resolved(
+        deployment,
+        seal_key,
+        presentation,
+        management_only,
+        local_acp,
+    )
+    .await;
     awaken_observability::shutdown();
     result
 }
@@ -158,6 +177,7 @@ async fn serve_resolved(
     seal_key: [u8; 32],
     presentation: Presentation,
     management_only: bool,
+    local_acp: Option<awaken_cli::PreparedLocalAcp>,
 ) -> Result<(), String> {
     let postgres_startup = !management_only
         && (deployment.runtime.dispatch_backend == awaken_runtime_host::DispatchBackend::Postgres
@@ -238,6 +258,9 @@ async fn serve_resolved(
         .await
         .map_err(|error| friendly_bind_error("server", &deployment.bind, error))?;
     let url = browser_url(&deployment.bind)?;
+    let local_worker = local_acp
+        .map(|prepared| prepared.build_worker(url.clone(), &deployment))
+        .transpose()?;
     match presentation {
         Presentation::Interactive => {
             eprintln!("\n  Awaken is ready\n");
@@ -257,10 +280,33 @@ async fn serve_resolved(
         ),
     }
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .map_err(|error| format!("server stopped: {error}"))
+    let server = std::future::IntoFuture::into_future(
+        axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()),
+    );
+    tokio::pin!(server);
+    let Some(worker) = local_worker else {
+        return server
+            .await
+            .map_err(|error| format!("server stopped: {error}"));
+    };
+    let worker = tokio::spawn(async move {
+        worker
+            .run_until_shutdown()
+            .await
+            .map_err(|error| error.to_string())
+    });
+    tokio::pin!(worker);
+    tokio::select! {
+        result = &mut server => {
+            worker.abort();
+            result.map_err(|error| format!("server stopped: {error}"))
+        }
+        result = &mut worker => match result {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(format!("local ACP worker stopped: {error}")),
+            Err(error) => Err(format!("local ACP worker task failed: {error}")),
+        },
+    }
 }
 
 fn warn_deprecations(deployment: &ResolvedDeployment) {

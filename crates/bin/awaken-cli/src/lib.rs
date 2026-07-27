@@ -30,7 +30,9 @@ pub use crate::brain_admin::{
     DrainController, brain_admin_router, register_active_streams_gauge, with_brain_admin,
     with_connection_metric,
 };
-pub use acp_local_credentials::AcpLocalCredentialResolver;
+pub use acp_local_credentials::{
+    AcpLocalCredentialResolver, PreparedLocalAcp, local_acp_diagnostics, prepare_local_acp,
+};
 // Embedded management-plane IAM (ADR-0042/0043 P1) + the mint spec and bootstrap
 // constants a test / operator embedding drives — re-exported from the authoring plane.
 pub use awaken_control::{
@@ -41,12 +43,35 @@ pub use awaken_control::{
 /// Project the one executable ACP catalog into the management read model. This
 /// composition edge is intentionally the only place that knows both contexts;
 /// neither Control nor the executor keeps a synchronized adapter list.
-fn runtime_capabilities() -> Vec<awaken_control::RuntimeCapability> {
+fn runtime_capabilities(
+    observations: &[awaken_run_executor_acp::AcpHostObservation],
+) -> Vec<awaken_control::RuntimeCapability> {
     std::iter::once(awaken_control::RuntimeCapability::native())
         .chain(awaken_run_executor_acp::known_acp_clis().iter().map(|cli| {
-            awaken_control::RuntimeCapability::acp(cli.id, cli.display_name, cli.description)
+            let capability =
+                awaken_control::RuntimeCapability::acp(cli.id, cli.display_name, cli.description);
+            let Some(observation) = observations.iter().find(|row| row.cli_id == cli.id) else {
+                return capability;
+            };
+            capability.with_local(awaken_control::LocalRuntimeCapability {
+                detected: observation.detected(),
+                version: observation.version.clone(),
+                login_state: observation.credential_state.map(credential_state_name),
+                reason_code: observation.reason_code.clone(),
+                remediation: cli
+                    .remediation(observation.reason_code.as_deref())
+                    .map(str::to_string),
+            })
         }))
         .collect()
+}
+
+fn credential_state_name(state: awaken_runtime_contract::CredentialObservationState) -> String {
+    serde_json::to_value(state)
+        .expect("credential observation state serializes")
+        .as_str()
+        .expect("credential observation state serializes as a string")
+        .to_string()
 }
 
 #[cfg(test)]
@@ -65,7 +90,7 @@ mod runtime_capability_tests {
         // | R1 | T | - | awaken exactly once |
         // | R2 | - | T | matching acp:<id> exactly once |
         // | R3 | - | F | absent |
-        let projected = runtime_capabilities();
+        let projected = runtime_capabilities(&[]);
         assert_eq!(
             projected.iter().filter(|row| row.id == "awaken").count(),
             1,
@@ -91,6 +116,47 @@ mod runtime_capability_tests {
         assert!(
             projected.iter().all(|row| row.id != "acp:hermes"),
             "R3 unsupported Hermes is not advertised"
+        );
+    }
+
+    #[test]
+    fn management_runtime_projection_joins_one_secret_free_local_observation() {
+        // Cause graph: catalog row + same-id startup observation -> enriched
+        // read model. Rows without an observation stay supported with unknown
+        // local status; no joined inventory is persisted.
+        //
+        // Decision table:
+        // L1 same id + detected/login-required -> detected status + remediation
+        // L2 no observation                    -> local status absent
+        let projected = runtime_capabilities(&[awaken_run_executor_acp::AcpHostObservation {
+            cli_id: "codex".into(),
+            display_name: "Codex".into(),
+            detection: awaken_run_executor_acp::AcpDetectionState::Detected,
+            version: Some("codex 1".into()),
+            credential_state: Some(
+                awaken_runtime_contract::CredentialObservationState::LoginRequired,
+            ),
+            reason_code: Some("acp_login_required".into()),
+        }]);
+        let codex = projected.iter().find(|row| row.id == "acp:codex").unwrap();
+        let local = codex.local.as_ref().expect("L1");
+        assert!(local.detected, "L1");
+        assert_eq!(local.login_state.as_deref(), Some("login_required"), "L1");
+        assert!(
+            local
+                .remediation
+                .as_deref()
+                .unwrap()
+                .contains("codex login")
+        );
+        assert!(
+            projected
+                .iter()
+                .find(|row| row.id == "acp:gemini")
+                .unwrap()
+                .local
+                .is_none(),
+            "L2"
         );
     }
 }
@@ -239,6 +305,7 @@ struct AssemblyOverrides {
     management_only: bool,
     cloud_api_base_url: Option<String>,
     cloud_models_enabled: bool,
+    local_acp_observations: Vec<awaken_run_executor_acp::AcpHostObservation>,
 }
 
 type IdentityWiring = (
@@ -844,6 +911,7 @@ pub async fn build_management_router_with_deployment(
             management_only: false,
             cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url.clone()),
             cloud_models_enabled: deployment.cloud_models.is_enabled(),
+            local_acp_observations: deployment.local_acp_observations.clone(),
         },
         None,
     )
@@ -887,6 +955,7 @@ pub async fn build_control_router_with_deployment(
             management_only: true,
             cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url.clone()),
             cloud_models_enabled: deployment.cloud_models.is_enabled(),
+            local_acp_observations: Vec::new(),
         },
         None,
     )
@@ -976,6 +1045,7 @@ async fn build_management_router_with_composition(
             management_only: false,
             cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url),
             cloud_models_enabled: deployment.cloud_models.is_enabled(),
+            local_acp_observations: deployment.local_acp_observations,
         },
         None,
     )
@@ -1450,7 +1520,7 @@ async fn management_router_over(
         deployment_state: deployment_state.clone(),
         plane,
         global_tools: global,
-        runtimes: runtime_capabilities(),
+        runtimes: runtime_capabilities(&assembly.local_acp_observations),
         org_id: Some(org_id),
         iam,
         remote_iam,

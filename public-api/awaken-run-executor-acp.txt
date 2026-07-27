@@ -105,7 +105,9 @@ impl awaken_run_executor_acp::AcpCli
 pub fn awaken_run_executor_acp::AcpCli::project(&self, &awaken_run_executor_acp::ResolvedModel, core::option::Option<u64>, &[(alloc::string::String, alloc::string::String)]) -> awaken_run_executor_acp::AcpLaunch
 impl awaken_run_executor_acp::AcpCli
 pub fn awaken_run_executor_acp::AcpCli::project_mcp(&self, &[awaken_run_executor_acp::McpServerConfig]) -> awaken_run_executor_acp::McpDelivery
+pub fn awaken_run_executor_acp::AcpCli::remediation(self, core::option::Option<&str>) -> core::option::Option<&'static str>
 pub struct awaken_run_executor_acp::AcpDiscoverySpec
+pub awaken_run_executor_acp::AcpDiscoverySpec::install_remediation: &'static str
 pub awaken_run_executor_acp::AcpDiscoverySpec::login: awaken_run_executor_acp::AcpLoginProbe
 pub awaken_run_executor_acp::AcpDiscoverySpec::version: awaken_run_executor_acp::AcpProbeCommand
 pub struct awaken_run_executor_acp::AcpHostDiscovery
@@ -132,6 +134,7 @@ impl awaken_run_executor_acp::AcpLaunch
 pub fn awaken_run_executor_acp::AcpLaunch::custom(alloc::vec::Vec<alloc::string::String>, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>) -> Self
 pub struct awaken_run_executor_acp::AcpLoginProbe
 pub awaken_run_executor_acp::AcpLoginProbe::command: awaken_run_executor_acp::AcpProbeCommand
+pub awaken_run_executor_acp::AcpLoginProbe::remediation: &'static str
 pub awaken_run_executor_acp::AcpLoginProbe::rules: &'static [awaken_run_executor_acp::AcpLoginRule]
 pub struct awaken_run_executor_acp::AcpLoginRule
 pub awaken_run_executor_acp::AcpLoginRule::predicate: awaken_run_executor_acp::AcpProbePredicate

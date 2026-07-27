@@ -256,6 +256,19 @@ impl WorkerNodeBuilder {
         self
     }
 
+    /// Configure the one credential-liveness loop used for heartbeat evidence
+    /// and launch-time revalidation.
+    #[must_use]
+    pub fn with_credential_observation_window(
+        mut self,
+        probe_interval: std::time::Duration,
+        observation_ttl: std::time::Duration,
+    ) -> Self {
+        self.credential_probe_interval = probe_interval;
+        self.credential_observation_ttl = observation_ttl;
+        self
+    }
+
     /// Install the authoritative credential materializer used by ACP launch and
     /// Session secret delivery.
     #[must_use]

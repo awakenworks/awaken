@@ -80,6 +80,12 @@ impl awaken_config_service::ConfigServiceReconciler
 pub fn awaken_config_service::ConfigServiceReconciler::new(awaken_config_service::ConfigPlane, impl core::convert::Into<awaken_tenancy::ScopeId>, impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<alloc::string::String>) -> Self
 impl awaken_config_service::AssistantBindingReconciler for awaken_config_service::ConfigServiceReconciler
 pub fn awaken_config_service::ConfigServiceReconciler::reconcile<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_config_service::LocalRuntimeCapability
+pub awaken_config_service::LocalRuntimeCapability::detected: bool
+pub awaken_config_service::LocalRuntimeCapability::login_state: core::option::Option<alloc::string::String>
+pub awaken_config_service::LocalRuntimeCapability::reason_code: core::option::Option<alloc::string::String>
+pub awaken_config_service::LocalRuntimeCapability::remediation: core::option::Option<alloc::string::String>
+pub awaken_config_service::LocalRuntimeCapability::version: core::option::Option<alloc::string::String>
 pub struct awaken_config_service::ResolvedPublicationModels
 pub awaken_config_service::ResolvedPublicationModels::candidates: alloc::vec::Vec<awaken_runtime_contract::resolved::ResolvedModelCandidate>
 pub awaken_config_service::ResolvedPublicationModels::context_window: core::option::Option<u32>
@@ -93,9 +99,11 @@ pub awaken_config_service::RuntimeCapability::description: alloc::string::String
 pub awaken_config_service::RuntimeCapability::id: alloc::string::String
 pub awaken_config_service::RuntimeCapability::kind: alloc::string::String
 pub awaken_config_service::RuntimeCapability::label: alloc::string::String
+pub awaken_config_service::RuntimeCapability::local: core::option::Option<awaken_config_service::LocalRuntimeCapability>
 impl awaken_config_service::RuntimeCapability
 pub fn awaken_config_service::RuntimeCapability::acp(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_config_service::RuntimeCapability::native() -> Self
+pub fn awaken_config_service::RuntimeCapability::with_local(self, awaken_config_service::LocalRuntimeCapability) -> Self
 pub struct awaken_config_service::ScopedToolCatalog
 impl awaken_config_service::ScopedToolCatalog
 pub fn awaken_config_service::ScopedToolCatalog::new(alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>, impl core::convert::Into<awaken_tenancy::ScopeId>, alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>) -> Self

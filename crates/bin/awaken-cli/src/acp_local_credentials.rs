@@ -7,9 +7,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_credential_vault::{CredentialKind, CredentialSource, CredentialStatus};
+use awaken_credential_vault::repo::ensure_worker_local;
+use awaken_credential_vault::{
+    CredentialKind, CredentialSource, CredentialStatus, WorkerLocalBinding,
+};
 use awaken_run_executor_acp::{
-    AcpCli, AcpDetectionState, AcpDiscovery, AcpHostObservation, acp_cli,
+    AcpCli, AcpDetectionState, AcpDiscovery, AcpHostDiscovery, AcpHostObservation, acp_cli,
 };
 use awaken_runtime_contract::resolved::Backend;
 use awaken_runtime_contract::{
@@ -28,6 +31,212 @@ struct LocalBinding {
 pub struct AcpLocalCredentialResolver {
     discovery: Arc<dyn AcpDiscovery>,
     bindings: BTreeMap<String, LocalBinding>,
+}
+
+/// One startup composition result for a trusted local ACP Worker. The durable
+/// sources remain in the credential repository; this value carries only the
+/// already-composed ports needed to build the existing WorkerNode.
+pub struct PreparedLocalAcp {
+    resolver: Arc<AcpLocalCredentialResolver>,
+    stores: awaken_control::InferenceMaterializationStores,
+    resources: Option<awaken_worker::WorkerResourcePlane>,
+}
+
+/// Discover local ACP agents once, register their secret-free WorkerLocal
+/// locators idempotently, and compose the one liveness resolver. Server mode
+/// deliberately does none of this.
+pub async fn prepare_local_acp(
+    deployment: &mut crate::config::ResolvedDeployment,
+    seal_key: &[u8; 32],
+) -> Result<Option<PreparedLocalAcp>, String> {
+    if deployment.mode != crate::config::OperatingMode::Local {
+        return Ok(None);
+    }
+    let discovery: Arc<dyn AcpDiscovery> =
+        Arc::new(AcpHostDiscovery::local(std::time::Duration::from_secs(3)));
+    let stores =
+        awaken_control::open_inference_materialization_stores(&deployment.control, seal_key).await;
+    let resources = Some(local_worker_resources(deployment, stores.clone()).await?);
+    prepare_local_acp_with(deployment, discovery, stores, resources).await
+}
+
+async fn local_worker_resources(
+    deployment: &crate::config::ResolvedDeployment,
+    credentials: awaken_control::InferenceMaterializationStores,
+) -> Result<awaken_worker::WorkerResourcePlane, String> {
+    let validator: awaken_server::ResourceBindingValidatorPort = match &deployment.control.admin {
+        awaken_control::StoreBackend::Sqlite(path) => Arc::new(
+            awaken_admin_config_api::SqliteAdminStore::open(&path.to_string_lossy())
+                .map_err(|error| format!("open local Worker Resource Catalog: {error}"))?,
+        ),
+        awaken_control::StoreBackend::Postgres(_) => {
+            awaken_control::open_shared_resource_validator(Some(&deployment.control.admin))
+                .await?
+                .expect("Postgres admin backend produces a validator")
+        }
+    };
+    let ports = match &deployment.resources {
+        crate::config::ResourcePlaneStoreBackend::Embedded(root) => {
+            awaken_server::embedded_resource_plane(root)
+        }
+        crate::config::ResourcePlaneStoreBackend::Postgres(url) => {
+            awaken_server::shared_worker_resource_plane(Some(url))
+                .await?
+                .ok_or_else(|| "Postgres resource plane did not produce Worker ports".to_string())?
+        }
+    };
+    Ok(awaken_worker::WorkerResourcePlane::new(ports, validator)
+        .with_repository_credentials(credentials))
+}
+
+async fn prepare_local_acp_with(
+    deployment: &mut crate::config::ResolvedDeployment,
+    discovery: Arc<dyn AcpDiscovery>,
+    stores: awaken_control::InferenceMaterializationStores,
+    resources: Option<awaken_worker::WorkerResourcePlane>,
+) -> Result<Option<PreparedLocalAcp>, String> {
+    let observations = discovery.discover_all().await;
+    deployment.apply_local_acp_observations(observations)?;
+    let Some(profile) = deployment.runtime.acp.as_ref() else {
+        return Ok(None);
+    };
+    let workspace =
+        awaken_runtime_host::SharedHost::provision_local_workspace_at(&deployment.data_dir);
+    for cli_id in profile.cli_ids() {
+        ensure_worker_local(
+            stores.credentials.as_ref(),
+            &workspace,
+            WorkerLocalBinding::new(format!("acp:{cli_id}"), "default"),
+            None,
+        )
+        .await
+        .map_err(|error| format!("register local ACP binding for {cli_id}: {error}"))?;
+    }
+    let sources = stores
+        .credentials
+        .list(&workspace)
+        .await
+        .map_err(|error| format!("list local ACP bindings: {error}"))?;
+    let resolver = Arc::new(AcpLocalCredentialResolver::from_sources(
+        discovery, sources,
+    )?);
+    // The registered Worker becomes the sole local execution pool. Keeping the
+    // anonymous coordinator pool active would create two overlapping claimers
+    // for ordinary runs, while only one can publish credential liveness.
+    deployment.runtime.disable_local_pool = true;
+    deployment.run_local_pool = false;
+    Ok(Some(PreparedLocalAcp {
+        resolver,
+        stores,
+        resources,
+    }))
+}
+
+impl PreparedLocalAcp {
+    /// Build the canonical database-less Worker against this process's control
+    /// URL. Backend-owned login requires the Workdir tier; the server Host keeps
+    /// its independently configured tier for managed executions.
+    pub fn build_worker(
+        self,
+        upstream: impl Into<String>,
+        deployment: &crate::config::ResolvedDeployment,
+    ) -> Result<awaken_worker::WorkerNode, String> {
+        let mut worker_deployment = deployment.runtime.clone();
+        worker_deployment.sandbox_tier = awaken_runtime_host::SandboxTier::Local;
+        worker_deployment.sandbox_tier_explicit = true;
+
+        let worker = &deployment.worker;
+        let mut manifest = worker
+            .build_digest
+            .clone()
+            .map(awaken_worker::StandardManifestConfig::new)
+            .unwrap_or_default()
+            .with_extra_capabilities(worker.capabilities.clone());
+        if let Some(zone) = &worker.zone {
+            manifest = manifest.with_zone(zone.clone());
+        }
+        if let Some(max_concurrent) = worker.max_concurrent {
+            manifest = manifest.with_max_concurrent(max_concurrent);
+        }
+
+        let mut builder = awaken_worker::WorkerNodeBuilder::new(
+            awaken_runtime_host::WorkerUpstream::new(upstream),
+        )
+        .with_deployment_config(worker_deployment)
+        .with_standard_manifest_config(manifest)
+        .with_credential_stores(self.stores.credentials, self.stores.secrets)
+        .with_external_credential_resolver(self.resolver)
+        .with_graceful_drain(std::time::Duration::from_secs(worker.drain_grace_secs))
+        .with_credential_observation_window(
+            std::time::Duration::from_secs(worker.credential_probe_interval_secs),
+            std::time::Duration::from_secs(worker.credential_observation_ttl_secs),
+        )
+        .without_admin_surface()
+        .with_standard_manifest(Default::default());
+        if let Some(resources) = self.resources {
+            builder = builder.with_resource_plane(resources);
+        }
+        builder.build().map_err(|error| error.to_string())
+    }
+}
+
+/// Run the same canonical discovery service as startup and render its
+/// secret-free observations. No diagnostic state is persisted.
+pub async fn local_acp_diagnostics(json: bool) -> String {
+    let discovery = AcpHostDiscovery::local(std::time::Duration::from_secs(3));
+    render_diagnostics(&discovery.discover_all().await, json)
+}
+
+fn render_diagnostics(observations: &[AcpHostObservation], json: bool) -> String {
+    let rows: Vec<_> = observations
+        .iter()
+        .filter_map(|observation| {
+            let cli = acp_cli(&observation.cli_id)?;
+            Some(serde_json::json!({
+                "id": observation.cli_id,
+                "name": observation.display_name,
+                "supported": true,
+                "detected": observation.detected(),
+                "version": observation.version,
+                "login_state": observation.credential_state.map(credential_state_name),
+                "reason_code": observation.reason_code,
+                "remediation": cli.remediation(observation.reason_code.as_deref()),
+            }))
+        })
+        .collect();
+    if json {
+        return serde_json::to_string_pretty(&serde_json::json!({ "acp": rows }))
+            .expect("ACP diagnostics serialize");
+    }
+    let mut output = String::from("Awaken ACP diagnostics\n\n");
+    for row in rows {
+        let status = if row["detected"] == true {
+            row["login_state"].as_str().unwrap_or("probe_failed")
+        } else {
+            "not_detected"
+        };
+        output.push_str(&format!(
+            "  {:<12} {:<16} {}\n",
+            row["id"].as_str().unwrap_or("unknown"),
+            status,
+            row["version"].as_str().unwrap_or("-")
+        ));
+        if let Some(remediation) = row["remediation"].as_str() {
+            output.push_str(&format!("    {remediation}\n"));
+        }
+    }
+    output
+}
+
+fn credential_state_name(state: CredentialObservationState) -> &'static str {
+    match state {
+        CredentialObservationState::Available => "available",
+        CredentialObservationState::LoginRequired => "login_required",
+        CredentialObservationState::Expired => "expired",
+        CredentialObservationState::Invalid => "invalid",
+        CredentialObservationState::Disabled => "disabled",
+        CredentialObservationState::ProbeFailed => "probe_failed",
+    }
 }
 
 impl AcpLocalCredentialResolver {
@@ -180,8 +389,7 @@ impl CredentialMaterialResolver for AcpLocalCredentialResolver {
 mod tests {
     use std::sync::Mutex;
 
-    use awaken_credential_vault::WorkerLocalBinding;
-    use awaken_credential_vault::repo::{InMemoryCredentialRepo, ensure_worker_local};
+    use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo};
     use awaken_runtime_contract::{
         CredentialAccess, CredentialExecutionPolicy, CredentialMaterialBinding,
         CredentialMaterialSource, CredentialUsage, ModelExposurePolicy, PlaintextBoundary,
@@ -450,5 +658,105 @@ mod tests {
                 .contains(&CredentialMaterialSource::WorkerReference),
             "B2"
         );
+    }
+
+    #[tokio::test]
+    async fn startup_discovery_registers_one_idempotent_binding_and_builds_the_existing_worker() {
+        // Cause graph: one detected catalog row -> one launch profile -> one
+        // stable WorkerLocal locator -> the existing WorkerNode manifest. A
+        // repeated startup reaches the same repository key.
+        //
+        // Decision table:
+        // P1 detected+available -> route + binding + acp capability
+        // P2 repeated startup   -> same binding, no duplicate
+        // P3 missing rows       -> diagnostics only, no route or binding
+        let directory = tempfile::tempdir().unwrap();
+        let mut deployment = crate::config::local_test_deployment(directory.path().into());
+        let observations = awaken_run_executor_acp::known_acp_clis()
+            .iter()
+            .map(|cli| {
+                if cli.id == "codex" {
+                    host(
+                        cli.id,
+                        AcpDetectionState::Detected,
+                        Some(CredentialObservationState::Available),
+                    )
+                } else {
+                    host(cli.id, AcpDetectionState::Missing, None)
+                }
+            })
+            .map(|observation| (observation.cli_id.clone(), observation))
+            .collect();
+        let discovery: Arc<dyn AcpDiscovery> = Arc::new(FixedDiscovery {
+            observations,
+            calls: Mutex::new(Vec::new()),
+        });
+        let credentials = Arc::new(InMemoryCredentialRepo::new());
+        let stores = awaken_control::InferenceMaterializationStores {
+            credentials: credentials.clone(),
+            secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
+        };
+
+        let prepared =
+            prepare_local_acp_with(&mut deployment, discovery.clone(), stores.clone(), None)
+                .await
+                .unwrap()
+                .expect("P1");
+        let workspace =
+            awaken_runtime_host::SharedHost::provision_local_workspace_at(&deployment.data_dir);
+        let first = credentials.list(&workspace).await.unwrap();
+        assert_eq!(first.len(), 1, "P1/P3");
+        assert_eq!(
+            first[0]
+                .worker_local_binding
+                .as_ref()
+                .map(|binding| binding.driver_id.as_str()),
+            Some("acp:codex"),
+            "P1"
+        );
+        let worker = prepared
+            .build_worker("http://127.0.0.1:1", &deployment)
+            .unwrap();
+        assert!(worker.manifest().capabilities.contains("acp:codex"), "P1");
+        assert!(
+            worker.manifest().sandbox_backends.contains("local"),
+            "P1 trusted local identity"
+        );
+        assert!(
+            deployment.runtime.disable_local_pool,
+            "P1 sole execution pool"
+        );
+
+        prepare_local_acp_with(&mut deployment, discovery, stores, None)
+            .await
+            .unwrap()
+            .expect("P2");
+        let repeated = credentials.list(&workspace).await.unwrap();
+        assert_eq!(repeated.len(), 1, "P2");
+        assert_eq!(repeated[0].id, first[0].id, "P2");
+    }
+
+    #[test]
+    fn diagnostics_render_the_same_reason_and_profile_owned_remediation() {
+        // Cause graph: canonical observation + catalog remediation -> text/JSON
+        // diagnostic projections. Rendering performs no probe and owns no state.
+        let observations = [host(
+            "codex",
+            AcpDetectionState::Detected,
+            Some(CredentialObservationState::LoginRequired),
+        )];
+        let mut observations = observations;
+        observations[0].reason_code = Some("acp_login_required".into());
+        let json: serde_json::Value =
+            serde_json::from_str(&render_diagnostics(&observations, true)).unwrap();
+        assert_eq!(json["acp"][0]["login_state"], "login_required");
+        assert!(
+            json["acp"][0]["remediation"]
+                .as_str()
+                .unwrap()
+                .contains("codex login")
+        );
+        let text = render_diagnostics(&observations, false);
+        assert!(text.contains("codex") && text.contains("login_required"));
     }
 }
