@@ -332,6 +332,20 @@ fn agent_messages(events: &[Value]) -> Vec<String> {
         .collect()
 }
 
+/// These tests exercise MCP transport and credential behavior, so their
+/// calculator is explicitly pre-authorized instead of depending on an ambient
+/// permission default or entering the interactive approval path.
+fn allow_calc_tools() -> Value {
+    json!([{
+        "type": "mcp_toolset",
+        "mcp_server_name": "calc",
+        "default_config": {
+            "enabled": true,
+            "permission_policy": { "type": "always_allow" }
+        }
+    }])
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn session_inline_mcp_server_with_vault_credential_converses_multi_turn() {
     let url = mock_calc_mcp().await;
@@ -345,7 +359,11 @@ async fn session_inline_mcp_server_with_vault_credential_converses_multi_turn() 
         "POST",
         "/v1/sessions",
         Some(json!({
-            "agent": "assistant",
+            "agent": {
+                "id": "assistant",
+                "type": "agent_with_overrides",
+                "tools": allow_calc_tools()
+            },
             "mcp_servers": [{ "name": "calc", "type": "url", "url": url }],
             "vault_ids": [vault_id],
         })),
@@ -414,7 +432,8 @@ async fn published_agent_mcp_binding_takes_effect_without_session_inline_servers
                 "backend_ref": "default"
             },
             "system": "Use the calculator tool and report its result.",
-            "mcp_servers": [{ "name": "calc", "url": url }]
+            "mcp_servers": [{ "name": "calc", "url": url }],
+            "tools": allow_calc_tools()
         })),
     )
     .await;
@@ -540,7 +559,11 @@ async fn create_mcp_session_response(
         "POST",
         "/v1/sessions",
         Some(json!({
-            "agent": "assistant",
+            "agent": {
+                "id": "assistant",
+                "type": "agent_with_overrides",
+                "tools": allow_calc_tools()
+            },
             "mcp_servers": [{ "name": "calc", "type": "url", "url": url }],
             "vault_ids": [vault_id],
         })),
