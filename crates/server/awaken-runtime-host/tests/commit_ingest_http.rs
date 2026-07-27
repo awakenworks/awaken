@@ -275,5 +275,8 @@ async fn t2_retries_ambiguous_server_failure_with_the_same_operation() {
     let bodies = bodies.lock().await;
     assert_eq!(bodies.len(), 2);
     assert_eq!(bodies[0], bodies[1], "retry preserves the exact operation");
-    assert_eq!(bodies[0]["operation"], serde_json::to_value(operation).unwrap());
+    assert_eq!(
+        bodies[0]["operation"],
+        serde_json::to_value(operation).unwrap()
+    );
 }

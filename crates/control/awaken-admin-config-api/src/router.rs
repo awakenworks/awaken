@@ -32,11 +32,15 @@ use awaken_model_catalog::{
 };
 use awaken_runtime_contract::resilience::Disposition;
 use awaken_tenancy::WorkspaceScope as ResourceWorkspace;
-use axum::extract::{Extension, Path, Query, State};
+use axum::extract::{Extension, FromRef, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header::CONTENT_TYPE};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
+
+mod provider_proposals;
+pub use provider_proposals::EnvironmentProviderProposal;
+use provider_proposals::provider_proposals_from;
 
 /// The admin config plane's injected stores. The router depends on the domain
 /// ports, not a concrete backend, so the same routes serve the in-memory dev
@@ -70,6 +74,66 @@ pub struct AdminState {
     /// /credentials/:id/cooldown`; pool resolution then rotates past it. Shared, so
     /// every route observes the same cooldown state.
     pub availability: Arc<AvailabilityLedger>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct IdentityCapabilityView {
+    pub mode: String,
+    pub cloud_login_enabled: bool,
+    pub authenticated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ModelSupplyCapabilityView {
+    pub local_catalog_enabled: bool,
+    pub byok_enabled: bool,
+    pub cloud_models_enabled: bool,
+}
+
+/// Stable frontend/SDK feature discovery; callers never infer deployment
+/// posture from a failed Cloud request.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ConfigCapabilitiesView {
+    pub identity: IdentityCapabilityView,
+    pub models: ModelSupplyCapabilityView,
+}
+
+impl Default for ConfigCapabilitiesView {
+    fn default() -> Self {
+        Self {
+            identity: IdentityCapabilityView {
+                mode: "no-login".into(),
+                cloud_login_enabled: false,
+                authenticated: false,
+            },
+            models: ModelSupplyCapabilityView {
+                local_catalog_enabled: true,
+                byok_enabled: true,
+                cloud_models_enabled: false,
+            },
+        }
+    }
+}
+
+#[derive(Clone)]
+struct AdminRouterState {
+    admin: AdminState,
+    capabilities: ConfigCapabilitiesView,
+}
+
+impl FromRef<AdminRouterState> for AdminState {
+    fn from_ref(state: &AdminRouterState) -> Self {
+        state.admin.clone()
+    }
+}
+
+impl FromRef<AdminRouterState> for ConfigCapabilitiesView {
+    fn from_ref(state: &AdminRouterState) -> Self {
+        state.capabilities.clone()
+    }
 }
 
 /// The result of a live credential probe (secret-free), aligned with the Managed
@@ -132,7 +196,15 @@ pub enum ModelCatalogDiscoveryError {
 /// Author the model catalog and enter credentials. The resolver consumes the same
 /// catalog snapshot (`GET /v1/config/catalog`) to bind a run.
 pub fn admin_router(state: AdminState) -> Router {
+    admin_router_with_capabilities(state, ConfigCapabilitiesView::default())
+}
+
+pub fn admin_router_with_capabilities(
+    state: AdminState,
+    capabilities: ConfigCapabilitiesView,
+) -> Router {
     Router::new()
+        .route("/v1/config/capabilities", get(get_config_capabilities))
         .route(
             "/v1/config/provider-descriptors",
             get(get_provider_descriptors),
@@ -210,19 +282,47 @@ pub fn admin_router(state: AdminState) -> Router {
             "/v1/config/agents/{agent_id}/resources",
             put(put_agent_inputs).get(get_agent_inputs),
         )
-        .with_state(state)
+        .with_state(AdminRouterState {
+            admin: state,
+            capabilities,
+        })
+}
+
+async fn get_config_capabilities(
+    State(capabilities): State<ConfigCapabilitiesView>,
+) -> Json<ConfigCapabilitiesView> {
+    Json(capabilities)
 }
 
 async fn refresh_brokered_models(
     State(state): State<AdminState>,
+    State(capabilities): State<ConfigCapabilitiesView>,
     headers: HeaderMap,
 ) -> Result<Json<CatalogSyncResult>, Problem> {
     let rid = req_id(&headers);
+    if !capabilities.models.cloud_models_enabled {
+        return Err(Problem(ApiError::new(
+            409,
+            "cloud_models_disabled",
+            "Cloud models disabled",
+            "enable cloud_models with Awaken Cloud identity before refreshing managed models",
+            &rid,
+        )));
+    }
+    if !capabilities.identity.authenticated {
+        return Err(Problem(ApiError::new(
+            401,
+            "cloud_sign_in_required",
+            "Awaken Cloud sign-in required",
+            "Sign in to Awaken Cloud before refreshing managed models",
+            &rid,
+        )));
+    }
     let discovery = state.brokered_catalog.as_ref().ok_or_else(|| {
         Problem(ApiError::new(
-            503,
-            "brokered_catalog_unavailable",
-            "Managed model catalog unavailable",
+            401,
+            "cloud_sign_in_required",
+            "Awaken Cloud sign-in required",
             "Sign in to Awaken Cloud before refreshing managed models",
             &rid,
         ))
@@ -242,103 +342,6 @@ async fn refresh_brokered_models(
         .await
         .map_err(|error| repo_problem(&error, &rid))?;
     Ok(Json(result))
-}
-
-/// A read-only, non-executable hint derived from process environment. It is not a
-/// catalog row, credential source, profile or publication and carries no secret.
-/// The UI may use it to prefill existing authoring forms; only their explicit writes
-/// create execution truth.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct EnvironmentProviderProposal {
-    pub provider_id: String,
-    pub endpoint_id: String,
-    pub dialect: awaken_model_catalog::ApiDialect,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub base_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model_id: Option<String>,
-    pub credential_env: String,
-    pub credential_present: bool,
-}
-
-struct ProposalKeys {
-    provider_id: &'static str,
-    endpoint_id: &'static str,
-    dialect: awaken_model_catalog::ApiDialect,
-    base_url: &'static str,
-    model: &'static str,
-    credential: &'static str,
-}
-
-fn provider_proposals_from(
-    read: impl Fn(&str) -> Option<String>,
-) -> Vec<EnvironmentProviderProposal> {
-    use awaken_model_catalog::ApiDialect;
-
-    let known = [
-        ProposalKeys {
-            provider_id: "anthropic",
-            endpoint_id: "anthropic-messages",
-            dialect: ApiDialect::AnthropicMessages,
-            base_url: "ANTHROPIC_BASE_URL",
-            model: "ANTHROPIC_MODEL",
-            credential: "ANTHROPIC_API_KEY",
-        },
-        ProposalKeys {
-            provider_id: "openai",
-            endpoint_id: "openai-chat",
-            dialect: ApiDialect::OpenAiChat,
-            base_url: "OPENAI_BASE_URL",
-            model: "OPENAI_MODEL",
-            credential: "OPENAI_API_KEY",
-        },
-        ProposalKeys {
-            provider_id: "gemini",
-            endpoint_id: "gemini",
-            dialect: ApiDialect::Gemini,
-            base_url: "GEMINI_BASE_URL",
-            model: "GEMINI_MODEL",
-            credential: "GEMINI_API_KEY",
-        },
-        ProposalKeys {
-            provider_id: "kimi",
-            endpoint_id: "kimi-anthropic",
-            dialect: ApiDialect::AnthropicMessages,
-            base_url: "KIMI_BASE_URL",
-            model: "KIMI_MODEL",
-            credential: "KIMI_API_KEY",
-        },
-        ProposalKeys {
-            provider_id: "minimax",
-            endpoint_id: "minimax-anthropic",
-            dialect: ApiDialect::AnthropicMessages,
-            base_url: "MINIMAX_BASE_URL",
-            model: "MINIMAX_MODEL",
-            credential: "MINIMAX_API_KEY",
-        },
-    ];
-
-    known
-        .into_iter()
-        .filter_map(|keys| {
-            let base_url = read(keys.base_url).filter(|value| !value.trim().is_empty());
-            let model_id = read(keys.model).filter(|value| !value.trim().is_empty());
-            let credential_present =
-                read(keys.credential).is_some_and(|value| !value.trim().is_empty());
-            (base_url.is_some() || model_id.is_some() || credential_present).then(|| {
-                EnvironmentProviderProposal {
-                    provider_id: keys.provider_id.to_string(),
-                    endpoint_id: keys.endpoint_id.to_string(),
-                    dialect: keys.dialect,
-                    base_url,
-                    model_id,
-                    credential_env: keys.credential.to_string(),
-                    credential_present,
-                }
-            })
-        })
-        .collect()
 }
 
 async fn get_provider_proposals() -> Json<Vec<EnvironmentProviderProposal>> {
@@ -956,14 +959,22 @@ pub struct PutModelAttributesRequest {
 
 async fn get_catalog(
     State(state): State<AdminState>,
+    State(capabilities): State<ConfigCapabilitiesView>,
     headers: HeaderMap,
 ) -> Result<Json<awaken_model_catalog::ProviderCatalog>, Problem> {
-    state
+    let mut catalog = state
         .catalog
         .snapshot()
         .await
-        .map(Json)
-        .map_err(|e| repo_problem(&e, &req_id(&headers)))
+        .map_err(|e| repo_problem(&e, &req_id(&headers)))?;
+    if !capabilities.models.cloud_models_enabled {
+        for offering in &mut catalog.offerings {
+            if offering.source == OfferingSource::Brokered {
+                offering.status = OfferingStatus::Unavailable;
+            }
+        }
+    }
+    Ok(Json(catalog))
 }
 
 async fn put_pool(

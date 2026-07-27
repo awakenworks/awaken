@@ -234,6 +234,7 @@ mod tests {
     fn request(messages: Vec<ChatMessage>) -> ChatRequest {
         ChatRequest {
             model_binding: ModelBinding::new("openai", "gpt-exact", "genai"),
+            inference: Default::default(),
             messages,
             tools: Vec::new(),
         }

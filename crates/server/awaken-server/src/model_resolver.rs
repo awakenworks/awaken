@@ -47,6 +47,7 @@ pub struct CatalogModelPublicationResolver {
     source: CatalogSource,
     credentials: Arc<dyn CredentialRepo>,
     profiles: Option<Arc<dyn InferenceProfileStore>>,
+    brokered_access_enabled: bool,
 }
 
 /// The conventional Workspace-level profile consumed by `ModelSelection::Auto`.
@@ -61,6 +62,7 @@ impl CatalogModelPublicationResolver {
             source: CatalogSource::Static(catalog),
             credentials,
             profiles: None,
+            brokered_access_enabled: true,
         }
     }
 
@@ -71,6 +73,7 @@ impl CatalogModelPublicationResolver {
             source: CatalogSource::Live(repo),
             credentials,
             profiles: None,
+            brokered_access_enabled: true,
         }
     }
 
@@ -80,6 +83,14 @@ impl CatalogModelPublicationResolver {
     #[must_use]
     pub fn with_profiles(mut self, profiles: Arc<dyn InferenceProfileStore>) -> Self {
         self.profiles = Some(profiles);
+        self
+    }
+
+    /// Select whether brokered Offering/Profile pairs may enter a new immutable
+    /// publication. Disabling this never relabels them as direct/BYOK candidates.
+    #[must_use]
+    pub fn with_brokered_access(mut self, enabled: bool) -> Self {
+        self.brokered_access_enabled = enabled;
         self
     }
 
@@ -413,6 +424,14 @@ impl CatalogModelPublicationResolver {
         offering: &Offering,
         candidate: &ProfileCandidate,
     ) -> Result<PublicationAccess<'a>, PublicationResolutionError> {
+        if offering.source == awaken_model_catalog::OfferingSource::Brokered
+            && !self.brokered_access_enabled
+        {
+            return Err(PublicationResolutionError::CandidateUnavailable {
+                binding: Self::binding_of(offering),
+                reason: "cloud_models_disabled: brokered model supply is disabled".into(),
+            });
+        }
         if let CredentialBinding::OneOfCredentialPool { credential_pool_id } =
             &candidate.credential_binding
         {
@@ -981,7 +1000,50 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn t8_brokered_binding_cannot_relabel_a_direct_offering() {
+    async fn t8_disabled_cloud_supply_rejects_brokered_without_byok_fallback() {
+        // Cause graph: C1 a brokered Offering/Profile is cached; C2 Cloud model
+        // supply is disabled; C3 a local inventory might exist. C1+C2 always
+        // yields E1 explicit rejection; C3 cannot relabel or rescue the target.
+        //
+        // | Rule | brokered target | Cloud enabled | local fallback | Result |
+        // |---|---:|---:|---:|---|
+        // | B1 | 1 | 1 | - | publish brokered marker |
+        // | B2 | 1 | 0 | 0 | cloud_models_disabled |
+        // | B3 | 1 | 0 | 1 | cloud_models_disabled; no fallback |
+        let credentials = Arc::new(InMemoryCredentialRepo::new());
+        let mut catalog = catalog(&["managed-model"]);
+        catalog.offerings[0].source = awaken_model_catalog::OfferingSource::Brokered;
+        let profiles = Arc::new(InMemoryProfileStore::new());
+        profiles
+            .put(
+                DEFAULT_INFERENCE_PROFILE_ID.into(),
+                InferenceProfile {
+                    workspace_id: "workspace-a".into(),
+                    primary: ProfileCandidate {
+                        target: ModelTarget {
+                            model_id: "managed-model".into(),
+                            provider_id: Some("openai".into()),
+                            protocol_endpoint_id: Some("ep1".into()),
+                        },
+                        credential_binding: CredentialBinding::Brokered,
+                    },
+                    fallbacks: Vec::new(),
+                    disabled_endpoint_ids: Vec::new(),
+                },
+            )
+            .unwrap();
+
+        let error = CatalogModelPublicationResolver::new(catalog, credentials)
+            .with_profiles(profiles)
+            .with_brokered_access(false)
+            .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("cloud_models_disabled"));
+    }
+
+    #[tokio::test]
+    async fn t9_brokered_binding_cannot_relabel_a_direct_offering() {
         let credentials = Arc::new(InMemoryCredentialRepo::new());
         let profiles = Arc::new(InMemoryProfileStore::new());
         profiles

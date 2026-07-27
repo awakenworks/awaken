@@ -33,6 +33,7 @@ pub fn contract_schemas() -> Map<String, Value> {
         "ProviderDriverDescriptor",
         awaken_model_catalog::ProviderDriverDescriptor
     );
+    add!("ConfigCapabilitiesView", crate::ConfigCapabilitiesView);
     add!(
         "SaveProviderConnectionRequest",
         crate::SaveProviderConnectionRequest
@@ -233,6 +234,10 @@ fn op(
 fn paths() -> Value {
     let id = |desc: &str| vec![path_param("id", desc)];
     json!({
+        "/v1/config/capabilities": {
+            "get": op("get_config_capabilities", "catalog", "Report identity and local/BYOK/Cloud model feature posture without probing external services",
+                &[], None, 200, schema_ref("ConfigCapabilitiesView"))
+        },
         "/v1/config/provider-proposals": {
             "get": op("get_provider_proposals", "catalog", "Discover secret-free environment hints; proposals are not persisted or executable",
                 &[], None, 200, array_of("EnvironmentProviderProposal"))

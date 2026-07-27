@@ -33,15 +33,16 @@
 //! `needs_attention`; active credential + only unavailable offerings ->
 //! `unavailable`. Tests below exercise every leaf from composed stores.
 //!
-//! Brokered refresh decision table: B1 adapter present + valid projection ->
-//! atomically expose only `brokered` offerings; B2 adapter absent -> typed 503
-//! and no catalog mutation; B3 adapter failure -> typed 503 and no mutation.
+//! Brokered refresh decision table: B1 feature+adapter+valid projection ->
+//! atomically expose only `brokered` offerings; B2 feature disabled -> typed 409;
+//! B3 enabled without login adapter -> typed 401; adapter failure -> typed 503.
 
 use std::sync::{Arc, Mutex};
 
 use awaken_admin_config_api::{
-    AdminState, BrokeredCatalogDiscovery, ModelCatalogDiscovery, ModelCatalogDiscoveryError,
-    admin_router,
+    AdminState, BrokeredCatalogDiscovery, ConfigCapabilitiesView, IdentityCapabilityView,
+    ModelCatalogDiscovery, ModelCatalogDiscoveryError, ModelSupplyCapabilityView, admin_router,
+    admin_router_with_capabilities,
 };
 use awaken_agent_contract::RedactedString;
 use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo};
@@ -110,6 +111,21 @@ struct Harness {
 }
 
 struct FixedBrokeredDiscovery(Result<BrokeredCatalogProjection, String>);
+
+fn cloud_capabilities(authenticated: bool) -> ConfigCapabilitiesView {
+    ConfigCapabilitiesView {
+        identity: IdentityCapabilityView {
+            mode: "awaken-cloud".into(),
+            cloud_login_enabled: true,
+            authenticated,
+        },
+        models: ModelSupplyCapabilityView {
+            local_catalog_enabled: true,
+            byok_enabled: true,
+            cloud_models_enabled: true,
+        },
+    }
+}
 
 #[async_trait::async_trait]
 impl BrokeredCatalogDiscovery for FixedBrokeredDiscovery {
@@ -220,31 +236,36 @@ async fn author_prerequisites(app: &Router) -> String {
 #[tokio::test]
 async fn b1_brokered_refresh_exposes_only_explicit_managed_offerings() {
     let catalog = Arc::new(InMemoryCatalogRepo::new());
-    let app = admin_router(AdminState {
-        catalog: catalog.clone(),
-        credentials: Arc::new(InMemoryCredentialRepo::new()),
-        secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
-        profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
-        resources: Arc::new(awaken_admin_config_api::InMemoryAgentInputBindingRepository::new()),
-        probe: None,
-        model_discovery: None,
-        brokered_catalog: Some(Arc::new(FixedBrokeredDiscovery(Ok(
-            BrokeredCatalogProjection {
-                broker_id: "awaken-cloud".into(),
-                control_base_url: "https://api.awakenworks.com".into(),
-                models: vec![BrokeredModelProjection {
-                    provider_id: "openai".into(),
-                    model_id: "gpt-5".into(),
-                    dialect: ApiDialect::OpenAiResponses,
-                    context_window: Some(400_000),
-                    max_output_tokens: Some(128_000),
-                    publication_revision: 7,
-                }],
-                observed_at_unix_ms: 42,
-            },
-        )))),
-        availability: Arc::new(AvailabilityLedger::new()),
-    });
+    let app = admin_router_with_capabilities(
+        AdminState {
+            catalog: catalog.clone(),
+            credentials: Arc::new(InMemoryCredentialRepo::new()),
+            secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
+            profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
+            resources: Arc::new(
+                awaken_admin_config_api::InMemoryAgentInputBindingRepository::new(),
+            ),
+            probe: None,
+            model_discovery: None,
+            brokered_catalog: Some(Arc::new(FixedBrokeredDiscovery(Ok(
+                BrokeredCatalogProjection {
+                    broker_id: "awaken-cloud".into(),
+                    control_base_url: "https://api.awakenworks.com".into(),
+                    models: vec![BrokeredModelProjection {
+                        provider_id: "openai".into(),
+                        model_id: "gpt-5".into(),
+                        dialect: ApiDialect::OpenAiResponses,
+                        context_window: Some(400_000),
+                        max_output_tokens: Some(128_000),
+                        publication_revision: 7,
+                    }],
+                    observed_at_unix_ms: 42,
+                },
+            )))),
+            availability: Arc::new(AvailabilityLedger::new()),
+        },
+        cloud_capabilities(true),
+    );
 
     let (status, result) = call(
         &app,
@@ -272,6 +293,28 @@ async fn b1_brokered_refresh_exposes_only_explicit_managed_offerings() {
             .as_deref(),
         Some("https://api.awakenworks.com")
     );
+
+    // Turning the feature off preserves the durable projection for audit but
+    // makes its API view unavailable, so UI/Profile clients cannot select it.
+    let local = admin_router(AdminState {
+        catalog: catalog.clone(),
+        credentials: Arc::new(InMemoryCredentialRepo::new()),
+        secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
+        profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
+        resources: Arc::new(awaken_admin_config_api::InMemoryAgentInputBindingRepository::new()),
+        probe: None,
+        model_discovery: None,
+        brokered_catalog: None,
+        availability: Arc::new(AvailabilityLedger::new()),
+    });
+    let (status, local_catalog) = call(&local, "GET", "/v1/config/catalog", Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(local_catalog["offerings"][0]["status"], "unavailable");
+    assert_eq!(
+        catalog.snapshot().await.unwrap().offerings[0].status,
+        OfferingStatus::Active,
+        "feature projection must not destroy durable Cloud history"
+    );
 }
 
 #[tokio::test]
@@ -284,8 +327,8 @@ async fn b2_missing_broker_adapter_is_typed_and_does_not_mutate_catalog() {
         Value::Null,
     )
     .await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(problem["code"], "brokered_catalog_unavailable");
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(problem["code"], "cloud_models_disabled");
     assert!(
         harness
             .catalog
@@ -295,6 +338,42 @@ async fn b2_missing_broker_adapter_is_typed_and_does_not_mutate_catalog() {
             .offerings
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn b3_enabled_cloud_supply_without_login_is_typed_and_non_mutating() {
+    let catalog = Arc::new(InMemoryCatalogRepo::new());
+    let app = admin_router_with_capabilities(
+        AdminState {
+            catalog: catalog.clone(),
+            credentials: Arc::new(InMemoryCredentialRepo::new()),
+            secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
+            profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
+            resources: Arc::new(
+                awaken_admin_config_api::InMemoryAgentInputBindingRepository::new(),
+            ),
+            probe: None,
+            model_discovery: None,
+            brokered_catalog: None,
+            availability: Arc::new(AvailabilityLedger::new()),
+        },
+        cloud_capabilities(false),
+    );
+    let (status, problem) = call(
+        &app,
+        "POST",
+        "/v1/config/brokered-models/refresh",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(problem["code"], "cloud_sign_in_required");
+    assert!(catalog.snapshot().await.unwrap().offerings.is_empty());
+    let (status, capabilities) = call(&app, "GET", "/v1/config/capabilities", Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(capabilities["identity"]["cloud_login_enabled"], true);
+    assert_eq!(capabilities["identity"]["authenticated"], false);
+    assert_eq!(capabilities["models"]["cloud_models_enabled"], true);
 }
 
 #[tokio::test]
@@ -416,7 +495,7 @@ async fn failed_connection_test_leaves_no_executable_catalog_facts() {
 #[tokio::test]
 async fn unsupported_provider_and_empty_key_fail_before_discovery() {
     let harness = harness();
-    let secret = "must-not-echo";
+    let secret = "must-not-echo"; // awaken-allow: secret -- inert non-echo fixture
     let (status, problem) = call(
         &harness.app,
         "POST",
@@ -479,7 +558,7 @@ async fn catalog_rejection_disables_the_already_sealed_credential() {
             "endpoint_id":"anthropic-messages",
             "dialect":"anthropic_messages",
             "base_url":"https://provider.invalid/v1",
-            "secret":"sealed-before-catalog-rejection"
+            "secret":"sealed-before-catalog-rejection" // awaken-allow: secret -- inert fixture
         }),
     )
     .await;
@@ -525,7 +604,7 @@ async fn connection_summaries_cover_not_configured_ready_stale_and_unavailable()
         json!({
             "workspace_id":"workspace-a", "provider_id":"anthropic",
             "display_name":"Anthropic", "endpoint_id":"anthropic-messages",
-            "dialect":"anthropic_messages", "secret":"summary-secret"
+            "dialect":"anthropic_messages", "secret":"summary-secret" // awaken-allow: secret -- inert fixture
         }),
     )
     .await;
@@ -589,7 +668,7 @@ async fn connection_summaries_separate_connected_from_needs_attention() {
         "/v1/config/credentials",
         json!({
             "workspace_id":"workspace-a", "kind":"vault", "provider_id":"openai",
-            "secret":"credential-only-secret"
+            "secret":"credential-only-secret" // awaken-allow: secret -- inert fixture
         }),
     )
     .await;

@@ -183,6 +183,51 @@ empty credential:
 | Direct/BYOK | manual or Provider API Offering | exact local credential, pool, or explicit no-auth | Awaken catalog, vault, and Profile |
 | Awaken Cloud subscription | on-demand `brokered` Offering projection | `brokered` | Cloud identity/entitlement/grant; Awaken Profile selection |
 
+### Deployment capability switches
+
+Identity and model supply are separate deployment axes. `identity_mode` controls
+who authenticates users; `cloud_models` controls whether this process may read
+the Cloud model projection or obtain brokered inference grants. Both are resolved
+once at startup from `~/.awaken/config.toml`, with explicit CLI overrides:
+
+```toml
+# "no-login" | "self-managed" | "awaken-cloud"
+identity_mode = "no-login"
+
+# "disabled" (default) | "enabled"
+cloud_models = "disabled"
+```
+
+Equivalent startup overrides are `--identity-mode <mode>` and
+`--cloud-models disabled|enabled`. Enabling Cloud models requires
+`identity_mode = "awaken-cloud"`; invalid combinations fail startup rather than
+silently enabling a network path.
+
+| Identity | `cloud_models` | Login | Local catalog/BYOK | Cloud catalog and brokered inference |
+|---|---|---:|---:|---:|
+| `no-login` | `disabled` | off | on | off |
+| `self-managed` | `disabled` | local IAM | on | off |
+| `awaken-cloud` | `disabled` | Cloud | on | off |
+| `awaken-cloud` | `enabled` | Cloud | on | on, after authentication/entitlement |
+| any non-Cloud identity | `enabled` | — | — | invalid; startup fails closed |
+
+`GET /v1/config/capabilities` is the UI/runtime contract for these axes. When
+Cloud models are disabled, brokered rows already persisted locally are projected
+as unavailable, profile publication rejects brokered access, materialization
+rejects brokered execution, and refresh returns `cloud_models_disabled` without
+performing a Cloud inference request. When enabled without an authenticated
+Cloud session, refresh returns `cloud_sign_in_required`. There is no implicit
+fallback from a brokered candidate to BYOK: fallback remains explicit Profile
+policy.
+
+The Models surface therefore presents `Local · BYOK`, `Cloud · sign in required`,
+or `Awaken Cloud` from capabilities instead of guessing from catalog contents.
+The local catalog and provider API discovery remain available in every valid
+mode. Provider model lists are fetched on an explicit user discovery action, not
+by a timer; model limits such as context window and maximum output tokens are
+optional, provenance-carrying facts, with manual values retained when APIs do not
+publish trustworthy values.
+
 Cloud discovery is an authenticated on-demand API projection, not a timer and
 not a second writable local catalog. It may publish optional context/output
 limits with `brokered` field provenance. Unknown remains absent, stale Cloud

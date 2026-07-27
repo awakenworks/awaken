@@ -37,13 +37,15 @@ pub use awaken_config_resolver::{
     InMemoryWebhookStore, InferenceProfileStore, WebhookStore,
 };
 pub use router::{
-    AdminState, AuthorOfferingRequest, BrokeredCatalogDiscovery, CooldownRequest, CredentialProbe,
-    CredentialSourceView, CredentialValidation, DiscoverModelsRequest, EnterCredentialRequest,
-    EnvironmentProviderProposal, ModelCatalogDiscovery, ModelCatalogDiscoveryError,
-    PoolEligibleView, ProbeStatus, ProviderConnectionStatus, ProviderConnectionSummary,
-    ProviderConnectionView, PutModelAttributesRequest, ResolveProfileRequest, ResolveRequest,
-    ResolvedCandidatesView, ResolvedInferenceView, SaveProviderConnectionRequest,
-    ValidateCredentialRequest, admin_router,
+    AdminState, AuthorOfferingRequest, BrokeredCatalogDiscovery, ConfigCapabilitiesView,
+    CooldownRequest, CredentialProbe, CredentialSourceView, CredentialValidation,
+    DiscoverModelsRequest, EnterCredentialRequest, EnvironmentProviderProposal,
+    IdentityCapabilityView, ModelCatalogDiscovery, ModelCatalogDiscoveryError,
+    ModelSupplyCapabilityView, PoolEligibleView, ProbeStatus, ProviderConnectionStatus,
+    ProviderConnectionSummary, ProviderConnectionView, PutModelAttributesRequest,
+    ResolveProfileRequest, ResolveRequest, ResolvedCandidatesView, ResolvedInferenceView,
+    SaveProviderConnectionRequest, ValidateCredentialRequest, admin_router,
+    admin_router_with_capabilities,
 };
 
 /// The API surface version this crate serves.

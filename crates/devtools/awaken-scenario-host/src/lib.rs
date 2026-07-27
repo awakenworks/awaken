@@ -12,7 +12,10 @@ mod models;
 pub use crate::models::*;
 pub use acp_gateway::build_acp_gateway_router;
 pub use deployment::scenario_deployment;
+
+mod scenario_shell;
 use deployment::{resource_host, resource_host_with_deployment, scenario_storage_dir};
+use scenario_shell::{scenario_host_acp_cli, scenario_shell_argv};
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -164,41 +167,6 @@ const FAKE_OUTCOME_ACP_SCRIPT: &str = "read _p; \
       *) printf '%s\\n' '{\"type\":\"message\",\"text\":\"a rough draft from ACP worker\"}';; \
     esac; \
     printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'";
-
-/// Resolve the POSIX shell used only by deterministic scenario fixtures.
-/// Windows developer environments normally provide it through Git for Windows,
-/// but npm launched from PowerShell does not necessarily inherit Git's `bin` in
-/// PATH. `AWAKEN_E2E_SH` remains the explicit override for non-standard installs.
-fn scenario_shell() -> String {
-    if let Ok(shell) = std::env::var("AWAKEN_E2E_SH")
-        && !shell.trim().is_empty()
-    {
-        return shell;
-    }
-    #[cfg(windows)]
-    for candidate in [
-        r"C:\Program Files\Git\bin\sh.exe",
-        r"C:\Program Files\Git\usr\bin\sh.exe",
-    ] {
-        if std::path::Path::new(candidate).is_file() {
-            return candidate.to_string();
-        }
-    }
-    "sh".to_string()
-}
-
-fn scenario_shell_argv(script: &str) -> Vec<String> {
-    vec![scenario_shell(), "-c".to_string(), script.to_string()]
-}
-
-fn scenario_host_acp_cli(
-    mut cli: awaken_run_executor_acp::AcpCli,
-) -> awaken_run_executor_acp::AcpCli {
-    // AcpCli catalog fields are process-lifetime static configuration. The
-    // scenario process creates at most one copy per selected router.
-    cli.command = Box::leak(scenario_shell().into_boxed_str());
-    cli
-}
 
 /// Managed Outcome backend matrix: each Session independently selects a Native
 /// or ACP Worker, while `AWAKEN_OUTCOME_JUDGE_RUNTIME` pins the Judge snapshot.
@@ -559,10 +527,8 @@ pub fn build_acp_permission_router() -> Router {
 /// ACP CLI (here the fake agent), else the native echo model (R3/R4/R7).
 /// `AWAKEN_MODEL_MODE=acp`.
 pub fn build_acp_router() -> Router {
-    let launch = awaken_run_executor_acp::AcpLaunch::custom(
-        scenario_shell_argv(FAKE_ACP_SCRIPT),
-        vec![],
-    );
+    let launch =
+        awaken_run_executor_acp::AcpLaunch::custom(scenario_shell_argv(FAKE_ACP_SCRIPT), vec![]);
     let source = Arc::new(awaken_run_executor_acp::SubprocessChannelSource::new(
         launch,
     ));
@@ -829,8 +795,7 @@ pub async fn build_acp_container_router() -> Router {
         .filter(|value| !value.trim().is_empty());
     let host = resource_host_with_deployment(Arc::new(EchoModel), "awaken", deployment);
     let argv = scenario_argv(
-        &std::env::var("AWAKEN_ACP_ARGV")
-            .expect("container scenario requires AWAKEN_ACP_ARGV"),
+        &std::env::var("AWAKEN_ACP_ARGV").expect("container scenario requires AWAKEN_ACP_ARGV"),
     );
     let host = host
         .with_acp_launch_source(
@@ -1976,7 +1941,9 @@ mod compatible_endpoint_tests {
     #[test]
     fn scenario_argv_preserves_paths_with_spaces() {
         assert_eq!(
-            scenario_argv(r#"["C:\\Program Files\\nodejs\\node.exe","C:\\fixture dir\\agent.mjs"]"#),
+            scenario_argv(
+                r#"["C:\\Program Files\\nodejs\\node.exe","C:\\fixture dir\\agent.mjs"]"#
+            ),
             vec![
                 r"C:\Program Files\nodejs\node.exe".to_string(),
                 r"C:\fixture dir\agent.mjs".to_string(),

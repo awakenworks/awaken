@@ -79,6 +79,40 @@ pub struct ConfigOverrides {
     pub port: Option<u16>,
     pub no_browser: Option<bool>,
     pub worker_server: Option<String>,
+    pub identity_mode: Option<awaken_control::ManagementIdentityMode>,
+    pub cloud_models: Option<CloudModelMode>,
+}
+
+/// Whether this process may project and execute Awaken Cloud subscription models.
+/// Cloud identity remains independent so users may sign in while staying BYOK-only.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CloudModelMode {
+    #[default]
+    Disabled,
+    Enabled,
+}
+
+impl CloudModelMode {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "disabled" | "off" | "false" => Ok(Self::Disabled),
+            "enabled" | "on" | "true" => Ok(Self::Enabled),
+            other => Err(format!(
+                "invalid cloud_models={other:?}: expected disabled or enabled"
+            )),
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Enabled => "enabled",
+        }
+    }
+
+    pub const fn is_enabled(self) -> bool {
+        matches!(self, Self::Enabled)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -175,6 +209,7 @@ pub struct ResolvedDeployment {
     pub worker_server: Option<String>,
     pub worker: WorkerBootstrap,
     pub identity_mode: awaken_control::ManagementIdentityMode,
+    pub cloud_models: CloudModelMode,
     pub org_id: String,
     pub iam_workspaces: Vec<String>,
     pub cloud_iam: CloudIamConfig,
@@ -459,16 +494,34 @@ impl ResolvedDeployment {
                 );
             }
         };
-        let identity_mode = file
+        let identity_mode = overrides
             .identity_mode
-            .as_deref()
-            .map(|value| {
-                awaken_control::ManagementIdentityMode::parse(value).ok_or_else(|| {
-                    format!("invalid identity_mode {value:?}: expected no-login, awaken-cloud, or self-managed")
+            .or(file
+                .identity_mode
+                .as_deref()
+                .map(|value| {
+                    awaken_control::ManagementIdentityMode::parse(value).ok_or_else(|| {
+                        format!("invalid identity_mode {value:?}: expected no-login, awaken-cloud, or self-managed")
+                    })
                 })
-            })
-            .transpose()?
+                .transpose()?)
             .unwrap_or(awaken_control::ManagementIdentityMode::NoLogin);
+        let cloud_models = overrides
+            .cloud_models
+            .or(file
+                .cloud_models
+                .as_deref()
+                .map(CloudModelMode::parse)
+                .transpose()?)
+            .unwrap_or_default();
+        if cloud_models.is_enabled()
+            && identity_mode != awaken_control::ManagementIdentityMode::AwakenCloud
+        {
+            return Err(
+                "cloud_models_require_awaken_cloud_identity: cloud_models=enabled requires identity_mode=awaken-cloud"
+                    .to_owned(),
+            );
+        }
         if file.cloud_iam_service_token.is_some() && file.cloud_iam_service_token_file.is_some() {
             return Err(
                 "configure exactly one of cloud_iam_service_token or cloud_iam_service_token_file"
@@ -517,6 +570,7 @@ impl ResolvedDeployment {
             worker_server,
             worker,
             identity_mode,
+            cloud_models,
             org_id: file
                 .org_id
                 .unwrap_or_else(|| awaken_control::DEFAULT_ORG_ID.to_owned()),
@@ -573,6 +627,8 @@ impl ResolvedDeployment {
                 "config_file_exists": self.config_file_exists,
                 "no_browser": self.no_browser,
                 "run_local_pool": self.run_local_pool,
+                "identity_mode": identity_mode_name(self.identity_mode),
+                "cloud_models": self.cloud_models.as_str(),
                 "runtime_dispatch_backend": runtime_backend,
                 "resource_backend": resource_backend,
                 "control_databases": databases,
@@ -584,7 +640,7 @@ impl ResolvedDeployment {
             .expect("configuration report is serializable");
         }
         let mut report = format!(
-            "Awaken configuration\n\n  role                 {role}\n  mode                 {mode}\n  bind                 {bind}\n  data directory       {data}\n  config file          {config} ({exists})\n  local worker pool    {pool}\n  runtime dispatch     {runtime}\n  resource plane       {resources}\n  control seal key     {key}\n\nSources: command line --config or standard config.toml, then defaults.\n",
+            "Awaken configuration\n\n  role                 {role}\n  mode                 {mode}\n  bind                 {bind}\n  data directory       {data}\n  config file          {config} ({exists})\n  local worker pool    {pool}\n  identity mode        {identity}\n  cloud models         {cloud_models}\n  runtime dispatch     {runtime}\n  resource plane       {resources}\n  control seal key     {key}\n\nSources: command line --config or standard config.toml, then defaults.\n",
             role = self.role.as_str(),
             mode = self.mode.as_str(),
             bind = self.bind,
@@ -596,6 +652,8 @@ impl ResolvedDeployment {
                 "not created"
             },
             pool = self.run_local_pool,
+            identity = identity_mode_name(self.identity_mode),
+            cloud_models = self.cloud_models.as_str(),
             runtime = runtime_backend,
             resources = resource_backend,
             key = self.seal_key.description(),
@@ -605,6 +663,14 @@ impl ResolvedDeployment {
             report.push_str(&format!("  {name:<20} {backend}\n"));
         }
         report
+    }
+}
+
+const fn identity_mode_name(mode: awaken_control::ManagementIdentityMode) -> &'static str {
+    match mode {
+        awaken_control::ManagementIdentityMode::NoLogin => "no-login",
+        awaken_control::ManagementIdentityMode::AwakenCloud => "awaken-cloud",
+        awaken_control::ManagementIdentityMode::SelfManaged => "self-managed",
     }
 }
 
@@ -644,6 +710,7 @@ struct FileConfig {
     admin_db: Option<String>,
     sessions_db: Option<String>,
     identity_mode: Option<String>,
+    cloud_models: Option<String>,
     org_id: Option<String>,
     iam_workspaces: Option<Vec<String>>,
     cloud_iam_url: Option<String>,
@@ -809,6 +876,78 @@ mod tests {
                 .inference_base_url,
             "https://api.awakenworks.com"
         );
+    }
+
+    #[test]
+    fn cloud_login_and_cloud_model_supply_are_independent_and_fail_closed() {
+        // Cause graph: C1 selects Cloud identity; C2 enables Cloud models.
+        // E1 identity alone keeps model supply local; E2 C1+C2 enables brokered
+        // supply; E3 C2 without C1 is rejected before any network wiring.
+        //
+        // | Rule | C1 Cloud identity | C2 Cloud models | Result |
+        // |---|---:|---:|---|
+        // | F1 | 0 | 0 | no-login + local/BYOK only |
+        // | F2 | 1 | 0 | Cloud login + local/BYOK only |
+        // | F3 | 1 | 1 | Cloud login + brokered supply |
+        // | F4 | 0 | 1 | startup configuration error |
+        let local = resolve(FileConfig::default(), ConfigOverrides::default());
+        assert_eq!(
+            local.identity_mode,
+            awaken_control::ManagementIdentityMode::NoLogin
+        );
+        assert_eq!(local.cloud_models, CloudModelMode::Disabled);
+
+        let login_only = resolve(
+            FileConfig {
+                identity_mode: Some("awaken-cloud".into()),
+                ..FileConfig::default()
+            },
+            ConfigOverrides::default(),
+        );
+        assert_eq!(login_only.cloud_models, CloudModelMode::Disabled);
+
+        let full = resolve(
+            FileConfig {
+                identity_mode: Some("awaken-cloud".into()),
+                cloud_models: Some("enabled".into()),
+                ..FileConfig::default()
+            },
+            ConfigOverrides::default(),
+        );
+        assert_eq!(full.cloud_models, CloudModelMode::Enabled);
+
+        let error = ResolvedDeployment::resolve_file(
+            ConfigOverrides::default(),
+            Some(PathBuf::from("/home/dev")),
+            PathBuf::from("/home/dev/.awaken/config.toml"),
+            FileConfig {
+                cloud_models: Some("enabled".into()),
+                ..FileConfig::default()
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("cloud_models_require_awaken_cloud_identity"));
+    }
+
+    #[test]
+    fn command_line_cloud_modes_override_the_config_file() {
+        let config = resolve(
+            FileConfig {
+                identity_mode: Some("no-login".into()),
+                cloud_models: Some("disabled".into()),
+                ..FileConfig::default()
+            },
+            ConfigOverrides {
+                identity_mode: Some(awaken_control::ManagementIdentityMode::AwakenCloud),
+                cloud_models: Some(CloudModelMode::Enabled),
+                ..ConfigOverrides::default()
+            },
+        );
+        assert_eq!(
+            config.identity_mode,
+            awaken_control::ManagementIdentityMode::AwakenCloud
+        );
+        assert_eq!(config.cloud_models, CloudModelMode::Enabled);
     }
 
     #[test]

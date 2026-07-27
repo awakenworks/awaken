@@ -30,6 +30,7 @@ use crate::executor_from_materialized_endpoint;
 pub struct CredentialInferenceMaterializer {
     credentials: awaken_runtime_host::PinnedCredentialMaterializer,
     brokered: Option<Arc<dyn crate::brokered_inference::BrokeredInferenceClient>>,
+    brokered_mode_enabled: bool,
 }
 
 struct PinnedModelExecutor {
@@ -75,7 +76,16 @@ impl CredentialInferenceMaterializer {
         Self {
             credentials,
             brokered: None,
+            brokered_mode_enabled: false,
         }
+    }
+
+    /// Preserve the distinction between an operator-disabled feature and an
+    /// enabled feature whose interactive Cloud login is not currently available.
+    #[must_use]
+    pub fn with_brokered_mode(mut self, enabled: bool) -> Self {
+        self.brokered_mode_enabled = enabled;
+        self
     }
 
     /// Add managed inference without changing the direct/BYOK realization path.
@@ -86,6 +96,7 @@ impl CredentialInferenceMaterializer {
         client: Arc<dyn crate::brokered_inference::BrokeredInferenceClient>,
     ) -> Self {
         self.brokered = Some(client);
+        self.brokered_mode_enabled = true;
         self
     }
 
@@ -105,10 +116,13 @@ impl CredentialInferenceMaterializer {
             return Ok(None);
         };
         if route_ref.starts_with(crate::brokered_inference::BROKERED_ROUTE_PREFIX) {
+            if !self.brokered_mode_enabled {
+                return Err("cloud_models_disabled: brokered model supply is disabled".into());
+            }
             let client = self
                 .brokered
                 .clone()
-                .ok_or_else(|| "brokered inference client is not installed".to_string())?;
+                .ok_or_else(|| "cloud_sign_in_required: brokered inference needs an authenticated Awaken Cloud identity".to_string())?;
             return crate::brokered_inference::BrokeredCandidateExecutor::new(
                 client,
                 provider_ref,
@@ -440,19 +454,29 @@ mod tests {
 
     #[tokio::test]
     async fn brokered_materialization_requires_the_explicit_cloud_client() {
-        // Decision table: B1 marker + client -> lazy executor, zero grant calls;
-        // B2 marker + no client -> unavailable; a direct route never enters B1.
+        // Cause graph / decision table: C1 Cloud mode; C2 authenticated client.
+        // B1 C1+C2 -> lazy executor, zero grant calls; B2 !C1 -> explicitly
+        // disabled; B3 C1+!C2 -> sign-in required. No rule tries a direct route.
         let credentials = Arc::new(InMemoryCredentialRepo::new());
         let secrets = Arc::new(InMemorySecretStore::new());
         let materializer = CredentialInferenceMaterializer::new(credentials, secrets);
         let candidate = brokered_candidate();
         let context = RuntimeRunContext::new().with_ownership(Arc::new(CurrentOwnership));
-        assert!(
-            materializer
-                .materialize_candidate(&candidate, &context)
-                .await
-                .is_none()
-        );
+        let disabled = materializer
+            .materialize_secret(&candidate, &context, None)
+            .await
+            .err()
+            .expect("disabled Cloud supply rejects a brokered candidate");
+        assert!(disabled.contains("cloud_models_disabled"));
+
+        let sign_in = materializer
+            .clone()
+            .with_brokered_mode(true)
+            .materialize_secret(&candidate, &context, None)
+            .await
+            .err()
+            .expect("enabled Cloud supply without a client requires sign-in");
+        assert!(sign_in.contains("cloud_sign_in_required"));
 
         let materializer = materializer.with_brokered_client(Arc::new(NeverGrantClient));
         assert!(

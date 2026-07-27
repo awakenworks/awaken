@@ -3,6 +3,23 @@
   "schemas": {
     "AgentInputConfig": {
       "$defs": {
+        "AgentEnvironmentBinding": {
+          "properties": {
+            "environment_id": {
+              "type": "string"
+            },
+            "revision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "environment_id",
+            "revision"
+          ],
+          "type": "object"
+        },
         "InputBinding": {
           "properties": {
             "access": {
@@ -97,6 +114,17 @@
       "properties": {
         "agent_id": {
           "type": "string"
+        },
+        "environment": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentEnvironmentBinding"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Exact Environment revision selected as this Agent's Session default.\nIt is secret-free and shares the same CAS revision as Resource bindings,\nso callers cannot observe a mixed default bundle."
         },
         "inputs": {
           "items": {
@@ -376,6 +404,64 @@
         "observed_at_unix_ms"
       ],
       "title": "CatalogSyncResult",
+      "type": "object"
+    },
+    "ConfigCapabilitiesView": {
+      "$defs": {
+        "IdentityCapabilityView": {
+          "properties": {
+            "authenticated": {
+              "type": "boolean"
+            },
+            "cloud_login_enabled": {
+              "type": "boolean"
+            },
+            "mode": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode",
+            "cloud_login_enabled",
+            "authenticated"
+          ],
+          "type": "object"
+        },
+        "ModelSupplyCapabilityView": {
+          "properties": {
+            "byok_enabled": {
+              "type": "boolean"
+            },
+            "cloud_models_enabled": {
+              "type": "boolean"
+            },
+            "local_catalog_enabled": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "local_catalog_enabled",
+            "byok_enabled",
+            "cloud_models_enabled"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Stable frontend/SDK feature discovery; callers never infer deployment\nposture from a failed Cloud request.",
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/IdentityCapabilityView"
+        },
+        "models": {
+          "$ref": "#/$defs/ModelSupplyCapabilityView"
+        }
+      },
+      "required": [
+        "identity",
+        "models"
+      ],
+      "title": "ConfigCapabilitiesView",
       "type": "object"
     },
     "CooldownRequest": {

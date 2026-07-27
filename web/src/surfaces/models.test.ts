@@ -6,6 +6,7 @@ import {
   profileCandidateOf,
   targetKey,
 } from "./model-profile-editor";
+import { cloudModelUiState } from "./model-cloud-capability";
 import { providerDraftDefaults } from "./models";
 
 // UI cause/effect rules kept beside the executable tests:
@@ -18,6 +19,10 @@ import { providerDraftDefaults } from "./models";
 // T5 C5 move is in bounds -> E5 swap adjacent; out of bounds -> same reference.
 // T6 C6 explicit access is BYOK/Cloud/none -> E6 exact/brokered/none binding;
 // a BYOK step without a selected credential is rejected before the request.
+// Cloud capability decision table:
+// T7 unknown capabilities -> E7 no cloud action while loading.
+// T8 cloud models off (regardless of Cloud login) -> E8 local/BYOK-only UI.
+// T9 cloud models on + unauthenticated/authenticated -> E9 sign-in-required/ready.
 
 const openai: ProviderDriverDescriptor = {
   provider_kind: "openai",
@@ -59,6 +64,32 @@ describe("providerDraftDefaults", () => {
       baseUrl: "",
       dialect: "vertex_gemini",
     });
+  });
+});
+
+describe("cloud model capability state", () => {
+  const capabilities = (cloudModels: boolean, authenticated: boolean) => ({
+    identity: {
+      mode: "awaken-cloud" as const,
+      cloud_login_enabled: true,
+      authenticated,
+    },
+    models: {
+      local_catalog_enabled: true,
+      byok_enabled: true,
+      cloud_models_enabled: cloudModels,
+    },
+  });
+
+  it("fails closed while capabilities are unknown or Cloud models are disabled", () => {
+    expect(cloudModelUiState(undefined)).toBe("loading");
+    expect(cloudModelUiState(capabilities(false, false))).toBe("local");
+    expect(cloudModelUiState(capabilities(false, true))).toBe("local");
+  });
+
+  it("requires both the Cloud-model switch and an authenticated session", () => {
+    expect(cloudModelUiState(capabilities(true, false))).toBe("sign_in_required");
+    expect(cloudModelUiState(capabilities(true, true))).toBe("ready");
   });
 });
 

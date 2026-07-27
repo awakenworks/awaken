@@ -795,7 +795,10 @@ mod tests {
                 Ok(vec![model.clone()]),
             ])),
         };
-        assert_eq!(fetch_brokered_catalog(&recovers).await.unwrap(), vec![model]);
+        assert_eq!(
+            fetch_brokered_catalog(&recovers).await.unwrap(),
+            vec![model]
+        );
         assert!(recovers.readiness.lock().unwrap().is_empty());
         assert!(recovers.models.lock().unwrap().is_empty());
 

@@ -25,6 +25,8 @@
 // blocks; incomplete and unknown output variants remain valid terminal responses.
 // T9 malformed/unsupported Cloud projections fail atomically; duplicate public
 // model observations merge only the conservative known attribute minimum.
+// T10 Cloud login on + Cloud models off -> identity remains authenticated while
+// Catalog refresh fails locally and performs zero Cloud inference requests.
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
@@ -261,10 +263,54 @@ async function main() {
   const wrongAudienceToken = iam.token('account-wrong-audience', { audience: 'other-service' });
   let server = null;
   try {
+    const localOnlyDirectory = path.join(directory, 'cloud-login-local-models');
+    const localOnlyEnv = deploymentEnv(localOnlyDirectory, {
+      identityMode: 'awaken-cloud',
+      controlSealKey: SEAL_KEY,
+      fields: { cloud_api_url: iam.url, cloud_models: 'disabled' },
+      cloudIam: {
+        url: iam.url,
+        issuer: ISSUER,
+        audience: AUDIENCE,
+        accessToken: cachedToken,
+        serviceToken: SERVICE_TOKEN,
+      },
+    });
+    const cloudCallsBeforeDisabledBoot = iam.cloudCalls.length;
+    ({ server } = spawnServer('management-providers', PORT, localOnlyEnv));
+    await waitForPort(PORT, 180_000, server);
+    let localOnlyResult = await req(
+      `http://127.0.0.1:${PORT}`,
+      'GET',
+      '/v1/config/capabilities',
+    );
+    assert.equal(localOnlyResult.status, 200, JSON.stringify(localOnlyResult.body));
+    assert.deepEqual(localOnlyResult.body.identity, {
+      mode: 'awaken-cloud',
+      cloud_login_enabled: true,
+      authenticated: true,
+    });
+    assert.equal(localOnlyResult.body.models.cloud_models_enabled, false);
+    localOnlyResult = await req(
+      `http://127.0.0.1:${PORT}`,
+      'POST',
+      '/v1/config/brokered-models/refresh',
+    );
+    assert.equal(localOnlyResult.status, 409, JSON.stringify(localOnlyResult.body));
+    assert.equal(localOnlyResult.body.code, 'cloud_models_disabled');
+    assert.equal(
+      iam.cloudCalls.length,
+      cloudCallsBeforeDisabledBoot,
+      'disabled Cloud model supply must not call readiness or catalog APIs',
+    );
+    await stopServer(server);
+    server = null;
+    pass('Cloud login and Cloud model supply are independent; disabled supply has zero Cloud traffic');
+
     const env = deploymentEnv(directory, {
       identityMode: 'awaken-cloud',
       controlSealKey: SEAL_KEY,
-      fields: { cloud_api_url: iam.url },
+      fields: { cloud_api_url: iam.url, cloud_models: 'enabled' },
       cloudIam: {
         url: iam.url,
         issuer: ISSUER,

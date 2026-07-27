@@ -77,7 +77,10 @@ mod managed_json_tests {
         let message = managed_json_message(detail.clone());
         assert!(message.starts_with("invalid resource:"));
         assert!(message.ends_with(&detail));
-        assert_eq!(managed_json_message("model: missing field".into()), "model: missing field");
+        assert_eq!(
+            managed_json_message("model: missing field".into()),
+            "model: missing field"
+        );
     }
 }
 
