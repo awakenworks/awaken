@@ -67,56 +67,61 @@ fn config_str(c: &EnvironmentConfig) -> String {
     serde_json::to_string(c).expect("env config serializes")
 }
 
-fn decode(
+struct StoredEnvRow {
     id: String,
     name: String,
     description: String,
-    metadata_json: &str,
-    config_json: &str,
+    metadata_json: String,
+    config_json: String,
     archived_at: Option<String>,
     revision: i64,
     scope: Option<String>,
-) -> EnvItem {
-    EnvItem {
-        id,
-        revision: EnvironmentRevision(u64::try_from(revision).expect("valid Environment revision")),
-        name,
-        description,
-        metadata: serde_json::from_str(metadata_json).unwrap_or_default(),
-        scope,
-        config: serde_json::from_str(config_json).expect("valid typed Environment config"),
-        archived_at,
+}
+
+impl StoredEnvRow {
+    fn into_item(self) -> EnvItem {
+        EnvItem {
+            id: self.id,
+            revision: EnvironmentRevision(
+                u64::try_from(self.revision).expect("valid Environment revision"),
+            ),
+            name: self.name,
+            description: self.description,
+            metadata: serde_json::from_str(&self.metadata_json).unwrap_or_default(),
+            scope: self.scope,
+            config: serde_json::from_str(&self.config_json)
+                .expect("valid typed Environment config"),
+            archived_at: self.archived_at,
+        }
     }
 }
 
 fn sqlite_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EnvItem> {
-    let metadata_json: String = row.get(3)?;
-    let config_json: String = row.get(4)?;
-    Ok(decode(
-        row.get(0)?,
-        row.get(1)?,
-        row.get(2)?,
-        &metadata_json,
-        &config_json,
-        row.get(5)?,
-        row.get(6)?,
-        row.get(7)?,
-    ))
+    Ok(StoredEnvRow {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        description: row.get(2)?,
+        metadata_json: row.get(3)?,
+        config_json: row.get(4)?,
+        archived_at: row.get(5)?,
+        revision: row.get(6)?,
+        scope: row.get(7)?,
+    }
+    .into_item())
 }
 
 fn pg_row(row: &PgRow) -> EnvItem {
-    let metadata_json: String = row.get("metadata_json");
-    let config_json: String = row.get("config_json");
-    decode(
-        row.get("env_id"),
-        row.get("name"),
-        row.get("description"),
-        &metadata_json,
-        &config_json,
-        row.get("archived_at"),
-        row.get("revision"),
-        row.get("scope"),
-    )
+    StoredEnvRow {
+        id: row.get("env_id"),
+        name: row.get("name"),
+        description: row.get("description"),
+        metadata_json: row.get("metadata_json"),
+        config_json: row.get("config_json"),
+        archived_at: row.get("archived_at"),
+        revision: row.get("revision"),
+        scope: row.get("scope"),
+    }
+    .into_item()
 }
 
 /// SQLite persistence for the environment registry.
