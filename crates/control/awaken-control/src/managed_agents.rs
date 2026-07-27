@@ -339,7 +339,9 @@ fn wire_tools(
         .iter()
         .map(|name| AgentTool::CustomReference { name: name.clone() })
         .collect::<Vec<_>>();
-    tools.extend(awaken_protocol_managed::project::resolved_toolsets(toolsets));
+    tools.extend(awaken_protocol_managed::project::resolved_toolsets(
+        toolsets,
+    ));
     tools.extend(client_tools.iter().map(|tool| {
         AgentTool::Custom {
             name: tool.id.clone(),

@@ -1439,6 +1439,11 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # other sqlite store in the workspace uses.
         "rusqlite",
         "async-trait",
+        # Awaken Cloud's grant/catalog client is an outbound control-plane HTTP
+        # adapter owned by this outer composition crate; these are wire-only
+        # dependencies, not provider SDK or runtime-domain dependencies.
+        "reqwest",
+        "serde",
         "serde_json",
         "thiserror",
         "tokio",

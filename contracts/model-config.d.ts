@@ -18,8 +18,20 @@ type CredentialPoolID = string;
  */
 export interface AgentInputConfig {
     agent_id: string;
-    inputs:   InputElement[];
-    revision: number;
+    /**
+     * Exact Environment revision selected as this Agent's Session default.
+     * It is secret-free and shares the same CAS revision as Resource bindings,
+     * so callers cannot observe a mixed default bundle.
+     */
+    environment?: null | EnvironmentObject;
+    inputs:       InputElement[];
+    revision:     number;
+    [property: string]: unknown;
+}
+
+export interface EnvironmentObject {
+    environment_id: string;
+    revision:       number;
     [property: string]: unknown;
 }
 
@@ -148,6 +160,30 @@ export interface CatalogSyncResult {
      * Observation time shared by every row in this successful atomic refresh.
      */
     observed_at_unix_ms: number;
+    [property: string]: unknown;
+}
+
+/**
+ * Stable frontend/SDK feature discovery; callers never infer deployment
+ * posture from a failed Cloud request.
+ */
+export interface ConfigCapabilitiesView {
+    identity: Identity;
+    models:   Models;
+    [property: string]: unknown;
+}
+
+export interface Identity {
+    authenticated:       boolean;
+    cloud_login_enabled: boolean;
+    mode:                string;
+    [property: string]: unknown;
+}
+
+export interface Models {
+    byok_enabled:          boolean;
+    cloud_models_enabled:  boolean;
+    local_catalog_enabled: boolean;
     [property: string]: unknown;
 }
 

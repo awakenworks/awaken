@@ -1062,6 +1062,13 @@ const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
         },
     },
     RoutePolicyDescriptor {
+        prefix: "/v1/config/capabilities",
+        policy: RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
         prefix: "/v1/config/brokered-models",
         policy: RouteFamilyPolicy::Scoped {
             read: WORKSPACE_READ,

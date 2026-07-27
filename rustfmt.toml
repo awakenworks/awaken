@@ -1,2 +1,5 @@
 edition = "2024"
-newline_style = "Unix"
+# Respect the checked-out platform newline style. Git may materialize CRLF on
+# Windows, and formatting policy must validate syntax/layout rather than reject
+# an otherwise clean checkout solely because of `core.autocrlf`.
+newline_style = "Auto"

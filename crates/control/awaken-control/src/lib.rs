@@ -50,9 +50,7 @@ pub use crate::worker_stores::{
     open_shared_resource_validator,
 };
 
-use awaken_admin_config_api::{
-    AdminState, CredentialProbe, InferenceProfileStore, WebhookStore, admin_router,
-};
+use awaken_admin_config_api::{AdminState, CredentialProbe, InferenceProfileStore, WebhookStore};
 use awaken_config_resolver::AgentInputBindingRepository;
 use awaken_config_service::{ConfigPlane, capabilities_router, config_router};
 use awaken_config_store::{AuditedConfigWrite, DEFAULT_SCOPE, ManagementAuditRecord};
@@ -184,6 +182,9 @@ pub struct ControlRouterInput {
     pub model_discovery: Arc<dyn awaken_admin_config_api::ModelCatalogDiscovery>,
     /// Signed-in managed model projection, absent outside Awaken Cloud mode.
     pub brokered_catalog: Option<Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>>,
+    /// Operator feature switch, independent from whether Cloud identity is wired
+    /// or an interactive token is currently cached.
+    pub cloud_models_enabled: bool,
     /// The Managed vault state, shared with the data-plane managed state.
     pub vault_state: Arc<VaultState>,
     /// The environment state, shared with the data-plane managed state.
@@ -224,6 +225,7 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
         probe,
         model_discovery,
         brokered_catalog,
+        cloud_models_enabled,
         vault_state,
         env_state,
         deployment_state,
@@ -235,22 +237,47 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
         application_access,
     } = input;
 
-    let admin = admin_router(AdminState {
-        catalog,
-        credentials: credentials.clone(),
-        secrets: secrets.clone(),
-        profiles,
-        // Per-agent resource bindings (ADR-0038).
-        resources: resource_store.clone(),
-        // The live credential probe is backed by provider-genai in the composition
-        // root — the only place the model SDK is named; the admin CRUD crate stays
-        // SDK-free.
-        probe: Some(probe),
-        model_discovery: Some(model_discovery),
-        brokered_catalog,
-        // Shared credential-availability cooldowns (E3-4).
-        availability: Default::default(),
-    });
+    let identity_mode = if remote_iam.is_some() {
+        "awaken-cloud"
+    } else if iam.is_some() {
+        "self-managed"
+    } else {
+        "no-login"
+    };
+    let capabilities = awaken_admin_config_api::ConfigCapabilitiesView {
+        identity: awaken_admin_config_api::IdentityCapabilityView {
+            mode: identity_mode.into(),
+            cloud_login_enabled: remote_iam.is_some(),
+            authenticated: remote_iam
+                .as_ref()
+                .and_then(|authz| authz.cloud_user_token())
+                .is_some(),
+        },
+        models: awaken_admin_config_api::ModelSupplyCapabilityView {
+            local_catalog_enabled: true,
+            byok_enabled: true,
+            cloud_models_enabled,
+        },
+    };
+    let admin = awaken_admin_config_api::admin_router_with_capabilities(
+        AdminState {
+            catalog,
+            credentials: credentials.clone(),
+            secrets: secrets.clone(),
+            profiles,
+            // Per-agent resource bindings (ADR-0038).
+            resources: resource_store.clone(),
+            // The live credential probe is backed by provider-genai in the composition
+            // root — the only place the model SDK is named; the admin CRUD crate stays
+            // SDK-free.
+            probe: Some(probe),
+            model_discovery: Some(model_discovery),
+            brokered_catalog,
+            // Shared credential-availability cooldowns (E3-4).
+            availability: Default::default(),
+        },
+        capabilities,
+    );
     // The webhook plane (ADR-0048): subscriptions are an id-addressed config resource
     // in the same admin store, their `whsec_` secret sealed in the shared vault. Merge
     // the front door into the admin router BEFORE the ownership fence so

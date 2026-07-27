@@ -13,6 +13,8 @@ pub(crate) struct StartArgs {
     pub port: Option<u16>,
     pub data_dir: Option<std::path::PathBuf>,
     pub no_browser: bool,
+    pub identity_mode: Option<awaken_control::ManagementIdentityMode>,
+    pub cloud_models: Option<awaken_cli::config::CloudModelMode>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -63,6 +65,22 @@ fn parse_start_args(args: &[String]) -> Result<StartArgs, String> {
     while index < args.len() {
         match args[index].as_str() {
             "--no-browser" => parsed.no_browser = true,
+            "--identity-mode" => {
+                index += 1;
+                parsed.identity_mode =
+                    Some(parse_identity_mode(args.get(index).map(String::as_str))?);
+            }
+            value if value.starts_with("--identity-mode=") => {
+                parsed.identity_mode = Some(parse_identity_mode(Some(&value[16..]))?);
+            }
+            "--cloud-models" => {
+                index += 1;
+                parsed.cloud_models =
+                    Some(parse_cloud_models(args.get(index).map(String::as_str))?);
+            }
+            value if value.starts_with("--cloud-models=") => {
+                parsed.cloud_models = Some(parse_cloud_models(Some(&value[15..]))?);
+            }
             "--config" => {
                 index += 1;
                 parsed.config_path =
@@ -194,6 +212,20 @@ fn parse_port(value: Option<&str>) -> Result<u16, String> {
         })
 }
 
+fn parse_identity_mode(
+    value: Option<&str>,
+) -> Result<awaken_control::ManagementIdentityMode, String> {
+    value
+        .and_then(awaken_control::ManagementIdentityMode::parse)
+        .ok_or_else(|| "--identity-mode expects no-login, self-managed, or awaken-cloud".to_owned())
+}
+
+fn parse_cloud_models(value: Option<&str>) -> Result<awaken_cli::config::CloudModelMode, String> {
+    awaken_cli::config::CloudModelMode::parse(
+        value.ok_or_else(|| "--cloud-models needs disabled or enabled".to_owned())?,
+    )
+}
+
 fn parse_path(value: Option<&str>, flag: &str) -> Result<std::path::PathBuf, String> {
     value
         .filter(|value| !value.trim().is_empty())
@@ -207,7 +239,7 @@ fn is_help(value: &str) -> bool {
 
 pub(crate) fn print_help() {
     println!(
-        "Awaken\n\nUSAGE:\n    awaken [COMMAND] [OPTIONS]\n\nRunning `awaken` without a command is the same as `awaken start`.\n\nCOMMANDS:\n    start                 Start locally, print readiness, and open the browser\n    serve                 Start headless for service managers\n    management            Start only the authoring/control surface (server mode)\n    database migrate      Apply management schema migrations and exit\n    worker --server URL   Join an Awaken server as a worker\n    config [--json]       Print effective, redacted configuration\n    version               Print the installed version\n\nOPTIONS:\n    --config PATH         Read typed configuration from PATH\n    --port PORT           Override the listen port\n    --data-dir PATH       Override the persistent data root (default ~/.awaken)\n    --no-browser          Do not open a browser\n    -h, --help            Print this help\n\nConfiguration sources: --config PATH or ~/.awaken/config.toml, then defaults."
+        "Awaken\n\nUSAGE:\n    awaken [COMMAND] [OPTIONS]\n\nRunning `awaken` without a command is the same as `awaken start`.\n\nCOMMANDS:\n    start                 Start locally, print readiness, and open the browser\n    serve                 Start headless for service managers\n    management            Start only the authoring/control surface (server mode)\n    database migrate      Apply management schema migrations and exit\n    worker --server URL   Join an Awaken server as a worker\n    config [--json]       Print effective, redacted configuration\n    version               Print the installed version\n\nOPTIONS:\n    --config PATH         Read typed configuration from PATH\n    --port PORT           Override the listen port\n    --data-dir PATH       Override the persistent data root (default ~/.awaken)\n    --no-browser          Do not open a browser\n    --identity-mode MODE  no-login, self-managed, or awaken-cloud\n    --cloud-models MODE   disabled or enabled (requires awaken-cloud identity)\n    -h, --help            Print this help\n\nConfiguration sources: --config PATH or ~/.awaken/config.toml, then defaults."
     );
 }
 
@@ -309,6 +341,20 @@ mod tests {
             parse_args(["start".into(), "--port".into(), "9123".into()]).unwrap(),
             Command::Start(StartArgs {
                 port: Some(9123),
+                ..Default::default()
+            })
+        );
+        assert_eq!(
+            parse_args([
+                "serve".into(),
+                "--identity-mode=awaken-cloud".into(),
+                "--cloud-models".into(),
+                "enabled".into(),
+            ])
+            .unwrap(),
+            Command::Serve(StartArgs {
+                identity_mode: Some(awaken_control::ManagementIdentityMode::AwakenCloud),
+                cloud_models: Some(awaken_cli::config::CloudModelMode::Enabled),
                 ..Default::default()
             })
         );
