@@ -24,6 +24,7 @@ import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import { withScenarioServer, pass } from './harness.mjs';
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
+import { alwaysAllowMcpAgent } from './fixtures/managed_mcp_session.ts';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const EXPIRED_TOKEN = 'expired-token-e2e'; // awaken-allow: secret
@@ -65,6 +66,11 @@ async function sendMessage(client, sessionId, text) {
 
 const agentMessages = (events) =>
   events.filter((e) => e.type === 'agent.message').map((e) => e.content[0].text);
+
+const mcpAgent = (url) => alwaysAllowMcpAgent(
+  'assistant',
+  [{ name: 'calc', type: 'url', url }],
+);
 
 /// Assert one add-turn: tool_use mcp__calc__add + tool_result <sum> + "result: <sum>".
 function assertAddTurn(events, sum) {
@@ -151,8 +157,8 @@ async function main() {
 
       // --- (a) session 1, turn 1: the expired token is refreshed mid-connect ---
       const session1 = await client.beta.sessions.create({
-        agent: 'assistant',
-        mcp_servers: [{ name: 'calc', type: 'url', url: fixtureA.url }],
+        agent: mcpAgent(fixtureA.url),
+        environment_id: 'env_local',
         vault_ids: [vault.id],
         betas: BETAS,
       });
@@ -194,8 +200,8 @@ async function main() {
       // --- (b) a SECOND session on the same vault/credential: the RESEALED
       // token materializes and connects with zero additional grants ---
       const session2 = await client.beta.sessions.create({
-        agent: 'assistant',
-        mcp_servers: [{ name: 'calc', type: 'url', url: fixtureA.url }],
+        agent: mcpAgent(fixtureA.url),
+        environment_id: 'env_local',
         vault_ids: [vault.id],
         betas: BETAS,
       });
@@ -253,8 +259,8 @@ async function main() {
       // | O3   | no          | no                  | reject creation   |
       await assert.rejects(
         () => client.beta.sessions.create({
-          agent: 'assistant',
-          mcp_servers: [{ name: 'calc', type: 'url', url: fixtureB.url }],
+          agent: mcpAgent(fixtureB.url),
+          environment_id: 'env_local',
           vault_ids: [vault2.id],
           betas: BETAS,
         }),
@@ -299,8 +305,8 @@ async function main() {
       // The expired token still converses: the grant authenticated with the
       // Basic header and the fresh token carried the tool call.
       const session4 = await client.beta.sessions.create({
-        agent: 'assistant',
-        mcp_servers: [{ name: 'calc', type: 'url', url: fixtureC.url }],
+        agent: mcpAgent(fixtureC.url),
+        environment_id: 'env_local',
         vault_ids: [vault3.id],
         betas: BETAS,
       });
@@ -362,8 +368,8 @@ async function main() {
       assert.deepEqual(postCred.auth.refresh.token_endpoint_auth, { type: 'client_secret_post' });
       assert.ok(!JSON.stringify(postCred).includes(POST_CLIENT_SECRET), 'post client secret is write-only');
       const postSession = await client.beta.sessions.create({
-        agent: 'assistant',
-        mcp_servers: [{ name: 'calc', type: 'url', url: fixtureD.url }],
+        agent: mcpAgent(fixtureD.url),
+        environment_id: 'env_local',
         vault_ids: [vault4.id],
         betas: BETAS,
       });

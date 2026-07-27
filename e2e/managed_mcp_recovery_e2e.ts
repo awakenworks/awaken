@@ -21,20 +21,18 @@ import Anthropic from '@anthropic-ai/sdk';
 import { availablePort, pass, realServerEnv, spawnServer, startUpstream, stopServer, waitForPort } from './harness.mjs';
 // @ts-ignore -- shared JS fixture deliberately serves TS scenarios.
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
+import {
+  alwaysAllowMcpAgent,
+  type McpServer,
+  replaceMcpServers,
+  responseEtag,
+  sendManagedMessage,
+} from './fixtures/managed_mcp_session.ts';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PREFERRED_PORT = 38208;
 const TOKEN_A = 'recovery-token-a'; // awaken-allow: secret
 const TOKEN_B = 'recovery-token-b'; // awaken-allow: secret
-
-type McpServer = { name: string; type: 'url'; url: string };
-
-async function send(client: Anthropic, sessionId: string, text: string): Promise<void> {
-  await client.beta.sessions.events.send(sessionId, {
-    events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
-    betas: BETAS,
-  });
-}
 
 async function update(
   client: Anthropic,
@@ -43,24 +41,10 @@ async function update(
   key: string,
   ifMatch?: string,
 ) {
-  return client.beta.sessions
-    .update(
-      sessionId,
-      { agent: { mcp_servers: servers }, betas: BETAS } as never,
-      {
-        headers: {
-          'Idempotency-Key': key,
-          ...(ifMatch === undefined ? {} : { 'If-Match': ifMatch }),
-        },
-      },
-    )
-    .withResponse();
-}
-
-function etag(response: Response): string {
-  const value = response.headers.get('etag');
-  assert.ok(value, 'Session response has an ETag');
-  return value;
+  return replaceMcpServers(client, sessionId, servers, BETAS, {
+    'Idempotency-Key': key,
+    ...(ifMatch === undefined ? {} : { 'If-Match': ifMatch }),
+  });
 }
 
 async function main(): Promise<void> {
@@ -91,18 +75,19 @@ async function main(): Promise<void> {
     const serverA: McpServer = { name: 'calc', type: 'url', url: fixtureA.url };
     const serverB: McpServer = { name: 'calc', type: 'url', url: fixtureB.url };
     const session = await client.beta.sessions.create({
-      agent: 'assistant',
-      mcp_servers: [serverA],
+      agent: alwaysAllowMcpAgent('assistant', [serverA]),
+      environment_id: 'env_local',
       vault_ids: [vault.id],
       betas: BETAS,
-    } as never);
+    });
     const emptySession = await client.beta.sessions.create({
       agent: 'assistant',
+      environment_id: 'env_local',
       betas: BETAS,
     });
     const replaced = await update(client, session.id, [serverB], 'persisted-swap-b');
-    const replaceEtag = etag(replaced.response);
-    await send(client, session.id, 'add 2 5');
+    const replaceEtag = responseEtag(replaced.response);
+    await sendManagedMessage(client, session.id, 'add 2 5', BETAS);
     assert.equal(fixtureB.calls.filter((call: any) => call.method === 'tools/call').length, 1);
 
     await stopServer(server);
@@ -118,14 +103,14 @@ async function main(): Promise<void> {
     pass('R0 durable idle Session survives restart without requiring transcript rows');
     const recovered = await client.beta.sessions.retrieve(session.id, { betas: BETAS });
     assert.deepEqual(recovered.agent.mcp_servers, [serverB], 'R1 restores durable active B');
-    await send(client, session.id, 'add 6 7');
+    await sendManagedMessage(client, session.id, 'add 6 7', BETAS);
     assert.equal(fixtureB.calls.filter((call: any) => call.method === 'tools/call').length, 2);
     assert.equal(fixtureA.calls.filter((call: any) => call.method === 'tools/call').length, 0);
     pass('R1 restart reacquires ownership and calls only exact active B');
 
     const beforeReplayIo = fixtureB.calls.length;
     const replay = await update(client, session.id, [serverB], 'persisted-swap-b');
-    assert.equal(etag(replay.response), replaceEtag, 'R2 returns the committed revision');
+    assert.equal(responseEtag(replay.response), replaceEtag, 'R2 returns the committed revision');
     assert.equal(fixtureB.calls.length, beforeReplayIo, 'R2 performs no realization I/O');
     pass('R2 idempotency receipt survives restart and replays without effect');
 
@@ -137,7 +122,7 @@ async function main(): Promise<void> {
       session.id,
       [],
       'persisted-remove-b',
-      etag(current.response),
+      responseEtag(current.response),
     );
     assert.deepEqual(removed.data.agent.mcp_servers, []);
     await stopServer(server);

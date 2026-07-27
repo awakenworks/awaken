@@ -18,6 +18,7 @@ import { Ajv2020 } from 'ajv/dist/2020.js';
 import Anthropic from '@anthropic-ai/sdk';
 import { withScenarioServer, pass } from './harness.mjs';
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
+import { alwaysAllowMcpTools } from './fixtures/managed_mcp_session.ts';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CONTRACT = JSON.parse(
@@ -103,6 +104,11 @@ async function main() {
       const credRevision = r.json.version;
       pass('POST /v1/config/credentials — secret-free CredentialSource matches contract');
 
+      const calcServer = {
+        name: 'calc',
+        url: fixture.url,
+        credential: { id: credId, revision: credRevision },
+      };
       r = await req(base, 'PUT', '/v1/config/agents/calc-agent', {
         name: 'Calculator',
         system: 'Use the calculator tool and report its result.',
@@ -111,11 +117,7 @@ async function main() {
           model_ref: 'management',
           backend_ref: 'default',
         },
-        mcp_servers: [{
-          name: 'calc',
-          url: fixture.url,
-          credential: { id: credId, revision: credRevision },
-        }],
+        mcp_servers: [calcServer],
       });
       assert.equal(r.status, 200, JSON.stringify(r.json));
       r = await req(base, 'GET', '/v1/config/agents/calc-agent');
@@ -131,7 +133,15 @@ async function main() {
 
       // --- a session for calc-agent with NO inline mcp_servers ---
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
-      const session = await client.beta.sessions.create({ agent: 'calc-agent', betas: BETAS });
+      const session = await client.beta.sessions.create({
+        agent: {
+          id: 'calc-agent',
+          type: 'agent_with_overrides',
+          tools: alwaysAllowMcpTools([{ name: 'calc', type: 'url', url: fixture.url }]),
+        },
+        environment_id: 'env_local',
+        betas: BETAS,
+      });
       assert.equal(session.type, 'session');
       assert.equal(session.agent.id, 'calc-agent');
 
