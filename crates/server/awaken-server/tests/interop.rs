@@ -19,6 +19,22 @@
 //!
 //! Errors never leak axum's default plain-text 400: each adapter's JSON extractor
 //! converts a decode failure into its own error frame (categories 4 and 5).
+//!
+//! Cross-protocol causal graph:
+//!
+//! `turn accepted -> stream reaches terminal frame -> committed thread facts`
+//! `committed thread facts -> history projection through any adapter`
+//! `client-tool call -> awaiting -> same-thread result -> resume -> committed reply`
+//!
+//! | rule | terminal stream consumed | awaiting tool | same-thread result | effect |
+//! |------|--------------------------|---------------|--------------------|--------|
+//! | X1   | yes                      | no            | -                  | history exposes turn |
+//! | X2   | yes                      | yes           | no                 | run remains awaiting |
+//! | X3   | yes                      | yes           | yes                | resumed reply is visible cross-protocol |
+//!
+//! The response collector consumes through `[DONE]`, which is emitted only after
+//! the turn future and authoritative commit complete. Consequently X1/X3 need no
+//! timing sleeps or retry loop; the stream terminal is their consistency boundary.
 
 use awaken_scenario_host::{build_custom_router, build_echo_router};
 use axum::Router;
@@ -92,7 +108,6 @@ async fn ai_sdk_echo_turn_streams_text() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "cross-protocol history/resume: the AI-SDK /threads/{id}/messages projection returns no committed messages under the multi_thread pool (run settles async, history read races the commit); needs cross-protocol shape/timing investigation — never passed on this branch (block_in_place masked it)"]
 async fn ai_sdk_history_reflects_committed_turn() {
     let app = build_echo_router();
     call(
@@ -133,7 +148,6 @@ async fn ai_sdk_history_reflects_committed_turn() {
 /// tool; the Managed adapter delivers the tool result on the *same thread* and the
 /// run resumes; the final answer is visible back through the AI SDK.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "cross-protocol await/resume: same AI-SDK history-projection race as ai_sdk_history_reflects_committed_turn — needs cross-protocol shape/timing investigation"]
 async fn ai_sdk_awaits_then_managed_resumes_same_thread() {
     let app = build_custom_router();
 
@@ -242,7 +256,6 @@ async fn ag_ui_echo_turn_streams_run_events() {
 /// Managed adapter delivers the result on the same thread, and the resumed answer
 /// is visible back through the AI SDK — all three over one shared host/thread.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "cross-protocol await/resume: same AI-SDK history-projection race as ai_sdk_history_reflects_committed_turn — needs cross-protocol shape/timing investigation"]
 async fn ag_ui_awaits_then_managed_resumes_visible_via_ai_sdk() {
     let app = build_custom_router();
 
@@ -395,6 +408,30 @@ async fn ag_ui_driver_error_returns_run_error() {
 
 // ── A2A adapter conformance (categories 1–3, 5) ─────────────────────────────
 
+/// Causal graph for the A2A cross-protocol slice:
+///
+/// - C1: message has the canonical `kind = message` discriminator.
+/// - C2: role is the canonical lowercase `user` token.
+/// - C3: every text part has the canonical `kind = text` discriminator.
+/// - C4: `contextId` names an existing conversation.
+/// - C5: that conversation is awaiting client input.
+/// - E1: `!(C1 && C2 && C3)` -> HTTP 400 A2A error envelope.
+/// - E2: `C1 && C2 && C3 && !C4` -> completed task and new history.
+/// - E3: `C1 && C2 && C3 && C4 && !C5` -> completed task with accumulated history.
+/// - E4: `C1 && C2 && C3 && C4 && C5` -> awaited run resumes to completion.
+///
+/// Decision table:
+///
+/// | rule | canonical wire | existing context | awaiting input | expected effect |
+/// |------|----------------|------------------|----------------|-----------------|
+/// | R1   | no             | -                | -              | E1 / 400        |
+/// | R2   | yes            | no               | no             | E2 / completed  |
+/// | R3   | yes            | yes              | no             | E3 / accumulated|
+/// | R4   | yes            | yes              | yes            | E4 / resumed    |
+///
+/// `a2a_malformed_body_returns_error_envelope` covers R1; the three positive
+/// tests below cover R2-R4 respectively.
+///
 /// An A2A `message:send` body: a user message on `context` carrying `text`.
 fn a2a_send(context: &str, msg_id: &str, text: &str) -> Value {
     json!({ "message": {

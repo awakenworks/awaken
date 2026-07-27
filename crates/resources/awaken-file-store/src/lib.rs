@@ -399,7 +399,25 @@ mod tests {
         admin.close().await;
         let sep = if base.contains('?') { '&' } else { '?' };
         let url = format!("{base}{sep}options=-c%20search_path%3Dt_file_store");
+
+        // Causal graph: verify -> read ledger -> serve/fail; only migrate may
+        // create ledger/tables. The table pins all three startup decisions:
+        // | ledger | operation | result  | schema write |
+        // | absent | verify    | failure | none         |
+        // | absent | migrate   | success | apply bundle |
+        // | current| verify    | success | none         |
+        assert!(PgFileStore::connect_existing(&url).await.is_err());
+        let verification_pool = sqlx::PgPool::connect(&url).await.unwrap();
+        let ledger_after_verify: Option<String> =
+            sqlx::query_scalar("SELECT to_regclass('file_store_schema_migrations')::text")
+                .fetch_one(&verification_pool)
+                .await
+                .unwrap();
+        assert_eq!(ledger_after_verify, None, "verify never creates its ledger");
+        verification_pool.close().await;
+
         let store = PgFileStore::connect(&url).await.unwrap();
+        PgFileStore::connect_existing(&url).await.unwrap();
         round_trip(&store).await;
         // Same id as the core, across the network backend too.
         assert_eq!(

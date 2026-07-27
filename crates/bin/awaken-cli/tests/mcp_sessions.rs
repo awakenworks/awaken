@@ -61,6 +61,29 @@ use tower::ServiceExt;
 
 const CALC_TOKEN: &str = "calc-bearer-token"; // awaken-allow: secret
 
+/// Session-local MCP policy for protocol/credential tests.
+///
+/// Causal graph:
+/// MCP tool discovered -> policy evaluation -> allow executes / ask awaits / deny rejects
+///                                      \-> transport and Vault assertions occur only on execute
+///
+/// Decision table for this suite:
+/// | test responsibility        | policy       | expected boundary              |
+/// | transport/Vault/OAuth      | always_allow | real MCP tool call/result       |
+/// | human confirmation         | always_ask   | requires_action then confirmation|
+/// | policy rejection           | deny/disabled| no MCP transport call           |
+///
+/// Confirmation and rejection are covered by the managed adapter policy tests;
+/// this file owns the first row and opts in explicitly instead of weakening the
+/// production `always_ask` default.
+fn always_allow_mcp_agent(id: &str, server_name: &str) -> Value {
+    json!({
+        "id": id,
+        "type": "agent_with_overrides",
+        "tools": always_allow_mcp_tools(server_name)
+    })
+}
+
 /// Answer one authorized JSON-RPC request of the `calc` contract.
 fn calc_rpc_result(body: &Value) -> Response {
     let id = body["id"].clone();
@@ -335,10 +358,10 @@ fn agent_messages(events: &[Value]) -> Vec<String> {
 /// These tests exercise MCP transport and credential behavior, so their
 /// calculator is explicitly pre-authorized instead of depending on an ambient
 /// permission default or entering the interactive approval path.
-fn allow_calc_tools() -> Value {
+fn always_allow_mcp_tools(server_name: &str) -> Value {
     json!([{
         "type": "mcp_toolset",
-        "mcp_server_name": "calc",
+        "mcp_server_name": server_name,
         "default_config": {
             "enabled": true,
             "permission_policy": { "type": "always_allow" }
@@ -359,11 +382,7 @@ async fn session_inline_mcp_server_with_vault_credential_converses_multi_turn() 
         "POST",
         "/v1/sessions",
         Some(json!({
-            "agent": {
-                "id": "assistant",
-                "type": "agent_with_overrides",
-                "tools": allow_calc_tools()
-            },
+            "agent": always_allow_mcp_agent("assistant", "calc"),
             "mcp_servers": [{ "name": "calc", "type": "url", "url": url }],
             "vault_ids": [vault_id],
         })),
@@ -433,7 +452,7 @@ async fn published_agent_mcp_binding_takes_effect_without_session_inline_servers
             },
             "system": "Use the calculator tool and report its result.",
             "mcp_servers": [{ "name": "calc", "url": url }],
-            "tools": allow_calc_tools()
+            "tools": always_allow_mcp_tools("calc")
         })),
     )
     .await;
@@ -448,7 +467,10 @@ async fn published_agent_mcp_binding_takes_effect_without_session_inline_servers
         &app,
         "POST",
         "/v1/sessions",
-        Some(json!({ "agent": "calc-agent", "vault_ids": [vault_id] })),
+        Some(json!({
+            "agent": always_allow_mcp_agent("calc-agent", "calc"),
+            "vault_ids": [vault_id]
+        })),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -559,11 +581,7 @@ async fn create_mcp_session_response(
         "POST",
         "/v1/sessions",
         Some(json!({
-            "agent": {
-                "id": "assistant",
-                "type": "agent_with_overrides",
-                "tools": allow_calc_tools()
-            },
+            "agent": always_allow_mcp_agent("assistant", "calc"),
             "mcp_servers": [{ "name": "calc", "type": "url", "url": url }],
             "vault_ids": [vault_id],
         })),

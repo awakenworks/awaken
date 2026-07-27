@@ -239,8 +239,25 @@ mod postgres {
         let Some(pool) = schema_pool().await else {
             return;
         };
-        let store = PgSkillStore::with_pool(pool);
+
+        // Causal graph and decision table:
+        // absent ledger + verify -> fail/no DDL; migrate -> current ledger;
+        // current ledger + verify -> serve/no DDL.
+        assert!(
+            PgSkillStore::with_existing_pool(pool.clone())
+                .await
+                .is_err()
+        );
+        let ledger_after_verify: Option<String> =
+            sqlx::query_scalar("SELECT to_regclass('skill_store_schema_migrations')::text")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(ledger_after_verify, None, "verify never creates its ledger");
+
+        let store = PgSkillStore::with_pool(pool.clone());
         store.ensure_schema().await.unwrap();
+        PgSkillStore::with_existing_pool(pool).await.unwrap();
         aggregate_lifecycle(&store).await;
     }
 }

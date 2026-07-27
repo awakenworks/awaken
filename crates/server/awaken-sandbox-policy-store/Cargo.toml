@@ -6,6 +6,8 @@ license.workspace = true
 
 [dependencies]
 awaken-provisioning-contract.workspace = true
+awaken-scoped-migration = { workspace = true, features = ["postgres"] }
+awaken-scoped-migration-sqlite.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
 rusqlite.workspace = true

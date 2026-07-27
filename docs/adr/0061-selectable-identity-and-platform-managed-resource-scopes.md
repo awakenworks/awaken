@@ -253,3 +253,16 @@ application Pod          -> scoped migration verify_bundle -> serve or fail
 | server `management` | absent/pending | fail closed without DDL |
 | server `management` | current | start control-only surface |
 | either | checksum drift/unknown version | fail closed |
+
+The table is executable test design, derived from this causal graph:
+
+```text
+caller mode -> migrate or verify -> scoped ledger state -> apply / serve / fail
+                                     \-> verify never creates ledger or tables
+```
+
+Every Postgres `connect_existing` used by server mode must therefore exercise
+the absent-ledger failure, prove the ledger is still absent afterward, then pass
+after the same bounded context's canonical bundle is migrated. SQLite and
+Postgres Sandbox Policy adapters use that same portable bundle rather than
+maintaining parallel raw DDL.

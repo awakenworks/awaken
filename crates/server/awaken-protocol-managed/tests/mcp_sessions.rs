@@ -1922,6 +1922,72 @@ async fn application_required_creation_is_generated_from_the_decision_table() {
     }
 }
 
+/// A Preparing Session has no hidden wall-clock owner: it remains inert until
+/// the claim-fenced contribution arrives, or the ordinary Session delete command
+/// terminates it. Delete is the one cancellation path and a later contribution
+/// cannot resurrect the aggregate.
+#[tokio::test]
+async fn preparing_session_can_be_cancelled_without_runtime_realization() {
+    // Causal graph:
+    // create(required) -> Preparing --contribution--> Frozen/idle
+    //                              \--delete-------> tombstone/not found
+    //
+    // | current   | trigger              | Runtime prepare | terminal result |
+    // | Preparing | no command           | never           | remains waiting |
+    // | Preparing | valid contribution   | once            | idle            |
+    // | Preparing | delete               | never           | not found       |
+    // | deleted   | late contribution    | never           | NotFound        |
+    let prepared = Arc::new(Mutex::new(Vec::new()));
+    let state = ManagedState::new_with_mcp(PreparingFake {
+        captured: prepared.clone(),
+        staged: Arc::new(Mutex::new(Vec::new())),
+        observed_durable: Arc::new(Mutex::new(Vec::new())),
+        repo: None,
+        fail_with: None,
+    });
+    let session = state
+        .create_session(
+            awaken_protocol_managed::types::SessionCreateParams {
+                agent: awaken_protocol_managed::types::AgentRef::Id("assistant".into()),
+                application_contribution_required: true,
+                environment_id: None,
+                title: None,
+                metadata: Default::default(),
+                mcp_servers: Vec::new(),
+                vault_ids: Vec::new(),
+                resources: Vec::new(),
+            },
+            Some("workspace-application".into()),
+        )
+        .await
+        .expect("create preparing Session");
+    assert_eq!(session.status, "preparing");
+    assert!(prepared.lock().unwrap().is_empty());
+
+    state
+        .delete_session(&session.id)
+        .await
+        .expect("delete is the Preparing cancellation command");
+    assert!(matches!(
+        state.get_session(&session.id),
+        Err(awaken_protocol_managed::StateError::NotFound)
+    ));
+    let late = awaken_protocol_managed::ApplicationSessionContributionPort::contribute_application(
+        &state,
+        awaken_protocol_managed::ApplicationSessionContribution {
+            session_id: session.id,
+            application_fingerprint: "late-plan".into(),
+            input: Default::default(),
+        },
+    )
+    .await;
+    assert!(matches!(
+        late,
+        Err(awaken_protocol_managed::ApplicationSessionContributionFailure::NotFound)
+    ));
+    assert!(prepared.lock().unwrap().is_empty());
+}
+
 /// ADR-0048 / S10: creating a session fires the lifecycle projection sink with the
 /// session's owner and the `session.status_idled` fact (the webhook catalog name,
 /// matching Anthropic's official set) — the seam a webhook dispatcher hangs off,

@@ -1070,6 +1070,62 @@ pub struct ListEventsResponse {
 mod tests {
     use super::*;
 
+    /// Causal graph: rubric object tag + variant payload -> one closed domain
+    /// variant; a scalar, unknown tag, or wrong payload -> boundary rejection.
+    ///
+    /// Decision table:
+    /// | shape  | tag     | required field | effect              |
+    /// |--------|---------|----------------|---------------------|
+    /// | object | text    | content        | Text accepted       |
+    /// | object | file    | file_id        | File accepted       |
+    /// | scalar | -       | -              | rejected            |
+    /// | object | unknown | -              | rejected            |
+    #[test]
+    fn outcome_rubric_wire_follows_the_closed_union_decision_table() {
+        let text: InboundEvent = serde_json::from_value(serde_json::json!({
+            "type": "user.define_outcome",
+            "description": "finish",
+            "rubric": { "type": "text", "content": "FINAL" }
+        }))
+        .unwrap();
+        assert!(matches!(
+            text,
+            InboundEvent::UserDefineOutcome {
+                rubric: OutcomeRubric::Text { ref content },
+                ..
+            } if content == "FINAL"
+        ));
+
+        let file: InboundEvent = serde_json::from_value(serde_json::json!({
+            "type": "user.define_outcome",
+            "description": "finish",
+            "rubric": { "type": "file", "file_id": "file_1" }
+        }))
+        .unwrap();
+        assert!(matches!(
+            file,
+            InboundEvent::UserDefineOutcome {
+                rubric: OutcomeRubric::File { ref file_id },
+                ..
+            } if file_id == "file_1"
+        ));
+
+        for invalid in [
+            serde_json::json!({
+                "type": "user.define_outcome",
+                "description": "finish",
+                "rubric": "FINAL"
+            }),
+            serde_json::json!({
+                "type": "user.define_outcome",
+                "description": "finish",
+                "rubric": { "type": "url", "url": "https://example.test/rubric" }
+            }),
+        ] {
+            assert!(serde_json::from_value::<InboundEvent>(invalid).is_err());
+        }
+    }
+
     #[test]
     fn agent_ref_parses_a_bare_id_and_a_tagged_object() {
         // Bare string id.

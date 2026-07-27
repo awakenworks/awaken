@@ -508,8 +508,27 @@ mod postgres {
         let Some(pool) = schema_pool("t_memoryfs").await else {
             return;
         };
-        let fs = PostgresMemoryRepository::with_pool(pool);
+
+        // Causal graph and decision table:
+        // absent ledger + verify -> fail/no DDL; migrate -> current ledger;
+        // current ledger + verify -> serve/no DDL.
+        assert!(
+            PostgresMemoryRepository::with_existing_pool(pool.clone())
+                .await
+                .is_err()
+        );
+        let ledger_after_verify: Option<String> =
+            sqlx::query_scalar("SELECT to_regclass('memory_store_schema_migrations')::text")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(ledger_after_verify, None, "verify never creates its ledger");
+
+        let fs = PostgresMemoryRepository::with_pool(pool.clone());
         fs.ensure_schema().await.unwrap();
+        PostgresMemoryRepository::with_existing_pool(pool)
+            .await
+            .unwrap();
         memory_repository_conformance(&fs).await;
         memory_repository_extended(&fs).await;
         memory_repository_not_found(&fs).await;

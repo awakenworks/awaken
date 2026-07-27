@@ -39,10 +39,21 @@ impl PostgresResourceStore {
 
     /// Connect to an already-migrated schema without executing DDL.
     pub async fn connect_existing(url: &str) -> Result<Self, ResourcePurgeError> {
-        PgPool::connect(url)
+        let pool = PgPool::connect(url)
             .await
-            .map(Self::with_pool)
-            .map_err(|error| storage(format!("connect: {error}")))
+            .map_err(|error| storage(format!("connect: {error}")))?;
+        Self::with_existing_pool(pool).await
+    }
+
+    /// Wrap a shared pool after verifying its externally-owned migration ledger.
+    pub async fn with_existing_pool(pool: PgPool) -> Result<Self, ResourcePurgeError> {
+        let bundle = resource_lifecycle_bundle().map_err(|error| storage(error.to_string()))?;
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+            .map_err(|error| storage(error.to_string()))?
+            .verify_bundle(&bundle)
+            .await
+            .map_err(|error| storage(error.to_string()))?;
+        Ok(Self { pool })
     }
 
     /// Wrap a shared pool without running migrations.
@@ -529,6 +540,61 @@ mod tests {
                 reference_id: format!("ownership-{workspace}"),
             },
         }
+    }
+
+    #[tokio::test]
+    async fn live_postgres_verify_is_fail_closed_and_read_only() {
+        use sqlx::Executor;
+        use sqlx::postgres::PgPoolOptions;
+
+        let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+            return;
+        };
+        let admin = PgPool::connect(&url).await.unwrap();
+        let _ = admin
+            .execute("DROP SCHEMA IF EXISTS t_resource_verify CASCADE")
+            .await;
+        admin
+            .execute("CREATE SCHEMA t_resource_verify")
+            .await
+            .unwrap();
+        admin.close().await;
+        let pool = PgPoolOptions::new()
+            .after_connect(|connection, _| {
+                Box::pin(async move {
+                    connection
+                        .execute("SET search_path = t_resource_verify")
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect(&url)
+            .await
+            .unwrap();
+
+        // Causal graph: application verify reads the ledger and either serves
+        // or fails; only the migration phase may create the ledger and tables.
+        // | ledger | operation | result  | schema write |
+        // | absent | verify    | failure | none         |
+        // | absent | migrate   | success | apply bundle |
+        // | current| verify    | success | none         |
+        assert!(
+            PostgresResourceStore::with_existing_pool(pool.clone())
+                .await
+                .is_err()
+        );
+        let ledger_after_verify: Option<String> =
+            sqlx::query_scalar("SELECT to_regclass('resource_lifecycle_schema_migrations')::text")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(ledger_after_verify, None, "verify never creates its ledger");
+
+        let migrated = PostgresResourceStore::with_pool(pool.clone());
+        migrated.ensure_schema().await.unwrap();
+        PostgresResourceStore::with_existing_pool(pool)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
