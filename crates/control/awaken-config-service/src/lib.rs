@@ -31,7 +31,9 @@ pub use binding_resolver::{
     AssistantBindingReconciler, ConfigServiceReconciler, ModelPublicationResolver,
     PublicationResolutionError, ResolvedPublicationModels,
 };
-pub use capabilities::{capabilities_router, runtime_catalog, sandbox_execution_policy_capability};
+pub use capabilities::{
+    RuntimeCapability, capabilities_router, sandbox_execution_policy_capability,
+};
 pub use config_plane::{ConfigPlane, ConfigService};
 pub use config_routes::config_router;
 pub use credential_reference::CredentialReferenceValidator;

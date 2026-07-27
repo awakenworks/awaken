@@ -564,7 +564,9 @@ const FAKE_ACP_GATEWAY_JSONRPC_SCRIPT: &str = "while IFS= read -r line; do \
 /// (self-credentialed vs cloud-managed gateway, D-R2) end to end.
 const FAKE_ACP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_acp::AcpCli {
     id: "fake",
-    command: "sh",
+    display_name: "Fake ACP",
+    description: "Deterministic scenario ACP fixture.",
+    command: "/bin/sh",
     args: &["-c", FAKE_ACP_GATEWAY_JSONRPC_SCRIPT],
     container_argv: &["/bin/sh", "-c", FAKE_ACP_GATEWAY_JSONRPC_SCRIPT],
     model_delivery: Some(awaken_run_executor_acp::ModelDelivery {
@@ -575,6 +577,7 @@ const FAKE_ACP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_acp::A
         key: "ANTHROPIC_API_KEY",
         aliases: &[],
     }),
+    managed_credential_delivery: awaken_run_executor_acp::ManagedCredentialDelivery::ProcessSecret,
     auth_method_id: None,
     mcp_interface: awaken_run_executor_acp::McpInterface::AcpSession,
     config_home_env: Some("CLAUDE_CONFIG_DIR"),
@@ -615,7 +618,9 @@ const FAKE_ACP_MCP_ECHO_SCRIPT: &str = "while IFS= read -r line; do \
 /// `session/new` request the [`awaken_run_executor_acp::Codec::Acp`] driver builds.
 const FAKE_ACP_MCP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_acp::AcpCli {
     id: "fake-mcp",
-    command: "sh",
+    display_name: "Fake ACP MCP",
+    description: "Deterministic scenario ACP MCP fixture.",
+    command: "/bin/sh",
     args: &["-c", FAKE_ACP_MCP_ECHO_SCRIPT],
     container_argv: &["/bin/sh", "-c", FAKE_ACP_MCP_ECHO_SCRIPT],
     model_delivery: Some(awaken_run_executor_acp::ModelDelivery {
@@ -626,6 +631,7 @@ const FAKE_ACP_MCP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_ac
         key: "ANTHROPIC_API_KEY",
         aliases: &[],
     }),
+    managed_credential_delivery: awaken_run_executor_acp::ManagedCredentialDelivery::ProcessSecret,
     auth_method_id: None,
     mcp_interface: awaken_run_executor_acp::McpInterface::AcpSession,
     config_home_env: Some("CLAUDE_CONFIG_DIR"),

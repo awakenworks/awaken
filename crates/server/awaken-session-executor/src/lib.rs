@@ -1306,9 +1306,10 @@ impl SessionRuntime for ManagedHost {
         if let Some(model) = &init.model {
             self.host.register_thread_model(thread, model);
         }
-        // R3: stage the session's runtime adapter; `acp:*` routes to the ACP CLI.
-        if let Some(runtime) = &init.runtime {
-            self.host.register_thread_runtime(thread, runtime);
+        // R3: cache the publication-derived backend carried by the frozen baseline.
+        if let Some(backend_ref) = &init.runtime {
+            self.host
+                .register_thread_backend_projection(thread, backend_ref);
         }
         self.host
             .install_environment_projection(thread, &init.environment)
@@ -1472,11 +1473,13 @@ impl awaken_protocol_managed::McpAttachmentRealizer for ManagedHost {
 
         let is_acp = self
             .host
-            .acp
-            .as_ref()
-            .and_then(|acp| acp.adapter_for(&request.generation.session_id))
-            .is_some_and(|adapter| {
-                awaken_runtime_contract::resolved::Backend::from_ref(&adapter).is_acp()
+            .session_slots
+            .read(&request.generation.session_id, |slot| {
+                slot.backend_ref.clone()
+            })
+            .flatten()
+            .is_some_and(|backend_ref| {
+                awaken_runtime_contract::resolved::Backend::from_ref(&backend_ref).is_acp()
             });
 
         let (bearer, refresh, actual_realization_kind) = match (

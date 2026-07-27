@@ -43,6 +43,7 @@ pub use crate::authz::{
 pub use crate::control_stores::{ControlStoreConfig, StoreBackend};
 pub use crate::credential_reference::CredentialRevisionValidator;
 pub use crate::managed_agents::ConfigPlaneManagedAgentRepository;
+pub use awaken_config_service::RuntimeCapability;
 // The database-less worker's materialization subset (Stage C): only the credential
 // vault + secret store needed by snapshot-pinned inference access.
 pub use crate::worker_stores::{
@@ -196,6 +197,9 @@ pub struct ControlRouterInput {
     pub plane: ConfigPlane,
     /// The host's global tool descriptors, for `GET /v1/capabilities`.
     pub global_tools: Vec<ToolDescriptor>,
+    /// Runtime capabilities projected by the composition root from the one
+    /// executable catalog.
+    pub runtimes: Vec<RuntimeCapability>,
     /// The org id stamped on webhook deliveries (`AWAKEN_ORG_ID`).
     pub org_id: Option<String>,
     /// The embedded IAM guard, when enabled by typed deployment identity mode.
@@ -231,6 +235,7 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
         deployment_state,
         plane,
         global_tools,
+        runtimes,
         org_id,
         iam,
         remote_iam,
@@ -310,7 +315,7 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
     ))));
     // Capability snapshot (`GET /v1/capabilities`): the host's tool descriptors +
     // installable plugins (with config schema) so the console authors data-driven.
-    let capabilities = capabilities_router(global_tools);
+    let capabilities = capabilities_router(global_tools, runtimes);
 
     // The IAM guard (when enabled) wraps the admin + vault routers only. An
     // axum layer binds to the routes present when it is applied, so merging

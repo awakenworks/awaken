@@ -268,6 +268,9 @@ pub fn resolved_toolsets(policies: &[awaken_agent_contract::ToolsetPolicy]) -> V
 
 pub struct AgentConfigView {
     pub model: Option<String>,
+    /// Exact execution backend projected from the immutable publication. Session
+    /// creation may copy this fact into its baseline but never author another one.
+    pub backend_ref: String,
     pub system: Option<String>,
     pub tool_ids: Vec<String>,
     /// Resolved availability/confirmation policies frozen in the publication.

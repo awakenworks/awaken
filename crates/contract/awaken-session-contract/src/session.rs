@@ -191,8 +191,8 @@ pub struct SessionInit {
     /// The session's requested model (R2), staged so the run binds it; `None` →
     /// the host default.
     pub model: Option<String>,
-    /// The session's requested runtime adapter (R3): `"acp:*"` routes to an ACP
-    /// CLI; `None`/`"awaken"` → native.
+    /// Exact backend projected from the immutable Agent publication (R3). The
+    /// Session baseline copies it for recovery; request metadata cannot override it.
     pub runtime: Option<String>,
     /// The one exact frozen Environment authority. Runtime projects its network,
     /// Sandbox, and credential-realization facts without deriving a second policy
