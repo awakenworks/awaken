@@ -180,6 +180,12 @@ async function main() {
       configureRuntime(runtime, kimi);
       await withServer('acp-real-mcp', 38240 + index, async (baseUrl) => {
         const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl, timeout: 600_000 });
+        const selectedModel = runtime === 'claude' ? kimi.anthropicModel : kimi.openaiModel;
+        const acpAgent = await client.beta.agents.create({
+          name: `${runtime} memory writer`,
+          model: selectedModel,
+          betas: BETAS,
+        });
         if (storeId === null) {
           const store = await client.post('/v1/memory_stores', {
             body: { name: 'cross-runtime-memory' },
@@ -191,9 +197,8 @@ async function main() {
         }
 
         const createSession = () => client.beta.sessions.create({
-            agent: 'assistant',
-            model: runtime === 'claude' ? kimi.anthropicModel : kimi.openaiModel,
-            metadata: { 'awaken.runtime': `acp:${runtime}` },
+            agent: acpAgent.id,
+            model: selectedModel,
             resources: [{
               type: 'memory_store',
               memory_store_id: storeId,
@@ -298,14 +303,19 @@ async function main() {
       configureRuntime(runtime, kimi);
       await withServer('acp-real-mcp', 38340 + index, async (baseUrl) => {
         const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl, timeout: 600_000 });
+        const selectedModel = runtime === 'claude' ? kimi.anthropicModel : kimi.openaiModel;
+        const acpAgent = await client.beta.agents.create({
+          name: `${runtime} memory reader`,
+          model: selectedModel,
+          betas: BETAS,
+        });
         const paths = chain.map(({ runtime: writer }) => `.mnt/memory/${writer}.md`);
         let session;
         let recalled;
         for (let attempt = 1; attempt <= 3; attempt += 1) {
           session = await client.beta.sessions.create({
-            agent: 'assistant',
-            model: runtime === 'claude' ? kimi.anthropicModel : kimi.openaiModel,
-            metadata: { 'awaken.runtime': `acp:${runtime}` },
+            agent: acpAgent.id,
+            model: selectedModel,
             resources: [{
               type: 'memory_store',
               memory_store_id: storeId,

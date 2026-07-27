@@ -112,6 +112,12 @@ async function main() {
   try {
     await withServer('acp-real-mcp', 38198, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl, timeout: 600_000 });
+      const selectedModel = runtime === 'claude' ? kimi.anthropicModel : kimi.openaiModel;
+      const acpAgent = await client.beta.agents.create({
+        name: `${runtime} live ACP`,
+        model: selectedModel,
+        betas: BETAS,
+      });
 
       const vault = await client.beta.vaults.create({ display_name: 'KIMI ACP vault', betas: BETAS });
       await client.beta.vaults.credentials.create(vault.id, {
@@ -122,11 +128,10 @@ async function main() {
       });
 
       const session = await client.beta.sessions.create({
-        agent: 'assistant',
+        agent: acpAgent.id,
         // The ACP adapter is handed this as its ANTHROPIC_MODEL (the ACP model-delivery
         // path resolves the run's model_ref), so it must be the real KIMI model name.
-        model: runtime === 'claude' ? kimi.anthropicModel : kimi.openaiModel,
-        metadata: { 'awaken.runtime': `acp:${runtime}` },
+        model: selectedModel,
         mcp_servers: noMcp ? [] : [{ name: 'calc', type: 'url', url: fixture.url }],
         vault_ids: noMcp ? [] : [vault.id],
         betas: BETAS,

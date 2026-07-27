@@ -18,6 +18,7 @@ const PORT = Number(process.env.E2E_PORT ?? 38172);
 const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
 const TMP = path.join(os.tmpdir(), `awaken-namespace-session-e2e-${process.pid}`);
 const TIER = process.env.SESSION_ENVIRONMENT_TIER ?? 'namespace';
+const AGENT = 'namespace-agent';
 
 function bwrapAvailable() {
   return spawnSync('bwrap', ['--unshare-user', '--ro-bind', '/', '/', '--', 'true'], {
@@ -163,9 +164,16 @@ async function main() {
       'the Skill is visible in the runtime catalog before Session creation',
     );
 
+    // Cause graph: fixed ACP test route -> scenario AgentConfigSource binding ->
+    // plain Session reference -> ACP execution. Session metadata is deliberately
+    // absent because metadata is descriptive and cannot select a backend.
+    //
+    // Decision table:
+    // projected acp:custom | agent reference || fixed ACP route
+    // no projection        | assistant       || host default (not this test)
+
     const session = await client.beta.sessions.create({
-      agent: 'assistant',
-      metadata: { 'awaken.runtime': 'acp:custom' },
+      agent: AGENT,
       environment_id: 'env_local',
       resources: [
         {

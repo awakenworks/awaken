@@ -11,10 +11,13 @@ use awaken_provisioning_contract as pc;
 use awaken_run_executor_acp::{AcpCli, AcpLaunch, LaunchResolver, OpenError};
 use awaken_runtime_contract::activation::RunActivation;
 
+type ResolvedRoute = (AcpCli, Arc<dyn LaunchResolver>, Option<Vec<String>>);
+
 #[derive(Clone)]
 pub(super) struct ProjectedLaunch {
     pub(super) cli: AcpCli,
     resolver: Arc<dyn LaunchResolver>,
+    launch_argv: Option<Vec<String>>,
 }
 
 /// Exact `acp:<cli>` launch routes installed on one Worker.
@@ -29,14 +32,34 @@ impl AcpLaunchRegistry {
         routes: Vec<(AcpCli, Arc<dyn LaunchResolver>)>,
         default_cli: Option<String>,
     ) -> Result<Self, String> {
+        Self::with_resolved_argv(
+            routes
+                .into_iter()
+                .map(|(cli, resolver)| (cli, resolver, None))
+                .collect(),
+            default_cli,
+        )
+    }
+
+    pub(crate) fn with_resolved_argv(
+        routes: Vec<ResolvedRoute>,
+        default_cli: Option<String>,
+    ) -> Result<Self, String> {
         let mut indexed = BTreeMap::new();
-        for (cli, resolver) in routes {
+        for (cli, resolver, launch_argv) in routes {
             if cli.id.trim().is_empty() {
                 return Err("ACP launch route id must not be empty".into());
             }
             let id = cli.id.to_string();
             if indexed
-                .insert(id.clone(), ProjectedLaunch { cli, resolver })
+                .insert(
+                    id.clone(),
+                    ProjectedLaunch {
+                        cli,
+                        resolver,
+                        launch_argv,
+                    },
+                )
                 .is_some()
             {
                 return Err(format!("duplicate ACP launch route `acp:{id}`"));
@@ -100,15 +123,6 @@ impl AcpLaunchRegistry {
             .resolver
             .credential_realization_capabilities())
     }
-    pub(super) fn combined_credential_realization_capabilities(
-        &self,
-    ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
-        let mut combined = awaken_runtime_contract::CredentialRealizationCapabilities::default();
-        for route in self.routes.values() {
-            combined.merge(&route.resolver.credential_realization_capabilities());
-        }
-        combined
-    }
 }
 
 /// How a sandboxed/containerized ACP source obtains a run's CLI launch: a fixed
@@ -132,15 +146,6 @@ pub(super) struct ResolvedLaunch {
 }
 
 impl LaunchSource {
-    pub(crate) fn combined_credential_realization_capabilities(
-        &self,
-    ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
-        match self {
-            Self::Fixed(_) => Default::default(),
-            Self::Projected(registry) => registry.combined_credential_realization_capabilities(),
-        }
-    }
-
     pub(crate) fn credential_realization_capabilities(
         &self,
         backend: &awaken_runtime_contract::resolved::Backend,
@@ -173,7 +178,12 @@ impl LaunchSource {
                     &activation.snapshot.resolved_spec.plugin_config,
                 )
                 .compact_window;
-                let launch = selected.cli.try_project(&model, window, &extra_env)?;
+                let launch = selected.cli.try_project_with_argv(
+                    &model,
+                    window,
+                    &extra_env,
+                    selected.launch_argv.as_deref(),
+                )?;
                 Ok(ResolvedLaunch {
                     launch,
                     credential_artifact,

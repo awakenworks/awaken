@@ -33,9 +33,11 @@ pub const PROVIDER_CREDENTIAL_SOURCE_CAPABILITY: &str = "credential-source/v1";
 /// File/Memory/Skill and public Repository inputs.
 pub const REPOSITORY_CREDENTIALS_CAPABILITY: &str = "repository-credentials/v1";
 
-/// Worker can materialize exact private credential revisions that never cross
-/// the control plane. Eligibility additionally requires a current observation
-/// for every pinned revision, so this capability alone grants no access.
+/// Worker can revalidate and use exact private credential revisions that never
+/// cross the control plane. Use may be secret materialization or a local backend
+/// (such as a CLI) reading its own login. Eligibility additionally requires a
+/// current observation for every pinned revision, so this capability alone
+/// grants no access.
 pub const WORKER_LOCAL_CREDENTIALS_CAPABILITY: &str = "worker-local-credentials/v1";
 
 /// Non-secret worker-side observation key for one locally materializable source

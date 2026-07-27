@@ -294,16 +294,12 @@ impl<'a> TurnConfig<'a> {
 }
 
 /// Which stage of bringing an ACP agent online a lifecycle notification marks.
-/// Ordered install → launch → initialize → ready, aligning to oversight-next's
-/// probe stages so a UI renders a consistent progress affordance. `Failed` is the
-/// terminal error stage; the accompanying [`AcpLaunchEvent::detail`] says why.
+/// Ordered launch → initialize → ready so a UI renders a consistent progress
+/// affordance. Adapter acquisition is a startup concern and never occurs in a
+/// run. `Failed` is terminal; [`AcpLaunchEvent::detail`] says why.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AcpLaunchStage {
-    /// Dynamically installing the adapter — an `npx` wrapper is pulling its pinned
-    /// package into the npm cache. The slow step: seconds to minutes on a cold
-    /// cache, near-instant when already cached. A native CLI never emits this.
-    Installing,
     /// Spawning the agent process.
     Launching,
     /// ACP handshake in progress (`initialize` + `session/new`).
@@ -315,8 +311,8 @@ pub enum AcpLaunchStage {
 }
 
 /// One lifecycle notification for an ACP agent's bring-up — the neutral event a UI
-/// renders as "installing… / launching… / ready". `detail` optionally carries
-/// human-facing context (the adapter package id, a spawn error message).
+/// renders as "launching… / ready". `detail` optionally carries human-facing
+/// context such as a spawn error message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AcpLaunchEvent {
     pub stage: AcpLaunchStage,
@@ -885,13 +881,13 @@ mod tests {
     fn an_acp_launch_event_omits_absent_detail_and_round_trips() {
         // A stageless bring-up event omits `detail` on the wire; one with detail
         // round-trips losslessly (the UI progress affordance's contract).
-        let bare = AcpLaunchEvent::stage(AcpLaunchStage::Installing);
+        let bare = AcpLaunchEvent::stage(AcpLaunchStage::Launching);
         let value = serde_json::to_value(&bare).unwrap();
         assert!(
             value.get("detail").is_none(),
             "absent detail omitted: {value}"
         );
-        assert_eq!(value["stage"], "installing");
+        assert_eq!(value["stage"], "launching");
 
         let detailed = AcpLaunchEvent::with_detail(AcpLaunchStage::Failed, "spawn failed");
         let back: AcpLaunchEvent =

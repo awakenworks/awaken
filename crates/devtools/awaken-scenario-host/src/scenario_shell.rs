@@ -24,11 +24,51 @@ pub(super) fn scenario_shell_argv(script: &str) -> Vec<String> {
     vec![scenario_shell(), "-c".to_string(), script.to_string()]
 }
 
+// Cause graph / decision table for scenario-only launch input:
+// JSON array + spaces in argv -> preserve exact elements; JSON array without
+// spaces -> preserve; legacy plain string -> whitespace split for compatibility;
+// malformed JSON-looking input -> legacy split, then launch fails explicitly.
+pub(super) fn scenario_argv(raw: &str) -> Vec<String> {
+    serde_json::from_str::<Vec<String>>(raw).unwrap_or_else(|_| {
+        raw.split_whitespace()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    })
+}
+
 pub(super) fn scenario_host_acp_cli(
     mut cli: awaken_run_executor_acp::AcpCli,
 ) -> awaken_run_executor_acp::AcpCli {
     // AcpCli catalog fields are process-lifetime static configuration. The
     // scenario process creates at most one copy per selected router.
-    cli.command = Box::leak(scenario_shell().into_boxed_str());
+    let awaken_run_executor_acp::AcpAcquisition::Direct { args, .. } = cli.acquisition else {
+        panic!("scenario ACP fixtures must use direct acquisition");
+    };
+    cli.acquisition = awaken_run_executor_acp::AcpAcquisition::Direct {
+        executable: Box::leak(scenario_shell().into_boxed_str()),
+        args,
+    };
     cli
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scenario_argv;
+
+    #[test]
+    fn scenario_argv_preserves_paths_with_spaces() {
+        assert_eq!(
+            scenario_argv(
+                r#"["C:\\Program Files\\nodejs\\node.exe","C:\\fixture dir\\agent.mjs"]"#
+            ),
+            vec![
+                r"C:\Program Files\nodejs\node.exe".to_string(),
+                r"C:\fixture dir\agent.mjs".to_string(),
+            ]
+        );
+        assert_eq!(
+            scenario_argv("node fixture.mjs"),
+            vec!["node".to_string(), "fixture.mjs".to_string()]
+        );
+    }
 }

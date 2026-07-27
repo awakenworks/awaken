@@ -84,8 +84,7 @@ async function exerciseContainerEnvironment(
   );
   assert.equal(response.status, 200, await response.text());
   const session = await client.beta.sessions.create({
-    agent: 'assistant',
-    metadata: { 'awaken.runtime': 'acp:custom' },
+    agent: 'namespace-agent',
     environment_id: environment.id,
     betas: BETAS,
   });
@@ -378,8 +377,7 @@ async function main() {
     });
 
     const session = await client.beta.sessions.create({
-      agent: 'assistant',
-      metadata: { 'awaken.runtime': 'acp:custom' },
+      agent: 'namespace-agent',
       environment_id: 'env_local',
       resources: [
         { type: 'file', file_id: file.id, mount_path: '/workspace/input.txt' },

@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use awaken_runtime_contract::CredentialObservationState;
 use tokio::process::Command;
 
-use crate::{AcpAcquisition, AcpCli, known_acp_clis};
+use crate::{AcpCli, known_acp_clis};
 
 /// One non-interactive command used to inspect an installed ACP agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -231,33 +231,6 @@ impl AcpHostDiscovery {
 #[async_trait]
 impl AcpDiscovery for AcpHostDiscovery {
     async fn discover(&self, cli: &AcpCli) -> AcpHostObservation {
-        if let AcpAcquisition::PinnedNpmWrapper { runner, .. } = cli.acquisition {
-            let runner_probe = AcpProbeCommand {
-                executable: runner,
-                args: &["--version"],
-            };
-            match self.process.run(runner_probe).await {
-                Err(AcpProcessProbeError::ExecutableNotFound { .. }) => {
-                    return observation(cli, AcpDetectionState::Missing, "acp_runner_missing");
-                }
-                Err(_) => {
-                    return observation(
-                        cli,
-                        AcpDetectionState::ProbeFailed,
-                        "acp_runner_probe_failed",
-                    );
-                }
-                Ok(output) if !output.success() => {
-                    return observation(
-                        cli,
-                        AcpDetectionState::ProbeFailed,
-                        "acp_runner_probe_failed",
-                    );
-                }
-                Ok(_) => {}
-            }
-        }
-
         let version = match self.process.run(cli.discovery.version).await {
             Err(AcpProcessProbeError::ExecutableNotFound { .. }) => {
                 return observation(cli, AcpDetectionState::Missing, "acp_agent_missing");
@@ -390,9 +363,9 @@ mod tests {
     #[tokio::test]
     async fn profile_rules_classify_login_without_cli_id_branches() {
         // Cause graph:
-        // runner/version evidence ──> Detected ──> ordered profile rules
-        // missing evidence          ──> Missing       ├─ match -> exact state
-        // broken evidence           ──> ProbeFailed  └─ none  -> ProbeFailed
+        // CLI/version evidence ──> Detected ──> ordered profile rules
+        // missing evidence       ──> Missing       ├─ match -> exact state
+        // broken evidence        ──> ProbeFailed  └─ none  -> ProbeFailed
         //
         // Decision table (representative catalog mechanisms):
         // D1 Codex marker      -> Available
@@ -400,7 +373,6 @@ mod tests {
         // D3 Gemini exit 41    -> LoginRequired
         // D4 OpenCode 0 creds  -> LoginRequired
         let probe = ScriptedProbe::default()
-            .with(&["npx", "--version"], Ok(output(0, "10.0", "")))
             .with(&["codex", "--version"], Ok(output(0, "codex 1", "")))
             .with(
                 &["codex", "login", "status"],
@@ -440,7 +412,7 @@ mod tests {
     #[tokio::test]
     async fn missing_broken_and_unrecognized_evidence_fail_closed() {
         // Decision table:
-        // D1 missing runner       -> Missing/no credential state
+        // D1 missing CLI          -> Missing/no credential state
         // D2 nonzero version      -> ProbeFailed/no credential state
         // D3 unrecognized login   -> Detected/ProbeFailed
         let missing = AcpHostDiscovery::with_process(Arc::new(ScriptedProbe::default()))

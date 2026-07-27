@@ -22,17 +22,6 @@ pub(crate) struct AcpBackend {
 }
 
 impl AcpBackend {
-    pub(crate) fn combined_credential_realization_capabilities(
-        &self,
-    ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
-        match &self.source {
-            AcpExecutorSource::Static(_) => Default::default(),
-            AcpExecutorSource::Bound { launch, .. } => {
-                launch.combined_credential_realization_capabilities()
-            }
-        }
-    }
-
     pub(crate) fn credential_realization_capabilities(
         &self,
         backend: &awaken_runtime_contract::resolved::Backend,
@@ -105,7 +94,7 @@ impl AcpBackend {
 
 /// A [`LaunchObserver`] that republishes ACP agent bring-up onto the per-thread
 /// [`ThreadEventHub`], so any protocol adapter observing the thread projects the
-/// progress to its UI (a "starting agent…" affordance during a dynamic install).
+/// progress to its UI as a "starting agent…" affordance.
 /// The launch scope is the thread key the hub routes on.
 pub(crate) struct HubLaunchObserver {
     hub: Arc<crate::hub::ThreadEventHub>,
@@ -121,7 +110,6 @@ impl awaken_run_executor_acp::LaunchObserver for HubLaunchObserver {
     fn on_launch(&self, scope: &str, event: &awaken_run_executor_acp::AcpLaunchEvent) {
         use awaken_run_executor_acp::AcpLaunchStage::*;
         let stage = match event.stage {
-            Installing => "installing",
             Launching => "launching",
             Initializing => "initializing",
             Ready => "ready",
@@ -198,12 +186,13 @@ impl crate::host::SharedHost {
                 (
                     cli,
                     resolver as Arc<dyn awaken_run_executor_acp::LaunchResolver>,
+                    profile.launch_argv(id).map(<[String]>::to_vec),
                 )
             })
             .collect();
         let default = profile.default_cli().map(str::to_string);
         let source = crate::LaunchSource::Projected(
-            crate::AcpLaunchRegistry::new(routes, default)
+            crate::AcpLaunchRegistry::with_resolved_argv(routes, default)
                 .unwrap_or_else(|error| panic!("configure ACP launch routes: {error}")),
         );
         // The same exact, claim-fenced materializer owns both sides of the
@@ -433,16 +422,16 @@ mod tests {
 
         observer.on_launch(
             "thread-42",
-            &AcpLaunchEvent::with_detail(AcpLaunchStage::Installing, "@…/claude-agent-acp@0.44"),
+            &AcpLaunchEvent::with_detail(AcpLaunchStage::Launching, "claude-agent-acp"),
         );
         observer.on_launch("thread-42", &AcpLaunchEvent::stage(AcpLaunchStage::Ready));
 
-        // The install event (with detail) then the ready event arrive on the hub,
+        // The launch event (with detail) then the ready event arrive on the hub,
         // scoped to the thread — exactly what a per-session UI channel renders.
         match sub.recv().await.unwrap() {
             crate::hub::ThreadEvent::AgentLaunch { stage, detail } => {
-                assert_eq!(stage, "installing");
-                assert_eq!(detail.as_deref(), Some("@…/claude-agent-acp@0.44"));
+                assert_eq!(stage, "launching");
+                assert_eq!(detail.as_deref(), Some("claude-agent-acp"));
             }
             other => panic!("expected AgentLaunch, got {other:?}"),
         }

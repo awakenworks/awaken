@@ -5,8 +5,8 @@ use std::collections::BTreeSet;
 use awaken_runtime_contract::execution::NATIVE_RUNTIME_CAPABILITY;
 use awaken_server::InferenceExecutorMaterializer;
 use awaken_worker_contract::{
-    REPOSITORY_CREDENTIALS_CAPABILITY, SESSION_RESOURCES_CAPABILITY, VersionRange, WorkerCapacity,
-    WorkerManifest,
+    REPOSITORY_CREDENTIALS_CAPABILITY, SESSION_RESOURCES_CAPABILITY, VersionRange,
+    WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerCapacity, WorkerManifest,
 };
 
 use crate::WorkerResourcePlane;
@@ -145,6 +145,9 @@ pub(crate) struct StandardManifestInputs<'a> {
     pub(crate) deployment: &'a awaken_runtime_host::DeploymentConfig,
     pub(crate) materializer: Option<&'a dyn InferenceExecutorMaterializer>,
     pub(crate) credential_materializer: Option<CredentialMaterializerSupport>,
+    /// An exact Worker-local observation/revalidation resolver is installed.
+    /// This is independent of whether that resolver returns secret material.
+    pub(crate) worker_local_credentials: bool,
     pub(crate) sandbox_override:
         Option<(awaken_provisioning_contract::SandboxCapabilities, &'a str)>,
     pub(crate) resource_support: ResourceManifestSupport,
@@ -193,6 +196,9 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
             capabilities.insert(SESSION_RESOURCES_CAPABILITY.to_string());
             capabilities.insert(REPOSITORY_CREDENTIALS_CAPABILITY.to_string());
         }
+    }
+    if inputs.worker_local_credentials {
+        capabilities.insert(WORKER_LOCAL_CREDENTIALS_CAPABILITY.to_string());
     }
     capabilities.extend(inputs.application_capabilities);
     if let Some(profile) = &inputs.deployment.acp {

@@ -6,16 +6,22 @@
 
 mod acp_gateway;
 mod attempt_credential;
+mod composition;
 mod deployment;
 mod model_publication;
 mod models;
 pub use crate::models::*;
 pub use acp_gateway::build_acp_gateway_router;
+pub use composition::build_unscoped_resource_router;
 pub use deployment::scenario_deployment;
 
 mod scenario_shell;
+use composition::{
+    fixed_host_backend_publication, mount, mount_with_environments,
+    mount_with_environments_and_agent_source, mount_with_host_backend_publication,
+};
 use deployment::{resource_host, resource_host_with_deployment, scenario_storage_dir};
-use scenario_shell::{scenario_host_acp_cli, scenario_shell_argv};
+use scenario_shell::{scenario_argv, scenario_host_acp_cli, scenario_shell_argv};
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -52,52 +58,6 @@ pub use awaken_runtime_host::{
 /// surface.
 use awaken_server::mount_with_managed;
 use awaken_server::placement;
-
-/// Scenario equivalent of the production composition root: one secret-free
-/// Resource Catalog is shared by the Memory API, Managed ACL, and runtime
-/// activation. Authorization remains outside this helper.
-fn mount(host: Arc<SharedHost>) -> Router {
-    let catalog = scenario_resource_catalog();
-    let managed = awaken_server::local_managed_state(host.clone(), catalog.clone());
-    awaken_server::mount_with_managed_and_resource_catalog(host, managed, catalog)
-}
-
-/// Scenario composition with the Environment API and the same Resource Catalog,
-/// credential plane, and Session repository used by [`mount`].
-fn mount_with_environments(host: Arc<SharedHost>) -> Router {
-    let catalog = scenario_resource_catalog();
-    let environments = Arc::new(
-        awaken_protocol_managed::EnvironmentState::new().with_sandbox_policies(Arc::new(
-            awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default(),
-        )),
-    );
-    let managed = awaken_server::local_managed_state_with_environments(
-        host.clone(),
-        catalog.clone(),
-        environments.clone(),
-    );
-    awaken_server::mount_with_managed_and_resource_catalog(host, managed, catalog)
-        .merge(awaken_protocol_managed::environments_router(environments))
-}
-
-/// Resource HTTP adapters without the product composition root's local Workspace
-/// injector. This intentionally incomplete test composition proves that File,
-/// MemoryStore, and Skill routes fail closed instead of deriving a Workspace from
-/// the Host. Production always supplies either the local default-scope layer or an
-/// authenticated PEP before these routers.
-pub fn build_unscoped_resource_router() -> Router {
-    let host = Arc::new(resource_host(Arc::new(EchoModel), "unscoped-resource"));
-    let purge: Arc<dyn awaken_protocol_managed::resource_plane::ResourcePurgeScheduler> =
-        host.clone();
-    Router::new()
-        .merge(files_router(host.clone()))
-        .merge(memory_stores_router_with_catalog(
-            host.memory_repository(),
-            scenario_resource_catalog(),
-            purge.clone(),
-        ))
-        .merge(skills_router(host.skill_store(), purge))
-}
 struct RouteProvider;
 
 impl InferenceExecutorMaterializer for RouteProvider {
@@ -193,11 +153,13 @@ pub fn build_outcome_matrix_router() -> Router {
         ))
         .max_steps(2)
         .build();
-    mount(Arc::new(
+    mount_with_host_backend_publication(
         resource_host(model, model_ref)
             .with_acp(acp)
             .with_judge_snapshot(judge),
-    ))
+        "acp-agent",
+        "acp:claude",
+    )
 }
 
 /// A router with out-of-band memory extraction + bounded recall (the memory
@@ -448,9 +410,11 @@ pub fn build_acp_control_router() -> Router {
     let acp = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(Arc::new(
         slow_acp_source(),
     )));
-    mount(Arc::new(
+    mount_with_host_backend_publication(
         resource_host(Arc::new(EchoModel), "awaken").with_acp(acp),
-    ))
+        "acp-agent",
+        "acp:claude",
+    )
 }
 
 struct FailSecondAcpSource {
@@ -483,9 +447,11 @@ pub fn build_acp_relaunch_failure_router() -> Router {
         opens: std::sync::atomic::AtomicUsize::new(0),
     });
     let acp = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
-    mount(Arc::new(
+    mount_with_host_backend_publication(
         resource_host(Arc::new(EchoModel), "awaken").with_acp(acp),
-    ))
+        "acp-agent",
+        "acp:claude",
+    )
 }
 
 /// [`build_acp_router`]'s official-wire twin: `acp:*` sessions drive the fake agent
@@ -501,9 +467,11 @@ pub fn build_acp_jsonrpc_router() -> Router {
             .with_codec(awaken_run_executor_acp::Codec::Acp),
     );
     let acp = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
-    mount(Arc::new(
+    mount_with_host_backend_publication(
         resource_host(Arc::new(EchoModel), "awaken").with_acp(acp),
-    ))
+        "acp-agent",
+        "acp:claude",
+    )
 }
 
 /// Durable allow/deny coverage for ACP `session/request_permission`, through the
@@ -518,9 +486,11 @@ pub fn build_acp_permission_router() -> Router {
             .with_codec(awaken_run_executor_acp::Codec::Acp),
     );
     let acp = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
-    mount(Arc::new(
+    mount_with_host_backend_publication(
         resource_host(Arc::new(EchoModel), "awaken").with_acp(acp),
-    ))
+        "acp-agent",
+        "acp:claude",
+    )
 }
 
 /// A router where a session can select `runtime: "acp:*"` to run on an external
@@ -537,7 +507,11 @@ pub fn build_acp_router() -> Router {
     // (`AWAKEN_MODEL_SOURCE=http`); the ACP `runtime:"acp:*"` path is unaffected — it
     // runs on the real CLI subprocess either way.
     let (model, model_ref) = scenario_model(Arc::new(EchoModel), "awaken");
-    mount(Arc::new(resource_host(model, model_ref).with_acp(acp)))
+    mount_with_host_backend_publication(
+        resource_host(model, model_ref).with_acp(acp),
+        "acp-agent",
+        "acp:claude",
+    )
 }
 
 /// A JSON-RPC fake agent (the codec [`ProjectingChannelSource`] speaks) that echoes
@@ -596,8 +570,6 @@ const FAKE_ACP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_acp::A
     model_delivery: Some(awaken_run_executor_acp::ModelDelivery {
         base_url: "ANTHROPIC_BASE_URL",
         model: "ANTHROPIC_MODEL",
-        model_config_key: None,
-        model_config_env: None,
         key: "ANTHROPIC_API_KEY",
         aliases: &[],
     }),
@@ -654,8 +626,6 @@ const FAKE_ACP_MCP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_ac
     model_delivery: Some(awaken_run_executor_acp::ModelDelivery {
         base_url: "ANTHROPIC_BASE_URL",
         model: "ANTHROPIC_MODEL",
-        model_config_key: None,
-        model_config_env: None,
         key: "ANTHROPIC_API_KEY",
         aliases: &[],
     }),
@@ -707,7 +677,7 @@ pub async fn build_acp_managed_mcp_router() -> Router {
     let executor = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
     awaken_cli::build_management_router_with_host_customizer(
         Arc::new(McpToolModel),
-        "acp-managed-mcp".to_string(),
+        ModelBinding::new("scenario", "acp-managed-mcp", "acp:fake-mcp"),
         move |host| host.with_acp(executor),
     )
     .await
@@ -723,7 +693,12 @@ pub async fn build_acp_managed_mcp_router() -> Router {
 /// `~/.claude`. Drives a real dynamic MCP tool call end to end. `AWAKEN_MODEL_MODE=acp-real-mcp`.
 pub async fn build_acp_real_mcp_router() -> Router {
     let store_dir = scenario_storage_dir();
-    let cli = *awaken_run_executor_acp::acp_cli("claude").expect("claude is a catalog row");
+    let cli_id = std::env::var("AWAKEN_ACP_CLI")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "claude".to_string());
+    let cli = *awaken_run_executor_acp::acp_cli(&cli_id)
+        .unwrap_or_else(|| panic!("{cli_id} is not an ACP catalog row"));
     // The host default model_ref mirrors the operator's `ANTHROPIC_MODEL` — the same env
     // the ACP model-delivery reads — so a session that names no model still hands the CLI
     // the real model name (not the scenario label). A session may still override it.
@@ -733,7 +708,7 @@ pub async fn build_acp_real_mcp_router() -> Router {
         .unwrap_or_else(|| "acp-real-mcp".to_string());
     awaken_cli::build_management_router_with_host_customizer(
         Arc::new(McpToolModel),
-        model_ref,
+        ModelBinding::new("scenario", model_ref, format!("acp:{cli_id}")),
         move |host| {
             host.with_projected_acp(cli, Arc::new(acp_gateway::ScenarioEnvAcpModel), store_dir)
         },
@@ -792,10 +767,11 @@ pub async fn build_acp_sandboxed_router() -> Router {
             awaken_runtime_host::LaunchSource::Fixed(launch),
         )
         .await;
-    let host = Arc::new(host);
+    let publication = fixed_host_backend_publication("acp-agent", "acp:claude", Vec::new());
+    let host = Arc::new(host.with_agent_publications(publication.clone()));
     // Mount `/v1/environments` over the same complete Managed state/resource
     // catalog used by every other scenario.
-    mount_with_environments(host)
+    mount_with_environments_and_agent_source(host, Some(publication))
 }
 
 /// The container-tier sibling of [`build_acp_sandboxed_router`]: the deterministic ACP
@@ -828,7 +804,19 @@ pub async fn build_acp_container_router() -> Router {
     deployment.container_image = std::env::var("AWAKEN_CONTAINER_IMAGE")
         .ok()
         .filter(|value| !value.trim().is_empty());
-    let host = resource_host_with_deployment(Arc::new(EchoModel), "awaken", deployment);
+    let delivered_skill = match deployment.sandbox_tier {
+        awaken_runtime_host::SandboxTier::Docker
+        | awaken_runtime_host::SandboxTier::Podman
+        | awaken_runtime_host::SandboxTier::K8s => "delivered-container",
+        _ => "delivered-namespace",
+    };
+    let publication = fixed_host_backend_publication(
+        "namespace-agent",
+        "acp:custom",
+        vec![delivered_skill.into()],
+    );
+    let host = resource_host_with_deployment(Arc::new(EchoModel), "awaken", deployment)
+        .with_agent_publications(publication.clone());
     let argv = scenario_argv(
         &std::env::var("AWAKEN_ACP_ARGV").expect("container scenario requires AWAKEN_ACP_ARGV"),
     );
@@ -843,19 +831,7 @@ pub async fn build_acp_container_router() -> Router {
         .await;
     // Use the same shared Resource Catalog + Managed ACL assembly as every other
     // scenario, with the exact EnvironmentState mounted by the environment API.
-    mount_with_environments(Arc::new(host))
-}
-
-// Cause graph / decision table for scenario-only launch input:
-// JSON array + spaces in argv -> preserve exact elements; JSON array without
-// spaces -> preserve; legacy plain string -> whitespace split for compatibility;
-// malformed JSON-looking input -> legacy split, then launch fails explicitly.
-fn scenario_argv(raw: &str) -> Vec<String> {
-    serde_json::from_str::<Vec<String>>(raw).unwrap_or_else(|_| {
-        raw.split_whitespace()
-            .map(str::to_string)
-            .collect::<Vec<_>>()
-    })
+    mount_with_environments_and_agent_source(Arc::new(host), Some(publication))
 }
 
 // ── Router assembly ─────────────────────────────────────────────────────────
@@ -1970,26 +1946,7 @@ fn connect_nats_executor_blocking(url: &str, subject: String) -> NatsToolExecuto
 
 #[cfg(test)]
 mod compatible_endpoint_tests {
-    use super::{
-        default_anthropic_compatible_model, normalize_anthropic_compatible_base, scenario_argv,
-    };
-
-    #[test]
-    fn scenario_argv_preserves_paths_with_spaces() {
-        assert_eq!(
-            scenario_argv(
-                r#"["C:\\Program Files\\nodejs\\node.exe","C:\\fixture dir\\agent.mjs"]"#
-            ),
-            vec![
-                r"C:\Program Files\nodejs\node.exe".to_string(),
-                r"C:\fixture dir\agent.mjs".to_string(),
-            ]
-        );
-        assert_eq!(
-            scenario_argv("node fixture.mjs"),
-            vec!["node".to_string(), "fixture.mjs".to_string()]
-        );
-    }
+    use super::{default_anthropic_compatible_model, normalize_anthropic_compatible_base};
 
     #[test]
     fn kimi_coding_root_is_canonicalized_for_the_messages_provider() {

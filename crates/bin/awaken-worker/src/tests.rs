@@ -115,6 +115,7 @@ async fn worker_manifest_derives_materialization_capabilities_from_the_adapter()
         deployment: &deployment,
         materializer: Some(&materializer),
         credential_materializer: None,
+        worker_local_credentials: false,
         sandbox_override: None,
         resource_support: ResourceManifestSupport::None,
         application_capabilities: Default::default(),
@@ -186,6 +187,13 @@ fn external_credential_resolver_composes_with_the_canonical_materializer() {
         .with_standard_manifest(Default::default())
         .build()
         .expect("X2 exact resolver topology");
+    assert!(
+        worker
+            .manifest()
+            .capabilities
+            .contains(awaken_worker_contract::WORKER_LOCAL_CREDENTIALS_CAPABILITY),
+        "X2 exact observation/revalidation capability"
+    );
     let evidence =
         awaken_runtime_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
             &worker.manifest().capabilities,
@@ -222,6 +230,7 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
         deployment: &acp,
         materializer: None,
         credential_materializer: Some(credential_support()),
+        worker_local_credentials: false,
         sandbox_override: None,
         resource_support: ResourceManifestSupport::None,
         application_capabilities: Default::default(),
@@ -250,6 +259,7 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
         deployment: &deployment(),
         materializer: None,
         credential_materializer: Some(credential_support()),
+        worker_local_credentials: false,
         sandbox_override: None,
         resource_support: ResourceManifestSupport::None,
         application_capabilities: Default::default(),
@@ -294,6 +304,7 @@ fn standard_manifest_requires_complete_provider_evidence_for_worker_relay() {
             deployment: &deployment,
             materializer: None,
             credential_materializer: credential_materializer.then(credential_support),
+            worker_local_credentials: false,
             sandbox_override: Some((sandbox.clone(), "external-secure-provider")),
             resource_support: ResourceManifestSupport::None,
             application_capabilities: Default::default(),
@@ -338,6 +349,7 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
         deployment: &deployment,
         materializer: None,
         credential_materializer: None,
+        worker_local_credentials: false,
         sandbox_override: None,
         resource_support: ResourceManifestSupport::None,
         application_capabilities: Default::default(),
@@ -365,6 +377,7 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
         deployment: &deployment,
         materializer: None,
         credential_materializer: None,
+        worker_local_credentials: false,
         sandbox_override: None,
         resource_support: ResourceManifestSupport::Session,
         application_capabilities: Default::default(),
@@ -392,6 +405,7 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
         deployment: &deployment,
         materializer: None,
         credential_materializer: None,
+        worker_local_credentials: false,
         sandbox_override: None,
         resource_support: ResourceManifestSupport::SessionWithRepositoryCredentials,
         application_capabilities: Default::default(),
@@ -414,6 +428,7 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
         deployment: &deployment,
         materializer: Some(&materializer),
         credential_materializer: None,
+        worker_local_credentials: false,
         sandbox_override: None,
         resource_support: ResourceManifestSupport::None,
         application_capabilities: Default::default(),
@@ -462,6 +477,7 @@ fn worker_manifest_includes_explicit_application_capabilities() {
         deployment: &deployment,
         materializer: None,
         credential_materializer: None,
+        worker_local_credentials: false,
         sandbox_override: None,
         resource_support: ResourceManifestSupport::None,
         application_capabilities: std::collections::BTreeSet::from([
@@ -490,6 +506,7 @@ fn standard_manifest_uses_one_typed_metadata_source() {
         deployment: &deployment,
         materializer: None,
         credential_materializer: None,
+        worker_local_credentials: false,
         sandbox_override: None,
         resource_support: ResourceManifestSupport::None,
         application_capabilities: Default::default(),

@@ -64,28 +64,7 @@ fn managed_toolset(value: &Value) -> Result<Option<awaken_session_contract::Agen
 /// Parse a managed-shaped Agent object into the domain compile input.
 pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig, String> {
     let string = |key: &str| body.get(key).and_then(Value::as_str).map(str::to_string);
-    let (provider_identity_ref, model_ref, backend_ref) = match body.get("model") {
-        Some(Value::String(model)) => (String::new(), model.clone(), String::new()),
-        Some(Value::Object(model)) => (
-            model
-                .get("provider_identity_ref")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            model
-                .get("model_ref")
-                .or_else(|| model.get("id"))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            model
-                .get("backend_ref")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-        ),
-        _ => (String::new(), String::new(), String::new()),
-    };
+    let model_binding = managed_model_selection(body.get("model"))?;
     let array = |key: &str| {
         body.get(key)
             .and_then(Value::as_array)
@@ -153,16 +132,6 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();
-    let model_binding = if body
-        .get("model")
-        .and_then(|model| model.get("mode"))
-        .and_then(Value::as_str)
-        == Some("auto")
-    {
-        ModelSelection::Auto
-    } else {
-        ModelSelection::pinned(provider_identity_ref, model_ref, backend_ref)
-    };
     Ok(AgentConfig {
         id,
         instructions: string("system").unwrap_or_default(),
@@ -212,9 +181,84 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
     })
 }
 
+fn managed_model_selection(model: Option<&Value>) -> Result<ModelSelection, String> {
+    let Some(model) = model else {
+        return Ok(ModelSelection::pinned("", "", ""));
+    };
+    if model.get("mode").and_then(Value::as_str) == Some("auto") {
+        return Ok(ModelSelection::Auto);
+    }
+    if let Some(object) = model.as_object()
+        && object.get("mode").and_then(Value::as_str) == Some("backend_default")
+    {
+        let backend_ref = object
+            .get("backend_ref")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|backend| !backend.is_empty())
+            .ok_or_else(|| "backend-default model requires a non-empty backend_ref".to_string())?;
+        let ambiguous = ["id", "model_ref", "provider_identity_ref"]
+            .iter()
+            .any(|key| {
+                object
+                    .get(*key)
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.trim().is_empty())
+            });
+        if ambiguous {
+            return Err(
+                "backend-default model cannot also name a model or provider identity".to_string(),
+            );
+        }
+        return Ok(ModelSelection::BackendDefault {
+            backend_ref: backend_ref.to_string(),
+        });
+    }
+    let (provider_identity_ref, model_ref, backend_ref) = match model {
+        Value::String(model) => (String::new(), model.clone(), String::new()),
+        Value::Object(model) => (
+            model
+                .get("provider_identity_ref")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            model
+                .get("model_ref")
+                .or_else(|| model.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            model
+                .get("backend_ref")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        ),
+        _ => return Err("model must be a string or object".to_string()),
+    };
+    Ok(ModelSelection::pinned(
+        provider_identity_ref,
+        model_ref,
+        backend_ref,
+    ))
+}
+
 /// Project a stored config into the managed-shaped object and its live state.
 pub fn managed_from_agent_config(config: &AgentConfig, published: bool) -> Value {
     let binding = config.model_binding.resolved();
+    let model = match &config.model_binding {
+        ModelSelection::BackendDefault { backend_ref } => json!({
+            "mode": "backend_default",
+            "backend_ref": backend_ref,
+        }),
+        ModelSelection::Auto => json!({ "mode": "auto" }),
+        ModelSelection::Pinned(_) => json!({
+            "id": binding.map(|binding| binding.model_ref.clone()).unwrap_or_default(),
+            "model_ref": binding.map(|binding| binding.model_ref.clone()).unwrap_or_default(),
+            "provider_identity_ref": binding.map(|binding| binding.provider_identity_ref.clone()).unwrap_or_default(),
+            "backend_ref": binding.map(|binding| binding.backend_ref.clone()).unwrap_or_default(),
+        }),
+    };
     let mut tools = config
         .tool_ids
         .iter()
@@ -233,17 +277,6 @@ pub fn managed_from_agent_config(config: &AgentConfig, published: bool) -> Value
             "input_schema": tool.parameters,
         })
     }));
-    let model = binding.map_or_else(
-        || json!({ "mode": "auto" }),
-        |binding| {
-            json!({
-                "id": binding.model_ref,
-                "model_ref": binding.model_ref,
-                "provider_identity_ref": binding.provider_identity_ref,
-                "backend_ref": binding.backend_ref,
-            })
-        },
-    );
     json!({
         "id": config.id,
         "type": "agent",
@@ -326,6 +359,57 @@ mod tests {
         let projected = managed_from_agent_config(&config, true);
         assert_eq!(projected["model"], json!({ "mode": "auto" }));
         assert_eq!(projected["tools"], json!(["bash"]));
+    }
+
+    #[test]
+    fn backend_default_model_round_trips_without_creating_a_pinned_shadow() {
+        // Cause graph: managed backend-default wire -> existing ModelSelection ->
+        // publication resolver. Projection emits the same policy, never a fake
+        // empty pinned model that competes with the domain source of truth.
+        //
+        // Decision table:
+        // B1 exact backend, no model/provider -> BackendDefault + lossless wire
+        // B2 missing backend                -> reject
+        // B3 backend plus model/provider    -> reject as ambiguous
+        let config = agent_config_from_managed(
+            "local-codex".into(),
+            &json!({
+                "model": { "mode": "backend_default", "backend_ref": "acp:codex" }
+            }),
+        )
+        .expect("B1");
+        assert_eq!(
+            config.model_binding.backend_default_ref(),
+            Some("acp:codex"),
+            "B1"
+        );
+        assert_eq!(
+            managed_from_agent_config(&config, false)["model"],
+            json!({ "mode": "backend_default", "backend_ref": "acp:codex" }),
+            "B1"
+        );
+        assert!(
+            agent_config_from_managed(
+                "invalid".into(),
+                &json!({ "model": { "mode": "backend_default" } }),
+            )
+            .is_err(),
+            "B2"
+        );
+        assert!(
+            agent_config_from_managed(
+                "ambiguous".into(),
+                &json!({
+                    "model": {
+                        "mode": "backend_default",
+                        "backend_ref": "acp:codex",
+                        "id": "gpt-x"
+                    }
+                }),
+            )
+            .is_err(),
+            "B3"
+        );
     }
 
     #[test]

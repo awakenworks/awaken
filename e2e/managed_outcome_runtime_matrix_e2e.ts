@@ -38,9 +38,8 @@ async function defineOutcome(client, sessionId, rubric, maxIterations) {
 async function verifyPair(baseUrl, worker, judge) {
   const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
   const session = await client.beta.sessions.create({
-    agent: 'assistant',
+    agent: worker === 'acp' ? 'acp-agent' : 'assistant',
     environment_id: 'env_local',
-    ...(worker === 'acp' ? { metadata: { 'awaken.runtime': 'acp:claude' } } : {}),
     betas: BETAS,
   });
   await sendMessage(client, session.id, 'prepare a draft');
@@ -71,9 +70,8 @@ async function verifyPair(baseUrl, worker, judge) {
 async function verifyBudgetOneAcknowledgment(baseUrl) {
   const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
   const session = await client.beta.sessions.create({
-    agent: 'assistant',
+    agent: 'acp-agent',
     environment_id: 'env_local',
-    metadata: { 'awaken.runtime': 'acp:claude' },
     betas: BETAS,
   });
   await sendMessage(client, session.id, 'prepare a draft');

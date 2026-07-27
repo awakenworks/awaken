@@ -242,7 +242,14 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
 
     let (s, prof) = call(&app, "GET", "/v1/config/inference-profiles/prof1", None).await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(prof["model_id"], json!("claude-opus-4-8"));
+    // Structured `primary.target` is the sole write/read contract. The flat
+    // `model_id` field is accepted only when decoding legacy rows and must not
+    // reappear as a parallel serialized profile shape after restart.
+    assert_eq!(
+        prof["primary"]["target"]["model_id"],
+        json!("claude-opus-4-8")
+    );
+    assert_eq!(prof["model_id"], serde_json::Value::Null);
 
     let (s, agent) = call(&app, "GET", "/v1/config/agents/calc-agent", None).await;
     assert_eq!(s, StatusCode::OK);

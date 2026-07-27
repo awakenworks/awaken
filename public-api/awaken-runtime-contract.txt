@@ -13,11 +13,14 @@ pub use awaken_runtime_contract::CredentialAccess
 pub use awaken_runtime_contract::CredentialAdmissionError
 pub use awaken_runtime_contract::CredentialEnvelope
 pub use awaken_runtime_contract::CredentialExecutionPolicy
+pub use awaken_runtime_contract::CredentialMaterial
 pub use awaken_runtime_contract::CredentialMaterialBinding
 pub use awaken_runtime_contract::CredentialMaterialError
 pub use awaken_runtime_contract::CredentialMaterialRequest
 pub use awaken_runtime_contract::CredentialMaterialResolver
 pub use awaken_runtime_contract::CredentialMaterialSource
+pub use awaken_runtime_contract::CredentialObservation
+pub use awaken_runtime_contract::CredentialObservationState
 pub use awaken_runtime_contract::CredentialRealizationCapabilities
 pub use awaken_runtime_contract::CredentialRealizationKind
 pub use awaken_runtime_contract::CredentialRealizationPlan
@@ -31,6 +34,7 @@ pub use awaken_runtime_contract::MergePolicy
 pub use awaken_runtime_contract::Message
 pub use awaken_runtime_contract::MessageId
 pub use awaken_runtime_contract::ModelExposurePolicy
+pub use awaken_runtime_contract::OAuthCredentialMaterial
 pub use awaken_runtime_contract::PlaintextBoundary
 pub use awaken_runtime_contract::PlaintextHolder
 pub use awaken_runtime_contract::ResolvedCredentialMaterial
@@ -70,19 +74,43 @@ pub fn awaken_runtime_contract::activation::RunActivation::with_delegation_origi
 pub fn awaken_runtime_contract::activation::RunActivation::with_model_ref_override(self, core::option::Option<alloc::string::String>) -> Self
 pub fn awaken_runtime_contract::activation::RunActivation::without_tools(self) -> Self
 pub mod awaken_runtime_contract::agent_bindings
+pub use awaken_runtime_contract::agent_bindings::ToolExecutionPolicy
+pub use awaken_runtime_contract::agent_bindings::ToolPermissionRequirement
+pub use awaken_runtime_contract::agent_bindings::ToolPolicyOverride
+pub use awaken_runtime_contract::agent_bindings::ToolsetPolicy
+pub use awaken_runtime_contract::agent_bindings::ToolsetSource
+pub enum awaken_runtime_contract::agent_bindings::InferenceSpeed
+pub awaken_runtime_contract::agent_bindings::InferenceSpeed::Fast
+pub awaken_runtime_contract::agent_bindings::InferenceSpeed::Standard
+pub enum awaken_runtime_contract::agent_bindings::ReasoningEffort
+pub awaken_runtime_contract::agent_bindings::ReasoningEffort::High
+pub awaken_runtime_contract::agent_bindings::ReasoningEffort::Low
+pub awaken_runtime_contract::agent_bindings::ReasoningEffort::Max
+pub awaken_runtime_contract::agent_bindings::ReasoningEffort::Medium
+pub awaken_runtime_contract::agent_bindings::ReasoningEffort::Xhigh
 pub struct awaken_runtime_contract::agent_bindings::AgentBindings
 pub awaken_runtime_contract::agent_bindings::AgentBindings::delegate_ids: alloc::vec::Vec<awaken_runtime_contract::snapshot::AgentId>
 pub awaken_runtime_contract::agent_bindings::AgentBindings::mcp_servers: alloc::vec::Vec<awaken_runtime_contract::agent_bindings::AgentMcpServerBinding>
 pub awaken_runtime_contract::agent_bindings::AgentBindings::skill_ids: alloc::vec::Vec<alloc::string::String>
+pub awaken_runtime_contract::agent_bindings::AgentBindings::toolsets: alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>
+impl awaken_runtime_contract::agent_bindings::AgentBindings
+pub fn awaken_runtime_contract::agent_bindings::AgentBindings::tool_policy(&self, &str) -> core::option::Option<awaken_agent_contract::toolset::ToolExecutionPolicy>
 pub struct awaken_runtime_contract::agent_bindings::AgentMcpServerBinding
 pub awaken_runtime_contract::agent_bindings::AgentMcpServerBinding::credential: core::option::Option<awaken_credential_contract::CredentialRef>
 pub awaken_runtime_contract::agent_bindings::AgentMcpServerBinding::name: alloc::string::String
 pub awaken_runtime_contract::agent_bindings::AgentMcpServerBinding::url: alloc::string::String
+pub struct awaken_runtime_contract::agent_bindings::InferenceOptions
+pub awaken_runtime_contract::agent_bindings::InferenceOptions::effort: core::option::Option<awaken_runtime_contract::agent_bindings::ReasoningEffort>
+pub awaken_runtime_contract::agent_bindings::InferenceOptions::speed: core::option::Option<awaken_runtime_contract::agent_bindings::InferenceSpeed>
+impl awaken_runtime_contract::agent_bindings::InferenceOptions
+pub fn awaken_runtime_contract::agent_bindings::InferenceOptions::is_default(&self) -> bool
 pub struct awaken_runtime_contract::agent_bindings::ResolvedConfiguration
 pub awaken_runtime_contract::agent_bindings::ResolvedConfiguration::agent: awaken_runtime_contract::agent_bindings::AgentBindings
+pub awaken_runtime_contract::agent_bindings::ResolvedConfiguration::inference: awaken_runtime_contract::agent_bindings::InferenceOptions
 impl awaken_runtime_contract::agent_bindings::ResolvedConfiguration
 pub fn awaken_runtime_contract::agent_bindings::ResolvedConfiguration::new(awaken_runtime_contract::agent_bindings::AgentBindings, alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>) -> Self
 pub fn awaken_runtime_contract::agent_bindings::ResolvedConfiguration::plugins(&self) -> &alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>
+pub fn awaken_runtime_contract::agent_bindings::ResolvedConfiguration::with_inference(self, awaken_runtime_contract::agent_bindings::InferenceOptions) -> Self
 impl core::convert::From<alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>> for awaken_runtime_contract::agent_bindings::ResolvedConfiguration
 pub fn awaken_runtime_contract::agent_bindings::ResolvedConfiguration::from(alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>) -> Self
 impl core::ops::deref::Deref for awaken_runtime_contract::agent_bindings::ResolvedConfiguration
@@ -442,6 +470,7 @@ pub struct awaken_runtime_contract::llm::ChatMessage
 pub awaken_runtime_contract::llm::ChatMessage::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_runtime_contract::llm::ChatMessage::role: awaken_agent_contract::agent::message::Role
 pub struct awaken_runtime_contract::llm::ChatRequest
+pub awaken_runtime_contract::llm::ChatRequest::inference: awaken_runtime_contract::agent_bindings::InferenceOptions
 pub awaken_runtime_contract::llm::ChatRequest::messages: alloc::vec::Vec<awaken_runtime_contract::llm::ChatMessage>
 pub awaken_runtime_contract::llm::ChatRequest::model_binding: awaken_runtime_contract::resolved::ModelBinding
 pub awaken_runtime_contract::llm::ChatRequest::tools: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
@@ -801,6 +830,7 @@ pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::route_ref: a
 pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::scope_id: awaken_tenancy::ScopeId
 pub enum awaken_runtime_contract::resolved::ToolKind
 pub awaken_runtime_contract::resolved::ToolKind::AgentDelegation
+pub awaken_runtime_contract::resolved::ToolKind::ClientExecuted
 pub awaken_runtime_contract::resolved::ToolKind::Regular
 pub struct awaken_runtime_contract::resolved::CatalogFingerprint(pub alloc::string::String)
 pub struct awaken_runtime_contract::resolved::InferenceEndpoint
@@ -863,6 +893,7 @@ pub awaken_runtime_contract::resolved::ToolDescriptor::kind: awaken_runtime_cont
 pub awaken_runtime_contract::resolved::ToolDescriptor::parameters: serde_json::value::Value
 pub awaken_runtime_contract::resolved::ToolDescriptor::recovery_policy: awaken_runtime_contract::tool::ToolRecoveryPolicy
 impl awaken_runtime_contract::resolved::ToolDescriptor
+pub fn awaken_runtime_contract::resolved::ToolDescriptor::client_executed(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, serde_json::value::Value) -> Self
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::pinned(&str, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, serde_json::value::Value) -> Self
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::with_kind(self, awaken_runtime_contract::resolved::ToolKind) -> Self
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::with_recovery(self, awaken_runtime_contract::tool::ToolRecoveryPolicy) -> Self
@@ -1090,6 +1121,9 @@ pub trait awaken_runtime_contract::tool::ToolExecutorProvider: core::marker::Sen
 pub fn awaken_runtime_contract::tool::ToolExecutorProvider::provide<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::activation::RunActivation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>>, awaken_runtime_contract::tool::ToolExecutorSelectionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_contract::tool::current_tool_operation_id() -> core::option::Option<alloc::string::String>
 pub async fn awaken_runtime_contract::tool::invoke_raw_tool(&dyn awaken_runtime_contract::tool::RawTool, awaken_runtime_contract::llm::ToolCall, core::option::Option<&tokio_util::sync::cancellation_token::CancellationToken>) -> core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>
+pub fn awaken_runtime_contract::tool::parse_tool_args<A: serde_core::de::DeserializeOwned>(serde_json::value::Value) -> core::result::Result<A, awaken_runtime_contract::tool::ToolError>
+pub fn awaken_runtime_contract::tool::parse_tool_args_or_error_output<A: serde_core::de::DeserializeOwned>(&str, serde_json::value::Value) -> core::result::Result<A, awaken_runtime_contract::tool::ToolOutput>
+pub fn awaken_runtime_contract::tool::render_tool_output<O: serde_core::ser::Serialize>(&O) -> core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>
 pub async fn awaken_runtime_contract::tool::with_tool_operation_id<T>(alloc::string::String, impl core::future::future::Future<Output = T>) -> T
 pub mod awaken_runtime_contract::tool_batch
 pub enum awaken_runtime_contract::tool_batch::ToolBatchError
@@ -1402,6 +1436,7 @@ impl core::fmt::Debug for awaken_runtime_contract::capture::CaptureDecision
 pub fn awaken_runtime_contract::capture::CaptureDecision::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct awaken_runtime_contract::CatalogFingerprint(pub alloc::string::String)
 pub struct awaken_runtime_contract::ChatRequest
+pub awaken_runtime_contract::ChatRequest::inference: awaken_runtime_contract::agent_bindings::InferenceOptions
 pub awaken_runtime_contract::ChatRequest::messages: alloc::vec::Vec<awaken_runtime_contract::llm::ChatMessage>
 pub awaken_runtime_contract::ChatRequest::model_binding: awaken_runtime_contract::resolved::ModelBinding
 pub awaken_runtime_contract::ChatRequest::tools: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
@@ -1495,6 +1530,7 @@ pub fn awaken_runtime_contract::ExecutableAgentSnapshotBuilder::build(self) -> a
 pub fn awaken_runtime_contract::ExecutableAgentSnapshotBuilder::context_policy(self, awaken_runtime_contract::resolved::ContextPolicy) -> Self
 pub fn awaken_runtime_contract::ExecutableAgentSnapshotBuilder::delegation_limits(self, awaken_agent_contract::agent::delegation::DelegationLimits) -> Self
 pub fn awaken_runtime_contract::ExecutableAgentSnapshotBuilder::fingerprint(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::ExecutableAgentSnapshotBuilder::inference_options(self, awaken_runtime_contract::agent_bindings::InferenceOptions) -> Self
 pub fn awaken_runtime_contract::ExecutableAgentSnapshotBuilder::instructions(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_contract::ExecutableAgentSnapshotBuilder::max_steps(self, usize) -> Self
 pub fn awaken_runtime_contract::ExecutableAgentSnapshotBuilder::metadata(self, awaken_runtime_contract::snapshot::AgentSnapshotMetadata) -> Self

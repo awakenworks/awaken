@@ -84,7 +84,6 @@ pub fn resolved_tools(
     let mut resolved = resolved_toolsets(&toolset_policies(tools));
     resolved.extend(tools.iter().filter_map(|tool| match tool {
         crate::types::agent::AgentTool::Custom { .. } => Some(tool.clone()),
-        crate::types::agent::AgentTool::CustomReference { .. } => None,
         crate::types::agent::AgentTool::AgentToolset20260401 { .. }
         | crate::types::agent::AgentTool::McpToolset { .. } => None,
     }));

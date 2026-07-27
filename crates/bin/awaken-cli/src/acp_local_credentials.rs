@@ -20,6 +20,10 @@ use awaken_runtime_contract::{
     CredentialObservation, CredentialObservationState, CredentialRef, ResolvedCredentialMaterial,
 };
 
+mod acquisition;
+
+use acquisition::{AcpWrapperInstaller, NpmWrapperInstaller};
+
 #[derive(Clone)]
 struct LocalBinding {
     credential: CredentialRef,
@@ -42,6 +46,11 @@ pub struct PreparedLocalAcp {
     resources: Option<awaken_worker::WorkerResourcePlane>,
 }
 
+fn uses_trusted_local_identity(deployment: &crate::config::ResolvedDeployment) -> bool {
+    deployment.mode == crate::config::OperatingMode::Local
+        && deployment.runtime.sandbox_tier == awaken_runtime_host::SandboxTier::Local
+}
+
 /// Discover local ACP agents once, register their secret-free WorkerLocal
 /// locators idempotently, and compose the one liveness resolver. Server mode
 /// deliberately does none of this.
@@ -49,15 +58,16 @@ pub async fn prepare_local_acp(
     deployment: &mut crate::config::ResolvedDeployment,
     seal_key: &[u8; 32],
 ) -> Result<Option<PreparedLocalAcp>, String> {
-    if deployment.mode != crate::config::OperatingMode::Local {
+    if !uses_trusted_local_identity(deployment) {
         return Ok(None);
     }
     let discovery: Arc<dyn AcpDiscovery> =
         Arc::new(AcpHostDiscovery::local(std::time::Duration::from_secs(3)));
+    let installer: Arc<dyn AcpWrapperInstaller> = Arc::new(NpmWrapperInstaller);
     let stores =
         awaken_control::open_inference_materialization_stores(&deployment.control, seal_key).await;
     let resources = Some(local_worker_resources(deployment, stores.clone()).await?);
-    prepare_local_acp_with(deployment, discovery, stores, resources).await
+    prepare_local_acp_with(deployment, discovery, installer, stores, resources).await
 }
 
 async fn local_worker_resources(
@@ -92,14 +102,45 @@ async fn local_worker_resources(
 async fn prepare_local_acp_with(
     deployment: &mut crate::config::ResolvedDeployment,
     discovery: Arc<dyn AcpDiscovery>,
+    installer: Arc<dyn AcpWrapperInstaller>,
     stores: awaken_control::InferenceMaterializationStores,
     resources: Option<awaken_worker::WorkerResourcePlane>,
 ) -> Result<Option<PreparedLocalAcp>, String> {
-    let observations = discovery.discover_all().await;
+    let mut observations = discovery.discover_all().await;
+    let wrapper_root = deployment.data_dir.join("acp-wrappers");
+    let selected_cli_ids = deployment.runtime.acp.as_ref().map(|profile| {
+        profile
+            .cli_ids()
+            .map(str::to_string)
+            .collect::<BTreeSet<_>>()
+    });
+    let mut launch_argv = BTreeMap::new();
+    for observation in observations.iter_mut().filter(|observation| {
+        observation.detected()
+            && selected_cli_ids
+                .as_ref()
+                .is_none_or(|selected| selected.contains(&observation.cli_id))
+    }) {
+        let cli = acp_cli(&observation.cli_id).expect("discovery returns catalog ids");
+        match installer.resolved_argv(cli, &wrapper_root).await {
+            Ok(Some(argv)) => {
+                launch_argv.insert(observation.cli_id.clone(), argv);
+            }
+            Ok(None) => {}
+            Err(_) => {
+                observation.detection = AcpDetectionState::ProbeFailed;
+                observation.credential_state = Some(CredentialObservationState::ProbeFailed);
+                observation.reason_code = Some("acp_wrapper_install_failed".to_string());
+            }
+        }
+    }
     deployment.apply_local_acp_observations(observations)?;
-    let Some(profile) = deployment.runtime.acp.as_ref() else {
+    let Some(profile) = deployment.runtime.acp.as_mut() else {
         return Ok(None);
     };
+    for (cli_id, argv) in launch_argv {
+        profile.set_launch_argv(&cli_id, argv)?;
+    }
     let workspace =
         awaken_runtime_host::SharedHost::provision_local_workspace_at(&deployment.data_dir);
     for cli_id in profile.cli_ids() {
@@ -387,6 +428,7 @@ impl CredentialMaterialResolver for AcpLocalCredentialResolver {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
     use std::sync::Mutex;
 
     use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo};
@@ -408,6 +450,29 @@ mod tests {
         async fn discover(&self, cli: &AcpCli) -> AcpHostObservation {
             self.calls.lock().unwrap().push(cli.id.to_string());
             self.observations.get(cli.id).cloned().unwrap()
+        }
+    }
+
+    struct FixedInstaller {
+        failures: BTreeSet<String>,
+        calls: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl AcpWrapperInstaller for FixedInstaller {
+        async fn resolved_argv(
+            &self,
+            cli: &AcpCli,
+            _root: &Path,
+        ) -> Result<Option<Vec<String>>, String> {
+            if !cli.acquisition.requires_installation() {
+                return Ok(None);
+            }
+            self.calls.lock().unwrap().push(cli.id.to_string());
+            if self.failures.contains(cli.id) {
+                return Err("fixture install failure".into());
+            }
+            Ok(Some(vec![format!("/fixed/{}-acp", cli.id)]))
         }
     }
 
@@ -653,6 +718,13 @@ mod tests {
             )
             .expect("B2 capability evidence");
         assert!(
+            worker
+                .manifest()
+                .capabilities
+                .contains("worker-local-credentials/v1"),
+            "B2 liveness/use capability is independent of secret material"
+        );
+        assert!(
             !evidence
                 .material_sources
                 .contains(&CredentialMaterialSource::WorkerReference),
@@ -670,12 +742,20 @@ mod tests {
         // P1 detected+available -> route + binding + acp capability
         // P2 repeated startup   -> same binding, no duplicate
         // P3 missing rows       -> diagnostics only, no route or binding
+        // P4 explicitly unselected detected row -> diagnostic only, no acquisition
         let directory = tempfile::tempdir().unwrap();
         let mut deployment = crate::config::local_test_deployment(directory.path().into());
+        deployment.runtime.acp = Some(
+            awaken_runtime_host::AcpWorkerProfile::new(
+                ["codex".to_string()],
+                Some("codex".to_string()),
+            )
+            .unwrap(),
+        );
         let observations = awaken_run_executor_acp::known_acp_clis()
             .iter()
             .map(|cli| {
-                if cli.id == "codex" {
+                if matches!(cli.id, "codex" | "claude") {
                     host(
                         cli.id,
                         AcpDetectionState::Detected,
@@ -691,17 +771,26 @@ mod tests {
             observations,
             calls: Mutex::new(Vec::new()),
         });
+        let installer = Arc::new(FixedInstaller {
+            failures: BTreeSet::new(),
+            calls: Mutex::new(Vec::new()),
+        });
         let credentials = Arc::new(InMemoryCredentialRepo::new());
         let stores = awaken_control::InferenceMaterializationStores {
             credentials: credentials.clone(),
             secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
         };
 
-        let prepared =
-            prepare_local_acp_with(&mut deployment, discovery.clone(), stores.clone(), None)
-                .await
-                .unwrap()
-                .expect("P1");
+        let prepared = prepare_local_acp_with(
+            &mut deployment,
+            discovery.clone(),
+            installer.clone(),
+            stores.clone(),
+            None,
+        )
+        .await
+        .unwrap()
+        .expect("P1");
         let workspace =
             awaken_runtime_host::SharedHost::provision_local_workspace_at(&deployment.data_dir);
         let first = credentials.list(&workspace).await.unwrap();
@@ -726,14 +815,153 @@ mod tests {
             deployment.runtime.disable_local_pool,
             "P1 sole execution pool"
         );
+        assert_eq!(
+            deployment
+                .runtime
+                .acp
+                .as_ref()
+                .and_then(|profile| profile.launch_argv("codex")),
+            Some(&["/fixed/codex-acp".to_string()][..]),
+            "P1 startup acquisition is the launch route"
+        );
 
-        prepare_local_acp_with(&mut deployment, discovery, stores, None)
+        prepare_local_acp_with(&mut deployment, discovery, installer.clone(), stores, None)
             .await
             .unwrap()
             .expect("P2");
         let repeated = credentials.list(&workspace).await.unwrap();
         assert_eq!(repeated.len(), 1, "P2");
         assert_eq!(repeated[0].id, first[0].id, "P2");
+        assert_eq!(&*installer.calls.lock().unwrap(), &["codex", "codex"], "P4");
+        assert!(
+            deployment
+                .local_acp_observations
+                .iter()
+                .any(|row| row.cli_id == "claude" && row.detected()),
+            "P4 diagnostics retain the unselected detected row"
+        );
+    }
+
+    #[test]
+    fn trusted_local_identity_is_composed_only_for_the_workdir_tier() {
+        // Cause graph: local operating mode + Workdir process identity -> the
+        // user's CLI login is reachable. Namespace/container break that identity
+        // edge and therefore retain the existing managed sandbox worker path.
+        //
+        // Decision table:
+        // I1 Local + Workdir   -> trusted local Worker
+        // I2 Local + Namespace-> no host identity composition
+        // I3 Local + Docker   -> no host identity composition
+        // I4 Server + Workdir -> no personal identity composition
+        let directory = tempfile::tempdir().unwrap();
+        let mut deployment = crate::config::local_test_deployment(directory.path().into());
+        deployment.runtime.sandbox_tier = awaken_runtime_host::SandboxTier::Local;
+        assert!(uses_trusted_local_identity(&deployment), "I1");
+
+        deployment.runtime.sandbox_tier = awaken_runtime_host::SandboxTier::Namespace;
+        assert!(!uses_trusted_local_identity(&deployment), "I2");
+        deployment.runtime.sandbox_tier = awaken_runtime_host::SandboxTier::Docker;
+        assert!(!uses_trusted_local_identity(&deployment), "I3");
+
+        deployment.runtime.sandbox_tier = awaken_runtime_host::SandboxTier::Local;
+        deployment.mode = crate::config::OperatingMode::Server;
+        assert!(!uses_trusted_local_identity(&deployment), "I4");
+    }
+
+    #[tokio::test]
+    async fn installed_wrapper_is_reused_without_running_the_installer() {
+        // Cause graph: exact wrapper already exists -> canonical absolute argv.
+        // Both first lookup and restart take the filesystem branch; a missing
+        // npm binary or network therefore cannot affect either lookup.
+        //
+        // Decision table:
+        // R1 existing wrapper, first lookup -> absolute argv
+        // R2 existing wrapper, restart      -> identical argv, no subprocess
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory
+            .path()
+            .join("codex")
+            .join("node_modules/.bin/codex-acp");
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::write(&executable, "fixture").unwrap();
+
+        let cli = acp_cli("codex").unwrap();
+        let first = NpmWrapperInstaller
+            .resolved_argv(cli, directory.path())
+            .await
+            .expect("R1")
+            .expect("R1 wrapper argv");
+        let restarted = NpmWrapperInstaller
+            .resolved_argv(cli, directory.path())
+            .await
+            .expect("R2")
+            .expect("R2 wrapper argv");
+        assert_eq!(first, restarted, "R2");
+        assert_eq!(
+            first,
+            vec![executable.canonicalize().unwrap().to_string_lossy()]
+        );
+    }
+
+    #[tokio::test]
+    async fn wrapper_install_failure_removes_the_route_and_records_diagnostics() {
+        // Cause graph: detected wrapper-backed CLI + failed startup acquisition
+        // -> ProbeFailed observation -> no profile, binding, or ACP Worker. This
+        // is fail-closed and never falls back to `npx` at run time.
+        //
+        // Decision table:
+        // F1 install succeeds -> route/binding (covered by startup test above)
+        // F2 install fails    -> diagnostic only, no executable route
+        let directory = tempfile::tempdir().unwrap();
+        let mut deployment = crate::config::local_test_deployment(directory.path().into());
+        let observations = awaken_run_executor_acp::known_acp_clis()
+            .iter()
+            .map(|cli| {
+                let observation = if cli.id == "codex" {
+                    host(
+                        cli.id,
+                        AcpDetectionState::Detected,
+                        Some(CredentialObservationState::Available),
+                    )
+                } else {
+                    host(cli.id, AcpDetectionState::Missing, None)
+                };
+                (cli.id.to_string(), observation)
+            })
+            .collect();
+        let discovery: Arc<dyn AcpDiscovery> = Arc::new(FixedDiscovery {
+            observations,
+            calls: Mutex::new(Vec::new()),
+        });
+        let installer: Arc<dyn AcpWrapperInstaller> = Arc::new(FixedInstaller {
+            failures: BTreeSet::from(["codex".to_string()]),
+            calls: Mutex::new(Vec::new()),
+        });
+        let credentials = Arc::new(InMemoryCredentialRepo::new());
+        let stores = awaken_control::InferenceMaterializationStores {
+            credentials: credentials.clone(),
+            secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
+        };
+
+        let prepared = prepare_local_acp_with(&mut deployment, discovery, installer, stores, None)
+            .await
+            .expect("F2 startup remains diagnosable");
+        assert!(prepared.is_none(), "F2");
+        assert!(deployment.runtime.acp.is_none(), "F2");
+        let codex = deployment
+            .local_acp_observations
+            .iter()
+            .find(|observation| observation.cli_id == "codex")
+            .expect("F2 diagnostic row");
+        assert_eq!(codex.detection, AcpDetectionState::ProbeFailed, "F2");
+        assert_eq!(
+            codex.reason_code.as_deref(),
+            Some("acp_wrapper_install_failed"),
+            "F2"
+        );
+        let workspace =
+            awaken_runtime_host::SharedHost::provision_local_workspace_at(&deployment.data_dir);
+        assert!(credentials.list(&workspace).await.unwrap().is_empty(), "F2");
     }
 
     #[test]

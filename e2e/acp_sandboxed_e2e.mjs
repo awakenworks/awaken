@@ -44,7 +44,7 @@ async function send(client, sessionId, text) {
 
 async function acpReply(client, environmentId, prompt) {
   const session = await client.beta.sessions.create({
-    agent: 'assistant', metadata: { 'awaken.runtime': 'acp:claude' },
+    agent: 'acp-agent',
     environment_id: environmentId,
     betas: BETAS,
   });

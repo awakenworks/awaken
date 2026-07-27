@@ -22,7 +22,9 @@ pub use awaken_run_ingress_contract::RegistryMutation
 pub use awaken_run_ingress_contract::SESSION_RESOURCES_CAPABILITY
 pub use awaken_run_ingress_contract::WORKER_LOCAL_CREDENTIALS_CAPABILITY
 pub use awaken_run_ingress_contract::WorkerAssignment
+pub use awaken_run_ingress_contract::WorkerCredentialObservation
 pub use awaken_run_ingress_contract::WorkerCredentialRevision
+pub use awaken_run_ingress_contract::WorkerCredentialState
 pub use awaken_run_ingress_contract::WorkerDirectory
 pub use awaken_run_ingress_contract::WorkerHeartbeat
 pub use awaken_run_ingress_contract::WorkerIdentity

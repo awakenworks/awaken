@@ -190,7 +190,18 @@ pub fn local_managed_state(
     host: Arc<SharedHost>,
     catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
 ) -> Arc<ManagedState> {
-    local_managed_state_over(host, catalog, None)
+    local_managed_state_over(host, catalog, None, None)
+}
+
+/// [`local_managed_state`] with one immutable Agent projection source. Embedded
+/// scenario hosts use this to exercise publication-owned routing without mounting
+/// a second authoring plane.
+pub fn local_managed_state_with_agent_source(
+    host: Arc<SharedHost>,
+    catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
+    agent_source: Arc<dyn awaken_protocol_managed::AgentConfigSource>,
+) -> Arc<ManagedState> {
+    local_managed_state_over(host, catalog, None, Some(agent_source))
 }
 
 /// [`local_managed_state`] with the Environment registry/work queue installed on
@@ -202,13 +213,25 @@ pub fn local_managed_state_with_environments(
     catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
     environments: Arc<awaken_protocol_managed::EnvironmentState>,
 ) -> Arc<ManagedState> {
-    local_managed_state_over(host, catalog, Some(environments))
+    local_managed_state_over(host, catalog, Some(environments), None)
+}
+
+/// Scenario/local composition variant that installs the same Agent projection
+/// port used by production before the Managed aggregate starts its supervisors.
+pub fn local_managed_state_with_environments_and_agent_source(
+    host: Arc<SharedHost>,
+    catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
+    environments: Arc<awaken_protocol_managed::EnvironmentState>,
+    agent_source: Arc<dyn awaken_protocol_managed::AgentConfigSource>,
+) -> Arc<ManagedState> {
+    local_managed_state_over(host, catalog, Some(environments), Some(agent_source))
 }
 
 fn local_managed_state_over(
     host: Arc<SharedHost>,
     catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
     environments: Option<Arc<awaken_protocol_managed::EnvironmentState>>,
+    agent_source: Option<Arc<dyn awaken_protocol_managed::AgentConfigSource>>,
 ) -> Arc<ManagedState> {
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
@@ -241,10 +264,15 @@ fn local_managed_state_over(
         None => managed,
     };
     let managed = managed.with_vaults(vaults).with_resource_catalog(catalog);
-    let managed = Arc::new(match environments {
+    let managed = match environments {
         Some(environments) => managed.with_environments(environments),
         None => managed,
-    });
+    };
+    let managed = match agent_source {
+        Some(source) => managed.with_config_source(source),
+        None => managed,
+    };
+    let managed = Arc::new(managed);
     let _ = managed.spawn_realization_lease_supervisor();
     managed
 }

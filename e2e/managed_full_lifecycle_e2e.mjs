@@ -117,7 +117,11 @@ async function main() {
       // lifecycle tests execution, so it opts into the tool explicitly.
       const agent = await client.beta.agents.create({
         name: 'assistant',
-        model: 'claude-opus-4-8',
+        // The scenario composition publishes one exact in-process model. Naming
+        // that model keeps this Agent executable; an arbitrary provider model
+        // would correctly remain an unresolved draft and could not contribute
+        // an execution policy to a Session.
+        model: 'management',
         system: 'be helpful',
         mcp_servers: [{ name: 'calc', type: 'url', url: fixture.url }],
         tools: [calcToolset()],
@@ -126,6 +130,15 @@ async function main() {
       });
       assert.ok(agent.id.startsWith('agent_'), `agent id: ${agent.id}`);
       assert.equal(agent.version, 1);
+      assert.deepEqual(agent.tools, [{
+        type: 'mcp_toolset',
+        mcp_server_name: 'calc',
+        configs: [],
+        default_config: {
+          enabled: true,
+          permission_policy: { type: 'always_allow' },
+        },
+      }], `created Agent retains its typed MCP policy: ${JSON.stringify(agent.tools)}`);
       pass(`agent created in the registry: ${agent.id} (v${agent.version})`);
 
       // ── 2. CREATE A SESSION THAT ASSOCIATES EVERYTHING ─────────────────────
@@ -137,7 +150,6 @@ async function main() {
           tools: [calcToolset()],
         }, // associate the session with the registry agent and explicit MCP policy
         environment_id: env.id,
-        mcp_servers: [{ name: 'calc', type: 'url', url: fixture.url }],
         vault_ids: [vault.id],
         resources: [
           { type: 'file', file_id: file.id, mount_path: '/notes.txt' },
@@ -152,6 +164,11 @@ async function main() {
       });
       assert.equal(session.type, 'session');
       assert.equal(session.agent.id, agent.id, 'session is associated with the created agent');
+      assert.deepEqual(
+        session.agent.tools,
+        agent.tools,
+        `session freezes the Agent tool policy: ${JSON.stringify(session.agent.tools)}`,
+      );
       assert.equal(session.environment_id, env.id, 'session is pinned to the environment');
       assert.ok((session.vault_ids ?? []).includes(vault.id), 'session carries the vault binding');
       pass(`session created + associated: ${session.id}`);
@@ -178,6 +195,7 @@ async function main() {
       assert.ok(toolUse, `an agent.mcp_tool_use event (types: ${events.map((e) => e.type)})`);
       assert.equal(toolUse.name, 'mcp__calc__add');
       const toolResult = events.find((e) => e.type === 'agent.mcp_tool_result');
+      assert.ok(toolResult, `an agent.mcp_tool_result event: ${JSON.stringify(events)}`);
       assert.equal(toolResult.content[0].text, '5');
       assert.ok(agentMessages(events).some((m) => m.includes('result: 5')), 'final message reports result: 5');
       pass('run turn 1: add 2 3 -> mcp__calc__add -> tool_result 5 -> "result: 5"');

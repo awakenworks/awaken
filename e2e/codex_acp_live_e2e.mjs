@@ -47,8 +47,7 @@ async function events(sessionId) {
 }
 
 const session = await client.beta.sessions.create({
-  agent: 'assistant',
-  metadata: { 'awaken.runtime': 'acp:codex' },
+  agent: process.env.AWAKEN_ACP_AGENT ?? 'codex',
   environment_id: 'env_local',
   betas: BETAS,
 });

@@ -1,21 +1,17 @@
 //! Systematic tenancy-isolation verification (ADR-0051), exercised from many
-//! angles over the REAL assembled management router. Each test is one angle; the
-//! module is the "check from 10+ different angles" matrix the goal asks for.
+//! angles over the REAL assembled management router. Each test is one angle.
 //!
 //! Angles covered here (management plane, driven end-to-end):
 //!  1. Agents registry: cross-tenant read is 404 (not 403 — no existence leak).
 //!  2. Agents registry: cross-tenant write (archive) is 404.
 //!  3. Agents registry: same-tenant read/write succeed.
 //!  4. Agents registry: `list` shows only the caller's agents.
-//!  5. Inference profiles: cross-tenant read is 404.
-//!  6. Inference profiles: cross-tenant author (overwrite) is 404.
-//!  7. MCP server defs: cross-tenant read is 404.
-//!  8. D3 path addressing: `/v1/workspaces/{ws}/…` routes to the flat handler.
-//!  9. D3 vs flat: a flat request resolves the seeded default scope.
-//! 10. Catalog: providers are SHARED across workspaces (org/deployment-level, the
+//!  5. D3 path addressing: `/v1/workspaces/{ws}/…` routes to the flat handler.
+//!  6. D3 vs flat: a flat request resolves the seeded default scope.
+//!  7. Catalog: providers are SHARED across workspaces (org/deployment-level, the
 //!     product decision) — NOT fenced per workspace.
-//! 11. Same id under two workspaces is independent (no collision leak).
-//! 12. Bare (unscoped) request cannot see a workspace-scoped agent.
+//!  8. Same id under two workspaces is independent (no collision leak).
+//!  9. Bare (unscoped) request cannot see a workspace-scoped agent.
 //!
 //! Session-axis isolation (data plane) is covered in
 //! `awaken-protocol-managed/tests/adapter.rs`; ingress `resolve_scope` and the
@@ -139,41 +135,7 @@ async fn angle_bare_request_cannot_see_a_scoped_agent() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
-// --- Angles 5-7: mcp / inference-profile config resources ------------------
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn angle_inference_profile_is_tenant_fenced() {
-    let app = build_management_router().await;
-    let body = json!({ "model_id": "kimi", "credential_binding": { "type": "none" } });
-    let (status, _) = call(
-        &app,
-        "PUT",
-        "/v1/workspaces/ws_a/config/inference-profiles/p1",
-        Some(body.clone()),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    // ws_b cannot read it…
-    let (status, _) = call(
-        &app,
-        "GET",
-        "/v1/workspaces/ws_b/config/inference-profiles/p1",
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    // …nor overwrite it.
-    let (status, _) = call(
-        &app,
-        "PUT",
-        "/v1/workspaces/ws_b/config/inference-profiles/p1",
-        Some(body),
-    )
-    .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-}
-
-// --- Angles 8-9: D3 path addressing ----------------------------------------
+// --- Angles 5-6: D3 path addressing ----------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn angle_d3_path_routes_to_the_flat_handler() {

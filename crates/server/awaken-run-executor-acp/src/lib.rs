@@ -297,17 +297,6 @@ fn notify(sink: Option<LaunchSink<'_>>, event: AcpLaunchEvent) {
     }
 }
 
-/// Whether the run's ACP backend installs dynamically on launch (an `npx` adapter),
-/// so the executor can surface an `Installing` state before the process is usable.
-fn dynamic_install_backend(activation: &RunActivation) -> bool {
-    match Backend::from_ref(&activation.snapshot.resolved_spec.model_binding.backend_ref) {
-        Backend::Acp { cli } => {
-            acp_cli(&cli).is_some_and(|profile| profile.acquisition.is_dynamic_install())
-        }
-        _ => false,
-    }
-}
-
 /// The prompt for this turn: the concatenated text of the activation's input.
 fn prompt_of(input: &[Message]) -> String {
     input
@@ -529,17 +518,10 @@ impl AcpRunExecutor {
         context: RuntimeRunContext,
         permission_resume: Option<PermissionResume>,
     ) -> Result<RunState> {
-        // Lifecycle bring-up (observed for UI progress): an npx-wrapped adapter may
-        // dynamically install on a cold cache (the slow step) before it launches.
-        // Scope events to the thread so a per-session UI channel routes them.
+        // Wrapper acquisition completed during product startup. Per-run lifecycle
+        // begins at launching and therefore never performs hidden network/package I/O.
         let scope = activation.thread_id.0.clone();
         let launch_sink = self.launch_sink(&scope);
-        if dynamic_install_backend(&activation) {
-            notify(
-                launch_sink,
-                AcpLaunchEvent::stage(AcpLaunchStage::Installing),
-            );
-        }
         notify(
             launch_sink,
             AcpLaunchEvent::stage(AcpLaunchStage::Launching),

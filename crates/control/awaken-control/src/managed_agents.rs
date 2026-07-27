@@ -133,7 +133,6 @@ fn client_tools(tools: &[AgentTool]) -> Vec<ToolDescriptor> {
                 description,
                 serde_json::to_value(input_schema).expect("typed custom-tool schema serializes"),
             )),
-            AgentTool::CustomReference { .. } => None,
             AgentTool::AgentToolset20260401 { .. } | AgentTool::McpToolset { .. } => None,
         })
         .collect()
@@ -327,21 +326,18 @@ fn model_config(model: String, inference: InferenceOptions) -> ModelConfig {
     }
 }
 
-fn wire_tools(
-    tool_ids: &[String],
-    toolsets: &[ToolsetPolicy],
-    client_tools: &[ToolDescriptor],
-) -> Vec<AgentTool> {
-    // Cause graph / decision table: config tool id -> serialization-only custom
-    // reference; client tool descriptor -> complete custom schema; toolset ->
-    // typed toolset. These sources coexist and must never overwrite each other.
-    let mut tools = tool_ids
-        .iter()
-        .map(|name| AgentTool::CustomReference { name: name.clone() })
-        .collect::<Vec<_>>();
-    tools.extend(awaken_protocol_managed::project::resolved_toolsets(
-        toolsets,
-    ));
+fn wire_tools(toolsets: &[ToolsetPolicy], client_tools: &[ToolDescriptor]) -> Vec<AgentTool> {
+    // Cause graph: server tool id -> runtime-only capability (no Managed wire
+    // representation); toolset -> typed server capability; client descriptor ->
+    // complete custom definition. Projecting a server id as `custom` would change
+    // execution ownership and create a second, incomplete representation.
+    //
+    // Decision table:
+    // | domain source          | Managed `tools` projection |
+    // | server `tool_ids`      | omitted                    |
+    // | typed toolset          | typed toolset              |
+    // | client tool descriptor | complete `custom`          |
+    let mut tools = awaken_protocol_managed::project::resolved_toolsets(toolsets);
     tools.extend(client_tools.iter().map(|tool| {
         AgentTool::Custom {
             name: tool.id.clone(),
@@ -361,7 +357,7 @@ fn project(revision: AgentConfigRevision) -> Agent {
         .resolved()
         .map(|binding| binding.model_ref.clone())
         .unwrap_or_default();
-    let tools = wire_tools(&config.tool_ids, &config.toolsets, &config.client_tools);
+    let tools = wire_tools(&config.toolsets, &config.client_tools);
     Agent {
         id: id.clone(),
         object_type: "agent",
@@ -753,6 +749,28 @@ mod tests {
             Arc::new(SqliteConfigStore::open(path).expect("config store")),
             Arc::new(StaticToolCatalog(Vec::new())),
         )
+    }
+
+    #[test]
+    fn server_tool_id_is_not_retyped_as_a_managed_custom_tool() {
+        // Cause graph: config-only server tool id -> executable publication;
+        // Managed read projection has no individual server-tool wire variant, so
+        // it omits the id. Only a client-owned descriptor may become `custom`.
+        //
+        // Decision table:
+        // | server id | toolset | client descriptor | projected tools |
+        // | bash      | no      | no                | empty           |
+        let mut params = create_params("server-tool");
+        params.mcp_servers.clear();
+        params.tools.clear();
+        let mut config = config_from_create("agent_server".into(), params).unwrap();
+        config.tool_ids.push("bash".into());
+
+        let projected = project(AgentConfigRevision {
+            config,
+            revision: 1,
+        });
+        assert!(projected.tools.is_empty());
     }
 
     #[tokio::test]

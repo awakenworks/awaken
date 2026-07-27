@@ -144,6 +144,14 @@ async function main() {
         url: fixture.url,
         credential: { id: credId, revision: 1 },
       }],
+      tools: [{
+        type: 'mcp_toolset',
+        mcp_server_name: 'calc',
+        default_config: {
+          enabled: true,
+          permission_policy: { type: 'always_allow' },
+        },
+      }],
     });
     assert.equal(r.status, 200);
     r = await req(base, 'POST', '/v1/config/agents/calc-agent/publish');

@@ -243,7 +243,8 @@ impl CatalogModelPublicationResolver {
             offering.status == awaken_model_catalog::OfferingStatus::Active
                 && offering.model_id == binding.model_ref
                 && offering.provider_id.as_str() == binding.provider_identity_ref
-                && binding.backend_ref == "genai"
+                && (binding.backend_ref == "genai"
+                    || matches!(Backend::from_ref(&binding.backend_ref), Backend::Acp { .. }))
         })
     }
 
@@ -1270,6 +1271,71 @@ mod tests {
             .unwrap();
         assert_eq!(resolved.primary.binding, primary);
         assert_eq!(resolved.candidates[0].binding, fallback);
+    }
+
+    #[tokio::test]
+    async fn provider_and_backend_ownership_remain_mutually_exclusive_on_acp() {
+        // Cause graph: an exact provider/model match selects Provider provisioning
+        // and preserves the authored ACP executor; without that provider match the
+        // same ACP backend resolves only through its WorkerLocal identity.
+        //
+        // Decision table:
+        // P1 provider + catalog model + ACP -> Provider/Vault on exact ACP backend
+        // P2 WorkerLocal id + exact model  -> BackendOwned/CLI login
+        // P3 bare model                    -> canonical native provider binding
+        let resolver = resolver(&["primary"]).await;
+        let managed = resolver
+            .resolve_models(
+                &ScopeId::from("workspace-a"),
+                &ModelSelection::Pinned(ModelBinding::new("openai", "primary", "acp:codex")),
+                &[],
+            )
+            .await
+            .expect("P1");
+        assert_eq!(managed.primary.binding.backend_ref, "acp:codex", "P1");
+        assert!(
+            matches!(
+                managed.primary.provisioning,
+                ModelProvisioning::Provider { .. }
+            ),
+            "P1"
+        );
+
+        let credentials = Arc::new(InMemoryCredentialRepo::new());
+        let local = ensure_worker_local(
+            credentials.as_ref(),
+            "workspace-a",
+            WorkerLocalBinding::new("acp:codex", "default"),
+            None,
+        )
+        .await
+        .unwrap();
+        let backend_owned =
+            CatalogModelPublicationResolver::new(catalog(&["primary"]), credentials)
+                .resolve_models(
+                    &ScopeId::from("workspace-a"),
+                    &ModelSelection::Pinned(ModelBinding::new(local.id.0, "primary", "acp:codex")),
+                    &[],
+                )
+                .await
+                .expect("P2");
+        assert!(
+            matches!(
+                backend_owned.primary.provisioning,
+                ModelProvisioning::BackendOwned { .. }
+            ),
+            "P2"
+        );
+
+        let native = resolver
+            .resolve_models(
+                &ScopeId::from("workspace-a"),
+                &ModelSelection::Pinned(ModelBinding::new("", "primary", "")),
+                &[],
+            )
+            .await
+            .expect("P3");
+        assert_eq!(native.primary.binding.backend_ref, "genai", "P3");
     }
 
     #[tokio::test]

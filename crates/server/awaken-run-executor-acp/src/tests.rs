@@ -472,10 +472,9 @@ impl LaunchObserver for RecordingObserver {
 }
 
 #[tokio::test]
-async fn observer_sees_install_launch_and_ready_for_a_dynamic_install_backend() {
-    // The fixture activation's backend_ref is `acp:claude` (an npx adapter), so the
-    // executor surfaces an Installing state before launch, then Ready once the
-    // (newline-fixture) agent is live.
+async fn observer_starts_at_launch_after_startup_acquisition() {
+    // Wrapper acquisition belongs to product startup. A run observes only launch
+    // and protocol readiness, so no network/package phase can occur per turn.
     let observer = Arc::new(RecordingObserver::default());
     let e = AcpRunExecutor::new(Arc::new(ScriptedSource {
         frames: vec![
@@ -493,12 +492,8 @@ async fn observer_sees_install_launch_and_ready_for_a_dynamic_install_backend() 
     let stages = observer.stages.lock().unwrap().clone();
     assert_eq!(
         stages,
-        vec![
-            AcpLaunchStage::Installing,
-            AcpLaunchStage::Launching,
-            AcpLaunchStage::Ready,
-        ],
-        "install → launch → ready, in order"
+        vec![AcpLaunchStage::Launching, AcpLaunchStage::Ready],
+        "launch → ready, in order"
     );
 }
 
@@ -507,7 +502,7 @@ async fn observer_sees_failed_when_the_launch_faults() {
     let observer = Arc::new(RecordingObserver::default());
     let e = AcpRunExecutor::new(Arc::new(ScriptedSource {
         frames: vec![],
-        open_error: Some("spawn npx: No such file or directory".into()),
+        open_error: Some("spawn claude-agent-acp: No such file or directory".into()),
     }))
     .with_launch_observer(observer.clone());
 
@@ -522,11 +517,7 @@ async fn observer_sees_failed_when_the_launch_faults() {
     let stages = observer.stages.lock().unwrap().clone();
     assert_eq!(
         stages,
-        vec![
-            AcpLaunchStage::Installing,
-            AcpLaunchStage::Launching,
-            AcpLaunchStage::Failed,
-        ],
+        vec![AcpLaunchStage::Launching, AcpLaunchStage::Failed],
         "a spawn fault surfaces a Failed state"
     );
 }
@@ -1745,10 +1736,7 @@ fn projecting_source_plans_launch_from_resolved_model_and_host_env() {
         .plan(&activation(), &RuntimeRunContext::new())
         .expect("plan");
     let env = |k: &str| projected_env(&launch, k);
-    assert_eq!(
-        launch.argv,
-        vec!["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.44"]
-    );
+    assert_eq!(launch.argv, vec!["claude-agent-acp"]);
     assert_eq!(env("ANTHROPIC_MODEL"), Some("kimi-k2"));
     assert_eq!(
         env("ANTHROPIC_BASE_URL"),

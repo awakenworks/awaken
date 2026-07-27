@@ -401,6 +401,7 @@ impl WorkerNodeBuilder {
                     .credential_materializer
                     .as_ref()
                     .map(CredentialMaterializerSupport::from),
+                worker_local_credentials: credential_observation_resolver.is_some(),
                 sandbox_override: self.session_container_provider.as_ref().map(|installed| {
                     (
                         installed.provider.sandbox_capabilities(),

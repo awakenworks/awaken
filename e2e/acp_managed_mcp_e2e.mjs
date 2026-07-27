@@ -29,6 +29,11 @@ async function main() {
   try {
     await withServer('acp-managed-mcp', 38196, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
+      const acpAgent = await client.beta.agents.create({
+        name: 'managed ACP fixture',
+        model: 'acp-managed-mcp',
+        betas: BETAS,
+      });
 
       // A vault + mcp_oauth credential holding the MCP server's token (write-only).
       const vault = await client.beta.vaults.create({ display_name: 'ACP MCP vault', betas: BETAS });
@@ -53,8 +58,7 @@ async function main() {
       // this composition intentionally installs the Workdir provider.
       await assert.rejects(
         client.beta.sessions.create({
-          agent: 'assistant',
-          metadata: { 'awaken.runtime': 'acp:fake-mcp' },
+          agent: acpAgent.id,
           mcp_servers: [{ name: 'calc', type: 'url', url: fixture.url }],
           vault_ids: [vault.id],
           betas: BETAS,
@@ -65,8 +69,7 @@ async function main() {
       );
 
       const anonymous = await client.beta.sessions.create({
-        agent: 'assistant',
-        metadata: { 'awaken.runtime': 'acp:fake-mcp' },
+        agent: acpAgent.id,
         mcp_servers: [{ name: 'calc', type: 'url', url: fixture.url }],
         betas: BETAS,
       });
@@ -92,13 +95,17 @@ async function main() {
     // acp_real_mcp_kimi_e2e.mjs when provider quota is available.
     await withServer('acp-real-mcp', 38199, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
+      const acpAgent = await client.beta.agents.create({
+        name: 'real ACP fixture',
+        model: process.env.ANTHROPIC_MODEL || 'acp-real-mcp',
+        betas: BETAS,
+      });
       const session = await client.beta.sessions.create({
-        agent: 'assistant',
-        metadata: { 'awaken.runtime': 'acp:claude' },
+        agent: acpAgent.id,
         betas: BETAS,
       });
       assert.equal(session.status, 'idle');
-      assert.equal(session.agent.id, 'assistant');
+      assert.equal(session.agent.id, acpAgent.id);
       pass('real ACP factory composes behind the managed API without a trusted-inline MCP path');
     });
 

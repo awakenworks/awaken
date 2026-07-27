@@ -1112,7 +1112,7 @@ fn awaken_cloud_authz(
 /// config plane) is still in play. Keeps the ACP executor's crate out of this module.
 pub async fn build_management_router_with_host_customizer(
     model: Arc<dyn LlmExecutor>,
-    model_ref: impl Into<String>,
+    binding: awaken_runtime_contract::resolved::ModelBinding,
     customize_host: impl FnOnce(SharedHost) -> SharedHost + Send + 'static,
 ) -> Router {
     management_router_over(
@@ -1121,9 +1121,7 @@ pub async fn build_management_router_with_host_customizer(
         None,
         ManagementModelComposition::Host {
             executor: model,
-            binding: awaken_runtime_contract::resolved::ModelBinding::new(
-                "default", model_ref, "default",
-            ),
+            binding,
         },
         AssemblyOverrides::default(),
         Some(Box::new(customize_host)),
@@ -1141,7 +1139,7 @@ pub async fn build_durable_management_router_with_host_customizer(
     dir: &std::path::Path,
     key: &[u8; 32],
     model: Arc<dyn LlmExecutor>,
-    model_ref: impl Into<String>,
+    binding: awaken_runtime_contract::resolved::ModelBinding,
     customize_host: impl FnOnce(SharedHost) -> SharedHost + Send + 'static,
 ) -> Router {
     management_router_over(
@@ -1152,9 +1150,7 @@ pub async fn build_durable_management_router_with_host_customizer(
         None,
         ManagementModelComposition::Host {
             executor: model,
-            binding: awaken_runtime_contract::resolved::ModelBinding::new(
-                "default", model_ref, "default",
-            ),
+            binding,
         },
         AssemblyOverrides::default(),
         Some(Box::new(customize_host)),

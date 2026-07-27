@@ -343,37 +343,32 @@ and never enter the snapshot. The runtime still routes via `Backend::from_ref`
 and never learns `AgentKind`. Secrets exist only from `materialize` to injection
 (model client / ACP `model_delivery.key` env last / A2A transport), per ADR-0043.
 
-### D7 — CLI provisioning: the launch command already encodes it; add only the missing pre-launch step
+### D7 — CLI acquisition: startup resolves one executable route; runs never install
 
-ACP is the only kind that must make a third-party executable *present* before
-launch (Native is compiled in; A2A runs remotely), so a provisioning concern is
-genuinely ACP-specific. But it does **not** warrant a 3-variant enum. "Self-
-installing (npx) vs prebaked (direct binary)" is already the `command`/`args` on
-the `AcpCli` row — exactly what `is_dynamic_install(cli)` derives
-(`command == "npx"`, `acp_cli.rs:419`). The only irreducibly-new concept is a
-pre-launch install step, so add just that:
+ACP is the only kind that may need to acquire a third-party executable (Native
+is compiled in; A2A runs remotely), so acquisition remains ACP-specific. The
+canonical `AcpCli` row declares one `AcpAcquisition`: either a direct executable
+and arguments, or an exact npm package plus its stable bin name. There is no
+second provisioning catalog and no per-Agent installation policy.
 
-```rust
-// AcpCli row — ADD one field, default empty (= today's behavior):
-pub bootstrap: Vec<BootstrapStep>,   // idempotent pre-launch install (npm i -g, pip, …)
-// OnDemand  = command is npx (self-installs; is_dynamic_install stays true)
-// Prebaked  = direct-binary command + empty bootstrap (nothing to run)
-// Bootstrap = non-empty steps run before spawn, surfaced as the Installing stage
-```
+For a local installation, product startup discovers the external CLI first and
+then installs a required pinned wrapper once below the Awaken data directory.
+It stores the canonical absolute wrapper argv in the ephemeral
+`AcpWorkerProfile`, which already owns the exact routes that Worker advertises.
+The immutable catalog continues to own model, MCP, environment, credential and
+probe policy; the resolved argv is only acquisition evidence.
 
-No `AcpProvisioning` enum: OnDemand/Prebaked are *consequences* of which command
-the row carries, not a stored strategy — encoding them twice is the redundancy
-this ADR keeps cutting. The Installing UI stage fires when the command is npx OR
-`bootstrap` is non-empty — one derived predicate replacing the `command == "npx"`
-heuristic. Provisioning is a property of the `AcpCli` row (worker/deployment-
-scoped), never of `AcpSpec`: two agents on one worker cannot install the same CLI
-two ways. Container tier = deployment bakes it (direct command, empty bootstrap),
-outside the process. Built-in rows stay the compile-time default; an optional
-store-backed `AcpAdapterProfile` overrides command/args/`speaks_dialect`/version-
-pin/env/`bootstrap` and admits custom CLIs (YAGNI-deferred).
+Every run launches that resolved executable directly. It never invokes
+`npx -y`, never fetches a package, and has no `Installing` lifecycle state. A
+restart reuses the existing wrapper without requiring npm or network access.
+Acquisition failure projects `ProbeFailed` diagnostics and prevents route and
+WorkerLocal-binding registration. It never falls back to a floating package or
+another adapter. Container/remote Workers must bake or otherwise provide their
+declared executable before registration; local host acquisition is not an
+isolation mechanism.
 
 **"Provisioning" is THREE concerns, and a sandbox sharpens the middle one.**
-(1) *Acquire* = fetch a **third-party** binary (ACP-only; npx/`bootstrap`).
+(1) *Acquire* = fetch a **third-party** binary (ACP-only, at product startup).
 (2) *Materialize-into-isolation* = make the needed executable + runtime deps
 **present inside the sandbox rootfs** — applies to **anything run under a sandbox
 tier, regardless of whose binary**. (3) *Bring-up* = spawn + get a duplex channel.
@@ -385,22 +380,17 @@ already up, just dial); ACP needs acquire + bring-up; Hand needs only bring-up
 **But under a sandbox tier, concern (2) is unavoidable even for our own binary.**
 A fresh bwrap namespace / container rootfs contains nothing unless bound-in or
 baked-in: the bwrap tier read-only-binds the host userland (`/usr,/bin,/lib,…`,
-`namespace.rs:111`) so host-installed interpreters/CLIs appear, plus the npx cache
-via sandbox-owned bind paths; the container tier presents only what the image baked. So a
+`namespace.rs:111`) so host-installed interpreters/CLIs appear; the container tier presents only what the image baked. So a
 **sandboxed** ACP CLI must be host-installed+bound or image-baked, and a
 **sandboxed** Hand — our binary — must likewise be bound/baked. Materialization is
 realized by the tier (bind vs image), not by config.
 
-**Fail-closed rule: acquire-on-demand ⊥ deny-egress.** A deny-egress sandbox
-launches under `--unshare-net` (`namespace.rs:105`) — npx cannot fetch. So the
-`OnDemand` (npx first-run) form is invalid inside a deny-egress sandbox unless the
-package is already in a bound-in warm cache; the launch must fail closed with a
-clear "prebake or warm-cache this CLI" error, never hang on an unreachable
-network. This makes `Prebaked` the default posture for deny-egress isolation
-(the common secure case), and is *why* the container/prod recommendation is
-Prebaked. `bootstrap` still lives on the `AcpCli` row (only ACP acquires a
-third-party binary); materialization and the egress rule live in the sandbox
-tier / channel source, shared by every sandboxed kind.
+**Fail-closed rule: acquisition never occurs in a run or sandbox.** A
+deny-egress sandbox launches under `--unshare-net` (`namespace.rs:105`), so its
+executable must already be materialized by the selected tier. A missing
+executable fails before launch with a clear diagnostic; no runtime network
+fallback exists. Materialization and egress enforcement live in the sandbox
+tier/channel source, shared by every sandboxed kind.
 
 Bring-up's **substrate** is already partly shared and should be more so. The
 duplex-byte-channel abstraction is **one trait today** —
@@ -663,7 +653,7 @@ right column; introducing a parallel type is a defect, not a phase.
 | ACP launch-source selection | publicize the existing `LaunchSource{Fixed,Projected}` | `awaken-runtime-host::sandbox_source` | ~~`AcpLaunchSpec`~~ mirror enum |
 | Model materialization for ACP | existing `LaunchResolver` backed by snapshot `ResolvedModelCandidate` + shared `PinnedCredentialMaterializer`; environment only advertises worker CLI capability | host/provisioning seam | a second model-materialization truth or ambient provider fallback |
 | ACP settings codec | ONE `AcpSpec` serde type (= the `plugin_config["acp"]` codec) shared by authoring + executor | shared contract crate | a separate `AcpSettings` duplicating it |
-| CLI install strategy | a `bootstrap: Vec<BootstrapStep>` field on the `AcpCli` row (dialect mapping is resolver-side, NOT on AcpCli — D4) (OnDemand/Prebaked are the command itself) | `awaken-run-executor-acp` | an `AcpProvisioning` enum re-encoding the command; per-agent provisioning |
+| CLI acquisition | existing `AcpAcquisition` on the `AcpCli` row + startup-resolved argv on `AcpWorkerProfile` | executor catalog + product composition root | runtime install stage; per-agent provisioning; second adapter catalog |
 | Hand transport | `ConnectionPlan` / `DialAddr` | `awaken-connection-plan` | ~~`HandTransport`~~ (alias `DialAddr`) |
 | Hand placement entry | `PlacementEntry` / `ConfigToolExecutorProvider` | `awaken-server::placement` | a second placement registry |
 | GDPR erasure / consent | ADR-0050 eraser fan-out + `consent_ceiling` | `awaken-data-subject` | any new erasure path |
@@ -808,18 +798,13 @@ byte-identical with/without hand.
 Done when: flipping `hand` in config moves tool execution to a `serve_hand`
 process without touching composition-root code.
 
-**G1 `explicit-install`** — *A CLI's pre-launch install step is data on the CLI
-row; self-install stays encoded in the command.*
-Adds: `bootstrap: Vec<BootstrapStep>` on `AcpCli` (deployment-scoped); container
-prebaked-image path (direct command + empty bootstrap).
-Retires: the bare `command == "npx"` heuristic as the sole Installing signal
-(`is_dynamic_install`, `acp_cli.rs:419`) → the predicate `npx-command ∨
-non-empty-bootstrap`.
-Guard: a direct-binary row with a missing binary fails launch with a clear error
-(no silent npx fallback); `OnDemand`/npx under a deny-egress sandbox fails closed
-with a "prebake or warm-cache" error (never a network hang).
-Done when: the container image runs with zero first-launch network installs; a
-deny-egress bwrap run with an uncached npx CLI fails fast in e2e.
+**G1 `startup-acquisition`** — *Complete.* Exact wrapper metadata lives on the
+canonical `AcpCli` row; the local product composition root installs it below the
+Awaken data directory and writes only the resolved argv into the Worker profile.
+Retires: runtime `npx -y`, `is_dynamic_install`, bootstrap command mirrors and
+the `Installing` lifecycle state.
+Guard: missing acquisition evidence prevents route registration; restart reuses
+the installed path without network; container Workers remain pre-provisioned.
 
 **G2 `erasable-acp-content`** — *ACP session content joins the ADR-0050
 consent/erasure fan-out.*
@@ -1129,6 +1114,8 @@ credential observations. They are not persisted as another capability inventory.
 ```text
 local startup
   -> probe each AcpCli profile through the process-probe port
+  -> acquire any exact wrapper into the Awaken data directory
+  -> resolve one canonical absolute launch argv per acquired route
   -> advertise only launchable acp:<id> capabilities
   -> ensure one idempotent WorkerLocal binding per driver/subject
   -> publish Available/LoginRequired/Expired/Invalid/ProbeFailed observation
@@ -1148,12 +1135,16 @@ The failure decision table is normative:
 
 | Rule | Provisioning | Environment | Exact login live | Outcome |
 |---|---|---|---|---|
-| L1 | BackendOwned | Local | yes | launch with host HOME; no materialization |
+| L1 | BackendOwned | Local | yes | launch resolved executable with host HOME; no credential materialization |
 | L2 | BackendOwned | Local | no/stale | `LoginRequired` or probe failure; do not launch |
 | L3 | BackendOwned | Namespace/Container | any | reject incompatible placement |
 | L4 | Provider | Namespace/Container | n/a | existing managed secret/artifact path |
 | L5 | Provider | Local | n/a | allowed only by an explicit trusted managed policy; never treated as backend-owned login |
 | L6 | either | any | selected mechanism fails | fail closed; never switch provisioning mode or adapter |
+
+Adapter-acquisition failures occur before L1-L6: the observation becomes
+`ProbeFailed`, no Worker route or WorkerLocal binding is created, and a later
+restart may retry the exact catalog package. Runs never perform installation.
 
 `BackendDefault` deliberately records that the CLI chooses its default model.
 `Exact` is valid only when the selected profile has a typed model-delivery

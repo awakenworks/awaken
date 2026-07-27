@@ -72,9 +72,9 @@ fn inline_env(name: &str, value: &str) -> pc::EnvVar {
 }
 
 /// Host env keys passed through into the otherwise-cleared child env (the
-/// `["PATH","HOME"]` allowlist awaken-next uses): `PATH` so the launcher resolves
-/// `npx`/`node`/the CLI binary, `HOME` so `npx` finds its package cache and the CLI
-/// its user config. Everything else stays cleared — no ambient leak (G22). A key
+/// `["PATH","HOME"]` allowlist): `PATH` so an absolute Node-backed wrapper can
+/// resolve `node`, and `HOME` so a backend-owned CLI finds its own login and user
+/// config. Everything else stays cleared — no ambient leak (G22). A key
 /// already set by the projection (a modeled value) is never overridden.
 const HOST_PASSTHROUGH_ENV: &[&str] = &["PATH", "HOME"];
 
@@ -180,8 +180,8 @@ async fn spawn(
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .kill_on_drop(true);
-    // Projected model/secret env plus the PATH/HOME allowlist, so `npx`/`node`/the
-    // CLI resolve and `npx` finds its cache — everything else stays cleared.
+    // Projected model/secret env plus the PATH/HOME allowlist, so a Node-backed
+    // wrapper and the CLI-owned login resolve — everything else stays cleared.
     let env = match launch.identity {
         AcpLaunchIdentity::Managed => with_local_host_launch_environment(launch.env.clone()),
         AcpLaunchIdentity::BackendOwned => with_backend_owned_host_environment(launch.env.clone()),

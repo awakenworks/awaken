@@ -116,7 +116,7 @@ async fn workspace_path_isolates_inference_profiles() {
         &app,
         "PUT",
         "/v1/workspaces/ws_a/config/inference-profiles/prof1",
-        Some(body.clone()),
+        Some(body),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -141,13 +141,35 @@ async fn workspace_path_isolates_inference_profiles() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
-    // …and cannot overwrite it (cross-tenant author is fenced before the handler).
+    // Cause graph / decision table: one profile id in two Workspaces maps to two
+    // qualified keys. ws_b may create its own `prof1`; each subsequent read must
+    // return only that Workspace's aggregate, never a global last-writer value.
     let (status, _) = call(
         &app,
         "PUT",
         "/v1/workspaces/ws_b/config/inference-profiles/prof1",
-        Some(body),
+        Some(json!({
+            "model_id": "qwen",
+            "credential_binding": { "type": "none" }
+        })),
     )
     .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(status, StatusCode::OK);
+
+    let (_, profile_a) = call(
+        &app,
+        "GET",
+        "/v1/workspaces/ws_a/config/inference-profiles/prof1",
+        None,
+    )
+    .await;
+    let (_, profile_b) = call(
+        &app,
+        "GET",
+        "/v1/workspaces/ws_b/config/inference-profiles/prof1",
+        None,
+    )
+    .await;
+    assert_eq!(profile_a["primary"]["target"]["model_id"], json!("kimi"));
+    assert_eq!(profile_b["primary"]["target"]["model_id"], json!("qwen"));
 }

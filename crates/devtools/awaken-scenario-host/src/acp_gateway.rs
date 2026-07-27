@@ -5,8 +5,8 @@ use std::sync::Arc;
 use axum::Router;
 
 use super::{
-    EchoModel, FAKE_ACP_CLI, SharedHost, mount, scenario_host_acp_cli, scenario_model,
-    scenario_storage_dir,
+    EchoModel, FAKE_ACP_CLI, SharedHost, mount_with_host_backend_publication,
+    scenario_host_acp_cli, scenario_model, scenario_storage_dir,
 };
 
 /// Drive the fake CLI through the projecting launch path with an explicit
@@ -14,13 +14,15 @@ use super::{
 pub fn build_acp_gateway_router() -> Router {
     let store_dir = scenario_storage_dir();
     let (model, model_ref) = scenario_model(Arc::new(EchoModel), "awaken");
-    mount(Arc::new(
+    mount_with_host_backend_publication(
         SharedHost::new(model, model_ref).with_projected_acp(
             scenario_host_acp_cli(FAKE_ACP_CLI),
             Arc::new(ScenarioEnvAcpModel),
             store_dir,
         ),
-    ))
+        "acp-agent",
+        "acp:fake",
+    )
 }
 
 /// Explicit environment fixture for dev-only live scenarios. Product composition

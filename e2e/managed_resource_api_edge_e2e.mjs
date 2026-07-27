@@ -61,7 +61,7 @@ async function main() {
     for (const [index, resource] of malformedSessionResources.entries()) {
       const denied = await createSession(base, [resource]);
       assert.equal(denied.status, 400, `${index}: ${JSON.stringify(denied.body)}`);
-      assert.match(JSON.stringify(denied.body), /invalid resource/u, `${index}`);
+      assert.equal(denied.body?.error?.type, 'invalid_request_error', `${index}`);
     }
     pass('unsupported and malformed Session resource unions fail closed');
 

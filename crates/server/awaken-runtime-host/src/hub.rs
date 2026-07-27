@@ -33,9 +33,9 @@ pub enum ThreadEvent {
     /// The step reached a terminal position. `awaiting` is true when the run
     /// awaits a tool decision / client result, false on natural end.
     StepEnded { awaiting: bool },
-    /// An external ACP agent's bring-up progressed (installing an npx adapter,
-    /// launching the process, initializing the handshake, ready, or failed). A UI
-    /// renders this as a "starting agent…" affordance while a dynamic install runs.
+    /// An external ACP agent's bring-up progressed (launching the process,
+    /// initializing the handshake, ready, or failed). A UI renders this as a
+    /// "starting agent…" affordance.
     /// `stage` is the snake_case [`awaken_run_executor_acp::AcpLaunchStage`]; `detail`
     /// is optional human-facing context.
     AgentLaunch {

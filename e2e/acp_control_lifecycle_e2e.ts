@@ -25,8 +25,7 @@ async function post(route: string, body: unknown): Promise<{ status: number; bod
 
 async function createAcpSession(client: Anthropic): Promise<any> {
   return client.beta.sessions.create({
-    agent: 'assistant',
-    metadata: { 'awaken.runtime': 'acp:claude' },
+    agent: 'acp-agent',
     environment_id: 'env_local',
     betas: BETAS,
   });

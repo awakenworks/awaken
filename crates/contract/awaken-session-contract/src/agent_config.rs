@@ -53,11 +53,6 @@ pub enum AgentTool {
         description: String,
         input_schema: CustomToolInputSchema,
     },
-    /// Serialization-only reference to a server-executed tool resolved by the
-    /// configuration plane. Managed writes must use the complete `Custom`
-    /// shape, so this variant cannot weaken client-tool admission.
-    #[serde(rename = "custom", skip_deserializing)]
-    CustomReference { name: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -157,7 +152,7 @@ pub fn toolset_policies(tools: &[AgentTool]) -> Vec<awaken_agent_contract::Tools
                     configs,
                     default_config.as_ref(),
                 ),
-                AgentTool::Custom { .. } | AgentTool::CustomReference { .. } => return None,
+                AgentTool::Custom { .. } => return None,
             };
             let default = ToolExecutionPolicy {
                 enabled: default_config

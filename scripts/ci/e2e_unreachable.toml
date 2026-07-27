@@ -1,113 +1,77 @@
 version = 1
 
-# Audited zero-hit changed executable lines only. The checker rejects an entry
-# as soon as its lines are covered or cease to be changed, so this is a review
-# queue rather than a permanent source exclusion.
+# Audited zero-hit changed executable lines only. The checker counts a selected
+# line only while its LCOV counter is zero, rejects stale entries, and caps this
+# ledger at 15% of changed executable lines.
 
 [[waiver]]
-path = "crates/server/awaken-run-ingress/src/transport_client.rs"
-ranges = ["149", "153-159", "163-171", "174-177", "181-186", "191-193"]
-reason = "These are the unauthenticated compatibility-header arm plus network, 5xx, rejection, malformed-JSON, and exhausted-loop faults of the idempotent worker HTTP client. A correctly composed served Awaken API cannot selectively make its own admitted bind endpoint disconnect or emit malformed JSON; those faults require a transport proxy or injected server/store failure below the API."
-evidence = "e2e/worker_transport_e2e.mjs; e2e/credential_reference_worker_e2e.ts; cargo test -p awaken-run-ingress transport_client"
+path = "crates/bin/awaken-cli/src/acp_local_credentials.rs"
+ranges = ["83-95", "163", "197-200", "276-278", "295-324", "338-344", "367-379", "390", "392", "421-426"]
+reason = "These branches require changing immutable startup adapters, corrupting the private WorkerLocal row written by ensure_worker_local, forging a duplicate or non-positive revision despite repository uniqueness, manufacturing observation states that no catalog login probe emits, poisoning an in-process lock, or asking the typed WorkerReference resolver for plaintext. None is selectable through a served request."
+evidence = "e2e/acp_local_discovery_e2e.mjs; cargo test -p awaken-cli acp_local_credentials"
 
 [[waiver]]
-path = "crates/server/awaken-server/src/model_resolver.rs"
-ranges = ["63", "263-267", "401-404", "424-425", "468-470", "496-497", "542"]
-reason = "These lines are constructor-only composition, corrupt negative credential revisions, an unreachable OneOf arm already intercepted by profile_source, injected repository failures, and cross-workspace profile corruption prevented by workspace-keyed writes. Valid model/profile HTTP DTOs cannot manufacture those internal states."
-evidence = "e2e/management_admin_e2e.mjs; e2e/management_cloud_iam_e2e.mjs; cargo test -p awaken-server model_resolver"
+path = "crates/bin/awaken-cli/src/main.rs"
+ranges = ["151-152", "292-308"]
+reason = "Management-only startup selection and terminal outcomes of the co-located Worker task are process-composition boundaries. Once the listener is serving, an API request cannot switch command role or independently terminate the Worker future while retaining the same process to observe these caller-side arms."
+evidence = "e2e/console_start_e2e.mjs; e2e/acp_local_discovery_e2e.mjs; cargo test -p awaken-cli"
 
 [[waiver]]
-path = "crates/server/awaken-server/src/brokered_inference.rs"
-ranges = ["154", "166-172", "191-194", "197", "332", "360", "471", "474", "493-494", "535", "544"]
-reason = "These are a proven-unreachable bounded-loop tail, redacted Debug formatting, startup-only Cloud URL/client validation, the currently unused renewal method boundary, publication-corruption guards enforced before runtime, the missing internal ownership capability guard, and the non-streaming executor method; every served protocol uses the streaming attempt path with an ownership fence."
-evidence = "e2e/management_cloud_iam_e2e.mjs; cargo test -p awaken-server brokered_inference"
+path = "crates/control/awaken-config-service/src/publication.rs"
+ranges = ["59-84"]
+reason = "The duplicate-candidate and incoherent backend-default checks guard the publication service against an invalid injected ModelPublicationResolver result. The production resolver constructs a unique BackendOwned candidate with the exact backend and policy before this boundary, and public authoring cannot replace that port."
+evidence = "e2e/acp_local_discovery_e2e.mjs; cargo test -p awaken-config-service publication"
+
+[[waiver]]
+path = "crates/control/awaken-credential-vault/src/repo.rs"
+ranges = ["84-94", "210-249"]
+reason = "The first range is the in-memory reference repository, while served production uses SQLite or Postgres. The remaining guards require an empty internal binding or a primary-key collision with a differently shaped private WorkerLocal row; the public credential API cannot author WorkerLocal sources and startup always supplies non-empty catalog identities."
+evidence = "e2e/acp_local_discovery_e2e.mjs; e2e/control_plane_postgres_e2e.mjs; cargo test -p awaken-credential-vault"
+
+[[waiver]]
+path = "crates/control/awaken-credential-vault/src/postgres.rs"
+ranges = ["139-155"]
+reason = "Postgres put_if_absent for a WorkerLocal source is selected only while the immutable local Worker is composed before the listener binds. Served credential routes deliberately reject WorkerLocal authoring and therefore cannot invoke this adapter operation after startup."
+evidence = "e2e/control_plane_postgres_e2e.mjs; cargo test -p awaken-credential-vault --features postgres"
+
+[[waiver]]
+path = "crates/server/awaken-run-executor-acp/src/acp_cli.rs"
+ranges = ["33-54", "343-354", "433-437", "466-474", "491-496", "513-515"]
+reason = "These are catalog/acquisition composition accessors, the Cloud gateway constructor boundary, and launch-corruption guards for empty argv, incoherent default/exact policy, unsupported exact selection, or a logically impossible enum fallthrough. Production discovery and publication validate each cause before a served run can reach launch projection."
+evidence = "e2e/acp_local_discovery_e2e.mjs; e2e/acp_gateway_e2e.mjs; cargo test -p awaken-run-executor-acp acp_cli"
+
+[[waiver]]
+path = "crates/server/awaken-run-executor-acp/src/subprocess.rs"
+ranges = ["171-174", "437-445"]
+reason = "The subprocess empty-argv check is dominated by AcpCli projection, and backend-owned config-file MCP injection is impossible for every production catalog row because all use in-band AcpSession delivery. Only the retired test fixture can construct that legacy combination."
+evidence = "e2e/acp_local_discovery_e2e.mjs; e2e/acp_managed_mcp_e2e.mjs; cargo test -p awaken-run-executor-acp subprocess"
+
+[[waiver]]
+path = "crates/server/awaken-runtime-host/src/acp_provision.rs"
+ranges = ["40-53", "69-89", "153-160"]
+reason = "These guards require a forged immutable activation: a model outside its candidate set, incoherent BackendOwned coordinates, or HostExecutor provisioning routed into ACP. The publication resolver and route selection reject those combinations before installation, and no served API mutates a frozen activation."
+evidence = "e2e/acp_projected_local_e2e.mjs; e2e/acp_local_discovery_e2e.mjs; cargo test -p awaken-runtime-host acp_provision"
+
+[[waiver]]
+path = "crates/server/awaken-runtime-host/src/host/session.rs"
+ranges = ["337-347"]
+reason = "These checks compare two projections derived atomically from the same installed Agent publication. Reaching them requires corrupting the private session slot so its backend differs from, or exists without, that immutable publication; session HTTP input cannot write either internal field independently."
+evidence = "e2e/agent_publication_truth_e2e.ts; cargo test -p awaken-runtime-host host::session"
 
 [[waiver]]
 path = "crates/server/awaken-runtime-host/src/sandbox_source.rs"
-ranges = ["114-122", "146-151", "153"]
-reason = "These lines aggregate credential capabilities while a Worker/Host launch source is composed and distinguish fixed versus projected launch registries. The source is immutable before the server binds and cannot be installed, removed, or switched by a served request."
-evidence = "e2e/acp_projected_local_e2e.mjs; e2e/credential_reference_worker_e2e.ts; cargo test -p awaken-runtime-host sandbox_source"
+ranges = ["144-146"]
+reason = "Host-identity support is an immutable SandboxBackend composition fact. Served runs consume the completed capability manifest but cannot replace Namespace with Workdir, or vice versa, after the process has bound."
+evidence = "e2e/acp_projected_local_e2e.mjs; e2e/acp_projected_container_e2e.mjs; cargo test -p awaken-runtime-host sandbox_source"
 
 [[waiver]]
-path = "crates/bin/awaken-worker/src/lib.rs"
-ranges = ["613-617", "623-625", "627-630", "682"]
-reason = "This is the library-only injected-shutdown helper and its embedded-default forwarding arm used by process harnesses that cannot deliver a graceful OS signal. The production worker binary uses run_with_inference_materializer and no served API can select this Rust caller-side helper after startup."
-evidence = "e2e/credential_reference_worker_e2e.ts; cargo test -p awaken-worker"
+path = "crates/server/awaken-runtime-host/src/deployment_config.rs"
+ranges = ["99-104"]
+reason = "Only the startup acquisition service can install resolved ACP argv, and it supplies a catalog-selected id plus a non-empty absolute wrapper/direct command. The served configuration API has no operation that mutates a Worker's launch registry."
+evidence = "e2e/acp_local_discovery_e2e.mjs; cargo test -p awaken-runtime-host deployment_config"
 
 [[waiver]]
-path = "crates/contract/awaken-credential-contract/src/lib.rs"
-ranges = ["689-697"]
-reason = "Capability-set merging happens while immutable Worker manifests and launch adapters are composed. Served credential and model DTOs consume the resulting manifest but cannot add adapter capability profiles or invoke the composition-time merge operation."
-evidence = "e2e/acp_projected_local_e2e.mjs; e2e/credential_reference_worker_e2e.ts; cargo test -p awaken-credential-contract"
-
-[[waiver]]
-path = "crates/server/awaken-runtime-host/src/acp_backend.rs"
-ranges = ["35-41", "44"]
-reason = "These lines project the immutable ACP executor source into its Worker capability manifest and distinguish a statically installed executor from a bound launch registry. A served Agent request can select an installed ACP backend but cannot replace its composition source."
-evidence = "e2e/acp_projected_local_e2e.mjs; e2e/acp_permission_resume_e2e.mjs; cargo test -p awaken-runtime-host acp_backend"
-
-[[waiver]]
-path = "crates/control/awaken-config-resolver/src/lib.rs"
-ranges = ["329-332", "489-490"]
-reason = "These are legacy on-disk inference-profile deserialization and its legacy unresolved-model diagnostic. Current HTTP authoring always writes the typed target-plus-binding representation and cannot restore the pre-migration wire variant after the process has bound."
-evidence = "e2e/management_admin_e2e.mjs; e2e/managed_config_e2e.mjs; cargo test -p awaken-config-resolver"
-
-[[waiver]]
-path = "crates/control/awaken-model-catalog/src/repo.rs"
-ranges = ["106", "118", "201", "206"]
-reason = "These statements belong to the in-memory reference catalog repository. Served local and Cloud production compositions install SQLite or Postgres catalog authority, and an API request cannot swap that repository adapter after startup."
-evidence = "e2e/management_admin_e2e.mjs; e2e/management_cloud_iam_e2e.mjs; cargo test -p awaken-model-catalog"
-
-[[waiver]]
-path = "crates/bin/awaken-cli/src/config.rs"
-ranges = ["207"]
-reason = "This is redacted Debug formatting for the immutable Cloud inference URL loaded before startup. No served route returns Rust Debug output or can select deployment parsing after the process binds."
-evidence = "e2e/management_cloud_iam_e2e.mjs; cargo test -p awaken-cli config"
-
-[[waiver]]
-path = "crates/bin/awaken-cli/src/lib.rs"
-ranges = ["785", "827", "1234"]
-reason = "These are CLI composition arms that copy the prevalidated Cloud inference URL into two server constructors and retain the default materializer when no optional wrapper is installed. Served requests observe the completed composition but cannot choose these constructor statements."
-evidence = "e2e/management_cloud_iam_e2e.mjs; e2e/awaken_cli_e2e.mjs; cargo test -p awaken-cli"
-
-[[waiver]]
-path = "crates/control/awaken-admin-config-api/src/router.rs"
-ranges = ["110", "114", "747", "891"]
-reason = "These are the discovery trait's fail-closed default, a wall-clock-only stale transition requiring more than the fixed catalog age, and an injected atomic catalog commit failure after successful external discovery. HTTP input cannot replace the installed adapter, advance the process clock by the stale interval, or fail the repository transaction."
-evidence = "e2e/management_admin_e2e.mjs; e2e/model_discovery_faults_e2e.mjs; cargo test -p awaken-admin-config-api"
-
-[[waiver]]
-path = "crates/control/awaken-model-catalog/src/lib.rs"
-ranges = ["90-91", "398", "401-404", "733-735", "901", "909"]
-reason = "Brokered discovery supports only the three Cloud native protocols, so its private dialect-token match cannot receive Gemini variants; public attribute authoring strips provenance, Cloud composition supplies non-empty broker identity/base URL, and the private merge helper is called only with its two known field constants. The remaining guards require forged internal aggregates."
-evidence = "e2e/management_admin_e2e.mjs; e2e/management_cloud_iam_e2e.mjs; cargo test -p awaken-model-catalog"
-
-[[waiver]]
-path = "crates/server/awaken-runtime-host/src/run_exec.rs"
-ranges = ["299-304"]
-reason = "This duplicate-candidate guard protects the runtime from a forged immutable publication. The publication resolver deduplicates and validates the candidate set before install, and served Agent/profile APIs cannot mutate an installed snapshot into duplicate fingerprints."
-evidence = "e2e/management_cloud_iam_e2e.mjs; e2e/model_route_e2e.mjs; cargo test -p awaken-runtime-host run_exec"
-
-[[waiver]]
-path = "crates/runtime/awaken-provider-genai/src/openai_responses.rs"
-ranges = ["97"]
-reason = "The Responses codec ignores an internal Thinking history block, but this adapter does not decode provider reasoning into that block and current served protocol inputs cannot author assistant Thinking history. The arm exists for cross-adapter forward compatibility."
-evidence = "e2e/management_cloud_iam_e2e.mjs; cargo test -p awaken-provider-genai openai_responses"
-
-[[waiver]]
-path = "crates/server/awaken-protocol-managed/src/project.rs"
-ranges = ["87"]
-reason = "CustomReference is an internal unresolved authoring variant that publication must resolve before a Managed Agent projection is installed. Served session traffic sees only the frozen resolved Custom tool descriptor."
-evidence = "e2e/management_cloud_iam_e2e.mjs; cargo test -p awaken-protocol-managed"
-
-[[waiver]]
-path = "crates/control/awaken-control/src/managed_agents.rs"
-ranges = ["136"]
-reason = "CustomReference is filtered only while an invalid unresolved internal Agent snapshot is projected. The public publication boundary resolves or rejects references before installation, so a served Session cannot select this arm."
-evidence = "e2e/management_cloud_iam_e2e.mjs; cargo test -p awaken-control managed_agents"
-
-[[waiver]]
-path = "crates/server/awaken-protocol-mcp/src/bin/awaken-mcp-stdio-demo.rs"
-ranges = ["35", "38-40", "42-44", "47-50", "52", "151"]
-reason = "These lines are the standalone developer demo binary's CLI argument and stdin/stdout transport shell, not a production Awaken server endpoint. Served MCP compositions use the protocol core through their own transport adapters."
-evidence = "e2e/mcp_official_sdk_e2e.ts; cargo test -p awaken-protocol-mcp"
+path = "crates/server/awaken-server/src/model_resolver.rs"
+ranges = ["633-651"]
+reason = "These failures require multiple private WorkerLocal sources for one deterministic driver without an exact identity, or a non-positive WorkerLocal revision. Repository identity makes startup registration idempotent, the row is created at revision one, and the public credential API cannot author or mutate WorkerLocal sources."
+evidence = "e2e/acp_local_discovery_e2e.mjs; cargo test -p awaken-server model_resolver"
