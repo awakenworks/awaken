@@ -9,6 +9,7 @@ import type { ModelTarget } from "./model-types";
 export type {
   ApiDialect,
   CatalogSyncResult,
+  ConfigCapabilitiesView,
   EnvironmentProviderProposal,
   ModelAttributes,
   ModelTarget,

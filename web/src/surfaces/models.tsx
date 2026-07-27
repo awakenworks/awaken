@@ -1,5 +1,4 @@
-// Workspace · Models: the three-layer catalog (Provider → ProtocolEndpoint →
-// Offering) plus inference profiles and the dry-run resolve chain.
+// Workspace Models: Provider → ProtocolEndpoint → Offering, profiles and dry-run resolve.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
@@ -8,6 +7,7 @@ import { Button, Card, Modal, Pill, SecretField, SelectField, Skeleton, TextFiel
 import { api, ws } from "../lib/api/client";
 import type {
   CatalogSyncResult,
+  ConfigCapabilitiesView,
   CredentialSource,
   EnvironmentProviderProposal,
   ProviderCatalog,
@@ -18,6 +18,12 @@ import type {
   Session,
 } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
+import {
+  cloudModelUiState,
+  CloudModelBadge,
+  CloudModelNotice,
+  CloudModelRefresh,
+} from "./model-cloud-capability";
 import ModelProfileEditor from "./model-profile-editor";
 
 /** Compact a token count for the catalog list: 200000 → "200k", 1_000_000 → "1M". */
@@ -128,6 +134,11 @@ export default function ModelsSurface() {
   const catalog = useQuery({
     queryKey: ["catalog"],
     queryFn: () => api.get<ProviderCatalog>(ws("/v1/config/catalog")),
+  });
+  const capabilities = useQuery({
+    queryKey: ["config-capabilities"],
+    queryFn: () => api.get<ConfigCapabilitiesView>(ws("/v1/config/capabilities")),
+    staleTime: Infinity,
   });
   const proposals = useQuery({
     queryKey: ["provider-proposals"],
@@ -272,24 +283,27 @@ export default function ModelsSurface() {
   });
 
   const c = catalog.data;
+  const cloudState = cloudModelUiState(capabilities.data);
   return (
     <>
       <Card style={{ padding: 0 }}>
         <div className="row" style={{ padding: "13px 16px", justifyContent: "space-between" }}>
           <div className="row">
           <h2 style={{ margin: 0, fontSize: 14 }}>{app.t("Catalog", "模型目录")}</h2>
+          <CloudModelBadge state={cloudState} />
           <span className="mut">
             {c
               ? `${Object.keys(c.providers).length} providers · ${Object.keys(c.endpoints).length} endpoints · ${c.offerings.length} offerings`
               : "…"}
           </span>
           </div>
-          <Button disabled={refreshCloudModels.isPending} onClick={() => refreshCloudModels.mutate()}>
-            {refreshCloudModels.isPending
-              ? app.t("Refreshing Cloud…", "正在刷新云端模型…")
-              : app.t("Refresh Cloud models", "刷新云端模型")}
-          </Button>
+          <CloudModelRefresh
+            state={cloudState}
+            pending={refreshCloudModels.isPending}
+            onRefresh={() => refreshCloudModels.mutate()}
+          />
         </div>
+        <CloudModelNotice state={cloudState} />
         {refreshCloudModels.error instanceof Error && (
           <div className="err" style={{ margin: "0 16px 12px" }}>
             {refreshCloudModels.error.message}
@@ -358,7 +372,11 @@ export default function ModelsSurface() {
                   )}
                 </td>
                 <td style={{ textAlign: "right" }}>
-                  <Button style={{ height: 24 }} onClick={() => setTestModel(o.model_id)}>
+                  <Button
+                    style={{ height: 24 }}
+                    disabled={(o.status ?? "active") !== "active"}
+                    onClick={() => setTestModel(o.model_id)}
+                  >
                     {app.t("Test", "测试")}
                   </Button>
                 </td>

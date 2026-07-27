@@ -179,6 +179,7 @@ struct AssemblyOverrides {
     mcp_bearer_token: Option<String>,
     management_only: bool,
     cloud_api_base_url: Option<String>,
+    cloud_models_enabled: bool,
 }
 
 type IdentityWiring = (
@@ -783,6 +784,7 @@ pub async fn build_management_router_with_deployment(
             mcp_bearer_token: deployment.mcp_bearer_token.clone(),
             management_only: false,
             cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url.clone()),
+            cloud_models_enabled: deployment.cloud_models.is_enabled(),
         },
         None,
     )
@@ -825,6 +827,7 @@ pub async fn build_control_router_with_deployment(
             mcp_bearer_token: deployment.mcp_bearer_token.clone(),
             management_only: true,
             cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url.clone()),
+            cloud_models_enabled: deployment.cloud_models.is_enabled(),
         },
         None,
     )
@@ -913,6 +916,7 @@ async fn build_management_router_with_composition(
             mcp_bearer_token: deployment.mcp_bearer_token,
             management_only: false,
             cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url),
+            cloud_models_enabled: deployment.cloud_models.is_enabled(),
         },
         None,
     )
@@ -1116,6 +1120,7 @@ async fn management_router_over(
     let management_only = assembly.management_only;
     let deployment = assembly.deployment;
     let cloud_api_base_url = assembly.cloud_api_base_url;
+    let cloud_models_enabled = assembly.cloud_models_enabled;
     let org_id = assembly.org_id.unwrap_or_else(local_org_id);
     let mcp_bearer_token = assembly.mcp_bearer_token;
     let ManagementStores {
@@ -1146,9 +1151,13 @@ async fn management_router_over(
         SharedHost::provision_local_workspace,
         SharedHost::provision_local_workspace_at,
     );
-    let brokered_client = remote_iam
-        .as_ref()
-        .and_then(|authz| authz.cloud_user_token())
+    let brokered_client = cloud_models_enabled
+        .then(|| {
+            remote_iam
+                .as_ref()
+                .and_then(|authz| authz.cloud_user_token())
+        })
+        .flatten()
         .map(|token| {
             let base_url = cloud_api_base_url
                 .clone()
@@ -1223,12 +1232,14 @@ async fn management_router_over(
                     catalog.clone(),
                     credentials.clone(),
                 )
-                .with_profiles(profiles.clone()),
+                .with_profiles(profiles.clone())
+                .with_brokered_access(cloud_models_enabled),
             ),
             materializer: Some(Arc::new({
                 let materializer = awaken_server::inference_materializer::CredentialInferenceMaterializer::from_pinned(
                     credential_materializer.clone(),
-                );
+                )
+                .with_brokered_mode(cloud_models_enabled);
                 match &brokered_client {
                     Some(client) => materializer.with_brokered_client(client.clone()),
                     None => materializer,
@@ -1374,6 +1385,7 @@ async fn management_router_over(
         brokered_catalog: brokered_client
             .clone()
             .map(|client| client as Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>),
+        cloud_models_enabled,
         vault_state: vault_state.clone(),
         env_state: env_state.clone(),
         deployment_state: deployment_state.clone(),

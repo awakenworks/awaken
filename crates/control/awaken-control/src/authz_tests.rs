@@ -226,6 +226,10 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
     }
     assert_eq!(action_for(&get, "/v1/config/catalog"), Some(WORKSPACE_READ));
     assert_eq!(
+        action_for(&get, "/v1/config/capabilities"),
+        Some(WORKSPACE_READ)
+    );
+    assert_eq!(
         action_for(&post, "/v1/config/brokered-models/refresh"),
         Some(WORKSPACE_WRITE)
     );

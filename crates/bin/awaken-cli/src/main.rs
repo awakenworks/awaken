@@ -131,6 +131,8 @@ async fn serve(
         data_dir: args.data_dir,
         port: args.port,
         no_browser: args.no_browser.then_some(true),
+        identity_mode: args.identity_mode,
+        cloud_models: args.cloud_models,
         ..Default::default()
     })?;
     if management_only && deployment.mode != awaken_cli::config::OperatingMode::Server {

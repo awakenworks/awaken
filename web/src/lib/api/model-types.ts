@@ -122,3 +122,16 @@ export interface EnvironmentProviderProposal {
   credential_env: string;
   credential_present: boolean;
 }
+
+export interface ConfigCapabilitiesView {
+  identity: {
+    mode: "no-login" | "self-managed" | "awaken-cloud";
+    cloud_login_enabled: boolean;
+    authenticated: boolean;
+  };
+  models: {
+    local_catalog_enabled: boolean;
+    byok_enabled: boolean;
+    cloud_models_enabled: boolean;
+  };
+}
