@@ -22,8 +22,9 @@ use agent_client_protocol::{
     ClientCapabilities, ContentBlock, InitializeRequest, InitializeResponse, LoadSessionRequest,
     LoadSessionResponse, NewSessionRequest, NewSessionResponse, PermissionOptionKind,
     PromptRequest, PromptResponse, ProtocolVersion, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionId,
-    SessionModeId, SessionModeState, SessionNotification, SetSessionModeRequest,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
+    SessionConfigOption, SessionId, SessionModeId, SessionModeState, SessionNotification,
+    SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest,
 };
 use awaken_agent_channel::AgentChannel;
 use serde::Serialize;
@@ -81,6 +82,9 @@ const ID_PROMPT: u64 = 3;
 const ID_SET_MODE: u64 = 4;
 /// Adapter-selected authentication, after initialize and before opening a Session.
 const ID_AUTHENTICATE: u64 = 5;
+/// Exact backend-owned model selection, after opening the Session and before
+/// prompting. Managed/default launches never send this request.
+const ID_SET_CONFIG_OPTION: u64 = 6;
 /// JSON-RPC "method not found" (the reply to any capability we do not advertise).
 const METHOD_NOT_FOUND: i64 = -32601;
 
@@ -280,7 +284,11 @@ pub async fn run_turn_with_config(
     //    hold a prior id and the agent supports it; else session/new. Fail-safe:
     //    an agent that does not advertise `loadSession` falls back to a fresh
     //    session (the neutral thread history is the authority — never lost).
-    let (session_id, available_modes): (SessionId, Vec<String>) = match config.session_id.clone() {
+    let (session_id, available_modes, available_config_options): (
+        SessionId,
+        Vec<String>,
+        Vec<String>,
+    ) = match config.session_id.clone() {
         Some(prior) if can_load => {
             wire.send_request(
                 ID_NEW_SESSION,
@@ -291,7 +299,11 @@ pub async fn run_turn_with_config(
             match pump_response(&mut wire, ID_NEW_SESSION, sink, &mut seq, resolver).await? {
                 RpcResponse::Result(result) => {
                     let resp: LoadSessionResponse = parse(result)?;
-                    (SessionId::new(prior.as_str()), mode_ids(resp.modes))
+                    (
+                        SessionId::new(prior.as_str()),
+                        mode_ids(resp.modes),
+                        config_option_ids(resp.config_options),
+                    )
                 }
                 RpcResponse::Error(error) if is_missing_session_error(&error) => {
                     // Some agents advertise loadSession but retain ids only for the
@@ -310,7 +322,8 @@ pub async fn run_turn_with_config(
                             .await?,
                     )?;
                     let modes = mode_ids(new_session.modes);
-                    (new_session.session_id, modes)
+                    let options = config_option_ids(new_session.config_options);
+                    (new_session.session_id, modes, options)
                 }
                 RpcResponse::Error(error) => {
                     return Err(AcpError::Frame(error.to_string()));
@@ -329,7 +342,8 @@ pub async fn run_turn_with_config(
                 pump_to_response(&mut wire, ID_NEW_SESSION, sink, &mut seq, resolver).await?,
             )?;
             let modes = mode_ids(new_session.modes);
-            (new_session.session_id, modes)
+            let options = config_option_ids(new_session.config_options);
+            (new_session.session_id, modes, options)
         }
     };
     // Record the negotiated id so the caller resumes this session next turn.
@@ -349,6 +363,31 @@ pub async fn run_turn_with_config(
         )
         .await?;
         pump_to_response(&mut wire, ID_SET_MODE, sink, &mut seq, resolver).await?;
+    }
+
+    // 2c. session/set_config_option — exact backend-owned model selection. The
+    // option must be advertised by this exact Session and the agent must accept
+    // the value; either failure is terminal and never falls back to its default.
+    if let Some(selection) = config.session_config_option.clone() {
+        if !available_config_options.contains(&selection.config_id) {
+            return Err(AcpError::Frame(format!(
+                "configured ACP session option `{}` was not advertised",
+                selection.config_id
+            )));
+        }
+        wire.send_request(
+            ID_SET_CONFIG_OPTION,
+            AGENT_METHOD_NAMES.session_set_config_option,
+            SetSessionConfigOptionRequest::new(
+                session_id.clone(),
+                selection.config_id,
+                selection.value,
+            ),
+        )
+        .await?;
+        let _: SetSessionConfigOptionResponse = parse(
+            pump_to_response(&mut wire, ID_SET_CONFIG_OPTION, sink, &mut seq, resolver).await?,
+        )?;
     }
 
     // Handshake complete — the agent is live and about to accept the prompt.
@@ -627,6 +666,14 @@ fn mode_ids(modes: Option<SessionModeState>) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn config_option_ids(options: Option<Vec<SessionConfigOption>>) -> Vec<String> {
+    options
+        .unwrap_or_default()
+        .into_iter()
+        .map(|option| option.id.0.to_string())
+        .collect()
 }
 
 #[cfg(test)]
@@ -1352,6 +1399,91 @@ mod tests {
             .unwrap();
         assert_eq!(reason, TerminationReason::NaturalEnd);
         assert_eq!(saw.lock().unwrap().as_deref(), Some("plan"));
+        agent.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_exact_session_config_option_is_set_before_prompt_or_fails_closed() {
+        // Cause graph: published exact model -> advertised Session option ->
+        // session/set_config_option response -> prompt. Missing advertisement
+        // terminates before either selection fallback or prompt.
+        //
+        // Decision table:
+        // C1 advertised + accepted -> exact configId/value, then prompt
+        // C2 not advertised        -> error, no set request and no prompt
+        let (mut ours, theirs) = channel();
+        let selected = Arc::new(Mutex::new(None));
+        let selected_by_agent = selected.clone();
+        let agent = tokio::spawn(async move {
+            let mut io = AgentIo::new(theirs);
+            io.read().await; // initialize
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#,
+            )
+            .await;
+            io.read().await; // session/new
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1","configOptions":[{"id":"model","name":"Model","type":"select","currentValue":"default","options":[{"value":"gpt-exact","name":"GPT Exact"}]}]}}"#,
+            )
+            .await;
+            let set = io.read().await.unwrap(); // session/set_config_option (id 6)
+            *selected_by_agent.lock().unwrap() = Some(set.clone());
+            io.write_line(r#"{"jsonrpc":"2.0","id":6,"result":{"configOptions":[]}}"#)
+                .await;
+            let prompt = io.read().await.unwrap();
+            assert_eq!(
+                prompt.get("method").and_then(|value| value.as_str()),
+                Some(AGENT_METHOD_NAMES.session_prompt),
+                "C1"
+            );
+            io.write_line(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#)
+                .await;
+        });
+
+        let mut sink = RecordingSink::default();
+        let mut config = TurnConfig::new(&AllowAll);
+        config.session_config_option = Some(crate::SessionConfigOptionSelection {
+            config_id: "model".into(),
+            value: "gpt-exact".into(),
+        });
+        run_turn_with_config(ours.as_mut(), "p", &mut sink, &mut config, None)
+            .await
+            .expect("C1");
+        {
+            let selected = selected.lock().unwrap();
+            let request = selected.as_ref().expect("C1 set request");
+            assert_eq!(
+                request.get("method").and_then(|value| value.as_str()),
+                Some(AGENT_METHOD_NAMES.session_set_config_option),
+                "C1"
+            );
+            assert_eq!(request["params"]["configId"], "model", "C1");
+            assert_eq!(request["params"]["value"], "gpt-exact", "C1");
+        }
+        agent.await.unwrap();
+
+        let (mut ours, theirs) = channel();
+        let agent = tokio::spawn(async move {
+            let mut io = AgentIo::new(theirs);
+            io.read().await;
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#,
+            )
+            .await;
+            io.read().await;
+            io.write_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1"}}"#)
+                .await;
+        });
+        let mut sink = RecordingSink::default();
+        let mut config = TurnConfig::new(&AllowAll);
+        config.session_config_option = Some(crate::SessionConfigOptionSelection {
+            config_id: "model".into(),
+            value: "gpt-exact".into(),
+        });
+        let error = run_turn_with_config(ours.as_mut(), "p", &mut sink, &mut config, None)
+            .await
+            .expect_err("C2");
+        assert!(error.to_string().contains("was not advertised"), "C2");
         agent.await.unwrap();
     }
 

@@ -22,7 +22,9 @@ pub use awaken_dispatch_contract::RegistryMutation
 pub use awaken_dispatch_contract::SESSION_RESOURCES_CAPABILITY
 pub use awaken_dispatch_contract::WORKER_LOCAL_CREDENTIALS_CAPABILITY
 pub use awaken_dispatch_contract::WorkerAssignment
+pub use awaken_dispatch_contract::WorkerCredentialObservation
 pub use awaken_dispatch_contract::WorkerCredentialRevision
+pub use awaken_dispatch_contract::WorkerCredentialState
 pub use awaken_dispatch_contract::WorkerDirectory
 pub use awaken_dispatch_contract::WorkerHeartbeat
 pub use awaken_dispatch_contract::WorkerIdentity

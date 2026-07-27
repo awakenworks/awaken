@@ -18,8 +18,7 @@ async function events(client, sessionId) {
 
 async function startAwaiting(client) {
   const session = await client.beta.sessions.create({
-    agent: 'assistant',
-    metadata: { 'awaken.runtime': 'acp:claude' },
+    agent: 'acp-agent',
     environment_id: 'env_local',
     betas: BETAS,
   });

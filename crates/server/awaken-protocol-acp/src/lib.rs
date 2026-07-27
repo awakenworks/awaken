@@ -232,6 +232,15 @@ pub struct SessionMcpServer {
     pub auth: Option<(String, String)>,
 }
 
+/// One exact backend-owned model selection delivered through ACP after a
+/// session is opened. It contains only the catalog-owned option id and published
+/// value; provider credentials and endpoints cannot enter this contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionConfigOptionSelection {
+    pub config_id: String,
+    pub value: String,
+}
+
 /// The per-turn cross-cutting inputs the driver needs beyond the prompt, bundled
 /// so a turn threads as one value rather than a widening parameter list. The Acp
 /// codec reads/updates it across the handshake; the newline stand-in ignores all
@@ -242,7 +251,7 @@ pub struct TurnConfig<'a> {
     pub resolver: &'a dyn PermissionResolver,
     /// MCP servers to hand the CLI at `session/new` (the `AcpSession` interface, for
     /// claude/gemini/opencode). Empty for the newline stand-in and for config-file CLIs
-    /// (codex gets a `config.toml` instead).
+    /// (legacy config-file adapters receive no in-band servers).
     pub mcp_servers: Vec<SessionMcpServer>,
     /// In: an ACP session id to resume via `session/load` (a relaunched CLI reloads
     /// its own session, so context survives the per-turn relaunch). Out: the id the
@@ -253,6 +262,9 @@ pub struct TurnConfig<'a> {
     /// adapter-local datum — `None` leaves the agent's default). Validated
     /// fail-closed against the modes the agent advertised for the session.
     pub session_mode: Option<String>,
+    /// Exact backend-owned model option to set after session creation/loading and
+    /// before the first prompt. `None` preserves the CLI's own default.
+    pub session_config_option: Option<SessionConfigOptionSelection>,
     /// In: the interior working directory the CLI runs the session under (the
     /// sandbox's fixed workspace path). For a CLI that keys sessions by cwd (Claude
     /// Code), holding this stable across relaunches/machines is what lets
@@ -274,6 +286,7 @@ impl<'a> TurnConfig<'a> {
             mcp_servers: Vec::new(),
             session_id: None,
             session_mode: None,
+            session_config_option: None,
             session_cwd: None,
             auth_method_id: None,
         }
@@ -281,16 +294,12 @@ impl<'a> TurnConfig<'a> {
 }
 
 /// Which stage of bringing an ACP agent online a lifecycle notification marks.
-/// Ordered install → launch → initialize → ready, aligning to oversight-next's
-/// probe stages so a UI renders a consistent progress affordance. `Failed` is the
-/// terminal error stage; the accompanying [`AcpLaunchEvent::detail`] says why.
+/// Ordered launch → initialize → ready so a UI renders a consistent progress
+/// affordance. Adapter acquisition is a startup concern and never occurs in a
+/// run. `Failed` is terminal; [`AcpLaunchEvent::detail`] says why.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AcpLaunchStage {
-    /// Dynamically installing the adapter — an `npx` wrapper is pulling its pinned
-    /// package into the npm cache. The slow step: seconds to minutes on a cold
-    /// cache, near-instant when already cached. A native CLI never emits this.
-    Installing,
     /// Spawning the agent process.
     Launching,
     /// ACP handshake in progress (`initialize` + `session/new`).
@@ -302,8 +311,8 @@ pub enum AcpLaunchStage {
 }
 
 /// One lifecycle notification for an ACP agent's bring-up — the neutral event a UI
-/// renders as "installing… / launching… / ready". `detail` optionally carries
-/// human-facing context (the adapter package id, a spawn error message).
+/// renders as "launching… / ready". `detail` optionally carries human-facing
+/// context such as a spawn error message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AcpLaunchEvent {
     pub stage: AcpLaunchStage,
@@ -872,13 +881,13 @@ mod tests {
     fn an_acp_launch_event_omits_absent_detail_and_round_trips() {
         // A stageless bring-up event omits `detail` on the wire; one with detail
         // round-trips losslessly (the UI progress affordance's contract).
-        let bare = AcpLaunchEvent::stage(AcpLaunchStage::Installing);
+        let bare = AcpLaunchEvent::stage(AcpLaunchStage::Launching);
         let value = serde_json::to_value(&bare).unwrap();
         assert!(
             value.get("detail").is_none(),
             "absent detail omitted: {value}"
         );
-        assert_eq!(value["stage"], "installing");
+        assert_eq!(value["stage"], "launching");
 
         let detailed = AcpLaunchEvent::with_detail(AcpLaunchStage::Failed, "spawn failed");
         let back: AcpLaunchEvent =

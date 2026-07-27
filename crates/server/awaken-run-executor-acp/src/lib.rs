@@ -71,8 +71,11 @@ pub struct AgentSession {
     pub workspace_cwd: Option<String>,
     /// MCP servers to hand the CLI at `session/new` (the `AcpSession` interface —
     /// claude/gemini/opencode). Populated by [`ProjectingChannelSource::open`] for those
-    /// CLIs; empty for a config-file CLI (codex gets a `config.toml`) and for fixtures.
+    /// CLIs; empty for a legacy config-file adapter and for fixtures.
     pub mcp_session_servers: Vec<awaken_protocol_acp::SessionMcpServer>,
+    /// Exact backend-owned model selection to apply over ACP after opening the
+    /// session. `None` leaves the CLI's own default untouched.
+    pub session_config_option: Option<awaken_protocol_acp::SessionConfigOptionSelection>,
 }
 
 /// Opens an [`AgentSession`] for a run. The one seam the host wires: local =
@@ -291,17 +294,6 @@ impl AcpRunExecutor {
 fn notify(sink: Option<LaunchSink<'_>>, event: AcpLaunchEvent) {
     if let Some(sink) = sink {
         sink.emit(event);
-    }
-}
-
-/// Whether the run's ACP backend installs dynamically on launch (an `npx` adapter),
-/// so the executor can surface an `Installing` state before the process is usable.
-fn dynamic_install_backend(activation: &RunActivation) -> bool {
-    match Backend::from_ref(&activation.snapshot.resolved_spec.model_binding.backend_ref) {
-        Backend::Acp { cli } => {
-            acp_cli(&cli).is_some_and(|profile| profile.acquisition.is_dynamic_install())
-        }
-        _ => false,
     }
 }
 
@@ -526,17 +518,10 @@ impl AcpRunExecutor {
         context: RuntimeRunContext,
         permission_resume: Option<PermissionResume>,
     ) -> Result<RunState> {
-        // Lifecycle bring-up (observed for UI progress): an npx-wrapped adapter may
-        // dynamically install on a cold cache (the slow step) before it launches.
-        // Scope events to the thread so a per-session UI channel routes them.
+        // Wrapper acquisition completed during product startup. Per-run lifecycle
+        // begins at launching and therefore never performs hidden network/package I/O.
         let scope = activation.thread_id.0.clone();
         let launch_sink = self.launch_sink(&scope);
-        if dynamic_install_backend(&activation) {
-            notify(
-                launch_sink,
-                AcpLaunchEvent::stage(AcpLaunchStage::Installing),
-            );
-        }
         notify(
             launch_sink,
             AcpLaunchEvent::stage(AcpLaunchStage::Launching),
@@ -641,6 +626,7 @@ impl AcpRunExecutor {
             config.mcp_servers = session.mcp_session_servers.clone();
             config.session_id = acp_session_id.take();
             config.session_mode = self.session_mode.clone();
+            config.session_config_option = session.session_config_option.clone();
             config.session_cwd = session.workspace_cwd.clone();
             config.auth_method_id = match Backend::from_ref(&backend_ref) {
                 Backend::Acp { cli } => acp_cli(&cli)
@@ -1316,10 +1302,10 @@ mod host_discovery;
 mod session_home;
 mod subprocess;
 pub use acp_cli::{
-    AcpAcquisition, AcpCli, CredentialArtifactCodec, CredentialArtifactRequirement,
-    CredentialArtifactSpec, ManagedCredentialDelivery, McpDelivery, McpInterface, McpServerConfig,
-    McpTransport, ModelDelivery, ProcessSecretRequirement, ResolvedModel, SessionKey,
-    SessionPersistence, acp_cli, known_acp_clis,
+    AcpAcquisition, AcpCli, BackendModelInterface, CredentialArtifactCodec,
+    CredentialArtifactRequirement, CredentialArtifactSpec, ManagedCredentialDelivery, McpDelivery,
+    McpInterface, McpServerConfig, McpTransport, ModelDelivery, ProcessSecretRequirement,
+    ResolvedModel, SessionKey, SessionPersistence, acp_cli, known_acp_clis,
 };
 // The ACP config-home path convention (shared kernel) and the reference cross-machine
 // session-home provider over it — the host consumes these instead of owning them.
@@ -1330,8 +1316,9 @@ pub use host_discovery::{
 };
 pub use session_home::{DirSessionHome, FsSessionBlobStore, SessionBlobStore};
 pub use subprocess::{
-    AcpLaunch, AcpSettings, LaunchResolver, McpInjection, ProjectingChannelSource,
-    SubprocessChannelSource, mcp_injection, mcp_injection_from_servers, project_launch,
+    AcpLaunch, AcpLaunchIdentity, AcpSettings, LaunchResolver, McpInjection,
+    ProjectingChannelSource, SubprocessChannelSource, admit_mcp_injection, mcp_injection,
+    mcp_injection_from_servers, project_launch, with_backend_owned_host_environment,
     with_local_host_launch_environment,
 };
 

@@ -159,7 +159,7 @@ async function request(base, method, route, body) {
 
 async function publishProviderAgent(base, definition) {
   const {
-    agent, provider, endpoint, model, upstreamModel, baseUrl, secret, envKey,
+    agent, backend, provider, endpoint, model, upstreamModel, baseUrl, secret, envKey,
   } = definition;
   await request(base, 'PUT', `/v1/config/providers/${provider}`, {
     id: provider,
@@ -192,7 +192,7 @@ async function publishProviderAgent(base, definition) {
   });
   await request(base, 'PUT', `/v1/config/agents/${agent}`, {
     name: agent,
-    model: { id: model, provider_identity_ref: provider },
+    model: { id: model, provider_identity_ref: provider, backend_ref: backend },
     system: 'Exercise publication-pinned ACP provisioning.',
     tools: [],
   });
@@ -215,6 +215,7 @@ async function main() {
     const base = `http://127.0.0.1:${PORT}`;
     await publishProviderAgent(base, {
       agent: GEMINI_AGENT,
+      backend: 'acp:gemini',
       provider: 'google',
       endpoint: 'gemini-endpoint',
       model: 'gemini-published',
@@ -225,6 +226,7 @@ async function main() {
     });
     await publishProviderAgent(base, {
       agent: CODEX_AGENT,
+      backend: 'acp:codex',
       provider: 'openai',
       endpoint: 'codex-endpoint',
       model: 'codex-published',
@@ -236,7 +238,6 @@ async function main() {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
     const session = await client.beta.sessions.create({
       agent: GEMINI_AGENT,
-      metadata: { 'awaken.runtime': 'acp:gemini' },
       betas: BETAS,
     });
     await client.beta.sessions.events.send(session.id, {
@@ -283,7 +284,6 @@ async function main() {
     await assert.rejects(
       codexClient.beta.sessions.create({
         agent: CODEX_AGENT,
-        metadata: { 'awaken.runtime': 'acp:codex' },
         mcp_servers: [{ name: 'calc-secure', type: 'url', url: fixture.url }],
         vault_ids: [vault.id],
         betas: BETAS,
@@ -293,7 +293,6 @@ async function main() {
     );
     const codexSession = await codexClient.beta.sessions.create({
       agent: CODEX_AGENT,
-      metadata: { 'awaken.runtime': 'acp:codex' },
       mcp_servers: [{ name: 'calc-anonymous', type: 'url', url: anonymousFixture.url }],
       betas: BETAS,
     });
@@ -303,7 +302,7 @@ async function main() {
     });
     const codexTexts = await messages(codexClient, codexSession.id);
     assert.ok(
-      codexTexts.some((text) => text.includes('credential_driver_required: codex')),
+      codexTexts.some((text) => text.includes('credential_realization_kind_unsupported')),
       `Codex rejects bearer-only publication instead of restoring its removed environment protocol: ${JSON.stringify(codexTexts)}`,
     );
 

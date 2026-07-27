@@ -214,12 +214,14 @@ threads. The single-writer + SQLite elegance is preserved **inside** each cell �
 ### Subprocess env (the awaken way)
 
 awaken's ACP subprocess `env_clear()`s the ambient env and installs only two
-things: **① a `["PATH","HOME"]` host passthrough** (so `npx`/`node`/the CLI
-resolve) and **② projected model/secret env** (from the config plane / vault). So
-in deployment: **node ≥ 20 is baked into the worker image** (found via PATH, not a
-shell hack); **credentials live in the vault, injected on demand**; **the sandbox
-is decided by pod securityContext**. These are not runtime shell variables — they
-are provisioned via image + config + vault.
+things: **① a `["PATH","HOME"]` host passthrough** (so an absolute Node-backed
+wrapper can resolve `node`, and a backend-owned CLI can read its own login) and
+**② typed managed-model/secret env when the publication selected managed
+provisioning**. Runtime never invokes `npx -y`: local product startup resolves a
+pinned wrapper once, while container Workers bake the executable and runtime
+dependencies into their image. Backend-owned credentials stay in the external
+CLI; managed credentials come from the vault. The sandbox is selected by typed
+deployment policy, not runtime shell variables.
 
 ### Single-writer HA (the one wart, faced head-on)
 

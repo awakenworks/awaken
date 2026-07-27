@@ -230,8 +230,7 @@ pub(crate) fn builtin_hand_tools() -> Vec<(String, bool)> {
 /// A client-executed tool descriptor: model-visible, but no `RawTool` is
 /// registered, so a call awaits (gate `ask`) and the *client* supplies the result.
 pub(crate) fn client_tool_descriptor(id: &str) -> ToolDescriptor {
-    ToolDescriptor::pinned(
-        "client",
+    ToolDescriptor::client_executed(
         id,
         format!("Client-executed tool `{id}`; the caller runs it and returns the result."),
         serde_json::json!({ "type": "object" }),
@@ -439,6 +438,22 @@ mod tests {
         spec.plugin_config
             .insert(STATE_MACHINE_PLUGIN_ID.to_string(), section);
         spec
+    }
+
+    #[test]
+    fn client_tool_uses_the_canonical_execution_ownership() {
+        // Cause graph: managed client declaration -> canonical descriptor
+        // constructor -> ClientExecuted ownership -> runtime awaits the caller.
+        // A generic pinned descriptor would instead claim server execution.
+        //
+        // Decision table:
+        // | declaration | descriptor kind | execution owner |
+        // | client      | ClientExecuted  | caller          |
+        let descriptor = client_tool_descriptor("lookup");
+        assert_eq!(
+            descriptor.kind,
+            awaken_runtime_contract::resolved::ToolKind::ClientExecuted
+        );
     }
 
     #[test]

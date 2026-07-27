@@ -33,6 +33,9 @@ pub(crate) enum Command {
         json: bool,
         config_path: Option<std::path::PathBuf>,
     },
+    DoctorAcp {
+        json: bool,
+    },
     Version,
     Help,
 }
@@ -53,10 +56,33 @@ pub(crate) fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Comma
         "database" => parse_database_args(&args),
         "worker" => parse_worker_args(&args),
         "config" => parse_config_args(&args),
+        "doctor" => parse_doctor_args(&args),
         "version" | "-V" | "--version" if args.is_empty() => Ok(Command::Version),
         "help" | "-h" | "--help" if args.is_empty() => Ok(Command::Help),
         other => Err(format!("unknown command {other:?}; run `awaken --help`")),
     }
+}
+
+fn parse_doctor_args(args: &[String]) -> Result<Command, String> {
+    let Some((subject, options)) = args.split_first() else {
+        return Err("doctor requires the 'acp' subject".to_owned());
+    };
+    if subject != "acp" {
+        return Err(format!(
+            "unknown doctor subject {subject:?}; expected 'acp'"
+        ));
+    }
+    if options.iter().any(|arg| is_help(arg)) {
+        return Ok(Command::Help);
+    }
+    let mut json = false;
+    for option in options {
+        match option.as_str() {
+            "--json" => json = true,
+            other => return Err(format!("unexpected doctor acp argument {other:?}")),
+        }
+    }
+    Ok(Command::DoctorAcp { json })
 }
 
 fn parse_start_args(args: &[String]) -> Result<StartArgs, String> {
@@ -239,7 +265,7 @@ fn is_help(value: &str) -> bool {
 
 pub(crate) fn print_help() {
     println!(
-        "Awaken\n\nUSAGE:\n    awaken [COMMAND] [OPTIONS]\n\nRunning `awaken` without a command is the same as `awaken start`.\n\nCOMMANDS:\n    start                 Start locally, print readiness, and open the browser\n    serve                 Start headless for service managers\n    management            Start only the authoring/control surface (server mode)\n    database migrate      Apply management schema migrations and exit\n    worker --server URL   Join an Awaken server as a worker\n    config [--json]       Print effective, redacted configuration\n    version               Print the installed version\n\nOPTIONS:\n    --config PATH         Read typed configuration from PATH\n    --port PORT           Override the listen port\n    --data-dir PATH       Override the persistent data root (default ~/.awaken)\n    --no-browser          Do not open a browser\n    --identity-mode MODE  no-login, self-managed, or awaken-cloud\n    --cloud-models MODE   disabled or enabled (requires awaken-cloud identity)\n    -h, --help            Print this help\n\nConfiguration sources: --config PATH or ~/.awaken/config.toml, then defaults."
+        "Awaken\n\nUSAGE:\n    awaken [COMMAND] [OPTIONS]\n\nRunning `awaken` without a command is the same as `awaken start`.\n\nCOMMANDS:\n    start                 Start locally, print readiness, and open the browser\n    serve                 Start headless for service managers\n    management            Start only the authoring/control surface (server mode)\n    database migrate      Apply management schema migrations and exit\n    worker --server URL   Join an Awaken server as a worker\n    doctor acp [--json]   Discover and diagnose supported local ACP agents\n    config [--json]       Print effective, redacted configuration\n    version               Print the installed version\n\nOPTIONS:\n    --config PATH         Read typed configuration from PATH\n    --port PORT           Override the listen port\n    --data-dir PATH       Override the persistent data root (default ~/.awaken)\n    --no-browser          Do not open a browser\n    --identity-mode MODE  no-login, self-managed, or awaken-cloud\n    --cloud-models MODE   disabled or enabled (requires awaken-cloud identity)\n    -h, --help            Print this help\n\nConfiguration sources: --config PATH or ~/.awaken/config.toml, then defaults."
     );
 }
 
@@ -359,6 +385,10 @@ mod tests {
             })
         );
         assert!(parse_args(["worker".into()]).is_err());
+        assert_eq!(
+            parse_args(["doctor".into(), "acp".into(), "--json".into()]).unwrap(),
+            Command::DoctorAcp { json: true }
+        );
     }
 
     #[tokio::test]

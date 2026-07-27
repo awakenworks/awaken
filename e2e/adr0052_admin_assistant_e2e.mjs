@@ -4,7 +4,8 @@
 //
 // It drives the HTTP surface the ADR changed:
 //   1. The assistant is an ordinary published agent, projected on `/v1/agents` (D1),
-//      carrying the six admin tools and an auto-resolved model (D3/D5).
+//      with an auto-resolved model (D5). Server-executed admin tools remain in the
+//      executable publication and are not retyped as client custom tools.
 //   2. Scope-keyed tool visibility (D3): a config naming an `admin_*` tool validates
 //      only in the reserved scope (via `/v1/workspaces/__admin/...`), and is rejected
 //      (UnknownTool) in the tenant/default scope — the tool's existence is not even
@@ -40,18 +41,12 @@ async function main() {
     const projected = await json('GET', `/v1/agents/${ASSISTANT}`);
     assert.equal(projected.status, 200, 'the management assistant is a published, projectable agent');
     assert.ok(projected.body.model && projected.body.model.id, 'its model auto-resolved (D5)');
-    const toolIds = (projected.body.tools ?? []).map((t) => t.name ?? t.id ?? t);
-    for (const id of [
-      'admin_get_platform_capabilities',
-      'admin_draft_agent',
-      'admin_patch_agent',
-      'admin_validate_agent',
-      'admin_draft_environment',
-      'admin_explain_console',
-    ]) {
-      assert.ok(toolIds.includes(id), `assistant carries ${id}`);
-    }
-    pass(`assistant projected with 6 admin tools + auto-bound model ${projected.body.model.id}`);
+    assert.deepEqual(
+      projected.body.tools ?? [],
+      [],
+      'server-executed admin tools are not projected as client-executed custom tools',
+    );
+    pass(`assistant projected with its auto-bound model ${projected.body.model.id}`);
 
     // 2a. A tenant/default-scope config naming an admin tool is rejected (D3): the
     // admin tool is not in the default scope's catalog, so compile fails closed.
@@ -95,10 +90,15 @@ async function main() {
     );
     const reservedPub = await json('POST', `/v1/workspaces/${RESERVED}/config/agents/sneaky/publish`, undefined);
     assert.equal(reservedPub.status, 200, 'admin-tool config publishes from the reserved scope');
+    const authoredSneaky = await json('GET', `/v1/workspaces/${RESERVED}/config/agents/sneaky`);
+    assert.deepEqual(authoredSneaky.body.tools, [ADMIN_TOOL], 'authoring truth retains the server tool');
     const sneakyProjected = await json('GET', `/v1/agents/sneaky`);
     assert.equal(sneakyProjected.status, 200, 'real platform Workspace owns the installed projection');
-    const sneakyTools = (sneakyProjected.body.tools ?? []).map((t) => t.name ?? t.id ?? t);
-    assert.ok(sneakyTools.includes(ADMIN_TOOL), 'the published reserved-scope agent carries the admin tool');
+    assert.deepEqual(
+      sneakyProjected.body.tools ?? [],
+      [],
+      'the server tool is not duplicated into the client-tool wire union',
+    );
     const syntheticWorkspaceProjection = await json('GET', `/v1/workspaces/${RESERVED}/agents/sneaky`);
     assert.equal(
       syntheticWorkspaceProjection.status,

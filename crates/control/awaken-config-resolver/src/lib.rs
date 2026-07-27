@@ -499,16 +499,20 @@ pub async fn resolve_profile_candidates(
 /// never a silent unauthenticated run.
 /// The validity join (ADR-0118 `can_consume`): may this credential authenticate
 /// this provider? A source scoped to a provider (`provider_id = Some("anthropic")`)
-/// may only consume that provider's offerings; an unscoped source
-/// (`provider_id = None`, explicitly unscoped persisted source) may consume any. This is what stops an
-/// otherwise-materializable key being paired with a model it cannot authenticate —
-/// the invalid `(model × credential)` combination the ADR calls out.
+/// may only consume that provider's offerings; an unscoped material source
+/// (`provider_id = None`, explicitly unscoped persisted Vault/OAuth source) may
+/// consume any. A backend-owned WorkerLocal identity without a provider scope is
+/// never provider material: it authenticates its own driver instead. This is what
+/// stops an otherwise-materializable key or local CLI login being paired with a
+/// model it cannot authenticate — the invalid `(model × credential)` combination
+/// the ADR calls out.
 #[must_use]
 pub fn can_consume(offering_provider_id: &str, source: &CredentialSource) -> bool {
-    source
-        .provider_id
-        .as_deref()
-        .is_none_or(|scoped| scoped == offering_provider_id)
+    match (source.kind, source.provider_id.as_deref()) {
+        (awaken_credential_vault::CredentialKind::WorkerLocal, None) => false,
+        (_, None) => true,
+        (_, Some(scoped)) => scoped == offering_provider_id,
+    }
 }
 
 /// Materialize the credential a binding selects, gated by [`can_consume`] when an
@@ -837,9 +841,10 @@ impl<'de> serde::Deserialize<'de> for AgentInputConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_credential_vault::repo::{InMemoryCredentialRepo, ensure_worker_local};
     use awaken_credential_vault::{
         CredentialCreateParams, CredentialKind, CredentialSourceId, InMemorySecretStore,
-        create_source,
+        WorkerLocalBinding, create_source,
     };
 
     use awaken_model_catalog::{
@@ -1183,6 +1188,19 @@ mod tests {
         // An explicitly unscoped persisted source consumes any provider.
         assert!(can_consume("anthropic", &unscoped));
         assert!(can_consume("openai", &unscoped));
+
+        let backend_login = ensure_worker_local(
+            &InMemoryCredentialRepo::new(),
+            "ws",
+            WorkerLocalBinding::new("acp:claude", "default"),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            !can_consume("anthropic", &backend_login),
+            "a CLI-owned login is not an unscoped provider secret"
+        );
     }
 
     #[tokio::test]

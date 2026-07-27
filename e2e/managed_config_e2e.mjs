@@ -170,7 +170,11 @@ async function main() {
     assert.equal(projected.body.id, AGENT);
     assert.equal(projected.body.model.id, 'config-model', 'model projected from config truth');
     assert.equal(projected.body.system, GREETING, 'system projected from config instructions');
-    assert.deepEqual(projected.body.tools, [{ type: 'custom', name: 'bash' }]);
+    assert.deepEqual(
+      projected.body.tools,
+      [],
+      'a server-executed builtin is not retyped as a client-executed custom tool',
+    );
     pass('published config agent projects onto /v1/agents');
 
     // Run: a session for the published agent runs with its own instructions.

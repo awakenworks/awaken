@@ -349,10 +349,6 @@ async function main(): Promise<void> {
         provider_id: PROVIDER,
         oauth_helper: 'gcloud',
       },
-      {
-        kind: 'worker_local',
-        provider_id: PROVIDER,
-      },
     ]) {
       response = await request('POST', '/v1/config/credentials', {
         workspace_id: WORKSPACE,
@@ -361,6 +357,22 @@ async function main(): Promise<void> {
       assert.equal(response.status, 201, JSON.stringify(response.body));
       assert.equal(response.body.kind, valid.kind);
     }
+
+    // Cause graph / decision table for credential ownership after restart:
+    // operator-owned managed material -> public authoring API; host-observed
+    // WorkerLocal identity -> discovery/ensure_worker_local only. Routing both
+    // through POST would create two registration authorities.
+    //
+    // | kind         | public POST | authoritative registration |
+    // | oauth        | 201         | credential API             |
+    // | worker_local | 422         | local discovery            |
+    response = await request('POST', '/v1/config/credentials', {
+      workspace_id: WORKSPACE,
+      kind: 'worker_local',
+      provider_id: PROVIDER,
+    });
+    assert.equal(response.status, 422, JSON.stringify(response.body));
+    assert.equal(response.body.code, 'credential_invalid');
 
     console.log(
       'POSTGRES CONTROL PLANE TS E2E PASS: catalog, credentials, Agent publication, admin resources/webhooks, and Sessions survive one process replacement.',
