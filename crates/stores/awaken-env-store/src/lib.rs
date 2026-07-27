@@ -67,7 +67,10 @@ fn config_str(c: &EnvironmentConfig) -> String {
     serde_json::to_string(c).expect("env config serializes")
 }
 
-struct StoredEnvRow {
+/// Storage-shaped row shared by the SQLite and PostgreSQL adapters. Keeping the
+/// row-to-domain translation here prevents either backend from becoming a second
+/// interpretation of persisted Environment facts.
+struct PersistedEnvRow {
     id: String,
     name: String,
     description: String,
@@ -78,7 +81,7 @@ struct StoredEnvRow {
     scope: Option<String>,
 }
 
-impl StoredEnvRow {
+impl PersistedEnvRow {
     fn into_item(self) -> EnvItem {
         EnvItem {
             id: self.id,
@@ -97,7 +100,7 @@ impl StoredEnvRow {
 }
 
 fn sqlite_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EnvItem> {
-    Ok(StoredEnvRow {
+    Ok(PersistedEnvRow {
         id: row.get(0)?,
         name: row.get(1)?,
         description: row.get(2)?,
@@ -111,7 +114,7 @@ fn sqlite_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EnvItem> {
 }
 
 fn pg_row(row: &PgRow) -> EnvItem {
-    StoredEnvRow {
+    PersistedEnvRow {
         id: row.get("env_id"),
         name: row.get("name"),
         description: row.get("description"),

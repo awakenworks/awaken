@@ -457,7 +457,7 @@ The initial implementation matrix is closed:
 |---|---|---|---|---|
 | Workload | not used for in-process Native provider access | typed process-secret or private secret-file requirement | only an explicitly trusted workload MCP client | last-mile delivery, process/file scope, cleanup, no base-env persistence |
 | Worker | exact Worker provider adapter | Worker-mediated endpoint; no real secret in ACP workload | generation-fenced Worker MCP relay | exact substitution, no-bypass network, ownership/lease revoke |
-| Platform | deferred | deferred | deferred | separate accepted downstream-adapter ADR and conformance |
+| Platform | supported only through the accepted neutral `PlatformProviderAdapter` contract and an explicitly installed downstream adapter | deferred | deferred | exact Platform holder/capability evidence, claim fence, and secret-free receipt; other cells require a separate accepted downstream-adapter ADR and conformance |
 
 ### Amendment: neutral platform-provider realization contract (2026-07-26)
 
@@ -699,8 +699,9 @@ is deferred with its authoring proposal.
 - Existing credential access/usage vocabulary is extended instead of duplicated.
 - Model and MCP reuse security values without merging their aggregates.
 - Vault remains storage at rest, not an execution custody grade.
-- Automatic authoring and platform mediation cannot be claimed before their
-  application and trust boundaries are designed and tested.
+- Automatic authoring and unimplemented Platform cells cannot be claimed before
+  their application and trust boundaries are designed and tested. Native
+  Platform inference is limited to the neutral amendment's exact adapter contract.
 
 ## Rejected Alternatives
 
@@ -720,13 +721,13 @@ is deferred with its authoring proposal.
 
 ## Development Readiness and Implementation Gate
 
-This ADR is an accepted target architecture, but Workload and Worker realization
-are implementation-gated by the coordinating Slice 0 in ADR-0066. Before feature
-coding begins, the runtime contract must freeze the envelope-reference schema and
-material-resolver result, dispatch must freeze the atomic claim-epoch binding
-transaction and recovery wire shape, Credential/Vault must freeze exact OAuth
-refresh/reseal projection, and ACP must freeze its typed last-mile requirement.
-Those are contract decisions, not private implementation details.
+The coordinating ADR-0066 Slice 0 and the in-repository Workload/Worker contract
+paths have landed: envelope-reference and material-resolver values, atomic
+claim-epoch binding and recovery shape, exact OAuth refresh/reseal projection,
+typed ACP last-mile requirements, Repository pins, and the neutral Native
+`PlatformProviderAdapter` extension are current code. Their decision-table,
+secret-nonleak, retry/reclaim, and Rust/TypeScript integration tests are the
+regression gate for further development.
 
 The explicit holder policy, no-order/no-fallback rule, Model/MCP aggregate
 separation, `Forbidden`/`VirtualOnly` exposure, and the Native/ACP/MCP matrix are
@@ -735,8 +736,8 @@ every new publication; the compatibility decoder is removed after all stored
 snapshot schema versions that can contain it are migrated or expire under
 retention policy.
 
-Acceptance approves the target design, not current conformance. G43 remains a
-target guardrail until one Workload and one Worker realization have the required
-Rust/provider/network and TypeScript end-to-end evidence. Platform realization
-and automatic LLM Vault authoring remain separately gated work and cannot be
-inferred from this acceptance.
+G43 remains a target guardrail for the deployment-specific authenticated ACP MCP
+case that must prove Worker-held substitution and provider-enforced no-bypass
+networking; built-in providers fail closed when they cannot prove that cell.
+Platform ACP/MCP realization and automatic LLM Vault authoring remain separately
+gated work and cannot be inferred from the implemented Native platform contract.

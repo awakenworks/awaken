@@ -90,7 +90,12 @@ struct SessionBaseline {
     environment: EnvironmentSnapshot,
     mcp_authoring: SessionMcpAuthoringContext,
     agent_id: AgentId,
+    model: ModelId,
     runtime: RuntimeSelection,
+    application: Option<ApplicationContributionReceipt>,
+    delegate_ids: Vec<AgentId>,
+    toolsets: Vec<ToolsetPolicy>,
+    mounts: Vec<MountRequirement>,
     env: Vec<EnvVar>,
     prompts: Vec<String>,
 }
@@ -104,6 +109,7 @@ struct EnvironmentSnapshot {
     revision: EnvironmentRevision,
     config_fingerprint: EnvironmentFingerprint,
     sandbox: SandboxRequirements,
+    packages: EnvironmentPackages,
     network: NetworkPolicy,
     credential_realization: CredentialRealizationProfile,
 }
@@ -142,6 +148,15 @@ creation compiler reads it, one root mutation consumes it, and the same mutation
 replaces it with `Frozen(SessionBaseline)` plus generation 1 Resource/MCP state.
 Raw authoring inputs are then gone. A Session whose composition has no registered
 application records `Absent` explicitly and can finalize immediately.
+
+A required contribution has no independent wall-clock timeout or background
+expiry authority. While it is absent, the Session remains inert in `Preparing`:
+no Runtime preparation, Resource/MCP realization, or idle lifecycle fact occurs.
+The ordinary idempotent Session delete command is the sole cancellation path; it
+commits the terminal delete/tombstone transition, after which a late contribution
+returns not found and cannot resurrect the aggregate. A future automatic
+retention policy, if required by operations, must invoke that same command rather
+than add another preparation state machine.
 
 `SessionBaseline` is immutable after this finalization CAS and before any
 external realization. It contains only facts whose lifecycle is frozen for that
@@ -266,9 +281,14 @@ to the Control-owned Session application service while the Session is still
 `Preparing`:
 
 ```rust
+struct WorkerApplicationContributionCommand {
+    run_claim: RunClaimRef,
+    worker_identity: WorkerIdentity,
+    contribution: ApplicationSessionContribution,
+}
+
 struct ApplicationSessionContribution {
     session_id: SessionId,
-    run_claim: RunClaimRef,
     application_fingerprint: ApplicationPlanFingerprint,
     input: ApplicationSessionInput,
 }
@@ -282,8 +302,10 @@ struct ApplicationSessionInput {
 }
 ```
 
-The Control edge verifies the exact claim/epoch and application fingerprint,
-strips the command envelope, persists only `ApplicationSessionInput` and its
+The Control transport edge verifies the envelope's exact claim/epoch, Worker
+identity, Session/Run correlation, and application fingerprint, then strips the
+envelope before invoking the Session application port. The domain command has no
+claim or Worker vocabulary. It persists only `ApplicationSessionInput` and its
 fingerprint into the preparation intent, and runs the single
 creation compiler over Control and application inputs. Re-delivery of the same
 contribution is a replay; a different payload under the same fingerprint fails
@@ -694,6 +716,22 @@ requires the exact publication acknowledgement to be durable as well.
    realization. Any required initial failure aborts activation and disposes partial results;
    durable nonterminal state remains recoverable.
 
+The preparation branch is tested from this causal graph:
+
+```text
+create(required) -> Preparing --valid contribution--> Frozen -> realization -> idle
+                              \--delete-------------> tombstone / not found
+                              \--no command---------> remains inert
+```
+
+| Preparing input | Terminal command | Runtime preparation | Result |
+|---|---|---|---|
+| absent | none | never | remains `preparing` |
+| valid exact contribution | none | once after the finalization CAS | `idle` after acknowledgement |
+| conflicting/replayed contribution | none | never/never again | conflict/exact replay |
+| absent | delete | never | tombstone and public not found |
+| contribution after delete | already deleted | never | not found; no resurrection |
+
 ### Managed MCP full replacement
 
 1. The Managed update edge authorizes the existing Session operation and parses
@@ -794,7 +832,12 @@ lifecycle.
 | Runtime Core | existing safe-boundary capability refresh and tool execution | Session persistence, Vault, Managed Environment, MCP authoring |
 | Downstream adapter | hosted gateway/lease behavior behind a future Session-owned port | reverse dependency or changes to Awaken domain types |
 
-## Required Consolidation Before Feature Expansion
+## Implemented Consolidation and Continuing Proof
+
+The following list is retained as the implementation/deletion ledger. Its
+authoritative paths have landed; it is no longer a pre-coding gate. Remaining
+work is evidence for deployment-specific cells, not permission to reintroduce
+the removed authorities.
 
 1. align the aggregate with ADR-0051's scoped persistence envelope and define
    Environment revision/snapshot compilation;
@@ -838,6 +881,9 @@ replacement and deletion proof:
 
 ## Implementation Slices
 
+Slices 0-3 have landed in the repository and are retained here to document the
+causal implementation order and the evidence expected when those paths change.
+
 ### Slice 0: contract closure gate
 
 - remove `workspace_id` from the Session aggregate and retain the ADR-0051 scope
@@ -852,9 +898,9 @@ replacement and deletion proof:
 - coordinate ADR-0067's attempt binding, sealed-envelope, and OAuth refresh
   contracts.
 
-No production feature path from Slices 1-3 begins until this document and the
-coordinating ADRs close Slice 0. Slice 0 is documentation/contract work, not a
-temporary implementation layer.
+This gate was satisfied before the production paths in Slices 1-3 landed. Slice
+0 remains contract history and a regression constraint, not a temporary
+implementation layer or an outstanding prerequisite.
 
 ### Slice 1: convergence before hot plug
 
@@ -918,19 +964,16 @@ item requires a concrete second implementation and a separate accepted slice.
 
 ## Development Readiness and Implementation Gate
 
-This ADR is an accepted target architecture, but Slices 1-3 are implementation
-gated by Slice 0. The aggregate separation, single-authority direction, MCP-only
-scope, normalizer precedence, and stage/activate/publish protocol are accepted.
-Direct feature implementation begins only after the scope envelope,
-EnvironmentSnapshot compiler, claim-fenced application contribution, Session
-realization lease, delete/tombstone/idempotency behavior, canonical public MCP
-replacement mapping, and ADR-0067 credential contracts are all frozen without
-contradiction in the coordinating documents.
+The contract-closure gate and Slices 1-3 are implemented: the scoped aggregate,
+exact Environment snapshot, claim-fenced transport envelope plus claim-free
+domain command, root CAS/tombstone/idempotency behavior, one attachment
+normalizer, and one `McpAttachmentRealizer` driven by
+`drive_session_realization` are the current code paths. Rust store/runtime tests
+and the Managed TypeScript MCP matrix are the regression gate for further
+development.
 
-Once Slice 0 is closed, implementations may refine private helper names but may
-not introduce another durable MCP registry, credential selector, network-policy
-authority, public MCP mutation surface, or long-lived dual-write path.
-
-Acceptance approves the target design, not its current implementation. G42
-remains a target guardrail until the old paths are deleted and the required
-SQLite/Postgres, Rust, and TypeScript evidence is green.
+Implementations may refine private helper names but may not introduce another
+durable MCP registry, credential selector, network-policy authority, public MCP
+mutation surface, or long-lived dual-write path. G42 remains listed as a target
+guardrail until all deployment-specific Native/ACP and ownership-loss evidence
+is continuously enforced, not because feature coding is still blocked.

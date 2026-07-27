@@ -29,6 +29,17 @@ async fn run_migrations(pool: &PgPool) -> Result<(), PgStoreError> {
     Ok(())
 }
 
+/// Verify the externally-owned `memory_store` bundle without executing DDL.
+async fn verify_migrations(pool: &PgPool) -> Result<(), PgStoreError> {
+    let bundle = memory_store_bundle().map_err(|e| PgStoreError::Migrate(e.to_string()))?;
+    awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+        .map_err(|e| PgStoreError::Migrate(e.to_string()))?
+        .verify_bundle(&bundle)
+        .await
+        .map_err(|e| PgStoreError::Migrate(e.to_string()))?;
+    Ok(())
+}
+
 use crate::repository::{now_nanos, under_prefix, validate_path, validate_size};
 use crate::{
     MemErr, Memory, MemoryEntry, MemoryPurgeSummary, MemoryRepository, MemoryVersion,
@@ -59,10 +70,16 @@ impl PostgresMemoryRepository {
 
     /// Connect to an already-migrated schema without executing DDL.
     pub async fn connect_existing(url: &str) -> Result<Self, PgStoreError> {
-        PgPool::connect(url)
+        let pool = PgPool::connect(url)
             .await
-            .map(Self::with_pool)
-            .map_err(|error| PgStoreError::Connect(error.to_string()))
+            .map_err(|error| PgStoreError::Connect(error.to_string()))?;
+        Self::with_existing_pool(pool).await
+    }
+
+    /// Wrap an existing pool after verifying its scoped migration ledger.
+    pub async fn with_existing_pool(pool: PgPool) -> Result<Self, PgStoreError> {
+        verify_migrations(&pool).await?;
+        Ok(Self { pool })
     }
 
     /// Wrap an existing pool **without migrating**, allowing a unified migration
