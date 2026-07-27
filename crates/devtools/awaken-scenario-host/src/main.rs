@@ -67,7 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // The worker transport mounted by awaken-server shares the same durable
         // Postgres topology. Initialize its sole process-wide directory before the
         // router is built, matching the production awaken composition root.
-        awaken_server::init_postgres_worker_registry(&url).await?;
+        awaken_server::init_postgres_worker_registry(url).await?;
     }
     // Shared Postgres commit backend (ADR-0022 D6): thread history on one DB so any
     // node warm-reloads any thread. Connected once here (non-Send sqlx out of the run

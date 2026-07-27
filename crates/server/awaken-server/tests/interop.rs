@@ -398,10 +398,11 @@ async fn ag_ui_driver_error_returns_run_error() {
 /// An A2A `message:send` body: a user message on `context` carrying `text`.
 fn a2a_send(context: &str, msg_id: &str, text: &str) -> Value {
     json!({ "message": {
+        "kind": "message",
         "messageId": msg_id,
         "contextId": context,
-        "role": "ROLE_USER",
-        "parts": [{ "text": text }]
+        "role": "user",
+        "parts": [{ "kind": "text", "text": text }]
     }})
 }
 

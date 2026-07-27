@@ -77,6 +77,27 @@ fn text_of(message: &Message) -> String {
         .collect()
 }
 
+fn task_response(id: &str, state: &str, message: Option<&str>) -> Vec<u8> {
+    let mut status = serde_json::json!({ "state": state });
+    if let Some(text) = message {
+        status["message"] = serde_json::json!({
+            "kind": "message",
+            "messageId": "a",
+            "role": "agent",
+            "parts": [{ "kind": "text", "text": text }],
+        });
+    }
+    serde_json::to_vec(&serde_json::json!({
+        "task": {
+            "kind": "task",
+            "id": id,
+            "contextId": "c",
+            "status": status,
+        }
+    }))
+    .expect("canonical A2A task fixture serializes")
+}
+
 fn delegating_host() -> SharedHost {
     let snapshot = ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("default", "parent", "default"))
@@ -217,17 +238,15 @@ async fn a_working_task_is_polled_to_completion() {
             _path: &str,
             _body: Option<Vec<u8>>,
         ) -> Result<Response, String> {
-            let json = if method == "POST" {
+            let body = if method == "POST" {
                 // message:send → a working task with an id to poll.
-                r#"{"task":{"id":"task-1","contextId":"c","status":{"state":"TASK_STATE_WORKING"}}}"#
-                    .to_string()
+                task_response("task-1", "working", None)
             } else {
                 // tasks/get → completed, carrying the reply.
                 self.gets.fetch_add(1, Ordering::SeqCst);
-                r#"{"task":{"id":"task-1","contextId":"c","status":{"state":"TASK_STATE_COMPLETED","message":{"messageId":"a","role":"ROLE_AGENT","parts":[{"text":"polled answer"}]}}}}"#
-                    .to_string()
+                task_response("task-1", "completed", Some("polled answer"))
             };
-            Ok(Response::new(200, json.into_bytes()))
+            Ok(Response::new(200, body))
         }
     }
 
@@ -261,9 +280,6 @@ async fn a_parent_interrupt_cancels_the_remote_task() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::sync::Notify;
 
-    const WORKING: &str =
-        r#"{"task":{"id":"task-1","contextId":"c","status":{"state":"TASK_STATE_WORKING"}}}"#;
-
     /// A remote whose task never completes; it records a `tasks:cancel` and signals
     /// each poll so the test can interrupt mid-flight.
     struct HangingTransport {
@@ -285,7 +301,7 @@ async fn a_parent_interrupt_cancels_the_remote_task() {
             if method == "GET" {
                 self.polled.notify_one();
             }
-            Ok(Response::new(200, WORKING.as_bytes().to_vec()))
+            Ok(Response::new(200, task_response("task-1", "working", None)))
         }
     }
 
@@ -342,12 +358,12 @@ async fn a_remote_input_required_awaits_the_parent_then_resumes() {
             _body: Option<Vec<u8>>,
         ) -> Result<Response, String> {
             assert_eq!(method, "POST", "only message:send is used (no polling)");
-            let json = if self.sends.fetch_add(1, Ordering::SeqCst) == 0 {
-                r#"{"task":{"id":"t","contextId":"c","status":{"state":"TASK_STATE_INPUT_REQUIRED"}}}"#
+            let body = if self.sends.fetch_add(1, Ordering::SeqCst) == 0 {
+                task_response("t", "input-required", None)
             } else {
-                r#"{"task":{"id":"t","contextId":"c","status":{"state":"TASK_STATE_COMPLETED","message":{"messageId":"a","role":"ROLE_AGENT","parts":[{"text":"final answer"}]}}}}"#
+                task_response("t", "completed", Some("final answer"))
             };
-            Ok(Response::new(200, json.as_bytes().to_vec()))
+            Ok(Response::new(200, body))
         }
     }
 
@@ -432,8 +448,28 @@ async fn remote_artifacts_are_included_in_the_reply() {
             _path: &str,
             _body: Option<Vec<u8>>,
         ) -> Result<Response, String> {
-            let json = r#"{"task":{"id":"t","contextId":"c","status":{"state":"TASK_STATE_COMPLETED","message":{"messageId":"a","role":"ROLE_AGENT","parts":[{"text":"summary"}]}},"artifacts":[{"artifactId":"report","parts":[{"text":"the report body"}]}]}}"#;
-            Ok(Response::new(200, json.as_bytes().to_vec()))
+            let body = serde_json::to_vec(&serde_json::json!({
+                "task": {
+                    "kind": "task",
+                    "id": "t",
+                    "contextId": "c",
+                    "status": {
+                        "state": "completed",
+                        "message": {
+                            "kind": "message",
+                            "messageId": "a",
+                            "role": "agent",
+                            "parts": [{ "kind": "text", "text": "summary" }],
+                        },
+                    },
+                    "artifacts": [{
+                        "artifactId": "report",
+                        "parts": [{ "kind": "text", "text": "the report body" }],
+                    }],
+                }
+            }))
+            .expect("canonical artifact task fixture serializes");
+            Ok(Response::new(200, body))
         }
     }
 

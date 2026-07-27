@@ -281,6 +281,35 @@ fn artifact_value(artifact: &Artifact) -> Value {
     value
 }
 
+pub(crate) fn agent_card_value(model: &str, origin: &str) -> Value {
+    json!({
+        "name": "assistant",
+        "description": format!("Awaken agent over model `{model}`"),
+        "supportedInterfaces": [
+            { "url": format!("{origin}{JSONRPC_PATH}"), "protocolBinding": "JSONRPC", "tenant": "", "protocolVersion": "1.0" },
+            { "url": origin, "protocolBinding": "HTTP+JSON", "tenant": "", "protocolVersion": "1.0" },
+            { "url": format!("{origin}{JSONRPC_PATH}"), "protocolBinding": "JSONRPC", "tenant": "", "protocolVersion": "0.3" },
+            { "url": origin, "protocolBinding": "HTTP+JSON", "tenant": "", "protocolVersion": "0.3" }
+        ],
+        "version": env!("CARGO_PKG_VERSION"),
+        "capabilities": {
+            "streaming": true, "pushNotifications": true, "extensions": [],
+            "extendedAgentCard": true,
+        },
+        "securitySchemes": {},
+        "securityRequirements": [],
+        "defaultInputModes": ["text/plain", "image/*", "application/json"],
+        "defaultOutputModes": ["text/plain", "application/json"],
+        "skills": [{
+            "id": "assistant", "name": "Assistant",
+            "description": "General-purpose agent execution", "tags": ["assistant"],
+            "examples": [], "inputModes": [], "outputModes": [],
+            "securityRequirements": [],
+        }],
+        "signatures": [],
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,33 +338,4 @@ mod tests {
             })
         );
     }
-}
-
-pub(crate) fn agent_card_value(model: &str, origin: &str) -> Value {
-    json!({
-        "name": "assistant",
-        "description": format!("Awaken agent over model `{model}`"),
-        "supportedInterfaces": [
-            { "url": format!("{origin}{JSONRPC_PATH}"), "protocolBinding": "JSONRPC", "tenant": "", "protocolVersion": "1.0" },
-            { "url": origin, "protocolBinding": "HTTP+JSON", "tenant": "", "protocolVersion": "1.0" },
-            { "url": format!("{origin}{JSONRPC_PATH}"), "protocolBinding": "JSONRPC", "tenant": "", "protocolVersion": "0.3" },
-            { "url": origin, "protocolBinding": "HTTP+JSON", "tenant": "", "protocolVersion": "0.3" }
-        ],
-        "version": env!("CARGO_PKG_VERSION"),
-        "capabilities": {
-            "streaming": true, "pushNotifications": true, "extensions": [],
-            "extendedAgentCard": true,
-        },
-        "securitySchemes": {},
-        "securityRequirements": [],
-        "defaultInputModes": ["text/plain", "image/*", "application/json"],
-        "defaultOutputModes": ["text/plain", "application/json"],
-        "skills": [{
-            "id": "assistant", "name": "Assistant",
-            "description": "General-purpose agent execution", "tags": ["assistant"],
-            "examples": [], "inputModes": [], "outputModes": [],
-            "securityRequirements": [],
-        }],
-        "signatures": [],
-    })
 }

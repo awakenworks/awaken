@@ -218,7 +218,7 @@ async fn define_outcome(app: &Router, session: &str, rubric: &str) -> serde_json
         app,
         "POST",
         &format!("/v1/sessions/{session}/events"),
-        serde_json::json!({ "events": [{ "type": "user.define_outcome", "description": "finish it", "rubric": rubric, "max_iterations": 3 }] }),
+        serde_json::json!({ "events": [{ "type": "user.define_outcome", "description": "finish it", "rubric": { "type": "text", "content": rubric }, "max_iterations": 3 }] }),
     )
     .await;
     json_call(

@@ -84,7 +84,7 @@ pub enum EnvironmentConfigParams {
         #[serde(default)]
         networking: Option<CloudNetworkingParams>,
         #[serde(default)]
-        packages: Option<PackagesParams>,
+        packages: Option<Box<PackagesParams>>,
     },
     SelfHosted {},
 }

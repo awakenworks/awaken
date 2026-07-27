@@ -112,7 +112,7 @@ fn part_to_block(part: &UIMessagePart) -> Option<ContentBlock> {
             if !media_type.starts_with("image/") {
                 return None;
             }
-            Some(match parse_data_uri(&url) {
+            Some(match parse_data_uri(url) {
                 Some((mime, data)) => ContentBlock::image_base64(mime, data),
                 None => ContentBlock::image_url(url.clone()),
             })
