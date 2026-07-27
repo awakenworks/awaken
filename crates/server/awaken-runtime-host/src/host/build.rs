@@ -265,6 +265,7 @@ impl SharedHost {
             // session recovery; unset means single-machine (stable config home).
             session_blob_root: deployment.acp_session_blob_root.clone(),
             upstream: None,
+            worker_credential_resolver: None,
             deployment,
             memory,
             memory_selector,
@@ -285,6 +286,16 @@ impl SharedHost {
             capture_sink: None,
             admin_tools: Vec::new(),
         }
+    }
+
+    /// Install the Worker process's one opaque local-credential adapter.
+    #[must_use]
+    pub fn with_worker_credential_resolver(
+        mut self,
+        resolver: Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>,
+    ) -> Self {
+        self.worker_credential_resolver = Some(resolver);
+        self
     }
 
     /// Install the adapter that drives snapshot-selected remote attempts. The

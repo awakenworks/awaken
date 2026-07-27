@@ -55,6 +55,8 @@ pub struct DispatchWorker<S> {
     cancellation: Option<CancellationToken>,
     ownership_clock: Arc<dyn Clock>,
     local_credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
+    worker_credential_resolver:
+        Option<Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>>,
 }
 
 struct ClaimBoundOwnershipVerifier {
@@ -176,6 +178,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             cancellation: None,
             ownership_clock: Arc::new(SystemClock),
             local_credential_capabilities: Default::default(),
+            worker_credential_resolver: None,
         }
     }
 
@@ -287,6 +290,17 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Self {
         self.local_credential_capabilities = capabilities;
+        self
+    }
+
+    /// Install the Worker-local adapter that owns opaque provider login state.
+    /// It is consulted only for exact references already pinned by placement.
+    #[must_use]
+    pub fn with_worker_credential_resolver(
+        mut self,
+        resolver: Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>,
+    ) -> Self {
+        self.worker_credential_resolver = Some(resolver);
         self
     }
 
@@ -582,6 +596,46 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         }
 
         let attempt_executor = self.attempt_executor();
+        if !claimed.request.placement.required_credentials.is_empty() {
+            let resolver = self.worker_credential_resolver.as_ref().ok_or_else(|| {
+                Error::Execution(awaken_runtime_contract::execution::Error::Execution(
+                    "worker-local credential resolver is not installed".to_string(),
+                ))
+            })?;
+            let ownership = claim_bound_ownership_verifier(
+                self.store.clone(),
+                claim.clone(),
+                self.ownership_clock.clone(),
+            );
+            ownership.verify_current().await.map_err(|error| {
+                Error::Execution(awaken_runtime_contract::execution::Error::Execution(
+                    format!("dispatch ownership was lost before credential revalidation: {error}"),
+                ))
+            })?;
+            for required in &claimed.request.placement.required_credentials {
+                resolver
+                    .revalidate_worker_reference(&awaken_runtime_contract::CredentialRef {
+                        id: required.id.clone(),
+                        revision: required.revision,
+                    })
+                    .await
+                    .map_err(|error| {
+                        Error::Execution(
+                            awaken_runtime_contract::execution::Error::Execution(format!(
+                                "worker-local credential {} revision {} failed use-time revalidation: {error}",
+                                required.id, required.revision
+                            )),
+                        )
+                    })?;
+                ownership.verify_current().await.map_err(|error| {
+                    Error::Execution(awaken_runtime_contract::execution::Error::Execution(
+                        format!(
+                            "dispatch ownership was lost during credential revalidation: {error}"
+                        ),
+                    ))
+                })?;
+            }
+        }
         // Resolve this run's model to an executor once, before the activation is
         // consumed, and route every inference in this drive through it: the run's
         // effective model (its per-run override, else its snapshot binding) resolved

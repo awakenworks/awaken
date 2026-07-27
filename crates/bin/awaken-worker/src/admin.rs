@@ -101,6 +101,7 @@ mod tests {
             ),
             identity: awaken_worker_contract::WorkerIdentity::new("admin-test", "boot", 1),
             credential_observation_resolver: None,
+            credential_observations: Arc::new(crate::CredentialObservationCache::default()),
         });
         let app = worker_admin_router_with_lifecycle(lifecycle);
         assert_eq!(

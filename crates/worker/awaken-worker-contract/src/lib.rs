@@ -55,6 +55,7 @@ pub enum WorkerCredentialState {
     Expired,
     Invalid,
     Disabled,
+    ProbeFailed,
 }
 
 /// Point-in-time, non-secret credential evidence published by one Worker.
@@ -63,24 +64,37 @@ pub struct WorkerCredentialObservation {
     pub credential: WorkerCredentialRevision,
     pub state: WorkerCredentialState,
     pub observed_at_ms: u64,
+    /// Exclusive deadline after which this observation is no longer placement
+    /// evidence. A missing field from an older sender decodes to zero and
+    /// therefore fails closed.
+    #[serde(default)]
+    pub valid_until_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason_code: Option<String>,
 }
 
 impl WorkerCredentialObservation {
     #[must_use]
-    pub fn available(credential: WorkerCredentialRevision, observed_at_ms: u64) -> Self {
+    pub fn available(
+        credential: WorkerCredentialRevision,
+        observed_at_ms: u64,
+        valid_until_ms: u64,
+    ) -> Self {
         Self {
             credential,
             state: WorkerCredentialState::Available,
             observed_at_ms,
+            valid_until_ms,
             reason_code: None,
         }
     }
 
     #[must_use]
-    pub fn is_available_for(&self, credential: &WorkerCredentialRevision) -> bool {
-        self.state == WorkerCredentialState::Available && &self.credential == credential
+    pub fn is_selectable_at(&self, credential: &WorkerCredentialRevision, now_ms: u64) -> bool {
+        self.state == WorkerCredentialState::Available
+            && &self.credential == credential
+            && self.observed_at_ms <= now_ms
+            && now_ms < self.valid_until_ms
     }
 }
 
@@ -677,7 +691,7 @@ impl WorkerSnapshot {
             && requirements.required_credentials.iter().all(|required| {
                 self.credential_observations
                     .iter()
-                    .any(|observation| observation.is_available_for(required))
+                    .any(|observation| observation.is_selectable_at(required, now_ms))
             })
     }
 }
@@ -989,6 +1003,7 @@ mod tests {
                     revision: 6,
                 },
                 9,
+                100,
             ));
         assert!(!worker.accepts(&requirements, 10));
         worker
@@ -997,6 +1012,7 @@ mod tests {
                 credential: required.clone(),
                 state: WorkerCredentialState::LoginRequired,
                 observed_at_ms: 10,
+                valid_until_ms: 100,
                 reason_code: Some("credential_login_required".into()),
             });
         assert!(
@@ -1005,8 +1021,81 @@ mod tests {
         );
         worker
             .credential_observations
-            .insert(WorkerCredentialObservation::available(required, 10));
+            .insert(WorkerCredentialObservation::available(required, 10, 100));
         assert!(worker.accepts(&requirements, 10));
+    }
+
+    #[test]
+    fn worker_private_credential_observation_is_a_bounded_fact() {
+        let required = WorkerCredentialRevision {
+            id: "cred:worker".into(),
+            revision: 7,
+        };
+        let mut requirements = requirements();
+        requirements.required_credentials.insert(required.clone());
+        let mut worker = manifest("a", 0);
+
+        worker
+            .credential_observations
+            .insert(WorkerCredentialObservation::available(
+                required.clone(),
+                100,
+                200,
+            ));
+
+        assert!(
+            !worker.accepts(&requirements, 99),
+            "future evidence is invalid"
+        );
+        assert!(
+            worker.accepts(&requirements, 100),
+            "lower bound is inclusive"
+        );
+        assert!(worker.accepts(&requirements, 199));
+        assert!(
+            !worker.accepts(&requirements, 200),
+            "valid-until is an exclusive upper bound"
+        );
+    }
+
+    #[test]
+    fn one_failed_credential_observation_does_not_block_an_unrelated_requirement() {
+        let required = WorkerCredentialRevision {
+            id: "cred:healthy".into(),
+            revision: 2,
+        };
+        let mut requirements = requirements();
+        requirements.required_credentials.insert(required.clone());
+        let mut worker = manifest("a", 0);
+        worker
+            .credential_observations
+            .insert(WorkerCredentialObservation {
+                credential: WorkerCredentialRevision {
+                    id: "cred:failed".into(),
+                    revision: 1,
+                },
+                state: WorkerCredentialState::ProbeFailed,
+                observed_at_ms: 100,
+                valid_until_ms: 200,
+                reason_code: Some("credential_probe_failed".into()),
+            });
+        worker
+            .credential_observations
+            .insert(WorkerCredentialObservation::available(required, 100, 200));
+
+        assert!(worker.accepts(&requirements, 150));
+    }
+
+    #[test]
+    fn legacy_observation_without_a_deadline_fails_closed() {
+        let observation: WorkerCredentialObservation = serde_json::from_value(serde_json::json!({
+            "credential": { "id": "cred:legacy", "revision": 1 },
+            "state": "available",
+            "observed_at_ms": 100
+        }))
+        .expect("legacy wire shape remains decodable");
+        assert_eq!(observation.valid_until_ms, 0);
+        assert!(!observation.is_selectable_at(&observation.credential, 100));
     }
 
     #[test]

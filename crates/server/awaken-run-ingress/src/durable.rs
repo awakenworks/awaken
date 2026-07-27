@@ -159,6 +159,20 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         self
     }
 
+    /// Install the exact Worker-local revalidation adapter before sharing the
+    /// per-Session dispatch worker.
+    #[must_use]
+    pub fn with_worker_credential_resolver(
+        mut self,
+        resolver: Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>,
+    ) -> Self {
+        let worker = Arc::into_inner(self.worker)
+            .expect("credential resolver must be configured before sharing the worker")
+            .with_worker_credential_resolver(resolver);
+        self.worker = Arc::new(worker);
+        self
+    }
+
     /// Install the Run-scoped extension context before the worker is shared.
     #[must_use]
     pub fn with_context(mut self, context: awaken_runtime_contract::RuntimeRunContext) -> Self {

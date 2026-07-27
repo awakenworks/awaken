@@ -22,6 +22,9 @@
 use std::sync::Arc;
 
 mod admin;
+mod credential_liveness;
+
+use credential_liveness::CredentialObservationCache;
 
 use awaken_runtime_contract::execution::NATIVE_RUNTIME_CAPABILITY;
 use awaken_runtime_host::{
@@ -186,6 +189,8 @@ struct WorkerProcessConfig {
     manifest: StandardManifestConfig,
     admin_listen: Option<String>,
     graceful_drain: std::time::Duration,
+    credential_probe_interval: std::time::Duration,
+    credential_observation_ttl: std::time::Duration,
     repository_credentials: bool,
 }
 
@@ -194,6 +199,8 @@ struct WorkerProcessConfig {
 pub struct WorkerRunOptions {
     pub admin_listen: Option<String>,
     pub drain_grace: std::time::Duration,
+    pub credential_probe_interval: std::time::Duration,
+    pub credential_observation_ttl: std::time::Duration,
     pub manifest: StandardManifestConfig,
 }
 
@@ -204,6 +211,8 @@ impl WorkerProcessConfig {
             manifest: StandardManifestConfig::default(),
             admin_listen: None,
             graceful_drain: grace_window(true, None),
+            credential_probe_interval: std::time::Duration::from_secs(10),
+            credential_observation_ttl: std::time::Duration::from_secs(30),
             repository_credentials: false,
         }
     }
@@ -351,6 +360,8 @@ pub struct WorkerNodeBuilder {
     resources: Option<WorkerResourcePlane>,
     admin_listen: Option<String>,
     graceful_drain: std::time::Duration,
+    credential_probe_interval: std::time::Duration,
+    credential_observation_ttl: std::time::Duration,
 }
 
 impl WorkerNodeBuilder {
@@ -372,6 +383,8 @@ impl WorkerNodeBuilder {
             resources: None,
             admin_listen: Some("0.0.0.0:9090".to_string()),
             graceful_drain: std::time::Duration::from_secs(20),
+            credential_probe_interval: std::time::Duration::from_secs(10),
+            credential_observation_ttl: std::time::Duration::from_secs(30),
         }
     }
 
@@ -380,6 +393,8 @@ impl WorkerNodeBuilder {
         self.standard_manifest_config = config.manifest;
         self.admin_listen = config.admin_listen;
         self.graceful_drain = config.graceful_drain;
+        self.credential_probe_interval = config.credential_probe_interval;
+        self.credential_observation_ttl = config.credential_observation_ttl;
         self
     }
 
@@ -561,6 +576,14 @@ impl WorkerNodeBuilder {
 
     /// Validate the immutable topology without registering or starting work.
     pub fn build(mut self) -> Result<WorkerNode, WorkerNodeBuildError> {
+        if self.credential_probe_interval.is_zero()
+            || self.credential_observation_ttl <= self.credential_probe_interval
+        {
+            return Err(WorkerNodeBuildError(
+                "credential observation TTL must be greater than the non-zero probe interval"
+                    .to_string(),
+            ));
+        }
         if self.upstream.base_url().trim().is_empty() {
             return Err(WorkerNodeBuildError(
                 "Worker upstream URL must not be empty".to_string(),
@@ -645,6 +668,8 @@ impl WorkerNodeBuilder {
             resources: self.resources,
             admin_listen: self.admin_listen,
             graceful_drain: self.graceful_drain,
+            credential_probe_interval: self.credential_probe_interval,
+            credential_observation_ttl: self.credential_observation_ttl,
         })
     }
 }
@@ -697,6 +722,8 @@ pub struct WorkerNode {
     resources: Option<WorkerResourcePlane>,
     admin_listen: Option<String>,
     graceful_drain: std::time::Duration,
+    credential_probe_interval: std::time::Duration,
+    credential_observation_ttl: std::time::Duration,
 }
 
 struct InstalledSessionContainerProvider {
@@ -711,6 +738,7 @@ struct WorkerLifecycle {
     identity: WorkerIdentity,
     credential_observation_resolver:
         Option<Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>>,
+    credential_observations: Arc<CredentialObservationCache>,
 }
 
 impl WorkerLifecycle {
@@ -770,6 +798,8 @@ pub async fn run_with_config(
         manifest: options.manifest,
         admin_listen: options.admin_listen,
         graceful_drain: options.drain_grace,
+        credential_probe_interval: options.credential_probe_interval,
+        credential_observation_ttl: options.credential_observation_ttl,
         repository_credentials,
     };
     let stores = awaken_control::open_inference_materialization_stores(&control, &seal_key).await;
@@ -984,6 +1014,9 @@ impl WorkerNode {
         if let Some(materializer) = &self.materializer {
             host = host.with_inference_materializer(materializer.clone());
         }
+        if let Some(resolver) = &self.credential_observation_resolver {
+            host = host.with_worker_credential_resolver(resolver.clone());
+        }
         if let Some(decorator) = application_decorator {
             host = host.with_application_attempt_decorator(decorator);
         }
@@ -1032,22 +1065,29 @@ impl WorkerNode {
             managed = managed.with_mcp_attachment_realizer(realizer);
         }
         drop(managed);
+        let credential_observations = Arc::new(CredentialObservationCache::default());
         let lifecycle = Arc::new(WorkerLifecycle {
             host: host.clone(),
             control: control.clone(),
             identity: registration.snapshot.identity,
             credential_observation_resolver: self.credential_observation_resolver,
+            credential_observations,
         });
         // Publish Ready before starting the pull loop. Starting the pool while the
         // directory still says Starting creates a tight claim/reject race; publishing
         // first is safe because any assignment remains queued until this process starts
         // polling immediately below.
-        let initial_observations =
-            credential_observations(lifecycle.credential_observation_resolver.as_deref())
-                .await
-                .map_err(|error| {
-                    std::io::Error::other(format!("local_credential_probe_failed: {error}"))
-                })?;
+        if let Err(error) = lifecycle
+            .credential_observations
+            .refresh(
+                lifecycle.credential_observation_resolver.as_deref(),
+                wall_clock_ms(),
+                self.credential_observation_ttl,
+            )
+            .await
+        {
+            eprintln!("local_credential_probe_failed: {error}; publishing no credential evidence");
+        }
         let initial = control
             .heartbeat(
                 &lifecycle.identity,
@@ -1055,7 +1095,7 @@ impl WorkerNode {
                     sequence: 1,
                     ready: true,
                     in_flight: 0,
-                    credential_observations: initial_observations,
+                    credential_observations: lifecycle.credential_observations.snapshot(),
                 },
             )
             .await;
@@ -1074,6 +1114,12 @@ impl WorkerNode {
             .into());
         }
         host.ensure_dispatch_pool();
+        let credential_probe = credential_liveness::spawn_probe(
+            lifecycle.credential_observations.clone(),
+            lifecycle.credential_observation_resolver.clone(),
+            self.credential_probe_interval,
+            self.credential_observation_ttl,
+        );
         let heartbeat = spawn_heartbeat(lifecycle.clone(), 2);
         eprintln!("awaken-worker draining from {upstream_url}");
 
@@ -1125,6 +1171,7 @@ impl WorkerNode {
             wait_for_in_flight(&host, grace).await;
         }
         heartbeat.abort();
+        credential_probe.abort();
         if let Some(admin_task) = admin_task {
             admin_task.abort();
         }
@@ -1300,17 +1347,6 @@ fn spawn_heartbeat(
         interval.tick().await;
         loop {
             interval.tick().await;
-            let observations =
-                match credential_observations(lifecycle.credential_observation_resolver.as_deref())
-                    .await
-                {
-                    Ok(observations) => observations,
-                    Err(error) => {
-                        eprintln!("local_credential_probe_failed: {error}; draining locally");
-                        revoke_worker_session_authority(&lifecycle).await;
-                        break;
-                    }
-                };
             let mutation = lifecycle
                 .control
                 .heartbeat(
@@ -1319,7 +1355,7 @@ fn spawn_heartbeat(
                         sequence,
                         ready: lifecycle.host.pool_accepting_work(),
                         in_flight: lifecycle.host.pool_in_flight(),
-                        credential_observations: observations,
+                        credential_observations: lifecycle.credential_observations.snapshot(),
                     },
                 )
                 .await;
@@ -1368,54 +1404,6 @@ async fn revoke_worker_session_authority(lifecycle: &WorkerLifecycle) {
     }
 }
 
-async fn credential_observations(
-    resolver: Option<&dyn awaken_runtime_contract::CredentialMaterialResolver>,
-) -> Result<
-    std::collections::BTreeSet<awaken_worker_contract::WorkerCredentialObservation>,
-    awaken_runtime_contract::CredentialMaterialError,
-> {
-    match resolver {
-        Some(resolver) => {
-            resolver
-                .credential_observations()
-                .await
-                .map(|observations| {
-                    observations
-                        .into_iter()
-                        .map(|observation| {
-                            awaken_worker_contract::WorkerCredentialObservation {
-                    credential: awaken_worker_contract::WorkerCredentialRevision {
-                        id: observation.credential.id,
-                        revision: observation.credential.revision,
-                    },
-                    state: match observation.state {
-                        awaken_runtime_contract::CredentialObservationState::Available => {
-                            awaken_worker_contract::WorkerCredentialState::Available
-                        }
-                        awaken_runtime_contract::CredentialObservationState::LoginRequired => {
-                            awaken_worker_contract::WorkerCredentialState::LoginRequired
-                        }
-                        awaken_runtime_contract::CredentialObservationState::Expired => {
-                            awaken_worker_contract::WorkerCredentialState::Expired
-                        }
-                        awaken_runtime_contract::CredentialObservationState::Invalid => {
-                            awaken_worker_contract::WorkerCredentialState::Invalid
-                        }
-                        awaken_runtime_contract::CredentialObservationState::Disabled => {
-                            awaken_worker_contract::WorkerCredentialState::Disabled
-                        }
-                    },
-                    observed_at_ms: observation.observed_at_ms,
-                    reason_code: observation.reason_code,
-                }
-                        })
-                        .collect()
-                })
-        }
-        None => Ok(std::collections::BTreeSet::new()),
-    }
-}
-
 async fn wait_for_in_flight(host: &SharedHost, grace: std::time::Duration) {
     let deadline = tokio::time::Instant::now() + grace;
     while host.pool_in_flight() > 0 && tokio::time::Instant::now() < deadline {
@@ -1441,7 +1429,7 @@ mod grace_tests {
 
     use super::{
         CredentialMaterializerSupport, InferenceExecutorMaterializer, ResourceManifestSupport,
-        StandardManifestConfig, StandardManifestInputs, WorkerNodeBuilder, credential_observations,
+        StandardManifestConfig, StandardManifestInputs, WorkerNodeBuilder,
         derive_standard_manifest, grace_window,
     };
 
@@ -1582,20 +1570,6 @@ mod grace_tests {
             realization.realization_kinds.contains(
                 &awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter
             )
-        );
-        assert_eq!(
-            credential_observations(Some(&ExternalCredentialResolver))
-                .await
-                .expect("worker-local probe"),
-            std::collections::BTreeSet::from([
-                awaken_worker_contract::WorkerCredentialObservation::available(
-                    awaken_worker_contract::WorkerCredentialRevision {
-                        id: "cred:worker".into(),
-                        revision: 4,
-                    },
-                    1,
-                ),
-            ])
         );
     }
 

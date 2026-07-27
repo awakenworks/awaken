@@ -18,6 +18,7 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const GRANT = 'grant-ts-provider-23';
 const GRANT_REVISION = 1;
 const THREAD = 'secretless-gateway-worker';
+const REVALIDATION_THREAD = 'secretless-gateway-worker-revalidation';
 
 function buildGatewayWorker(): string {
   const output = execFileSync(
@@ -119,8 +120,35 @@ async function waitForGatewayReply(timeoutMs = 30_000): Promise<any[]> {
   throw new Error(`gateway worker never committed its grant-routed reply: ${JSON.stringify(observed)}`);
 }
 
+async function waitForOutput(
+  output: () => string,
+  expected: string,
+  timeoutMs = 15_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    if (output().includes(expected)) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`worker output never contained ${expected}:\n${output()}`);
+}
+
+async function waitForNoDispatches(thread: string, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let observed = '';
+  while (Date.now() <= deadline) {
+    const response = await fetch(`${BASE}/v1/durable/threads/${thread}/dispatches`);
+    observed = await response.text();
+    if (response.status === 200 && (JSON.parse(observed) as any).dispatches?.length === 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`thread ${thread} did not settle its dispatch: ${observed}`);
+}
+
 async function main(): Promise<void> {
   const storage = mkdtempSync(path.join(tmpdir(), 'awaken-secretless-worker-'));
+  const credentialState = path.join(storage, 'worker-local-credential-state');
+  fs.writeFileSync(credentialState, 'available\n');
   const cell = spawnServer('echo', PORT, {
     SESSION_DEPLOYMENT_INGRESS: 'durable',
     SESSION_DEPLOYMENT_STORAGE_DIR: storage,
@@ -197,6 +225,7 @@ async function main(): Promise<void> {
       AWAKEN_WORKER_GATEWAY_ONLY: '1',
       AWAKEN_TEST_CREDENTIAL_ID: GRANT,
       AWAKEN_TEST_CREDENTIAL_REVISION: String(GRANT_REVISION),
+      AWAKEN_TEST_CREDENTIAL_STATE_FILE: credentialState,
       AWAKEN_WORKER_ID: 'gateway-worker-ts',
     });
     worker = spawn(buildGatewayWorker(), [], { cwd: ROOT, env, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -218,13 +247,34 @@ async function main(): Promise<void> {
       'the provider-routed model result committed exactly once',
     );
     assert.ok(!workerOutput.includes('provider-key'), 'worker output contains no provider credential');
+    await waitForNoDispatches(THREAD);
 
-    const dispatches = await fetch(`${BASE}/v1/durable/threads/${THREAD}/dispatches`);
-    assert.equal(dispatches.status, 200);
-    assert.equal(((await dispatches.json()) as any).dispatches.length, 0, 'gateway dispatch settled');
+    // Placement still sees a fresh Available observation, while the exact
+    // use-time provider check reports logout. The attempt must stop before the
+    // materializer/Agent executor is entered.
+    fs.writeFileSync(credentialState, 'available_then_login_required\n');
+    const rejected = structuredClone(request);
+    rejected.activation.run_id = `${request.activation.run_id}-revalidation`;
+    rejected.activation.thread_id = REVALIDATION_THREAD;
+    rejected.session_thread_id = REVALIDATION_THREAD;
+    await post('/v1/worker/dispatch/enqueue', { request: rejected }, 'seed-worker');
+    await waitForOutput(
+      () => workerOutput,
+      `worker-local credential ${GRANT} revision ${GRANT_REVISION} failed use-time revalidation`,
+    );
+    const rejectedMessages = await fetch(
+      `${BASE}/v1/durable/threads/${REVALIDATION_THREAD}/messages`,
+    );
+    if (rejectedMessages.status === 200) {
+      const body = ((await rejectedMessages.json()) as any).messages ?? [];
+      assert.ok(
+        !body.some((message: any) => String(message.text ?? '').includes(`credential-reference:${GRANT}`)),
+        'logout after placement must not reach the model executor',
+      );
+    }
 
     console.log(
-      'CREDENTIAL REFERENCE WORKER TS E2E PASS: opaque reference reached the materializer, selected the model executor, committed once and exposed no provider key.',
+      'CREDENTIAL REFERENCE WORKER TS E2E PASS: fresh opaque state executed once; logout after placement failed exact use-time revalidation before Agent launch.',
     );
   } finally {
     if (worker) await stopServer(worker).catch(() => {});

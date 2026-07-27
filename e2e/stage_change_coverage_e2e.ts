@@ -120,6 +120,7 @@ const obligations: Obligation[] = [
   { id: 'D4-04', stage: '4 credential injection', behavior: 'materialized executor drives the model result', scenario: 'credential_reference_worker' },
   { id: 'D4-05', stage: '4 credential injection', behavior: 'worker runs with provider key variables removed', scenario: 'credential_reference_worker' },
   { id: 'D4-06', stage: '4 credential injection', behavior: 'reference-routed result commits and settles exactly once', scenario: 'credential_reference_worker' },
+  { id: 'D4-07', stage: '4 credential injection', behavior: 'worker-local logout after placement fails exact use-time revalidation before Agent launch', scenario: 'credential_reference_worker' },
   { id: 'D4-07', stage: '4 credential injection', behavior: 'production worker uses typed credential and shared ResourcePlane configuration, then calls the pinned endpoint', scenario: 'credential_materialization_worker' },
   { id: 'D4-09', stage: '4 credential injection', behavior: 'the production composition projects endpoint and credential use once into the per-thread ACP sandbox', scenario: 'acp_projected_local' },
   { id: 'D4-10', stage: '4 credential injection', behavior: 'config-file ACP adapters receive a per-run materialized config home through the same local projection', scenario: 'acp_projected_local' },

@@ -222,6 +222,10 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/worker-drain" \
     -config formal/tla/WorkerDrain.cfg formal/tla/WorkerDrain.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/worker-credential-liveness" \
+    -config formal/tla/WorkerCredentialLiveness.cfg \
+    formal/tla/WorkerCredentialLiveness.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/audit-commit" \
     -config formal/tla/AuditCommit.cfg formal/tla/AuditCommit.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
