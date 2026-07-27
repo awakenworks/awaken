@@ -93,25 +93,33 @@ def changed_lines(base: str, ignore: re.Pattern[str] | None) -> dict[str, set[in
     return result
 
 
-def lcov_lines(ignore_filename_regex: str | None) -> dict[str, dict[int, int]]:
-    command = ["cargo", "llvm-cov", "report", "--lcov"]
-    if ignore_filename_regex:
-        command.extend(["--ignore-filename-regex", ignore_filename_regex])
-    lcov = run(*command)
+def lcov_lines(
+    ignore_filename_regex: str | None,
+    lcov_paths: list[str],
+) -> dict[str, dict[int, int]]:
+    documents: list[str]
+    if lcov_paths:
+        documents = [(ROOT / path).read_text(encoding="utf-8") for path in lcov_paths]
+    else:
+        command = ["cargo", "llvm-cov", "report", "--lcov"]
+        if ignore_filename_regex:
+            command.extend(["--ignore-filename-regex", ignore_filename_regex])
+        documents = [run(*command)]
     result: dict[str, dict[int, int]] = {}
-    current: str | None = None
-    for line in lcov.splitlines():
-        if line.startswith("SF:"):
-            source = pathlib.Path(line[3:])
-            try:
-                current = source.resolve().relative_to(ROOT).as_posix()
-            except ValueError:
-                current = None
-        elif current is not None and line.startswith("DA:"):
-            number, count, *_ = line[3:].split(",")
-            bucket = result.setdefault(current, {})
-            line_number = int(number)
-            bucket[line_number] = max(bucket.get(line_number, 0), int(count))
+    for lcov in documents:
+        current: str | None = None
+        for line in lcov.splitlines():
+            if line.startswith("SF:"):
+                source = pathlib.Path(line[3:])
+                try:
+                    current = source.resolve().relative_to(ROOT).as_posix()
+                except ValueError:
+                    current = None
+            elif current is not None and line.startswith("DA:"):
+                number, count, *_ = line[3:].split(",")
+                bucket = result.setdefault(current, {})
+                line_number = int(number)
+                bucket[line_number] = max(bucket.get(line_number, 0), int(count))
     return result
 
 
@@ -186,6 +194,12 @@ def main() -> None:
         "--ignore-filename-regex",
         help="apply the production reachability exclusions used by the coverage report",
     )
+    parser.add_argument(
+        "--lcov-path",
+        action="append",
+        default=[],
+        help="merge a pre-exported homogeneous LCOV report; repeat for feature/binary groups",
+    )
     parser.add_argument("--show-missing", type=int, default=80)
     parser.add_argument("--show-files", type=int, default=30)
     parser.add_argument(
@@ -218,14 +232,16 @@ def main() -> None:
     except re.error as error:
         parser.error(f"invalid --ignore-filename-regex: {error}")
     changed = changed_lines(args.base, ignore)
-    coverage = lcov_lines(args.ignore_filename_regex)
+    coverage = lcov_lines(args.ignore_filename_regex, args.lcov_path)
     try:
         unreachable, waiver_entries = unreachable_lines(args.unreachable_manifest)
     except (OSError, ValueError, tomllib.TOMLDecodeError) as error:
         parser.error(str(error))
     executable: list[tuple[str, int, int]] = []
+    non_executable_changed = 0
     for relative, lines in changed.items():
         measured = coverage.get(relative, {})
+        non_executable_changed += len(lines - measured.keys())
         executable.extend(
             (relative, number, measured[number])
             for number in sorted(lines & measured.keys())
@@ -249,6 +265,10 @@ def main() -> None:
     print(
         f"{args.label}: {len(covered)}/{reachable_total} = {ratio:.2%} "
         f"(required > {args.minimum:.0%}, base {args.base})"
+    )
+    print(
+        "  changed source lines without an executable LCOV region: "
+        f"{non_executable_changed}"
     )
     if waived:
         waived_fraction = len(waived) / len(executable)

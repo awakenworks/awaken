@@ -218,7 +218,10 @@ function seedSkillRepository() {
 }
 
 function containerAvailable() {
-  return spawnSync(ENGINE, ['version'], { stdio: 'ignore' }).status === 0;
+  // A CLI can be installed while its daemon is unreachable. Bound the probe so
+  // this optional E2E reaches its documented skip/fail-closed branch instead of
+  // hanging the complete causal suite indefinitely.
+  return spawnSync(ENGINE, ['version'], { stdio: 'ignore', timeout: 10_000 }).status === 0;
 }
 
 function testContainers({ all = false } = {}) {
