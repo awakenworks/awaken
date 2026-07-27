@@ -29,6 +29,15 @@ const FILE_MARK = 'FILE_MARK_5150'; // awaken-allow: secret
 const MEM_MARK = 'MEM_MARK_2718'; // awaken-allow: secret
 const PORT = Number(process.env.E2E_PORT ?? 38195);
 
+const calcToolset = () => ({
+  type: 'mcp_toolset',
+  mcp_server_name: 'calc',
+  default_config: {
+    enabled: true,
+    permission_policy: { type: 'always_allow' },
+  },
+});
+
 async function drain(pageIter) {
   const out = [];
   for await (const item of pageIter) out.push(item);
@@ -102,12 +111,16 @@ async function main() {
       assert.equal(seeded.path, '/kb.md');
       pass(`memory store created + seeded: ${store.id}`);
 
-      // agent (registry), declaring the MCP server it may use
+      // Agent registry MCP invariant / decision table:
+      // server + matching enabled mcp_toolset -> publishable and executable;
+      // server without toolset -> 400 (covered by contract-guard E2E). This
+      // lifecycle tests execution, so it opts into the tool explicitly.
       const agent = await client.beta.agents.create({
         name: 'assistant',
         model: 'claude-opus-4-8',
         system: 'be helpful',
         mcp_servers: [{ name: 'calc', type: 'url', url: fixture.url }],
+        tools: [calcToolset()],
         metadata: { team: 'full-e2e' },
         betas: BETAS,
       });
@@ -118,7 +131,11 @@ async function main() {
       // ── 2. CREATE A SESSION THAT ASSOCIATES EVERYTHING ─────────────────────
 
       const session = await client.beta.sessions.create({
-        agent: agent.id, // associate the session with the registry agent
+        agent: {
+          id: agent.id,
+          type: 'agent_with_overrides',
+          tools: [calcToolset()],
+        }, // associate the session with the registry agent and explicit MCP policy
         environment_id: env.id,
         mcp_servers: [{ name: 'calc', type: 'url', url: fixture.url }],
         vault_ids: [vault.id],
