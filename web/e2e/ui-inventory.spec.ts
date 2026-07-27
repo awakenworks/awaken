@@ -66,7 +66,7 @@ test("Agent configuration exposes every controllable capability by user intent",
 
   await page.getByRole("tab", { name: "Integrations", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Direct MCP servers" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Skill optimization" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Skill bindings" })).toBeVisible();
   await expect(page.getByText(/state only the goal/)).toBeVisible();
 
   await page.getByRole("button", { name: "{} JSON" }).click();

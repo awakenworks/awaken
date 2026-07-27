@@ -83,7 +83,7 @@ export default function AgentIntegrationsEditor({
       </Card>
 
       <Card className="agent-config-card">
-        <h2>{app.t("Skill optimization", "Skill 优化")}</h2>
+        <h2>{app.t("Skill bindings", "Skill 绑定")}</h2>
         <p className="hint">
           {app.t(
             "Bind focused instructions so the operator can state only the goal; the Agent discovers and activates detailed procedure at runtime.",
