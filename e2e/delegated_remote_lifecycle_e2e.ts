@@ -22,6 +22,7 @@ type PeerState = {
 
 function task(id: string, contextId: string, state: string, text?: string): Record<string, unknown> {
   return {
+    kind: 'task',
     id,
     contextId,
     status: {
@@ -29,9 +30,10 @@ function task(id: string, contextId: string, state: string, text?: string): Reco
       ...(text
         ? {
             message: {
+              kind: 'message',
               messageId: `reply-${id}`,
               role: 'agent',
-              parts: [{ text }],
+              parts: [{ kind: 'text', text }],
             },
           }
         : {}),
