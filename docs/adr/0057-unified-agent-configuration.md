@@ -1061,3 +1061,122 @@ Runtime constructor, repository query, or normal `open()` read path.
   and publication; the Managed Session application freezes one executable
   Session; Runtime validates, realizes and executes it. Runtime does not edit,
   publish or re-resolve Agent configuration.
+
+## Amendment (2026-07-27): backend-owned local ACP login is trusted host execution
+
+This amendment fixes the boundary for zero-configuration local ACP use. It does
+not add another executor, credential store, discovery inventory, or isolation
+abstraction. The existing `AcpCli` catalog, WorkerLocal credential lifecycle,
+Worker placement, `AgentChannelSource`, `AcpRunExecutor`, Session Environment,
+and Sandbox providers remain the authoritative mechanisms.
+
+### Decision and static structure
+
+An Agent publication selects exactly one of two mutually exclusive provisioning
+modes:
+
+```text
+Agent publication / ResolvedModelCandidate
+  |
+  +-- Provider (Awaken-managed)
+  |     exact endpoint/model/CredentialAccess
+  |     -> Worker/Workload materialization
+  |     -> isolated config HOME
+  |     -> Namespace or Container Sandbox
+  |
+  +-- BackendOwned (CLI-managed)
+        backend_ref = acp:<catalog id>
+        exact WorkerLocal credential reference
+        model = BackendDefault | Exact
+        -> trusted Local Session Environment
+        -> host PATH + host HOME
+        -> CLI owns login files, refresh, provider and default model
+```
+
+`BackendOwned` means Awaken can prove that an exact local CLI login is live, but
+cannot open or materialize its secret. The `CredentialRef` is a non-secret
+placement and liveness handle. Awaken must not read, parse, copy, mount, encode,
+or persist the CLI's authentication files. In particular, backend-owned Codex
+and Claude execution never enters the managed `CredentialArtifactRequirement`
+or `ProcessSecretRequirement` paths.
+
+`SandboxTier::Local` is a provisioning choice with
+`IsolationClass::Workdir`. It may provide a Session working directory and
+resource projection, but it provides no OS isolation, network isolation,
+read-only enforcement, or secret boundary. In this amendment, “isolation” means
+the capabilities actually reported by the selected Sandbox provider; it is not
+a synonym for every Session Environment. Namespace and Container tiers are
+sandboxed execution. Local backend-owned login is explicitly trusted host
+execution.
+
+The bounded-context ownership is:
+
+| Fact | Authoritative owner |
+|---|---|
+| supported ACP adapters and their probes/delivery interfaces | `AcpCli` catalog |
+| adapter installed on one Worker | Worker manifest capability |
+| exact local login state and observation TTL | WorkerLocal resolver/observation |
+| selected backend and provisioning mode | immutable Agent publication |
+| exact credential revision required for placement | claim-frozen attempt binding |
+| host process launch and HOME projection | Session Environment + `AgentChannelSource` |
+| OAuth files, refresh and account state | external CLI itself |
+
+Discovery and diagnostics are query projections over catalog + Worker manifest +
+credential observations. They are not persisted as another capability inventory.
+
+### Dynamic behavior
+
+```text
+local startup
+  -> probe each AcpCli profile through the process-probe port
+  -> advertise only launchable acp:<id> capabilities
+  -> ensure one idempotent WorkerLocal binding per driver/subject
+  -> publish Available/LoginRequired/Expired/Invalid/ProbeFailed observation
+
+publish and run
+  -> publish backend_ref + BackendOwned model selection + exact WorkerLocal ref
+  -> Session copies publication facts into its frozen baseline
+  -> placement matches capability + exact live credential revision
+  -> claim fixes Worker/incarnation/epoch
+  -> Worker revalidates the exact login immediately before launch
+  -> Local source starts the catalog command with cleared env plus host PATH/HOME
+  -> CLI reads and refreshes its own login and serves ACP
+  -> ordinary ACP executor commits the result
+```
+
+The failure decision table is normative:
+
+| Rule | Provisioning | Environment | Exact login live | Outcome |
+|---|---|---|---|---|
+| L1 | BackendOwned | Local | yes | launch with host HOME; no materialization |
+| L2 | BackendOwned | Local | no/stale | `LoginRequired` or probe failure; do not launch |
+| L3 | BackendOwned | Namespace/Container | any | reject incompatible placement |
+| L4 | Provider | Namespace/Container | n/a | existing managed secret/artifact path |
+| L5 | Provider | Local | n/a | allowed only by an explicit trusted managed policy; never treated as backend-owned login |
+| L6 | either | any | selected mechanism fails | fail closed; never switch provisioning mode or adapter |
+
+`BackendDefault` deliberately records that the CLI chooses its default model.
+`Exact` is valid only when the selected profile has a typed model-delivery
+interface that can prove delivery; otherwise publication or admission rejects it.
+Failure never silently falls back to the CLI default.
+
+### Consequences and implementation gate
+
+- Local installation can be configuration-free without importing OAuth into
+  Awaken: discovery, WorkerLocal registration and observations are automatic.
+- Flow consumes Awaken's Agent/capability API. It does not inspect PATH/HOME,
+  credentials, Worker state, or ACP processes.
+- Managed provider credentials remain supported for isolated deployments. They
+  are a different provisioning variant, not a fallback for local login.
+- Reusing host HOME intentionally trusts the external CLI with the user's host
+  identity and files accessible to that process. Product diagnostics must label
+  this mode “trusted local”, not “sandboxed”.
+- A missing executable, unsupported wrapper version, ambiguous default among
+  multiple CLIs, expired observation, lost claim, exact-model delivery failure,
+  or sandbox mismatch is terminal for that attempt and has a stable remediation.
+
+Implementation is complete only when tests generated from L1-L6 prove that
+backend-owned launch preserves host HOME without Awaken reading auth files,
+managed launch still uses an isolated HOME, non-Local placement rejects
+backend-owned credentials, observation expiry and pre-launch revalidation fence
+the race, and no failure switches adapter or provisioning variant.
