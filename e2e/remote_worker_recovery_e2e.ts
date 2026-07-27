@@ -39,6 +39,9 @@ async function startA2aPeer(): Promise<{
   sent: Array<{ contextId?: string; text: string }>;
   close: () => Promise<void>;
 }> {
+  // A2A wire decision: a discriminated Task/Message/TextPart envelope reaches
+  // the Awaiting boundary; omitting any `kind` fails closed as a decode error.
+  // This recovery scenario needs the former so it can exercise reclaim/resume.
   const sent: Array<{ contextId?: string; text: string }> = [];
   const server = http.createServer(async (request, response) => {
     if (request.method !== 'POST' || request.url !== '/v1/a2a/message:send') {
@@ -54,14 +57,16 @@ async function startA2aPeer(): Promise<{
     if (message.contextId === 'recovery-context') {
       json(response, 200, {
         task: {
+          kind: 'task',
           id: 'recovery-finished',
           contextId: 'recovery-context',
           status: {
             state: 'completed',
             message: {
+              kind: 'message',
               messageId: 'recovery-terminal-message',
               role: 'agent',
-              parts: [{ text: TERMINAL_MARKER }],
+              parts: [{ kind: 'text', text: TERMINAL_MARKER }],
             },
           },
         },
@@ -70,14 +75,16 @@ async function startA2aPeer(): Promise<{
     }
     json(response, 200, {
       task: {
+        kind: 'task',
         id: 'recovery-task',
         contextId: 'recovery-context',
         status: {
           state: 'input-required',
           message: {
+            kind: 'message',
             messageId: 'recovery-question',
             role: 'agent',
-            parts: [{ text: 'continue on another worker?' }],
+            parts: [{ kind: 'text', text: 'continue on another worker?' }],
           },
         },
       },
@@ -104,6 +111,7 @@ async function startFaultProxy(): Promise<{
   capturedCommit: () => CapturedCommit | undefined;
   commits: () => any[];
   commitAttempts: () => any[];
+  settleAttempts: () => any[];
   requestCounts: () => Record<string, number>;
   registration: () => any;
   awaitingSettle: Promise<void>;
@@ -113,6 +121,7 @@ async function startFaultProxy(): Promise<{
   let firstCommit: CapturedCommit | undefined;
   const firstOperationAttempts: any[] = [];
   const commits: any[] = [];
+  const settleAttempts: any[] = [];
   let firstOperationId: string | undefined;
   let blockedAwaitingSettle = false;
   let signalAwaitingSettle!: () => void;
@@ -129,6 +138,9 @@ async function startFaultProxy(): Promise<{
     const parsed = body.length > 0 ? JSON.parse(body.toString('utf8')) : {};
     const workerId = String(request.headers['x-awaken-worker-id'] ?? '');
     if (request.url === '/v1/worker/register') registration = parsed;
+    if (request.method === 'POST' && request.url === '/v1/worker/dispatch/settle') {
+      settleAttempts.push(parsed);
+    }
 
     if (
       request.method === 'POST' &&
@@ -205,6 +217,7 @@ async function startFaultProxy(): Promise<{
     capturedCommit: () => firstCommit,
     commits: () => commits,
     commitAttempts: () => firstOperationAttempts,
+    settleAttempts: () => settleAttempts,
     requestCounts: () => Object.fromEntries(requestCounts),
     registration: () => registration,
     awaitingSettle,
@@ -448,6 +461,9 @@ async function main(): Promise<void> {
         throw new Error(
           `Worker A did not attempt Awaiting settle; proxy=${JSON.stringify(proxy.requestCounts())} ` +
             `registration=${JSON.stringify(proxy.registration())} ` +
+            `settles=${JSON.stringify(proxy.settleAttempts())} ` +
+            `claim=${JSON.stringify(proxy.capturedClaim())} commit=${JSON.stringify(proxy.capturedCommit())} ` +
+            `peer=${JSON.stringify(peer.sent)} ` +
             `request=${JSON.stringify(requests)} dispatches=${JSON.stringify(dispatches.body)}`,
         );
       }),

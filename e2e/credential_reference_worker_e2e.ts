@@ -25,6 +25,9 @@ import { spawnServer, stopServer, waitForPort } from './harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38813);
+// The stage orchestrator allocates this independently from the Control port so
+// concurrent scenarios never alias the Worker's operational listener.
+const WORKER_ADMIN_PORT = Number(process.env.E2E_WORKER_PORT ?? 38814);
 const BASE = `http://127.0.0.1:${PORT}`;
 const GRANT = 'grant-ts-provider-23';
 const GRANT_REVISION = 1;

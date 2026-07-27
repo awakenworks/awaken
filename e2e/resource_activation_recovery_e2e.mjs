@@ -159,13 +159,15 @@ function persistLegacyManifest(database, sessionId) {
   assert.ok(row.resources.active.inputs.length > 0);
   // Exercise the retained one-way row decoder deliberately: legacy resource
   // manifests exist only in retained columns, never inside aggregate_json.
-  execFileSync('sqlite3', [
+  // Use the shared in-process SQLite helper so this crash-window mutation has
+  // identical behavior on developer machines without an external sqlite3 CLI.
+  sqliteExec(
     database,
     `UPDATE managed_session
        SET aggregate_json=NULL, status='idle', archived_at=NULL,
            effective_inputs_json=${sqlQuote(JSON.stringify(row.resources.active))}
        WHERE session_id=${sqlQuote(sessionId)}`,
-  ]);
+  );
 }
 
 function persistInconsistentRelease(database, sessionId) {
