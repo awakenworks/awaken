@@ -226,6 +226,31 @@ prompts, used the obsolete two-state Judge contract, and reconstructed Agents
 through a separate configuration-plane path. All maintained evaluation now
 uses versioned fixtures and the unified Run boundary.
 
+## Admin Assistant authoring evaluation
+
+The Admin Assistant's full-server Agent-authoring cases also live here. The
+former `scripts/assistant-eval.py` entry point duplicated its golden cases,
+HTTP lifecycle, scoring, and quality gates in Python. Its five cases are now a
+versioned typed fixture; live collection and deterministic offline scoring are
+separate so one observation artifact can be re-scored without calling a model.
+
+```bash
+cargo run -p awaken-eval -- admin-authoring-run-live \
+  crates/devtools/awaken-eval/fixtures/admin-authoring-gold-v1.json \
+  /tmp/admin-authoring-observations.json \
+  http://127.0.0.1:38080 3
+
+cargo run -p awaken-eval -- admin-authoring-score \
+  crates/devtools/awaken-eval/fixtures/admin-authoring-gold-v1.json \
+  /tmp/admin-authoring-observations.json
+```
+
+The default gates preserve the old floors: criteria pass rate 0.90,
+fully-correct runs 0.80, and persisted configs 1.0. Optional trailing arguments
+to `admin-authoring-score` override those three values in that order. The
+committed fixture is synthetic and contains no subject content; live artifacts
+remain outside the repository.
+
 ## Optimization rounds
 
 This ledger records every live optimization round run on 2026-07-22, including

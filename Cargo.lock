@@ -566,6 +566,7 @@ dependencies = [
  "awaken-run-executor-acp",
  "awaken-runtime",
  "awaken-runtime-contract",
+ "reqwest 0.12.28",
  "rusqlite",
  "serde",
  "serde_json",

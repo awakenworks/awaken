@@ -1201,7 +1201,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-agent-contract",
         "awaken-runtime-contract",
         "awaken-runtime", "awaken-ext-goal", "awaken-ext-compact", "awaken-ext-memory", "awaken-run-executor-acp",
-        "async-trait", "rusqlite", "thiserror",
+        # Full-server Admin Assistant evaluation drives the public HTTP boundary;
+        # request/response lifecycle stays in the eval adapter, not the runtime.
+        "async-trait", "reqwest", "rusqlite", "thiserror",
         "serde",
         "serde_json",
         "tokio",

@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "name": "admin-authoring-gold-v1",
+  "cases": [
+    {
+      "id": "eval-c1",
+      "prompt": "Draft an agent id 'eval-c1' that reviews pull requests. Give it the read and grep tools, and rename grep to 'search_code' for the model with a helpful description.",
+      "criteria": [
+        { "kind": "persisted" },
+        { "kind": "has_tool", "tool_id": "read" },
+        { "kind": "has_tool", "tool_id": "grep" },
+        { "kind": "tool_override_alias", "target": "grep", "alias": "search_code" },
+        { "kind": "tool_override_has_description", "target": "grep" }
+      ]
+    },
+    {
+      "id": "eval-c2",
+      "prompt": "Draft an agent id 'eval-c2' with the bash and read tools. Require human approval before any bash command, and always deny shell deletes (rm).",
+      "criteria": [
+        { "kind": "persisted" },
+        { "kind": "has_tool", "tool_id": "bash" },
+        { "kind": "permission_gated" },
+        { "kind": "permission_uses_real_lowercase_tool_ids" },
+        { "kind": "permission_denies_tool_term", "tool_id": "bash", "term": "rm" }
+      ]
+    },
+    {
+      "id": "eval-c3",
+      "prompt": "Draft an agent id 'eval-c3' with the read and write tools, and add a state_machine plugin that requires reading a file before writing it, emitting a system reminder if it writes without reading first.",
+      "criteria": [
+        { "kind": "persisted" },
+        { "kind": "has_plugin", "plugin_id": "state_machine" },
+        { "kind": "state_machine_has_transitions" },
+        { "kind": "state_machine_has_reminder" }
+      ]
+    },
+    {
+      "id": "eval-c4",
+      "prompt": "Draft an agent id 'eval-c4' for long research sessions. Enable auto-compaction with a custom compaction prompt that keeps key findings and open questions.",
+      "criteria": [
+        { "kind": "persisted" },
+        { "kind": "has_plugin", "plugin_id": "compact" },
+        { "kind": "compact_has_instructions" },
+        { "kind": "compact_instructions_are_prose" },
+        { "kind": "compact_trigger_ratio_set" }
+      ]
+    },
+    {
+      "id": "eval-c5",
+      "prompt": "Draft an agent id 'eval-c5': a terse assistant that writes haiku. No tools needed.",
+      "criteria": [
+        { "kind": "persisted" },
+        { "kind": "instructions_min_length", "min": 40 },
+        { "kind": "tools_empty" }
+      ]
+    }
+  ]
+}
