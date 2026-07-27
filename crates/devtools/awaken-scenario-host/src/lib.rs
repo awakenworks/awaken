@@ -828,11 +828,10 @@ pub async fn build_acp_container_router() -> Router {
         .ok()
         .filter(|value| !value.trim().is_empty());
     let host = resource_host_with_deployment(Arc::new(EchoModel), "awaken", deployment);
-    let argv = std::env::var("AWAKEN_ACP_ARGV")
-        .expect("container scenario requires AWAKEN_ACP_ARGV")
-        .split_whitespace()
-        .map(str::to_string)
-        .collect();
+    let argv = scenario_argv(
+        &std::env::var("AWAKEN_ACP_ARGV")
+            .expect("container scenario requires AWAKEN_ACP_ARGV"),
+    );
     let host = host
         .with_acp_launch_source(
             awaken_server::relay_hand_executor_factory(),
@@ -845,6 +844,18 @@ pub async fn build_acp_container_router() -> Router {
     // Use the same shared Resource Catalog + Managed ACL assembly as every other
     // scenario, with the exact EnvironmentState mounted by the environment API.
     mount_with_environments(Arc::new(host))
+}
+
+// Cause graph / decision table for scenario-only launch input:
+// JSON array + spaces in argv -> preserve exact elements; JSON array without
+// spaces -> preserve; legacy plain string -> whitespace split for compatibility;
+// malformed JSON-looking input -> legacy split, then launch fails explicitly.
+fn scenario_argv(raw: &str) -> Vec<String> {
+    serde_json::from_str::<Vec<String>>(raw).unwrap_or_else(|_| {
+        raw.split_whitespace()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    })
 }
 
 // ── Router assembly ─────────────────────────────────────────────────────────
@@ -1958,7 +1969,24 @@ fn connect_nats_executor_blocking(url: &str, subject: String) -> NatsToolExecuto
 
 #[cfg(test)]
 mod compatible_endpoint_tests {
-    use super::{default_anthropic_compatible_model, normalize_anthropic_compatible_base};
+    use super::{
+        default_anthropic_compatible_model, normalize_anthropic_compatible_base, scenario_argv,
+    };
+
+    #[test]
+    fn scenario_argv_preserves_paths_with_spaces() {
+        assert_eq!(
+            scenario_argv(r#"["C:\\Program Files\\nodejs\\node.exe","C:\\fixture dir\\agent.mjs"]"#),
+            vec![
+                r"C:\Program Files\nodejs\node.exe".to_string(),
+                r"C:\fixture dir\agent.mjs".to_string(),
+            ]
+        );
+        assert_eq!(
+            scenario_argv("node fixture.mjs"),
+            vec!["node".to_string(), "fixture.mjs".to_string()]
+        );
+    }
 
     #[test]
     fn kimi_coding_root_is_canonicalized_for_the_messages_provider() {

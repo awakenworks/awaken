@@ -134,9 +134,11 @@ async function main() {
     SESSION_ENVIRONMENT_TIER: TIER,
     AWAKEN_SANDBOX_DIR: `${TMP}/sandboxes`,
     SESSION_DEPLOYMENT_STORAGE_DIR: `${TMP}/storage`,
-    AWAKEN_ACP_ARGV: TIER === 'namespace'
-      ? `${process.execPath} /workspace/fixture/namespace-agent.mjs`
-      : `${process.execPath} ${TMP}/fixture-seed/namespace-agent.mjs`,
+    // JSON preserves Windows executable and fixture paths containing spaces;
+    // the scenario host still accepts the legacy whitespace-delimited form.
+    AWAKEN_ACP_ARGV: JSON.stringify(TIER === 'namespace'
+      ? [process.execPath, '/workspace/fixture/namespace-agent.mjs']
+      : [process.execPath, `${TMP}/fixture-seed/namespace-agent.mjs`]),
   };
   let running = spawnServer('acp-container', PORT, serverEnv);
   let server = running.server;
