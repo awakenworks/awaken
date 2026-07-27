@@ -566,8 +566,10 @@ const FAKE_ACP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_acp::A
     id: "fake",
     display_name: "Fake ACP",
     description: "Deterministic scenario ACP fixture.",
-    command: "/bin/sh",
-    args: &["-c", FAKE_ACP_GATEWAY_JSONRPC_SCRIPT],
+    acquisition: awaken_run_executor_acp::AcpAcquisition::Direct {
+        executable: "/bin/sh",
+        args: &["-c", FAKE_ACP_GATEWAY_JSONRPC_SCRIPT],
+    },
     container_argv: &["/bin/sh", "-c", FAKE_ACP_GATEWAY_JSONRPC_SCRIPT],
     model_delivery: Some(awaken_run_executor_acp::ModelDelivery {
         base_url: "ANTHROPIC_BASE_URL",
@@ -620,8 +622,10 @@ const FAKE_ACP_MCP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_ac
     id: "fake-mcp",
     display_name: "Fake ACP MCP",
     description: "Deterministic scenario ACP MCP fixture.",
-    command: "/bin/sh",
-    args: &["-c", FAKE_ACP_MCP_ECHO_SCRIPT],
+    acquisition: awaken_run_executor_acp::AcpAcquisition::Direct {
+        executable: "/bin/sh",
+        args: &["-c", FAKE_ACP_MCP_ECHO_SCRIPT],
+    },
     container_argv: &["/bin/sh", "-c", FAKE_ACP_MCP_ECHO_SCRIPT],
     model_delivery: Some(awaken_run_executor_acp::ModelDelivery {
         base_url: "ANTHROPIC_BASE_URL",

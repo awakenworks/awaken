@@ -1798,8 +1798,10 @@ async fn open_writes_legacy_mcp_config_into_the_isolated_config_home() {
     // A synthetic legacy ConfigFileToml row with a cheap spawnable command. Codex
     // deliberately does not use this protocol.
     let mut cli = *acp_cli("claude").expect("claude in the catalog");
-    cli.command = "/bin/sh";
-    cli.args = &["-c", "exit 0"];
+    cli.acquisition = AcpAcquisition::Direct {
+        executable: "/bin/sh",
+        args: &["-c", "exit 0"],
+    };
     cli.mcp_interface = McpInterface::ConfigFileToml {
         path: "config.toml",
     };
@@ -1876,8 +1878,10 @@ const FAKE_ACP_MCP_ECHO_SCRIPT: &str = "while IFS= read -r line; do \
 async fn open_and_drive_inject_the_mcp_server_into_session_new_for_an_acp_session_cli() {
     // A claude row (AcpSession, session/new delivery) with a cheap JSON-RPC echo agent.
     let mut cli = *acp_cli("claude").expect("claude in the catalog");
-    cli.command = "/bin/sh";
-    cli.args = &["-c", FAKE_ACP_MCP_ECHO_SCRIPT];
+    cli.acquisition = AcpAcquisition::Direct {
+        executable: "/bin/sh",
+        args: &["-c", FAKE_ACP_MCP_ECHO_SCRIPT],
+    };
     let source = Arc::new(ProjectingChannelSource::new(
         cli,
         Arc::new(FixedModel(ResolvedModel {
@@ -1933,8 +1937,10 @@ async fn retained_inline_mcp_credential_is_ignored_before_session_new() {
           esac; \
         done";
     let mut cli = *acp_cli("claude").expect("claude in the catalog");
-    cli.command = "/bin/sh";
-    cli.args = &["-c", LEGACY_ECHO];
+    cli.acquisition = AcpAcquisition::Direct {
+        executable: "/bin/sh",
+        args: &["-c", LEGACY_ECHO],
+    };
     let source = Arc::new(ProjectingChannelSource::new(
         cli,
         Arc::new(FixedModel(ResolvedModel {
@@ -1995,8 +2001,10 @@ async fn acp_session_id_is_carried_across_the_per_turn_relaunch() {
     // session/load carries `s1` (→ `load-s1`, empty result). The turn's agent message
     // echoes which verb fired, so the committed transcript proves the carry.
     let mut cli = *acp_cli("claude").expect("claude in the catalog");
-    cli.command = "/bin/sh";
-    cli.args = &["-c", SESSION_CARRY_AGENT];
+    cli.acquisition = AcpAcquisition::Direct {
+        executable: "/bin/sh",
+        args: &["-c", SESSION_CARRY_AGENT],
+    };
     let source = Arc::new(ProjectingChannelSource::new(
         cli,
         Arc::new(FixedModel(ResolvedModel {
@@ -2054,8 +2062,10 @@ async fn paused_run_resumes_after_executor_replacement_with_the_committed_sessio
     use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 
     let mut cli = *acp_cli("claude").expect("claude in the catalog");
-    cli.command = "/bin/sh";
-    cli.args = &["-c", SESSION_CARRY_AGENT];
+    cli.acquisition = AcpAcquisition::Direct {
+        executable: "/bin/sh",
+        args: &["-c", SESSION_CARRY_AGENT],
+    };
     let source: Arc<dyn AgentChannelSource> = Arc::new(ProjectingChannelSource::new(
         cli,
         Arc::new(FixedModel(ResolvedModel {
@@ -2420,7 +2430,7 @@ fn every_backend_row_projects_a_launchable_process_through_the_source() {
         let env = |k: &str| projected_env(&launch, k);
         assert_eq!(
             launch.argv.first().map(String::as_str),
-            Some(cli.command),
+            Some(cli.acquisition.executable()),
             "{}: argv[0] is the row's command",
             cli.id
         );
@@ -2481,8 +2491,10 @@ async fn every_backend_row_drives_a_plain_turn_to_a_committed_reply() {
             continue;
         }
         let mut cli = *row;
-        cli.command = "/bin/sh";
-        cli.args = &["-c", PONG_ECHO];
+        cli.acquisition = AcpAcquisition::Direct {
+            executable: "/bin/sh",
+            args: &["-c", PONG_ECHO],
+        };
         let source = Arc::new(ProjectingChannelSource::new(cli, Arc::new(MatrixModel)));
         let exec = AcpRunExecutor::new(source);
 

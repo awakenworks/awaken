@@ -135,8 +135,7 @@ fn live_launch(cli: &awaken_run_executor_acp::AcpCli, config_home: &Path) -> Acp
     let delivery = cli
         .model_delivery
         .expect("live environment projection requires model env keys");
-    let mut argv = vec![cli.command.to_string()];
-    argv.extend(cli.args.iter().map(|a| (*a).to_string()));
+    let argv = cli.acquisition.local_argv();
     let mut env = vec![(
         config_home_env.to_string(),
         config_home.display().to_string(),

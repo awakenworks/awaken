@@ -6,6 +6,17 @@ pub use awaken_run_executor_acp::Codec
 pub use awaken_run_executor_acp::LaunchObserver
 pub use awaken_run_executor_acp::SandboxError
 pub use awaken_run_executor_acp::SecretBroker
+pub enum awaken_run_executor_acp::AcpAcquisition
+pub awaken_run_executor_acp::AcpAcquisition::Direct
+pub awaken_run_executor_acp::AcpAcquisition::Direct::args: &'static [&'static str]
+pub awaken_run_executor_acp::AcpAcquisition::Direct::executable: &'static str
+pub awaken_run_executor_acp::AcpAcquisition::PinnedNpmWrapper
+pub awaken_run_executor_acp::AcpAcquisition::PinnedNpmWrapper::package: &'static str
+pub awaken_run_executor_acp::AcpAcquisition::PinnedNpmWrapper::runner: &'static str
+impl awaken_run_executor_acp::AcpAcquisition
+pub fn awaken_run_executor_acp::AcpAcquisition::executable(self) -> &'static str
+pub fn awaken_run_executor_acp::AcpAcquisition::is_dynamic_install(self) -> bool
+pub fn awaken_run_executor_acp::AcpAcquisition::local_argv(self) -> alloc::vec::Vec<alloc::string::String>
 pub enum awaken_run_executor_acp::CredentialArtifactCodec
 pub awaken_run_executor_acp::CredentialArtifactCodec::ClaudeCredentialsJson
 pub awaken_run_executor_acp::CredentialArtifactCodec::CodexAuthJson
@@ -48,9 +59,8 @@ pub enum awaken_run_executor_acp::SessionReuse
 pub awaken_run_executor_acp::SessionReuse::ForcedCold
 pub awaken_run_executor_acp::SessionReuse::Warm
 pub struct awaken_run_executor_acp::AcpCli
-pub awaken_run_executor_acp::AcpCli::args: &'static [&'static str]
+pub awaken_run_executor_acp::AcpCli::acquisition: awaken_run_executor_acp::AcpAcquisition
 pub awaken_run_executor_acp::AcpCli::auth_method_id: core::option::Option<&'static str>
-pub awaken_run_executor_acp::AcpCli::command: &'static str
 pub awaken_run_executor_acp::AcpCli::config_home_aliases: &'static [&'static str]
 pub awaken_run_executor_acp::AcpCli::config_home_env: &'static str
 pub awaken_run_executor_acp::AcpCli::container_argv: &'static [&'static str]
@@ -203,7 +213,6 @@ impl awaken_run_executor_acp::SessionHomeProvider for awaken_run_executor_acp::N
 pub fn awaken_run_executor_acp::NoSessionHome::harvest<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_run_executor_acp::SessionHomeKey, &'life2 awaken_run_executor_acp::SessionHomePlan) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_run_executor_acp::NoSessionHome::restore<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_run_executor_acp::SessionHomeKey, &'life2 awaken_run_executor_acp::SessionHomePlan) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_run_executor_acp::acp_cli(&str) -> core::option::Option<&'static awaken_run_executor_acp::AcpCli>
-pub fn awaken_run_executor_acp::is_dynamic_install(&awaken_run_executor_acp::AcpCli) -> bool
 pub fn awaken_run_executor_acp::known_acp_clis() -> &'static [awaken_run_executor_acp::AcpCli]
 pub fn awaken_run_executor_acp::mcp_injection(&awaken_run_executor_acp::AcpCli, &alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>) -> core::result::Result<awaken_run_executor_acp::McpInjection, awaken_run_executor_acp::OpenError>
 pub fn awaken_run_executor_acp::mcp_injection_from_servers(&awaken_run_executor_acp::AcpCli, &[awaken_run_executor_acp::McpServerConfig]) -> core::result::Result<awaken_run_executor_acp::McpInjection, awaken_run_executor_acp::OpenError>

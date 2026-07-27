@@ -8,6 +8,49 @@
 use crate::{AcpLaunch, OpenError};
 use awaken_provisioning_contract as pc;
 
+/// How the local host obtains the ACP-serving executable. This is the sole local
+/// argv authority; discovery and launch both project it instead of inferring an
+/// install strategy from a command name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcpAcquisition {
+    Direct {
+        executable: &'static str,
+        args: &'static [&'static str],
+    },
+    PinnedNpmWrapper {
+        runner: &'static str,
+        package: &'static str,
+    },
+}
+
+impl AcpAcquisition {
+    #[must_use]
+    pub fn executable(self) -> &'static str {
+        match self {
+            Self::Direct { executable, .. } => executable,
+            Self::PinnedNpmWrapper { runner, .. } => runner,
+        }
+    }
+
+    #[must_use]
+    pub fn local_argv(self) -> Vec<String> {
+        match self {
+            Self::Direct { executable, args } => std::iter::once(executable)
+                .chain(args.iter().copied())
+                .map(str::to_string)
+                .collect(),
+            Self::PinnedNpmWrapper { runner, package } => {
+                vec![runner.to_string(), "-y".into(), package.to_string()]
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn is_dynamic_install(self) -> bool {
+        matches!(self, Self::PinnedNpmWrapper { .. })
+    }
+}
+
 /// How resolved model coordinates reach a CLI. Endpoints and secrets use env keys;
 /// model selection may additionally use the CLI's generic config override (Codex
 /// consumes `-c model=...`). Both remain catalog data rather than adapter branches.
@@ -133,9 +176,8 @@ pub struct AcpCli {
     /// Operator-facing launch summary. This is descriptive metadata, never a
     /// second launch/configuration source.
     pub description: &'static str,
-    /// Host/local argv. This may use `npx` for on-demand developer installation.
-    pub command: &'static str,
-    pub args: &'static [&'static str],
+    /// Host/local acquisition and argv projection.
+    pub acquisition: AcpAcquisition,
     /// Equivalent argv for a worker image where the adapter is preinstalled. Keeping
     /// this in the catalog row avoids both runtime package downloads and adapter
     /// branches in the container mechanism.
@@ -301,8 +343,7 @@ impl AcpCli {
             )));
         }
         let Some(d) = d else {
-            let mut argv = vec![self.command.to_string()];
-            argv.extend(self.args.iter().map(|s| (*s).to_string()));
+            let argv = self.acquisition.local_argv();
             return Ok(AcpLaunch {
                 argv,
                 env: env.into_values().collect(),
@@ -337,8 +378,7 @@ impl AcpCli {
             );
         }
 
-        let mut argv = vec![self.command.to_string()];
-        argv.extend(self.args.iter().map(|s| (*s).to_string()));
+        let mut argv = self.acquisition.local_argv();
         if let Some(key) = d.model_config_key
             && !model.model.is_empty()
         {
@@ -465,8 +505,10 @@ const CLAUDE: AcpCli = AcpCli {
     id: "claude",
     display_name: "Claude Code",
     description: "Claude Code via the pinned ACP adapter. Reads CLAUDE.md.",
-    command: "npx",
-    args: &["-y", "@agentclientprotocol/claude-agent-acp@0.44"],
+    acquisition: AcpAcquisition::PinnedNpmWrapper {
+        runner: "npx",
+        package: "@agentclientprotocol/claude-agent-acp@0.44",
+    },
     container_argv: &["claude-agent-acp"],
     model_delivery: Some(ModelDelivery {
         base_url: "ANTHROPIC_BASE_URL",
@@ -510,8 +552,10 @@ const CODEX: AcpCli = AcpCli {
     id: "codex",
     display_name: "Codex",
     description: "OpenAI Codex via the pinned ACP adapter. Reads AGENTS.md.",
-    command: "npx",
-    args: &["-y", "@agentclientprotocol/codex-acp@1.1"],
+    acquisition: AcpAcquisition::PinnedNpmWrapper {
+        runner: "npx",
+        package: "@agentclientprotocol/codex-acp@1.1",
+    },
     container_argv: &["codex-acp"],
     model_delivery: None,
     managed_credential_delivery: ManagedCredentialDelivery::Artifact(CredentialArtifactSpec {
@@ -536,8 +580,10 @@ const GEMINI: AcpCli = AcpCli {
     id: "gemini",
     display_name: "Gemini CLI",
     description: "Gemini CLI via its native ACP mode. Reads GEMINI.md.",
-    command: "gemini",
-    args: &["--experimental-acp"],
+    acquisition: AcpAcquisition::Direct {
+        executable: "gemini",
+        args: &["--experimental-acp"],
+    },
     container_argv: &["gemini", "--experimental-acp"],
     model_delivery: Some(ModelDelivery {
         base_url: "GOOGLE_GEMINI_BASE_URL",
@@ -573,8 +619,10 @@ const OPENCODE: AcpCli = AcpCli {
     id: "opencode",
     display_name: "OpenCode",
     description: "OpenCode via its native ACP mode. Reads AGENTS.md.",
-    command: "opencode",
-    args: &["acp"],
+    acquisition: AcpAcquisition::Direct {
+        executable: "opencode",
+        args: &["acp"],
+    },
     container_argv: &["opencode", "acp"],
     model_delivery: Some(ModelDelivery {
         base_url: "OPENAI_BASE_URL",
@@ -605,14 +653,6 @@ const OPENCODE: AcpCli = AcpCli {
     context_window_env: None,
     env: &[],
 };
-
-/// Whether a launch command dynamically installs its agent on first run (an `npx`
-/// wrapper pulls the pinned package into the npm cache), so a caller can surface an
-/// "installing…" phase before the process is usable. A native CLI (Gemini) is not.
-#[must_use]
-pub fn is_dynamic_install(cli: &AcpCli) -> bool {
-    cli.command == "npx"
-}
 
 /// The known ACP CLIs. Adding one is a row here — never a branch elsewhere.
 #[must_use]
@@ -730,7 +770,11 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), n, "catalog has a duplicate CLI id");
         for cli in known_acp_clis() {
-            assert!(!cli.command.is_empty(), "{}: command is set", cli.id);
+            assert!(
+                !cli.acquisition.executable().is_empty(),
+                "{}: acquisition executable is set",
+                cli.id
+            );
             assert_eq!(
                 cli.config_home_env.is_some(),
                 cli.model_delivery.is_some(),
@@ -987,11 +1031,6 @@ mod tests {
     #[test]
     fn opencode_resolves_and_projects_like_a_native_openai_compatible_cli() {
         let cli = acp_cli("opencode").unwrap();
-        assert_eq!(cli.command, "opencode");
-        assert!(
-            !is_dynamic_install(cli),
-            "a native CLI has no npm install step"
-        );
         let launch = cli.project(&resolved(), None, &[]);
         assert_eq!(
             env_of(&launch, "OPENAI_BASE_URL").as_deref(),
@@ -1050,27 +1089,42 @@ mod tests {
     }
 
     #[test]
-    fn claude_launches_via_pinned_npx_adapter_not_a_native_flag() {
-        // Claude Code has no native ACP mode; it is fronted by the npx adapter,
-        // pinned to a MAJOR.MINOR (never `@latest`).
-        let cli = acp_cli("claude").unwrap();
-        assert_eq!(cli.command, "npx");
-        assert_eq!(
-            cli.args,
-            &["-y", "@agentclientprotocol/claude-agent-acp@0.44"]
-        );
-        assert!(
-            is_dynamic_install(cli),
-            "an npx wrapper installs on first run"
-        );
-    }
+    fn acquisition_kind_is_the_single_source_for_local_argv_and_install_phase() {
+        // Acquisition cause graph:
+        // catalog kind ──> exact local argv ──> launch + discovery executable
+        //              └─> dynamic-install phase
+        //
+        // Decision table:
+        // D1 pinned wrapper | runner,-y,pinned package | dynamic
+        // D2 direct native  | executable,native args   | not dynamic
+        let cases: [(&str, &[&str], bool); 4] = [
+            (
+                "claude",
+                &["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.44"],
+                true,
+            ),
+            (
+                "codex",
+                &["npx", "-y", "@agentclientprotocol/codex-acp@1.1"],
+                true,
+            ),
+            ("gemini", &["gemini", "--experimental-acp"], false),
+            ("opencode", &["opencode", "acp"], false),
+        ];
 
-    #[test]
-    fn codex_launches_via_the_pinned_official_adapter() {
-        let cli = acp_cli("codex").unwrap();
-        assert_eq!(cli.command, "npx");
-        assert!(cli.args.contains(&"@agentclientprotocol/codex-acp@1.1"));
-        assert!(is_dynamic_install(cli));
+        for (id, expected_argv, expected_dynamic) in cases {
+            let acquisition = acp_cli(id).unwrap().acquisition;
+            assert_eq!(acquisition.executable(), expected_argv[0], "{id}");
+            assert_eq!(acquisition.local_argv(), expected_argv, "{id}");
+            assert_eq!(acquisition.is_dynamic_install(), expected_dynamic, "{id}");
+            assert!(
+                acquisition
+                    .local_argv()
+                    .iter()
+                    .all(|arg| !arg.ends_with("@latest")),
+                "{id}: acquisition must be reproducibly pinned"
+            );
+        }
     }
 
     #[test]
@@ -1098,17 +1152,6 @@ mod tests {
                 .env
                 .iter()
                 .all(|var| { !var.name.starts_with("OPENAI_") && !var.name.starts_with("CODEX_") })
-        );
-    }
-
-    #[test]
-    fn gemini_speaks_acp_natively_and_needs_no_install() {
-        let cli = acp_cli("gemini").unwrap();
-        assert_eq!(cli.command, "gemini");
-        assert_eq!(cli.args, &["--experimental-acp"]);
-        assert!(
-            !is_dynamic_install(cli),
-            "a native CLI has no dynamic-install step"
         );
     }
 
