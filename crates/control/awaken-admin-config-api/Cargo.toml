@@ -30,8 +30,8 @@ rusqlite = { workspace = true, optional = true }
 # store owns, so `tokio` (multi-thread) is a hard dep of this feature.
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"], optional = true }
 tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread"] }
-awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "111aaf8a22e0ade4f02548732fd852057180a174", features = ["postgres"] }
-awaken-scoped-migration-sqlite = { git = "https://github.com/awakenworks/awaken-foundation", rev = "111aaf8a22e0ade4f02548732fd852057180a174" }
+awaken-scoped-migration = { workspace = true, features = ["postgres"] }
+awaken-scoped-migration-sqlite.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

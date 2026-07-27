@@ -18,7 +18,7 @@ tar = "0.4"
 # Slice-5 remote transport: awaken-connection (core-only, same foundation rev as
 # awaken-scoped-migration) establishes the container-tier AgentChannel. Optional so
 # the default build stays dependency-light and daemon-free.
-awaken-connection = { git = "https://github.com/awakenworks/awaken-foundation", rev = "111aaf8a22e0ade4f02548732fd852057180a174", optional = true }
+awaken-connection = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["sync"] }
 # Real Docker backend (Docker Engine API via the SDK, not the CLI). Optional.
 bollard = { version = "0.18", optional = true }

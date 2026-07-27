@@ -13,7 +13,7 @@
     "record:review": "node record/review.mjs"
   },
   "dependencies": {
-    "@awaken/ui": "file:../../awaken-ui",
+    "@awaken/ui": "git+https://github.com/awakenworks/awaken-ui.git#ac82353cd323ee9ea816d93ca6c47544141564d3",
     "@ai-sdk/react": "^4.0.39",
     "@tanstack/react-query": "^5.62.0",
     "ai": "^7.0.36",

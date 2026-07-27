@@ -11,8 +11,8 @@ parking_lot = "0.12"
 rusqlite = { workspace = true, optional = true }
 serde_json.workspace = true
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"], optional = true }
-awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "111aaf8a22e0ade4f02548732fd852057180a174", features = ["postgres"], optional = true }
-awaken-scoped-migration-sqlite = { git = "https://github.com/awakenworks/awaken-foundation", rev = "111aaf8a22e0ade4f02548732fd852057180a174", optional = true }
+awaken-scoped-migration = { workspace = true, features = ["postgres"], optional = true }
+awaken-scoped-migration-sqlite = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"
