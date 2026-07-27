@@ -3,12 +3,13 @@
 //   C2 secret is sealed with the same key          -> E2 credential materializes
 //   C3 wire-only vault object is process-local     -> E3 vault wire GET returns 404
 //   C4 restored Agent uses restored MCP binding    -> E4 authenticated tool call works
+//   C5 session explicitly allows the MCP tool      -> E5 transport proof is not paused by HITL
 //
 // Decision table:
-//   Rule  C1  C2  C3  C4  Expected
-//   T1    Y   -   -   -   E1 (catalog/pool/normalized profile/Agent)
-//   T2    Y   Y   -   Y   E2 + E4
-//   T3    -   -   Y   -   E3
+//   Rule  C1  C2  C3  C4  C5  Expected
+//   T1    Y   -   -   -   -   E1 (catalog/pool/normalized profile/Agent)
+//   T2    Y   Y   -   Y   Y   E2 + E4 + E5
+//   T3    -   -   Y   -   -   E3
 //
 // Restart-persistence e2e for the durable management plane (ADR-0043): spawn
 // awaken-server in `management` mode with a fixed typed data_dir + seal key,
@@ -56,6 +57,14 @@ async function listEvents(client, sessionId) {
   const events = [];
   for await (const ev of client.beta.sessions.events.list(sessionId, { betas: BETAS })) events.push(ev);
   return events;
+}
+
+function agentMessages(events) {
+  return events
+    .filter((event) => event.type === 'agent.message')
+    .flatMap((event) => event.content ?? [])
+    .filter((block) => block.type === 'text')
+    .map((block) => block.text);
 }
 
 async function main() {
@@ -185,7 +194,21 @@ async function main() {
     // ...and an MCP conversation works through the ADMIN-authored path (no
     // inline mcp_servers), with the PERSISTED credential as the bearer.
     const before = fixture.calls.filter((c) => c.method === 'tools/call').length;
-    const session = await client2.beta.sessions.create({ agent: 'calc-agent', betas: BETAS });
+    const session = await client2.beta.sessions.create({
+      agent: {
+        id: 'calc-agent',
+        type: 'agent_with_overrides',
+        tools: [{
+          type: 'mcp_toolset',
+          mcp_server_name: 'calc',
+          default_config: {
+            enabled: true,
+            permission_policy: { type: 'always_allow' },
+          },
+        }],
+      },
+      betas: BETAS,
+    });
     await client2.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'add 7 8' }] }],
       betas: BETAS,
@@ -195,9 +218,10 @@ async function main() {
       events.some((e) => e.type === 'agent.mcp_tool_use' && e.name === 'mcp__calc__add'),
       `an mcp__calc__add tool_use: ${JSON.stringify(events.map((e) => e.type))}`,
     );
+    const messages = agentMessages(events);
     assert.ok(
-      events.some((e) => e.type === 'agent.message' && e.content[0].text.includes('result: 15')),
-      'the conversation reports result: 15',
+      messages.some((message) => message.includes('result: 15')),
+      `the conversation reports result: 15 — messages=${JSON.stringify(messages)}, event types=${JSON.stringify(events.map((event) => event.type))}`,
     );
     const toolCalls = fixture.calls.filter((c) => c.method === 'tools/call');
     assert.equal(toolCalls.length, before + 1);
