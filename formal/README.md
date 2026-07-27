@@ -133,7 +133,7 @@ production logic.
 - `MemoryCAS.tla`, `SkillVersionPin.tla`, `ToolResultProtocol.tla`, and
   `WorkerDrain.tla` cover memory generation/rename/conditional-delete safety,
   immutable Skill pin retention and validation, cross-protocol result
-  correlation, and the drain admission fence.
+  correlation, and the local-admission-before-remote-registry drain fence.
 - `AuditCommit.tla` and `ConfigActivation.tla` cover transactional durable audit,
   replay fencing, and generation-fenced publication installation.
 - `InferenceAccessPublication.tla` covers immutable access publication and
@@ -242,7 +242,7 @@ graphs with zero invariant violations and zero states left on the queue:
 | CredentialCreation | 14 | 8 | 5 |
 | MemoryCAS | 3,511 | 563 | 11 |
 | ToolResultProtocol | 213 | 56 | 9 |
-| WorkerDrain | 15 | 11 | 8 |
+| WorkerDrain | 44 | 26 | 11 |
 | AuditCommit | 10 | 6 | 4 |
 | ConfigActivation | 85 | 35 | 9 |
 | InferenceAccessPublication | 466 | 234 | 9 |
@@ -333,7 +333,7 @@ TLAPS, Java, or `tla2tools.jar` fails instead of producing a false green.
 `formal/coverage.json` is the versioned obligation ledger. The CI gate verifies
 that every evidence path exists and that at least 70% of formalizable safety
 obligations have a machine-checked production link. The current ledger is
-164/164, or 100%. Environmental properties are listed separately and never
+166/166, or 100%. Environmental properties are listed separately and never
 silently omitted or mislabeled as machine-linked merely to raise the percentage.
 
 ## Loom concurrency exploration

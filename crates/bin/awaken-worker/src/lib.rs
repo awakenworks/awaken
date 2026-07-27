@@ -715,8 +715,11 @@ struct WorkerLifecycle {
 
 impl WorkerLifecycle {
     async fn begin_drain(&self, deadline_ms: Option<u64>) -> Result<(), String> {
-        let remote = self.control.begin_drain(&self.identity, deadline_ms).await;
+        // The process-local claim gate is the drain linearization point. Fence it
+        // before publishing Draining to the Registry so no still-open claim loop
+        // can race the remote state transition and receive a predictable rejection.
         self.host.begin_pool_drain().await;
+        let remote = self.control.begin_drain(&self.identity, deadline_ms).await;
         match remote? {
             RegistryMutation::Applied => Ok(()),
             other => Err(format!("worker drain rejected: {other:?}")),

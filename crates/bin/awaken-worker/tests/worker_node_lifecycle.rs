@@ -1,7 +1,11 @@
 use awaken_runtime_host::{SignedWorkerRequestAuthorizer, WorkerSigningCredential, WorkerUpstream};
 use awaken_worker::{StandardManifestConfig, WorkerNodeBuilder, WorkerShutdown};
 use awaken_worker_contract::{VersionRange, WorkerManifest};
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 mod support;
 use support::FakeWorkerUpstream;
@@ -13,6 +17,43 @@ fn manifest() -> WorkerManifest {
         runtime_protocol: VersionRange::exact(1),
         ..WorkerManifest::default()
     }
+}
+
+fn free_port() -> u16 {
+    TcpListener::bind("127.0.0.1:0")
+        .expect("bind an ephemeral admin port")
+        .local_addr()
+        .expect("read the ephemeral admin address")
+        .port()
+}
+
+fn http_status(address: &str, method: &str, path: &str) -> Option<u16> {
+    let mut stream = TcpStream::connect(address).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+    write!(
+        stream,
+        "{method} {path} HTTP/1.1\r\nhost: {address}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+    )
+    .ok()?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response).ok()?;
+    response
+        .lines()
+        .next()?
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
+}
+
+fn poll_status(address: &str, method: &str, path: &str, expected: u16) -> bool {
+    for _ in 0..300 {
+        if http_status(address, method, path) == Some(expected) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    false
 }
 
 struct ExternalSessionProvider;
@@ -256,4 +297,61 @@ async fn node_runs_register_ready_drain_quiesce_and_deregister() {
             .to_ascii_lowercase()
             .contains("authorization: awakenworker ")
     }));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn drain_closes_local_admission_before_control_acknowledges() {
+    let (upstream, drain_release) = FakeWorkerUpstream::start_with_blocked_drain();
+    let admin_addr = format!("127.0.0.1:{}", free_port());
+    let mut coordinator_defaults = awaken_runtime_host::DeploymentConfig::ephemeral();
+    coordinator_defaults.disable_local_pool = true;
+
+    WorkerNodeBuilder::new(
+        WorkerUpstream::new(upstream.url()).with_worker_id("worker-drain-order-test"),
+    )
+    .with_deployment_config(coordinator_defaults)
+    .with_manifest(manifest())
+    .with_admin_listen(&admin_addr)
+    .build()
+    .expect("valid explicit Worker topology")
+    .run_until(async {
+        assert!(
+            poll_status(&admin_addr, "GET", "/readyz", 200),
+            "worker reaches accepting before drain"
+        );
+
+        let drain_addr = admin_addr.clone();
+        let drain_request = std::thread::spawn(move || {
+            http_status(&drain_addr, "POST", "/admin/drain")
+                .expect("admin drain returns an HTTP response")
+        });
+        for _ in 0..300 {
+            if upstream
+                .requests()
+                .iter()
+                .any(|path| path == "/v1/worker/drain")
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            upstream
+                .requests()
+                .iter()
+                .any(|path| path == "/v1/worker/drain"),
+            "Control receives the drain mutation"
+        );
+        assert_eq!(
+            http_status(&admin_addr, "GET", "/readyz"),
+            Some(503),
+            "local claim admission closes before the blocked Control response returns"
+        );
+
+        drain_release.store(true, Ordering::Release);
+        assert_eq!(drain_request.join().expect("drain request joins"), 200);
+        Ok(WorkerShutdown::Prompt)
+    })
+    .await
+    .expect("Worker lifecycle completes");
 }
