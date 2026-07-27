@@ -63,7 +63,8 @@ impl ManagedState {
             "idle" => SessionThreadStatus::Idle,
             "rescheduling" => SessionThreadStatus::Rescheduling,
             "terminated" | "deleted" | "activation_failed" => SessionThreadStatus::Terminated,
-            "running" | "preparing" | "activating" | _ => SessionThreadStatus::Running,
+            "running" | "preparing" | "activating" => SessionThreadStatus::Running,
+            _ => SessionThreadStatus::Running,
         }
     }
 
@@ -246,5 +247,33 @@ impl ManagedState {
         // instead of only on a reconnect/replay.
         self.broadcast_committed_from(id, record, from);
         Ok(archived)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_status_projects_to_the_closed_thread_status_table() {
+        // Cause graph: durable Session status -> thread projection. Known terminal,
+        // idle and rescheduling states retain their meaning; all active and future
+        // unknown non-terminal states fail safe to Running rather than inventing a
+        // second thread lifecycle.
+        let cases = [
+            ("idle", SessionThreadStatus::Idle),
+            ("rescheduling", SessionThreadStatus::Rescheduling),
+            ("terminated", SessionThreadStatus::Terminated),
+            ("deleted", SessionThreadStatus::Terminated),
+            ("activation_failed", SessionThreadStatus::Terminated),
+            ("running", SessionThreadStatus::Running),
+            ("preparing", SessionThreadStatus::Running),
+            ("activating", SessionThreadStatus::Running),
+            ("future-active-state", SessionThreadStatus::Running),
+        ];
+
+        for (source, expected) in cases {
+            assert_eq!(ManagedState::thread_status(source), expected, "{source}");
+        }
     }
 }
