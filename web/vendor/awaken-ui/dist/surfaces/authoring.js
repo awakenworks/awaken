@@ -1,0 +1,12 @@
+import { jsxs as _jsxs, jsx as _jsx } from "react/jsx-runtime";
+import { cx } from "../internal/cx.js";
+import { Button } from "../primitives/button.js";
+export function AuthoringHeader({ backLabel, backIcon, onBack, identity, name, nameLabel, onNameChange, nameSize, placeholder, metadata, windowed, onWindowedChange, maximizeLabel, maximizeIcon, restoreLabel, restoreIcon, closeLabel, closeIcon, actionButtonClassName, onClose, children, }) {
+    const windowLabel = windowed ? maximizeLabel : restoreLabel;
+    return (_jsxs("header", { className: "ui-authoring-header", children: [_jsxs("button", { className: "ui-authoring-header__back", onClick: onBack, type: "button", children: [backIcon, " ", backLabel] }), identity, _jsx("input", { "aria-label": nameLabel, className: "ui-authoring-header__name", onChange: (event) => onNameChange(event.target.value), placeholder: placeholder, size: nameSize, value: name }), metadata, _jsx("span", { className: "ui-authoring-header__spacer" }), _jsxs("div", { className: "ui-authoring-header__actions", children: [_jsx(Button, { "aria-label": windowLabel, className: actionButtonClassName, icon: windowed ? maximizeIcon : restoreIcon, onClick: () => onWindowedChange(!windowed), size: "sm", title: windowLabel, variant: "icon" }), children, _jsx(Button, { "aria-label": closeLabel, className: actionButtonClassName, icon: closeIcon, onClick: onClose, size: "sm", title: closeLabel, variant: "icon" })] })] }));
+}
+export function AuthoringGuide({ label, steps, onSelect, completeIcon, incompleteIcon, blocked, className, }) {
+    const currentIndex = Math.max(0, steps.findIndex((step) => !step.complete));
+    return (_jsxs("nav", { "aria-label": label, className: cx("ui-authoring-guide", className), children: [steps.map((step, index) => (_jsxs("button", { className: cx("ui-authoring-guide__step", step.complete && "is-complete", index === currentIndex && "is-current"), onClick: () => onSelect(step.key), type: "button", children: [step.complete ? completeIcon : incompleteIcon, _jsxs("span", { children: [index + 1, ". ", step.label] })] }, step.key))), blocked ? _jsx("span", { className: "ui-authoring-guide__blocked", children: blocked }) : null] }));
+}
+//# sourceMappingURL=authoring.js.map

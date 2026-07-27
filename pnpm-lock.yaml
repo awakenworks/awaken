@@ -14,8 +14,8 @@ importers:
         specifier: ^4.0.39
         version: 4.0.39(react@19.2.7)(zod@4.4.3)
       '@awaken/ui':
-        specifier: git+https://github.com/awakenworks/awaken-ui.git#ac82353cd323ee9ea816d93ca6c47544141564d3
-        version: https://codeload.github.com/awakenworks/awaken-ui/tar.gz/ac82353cd323ee9ea816d93ca6c47544141564d3(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+        specifier: file:vendor/awaken-ui
+        version: file:web/vendor/awaken-ui(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@tanstack/react-query':
         specifier: ^5.62.0
         version: 5.101.2(react@19.2.7)
@@ -87,10 +87,8 @@ packages:
     peerDependencies:
       react: ^18 || ~19.0.1 || ~19.1.2 || ^19.2.1
 
-  '@awaken/ui@https://codeload.github.com/awakenworks/awaken-ui/tar.gz/ac82353cd323ee9ea816d93ca6c47544141564d3':
-    resolution: {gitHosted: true, integrity: sha512-zCXd8VvK2QVseXTfqoOTP5tPzBZw4vA+B2aCMybKIJkbzln6phHytdkADY3/iBfqK/4f9hvYLayyCxQe1/aFsA==, tarball: https://codeload.github.com/awakenworks/awaken-ui/tar.gz/ac82353cd323ee9ea816d93ca6c47544141564d3}
-    version: 0.2.0
-    engines: {node: '>=22', pnpm: '>=11'}
+  '@awaken/ui@file:web/vendor/awaken-ui':
+    resolution: {directory: web/vendor/awaken-ui, type: directory}
     peerDependencies:
       react: ^19.0.0
       react-dom: ^19.0.0
@@ -1052,7 +1050,7 @@ snapshots:
     transitivePeerDependencies:
       - zod
 
-  '@awaken/ui@https://codeload.github.com/awakenworks/awaken-ui/tar.gz/ac82353cd323ee9ea816d93ca6c47544141564d3(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
+  '@awaken/ui@file:web/vendor/awaken-ui(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
     dependencies:
       '@base-ui/react': 1.6.0(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       dompurify: 3.3.0
