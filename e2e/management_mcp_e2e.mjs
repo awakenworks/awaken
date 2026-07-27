@@ -169,6 +169,16 @@ async function main() {
       // Anthropic MCP toolset default is always_ask. The permission policy is
       // carried through the neutral AgentConfigView/SessionInit into the one
       // runtime gate, then projected as the same Managed event sequence.
+      //
+      // Cause graph / decision table for permission ownership:
+      // | MCP toolset | legacy permission config | expected result |
+      // | present     | absent                   | toolset owns the gate |
+      // | present     | present                  | reject competing owners |
+      // | absent      | present                  | legacy config owns the gate |
+      //
+      // This scenario selects the first row. Compile-level tests cover the two
+      // fail-closed/legacy rows; the served E2E proves the toolset policy reaches
+      // requires_action and resumes after the user's exact confirmation.
       const gatedAgent = 'calc-gated-agent';
       r = await req(base, 'PUT', `/v1/config/agents/${gatedAgent}`, {
         name: 'Gated Calculator',
@@ -176,8 +186,6 @@ async function main() {
         model: { provider_identity_ref: 'default', model_ref: 'management', backend_ref: 'default' },
         mcp_servers: [{ name: 'calc', url: fixture.url, credential: { id: credId, revision: credRevision } }],
         tools: [{ type: 'mcp_toolset', mcp_server_name: 'calc', default_config: { enabled: true, permission_policy: { type: 'always_ask' } } }],
-        plugins: ['permission'],
-        plugin_config: { permission: { default_behavior: 'ask', rules: [{ pattern: 'mcp__calc__add', behavior: 'ask' }] } },
       });
       assert.equal(r.status, 200, JSON.stringify(r.json));
       r = await req(base, 'POST', `/v1/config/agents/${gatedAgent}/publish`);

@@ -729,6 +729,15 @@ async function main(): Promise<void> {
 
     // Drive the production Managed Session edge so Repository configuration uses
     // this same PostgreSQL Resource Catalog rather than a scenario-host registry.
+    //
+    // Cause graph: public checkout choice -> managed resource DTO -> internal
+    // initial_branch plan -> PostgreSQL catalog reference -> realized repository.
+    //
+    // Decision table:
+    // | Public input                         | Expected result                 |
+    // | checkout omitted                     | repository default branch      |
+    // | checkout={type:branch,name:main}      | exact main branch realization  |
+    // | legacy top-level initial_branch       | 400 unknown-field fail-closed  |
     await publishAgent(upstream.url);
     const repository = seedRepository(secondDirectory);
     const session = await json('POST', scoped(WORKSPACE, 'sessions'), {
@@ -742,7 +751,7 @@ async function main(): Promise<void> {
         {
           type: 'github_repository',
           url: repository,
-          initial_branch: 'main',
+          checkout: { type: 'branch', name: 'main' },
           mount_path: '/workspace/create-time-repository',
         },
       ],
@@ -901,32 +910,35 @@ async function main(): Promise<void> {
       'recovered probe generations were removed without changing original bindings',
     );
 
-    const repositoryResource = await json(
-      'POST',
-      scoped(WORKSPACE, `sessions/${session.body.id}/resources`),
-      { type: 'github_repository', url: repository, mount_path: '/workspace/repository' },
+    // Post-create resource admission deliberately supports File only. Repository
+    // configuration is frozen at Session creation; that projected binding is
+    // immutable but can still be retired.
+    //
+    // | Resource operation           | File | Repository |
+    // | add after Session creation   | yes  | 400        |
+    // | update existing projection   | 400  | 400        |
+    // | retire existing projection   | yes  | yes        |
+    const repositoryResource = session.body.resources.find(
+      (resource: { type: string }) => resource.type === 'github_repository',
     );
-    assert.equal(repositoryResource.status, 200, JSON.stringify(repositoryResource.body));
+    assert.ok(repositoryResource?.id, 'create-time Repository projection is addressable');
     const rawCredentialUpdate = await json(
       'POST',
-      scoped(WORKSPACE, `sessions/${session.body.id}/resources/${repositoryResource.body.id}`),
+      scoped(WORKSPACE, `sessions/${session.body.id}/resources/${repositoryResource.id}`),
       {
-        mount_path: '/workspace/repository-updated',
         authorization_token: 'repository-rotated-token', // awaken-allow: secret
       },
     );
     assert.equal(rawCredentialUpdate.status, 400, JSON.stringify(rawCredentialUpdate.body));
-    assert.match(JSON.stringify(rawCredentialUpdate.body), /raw_repository_credentials_unsupported/u);
-    const updatedRepository = await json(
-      'POST',
-      scoped(WORKSPACE, `sessions/${session.body.id}/resources/${repositoryResource.body.id}`),
-      { mount_path: '/workspace/repository-updated' },
+    const unchangedRepository = await json(
+      'GET',
+      scoped(WORKSPACE, `sessions/${session.body.id}/resources/${repositoryResource.id}`),
     );
-    assert.equal(updatedRepository.status, 200, JSON.stringify(updatedRepository.body));
-    assert.equal(updatedRepository.body.mount_path, '/workspace/repository-updated');
+    assert.equal(unchangedRepository.status, 200, JSON.stringify(unchangedRepository.body));
+    assert.equal(unchangedRepository.body.mount_path, '/workspace/create-time-repository');
     const retiredRepository = await json(
       'DELETE',
-      scoped(WORKSPACE, `sessions/${session.body.id}/resources/${repositoryResource.body.id}`),
+      scoped(WORKSPACE, `sessions/${session.body.id}/resources/${repositoryResource.id}`),
     );
     assert.equal(retiredRepository.status, 200, JSON.stringify(retiredRepository.body));
     assert.equal(retiredRepository.body.type, 'session_resource_deleted');
