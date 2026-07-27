@@ -1274,6 +1274,7 @@ mod tests {
             env_key: None,
             material_ref: None,
             oauth_command: None,
+            worker_local_binding: None,
             status: CredentialStatus::Disabled,
             version: 1,
         }
