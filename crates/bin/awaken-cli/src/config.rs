@@ -368,15 +368,48 @@ impl ResolvedDeployment {
             container_image: file.container_image.clone(),
             disable_local_pool: !run_local_pool,
         };
+        let shared_management_database = file
+            .management_database_url_file
+            .as_deref()
+            .map(read_management_database_url)
+            .transpose()?;
+        if shared_management_database.is_some()
+            && [
+                &file.resource_database_url,
+                &file.catalog_db,
+                &file.credential_db,
+                &file.config_db,
+                &file.admin_db,
+                &file.sessions_db,
+            ]
+            .into_iter()
+            .any(Option::is_some)
+        {
+            return Err(
+                "management_database_url_file cannot be combined with per-store database URLs"
+                    .to_owned(),
+            );
+        }
+        if shared_management_database.is_some() {
+            origins.insert(
+                "management_database".to_owned(),
+                "management_database_url_file".to_owned(),
+            );
+        }
+        let store_url = |specific: &Option<String>| {
+            specific
+                .clone()
+                .or_else(|| shared_management_database.clone())
+        };
         let control = awaken_control::ControlStoreConfig::from_values(
             &data_dir,
-            file.catalog_db.clone(),
-            file.credential_db.clone(),
-            file.config_db.clone(),
-            file.admin_db.clone(),
-            file.sessions_db.clone(),
+            store_url(&file.catalog_db),
+            store_url(&file.credential_db),
+            store_url(&file.config_db),
+            store_url(&file.admin_db),
+            store_url(&file.sessions_db),
         );
-        let resources = match file.resource_database_url.clone() {
+        let resources = match store_url(&file.resource_database_url) {
             Some(url) if is_postgres_url(&url) => ResourcePlaneStoreBackend::Postgres(url),
             Some(_) => return Err("resource_database_url must be postgres://".to_owned()),
             None => ResourcePlaneStoreBackend::Embedded(data_dir.clone()),
@@ -579,6 +612,7 @@ struct FileConfig {
     run_local_pool: Option<bool>,
     no_browser: Option<bool>,
     runtime_database_url: Option<String>,
+    management_database_url_file: Option<PathBuf>,
     resource_database_url: Option<String>,
     catalog_db: Option<String>,
     credential_db: Option<String>,
@@ -608,6 +642,22 @@ struct FileConfig {
     dispatch_wake_channel: Option<String>,
     nats_url: Option<String>,
     dispatch_owner: Option<String>,
+}
+
+fn read_management_database_url(path: &Path) -> Result<String, String> {
+    let value = fs::read_to_string(path)
+        .map_err(|error| format!("read management database URL {}: {error}", path.display()))?;
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(format!(
+            "management database URL file {} is empty",
+            path.display()
+        ));
+    }
+    if !is_postgres_url(value) {
+        return Err("management_database_url_file must contain a postgres:// URL".to_owned());
+    }
+    Ok(value.to_owned())
 }
 
 fn override_port(bind: &str, port: u16) -> Result<String, String> {
@@ -745,6 +795,70 @@ mod tests {
             assert!(!report.contains("user:secret"), "{report}");
             assert!(!report.contains("postgres://"), "{report}");
         }
+    }
+
+    #[test]
+    fn projected_management_database_url_is_one_shared_secret_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("database-url");
+        fs::write(&path, "postgres://user:secret@database/awaken\n").unwrap();
+        let config = resolve(
+            FileConfig {
+                management_database_url_file: Some(path),
+                ..FileConfig::default()
+            },
+            Default::default(),
+        );
+        for backend in [
+            &config.control.catalog,
+            &config.control.credential,
+            &config.control.config,
+            &config.control.admin,
+            &config.control.sessions,
+        ] {
+            assert!(matches!(backend, awaken_control::StoreBackend::Postgres(_)));
+        }
+        assert!(config.resources.is_shared());
+        assert_eq!(
+            config
+                .origins
+                .get("management_database")
+                .map(String::as_str),
+            Some("management_database_url_file")
+        );
+        assert!(!config.report(false).contains("user:secret"));
+    }
+
+    #[test]
+    fn projected_management_database_url_rejects_ambiguous_or_invalid_sources() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("database-url");
+        fs::write(&path, "postgres://database/awaken").unwrap();
+        let error = ResolvedDeployment::resolve_file(
+            ConfigOverrides::default(),
+            Some(PathBuf::from("/home/dev")),
+            PathBuf::from("/home/dev/.awaken/config.toml"),
+            FileConfig {
+                management_database_url_file: Some(path.clone()),
+                catalog_db: Some("postgres://other/catalog".to_owned()),
+                ..FileConfig::default()
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("cannot be combined"));
+
+        fs::write(&path, "https://not-a-database.example").unwrap();
+        let error = ResolvedDeployment::resolve_file(
+            ConfigOverrides::default(),
+            Some(PathBuf::from("/home/dev")),
+            PathBuf::from("/home/dev/.awaken/config.toml"),
+            FileConfig {
+                management_database_url_file: Some(path),
+                ..FileConfig::default()
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("must contain a postgres:// URL"));
     }
 
     #[test]

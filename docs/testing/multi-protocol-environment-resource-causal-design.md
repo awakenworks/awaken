@@ -434,6 +434,20 @@ Both production processes receive database topology through one generated typed
 config. Per-database `AWAKEN_*` variables and node-local fallback stores are not
 part of either persistence axis.
 
+For the common single-PostgreSQL management topology, the typed config contains
+only `management_database_url_file`. The operator projects one secret file; the
+resolver reads it once and supplies catalog, credential, config, admin, Session,
+and Resource stores. Combining that shared file with any direct per-store URL is
+rejected as ambiguous rather than creating two topology authorities.
+
+| Shared URL file | Per-store URL | File contents | Expected |
+|---|---|---|---|
+| present | absent | PostgreSQL URL | all management and Resource stores use the exact projected value |
+| present | present | any | reject ambiguous topology |
+| present | absent | empty/non-PostgreSQL | reject before store connection |
+| absent | present | PostgreSQL URL(s) | existing advanced split-store topology |
+| absent | absent | n/a | existing embedded local topology |
+
 ## Phase 20: typed remote Worker resource composition
 
 ```text
@@ -493,6 +507,7 @@ one typed deployment file
 | T3 | config_db | external C | Agent publication only at C |
 | T4 | admin_db / sessions_db absent | data_dir | default typed deployment root |
 | T5 | removed per-component environment variables | any inherited value | no topology effect |
+| T6 | `management_database_url_file` only | projected Secret file | all control + Resource stores share one URL |
 
 `spawnProduction` accepts the same database map already owned by
 `deploymentEnv`; per-component tests no longer duplicate binary discovery,
