@@ -34,6 +34,18 @@ use crate::types::{Event, StreamFrame};
 /// the vault routes so the whole managed surface answers bad bodies identically.
 pub(crate) struct ManagedJson<T>(pub(crate) T);
 
+fn managed_json_message(detail: String) -> String {
+    // Cause graph / decision table: a decode error under `resources[i]` is a
+    // resource-union admission failure, so prefix the stable public category and
+    // retain serde's exact path/detail; every other Managed body keeps its
+    // existing diagnostic. This avoids coupling SDK users to Rust type wording.
+    if detail.contains("resources[") {
+        format!("invalid resource: {detail}")
+    } else {
+        detail
+    }
+}
+
 impl<S, T> FromRequest<S> for ManagedJson<T>
 where
     Json<T>: FromRequest<S, Rejection = JsonRejection>,
@@ -48,10 +60,24 @@ where
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse::new(
                     "invalid_request_error",
-                    rejection.body_text(),
+                    managed_json_message(rejection.body_text()),
                 )),
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod managed_json_tests {
+    use super::managed_json_message;
+
+    #[test]
+    fn resource_decode_errors_have_a_stable_category_and_keep_the_path() {
+        let detail = "resources[0].type: unknown variant `future_resource`".to_string();
+        let message = managed_json_message(detail.clone());
+        assert!(message.starts_with("invalid resource:"));
+        assert!(message.ends_with(&detail));
+        assert_eq!(managed_json_message("model: missing field".into()), "model: missing field");
     }
 }
 

@@ -133,6 +133,7 @@ fn client_tools(tools: &[AgentTool]) -> Vec<ToolDescriptor> {
                 description,
                 serde_json::to_value(input_schema).expect("typed custom-tool schema serializes"),
             )),
+            AgentTool::CustomReference { .. } => None,
             AgentTool::AgentToolset20260401 { .. } | AgentTool::McpToolset { .. } => None,
         })
         .collect()
@@ -326,8 +327,19 @@ fn model_config(model: String, inference: InferenceOptions) -> ModelConfig {
     }
 }
 
-fn wire_tools(toolsets: &[ToolsetPolicy], client_tools: &[ToolDescriptor]) -> Vec<AgentTool> {
-    let mut tools = awaken_protocol_managed::project::resolved_toolsets(toolsets);
+fn wire_tools(
+    tool_ids: &[String],
+    toolsets: &[ToolsetPolicy],
+    client_tools: &[ToolDescriptor],
+) -> Vec<AgentTool> {
+    // Cause graph / decision table: config tool id -> serialization-only custom
+    // reference; client tool descriptor -> complete custom schema; toolset ->
+    // typed toolset. These sources coexist and must never overwrite each other.
+    let mut tools = tool_ids
+        .iter()
+        .map(|name| AgentTool::CustomReference { name: name.clone() })
+        .collect::<Vec<_>>();
+    tools.extend(awaken_protocol_managed::project::resolved_toolsets(toolsets));
     tools.extend(client_tools.iter().map(|tool| {
         AgentTool::Custom {
             name: tool.id.clone(),
@@ -347,7 +359,7 @@ fn project(revision: AgentConfigRevision) -> Agent {
         .resolved()
         .map(|binding| binding.model_ref.clone())
         .unwrap_or_default();
-    let tools = wire_tools(&config.toolsets, &config.client_tools);
+    let tools = wire_tools(&config.tool_ids, &config.toolsets, &config.client_tools);
     Agent {
         id: id.clone(),
         object_type: "agent",
