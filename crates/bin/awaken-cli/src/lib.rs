@@ -11,6 +11,7 @@
 //!
 //! The `awaken` binary ([`main`](../main.rs)) is a thin shell over this library.
 
+mod acp_local_credentials;
 mod brain_admin;
 pub mod config;
 
@@ -29,6 +30,7 @@ pub use crate::brain_admin::{
     DrainController, brain_admin_router, register_active_streams_gauge, with_brain_admin,
     with_connection_metric,
 };
+pub use acp_local_credentials::AcpLocalCredentialResolver;
 // Embedded management-plane IAM (ADR-0042/0043 P1) + the mint spec and bootstrap
 // constants a test / operator embedding drives — re-exported from the authoring plane.
 pub use awaken_control::{

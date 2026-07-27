@@ -197,6 +197,20 @@ pub struct AcpHostDiscovery {
     process: Arc<dyn AcpProcessProbe>,
 }
 
+/// Secret-free discovery port shared by Worker liveness and diagnostics.
+#[async_trait]
+pub trait AcpDiscovery: Send + Sync {
+    async fn discover(&self, cli: &AcpCli) -> AcpHostObservation;
+
+    async fn discover_all(&self) -> Vec<AcpHostObservation> {
+        let mut observations = Vec::with_capacity(known_acp_clis().len());
+        for cli in known_acp_clis() {
+            observations.push(self.discover(cli).await);
+        }
+        observations
+    }
+}
+
 impl AcpHostDiscovery {
     /// Discover against the real trusted host with a per-command timeout.
     #[must_use]
@@ -210,16 +224,11 @@ impl AcpHostDiscovery {
     fn with_process(process: Arc<dyn AcpProcessProbe>) -> Self {
         Self { process }
     }
+}
 
-    pub async fn discover_all(&self) -> Vec<AcpHostObservation> {
-        let mut observations = Vec::with_capacity(known_acp_clis().len());
-        for cli in known_acp_clis() {
-            observations.push(self.discover(cli).await);
-        }
-        observations
-    }
-
-    pub async fn discover(&self, cli: &AcpCli) -> AcpHostObservation {
+#[async_trait]
+impl AcpDiscovery for AcpHostDiscovery {
+    async fn discover(&self, cli: &AcpCli) -> AcpHostObservation {
         if let AcpAcquisition::PinnedNpmWrapper { runner, .. } = cli.acquisition {
             let runner_probe = AcpProbeCommand {
                 executable: runner,
