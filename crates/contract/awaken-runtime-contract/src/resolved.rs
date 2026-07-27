@@ -238,10 +238,21 @@ pub struct ModelBinding {
     pub backend_ref: String,
 }
 
+/// Whether an external backend keeps its own default model or receives the exact
+/// model id frozen in the publication. This remains explicit in the immutable
+/// candidate; an empty model string is never interpreted as policy by itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackendModelSelection {
+    Default,
+    Exact,
+}
+
 /// The provisioning facts for one published model candidate. This is snapshot
 /// data, not secret material and not an IAM decision. Local endpoints, gateways,
-/// and provider SaaS all use `Provider`; only an explicitly installed in-process
-/// executor uses `HostExecutor`.
+/// and provider SaaS use `Provider`; a trusted local ACP agent uses
+/// `BackendOwned`; only an explicitly installed in-process executor uses
+/// `HostExecutor`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ModelProvisioning {
@@ -249,6 +260,13 @@ pub enum ModelProvisioning {
     /// provider configurations never fall back to this variant.
     #[default]
     HostExecutor,
+    /// An external backend owns endpoint, account, refresh, and credential
+    /// material. Awaken pins only the exact Worker-local liveness reference and
+    /// the model-selection policy; it never materializes this credential.
+    BackendOwned {
+        credential: crate::CredentialRef,
+        model_selection: BackendModelSelection,
+    },
     /// Exact provider route and credential delivery frozen by publication.
     Provider {
         provider_ref: String,
@@ -308,6 +326,21 @@ impl ResolvedModelCandidate {
                 scope_id: scope_id.into(),
                 credential: credential.map(Box::new),
                 endpoint: Box::new(endpoint),
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn backend_owned(
+        binding: ModelBinding,
+        credential: crate::CredentialRef,
+        model_selection: BackendModelSelection,
+    ) -> Self {
+        Self {
+            binding,
+            provisioning: ModelProvisioning::BackendOwned {
+                credential,
+                model_selection,
             },
         }
     }
@@ -664,8 +697,8 @@ pub struct ResolvedRun {
 #[cfg(test)]
 mod tests {
     use super::{
-        Backend, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor, ToolFacet,
-        ToolPresentation,
+        Backend, BackendModelSelection, ContextPolicy, ModelBinding, ResolvedModelCandidate,
+        ResolvedSpec, ToolDescriptor, ToolFacet, ToolPresentation,
     };
 
     fn td(id: &str) -> ToolDescriptor {
@@ -811,6 +844,37 @@ mod tests {
             Some("https://host/a2a")
         );
         assert!(!Backend::from_ref("a2a:x").is_acp());
+    }
+
+    #[test]
+    fn backend_owned_candidate_serializes_only_identity_and_model_policy() {
+        // Cause graph: exact Worker-local reference + explicit model policy ->
+        // immutable BackendOwned candidate. Endpoint and material have no fields.
+        //
+        // Decision table: Default and Exact both round-trip; changing the policy
+        // changes the snapshot data without inventing a model-id sentinel.
+        for selection in [BackendModelSelection::Default, BackendModelSelection::Exact] {
+            let model = if selection == BackendModelSelection::Default {
+                ""
+            } else {
+                "gpt-exact"
+            };
+            let candidate = ResolvedModelCandidate::backend_owned(
+                ModelBinding::new("cred:local", model, "acp:codex"),
+                crate::CredentialRef {
+                    id: "cred:local".into(),
+                    revision: 3,
+                },
+                selection,
+            );
+            let wire = serde_json::to_string(&candidate).unwrap();
+            assert!(!wire.contains("base_url"));
+            assert!(!wire.contains("material"));
+            assert_eq!(
+                serde_json::from_str::<ResolvedModelCandidate>(&wire).unwrap(),
+                candidate
+            );
+        }
     }
 
     #[test]

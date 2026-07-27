@@ -781,11 +781,17 @@ impl awaken_runtime_contract::resolved::Backend
 pub fn awaken_runtime_contract::resolved::Backend::from_ref(&str) -> Self
 pub fn awaken_runtime_contract::resolved::Backend::is_acp(&self) -> bool
 pub fn awaken_runtime_contract::resolved::Backend::remote_endpoint(&self) -> core::option::Option<&str>
+pub enum awaken_runtime_contract::resolved::BackendModelSelection
+pub awaken_runtime_contract::resolved::BackendModelSelection::Default
+pub awaken_runtime_contract::resolved::BackendModelSelection::Exact
 pub enum awaken_runtime_contract::resolved::ContextPolicy
 pub awaken_runtime_contract::resolved::ContextPolicy::KeepAll
 pub awaken_runtime_contract::resolved::ContextPolicy::KeepLast
 pub awaken_runtime_contract::resolved::ContextPolicy::KeepLast::keep_last: usize
 pub enum awaken_runtime_contract::resolved::ModelProvisioning
+pub awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned
+pub awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned::credential: awaken_credential_contract::CredentialRef
+pub awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned::model_selection: awaken_runtime_contract::resolved::BackendModelSelection
 pub awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor
 pub awaken_runtime_contract::resolved::ModelProvisioning::Provider
 pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::credential: core::option::Option<alloc::boxed::Box<awaken_credential_contract::CredentialAccess>>
@@ -817,6 +823,7 @@ pub struct awaken_runtime_contract::resolved::ResolvedModelCandidate
 pub awaken_runtime_contract::resolved::ResolvedModelCandidate::binding: awaken_runtime_contract::resolved::ModelBinding
 pub awaken_runtime_contract::resolved::ResolvedModelCandidate::provisioning: awaken_runtime_contract::resolved::ModelProvisioning
 impl awaken_runtime_contract::resolved::ResolvedModelCandidate
+pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::backend_owned(awaken_runtime_contract::resolved::ModelBinding, awaken_credential_contract::CredentialRef, awaken_runtime_contract::resolved::BackendModelSelection) -> Self
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::host(awaken_runtime_contract::resolved::ModelBinding) -> Self
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(awaken_runtime_contract::resolved::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, core::option::Option<awaken_credential_contract::CredentialAccess>, awaken_runtime_contract::resolved::InferenceEndpoint) -> Self
 impl core::convert::AsRef<awaken_runtime_contract::resolved::ModelBinding> for awaken_runtime_contract::resolved::ResolvedModelCandidate

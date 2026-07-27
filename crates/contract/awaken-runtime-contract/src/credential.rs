@@ -269,3 +269,47 @@ impl AttemptCredentialRealization {
         self.recorder.record(receipt).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::resolved::{BackendModelSelection, ModelBinding, ResolvedModelCandidate};
+
+    #[test]
+    fn backend_owned_candidates_never_compile_material_authority() {
+        // Cause graph: BackendOwned -> exact Worker-local liveness fence -> ACP
+        // process. It must bypass the provider-material compiler entirely.
+        //
+        // Decision table: Default and Exact model policies both produce zero
+        // material bindings, even when no plaintext holder is available.
+        for selection in [BackendModelSelection::Default, BackendModelSelection::Exact] {
+            let candidate = ResolvedModelCandidate::backend_owned(
+                ModelBinding::new(
+                    "local-codex",
+                    if selection == BackendModelSelection::Exact {
+                        "gpt-exact"
+                    } else {
+                        ""
+                    },
+                    "acp:codex",
+                ),
+                CredentialRef {
+                    id: "local-codex".into(),
+                    revision: 3,
+                },
+                selection,
+            );
+            assert_eq!(
+                compile_candidate_credential_bindings(
+                    &[&candidate],
+                    None,
+                    &CredentialRealizationCapabilities::default(),
+                    1,
+                    0,
+                )
+                .unwrap(),
+                Vec::new()
+            );
+        }
+    }
+}

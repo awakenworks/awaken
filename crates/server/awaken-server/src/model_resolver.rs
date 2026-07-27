@@ -18,7 +18,9 @@ use awaken_credential_vault::{
 };
 use awaken_model_catalog::repo::CatalogRepo;
 use awaken_model_catalog::{Offering, ProviderCatalog};
-use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
+use awaken_runtime_contract::resolved::{
+    Backend, BackendModelSelection, ModelBinding, ResolvedModelCandidate,
+};
 use awaken_runtime_contract::{
     CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
     CredentialUsage, InferenceEndpoint,
@@ -122,6 +124,17 @@ impl CatalogModelPublicationResolver {
                     .collect::<Result<Vec<_>, _>>()?,
             ));
         }
+        if let Some(backend_ref) = selection.backend_default_ref() {
+            let primary = ModelBinding::new("", "", backend_ref);
+            Self::validate_acp_binding(&primary, BackendModelSelection::Default)?;
+            return Ok((
+                primary,
+                fallbacks
+                    .iter()
+                    .map(|binding| Self::canonical_binding(catalog, binding))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ));
+        }
         let mut offerings = catalog
             .offerings
             .iter()
@@ -144,6 +157,10 @@ impl CatalogModelPublicationResolver {
         binding: &ModelBinding,
     ) -> Result<ModelBinding, PublicationResolutionError> {
         if Self::offering_for(catalog, binding).is_some() {
+            return Ok(binding.clone());
+        }
+        if matches!(Backend::from_ref(&binding.backend_ref), Backend::Acp { .. }) {
+            Self::validate_acp_binding(binding, BackendModelSelection::Exact)?;
             return Ok(binding.clone());
         }
         let candidates = catalog
@@ -172,6 +189,41 @@ impl CatalogModelPublicationResolver {
                 ),
             }),
         }
+    }
+
+    fn validate_acp_binding(
+        binding: &ModelBinding,
+        selection: BackendModelSelection,
+    ) -> Result<&'static awaken_run_executor_acp::AcpCli, PublicationResolutionError> {
+        let Backend::Acp { cli } = Backend::from_ref(&binding.backend_ref) else {
+            return Err(PublicationResolutionError::CandidateUnavailable {
+                binding: binding.clone(),
+                reason: "backend-owned model selection requires an ACP backend".into(),
+            });
+        };
+        if cli.trim().is_empty() || binding.backend_ref != format!("acp:{cli}") {
+            return Err(PublicationResolutionError::CandidateUnavailable {
+                binding: binding.clone(),
+                reason: "backend-owned model selection requires an exact acp:<cli> backend".into(),
+            });
+        }
+        let profile = awaken_run_executor_acp::acp_cli(&cli).ok_or_else(|| {
+            PublicationResolutionError::CandidateUnavailable {
+                binding: binding.clone(),
+                reason: format!("ACP backend {cli} is not in the executable catalog"),
+            }
+        })?;
+        let coherent = match selection {
+            BackendModelSelection::Default => binding.model_ref.is_empty(),
+            BackendModelSelection::Exact => !binding.model_ref.trim().is_empty(),
+        };
+        if !coherent {
+            return Err(PublicationResolutionError::CandidateUnavailable {
+                binding: binding.clone(),
+                reason: format!("incoherent {selection:?} backend model selection"),
+            });
+        }
+        Ok(profile)
     }
 
     fn offering_for<'a>(
@@ -357,6 +409,9 @@ impl CatalogModelPublicationResolver {
                 PublicationAccess::Direct(Some(credential)),
             );
         }
+        if matches!(Backend::from_ref(&binding.backend_ref), Backend::Acp { .. }) {
+            return Self::backend_candidate(binding, sources, BackendModelSelection::Exact);
+        }
         Err(PublicationResolutionError::CandidateUnavailable {
             reason: format!("model offering {} is not published", binding.model_ref),
             binding,
@@ -539,6 +594,64 @@ impl CatalogModelPublicationResolver {
             max_output_tokens: catalog.max_output_tokens(&primary_model),
         })
     }
+
+    fn backend_candidate(
+        binding: ModelBinding,
+        sources: &[CredentialSource],
+        model_selection: BackendModelSelection,
+    ) -> Result<ResolvedModelCandidate, PublicationResolutionError> {
+        Self::validate_acp_binding(&binding, model_selection)?;
+        let mut matches = sources.iter().filter(|source| {
+            source.status == CredentialStatus::Active
+                && source.kind == CredentialKind::WorkerLocal
+                && source.worker_local_binding.as_ref().is_some_and(|local| {
+                    local.driver_id == binding.backend_ref
+                        && (binding.provider_identity_ref.is_empty()
+                            || binding.provider_identity_ref == source.id.0)
+                })
+        });
+        let source =
+            matches
+                .next()
+                .ok_or_else(|| PublicationResolutionError::CandidateUnavailable {
+                    binding: binding.clone(),
+                    reason: format!(
+                        "no active Worker-local binding is registered for {}",
+                        binding.backend_ref
+                    ),
+                })?;
+        if matches.next().is_some() {
+            return Err(PublicationResolutionError::CandidateUnavailable {
+                binding: binding.clone(),
+                reason: format!(
+                    "multiple Worker-local bindings are registered for {}; select an exact identity",
+                    binding.backend_ref
+                ),
+            });
+        }
+        let revision = u64::try_from(source.version)
+            .ok()
+            .filter(|revision| *revision > 0)
+            .ok_or_else(|| PublicationResolutionError::CandidateUnavailable {
+                binding: binding.clone(),
+                reason: format!(
+                    "Worker-local source {} has an invalid revision",
+                    source.id.0
+                ),
+            })?;
+        let mut resolved_binding = binding;
+        resolved_binding
+            .provider_identity_ref
+            .clone_from(&source.id.0);
+        Ok(ResolvedModelCandidate::backend_owned(
+            resolved_binding,
+            CredentialRef {
+                id: source.id.0.clone(),
+                revision,
+            },
+            model_selection,
+        ))
+    }
 }
 
 #[async_trait::async_trait]
@@ -575,9 +688,10 @@ impl ModelPublicationResolver for CatalogModelPublicationResolver {
         let all_bindings = std::iter::once(&primary_binding)
             .chain(fallback_bindings.iter())
             .collect::<Vec<_>>();
-        let needs_credentials = all_bindings
-            .iter()
-            .any(|binding| Self::offering_for(&catalog, binding).is_some());
+        let needs_credentials = all_bindings.iter().any(|binding| {
+            Self::offering_for(&catalog, binding).is_some()
+                || matches!(Backend::from_ref(&binding.backend_ref), Backend::Acp { .. })
+        });
         let sources = if needs_credentials {
             self.credentials
                 .list(workspace.as_str())
@@ -588,7 +702,15 @@ impl ModelPublicationResolver for CatalogModelPublicationResolver {
         } else {
             Vec::new()
         };
-        let primary = self.candidate(&catalog, &sources, workspace, primary_binding.clone())?;
+        let primary = if selection.backend_default_ref().is_some() {
+            Self::backend_candidate(
+                primary_binding.clone(),
+                &sources,
+                BackendModelSelection::Default,
+            )?
+        } else {
+            self.candidate(&catalog, &sources, workspace, primary_binding.clone())?
+        };
         let candidates = fallback_bindings
             .into_iter()
             .map(|binding| self.candidate(&catalog, &sources, workspace, binding))
@@ -626,8 +748,12 @@ mod tests {
     use super::*;
     use awaken_agent_contract::RedactedString;
     use awaken_config_resolver::InMemoryProfileStore;
-    use awaken_credential_vault::repo::{InMemoryCredentialRepo, enter_credential};
-    use awaken_credential_vault::{CredentialCreateParams, InMemorySecretStore};
+    use awaken_credential_vault::repo::{
+        InMemoryCredentialRepo, ensure_worker_local, enter_credential,
+    };
+    use awaken_credential_vault::{
+        CredentialCreateParams, InMemorySecretStore, WorkerLocalBinding,
+    };
     use awaken_model_catalog::{
         ApiDialect, ModelAttributes, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
     };
@@ -1215,17 +1341,11 @@ mod tests {
     #[tokio::test]
     async fn worker_local_source_publishes_an_exact_worker_reference() {
         let credentials = Arc::new(InMemoryCredentialRepo::new());
-        let source = enter_credential(
-            CredentialCreateParams {
-                workspace_id: "workspace-a".into(),
-                kind: CredentialKind::WorkerLocal,
-                provider_id: Some("openai".into()),
-                env_key: None,
-                secret: None,
-                oauth_command: None,
-            },
-            &InMemorySecretStore::new(),
+        let source = ensure_worker_local(
             credentials.as_ref(),
+            "workspace-a",
+            WorkerLocalBinding::new("provider:openai", "default"),
+            Some("openai".into()),
         )
         .await
         .unwrap();
@@ -1246,6 +1366,152 @@ mod tests {
         assert_eq!(
             access.material_source,
             CredentialMaterialSource::WorkerReference
+        );
+    }
+
+    #[tokio::test]
+    async fn backend_owned_publication_pins_one_local_binding_without_material() {
+        // Cause graph:
+        // authored backend policy -> executable ACP catalog row -> active exact
+        // WorkerLocal locator -> immutable BackendOwned candidate. No endpoint,
+        // API key, or materialization edge exists.
+        //
+        // Decision table:
+        // B1 default + one binding -> Default, empty model, exact credential
+        // B2 exact + one binding   -> Exact, authored model, exact credential
+        // B3 no binding            -> CandidateUnavailable
+        // B4 default + many        -> CandidateUnavailable (never random)
+        // B5 exact source id + many-> selected exact source
+        // B6 unknown ACP backend   -> CandidateUnavailable
+        let credentials = Arc::new(InMemoryCredentialRepo::new());
+        let codex = ensure_worker_local(
+            credentials.as_ref(),
+            "workspace-a",
+            WorkerLocalBinding::new("acp:codex", "default"),
+            None,
+        )
+        .await
+        .unwrap();
+        let resolver =
+            CatalogModelPublicationResolver::new(ProviderCatalog::default(), credentials.clone());
+
+        let default = resolver
+            .resolve_models(
+                &ScopeId::from("workspace-a"),
+                &ModelSelection::BackendDefault {
+                    backend_ref: "acp:codex".into(),
+                },
+                &[],
+            )
+            .await
+            .expect("B1");
+        assert_eq!(default.primary.binding.model_ref, "", "B1");
+        assert_eq!(
+            default.primary.binding.provider_identity_ref, codex.id.0,
+            "B1"
+        );
+        assert!(
+            matches!(
+                default.primary.provisioning,
+                ModelProvisioning::BackendOwned {
+                    ref credential,
+                    model_selection: BackendModelSelection::Default,
+                } if credential.id == codex.id.0 && credential.revision == 1
+            ),
+            "B1"
+        );
+
+        let exact = resolver
+            .resolve_models(
+                &ScopeId::from("workspace-a"),
+                &ModelSelection::Pinned(ModelBinding::new("", "gpt-exact", "acp:codex")),
+                &[],
+            )
+            .await
+            .expect("B2");
+        assert_eq!(exact.primary.binding.model_ref, "gpt-exact", "B2");
+        assert!(
+            matches!(
+                exact.primary.provisioning,
+                ModelProvisioning::BackendOwned {
+                    model_selection: BackendModelSelection::Exact,
+                    ..
+                }
+            ),
+            "B2"
+        );
+
+        assert!(
+            matches!(
+                resolver
+                    .resolve_models(
+                        &ScopeId::from("workspace-a"),
+                        &ModelSelection::BackendDefault {
+                            backend_ref: "acp:claude".into(),
+                        },
+                        &[],
+                    )
+                    .await,
+                Err(PublicationResolutionError::CandidateUnavailable { .. })
+            ),
+            "B3"
+        );
+
+        let secondary = ensure_worker_local(
+            credentials.as_ref(),
+            "workspace-a",
+            WorkerLocalBinding::new("acp:codex", "secondary"),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(
+                resolver
+                    .resolve_models(
+                        &ScopeId::from("workspace-a"),
+                        &ModelSelection::BackendDefault {
+                            backend_ref: "acp:codex".into(),
+                        },
+                        &[],
+                    )
+                    .await,
+                Err(PublicationResolutionError::CandidateUnavailable { .. })
+            ),
+            "B4"
+        );
+
+        let selected = resolver
+            .resolve_models(
+                &ScopeId::from("workspace-a"),
+                &ModelSelection::Pinned(ModelBinding::new(
+                    secondary.id.0.clone(),
+                    "gpt-exact",
+                    "acp:codex",
+                )),
+                &[],
+            )
+            .await
+            .expect("B5");
+        assert_eq!(
+            selected.primary.binding.provider_identity_ref, secondary.id.0,
+            "B5"
+        );
+
+        assert!(
+            matches!(
+                resolver
+                    .resolve_models(
+                        &ScopeId::from("workspace-a"),
+                        &ModelSelection::BackendDefault {
+                            backend_ref: "acp:not-installed".into(),
+                        },
+                        &[],
+                    )
+                    .await,
+                Err(PublicationResolutionError::CandidateUnavailable { .. })
+            ),
+            "B6"
         );
     }
 }
