@@ -1184,6 +1184,7 @@ pub async fn build_oauth_resolved_router() -> Router {
         } else {
             vec!["printf".into(), OAUTH_MINTED_KEY.into()]
         }),
+        worker_local_binding: None,
         status: CredentialStatus::Active,
         version: 1,
     };

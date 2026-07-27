@@ -161,6 +161,31 @@ impl CredentialRepo for SqliteCredentialRepo {
         .await
     }
 
+    async fn put_if_absent(
+        &self,
+        source: CredentialSource,
+    ) -> Result<CredentialSource, CredentialError> {
+        let id = source.id.0.clone();
+        let workspace_id = source.workspace_id.clone();
+        let data = serde_json::to_string(&source).map_err(storage)?;
+        with_conn(&self.conn, move |conn, p| {
+            conn.execute(
+                &format!(
+                    "INSERT OR IGNORE INTO {p}_source (id, workspace_id, data) VALUES (?1, ?2, ?3)"
+                ),
+                params![id, workspace_id, data],
+            )
+            .map_err(storage)?;
+            get_row(
+                conn,
+                &format!("SELECT data FROM {p}_source WHERE id = ?1"),
+                &source.id.0,
+                CredentialError::SourceNotFound,
+            )
+        })
+        .await
+    }
+
     async fn get(&self, id: &CredentialSourceId) -> Result<CredentialSource, CredentialError> {
         let id = id.0.clone();
         with_conn(&self.conn, move |conn, p| {
@@ -454,6 +479,7 @@ mod tests {
             env_key: Some("ANTHROPIC_API_KEY".into()),
             material_ref: None,
             oauth_command: None,
+            worker_local_binding: None,
             status: CredentialStatus::Active,
             version: 1,
         })

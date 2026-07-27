@@ -4,11 +4,11 @@
 //! the exact NotFound arms.
 
 use awaken_credential_vault::repo::{
-    CredentialCreationIntent, CredentialRepo, InMemoryCredentialRepo,
+    CredentialCreationIntent, CredentialRepo, InMemoryCredentialRepo, ensure_worker_local,
 };
 use awaken_credential_vault::{
     CredentialError, CredentialKind, CredentialPool, CredentialPoolId, CredentialPoolMember,
-    CredentialSource, CredentialSourceId, CredentialStatus, SelectionPolicy,
+    CredentialSource, CredentialSourceId, CredentialStatus, SelectionPolicy, WorkerLocalBinding,
 };
 
 fn source(id: &str, ws: &str) -> CredentialSource {
@@ -20,6 +20,7 @@ fn source(id: &str, ws: &str) -> CredentialSource {
         env_key: Some("ANTHROPIC_API_KEY".into()),
         material_ref: None,
         oauth_command: None,
+        worker_local_binding: None,
         status: CredentialStatus::Active,
         version: 1,
     }
@@ -105,6 +106,88 @@ async fn put_is_upsert(repo: &dyn CredentialRepo) {
     assert_eq!(repo.list_pools("ws").await.unwrap().len(), 1);
 }
 
+async fn worker_local_registration_is_atomic_idempotent_and_secret_free(repo: &dyn CredentialRepo) {
+    // Cause graph: (workspace, driver, subject) -> canonical id -> put-if-absent
+    // -> one durable non-secret source; a conflicting durable winner fails closed.
+    //
+    // Decision table:
+    // D1 first ensure       -> version 1 source
+    // D2 concurrent ensure  -> one identical durable source
+    // D3 repeated ensure    -> identical source
+    // D4 different subject  -> different source
+    // D5 conflicting winner -> InvalidSource
+    // D6 empty identity      -> InvalidSource, no row
+    let binding = WorkerLocalBinding::new("acp:codex", "default");
+    let first = ensure_worker_local(repo, "ws", binding.clone(), Some("openai".into()))
+        .await
+        .expect("D1");
+    assert_eq!(first.kind, CredentialKind::WorkerLocal, "D1");
+    assert_eq!(first.worker_local_binding.as_ref(), Some(&binding), "D1");
+    assert!(
+        first.material_ref.is_none() && first.env_key.is_none(),
+        "D1"
+    );
+
+    let concurrent_binding = WorkerLocalBinding::new("acp:codex", "concurrent");
+    let (left, right) = tokio::join!(
+        ensure_worker_local(
+            repo,
+            "ws",
+            concurrent_binding.clone(),
+            Some("openai".into())
+        ),
+        ensure_worker_local(repo, "ws", concurrent_binding, Some("openai".into()))
+    );
+    assert_eq!(left.expect("D2 left"), right.expect("D2 right"), "D2");
+
+    let repeated = ensure_worker_local(repo, "ws", binding, Some("openai".into()))
+        .await
+        .expect("D3");
+    assert_eq!(repeated, first, "D3");
+
+    let other = ensure_worker_local(
+        repo,
+        "ws",
+        WorkerLocalBinding::new("acp:codex", "secondary"),
+        Some("openai".into()),
+    )
+    .await
+    .expect("D4");
+    assert_ne!(other.id, first.id, "D4");
+
+    let mut conflict = first.clone();
+    conflict.kind = CredentialKind::Vault;
+    conflict.worker_local_binding = None;
+    repo.put(conflict).await.unwrap();
+    assert!(
+        matches!(
+            ensure_worker_local(
+                repo,
+                "ws",
+                WorkerLocalBinding::new("acp:codex", "default"),
+                Some("openai".into())
+            )
+            .await,
+            Err(CredentialError::InvalidSource(_))
+        ),
+        "D5"
+    );
+
+    assert!(
+        matches!(
+            ensure_worker_local(
+                repo,
+                " ",
+                WorkerLocalBinding::new("acp:codex", "default"),
+                None
+            )
+            .await,
+            Err(CredentialError::InvalidSource(_))
+        ),
+        "D6"
+    );
+}
+
 /// Publishing metadata and retiring the durable creation intent is one repository
 /// transaction. A successful return may never expose both the source and its old
 /// pending intent, and replaying the commit must remain harmless.
@@ -175,6 +258,7 @@ async fn run_all(make: impl Fn() -> Box<dyn CredentialRepo>) {
     pools_round_trip_and_scope_by_workspace(&*make()).await;
     missing_rows_are_not_found(&*make()).await;
     put_is_upsert(&*make()).await;
+    worker_local_registration_is_atomic_idempotent_and_secret_free(&*make()).await;
     creation_intent_commit_is_atomic_and_idempotent(&*make()).await;
     abort_creation_is_idempotent(&*make()).await;
     get_is_an_unscoped_by_id_primitive(&*make()).await;

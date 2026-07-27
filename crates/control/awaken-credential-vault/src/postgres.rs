@@ -136,6 +136,24 @@ impl CredentialRepo for PostgresCredentialRepo {
         Ok(())
     }
 
+    async fn put_if_absent(
+        &self,
+        source: CredentialSource,
+    ) -> Result<CredentialSource, CredentialError> {
+        let p = NS;
+        sqlx::query(&format!(
+            "INSERT INTO {p}_source (id, workspace_id, data) VALUES ($1, $2, $3) \
+             ON CONFLICT (id) DO NOTHING"
+        ))
+        .bind(&source.id.0)
+        .bind(&source.workspace_id)
+        .bind(Json(&source))
+        .execute(&self.pool)
+        .await
+        .map_err(storage)?;
+        self.get(&source.id).await
+    }
+
     async fn get(&self, id: &CredentialSourceId) -> Result<CredentialSource, CredentialError> {
         let p = NS;
         let row = sqlx::query(&format!("SELECT data FROM {p}_source WHERE id = $1"))
