@@ -125,6 +125,35 @@ pub trait BrokeredModelCatalogClient: Send + Sync {
     async fn list_models(&self) -> Result<Vec<BrokeredModel>, BrokeredInferenceError>;
 }
 
+const BROKERED_CATALOG_MAX_ATTEMPTS: usize = 3;
+const BROKERED_CATALOG_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// Read one authoritative Cloud catalog snapshot. Both operations are GETs, so a
+/// transient transport/5xx failure can be retried without duplicating grants,
+/// usage, or billing side effects. Stable identity/entitlement failures remain
+/// fail-closed on the first attempt.
+async fn fetch_brokered_catalog(
+    client: &dyn BrokeredModelCatalogClient,
+) -> Result<Vec<BrokeredModel>, BrokeredInferenceError> {
+    for attempt in 1..=BROKERED_CATALOG_MAX_ATTEMPTS {
+        let result = async {
+            client.readiness().await?;
+            client.list_models().await
+        }
+        .await;
+        match result {
+            Ok(models) => return Ok(models),
+            Err(BrokeredInferenceError::TemporarilyUnavailable)
+                if attempt < BROKERED_CATALOG_MAX_ATTEMPTS =>
+            {
+                tokio::time::sleep(BROKERED_CATALOG_RETRY_DELAY).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("the bounded catalog retry loop always returns")
+}
+
 #[derive(Clone)]
 pub struct HttpBrokeredInferenceClient {
     http: reqwest::Client,
@@ -370,9 +399,7 @@ impl BrokeredModelCatalogClient for HttpBrokeredInferenceClient {
 #[async_trait]
 impl awaken_admin_config_api::BrokeredCatalogDiscovery for HttpBrokeredInferenceClient {
     async fn projection(&self) -> Result<awaken_model_catalog::BrokeredCatalogProjection, String> {
-        self.readiness().await.map_err(|error| error.to_string())?;
-        let models = self
-            .list_models()
+        let models = fetch_brokered_catalog(self)
             .await
             .map_err(|error| error.to_string())?;
         let models = models
@@ -548,6 +575,7 @@ mod tests {
     //! | T3   | Y  | N  | -  | -  | E4, zero grant calls |
     //! | T4   | Y  | Y  | N  | -  | typed LLM failure |
 
+    use std::collections::VecDeque;
     use std::sync::Mutex;
 
     use super::*;
@@ -585,6 +613,30 @@ mod tests {
     }
 
     struct CurrentOwnership;
+
+    struct ScriptedCatalogClient {
+        readiness: Mutex<VecDeque<Result<(), BrokeredInferenceError>>>,
+        models: Mutex<VecDeque<Result<Vec<BrokeredModel>, BrokeredInferenceError>>>,
+    }
+
+    #[async_trait]
+    impl BrokeredModelCatalogClient for ScriptedCatalogClient {
+        async fn readiness(&self) -> Result<(), BrokeredInferenceError> {
+            self.readiness
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("scripted readiness result")
+        }
+
+        async fn list_models(&self) -> Result<Vec<BrokeredModel>, BrokeredInferenceError> {
+            self.models
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("scripted models result")
+        }
+    }
 
     #[async_trait]
     impl awaken_runtime_contract::AttemptOwnershipVerifier for CurrentOwnership {
@@ -709,5 +761,67 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[tokio::test]
+    async fn catalog_retry_decision_table_is_bounded_and_fail_closed() {
+        // Cause graph: C1=readiness result, C2=models result, C3=error is
+        // temporary. Effects: E1=return snapshot, E2=retry the whole read,
+        // E3=return the stable error immediately.
+        //
+        // | Rule | C1        | C2        | C3 | Effect |
+        // | R1   | ok        | ok        | -  | E1     |
+        // | R2   | temporary | -         | Y  | E2     |
+        // | R3   | ok        | temporary | Y  | E2     |
+        // | R4   | stable    | -         | N  | E3     |
+        // | R5   | temporary on all three attempts | - | Y | E3 |
+        let model = BrokeredModel {
+            provider: "openai".into(),
+            original_model_id: "gpt-5".into(),
+            native_protocol: "openai_responses".into(),
+            context_window: Some(400_000),
+            max_output_tokens: Some(128_000),
+            capabilities: Default::default(),
+            route_publication_revision: 7,
+        };
+        let recovers = ScriptedCatalogClient {
+            readiness: Mutex::new(VecDeque::from([
+                Err(BrokeredInferenceError::TemporarilyUnavailable),
+                Ok(()),
+                Ok(()),
+            ])),
+            models: Mutex::new(VecDeque::from([
+                Err(BrokeredInferenceError::TemporarilyUnavailable),
+                Ok(vec![model.clone()]),
+            ])),
+        };
+        assert_eq!(fetch_brokered_catalog(&recovers).await.unwrap(), vec![model]);
+        assert!(recovers.readiness.lock().unwrap().is_empty());
+        assert!(recovers.models.lock().unwrap().is_empty());
+
+        let stable = ScriptedCatalogClient {
+            readiness: Mutex::new(VecDeque::from([Err(
+                BrokeredInferenceError::AuthenticationRequired,
+            )])),
+            models: Mutex::new(VecDeque::new()),
+        };
+        assert_eq!(
+            fetch_brokered_catalog(&stable).await.unwrap_err(),
+            BrokeredInferenceError::AuthenticationRequired
+        );
+
+        let exhausted = ScriptedCatalogClient {
+            readiness: Mutex::new(VecDeque::from([
+                Err(BrokeredInferenceError::TemporarilyUnavailable),
+                Err(BrokeredInferenceError::TemporarilyUnavailable),
+                Err(BrokeredInferenceError::TemporarilyUnavailable),
+            ])),
+            models: Mutex::new(VecDeque::new()),
+        };
+        assert_eq!(
+            fetch_brokered_catalog(&exhausted).await.unwrap_err(),
+            BrokeredInferenceError::TemporarilyUnavailable
+        );
+        assert!(exhausted.readiness.lock().unwrap().is_empty());
     }
 }

@@ -118,7 +118,8 @@ impl SharedHost {
         let ctx = self.ctx_for(thread, None).await.ok()?;
         let st = ctx.state.lock().await;
         let run_id = st.awaiting_run.clone()?;
-        pending_from_ticket(&ctx.commit.resume_ticket(&run_id)?, &self.client_tools)
+        let client_tools = self.client_tools_for(&ctx);
+        pending_from_ticket(&ctx.commit.resume_ticket(&run_id)?, &client_tools)
     }
 
     /// Buffer a system message; it is prepended to the next turn's input.
@@ -284,7 +285,14 @@ impl SharedHost {
     ) -> Result<RunState, HostError> {
         let run_id = activation.run_id.clone();
         *ctx.active_run.lock().expect("active run mutex poisoned") = Some(run_id.clone());
-        let result = ctx.ingress.resume(activation, command, ctx.context()).await;
+        // Cause graph: C1 foreground resume (direct or DurableRunIngress inline),
+        // C2 snapshot pins provider/brokered access. C1+C2 must rematerialize an
+        // attempt-scoped executor (and a fresh grant when brokered). Background
+        // dispatch uses the Worker's separate claimed-resume path and never enters
+        // this method. Reusing a dropped first-step executor is neither safe nor
+        // viable after an arbitrarily long client-action wait.
+        let context = self.native_attempt_context(ctx, &activation).await?;
+        let result = ctx.ingress.resume(activation, command, context).await;
         {
             let mut active = ctx.active_run.lock().expect("active run mutex poisoned");
             if active.as_ref() == Some(&run_id) {
@@ -514,7 +522,7 @@ impl SharedHost {
                 .map_err(|error| HostError::internal(error.to_string()))?;
             let child = child_ticket(ctx.as_ref(), registry.as_ref(), ticket.call_id.as_deref());
             let result = if let Some(child_ticket) = child {
-                self.check_pending(&child_ticket, tool_use_id, resume.wants_client())?;
+                self.check_pending(&ctx, &child_ticket, tool_use_id, resume.wants_client())?;
                 match resume {
                     HostResume::ToolPermission { allow, note } => {
                         if allow {
@@ -557,7 +565,7 @@ impl SharedHost {
             return Ok(result);
         }
 
-        self.check_pending(&ticket, tool_use_id, resume.wants_client())?;
+        self.check_pending(&ctx, &ticket, tool_use_id, resume.wants_client())?;
         let result = match resume {
             HostResume::ToolPermission { allow, note } => {
                 if allow {
@@ -606,6 +614,7 @@ impl SharedHost {
         }
         let delegation_registry = RunDelegations::load(&run_store)
             .map_err(|error| HostError::internal(error.to_string()))?;
+        let client_tools = self.client_tools_for(ctx);
         let (pending, awaiting) = match &state {
             RunState::Awaiting => {
                 st.awaiting_run = Some(run_id.clone());
@@ -620,19 +629,19 @@ impl SharedHost {
                         None
                     };
                     match visible_child {
-                        Some(child) => pending_from_ticket(&child, &self.client_tools),
+                        Some(child) => pending_from_ticket(&child, &client_tools),
                         None if ticket.reason == AwaitReason::Delegation => {
                             // A remote Agent may return an opaque InputRequired
                             // continuation without a local child ticket. The parent
                             // session mediates that user interaction, so it is
                             // client-executed even though the initiating agent_run
                             // tool itself is host-executed.
-                            pending_from_ticket(&ticket, &self.client_tools).map(|mut pending| {
+                            pending_from_ticket(&ticket, &client_tools).map(|mut pending| {
                                 pending.client_executed = true;
                                 pending
                             })
                         }
-                        None => pending_from_ticket(&ticket, &self.client_tools),
+                        None => pending_from_ticket(&ticket, &client_tools),
                     }
                 });
                 (pending, true)
@@ -681,6 +690,7 @@ impl SharedHost {
     /// only a built-in one.
     fn check_pending(
         &self,
+        ctx: &SessionCtx,
         ticket: &ResumeTicket,
         tool_use_id: &str,
         want_client: bool,
@@ -695,7 +705,7 @@ impl SharedHost {
             .as_ref()
             .map(|t| t.tool_id.as_str())
             .ok_or_else(|| HostError::internal("awaiting run has no pending tool"))?;
-        let is_client = self.client_tools.contains(pending_tool_id);
+        let is_client = self.client_tools_for(ctx).contains(pending_tool_id);
         if is_client != want_client {
             let (got, expected) = if want_client {
                 ("built-in", "a confirmation")
@@ -707,6 +717,21 @@ impl SharedHost {
             )));
         }
         Ok(())
+    }
+
+    fn client_tools_for(&self, ctx: &SessionCtx) -> HashSet<String> {
+        let mut tools = self.client_tools.clone();
+        tools.extend(
+            ctx.config
+                .resolved_spec
+                .tool_descriptors
+                .iter()
+                .filter(|tool| {
+                    tool.kind == awaken_runtime_contract::resolved::ToolKind::ClientExecuted
+                })
+                .map(|tool| tool.id.clone()),
+        );
+        tools
     }
 }
 

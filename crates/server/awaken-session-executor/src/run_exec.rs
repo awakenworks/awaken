@@ -245,6 +245,95 @@ impl RunAttemptExecutor for SessionAttemptExecutor {
 }
 
 impl SharedHost {
+    /// Build the exact per-attempt runtime context shared by a fresh direct run and
+    /// an awaiting direct run resumed later. Brokered grants and expiring provider
+    /// credentials are attempt-scoped, so a resume must rematerialize from the
+    /// immutable activation instead of falling back to the host's placeholder model.
+    pub(crate) async fn native_attempt_context(
+        &self,
+        ctx: &Arc<SessionCtx>,
+        activation: &RunActivation,
+    ) -> Result<RuntimeRunContext, HostError> {
+        let mut context = ctx
+            .context_for(activation)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        let candidates = activation
+            .snapshot
+            .resolved_spec
+            .execution_candidates(activation.model_ref_override.as_deref());
+        let holder = self.inference_plaintext_holder(activation)?;
+        let epoch = LOCAL_ATTEMPT_EPOCH
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .max(1);
+        let now_unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or_default();
+        let mut bindings = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for candidate in &candidates {
+            let backend = Backend::from_ref(&candidate.binding.backend_ref);
+            // Each route is admitted only by the resolver/provider that will
+            // execute that exact candidate. Unioning evidence across fallback
+            // candidates would let one ACP route authorize another route.
+            let installed = match &backend {
+                Backend::Native => self.inference_routing.credential_realization_capabilities(),
+                Backend::Acp { .. } => self
+                    .acp
+                    .as_ref()
+                    .ok_or_else(|| HostError::bad_request("ACP backend is not installed"))?
+                    .credential_realization_capabilities(&backend)
+                    .map_err(HostError::bad_request)?,
+                Backend::Remote { .. } => Default::default(),
+            };
+            let compiled = awaken_runtime_contract::compile_candidate_credential_bindings(
+                &[*candidate],
+                holder.as_ref(),
+                &installed,
+                epoch,
+                now_unix_ms,
+            )
+            .map_err(|error| HostError::bad_request(error.to_string()))?;
+            for binding in compiled {
+                if !seen.insert(binding.candidate_fingerprint.clone()) {
+                    return Err(HostError::bad_request(
+                        "published model candidate is duplicated in the selected fallback set",
+                    ));
+                }
+                bindings.push(binding);
+            }
+        }
+        // Local attempt authority cause graph: C1 the Session still owns this
+        // run; C2 a candidate needs local credential material. E1 expose an
+        // ownership fence to every side-effecting executor (including brokered
+        // grants); E2 additionally install credential bindings/receipts.
+        // Decision table: C1=N -> fail at verifier; C1=Y,C2=N -> E1 only;
+        // C1=Y,C2=Y -> E1+E2. A resumed attempt applies the same table again.
+        let authority = Arc::new(LocalAttemptAuthority {
+            session: Arc::downgrade(ctx),
+            run_id: activation.run_id.clone(),
+            bindings: bindings.clone(),
+        });
+        context = context.with_ownership(authority.clone());
+        if !bindings.is_empty() {
+            context = context.with_credential_realization(
+                awaken_runtime_contract::AttemptCredentialRealization::new(bindings, authority),
+            );
+        }
+        // Route this attempt's inference through the run's effective model,
+        // resolved through the host's InferenceExecutorMaterializer. `None` leaves
+        // the runtime's bound host-default executor.
+        if let Some(executor) = self
+            .inference_routing
+            .executor_for_activation(activation, &context)
+            .map_err(HostError::bad_request)?
+        {
+            context = context.with_model_executor(executor);
+        }
+        Ok(context)
+    }
+
     /// Execute `activation`: the ACP executor when the session chose
     /// an ACP runtime, else the native ingress (direct / durable / superseding).
     ///
@@ -280,92 +369,15 @@ impl SharedHost {
             // inbox in-process, so it is the only path that opens one. The
             // inbox closes when the attempt returns — success or error — and
             // unconsumed messages carry over to the thread's next attempt.
-            let mut context = ctx
-                .context_for(&activation)
-                .await
-                .map_err(|e| HostError::internal(e.to_string()))?
+            let mut context = self
+                .native_attempt_context(ctx, &activation)
+                .await?
                 .with_live_inbox(ctx.open_live_inbox());
-            let candidates = activation
-                .snapshot
-                .resolved_spec
-                .execution_candidates(activation.model_ref_override.as_deref());
-            let holder = self.inference_plaintext_holder(&activation)?;
-            let epoch = LOCAL_ATTEMPT_EPOCH
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                .max(1);
-            let now_unix_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-                .unwrap_or_default();
-            let mut bindings = Vec::new();
-            let mut seen = std::collections::BTreeSet::new();
-            for candidate in &candidates {
-                let backend = Backend::from_ref(&candidate.binding.backend_ref);
-                // Each route is admitted only by the resolver/provider that will
-                // execute that exact candidate. Unioning evidence across fallback
-                // candidates would let one ACP route authorize another route.
-                let installed = match &backend {
-                    Backend::Native => self.inference_routing.credential_realization_capabilities(),
-                    Backend::Acp { .. } => self
-                        .acp
-                        .as_ref()
-                        .ok_or_else(|| HostError::bad_request("ACP backend is not installed"))?
-                        .credential_realization_capabilities(&backend)
-                        .map_err(HostError::bad_request)?,
-                    Backend::Remote { .. } => Default::default(),
-                };
-                let compiled = awaken_runtime_contract::compile_candidate_credential_bindings(
-                    &[*candidate],
-                    holder.as_ref(),
-                    &installed,
-                    epoch,
-                    now_unix_ms,
-                )
-                .map_err(|error| HostError::bad_request(error.to_string()))?;
-                for binding in compiled {
-                    if !seen.insert(binding.candidate_fingerprint.clone()) {
-                        return Err(HostError::bad_request(
-                            "published model candidate is duplicated in the selected fallback set",
-                        ));
-                    }
-                    bindings.push(binding);
-                }
-            }
-            // Local attempt authority cause graph: C1 the Session still owns this
-            // run; C2 a candidate needs local credential material. E1 expose an
-            // ownership fence to every side-effecting executor (including brokered
-            // grants); E2 additionally install credential bindings/receipts.
-            // Decision table: C1=N -> fail at verifier; C1=Y,C2=N -> E1 only;
-            // C1=Y,C2=Y -> E1+E2.
-            let authority = Arc::new(LocalAttemptAuthority {
-                session: Arc::downgrade(ctx),
-                run_id: activation.run_id.clone(),
-                bindings: bindings.clone(),
-            });
-            context = context.with_ownership(authority.clone());
-            if !bindings.is_empty() {
-                context = context.with_credential_realization(
-                    awaken_runtime_contract::AttemptCredentialRealization::new(
-                        bindings, authority,
-                    ),
-                );
-            }
             if let (Some(mirror), Some(token)) = (
                 options.cancellation_mirror.as_ref(),
                 context.cancellation.clone(),
             ) {
                 *mirror.lock().expect("cancel mirror mutex poisoned") = Some(token);
-            }
-            // Route this attempt's inference through the run's effective model,
-            // resolved through the host's InferenceExecutorMaterializer. `None` leaves the
-            // runtime's bound (host default) executor — a single-model deployment is
-            // unaffected.
-            if let Some(exec) = self
-                .inference_routing
-                .executor_for_activation(&activation, &context)
-                .map_err(HostError::bad_request)?
-            {
-                context = context.with_model_executor(exec);
             }
             if let Some(sink) = options.sink {
                 context = context.with_stream_sink(sink);

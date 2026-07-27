@@ -54,12 +54,15 @@ async function startModelDirectory(apiKey) {
     state.requests.push({
       method: request.method,
       url: request.url,
-      apiKey: request.headers['x-api-key'],
+      apiKey: request.headers['x-api-key']
+        ?? request.headers.authorization?.replace(/^Bearer\s+/u, ''),
     });
+    const suppliedKey = request.headers['x-api-key']
+      ?? request.headers.authorization?.replace(/^Bearer\s+/u, '');
     if (
       request.method !== 'GET'
       || !request.url.startsWith('/v1/models')
-      || request.headers['x-api-key'] !== apiKey
+      || suppliedKey !== apiKey
     ) {
       response.writeHead(401, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ error: { message: 'unauthorized' } }));
@@ -164,6 +167,7 @@ async function main() {
 
       r = await req(base, 'POST', '/v1/config/provider-connections', {
         ...connection,
+        timeout_secs: undefined,
         secret: 'wrong-secret', // awaken-allow: secret
       });
       assert.equal(r.status, 502, JSON.stringify(r.json));
@@ -185,9 +189,63 @@ async function main() {
       assert.equal(readyConnection.status, 'ready');
       assert.equal(readyConnection.active_credentials, 1);
       assert.equal(readyConnection.active_models, 2);
+
+      // Connection-state cause graph:
+      // C1 authored provider; C2 active credential; C3 observed offerings;
+      // C4 at least one offering active; C5 last active observation is fresh.
+      // E1 NotConfigured, E2 NeedsAttention, E3 Connected, E4 Unavailable,
+      // E5 Stale, E6 Ready. Stale needs a historical clock fixture and is kept
+      // out of this live-clock table; every other state is driven over HTTP.
+      //
+      // | Rule | C1 | C2 | C3 | C4 | C5 | Expected |
+      // | S1   | N  | N  | N  | -  | -  | not_configured |
+      // | S2   | Y  | N  | -  | -  | -  | needs_attention |
+      // | S3   | -  | Y  | N  | -  | -  | connected |
+      // | S4   | -  | Y  | Y  | N  | -  | unavailable |
+      // | S5   | -  | Y  | Y  | Y  | Y  | ready |
+      r = await req(base, 'PUT', '/v1/config/providers/gemini', {
+        id: 'gemini', slug: 'gemini', display_name: 'Google Gemini', version: 1,
+      });
+      assert.equal(r.status, 200, JSON.stringify(r.json));
+      const openAiCredential = await req(base, 'POST', '/v1/config/credentials', {
+        workspace_id: 'ws', kind: 'vault', provider_id: 'openai', secret: 'sk-admin-e2e', // awaken-allow: secret
+      });
+      assert.equal(openAiCredential.status, 201, JSON.stringify(openAiCredential.json));
+      r = await req(base, 'GET', '/v1/config/provider-connections?workspace_id=ws');
+      assert.equal(r.json.find((item) => item.provider_id === 'gemini').status, 'needs_attention');
+      assert.equal(r.json.find((item) => item.provider_id === 'openai').status, 'connected');
+
+      await req(base, 'PUT', '/v1/config/providers/openai', {
+        id: 'openai', slug: 'openai', display_name: 'OpenAI', version: 1,
+      });
+      await req(base, 'PUT', '/v1/config/endpoints/openai-unavailable-ep', {
+        id: 'ignored', provider_id: 'openai', dialect: 'open_ai_chat',
+        base_url: `${directory.url}/v1/`, timeout_secs: 30,
+        display_name: 'OpenAI unavailable fixture', version: 1,
+      });
+      directory.state.models = ['openai-unavailable'];
+      r = await req(base, 'POST', '/v1/config/endpoints/openai-unavailable-ep/discover-models', {
+        workspace_id: 'ws', credential_source_id: openAiCredential.json.id,
+      });
+      assert.equal(r.status, 200, JSON.stringify(r.json));
+      assert.equal(r.json.discovered, 1);
+      directory.state.models = [];
+      r = await req(base, 'POST', '/v1/config/endpoints/openai-unavailable-ep/discover-models', {
+        workspace_id: 'ws', credential_source_id: openAiCredential.json.id,
+      });
+      assert.equal(r.status, 200, JSON.stringify(r.json));
+      assert.equal(r.json.marked_unavailable, 1);
+      r = await req(base, 'GET', '/v1/config/provider-connections?workspace_id=ws');
+      assert.equal(r.json.find((item) => item.provider_id === 'openai').status, 'unavailable');
+      directory.state.models = ['openai-unavailable'];
+      r = await req(base, 'POST', '/v1/config/endpoints/openai-unavailable-ep/discover-models', {
+        workspace_id: 'ws', credential_source_id: openAiCredential.json.id,
+      });
+      assert.equal(r.status, 200, JSON.stringify(r.json));
+      assert.equal(r.json.activated, 1);
       directory.state.models = ['provider-model-a', 'provider-model-b'];
       directory.state.requests.length = 0;
-      pass('Provider Connections Test & Save covers rejection, discovery, atomic save, and Ready state');
+      pass('Provider Connections cover validation, default timeout, and five live catalog states');
 
       // --- author provider / endpoint / offering (path id is authoritative) ---
       r = await req(base, 'PUT', '/v1/config/providers/anthropic', {
@@ -228,6 +286,35 @@ async function main() {
       checkContract('ProviderCatalog', r.json);
       assert.ok('anthropic' in r.json.providers);
       pass('GET /v1/config/catalog matches ProviderCatalog contract');
+
+      // Model-attribute cause graph:
+      // C1 context is positive; C2 output limit is positive; C3 output <= context.
+      // E1 persist a Manual provenance stamp, otherwise E2 reject the aggregate.
+      //
+      // | Rule | C1 | C2 | C3 | Expected |
+      // | A1   | Y  | Y  | Y  | 200 + manual provenance |
+      // | A2   | N  | -  | -  | 422 context_window |
+      // | A3   | -  | N  | -  | 422 max_output_tokens |
+      // | A4   | Y  | Y  | N  | 422 output exceeds context |
+      r = await req(base, 'PUT', '/v1/config/model-attributes/claude-opus-4-8', {
+        context_window: 200_000,
+        max_output_tokens: 8_192,
+      });
+      assert.equal(r.status, 200, JSON.stringify(r.json));
+      checkContract('ModelAttributes', r.json);
+      assert.equal(r.json.provenance.context_window.source, 'manual');
+      assert.equal(r.json.provenance.max_output_tokens.source, 'manual');
+      for (const [attributes, detail] of [
+        [{ context_window: 0 }, 'context_window'],
+        [{ max_output_tokens: 0 }, 'max_output_tokens'],
+        [{ context_window: 10, max_output_tokens: 11 }, 'max_output_tokens cannot exceed context_window'],
+      ]) {
+        r = await req(base, 'PUT', `/v1/config/model-attributes/invalid-${detail.length}`, attributes);
+        assert.equal(r.status, 422, JSON.stringify(r.json));
+        assert.equal(r.json.code, 'catalog_invariant');
+        assert.match(r.json.detail, new RegExp(detail));
+      }
+      pass('manual model attributes persist provenance and reject all numeric invariant violations');
 
       // --- credential entry: secret-in, secret-free-out (validated) ---
       r = await req(base, 'POST', '/v1/config/credentials', {
@@ -305,6 +392,26 @@ async function main() {
       assert.equal(r.json.base_url, 'https://api.anthropic.com/v1/');
       assert.equal(r.json.credential_present, true);
       pass('POST /v1/config/inference/resolve — resolver output matches ResolvedInferenceView contract');
+
+      // Target-shape cause graph: exactly one of structured target (C1) and legacy
+      // model_id (C2) is required. XOR succeeds; both/none fail before resolution.
+      // | Rule | C1 | C2 | Expected |
+      // | T1   | Y  | N  | structured resolution |
+      // | T2   | N  | Y  | legacy resolution |
+      // | T3   | Y  | Y  | 400 model_target_invalid |
+      // | T4   | N  | N  | 400 model_target_invalid |
+      for (const request of [
+        {
+          workspace_id: 'ws', model_id: 'claude-opus-4-8',
+          target: { model_id: 'claude-opus-4-8' }, binding: { type: 'none' },
+        },
+        { workspace_id: 'ws', binding: { type: 'none' } },
+      ]) {
+        r = await req(base, 'POST', '/v1/config/inference/resolve', request);
+        assert.equal(r.status, 400, JSON.stringify(r.json));
+        assert.equal(r.json.code, 'model_target_invalid');
+      }
+      pass('resolve request enforces target/model_id XOR at the HTTP boundary');
 
       // --- read-back: GET provider / endpoint / credential + list (validated) ---
       r = await req(base, 'GET', '/v1/config/providers/anthropic');
@@ -450,6 +557,34 @@ async function main() {
         model_id: 'claude-opus-4-8', provider_id: 'anthropic',
         protocol_endpoint_id: 'ep2', dialect: 'anthropic_messages', upstream_model: null,
       });
+
+      // Profile-validation cause graph:
+      // C1 primary model non-empty; C2 fallback count <= 8; C3 every fallback
+      // model non-empty; C4 every structured target unique. Only C1..C4 persists.
+      // | Rule | C1 | C2 | C3 | C4 | Expected |
+      // | P1   | N  | -  | -  | -  | 422 empty primary |
+      // | P2   | Y  | N  | -  | -  | 422 too many fallbacks |
+      // | P3   | Y  | Y  | N  | -  | 422 empty fallback |
+      // | P4   | Y  | Y  | Y  | N  | 422 duplicate target |
+      const candidate = (model_id) => ({
+        target: { model_id }, credential_binding: { type: 'none' },
+      });
+      const invalidProfiles = [
+        { primary: candidate('  '), fallbacks: [], disabled_endpoint_ids: [] },
+        {
+          primary: candidate('primary'),
+          fallbacks: Array.from({ length: 9 }, (_, index) => candidate(`fallback-${index}`)),
+          disabled_endpoint_ids: [],
+        },
+        { primary: candidate('primary'), fallbacks: [candidate(' ')], disabled_endpoint_ids: [] },
+        { primary: candidate('duplicate'), fallbacks: [candidate('duplicate')], disabled_endpoint_ids: [] },
+      ];
+      for (const [index, profile] of invalidProfiles.entries()) {
+        r = await req(base, 'PUT', `/v1/config/inference-profiles/invalid-${index}`, profile);
+        assert.equal(r.status, 422, JSON.stringify(r.json));
+        assert.equal(r.json.code, 'invalid_inference_profile');
+      }
+      pass('inference-profile authoring rejects every invalid cause partition atomically');
 
       // Cause graph / decision table:
       // C1 one model has ep1+ep2 and no qualifier -> E1 fail model_ambiguous.
