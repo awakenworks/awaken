@@ -56,8 +56,13 @@ no_browser = false
 
 The file also accepts `runtime_database_url`, `resource_database_url`, and
 `catalog_db` / `credential_db` / `config_db` / `admin_db` / `sessions_db` for
-server deployments. Prefer environment variables or a secret manager for URLs
-that contain credentials and for seal keys.
+server deployments. A deployment that uses one PostgreSQL authority for the
+complete management plane should instead set `management_database_url_file` to
+an operator-projected secret file; it supplies all five control stores and the
+Resource Plane without copying the URL into configuration. It cannot be mixed
+with the per-store URL fields. Seal keys and Cloud workload credentials likewise
+use their existing file-backed settings. Environment variables never select
+these deployment facts.
 
 ## License
 
