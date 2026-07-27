@@ -625,8 +625,10 @@ where
 {
     build_secretless_worker(
         WorkerUpstream::new(upstream),
-        WorkerProcessConfig::from_env(),
+        WorkerProcessConfig::embedded_defaults(),
         materializer,
+        None,
+        None,
     )
     .await?
     .run_until(shutdown)

@@ -153,12 +153,22 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();
+    let model_binding = if body
+        .get("model")
+        .and_then(|model| model.get("mode"))
+        .and_then(Value::as_str)
+        == Some("auto")
+    {
+        ModelSelection::Auto
+    } else {
+        ModelSelection::pinned(provider_identity_ref, model_ref, backend_ref)
+    };
     Ok(AgentConfig {
         id,
         instructions: string("system").unwrap_or_default(),
         max_steps: body.get("max_steps").and_then(Value::as_u64).unwrap_or(8) as usize,
         delegation_limits: Default::default(),
-        model_binding: ModelSelection::pinned(provider_identity_ref, model_ref, backend_ref),
+        model_binding,
         inference: Default::default(),
         tool_ids: tools.iter().filter_map(managed_tool_id).collect(),
         toolsets: awaken_session_contract::toolset_policies(&authored_toolsets),
@@ -223,17 +233,23 @@ pub fn managed_from_agent_config(config: &AgentConfig, published: bool) -> Value
             "input_schema": tool.parameters,
         })
     }));
+    let model = binding.map_or_else(
+        || json!({ "mode": "auto" }),
+        |binding| {
+            json!({
+                "id": binding.model_ref,
+                "model_ref": binding.model_ref,
+                "provider_identity_ref": binding.provider_identity_ref,
+                "backend_ref": binding.backend_ref,
+            })
+        },
+    );
     json!({
         "id": config.id,
         "type": "agent",
         "name": config.name,
         "description": config.description,
-        "model": {
-            "id": binding.map(|binding| binding.model_ref.clone()).unwrap_or_default(),
-            "model_ref": binding.map(|binding| binding.model_ref.clone()).unwrap_or_default(),
-            "provider_identity_ref": binding.map(|binding| binding.provider_identity_ref.clone()).unwrap_or_default(),
-            "backend_ref": binding.map(|binding| binding.backend_ref.clone()).unwrap_or_default(),
-        },
+        "model": model,
         "system": config.instructions,
         "metadata": config.metadata,
         "tools": tools,
@@ -258,6 +274,23 @@ mod tests {
 
     #[test]
     fn reads_every_managed_model_shape() {
+        // Cause graph: C1 `model.mode` is `auto`; C2 an exact model coordinate is
+        // present. E1 preserve Auto for Workspace Profile resolution; E2 preserve
+        // the exact pinned triple. Decision table: C1=Y -> E1; C1=N,C2=Y -> E2;
+        // C1=N,C2=N -> legacy empty pin.
+        let auto = agent_config_from_managed(
+            "a".into(),
+            &json!({
+                "model": { "mode": "auto" }
+            }),
+        )
+        .expect("auto model");
+        assert!(auto.model_binding.is_auto());
+        assert_eq!(
+            managed_from_agent_config(&auto, false)["model"]["mode"],
+            "auto"
+        );
+
         let from_string = agent_config_from_managed("a".into(), &json!({ "model": "gpt-x" }))
             .expect("string model");
         assert_eq!(

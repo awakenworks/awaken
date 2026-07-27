@@ -104,6 +104,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             )
             .await
         }
+        // Production model composition for provider/BYOK/brokered e2e: no
+        // deterministic Host executor is installed, so publications resolve from
+        // the authored catalog and execute through the real materializer.
+        Ok("management-providers") => awaken_cli::build_management_router().await,
         // The production management composition (durable stores + config plane +
         // resource PEP) with only its deterministic fallback model replaced. Used
         // by the Skill pin/restart e2e; resource repositories remain auth-agnostic.
