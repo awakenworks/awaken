@@ -79,6 +79,13 @@ pub enum McpInterface {
 #[derive(Debug, Clone, Copy)]
 pub struct AcpCli {
     pub id: &'static str,
+    /// Operator-facing name projected into the management capability view. The
+    /// catalog owns it so authoring cannot advertise an adapter execution cannot
+    /// launch.
+    pub display_name: &'static str,
+    /// Operator-facing launch summary. This is descriptive metadata, never a
+    /// second launch/configuration source.
+    pub description: &'static str,
     /// Host/local argv. This may use `npx` for on-demand developer installation.
     pub command: &'static str,
     pub args: &'static [&'static str],
@@ -406,6 +413,8 @@ impl AcpCli {
 // reproducible and the wire codec stays a known quantity.
 const CLAUDE: AcpCli = AcpCli {
     id: "claude",
+    display_name: "Claude Code",
+    description: "Claude Code via the pinned ACP adapter. Reads CLAUDE.md.",
     command: "npx",
     args: &["-y", "@agentclientprotocol/claude-agent-acp@0.44"],
     container_argv: &["claude-agent-acp"],
@@ -443,6 +452,8 @@ const CLAUDE: AcpCli = AcpCli {
 // deliberately unavailable for this row.
 const CODEX: AcpCli = AcpCli {
     id: "codex",
+    display_name: "Codex",
+    description: "OpenAI Codex via the pinned ACP adapter. Reads AGENTS.md.",
     command: "npx",
     args: &["-y", "@agentclientprotocol/codex-acp@1.1"],
     container_argv: &["codex-acp"],
@@ -463,6 +474,8 @@ const CODEX: AcpCli = AcpCli {
 // is a Direct launch with no dynamic-install step.
 const GEMINI: AcpCli = AcpCli {
     id: "gemini",
+    display_name: "Gemini CLI",
+    description: "Gemini CLI via its native ACP mode. Reads GEMINI.md.",
     command: "gemini",
     args: &["--experimental-acp"],
     container_argv: &["gemini", "--experimental-acp"],
@@ -497,6 +510,8 @@ const GEMINI: AcpCli = AcpCli {
 // the Gemini row) — the projection/session/egress contract below is exercised regardless.
 const OPENCODE: AcpCli = AcpCli {
     id: "opencode",
+    display_name: "OpenCode",
+    description: "OpenCode via its native ACP mode. Reads AGENTS.md.",
     command: "opencode",
     args: &["acp"],
     container_argv: &["opencode", "acp"],

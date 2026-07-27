@@ -19,15 +19,74 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde_json::{Value, json};
 
-/// Mount `GET /v1/capabilities` over the host's advertised tool descriptors.
-pub fn capabilities_router(tools: Vec<ToolDescriptor>) -> Router {
-    Router::new()
-        .route("/v1/capabilities", get(get_capabilities))
-        .with_state(Arc::new(tools))
+/// One execution backend projected by the composition root from its authoritative
+/// runtime catalog. The config plane renders this value but never authors another
+/// adapter list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeCapability {
+    pub id: String,
+    pub label: String,
+    pub kind: String,
+    pub cli: Option<String>,
+    pub description: String,
 }
 
-async fn get_capabilities(State(tools): State<Arc<Vec<ToolDescriptor>>>) -> Json<Value> {
-    let tool_caps: Vec<Value> = tools
+impl RuntimeCapability {
+    #[must_use]
+    pub fn native() -> Self {
+        Self {
+            id: "awaken".into(),
+            label: "Native".into(),
+            kind: "native".into(),
+            cli: None,
+            description: "Runs in-process on the awaken runtime — no external CLI, no sandbox."
+                .into(),
+        }
+    }
+
+    #[must_use]
+    pub fn acp(
+        cli: impl Into<String>,
+        label: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
+        let cli = cli.into();
+        Self {
+            id: format!("acp:{cli}"),
+            label: label.into(),
+            kind: "acp".into(),
+            cli: Some(cli),
+            description: description.into(),
+        }
+    }
+
+    fn to_json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "label": self.label,
+            "kind": self.kind,
+            "cli": self.cli,
+            "description": self.description,
+        })
+    }
+}
+
+struct CapabilityState {
+    tools: Vec<ToolDescriptor>,
+    runtimes: Vec<RuntimeCapability>,
+}
+
+/// Mount `GET /v1/capabilities` over the host's advertised tool descriptors and
+/// the runtime catalog projection supplied by the composition root.
+pub fn capabilities_router(tools: Vec<ToolDescriptor>, runtimes: Vec<RuntimeCapability>) -> Router {
+    Router::new()
+        .route("/v1/capabilities", get(get_capabilities))
+        .with_state(Arc::new(CapabilityState { tools, runtimes }))
+}
+
+async fn get_capabilities(State(state): State<Arc<CapabilityState>>) -> Json<Value> {
+    let tool_caps: Vec<Value> = state
+        .tools
         .iter()
         .map(|t| {
             json!({
@@ -37,81 +96,19 @@ async fn get_capabilities(State(tools): State<Arc<Vec<ToolDescriptor>>>) -> Json
             })
         })
         .collect();
+    let runtime_caps: Vec<Value> = state
+        .runtimes
+        .iter()
+        .map(RuntimeCapability::to_json)
+        .collect();
     Json(json!({
         "runtime_version": env!("CARGO_PKG_VERSION"),
         "tools": tool_caps,
         "plugins": plugin_catalog(),
         "policies": policy_catalog(),
-        "runtimes": runtime_catalog(),
+        "runtimes": runtime_caps,
         "sandbox_execution_policy": sandbox_execution_policy_capability(),
     }))
-}
-
-/// The execution backends an environment can bind — the "where/how it runs" axis,
-/// kept off the (protocol-neutral) agent. `awaken` is the native in-process runtime;
-/// `acp:<cli>` routes the run to an ACP CLI adapter. The console renders this as the
-/// environment's Runtime picker and, on session-start, writes the chosen id to the
-/// `awaken.runtime` session-metadata key (see protocol-managed `ext::model_selection`).
-///
-/// Hand-curated deployment vocabulary (like the permission schema below), pinned to
-/// the backend source of truth `awaken_run_executor_acp::known_acp_clis()` by
-/// `runtime_catalog_matches_known_clis` — keep the two in sync.
-pub fn runtime_catalog() -> Vec<Value> {
-    vec![
-        runtime(
-            "awaken",
-            "Native",
-            "native",
-            None,
-            "Runs in-process on the awaken runtime — no external CLI, no sandbox.",
-        ),
-        runtime(
-            "acp:claude",
-            "Claude Code",
-            "acp",
-            Some("claude"),
-            "Claude Code via the ACP adapter (npx @agentclientprotocol/claude-agent-acp). Reads CLAUDE.md.",
-        ),
-        runtime(
-            "acp:kimi",
-            "Kimi Code",
-            "acp",
-            Some("kimi"),
-            "Kimi Code CLI via its native ACP server. Reads AGENTS.md.",
-        ),
-        runtime(
-            "acp:codex",
-            "Codex",
-            "acp",
-            Some("codex"),
-            "OpenAI Codex via the Zed codex-acp adapter.",
-        ),
-        runtime(
-            "acp:gemini",
-            "Gemini CLI",
-            "acp",
-            Some("gemini"),
-            "Gemini CLI via ACP. Reads GEMINI.md.",
-        ),
-        runtime(
-            "acp:opencode",
-            "OpenCode",
-            "acp",
-            Some("opencode"),
-            "OpenCode via ACP.",
-        ),
-        runtime(
-            "acp:hermes",
-            "Hermes Agent",
-            "acp",
-            Some("hermes"),
-            "Hermes Agent via its native ACP server; private MEMORY.md state stays isolated.",
-        ),
-    ]
-}
-
-fn runtime(id: &str, label: &str, kind: &str, cli: Option<&str>, description: &str) -> Value {
-    json!({ "id": id, "label": label, "kind": kind, "cli": cli, "description": description })
 }
 
 /// Authoring contract for the independent, versioned SandboxExecutionPolicy.
@@ -255,30 +252,21 @@ mod tests {
     }
 
     #[test]
-    fn runtime_catalog_matches_known_clis() {
-        // Pinned to `awaken_run_executor_acp::known_acp_clis()` (native + these four).
-        // If that catalog changes, update this list — the boundary keeps the executor
-        // crate out of the config plane, so this is the deliberate sync point.
-        let catalog = runtime_catalog();
-        let ids: Vec<&str> = catalog.iter().map(|r| r["id"].as_str().unwrap()).collect();
-        assert_eq!(
-            ids,
-            [
-                "awaken",
-                "acp:claude",
-                "acp:kimi",
-                "acp:codex",
-                "acp:gemini",
-                "acp:opencode",
-                "acp:hermes"
-            ]
-        );
-        // Native has no cli; every acp:* names its cli so the host can look it up.
-        for r in runtime_catalog() {
-            if r["kind"] == "acp" {
-                assert!(r["cli"].is_string(), "acp runtime names its cli: {r}");
-            }
-        }
+    fn runtime_capability_constructor_preserves_the_exact_adapter_identity() {
+        // Cause graph:
+        // catalog row -> exact `acp:<id>` capability; absent row -> no capability
+        // can be fabricated by this config-plane renderer.
+        //
+        // Decision table:
+        // | Rule | input kind | CLI id | result id | CLI field |
+        // | C1 | Native | - | awaken | absent |
+        // | C2 | ACP | codex | acp:codex | codex |
+        let native = RuntimeCapability::native();
+        let acp = RuntimeCapability::acp("codex", "Codex", "description");
+        assert_eq!(native.id, "awaken", "C1");
+        assert_eq!(native.cli, None, "C1");
+        assert_eq!(acp.id, "acp:codex", "C2");
+        assert_eq!(acp.cli.as_deref(), Some("codex"), "C2");
     }
 
     #[test]

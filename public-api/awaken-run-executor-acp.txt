@@ -46,6 +46,8 @@ pub awaken_run_executor_acp::AcpCli::config_home_env: &'static str
 pub awaken_run_executor_acp::AcpCli::container_argv: &'static [&'static str]
 pub awaken_run_executor_acp::AcpCli::context_window_env: core::option::Option<&'static str>
 pub awaken_run_executor_acp::AcpCli::credential_file: core::option::Option<&'static str>
+pub awaken_run_executor_acp::AcpCli::description: &'static str
+pub awaken_run_executor_acp::AcpCli::display_name: &'static str
 pub awaken_run_executor_acp::AcpCli::env: &'static [(&'static str, &'static str)]
 pub awaken_run_executor_acp::AcpCli::id: &'static str
 pub awaken_run_executor_acp::AcpCli::mcp_interface: awaken_run_executor_acp::McpInterface
