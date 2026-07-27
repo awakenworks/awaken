@@ -1806,7 +1806,7 @@ async fn open_writes_legacy_mcp_config_into_the_isolated_config_home() {
         path: "config.toml",
     };
     cli.config_home_env = Some("TEST_CONFIG_HOME");
-    cli.retained_paths = &["config.toml"];
+    cli.session_export_excludes = &["config.toml"];
     let source = ProjectingChannelSource::new(
         cli,
         Arc::new(ConfigHomeAt {

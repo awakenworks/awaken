@@ -557,6 +557,25 @@ const FAKE_ACP_GATEWAY_JSONRPC_SCRIPT: &str = "while IFS= read -r line; do \
       esac; \
     done";
 
+const FAKE_ACP_DISCOVERY: awaken_run_executor_acp::AcpDiscoverySpec =
+    awaken_run_executor_acp::AcpDiscoverySpec {
+        version: awaken_run_executor_acp::AcpProbeCommand {
+            executable: "/bin/true",
+            args: &[],
+        },
+        login: awaken_run_executor_acp::AcpLoginProbe {
+            command: awaken_run_executor_acp::AcpProbeCommand {
+                executable: "/bin/true",
+                args: &[],
+            },
+            rules: &[awaken_run_executor_acp::AcpLoginRule {
+                predicate: awaken_run_executor_acp::AcpProbePredicate::ExitSuccess,
+                state: awaken_runtime_contract::CredentialObservationState::Available,
+                reason_code: "scenario_fixture_available",
+            }],
+        },
+    };
+
 /// The [`FAKE_ACP_GATEWAY_JSONRPC_SCRIPT`] wired as a real [`AcpCli`] row, so the
 /// projecting launch path resolves + projects the model env onto it exactly as a
 /// production CLI (its delivery keys are the `ANTHROPIC_*` ones the script echoes).
@@ -570,6 +589,7 @@ const FAKE_ACP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_acp::A
         executable: "/bin/sh",
         args: &["-c", FAKE_ACP_GATEWAY_JSONRPC_SCRIPT],
     },
+    discovery: FAKE_ACP_DISCOVERY,
     container_argv: &["/bin/sh", "-c", FAKE_ACP_GATEWAY_JSONRPC_SCRIPT],
     model_delivery: Some(awaken_run_executor_acp::ModelDelivery {
         base_url: "ANTHROPIC_BASE_URL",
@@ -585,7 +605,7 @@ const FAKE_ACP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_acp::A
     config_home_env: Some("CLAUDE_CONFIG_DIR"),
     config_home_aliases: &[],
     memory_entrypoint: "CLAUDE.md",
-    retained_paths: &[],
+    session_export_excludes: &[],
     // The fake gateway CLI keeps no local session (it is a scripted stand-in).
     session_persistence: awaken_run_executor_acp::SessionPersistence::None,
     context_window_env: None,
@@ -626,6 +646,7 @@ const FAKE_ACP_MCP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_ac
         executable: "/bin/sh",
         args: &["-c", FAKE_ACP_MCP_ECHO_SCRIPT],
     },
+    discovery: FAKE_ACP_DISCOVERY,
     container_argv: &["/bin/sh", "-c", FAKE_ACP_MCP_ECHO_SCRIPT],
     model_delivery: Some(awaken_run_executor_acp::ModelDelivery {
         base_url: "ANTHROPIC_BASE_URL",
@@ -641,7 +662,7 @@ const FAKE_ACP_MCP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_ac
     config_home_env: Some("CLAUDE_CONFIG_DIR"),
     config_home_aliases: &[],
     memory_entrypoint: "CLAUDE.md",
-    retained_paths: &[],
+    session_export_excludes: &[],
     session_persistence: awaken_run_executor_acp::SessionPersistence::None,
     context_window_env: None,
     env: &[],

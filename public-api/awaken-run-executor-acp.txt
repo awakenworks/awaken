@@ -17,6 +17,17 @@ impl awaken_run_executor_acp::AcpAcquisition
 pub fn awaken_run_executor_acp::AcpAcquisition::executable(self) -> &'static str
 pub fn awaken_run_executor_acp::AcpAcquisition::is_dynamic_install(self) -> bool
 pub fn awaken_run_executor_acp::AcpAcquisition::local_argv(self) -> alloc::vec::Vec<alloc::string::String>
+pub enum awaken_run_executor_acp::AcpDetectionState
+pub awaken_run_executor_acp::AcpDetectionState::Detected
+pub awaken_run_executor_acp::AcpDetectionState::Missing
+pub awaken_run_executor_acp::AcpDetectionState::ProbeFailed
+pub enum awaken_run_executor_acp::AcpProbePredicate
+pub awaken_run_executor_acp::AcpProbePredicate::CombinedOutputContains(&'static str)
+pub awaken_run_executor_acp::AcpProbePredicate::ExitCode(i32)
+pub awaken_run_executor_acp::AcpProbePredicate::ExitSuccess
+pub awaken_run_executor_acp::AcpProbePredicate::StdoutJsonBoolean
+pub awaken_run_executor_acp::AcpProbePredicate::StdoutJsonBoolean::field: &'static str
+pub awaken_run_executor_acp::AcpProbePredicate::StdoutJsonBoolean::value: bool
 pub enum awaken_run_executor_acp::CredentialArtifactCodec
 pub awaken_run_executor_acp::CredentialArtifactCodec::ClaudeCredentialsJson
 pub awaken_run_executor_acp::CredentialArtifactCodec::CodexAuthJson
@@ -67,6 +78,7 @@ pub awaken_run_executor_acp::AcpCli::container_argv: &'static [&'static str]
 pub awaken_run_executor_acp::AcpCli::context_window_env: core::option::Option<&'static str>
 pub awaken_run_executor_acp::AcpCli::credential_file: core::option::Option<&'static str>
 pub awaken_run_executor_acp::AcpCli::description: &'static str
+pub awaken_run_executor_acp::AcpCli::discovery: awaken_run_executor_acp::AcpDiscoverySpec
 pub awaken_run_executor_acp::AcpCli::display_name: &'static str
 pub awaken_run_executor_acp::AcpCli::env: &'static [(&'static str, &'static str)]
 pub awaken_run_executor_acp::AcpCli::id: &'static str
@@ -74,17 +86,44 @@ pub awaken_run_executor_acp::AcpCli::managed_credential_delivery: awaken_run_exe
 pub awaken_run_executor_acp::AcpCli::mcp_interface: awaken_run_executor_acp::McpInterface
 pub awaken_run_executor_acp::AcpCli::memory_entrypoint: &'static str
 pub awaken_run_executor_acp::AcpCli::model_delivery: awaken_run_executor_acp::ModelDelivery
-pub awaken_run_executor_acp::AcpCli::retained_paths: &'static [&'static str]
+pub awaken_run_executor_acp::AcpCli::session_export_excludes: &'static [&'static str]
 pub awaken_run_executor_acp::AcpCli::session_persistence: awaken_run_executor_acp::SessionPersistence
 impl awaken_run_executor_acp::AcpCli
 pub fn awaken_run_executor_acp::AcpCli::project(&self, &awaken_run_executor_acp::ResolvedModel, core::option::Option<u64>, &[(alloc::string::String, alloc::string::String)]) -> awaken_run_executor_acp::AcpLaunch
 impl awaken_run_executor_acp::AcpCli
 pub fn awaken_run_executor_acp::AcpCli::project_mcp(&self, &[awaken_run_executor_acp::McpServerConfig]) -> awaken_run_executor_acp::McpDelivery
+pub struct awaken_run_executor_acp::AcpDiscoverySpec
+pub awaken_run_executor_acp::AcpDiscoverySpec::login: awaken_run_executor_acp::AcpLoginProbe
+pub awaken_run_executor_acp::AcpDiscoverySpec::version: awaken_run_executor_acp::AcpProbeCommand
+pub struct awaken_run_executor_acp::AcpHostDiscovery
+impl awaken_run_executor_acp::AcpHostDiscovery
+pub async fn awaken_run_executor_acp::AcpHostDiscovery::discover(&self, &awaken_run_executor_acp::AcpCli) -> awaken_run_executor_acp::AcpHostObservation
+pub async fn awaken_run_executor_acp::AcpHostDiscovery::discover_all(&self) -> alloc::vec::Vec<awaken_run_executor_acp::AcpHostObservation>
+pub fn awaken_run_executor_acp::AcpHostDiscovery::local(core::time::Duration) -> Self
+pub struct awaken_run_executor_acp::AcpHostObservation
+pub awaken_run_executor_acp::AcpHostObservation::cli_id: alloc::string::String
+pub awaken_run_executor_acp::AcpHostObservation::credential_state: core::option::Option<awaken_credential_contract::CredentialObservationState>
+pub awaken_run_executor_acp::AcpHostObservation::detection: awaken_run_executor_acp::AcpDetectionState
+pub awaken_run_executor_acp::AcpHostObservation::display_name: alloc::string::String
+pub awaken_run_executor_acp::AcpHostObservation::reason_code: core::option::Option<alloc::string::String>
+pub awaken_run_executor_acp::AcpHostObservation::version: core::option::Option<alloc::string::String>
+impl awaken_run_executor_acp::AcpHostObservation
+pub fn awaken_run_executor_acp::AcpHostObservation::detected(&self) -> bool
 pub struct awaken_run_executor_acp::AcpLaunch
 pub awaken_run_executor_acp::AcpLaunch::argv: alloc::vec::Vec<alloc::string::String>
 pub awaken_run_executor_acp::AcpLaunch::env: alloc::vec::Vec<awaken_provisioning_contract::vocab::EnvVar>
 impl awaken_run_executor_acp::AcpLaunch
 pub fn awaken_run_executor_acp::AcpLaunch::custom(alloc::vec::Vec<alloc::string::String>, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>) -> Self
+pub struct awaken_run_executor_acp::AcpLoginProbe
+pub awaken_run_executor_acp::AcpLoginProbe::command: awaken_run_executor_acp::AcpProbeCommand
+pub awaken_run_executor_acp::AcpLoginProbe::rules: &'static [awaken_run_executor_acp::AcpLoginRule]
+pub struct awaken_run_executor_acp::AcpLoginRule
+pub awaken_run_executor_acp::AcpLoginRule::predicate: awaken_run_executor_acp::AcpProbePredicate
+pub awaken_run_executor_acp::AcpLoginRule::reason_code: &'static str
+pub awaken_run_executor_acp::AcpLoginRule::state: awaken_credential_contract::CredentialObservationState
+pub struct awaken_run_executor_acp::AcpProbeCommand
+pub awaken_run_executor_acp::AcpProbeCommand::args: &'static [&'static str]
+pub awaken_run_executor_acp::AcpProbeCommand::executable: &'static str
 pub struct awaken_run_executor_acp::AcpRunExecutor
 impl awaken_run_executor_acp::AcpRunExecutor
 pub fn awaken_run_executor_acp::AcpRunExecutor::for_session(&self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>, &[awaken_run_executor_acp::McpServerConfig]) -> Self

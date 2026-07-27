@@ -511,7 +511,7 @@ impl AcpRunExecutor {
                 config_home_env: row.config_home_env?.to_string(),
                 session_subpath: session_subpath.to_string(),
                 exclude: row
-                    .retained_paths
+                    .session_export_excludes
                     .iter()
                     .map(|p| (*p).to_string())
                     .collect(),
@@ -1312,6 +1312,7 @@ fn ensure_pending_tool_use(messages: &mut Vec<Message>, ask: &PermissionAsk) {
 
 mod acp_cli;
 mod config_home;
+mod host_discovery;
 mod session_home;
 mod subprocess;
 pub use acp_cli::{
@@ -1323,6 +1324,10 @@ pub use acp_cli::{
 // The ACP config-home path convention (shared kernel) and the reference cross-machine
 // session-home provider over it — the host consumes these instead of owning them.
 pub use config_home::{ConfigHome, RetentionPolicy, SessionReuse};
+pub use host_discovery::{
+    AcpDetectionState, AcpDiscoverySpec, AcpHostDiscovery, AcpHostObservation, AcpLoginProbe,
+    AcpLoginRule, AcpProbeCommand, AcpProbePredicate,
+};
 pub use session_home::{DirSessionHome, FsSessionBlobStore, SessionBlobStore};
 pub use subprocess::{
     AcpLaunch, AcpSettings, LaunchResolver, McpInjection, ProjectingChannelSource,
