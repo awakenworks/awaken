@@ -26,8 +26,7 @@ async function events(client: Anthropic, sessionId: string): Promise<any[]> {
 
 async function startAwaiting(client: Anthropic): Promise<string> {
   const session = await client.beta.sessions.create({
-    agent: 'assistant',
-    metadata: { 'awaken.runtime': 'acp:claude' },
+    agent: 'acp-agent',
     environment_id: 'env_local',
     betas: BETAS,
   });

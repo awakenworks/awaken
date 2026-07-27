@@ -5,8 +5,8 @@ use std::sync::Arc;
 use axum::Router;
 
 use super::{
-    EchoModel, FAKE_ACP_CLI, SharedHost, mount, scenario_host_acp_cli, scenario_model,
-    scenario_storage_dir,
+    EchoModel, FAKE_ACP_CLI, SharedHost, mount_with_host_backend_publication,
+    scenario_host_acp_cli, scenario_model, scenario_storage_dir,
 };
 
 /// Drive the fake CLI through the projecting launch path with an explicit
@@ -14,13 +14,15 @@ use super::{
 pub fn build_acp_gateway_router() -> Router {
     let store_dir = scenario_storage_dir();
     let (model, model_ref) = scenario_model(Arc::new(EchoModel), "awaken");
-    mount(Arc::new(
+    mount_with_host_backend_publication(
         SharedHost::new(model, model_ref).with_projected_acp(
             scenario_host_acp_cli(FAKE_ACP_CLI),
             Arc::new(ScenarioEnvAcpModel),
             store_dir,
         ),
-    ))
+        "acp-agent",
+        "acp:fake",
+    )
 }
 
 /// Explicit environment fixture for dev-only live scenarios. Product composition
@@ -75,19 +77,19 @@ impl awaken_run_executor_acp::LaunchResolver for ScenarioEnvAcpModel {
         activation: &awaken_runtime_contract::activation::RunActivation,
         _context: &awaken_runtime_contract::RuntimeRunContext,
     ) -> Result<awaken_run_executor_acp::ResolvedModel, awaken_run_executor_acp::OpenError> {
-        Ok(awaken_run_executor_acp::ResolvedModel {
-            base_url: std::env::var("AWAKEN_ACP_GATEWAY_URL")
+        Ok(awaken_run_executor_acp::ResolvedModel::managed(
+            std::env::var("AWAKEN_ACP_GATEWAY_URL")
                 .ok()
                 .or_else(|| std::env::var("ANTHROPIC_BASE_URL").ok())
                 .ok_or_else(|| {
                     awaken_run_executor_acp::OpenError("dev scenario has no endpoint".into())
                 })?,
-            model: activation.effective_model_ref().to_string(),
-            process_secret: Some(awaken_run_executor_acp::ProcessSecretRequirement::new(
+            activation.effective_model_ref().to_string(),
+            Some(awaken_run_executor_acp::ProcessSecretRequirement::new(
                 "scenario-env://acp-credential",
             )),
-            credential_artifact: None,
-        })
+            None,
+        ))
     }
 
     fn secret_broker(&self) -> Option<Arc<dyn awaken_run_executor_acp::SecretBroker>> {

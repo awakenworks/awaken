@@ -10,7 +10,7 @@
 //! one from a typed configuration file (or explicitly for an embedding), and the
 //! library reads it rather than process-global deployment configuration.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 /// The ACP adapters one Worker can actually launch.
@@ -22,6 +22,7 @@ use std::path::PathBuf;
 pub struct AcpWorkerProfile {
     cli_ids: BTreeSet<String>,
     default_cli: Option<String>,
+    launch_argv: BTreeMap<String, Vec<String>>,
 }
 
 impl AcpWorkerProfile {
@@ -61,6 +62,7 @@ impl AcpWorkerProfile {
         Ok(Self {
             cli_ids: normalized,
             default_cli,
+            launch_argv: BTreeMap::new(),
         })
     }
 
@@ -89,6 +91,25 @@ impl AcpWorkerProfile {
     #[must_use]
     pub fn default_cli(&self) -> Option<&str> {
         self.default_cli.as_deref()
+    }
+
+    /// Pin one startup-resolved launch argv to this Worker profile. This is
+    /// acquisition evidence, not another adapter definition; model/MCP/env
+    /// projection continues to come only from the canonical AcpCli row.
+    pub fn set_launch_argv(&mut self, cli_id: &str, argv: Vec<String>) -> Result<(), String> {
+        if !self.cli_ids.contains(cli_id) {
+            return Err(format!("ACP launch argv names unadvertised CLI `{cli_id}`"));
+        }
+        if argv.is_empty() || argv[0].trim().is_empty() {
+            return Err(format!("ACP launch argv for `{cli_id}` must not be empty"));
+        }
+        self.launch_argv.insert(cli_id.to_string(), argv);
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn launch_argv(&self, cli_id: &str) -> Option<&[String]> {
+        self.launch_argv.get(cli_id).map(Vec::as_slice)
     }
 }
 
@@ -459,6 +480,40 @@ mod tests {
                 Some("gemini".to_string())
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn acp_worker_profile_accepts_only_resolved_argv_for_its_own_routes() {
+        // Cause graph: advertised route + successful startup acquisition -> one
+        // immutable launch override. Unadvertised or empty evidence is rejected
+        // before the Worker can advertise a route it cannot launch.
+        //
+        // Decision table:
+        // A1 advertised + absolute argv -> stored for that route
+        // A2 unadvertised route         -> reject
+        // A3 empty/blank executable     -> reject
+        let mut profile =
+            AcpWorkerProfile::new(["codex".to_string()], Some("codex".to_string())).unwrap();
+        profile
+            .set_launch_argv("codex", vec!["/opt/awaken/codex-acp".into()])
+            .expect("A1");
+        assert_eq!(
+            profile.launch_argv("codex"),
+            Some(&["/opt/awaken/codex-acp".to_string()][..]),
+            "A1"
+        );
+        assert!(
+            profile
+                .set_launch_argv("claude", vec!["/opt/awaken/claude-agent-acp".into()])
+                .is_err(),
+            "A2"
+        );
+        assert!(
+            profile
+                .set_launch_argv("codex", vec!["   ".into()])
+                .is_err(),
+            "A3"
         );
     }
 

@@ -110,8 +110,8 @@ function rewriteBinding(storage: string, sessionId: string, encoded: string): vo
 
 async function createRealizedSession(client: Anthropic, name: string): Promise<string> {
   const created = await client.beta.sessions.create({
-    agent: 'assistant',
-    metadata: { 'awaken.runtime': 'acp:custom', fault: name },
+    agent: 'namespace-agent',
+    metadata: { fault: name },
     environment_id: 'env_local',
     betas: BETAS,
   });
@@ -172,6 +172,21 @@ async function main(): Promise<void> {
   try {
     await waitForPort(PORT, 180_000, brain);
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE });
+
+    // Cause graph / decision table for the immutable Agent fixture:
+    // published skill id + absent Workspace resource -> publication validation
+    // fails before realization; published id + present resource -> the recovery
+    // cases reach their intended Session-environment boundary.
+    //
+    // | publication skill | Workspace skill | expected setup result |
+    // | delivered-container | absent       | reject              |
+    // | delivered-container | present      | realize container   |
+    await client.post('/v1/skills', {
+      body: {
+        id: 'delivered-container',
+        content: '---\ndescription: recovery fixture skill\n---\nRECOVERY-SKILL-OK',
+      },
+    });
 
     const cases = new Map<string, string>();
     for (const name of [

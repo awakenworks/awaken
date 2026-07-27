@@ -1,6 +1,6 @@
 //! Gated real-CLI cross-directory session-recovery e2e (no stubs — drives the real
 //! adapter binary). `#[ignore]` by default: it needs a real ACP CLI reachable
-//! (`npx @agentclientprotocol/claude-agent-acp`, `codex-acp`, or `gemini
+//! (`claude-agent-acp`, `codex-acp`, or `gemini
 //! --acp`) **and** provider credentials, so it self-skips unless
 //! `ACP_LIVE_CLI` is set to a known adapter and the model env is present.
 //!

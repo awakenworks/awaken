@@ -1,5 +1,5 @@
-// ACP-runtime Managed Agents e2e (R3/R4/R7): a session selects `runtime:"acp:*"`
-// through the Managed API and runs on an external ACP CLI (a fake `claude --acp`
+// ACP-runtime Managed Agents e2e (R3/R4/R7): an immutable Agent publication
+// selects `acp:claude` and runs on an external ACP CLI (a fake `claude --acp`
 // stand-in launched as a subprocess), while a native session on the same server
 // runs the built-in echo model. A second turn re-launches the ACP CLI (R7).
 //
@@ -36,9 +36,10 @@ async function main() {
     await withScenarioServer('acp', 'echo', 38185, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
-      // R3/R4: a session selecting an ACP runtime runs on the external CLI.
+      // R3/R4: the published ACP Agent runs on the external CLI. Request metadata
+      // is not a backend selector.
       const acp = await client.beta.sessions.create({
-        agent: 'assistant', metadata: { 'awaken.runtime': 'acp:claude' },
+        agent: 'acp-agent',
         environment_id: 'env_local',
         betas: BETAS,
       });
@@ -82,7 +83,7 @@ async function main() {
       // from a real CLI's output, so those stay unit-tested.)
       for (const trigger of ['acp-auth reply', 'acp-truncate reply']) {
         const s2 = await client.beta.sessions.create({
-          agent: 'assistant', metadata: { 'awaken.runtime': 'acp:claude' },
+          agent: 'acp-agent',
           environment_id: 'env_local',
           betas: BETAS,
         });

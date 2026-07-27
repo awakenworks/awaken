@@ -43,7 +43,7 @@ pub use crate::authz::{
 pub use crate::control_stores::{ControlStoreConfig, StoreBackend};
 pub use crate::credential_reference::CredentialRevisionValidator;
 pub use crate::managed_agents::ConfigPlaneManagedAgentRepository;
-pub use awaken_config_service::RuntimeCapability;
+pub use awaken_config_service::{LocalRuntimeCapability, RuntimeCapability};
 // The database-less worker's materialization subset (Stage C): only the credential
 // vault + secret store needed by snapshot-pinned inference access.
 pub use crate::worker_stores::{

@@ -8,9 +8,9 @@
 use crate::host_discovery::{
     AcpDiscoverySpec, AcpLoginProbe, AcpLoginRule, AcpProbeCommand, AcpProbePredicate,
 };
-use crate::{AcpLaunch, OpenError};
+use crate::{AcpLaunch, AcpLaunchIdentity, OpenError};
 use awaken_provisioning_contract as pc;
-use awaken_runtime_contract::CredentialObservationState;
+use awaken_runtime_contract::{CredentialObservationState, resolved::BackendModelSelection};
 
 /// How the local host obtains the ACP-serving executable. This is the sole local
 /// argv authority; discovery and launch both project it instead of inferring an
@@ -22,8 +22,9 @@ pub enum AcpAcquisition {
         args: &'static [&'static str],
     },
     PinnedNpmWrapper {
-        runner: &'static str,
+        installer: &'static str,
         package: &'static str,
+        bin: &'static str,
     },
 }
 
@@ -32,7 +33,7 @@ impl AcpAcquisition {
     pub fn executable(self) -> &'static str {
         match self {
             Self::Direct { executable, .. } => executable,
-            Self::PinnedNpmWrapper { runner, .. } => runner,
+            Self::PinnedNpmWrapper { bin, .. } => bin,
         }
     }
 
@@ -43,39 +44,48 @@ impl AcpAcquisition {
                 .chain(args.iter().copied())
                 .map(str::to_string)
                 .collect(),
-            Self::PinnedNpmWrapper { runner, package } => {
-                vec![runner.to_string(), "-y".into(), package.to_string()]
-            }
+            Self::PinnedNpmWrapper { bin, .. } => vec![bin.to_string()],
         }
     }
 
     #[must_use]
-    pub fn is_dynamic_install(self) -> bool {
+    pub fn requires_installation(self) -> bool {
         matches!(self, Self::PinnedNpmWrapper { .. })
     }
 }
 
-/// How resolved model coordinates reach a CLI. Endpoints and secrets use env keys;
-/// model selection may additionally use the CLI's generic config override (Codex
-/// consumes `-c model=...`). Both remain catalog data rather than adapter branches.
+/// How Awaken-managed model coordinates reach a CLI through its provider
+/// environment. Backend-owned selection uses [`BackendModelInterface`] instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModelDelivery {
     /// Env key for the endpoint base URL (e.g. `ANTHROPIC_BASE_URL`).
     pub base_url: &'static str,
     /// Env key for the model name (e.g. `ANTHROPIC_MODEL`).
     pub model: &'static str,
-    /// Optional Codex-style config key for CLIs that do not consume their model
-    /// selection from the ordinary model environment variable.
-    pub model_config_key: Option<&'static str>,
-    /// Optional JSON environment variable carrying the config object. When paired
-    /// with `model_config_key`, the projection merges the resolved model into the
-    /// row's static JSON config. `None` retains the legacy `-c key=value` delivery.
-    pub model_config_env: Option<&'static str>,
     /// Env key for the API key (a process-secret broker reference; never plaintext).
     pub key: &'static str,
     /// Extra model-name env keys the CLI reads as tier aliases, all set to the same
     /// resolved model (e.g. `ANTHROPIC_SONNET_MODEL`/`OPUS`/`HAIKU`).
     pub aliases: &'static [&'static str],
+}
+
+/// How a backend-owned CLI accepts an exact model selection. This is distinct
+/// from [`ModelDelivery`]: it never carries an endpoint or credential and is
+/// consulted only for [`ResolvedModel::BackendOwned`]. Adding an ACP client is a
+/// catalog row, not another launch branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendModelInterface {
+    /// Generic CLI config override such as `-c model="..."`.
+    ConfigOverride {
+        flag: &'static str,
+        key: &'static str,
+    },
+    /// Ordinary model flag such as `--model <id>`.
+    Flag { flag: &'static str },
+    /// ACP `session/set_config_option` after opening the session.
+    SessionConfigOption { config_id: &'static str },
+    /// The CLI can use its own default, but Awaken cannot guarantee an exact id.
+    Unsupported,
 }
 
 /// How a CLI keys its persisted sessions — decides whether cross-directory
@@ -191,6 +201,9 @@ pub struct AcpCli {
     /// Environment projection used only by legacy API-key adapters. `None`
     /// means the adapter requires its provider-specific credential driver.
     pub model_delivery: Option<ModelDelivery>,
+    /// Exact-model interface for backend-owned local login. Default-model
+    /// selection never consumes it.
+    pub backend_model_interface: BackendModelInterface,
     /// Managed provider credential delivery. Local backend-owned login is a
     /// separate provisioning mode and does not consume this field.
     pub managed_credential_delivery: ManagedCredentialDelivery,
@@ -215,6 +228,26 @@ pub struct AcpCli {
     pub context_window_env: Option<&'static str>,
     /// Static non-secret env defaults for this CLI (lowest precedence).
     pub env: &'static [(&'static str, &'static str)],
+}
+
+impl AcpCli {
+    /// Operator remediation for one canonical discovery reason. The catalog row
+    /// owns adapter-specific commands; diagnostics and capabilities merely
+    /// project them and therefore cannot drift.
+    #[must_use]
+    pub fn remediation(self, reason_code: Option<&str>) -> Option<&'static str> {
+        match reason_code? {
+            "acp_agent_missing" => Some(self.discovery.install_remediation),
+            "acp_login_required" => Some(self.discovery.login.remediation),
+            "acp_version_probe_failed"
+            | "acp_login_probe_failed"
+            | "acp_login_probe_unrecognized"
+            | "acp_wrapper_install_failed" => {
+                Some("Run `awaken doctor acp` after checking the CLI installation and login.")
+            }
+            _ => None,
+        }
+    }
 }
 
 /// One already-selected process-secret requirement. The opaque reference is
@@ -280,15 +313,21 @@ impl std::fmt::Debug for ProcessSecretRequirement {
     }
 }
 
-/// The host-resolved model coordinates handed to the projection. Base URL and
-/// model come from the resolved spec; the credential remains a typed broker
-/// requirement until the concrete process-launch boundary.
+/// Mutually exclusive model ownership handed to the launch projection. Managed
+/// launches carry endpoint and broker requirements; backend-owned launches carry
+/// only an explicit default/exact policy and never have fields for material.
 #[derive(Debug, Clone)]
-pub struct ResolvedModel {
-    pub base_url: String,
-    pub model: String,
-    pub process_secret: Option<ProcessSecretRequirement>,
-    pub credential_artifact: Option<CredentialArtifactRequirement>,
+pub enum ResolvedModel {
+    Managed {
+        base_url: String,
+        model: String,
+        process_secret: Option<ProcessSecretRequirement>,
+        credential_artifact: Option<CredentialArtifactRequirement>,
+    },
+    BackendOwned {
+        model_selection: BackendModelSelection,
+        model: String,
+    },
 }
 
 impl ResolvedModel {
@@ -305,11 +344,45 @@ impl ResolvedModel {
         model: impl Into<String>,
         lease_reference: impl Into<String>,
     ) -> Self {
-        Self {
+        Self::Managed {
             base_url: gateway_base_url.into(),
             model: model.into(),
             process_secret: Some(ProcessSecretRequirement::new(lease_reference)),
             credential_artifact: None,
+        }
+    }
+
+    #[must_use]
+    pub fn managed(
+        base_url: impl Into<String>,
+        model: impl Into<String>,
+        process_secret: Option<ProcessSecretRequirement>,
+        credential_artifact: Option<CredentialArtifactRequirement>,
+    ) -> Self {
+        Self::Managed {
+            base_url: base_url.into(),
+            model: model.into(),
+            process_secret,
+            credential_artifact,
+        }
+    }
+
+    #[must_use]
+    pub fn backend_owned(model_selection: BackendModelSelection, model: impl Into<String>) -> Self {
+        Self::BackendOwned {
+            model_selection,
+            model: model.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn credential_artifact(&self) -> Option<&CredentialArtifactRequirement> {
+        match self {
+            Self::Managed {
+                credential_artifact,
+                ..
+            } => credential_artifact.as_ref(),
+            Self::BackendOwned { .. } => None,
         }
     }
 }
@@ -327,6 +400,19 @@ impl AcpCli {
         context_window: Option<u64>,
         extra_env: &[(String, String)],
     ) -> Result<AcpLaunch, OpenError> {
+        self.try_project_with_argv(model, context_window, extra_env, None)
+    }
+
+    /// Project with an acquisition-resolved base argv. Product startup uses
+    /// this for an absolute, already-installed wrapper path; callers without an
+    /// override use the profile's preinstalled binary name.
+    pub fn try_project_with_argv(
+        &self,
+        model: &ResolvedModel,
+        context_window: Option<u64>,
+        extra_env: &[(String, String)],
+        resolved_argv: Option<&[String]>,
+    ) -> Result<AcpLaunch, OpenError> {
         use std::collections::BTreeMap;
         let mut env: BTreeMap<String, pc::EnvVar> = BTreeMap::new();
         let inline = |name: &str, value: String| pc::EnvVar {
@@ -340,37 +426,121 @@ impl AcpCli {
         for (k, v) in extra_env {
             env.insert(k.clone(), inline(k, v.clone()));
         }
+        let mut argv = resolved_argv
+            .map(<[String]>::to_vec)
+            .unwrap_or_else(|| self.acquisition.local_argv());
+        if argv.is_empty() || argv[0].trim().is_empty() {
+            return Err(OpenError(
+                "resolved ACP launch argv must not be empty".into(),
+            ));
+        }
+        let mut session_config_option = None;
+        if let ResolvedModel::BackendOwned {
+            model_selection,
+            model,
+        } = model
+        {
+            // A retained managed projection cannot shadow the CLI-owned account,
+            // endpoint, model, or home. Production supplies no extra env for this
+            // mode; stripping catalog-known keys makes the boundary fail safe for
+            // alternate resolvers and stale snapshots too.
+            if let Some(delivery) = self.model_delivery {
+                for key in std::iter::once(delivery.base_url)
+                    .chain(std::iter::once(delivery.model))
+                    .chain(std::iter::once(delivery.key))
+                    .chain(delivery.aliases.iter().copied())
+                {
+                    env.remove(key);
+                }
+            }
+            for key in self
+                .config_home_env
+                .into_iter()
+                .chain(self.config_home_aliases.iter().copied())
+                .chain(self.context_window_env)
+            {
+                env.remove(key);
+            }
+            match model_selection {
+                BackendModelSelection::Default if !model.is_empty() => {
+                    return Err(OpenError(
+                        "backend_default_model_must_not_carry_an_exact_id".into(),
+                    ));
+                }
+                BackendModelSelection::Default => {}
+                BackendModelSelection::Exact if model.trim().is_empty() => {
+                    return Err(OpenError("backend_exact_model_id_required".into()));
+                }
+                BackendModelSelection::Exact => match self.backend_model_interface {
+                    BackendModelInterface::ConfigOverride { flag, key } => {
+                        argv.push(flag.to_string());
+                        argv.push(format!("{key}={model:?}"));
+                    }
+                    BackendModelInterface::Flag { flag } => {
+                        argv.push(flag.to_string());
+                        argv.push(model.clone());
+                    }
+                    BackendModelInterface::SessionConfigOption { config_id } => {
+                        session_config_option =
+                            Some(awaken_protocol_acp::SessionConfigOptionSelection {
+                                config_id: config_id.to_string(),
+                                value: model.clone(),
+                            });
+                    }
+                    BackendModelInterface::Unsupported => {
+                        return Err(OpenError(format!(
+                            "backend_exact_model_unsupported: {}",
+                            self.id
+                        )));
+                    }
+                },
+            }
+            return Ok(AcpLaunch {
+                argv,
+                env: env.into_values().collect(),
+                identity: AcpLaunchIdentity::BackendOwned,
+                session_config_option,
+            });
+        }
+
+        let ResolvedModel::Managed {
+            base_url,
+            model,
+            process_secret,
+            credential_artifact,
+        } = model
+        else {
+            unreachable!("backend-owned launch returned above")
+        };
         let d = self.model_delivery.as_ref();
-        if d.is_none() && model.credential_artifact.is_none() {
+        if d.is_none() && credential_artifact.is_none() {
             return Err(OpenError(format!(
                 "credential_driver_required: {}",
                 self.id
             )));
         }
         let Some(d) = d else {
-            let argv = self.acquisition.local_argv();
             return Ok(AcpLaunch {
                 argv,
                 env: env.into_values().collect(),
+                identity: AcpLaunchIdentity::Managed,
+                session_config_option,
             });
         };
-        if !model.base_url.is_empty() {
-            env.insert(
-                d.base_url.to_string(),
-                inline(d.base_url, model.base_url.clone()),
-            );
+        if !base_url.is_empty() {
+            env.insert(d.base_url.to_string(), inline(d.base_url, base_url.clone()));
         }
-        if !model.model.is_empty() {
-            env.insert(d.model.to_string(), inline(d.model, model.model.clone()));
+        if !model.is_empty() {
+            env.insert(d.model.to_string(), inline(d.model, model.clone()));
             for alias in d.aliases {
-                env.insert((*alias).to_string(), inline(alias, model.model.clone()));
+                env.insert((*alias).to_string(), inline(alias, model.clone()));
             }
         }
         if let (Some(key), Some(window)) = (self.context_window_env, context_window) {
             env.insert(key.to_string(), inline(key, window.to_string()));
         }
         // The typed secret goes last so no passthrough key can shadow it.
-        if let Some(secret) = &model.process_secret {
+        if let Some(secret) = process_secret {
             env.insert(
                 d.key.to_string(),
                 pc::EnvVar {
@@ -383,37 +553,11 @@ impl AcpCli {
             );
         }
 
-        let mut argv = self.acquisition.local_argv();
-        if let Some(key) = d.model_config_key
-            && !model.model.is_empty()
-        {
-            if let Some(config_env) = d.model_config_env {
-                let mut config = env
-                    .get(config_env)
-                    .and_then(|var| match &var.value {
-                        pc::EnvValue::Inline { value } => serde_json::from_str::<
-                            serde_json::Map<String, serde_json::Value>,
-                        >(value)
-                        .ok(),
-                        pc::EnvValue::Secret { .. } => None,
-                    })
-                    .unwrap_or_default();
-                config.insert(
-                    key.to_string(),
-                    serde_json::Value::String(model.model.clone()),
-                );
-                env.insert(
-                    config_env.to_string(),
-                    inline(config_env, serde_json::Value::Object(config).to_string()),
-                );
-            } else {
-                argv.push("-c".to_string());
-                argv.push(format!("{key}={:?}", model.model));
-            }
-        }
         Ok(AcpLaunch {
             argv,
             env: env.into_values().collect(),
+            identity: AcpLaunchIdentity::Managed,
+            session_config_option,
         })
     }
 
@@ -463,7 +607,9 @@ pub enum McpDelivery {
     SessionServers(Vec<McpServerConfig>),
 }
 
-/// Render an MCP server set as a codex `config.toml` fragment (`[mcp_servers.<name>]`).
+/// Render an MCP server set as the legacy `config.toml` fragment used by the
+/// canonical config-file test adapter (`[mcp_servers.<name>]`). Production rows
+/// currently use in-band ACP Session delivery.
 /// Only the transport and a credential *reference* are written — never a secret.
 fn render_mcp_config_toml(servers: &[McpServerConfig]) -> String {
     let mut out = String::new();
@@ -503,16 +649,16 @@ impl AcpCli {
 
 // Claude Code does NOT speak ACP natively (there is no `claude --acp`). It is
 // fronted by the official adapter package `@agentclientprotocol/claude-agent-acp`,
-// launched via `npx`. The version is pinned to a MAJOR.MINOR (never `@latest`,
-// mirroring oversight-next's `is_floating_version` guardrail) so a launch is
-// reproducible and the wire codec stays a known quantity.
+// installed once into Awaken's data directory. Runtime launches the resolved
+// absolute bin and never asks npx to install on demand.
 const CLAUDE: AcpCli = AcpCli {
     id: "claude",
     display_name: "Claude Code",
     description: "Claude Code via the pinned ACP adapter. Reads CLAUDE.md.",
     acquisition: AcpAcquisition::PinnedNpmWrapper {
-        runner: "npx",
-        package: "@agentclientprotocol/claude-agent-acp@0.44",
+        installer: "npm",
+        package: "@agentclientprotocol/claude-agent-acp@0.44.0",
+        bin: "claude-agent-acp",
     },
     discovery: AcpDiscoverySpec {
         version: AcpProbeCommand {
@@ -542,14 +688,14 @@ const CLAUDE: AcpCli = AcpCli {
                     reason_code: "acp_login_required",
                 },
             ],
+            remediation: "Run `claude auth login` and complete the Claude Code login flow.",
         },
+        install_remediation: "Install Claude Code and Node.js/npm, then rerun discovery.",
     },
     container_argv: &["claude-agent-acp"],
     model_delivery: Some(ModelDelivery {
         base_url: "ANTHROPIC_BASE_URL",
         model: "ANTHROPIC_MODEL",
-        model_config_key: None,
-        model_config_env: None,
         key: "ANTHROPIC_API_KEY",
         aliases: &[
             "ANTHROPIC_SONNET_MODEL",
@@ -557,6 +703,10 @@ const CLAUDE: AcpCli = AcpCli {
             "ANTHROPIC_HAIKU_MODEL",
         ],
     }),
+    backend_model_interface: BackendModelInterface::ConfigOverride {
+        flag: "-c",
+        key: "model",
+    },
     managed_credential_delivery: ManagedCredentialDelivery::RefreshArtifactOrProcessSecret(
         CredentialArtifactSpec {
             codec: CredentialArtifactCodec::ClaudeCredentialsJson,
@@ -588,8 +738,9 @@ const CODEX: AcpCli = AcpCli {
     display_name: "Codex",
     description: "OpenAI Codex via the pinned ACP adapter. Reads AGENTS.md.",
     acquisition: AcpAcquisition::PinnedNpmWrapper {
-        runner: "npx",
-        package: "@agentclientprotocol/codex-acp@1.1",
+        installer: "npm",
+        package: "@agentclientprotocol/codex-acp@1.1.7",
+        bin: "codex-acp",
     },
     discovery: AcpDiscoverySpec {
         version: AcpProbeCommand {
@@ -613,10 +764,13 @@ const CODEX: AcpCli = AcpCli {
                     reason_code: "acp_login_available",
                 },
             ],
+            remediation: "Run `codex login` and complete the Codex login flow.",
         },
+        install_remediation: "Install Codex and Node.js/npm, then rerun discovery.",
     },
     container_argv: &["codex-acp"],
     model_delivery: None,
+    backend_model_interface: BackendModelInterface::SessionConfigOption { config_id: "model" },
     managed_credential_delivery: ManagedCredentialDelivery::Artifact(CredentialArtifactSpec {
         codec: CredentialArtifactCodec::CodexAuthJson,
         relative_path: ".codex/auth.json",
@@ -668,17 +822,18 @@ const GEMINI: AcpCli = AcpCli {
                     reason_code: "acp_login_available",
                 },
             ],
+            remediation: "Run `gemini` and complete the Gemini CLI login flow.",
         },
+        install_remediation: "Install Gemini CLI, then rerun discovery.",
     },
     container_argv: &["gemini", "--acp"],
     model_delivery: Some(ModelDelivery {
         base_url: "GOOGLE_GEMINI_BASE_URL",
         model: "GEMINI_MODEL",
-        model_config_key: None,
-        model_config_env: None,
         key: "GEMINI_API_KEY",
         aliases: &[],
     }),
+    backend_model_interface: BackendModelInterface::Flag { flag: "--model" },
     managed_credential_delivery: ManagedCredentialDelivery::ProcessSecret,
     auth_method_id: None,
     mcp_interface: McpInterface::AcpSession,
@@ -731,17 +886,18 @@ const OPENCODE: AcpCli = AcpCli {
                     reason_code: "acp_login_available",
                 },
             ],
+            remediation: "Run `opencode auth login` and complete the OpenCode login flow.",
         },
+        install_remediation: "Install OpenCode, then rerun discovery.",
     },
     container_argv: &["opencode", "acp"],
     model_delivery: Some(ModelDelivery {
         base_url: "OPENAI_BASE_URL",
         model: "OPENAI_MODEL",
-        model_config_key: None,
-        model_config_env: None,
         key: "OPENAI_API_KEY",
         aliases: &[],
     }),
+    backend_model_interface: BackendModelInterface::Unsupported,
     managed_credential_delivery: ManagedCredentialDelivery::ProcessSecret,
     auth_method_id: None,
     mcp_interface: McpInterface::AcpSession,
@@ -796,7 +952,7 @@ mod tests {
     use super::*;
 
     fn resolved() -> ResolvedModel {
-        ResolvedModel {
+        ResolvedModel::Managed {
             base_url: "https://api.minimaxi.com/anthropic".to_string(),
             model: "MiniMax-M3[1m]".to_string(),
             process_secret: Some(ProcessSecretRequirement::new("lease://test-model")),
@@ -867,6 +1023,92 @@ mod tests {
         }
     }
 
+    #[test]
+    fn backend_owned_model_projection_is_catalog_driven_and_secret_free() {
+        // Cause graph: BackendOwned policy -> one catalog model interface -> argv
+        // or ACP Session option. Managed endpoint/key delivery is unreachable.
+        //
+        // Decision table:
+        // B1 any known CLI + Default -> own default, no provider env/config option
+        // B2 Claude + Exact         -> catalog config override
+        // B3 Codex + Exact          -> ACP Session config option
+        // B4 Gemini + Exact         -> catalog model flag
+        // B5 OpenCode + Exact       -> fail closed, never default fallback
+        for cli in known_acp_clis() {
+            let mut stale_managed_env = vec![("HOME".into(), "/wrong-home".into())];
+            if let Some(delivery) = cli.model_delivery {
+                stale_managed_env.extend([
+                    (delivery.base_url.into(), "https://wrong.invalid".into()),
+                    (delivery.model.into(), "wrong-model".into()),
+                    (delivery.key.into(), "wrong-secret".into()),
+                ]);
+            }
+            if let Some(config_home) = cli.config_home_env {
+                stale_managed_env.push((config_home.into(), "/wrong-config".into()));
+            }
+            let launch = cli
+                .try_project(
+                    &ResolvedModel::backend_owned(BackendModelSelection::Default, ""),
+                    Some(999),
+                    &stale_managed_env,
+                )
+                .unwrap_or_else(|error| panic!("B1 {}: {error}", cli.id));
+            assert!(launch.session_config_option.is_none(), "B1 {}", cli.id);
+            if let Some(delivery) = cli.model_delivery {
+                for key in std::iter::once(delivery.base_url)
+                    .chain(std::iter::once(delivery.model))
+                    .chain(std::iter::once(delivery.key))
+                    .chain(delivery.aliases.iter().copied())
+                {
+                    assert!(env_of(&launch, key).is_none(), "B1 {} leaked {key}", cli.id);
+                }
+            }
+            if let Some(config_home) = cli.config_home_env {
+                assert!(env_of(&launch, config_home).is_none(), "B1 {}", cli.id);
+            }
+        }
+
+        let exact = ResolvedModel::backend_owned(BackendModelSelection::Exact, "model-x");
+        let claude = acp_cli("claude")
+            .unwrap()
+            .try_project(&exact, None, &[])
+            .unwrap();
+        assert!(
+            claude
+                .argv
+                .ends_with(&["-c".into(), "model=\"model-x\"".into()]),
+            "B2"
+        );
+
+        let codex = acp_cli("codex")
+            .unwrap()
+            .try_project(&exact, None, &[])
+            .unwrap();
+        assert_eq!(
+            codex.session_config_option,
+            Some(awaken_protocol_acp::SessionConfigOptionSelection {
+                config_id: "model".into(),
+                value: "model-x".into(),
+            }),
+            "B3"
+        );
+
+        let gemini = acp_cli("gemini")
+            .unwrap()
+            .try_project(&exact, None, &[])
+            .unwrap();
+        assert!(
+            gemini.argv.ends_with(&["--model".into(), "model-x".into()]),
+            "B4"
+        );
+
+        let error = acp_cli("opencode")
+            .unwrap()
+            .try_project(&exact, None, &[])
+            .unwrap_err();
+        assert_eq!(error.0, "backend_exact_model_unsupported: opencode", "B5");
+    }
+
     // ── Property tests over EVERY catalog row ────────────────────────────────────
     // These hold for every current and future CLI, so adding a row (opencode, …) is
     // covered by construction — the invariants a new agent must satisfy, not a
@@ -913,6 +1155,12 @@ mod tests {
     #[test]
     fn every_cli_injects_the_resolved_model_base_url_and_secret_key() {
         let m = resolved();
+        let ResolvedModel::Managed {
+            base_url, model, ..
+        } = &m
+        else {
+            unreachable!()
+        };
         for cli in known_acp_clis() {
             let Some(d) = cli.model_delivery.as_ref() else {
                 assert!(cli.try_project(&m, None, &[]).is_err(), "{}", cli.id);
@@ -921,13 +1169,13 @@ mod tests {
             let launch = cli.project(&m, None, &[]);
             assert_eq!(
                 env_of(&launch, d.base_url).as_deref(),
-                Some(m.base_url.as_str()),
+                Some(base_url.as_str()),
                 "{}: base_url",
                 cli.id
             );
             assert_eq!(
                 env_of(&launch, d.model).as_deref(),
-                Some(m.model.as_str()),
+                Some(model.as_str()),
                 "{}: model",
                 cli.id
             );
@@ -940,7 +1188,7 @@ mod tests {
             for alias in d.aliases {
                 assert_eq!(
                     env_of(&launch, alias).as_deref(),
-                    Some(m.model.as_str()),
+                    Some(model.as_str()),
                     "{}: alias {alias}",
                     cli.id
                 );
@@ -951,6 +1199,9 @@ mod tests {
     #[test]
     fn every_cli_keeps_the_secret_unshadowable_by_passthrough() {
         let m = resolved();
+        let ResolvedModel::Managed { model, .. } = &m else {
+            unreachable!()
+        };
         for cli in known_acp_clis() {
             let Some(d) = cli.model_delivery else {
                 assert!(cli.try_project(&m, None, &[]).is_err(), "{}", cli.id);
@@ -964,7 +1215,7 @@ mod tests {
             let launch = cli.project(&m, None, &extra);
             assert_eq!(
                 env_of(&launch, d.model).as_deref(),
-                Some(m.model.as_str()),
+                Some(model.as_str()),
                 "{}: typed model wins",
                 cli.id
             );
@@ -1215,34 +1466,30 @@ mod tests {
     }
 
     #[test]
-    fn acquisition_kind_is_the_single_source_for_local_argv_and_install_phase() {
+    fn acquisition_kind_is_the_single_source_for_preinstalled_argv_and_acquisition_phase() {
         // Acquisition cause graph:
         // catalog kind ──> exact local argv ──> launch + discovery executable
-        //              └─> dynamic-install phase
+        //              └─> startup acquisition requirement
         //
         // Decision table:
-        // D1 pinned wrapper | runner,-y,pinned package | dynamic
-        // D2 direct native  | executable,native args   | not dynamic
+        // D1 pinned wrapper | preinstalled bin | startup install required
+        // D2 direct native  | executable,args  | no startup install
         let cases: [(&str, &[&str], bool); 4] = [
-            (
-                "claude",
-                &["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.44"],
-                true,
-            ),
-            (
-                "codex",
-                &["npx", "-y", "@agentclientprotocol/codex-acp@1.1"],
-                true,
-            ),
+            ("claude", &["claude-agent-acp"], true),
+            ("codex", &["codex-acp"], true),
             ("gemini", &["gemini", "--acp"], false),
             ("opencode", &["opencode", "acp"], false),
         ];
 
-        for (id, expected_argv, expected_dynamic) in cases {
+        for (id, expected_argv, expected_install) in cases {
             let acquisition = acp_cli(id).unwrap().acquisition;
             assert_eq!(acquisition.executable(), expected_argv[0], "{id}");
             assert_eq!(acquisition.local_argv(), expected_argv, "{id}");
-            assert_eq!(acquisition.is_dynamic_install(), expected_dynamic, "{id}");
+            assert_eq!(
+                acquisition.requires_installation(),
+                expected_install,
+                "{id}"
+            );
             assert!(
                 acquisition
                     .local_argv()
@@ -1251,6 +1498,70 @@ mod tests {
                 "{id}: acquisition must be reproducibly pinned"
             );
         }
+    }
+
+    #[test]
+    fn wrapper_catalog_uses_exact_packages_and_resolved_argv_preserves_model_delivery() {
+        // Cause graph: exact catalog package -> startup-resolved absolute argv ->
+        // canonical model projection. The override replaces acquisition only;
+        // it cannot replace model, MCP, environment, or credential policy.
+        //
+        // Decision table:
+        // W1 wrapper catalog row -> exact x.y.z package and stable bin
+        // W2 default model       -> absolute argv, no model override
+        // W3 exact model         -> absolute argv + catalog model interface
+        for id in ["claude", "codex"] {
+            let AcpAcquisition::PinnedNpmWrapper { package, bin, .. } =
+                acp_cli(id).unwrap().acquisition
+            else {
+                panic!("W1 {id}");
+            };
+            let (_, version) = package.rsplit_once('@').expect("W1 exact package");
+            assert_eq!(
+                version.split('.').count(),
+                3,
+                "W1 {id}: package must pin x.y.z"
+            );
+            assert!(version.split('.').all(|part| part.parse::<u64>().is_ok()));
+            assert!(!bin.trim().is_empty(), "W1 {id}");
+        }
+
+        let claude = acp_cli("claude").unwrap();
+        let absolute = vec!["/var/lib/awaken/acp-wrappers/claude-agent-acp".to_string()];
+        let default = claude
+            .try_project_with_argv(
+                &ResolvedModel::backend_owned(BackendModelSelection::Default, ""),
+                None,
+                &[],
+                Some(&absolute),
+            )
+            .expect("W2");
+        assert_eq!(default.argv, absolute, "W2");
+
+        let exact = claude
+            .try_project_with_argv(
+                &ResolvedModel::backend_owned(BackendModelSelection::Exact, "model-x"),
+                None,
+                &[],
+                Some(&absolute),
+            )
+            .expect("W3");
+        assert_eq!(
+            exact.argv,
+            [absolute[0].clone(), "-c".into(), "model=\"model-x\"".into()],
+            "W3"
+        );
+        assert!(
+            claude
+                .try_project_with_argv(
+                    &ResolvedModel::backend_owned(BackendModelSelection::Default, ""),
+                    None,
+                    &[],
+                    Some(&[]),
+                )
+                .is_err(),
+            "empty acquisition evidence fails closed"
+        );
     }
 
     #[test]
@@ -1266,12 +1577,15 @@ mod tests {
     #[test]
     fn codex_artifact_launch_has_no_model_or_credential_environment_projection() {
         let cli = acp_cli("codex").unwrap();
-        let mut model = resolved();
-        model.process_secret = None;
-        model.credential_artifact = Some(CredentialArtifactRequirement::new(
-            "awaken-credential-artifact://one-shot",
-            ".codex/auth.json",
-        ));
+        let model = ResolvedModel::managed(
+            "https://api.minimaxi.com/anthropic",
+            "MiniMax-M3[1m]",
+            None,
+            Some(CredentialArtifactRequirement::new(
+                "awaken-credential-artifact://one-shot",
+                ".codex/auth.json",
+            )),
+        );
         let launch = cli.try_project(&model, None, &[]).expect("artifact launch");
         assert!(
             launch
@@ -1297,10 +1611,7 @@ mod tests {
         let cli = acp_cli("claude").unwrap();
         let launch = cli.project(&resolved(), Some(1_000_000), &[]);
 
-        assert_eq!(
-            launch.argv,
-            vec!["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.44"]
-        );
+        assert_eq!(launch.argv, vec!["claude-agent-acp"]);
         assert_eq!(
             env_of(&launch, "ANTHROPIC_BASE_URL").as_deref(),
             Some("https://api.minimaxi.com/anthropic")

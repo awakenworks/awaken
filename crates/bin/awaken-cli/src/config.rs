@@ -216,6 +216,9 @@ pub struct ResolvedDeployment {
     pub mcp_bearer_token: Option<String>,
     pub admin_listen: Option<String>,
     pub runtime: DeploymentConfig,
+    /// Secret-free local ACP observations captured once during product startup.
+    /// Empty means discovery was not run (for example in Server mode).
+    pub local_acp_observations: Vec<awaken_run_executor_acp::AcpHostObservation>,
     pub control: awaken_control::ControlStoreConfig,
     pub resources: ResourcePlaneStoreBackend,
     pub seal_key: SealKeySource,
@@ -579,6 +582,7 @@ impl ResolvedDeployment {
             mcp_bearer_token: file.mcp_bearer_token,
             admin_listen: file.admin_listen,
             runtime,
+            local_acp_observations: Vec::new(),
             control,
             resources,
             seal_key,
@@ -597,6 +601,32 @@ impl ResolvedDeployment {
             fs::create_dir_all(&path)
                 .map_err(|error| format!("create data directory {}: {error}", path.display()))?;
         }
+        Ok(())
+    }
+
+    /// Apply the canonical host-discovery result to the one runtime profile.
+    /// Explicit `acp_clis` constrain the discovered set; an unconfigured Local
+    /// install advertises every detected catalog row. Missing/broken CLIs are
+    /// retained only in the diagnostic read model and never in Worker routes.
+    pub fn apply_local_acp_observations(
+        &mut self,
+        observations: Vec<awaken_run_executor_acp::AcpHostObservation>,
+    ) -> Result<(), String> {
+        let explicit = self.runtime.acp.clone();
+        let selected: Vec<_> = observations
+            .iter()
+            .filter(|observation| {
+                explicit
+                    .as_ref()
+                    .is_none_or(|profile| profile.cli_ids().any(|id| id == observation.cli_id))
+            })
+            .cloned()
+            .collect();
+        let default_cli = explicit
+            .as_ref()
+            .and_then(|profile| profile.default_cli().map(str::to_string));
+        self.runtime.acp = AcpWorkerProfile::from_discovery(&selected, default_cli)?;
+        self.local_acp_observations = observations;
         Ok(())
     }
 
@@ -672,6 +702,20 @@ const fn identity_mode_name(mode: awaken_control::ManagementIdentityMode) -> &'s
         awaken_control::ManagementIdentityMode::AwakenCloud => "awaken-cloud",
         awaken_control::ManagementIdentityMode::SelfManaged => "self-managed",
     }
+}
+
+#[cfg(test)]
+pub(crate) fn local_test_deployment(data_dir: PathBuf) -> ResolvedDeployment {
+    ResolvedDeployment::resolve_file(
+        ConfigOverrides {
+            data_dir: Some(data_dir),
+            ..Default::default()
+        },
+        Some(PathBuf::from("/home/test")),
+        PathBuf::from("/home/test/.awaken/config.toml"),
+        FileConfig::default(),
+    )
+    .expect("test local deployment")
 }
 
 fn render_store_backend(backend: &awaken_control::StoreBackend) -> String {
@@ -824,6 +868,84 @@ mod tests {
             file,
         )
         .unwrap()
+    }
+
+    fn acp_observation(
+        id: &str,
+        detection: awaken_run_executor_acp::AcpDetectionState,
+    ) -> awaken_run_executor_acp::AcpHostObservation {
+        awaken_run_executor_acp::AcpHostObservation {
+            cli_id: id.to_string(),
+            display_name: id.to_string(),
+            detection,
+            version: (detection == awaken_run_executor_acp::AcpDetectionState::Detected)
+                .then(|| "1.0".to_string()),
+            credential_state: (detection == awaken_run_executor_acp::AcpDetectionState::Detected)
+                .then_some(awaken_runtime_contract::CredentialObservationState::Available),
+            reason_code: Some("fixture".to_string()),
+        }
+    }
+
+    #[test]
+    fn local_discovery_is_the_only_source_of_worker_routes_and_defaults() {
+        // Cause graph:
+        // catalog observations -> detected subset -> AcpWorkerProfile; an
+        // explicit configured subset intersects that detected set. The profile
+        // constructor alone decides whether one row becomes the default.
+        //
+        // Decision table:
+        // A1 unconfigured + none detected -> no ACP Worker
+        // A2 unconfigured + one detected  -> that CLI + automatic default
+        // A3 unconfigured + many detected -> all CLIs + no random default
+        // A4 explicit subset              -> only detected configured CLIs
+        let missing = acp_observation(
+            "claude",
+            awaken_run_executor_acp::AcpDetectionState::Missing,
+        );
+        let codex = acp_observation(
+            "codex",
+            awaken_run_executor_acp::AcpDetectionState::Detected,
+        );
+        let claude = acp_observation(
+            "claude",
+            awaken_run_executor_acp::AcpDetectionState::Detected,
+        );
+
+        let mut none = resolve(FileConfig::default(), ConfigOverrides::default());
+        none.apply_local_acp_observations(vec![missing.clone()])
+            .unwrap();
+        assert!(none.runtime.acp.is_none(), "A1");
+
+        let mut one = resolve(FileConfig::default(), ConfigOverrides::default());
+        one.apply_local_acp_observations(vec![codex.clone(), missing])
+            .unwrap();
+        let one = one.runtime.acp.unwrap();
+        assert_eq!(one.cli_ids().collect::<Vec<_>>(), ["codex"], "A2");
+        assert_eq!(one.default_cli(), Some("codex"), "A2");
+
+        let mut many = resolve(FileConfig::default(), ConfigOverrides::default());
+        many.apply_local_acp_observations(vec![codex.clone(), claude.clone()])
+            .unwrap();
+        let many = many.runtime.acp.unwrap();
+        assert_eq!(
+            many.cli_ids().collect::<Vec<_>>(),
+            ["claude", "codex"],
+            "A3"
+        );
+        assert_eq!(many.default_cli(), None, "A3");
+
+        let mut explicit = resolve(
+            FileConfig {
+                acp_clis: Some(vec!["claude".into()]),
+                ..Default::default()
+            },
+            ConfigOverrides::default(),
+        );
+        explicit
+            .apply_local_acp_observations(vec![codex, claude])
+            .unwrap();
+        let explicit = explicit.runtime.acp.unwrap();
+        assert_eq!(explicit.cli_ids().collect::<Vec<_>>(), ["claude"], "A4");
     }
 
     #[test]

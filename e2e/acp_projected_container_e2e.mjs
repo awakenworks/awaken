@@ -41,7 +41,7 @@ ENTRYPOINT ["/usr/local/bin/bridge"]
   fs.writeFileSync(path.join(context, 'bridge'), `#!/bin/sh
 set -eu
 test "$1" = gemini
-test "$2" = --experimental-acp
+test "$2" = --acp
 exec nc -lk -p 8080 -e /usr/local/bin/gemini
 `);
   fs.writeFileSync(path.join(context, 'gemini'), `#!/bin/sh
@@ -178,7 +178,11 @@ async function publishAgent(base) {
   });
   await request(base, 'PUT', `/v1/config/agents/${AGENT}`, {
     name: AGENT,
-    model: { id: 'container-published', provider_identity_ref: 'google' },
+    model: {
+      id: 'container-published',
+      provider_identity_ref: 'google',
+      backend_ref: 'acp:gemini',
+    },
     system: 'Exercise publication-pinned container ACP provisioning.',
     tools: [],
   });
@@ -273,7 +277,6 @@ async function main() {
       client.beta.sessions.create({
         agent: AGENT,
         environment_id: environmentResource.id,
-        metadata: { 'awaken.runtime': 'acp:gemini' },
         mcp_servers: [{ name: 'container-fixture-secure', type: 'url', url: fixture.url }],
         vault_ids: [vault.id],
         betas: BETAS,
@@ -284,7 +287,6 @@ async function main() {
     session = await client.beta.sessions.create({
       agent: AGENT,
       environment_id: environmentResource.id,
-      metadata: { 'awaken.runtime': 'acp:gemini' },
       resources: [{
         type: 'file',
         file_id: file.id,

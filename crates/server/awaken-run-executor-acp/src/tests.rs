@@ -112,6 +112,7 @@ impl AgentChannelSource for ScriptedSource {
             codec: awaken_protocol_acp::Codec::Newline,
             workspace_cwd: None,
             mcp_session_servers: Vec::new(),
+            session_config_option: None,
         })
     }
 }
@@ -471,10 +472,9 @@ impl LaunchObserver for RecordingObserver {
 }
 
 #[tokio::test]
-async fn observer_sees_install_launch_and_ready_for_a_dynamic_install_backend() {
-    // The fixture activation's backend_ref is `acp:claude` (an npx adapter), so the
-    // executor surfaces an Installing state before launch, then Ready once the
-    // (newline-fixture) agent is live.
+async fn observer_starts_at_launch_after_startup_acquisition() {
+    // Wrapper acquisition belongs to product startup. A run observes only launch
+    // and protocol readiness, so no network/package phase can occur per turn.
     let observer = Arc::new(RecordingObserver::default());
     let e = AcpRunExecutor::new(Arc::new(ScriptedSource {
         frames: vec![
@@ -492,12 +492,8 @@ async fn observer_sees_install_launch_and_ready_for_a_dynamic_install_backend() 
     let stages = observer.stages.lock().unwrap().clone();
     assert_eq!(
         stages,
-        vec![
-            AcpLaunchStage::Installing,
-            AcpLaunchStage::Launching,
-            AcpLaunchStage::Ready,
-        ],
-        "install → launch → ready, in order"
+        vec![AcpLaunchStage::Launching, AcpLaunchStage::Ready],
+        "launch → ready, in order"
     );
 }
 
@@ -506,7 +502,7 @@ async fn observer_sees_failed_when_the_launch_faults() {
     let observer = Arc::new(RecordingObserver::default());
     let e = AcpRunExecutor::new(Arc::new(ScriptedSource {
         frames: vec![],
-        open_error: Some("spawn npx: No such file or directory".into()),
+        open_error: Some("spawn claude-agent-acp: No such file or directory".into()),
     }))
     .with_launch_observer(observer.clone());
 
@@ -521,11 +517,7 @@ async fn observer_sees_failed_when_the_launch_faults() {
     let stages = observer.stages.lock().unwrap().clone();
     assert_eq!(
         stages,
-        vec![
-            AcpLaunchStage::Installing,
-            AcpLaunchStage::Launching,
-            AcpLaunchStage::Failed,
-        ],
+        vec![AcpLaunchStage::Launching, AcpLaunchStage::Failed],
         "a spawn fault surfaces a Failed state"
     );
 }
@@ -881,6 +873,7 @@ async fn a_session_persisted_in_one_dir_is_recovered_in_another_through_the_exec
                 codec: awaken_protocol_acp::Codec::Newline,
                 workspace_cwd: Some("/workspace".to_string()),
                 mcp_session_servers: Vec::new(),
+                session_config_option: None,
             })
         }
     }
@@ -1243,6 +1236,7 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
                 codec: Codec::Acp,
                 workspace_cwd: None,
                 mcp_session_servers: Vec::new(),
+                session_config_option: None,
             })
         }
     }
@@ -1674,6 +1668,7 @@ async fn acp_relaunches_the_cli_every_turn_so_a_model_switch_takes_effect() {
                 codec: awaken_protocol_acp::Codec::Newline,
                 workspace_cwd: None,
                 mcp_session_servers: Vec::new(),
+                session_config_option: None,
             })
         }
     }
@@ -1729,7 +1724,7 @@ fn projected_env<'a>(launch: &'a AcpLaunch, key: &str) -> Option<&'a str> {
 #[test]
 fn projecting_source_plans_launch_from_resolved_model_and_host_env() {
     let cli = *acp_cli("claude").expect("claude in the catalog");
-    let resolver = Arc::new(FixedModel(ResolvedModel {
+    let resolver = Arc::new(FixedModel(ResolvedModel::Managed {
         base_url: "https://api.kimi.com/coding/".to_string(),
         model: "kimi-k2".to_string(),
         process_secret: Some(ProcessSecretRequirement::new("lease://projected-host")),
@@ -1741,10 +1736,7 @@ fn projecting_source_plans_launch_from_resolved_model_and_host_env() {
         .plan(&activation(), &RuntimeRunContext::new())
         .expect("plan");
     let env = |k: &str| projected_env(&launch, k);
-    assert_eq!(
-        launch.argv,
-        vec!["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.44"]
-    );
+    assert_eq!(launch.argv, vec!["claude-agent-acp"]);
     assert_eq!(env("ANTHROPIC_MODEL"), Some("kimi-k2"));
     assert_eq!(
         env("ANTHROPIC_BASE_URL"),
@@ -1768,7 +1760,7 @@ impl LaunchResolver for ConfigHomeAt {
         _a: &RunActivation,
         _context: &RuntimeRunContext,
     ) -> std::result::Result<ResolvedModel, OpenError> {
-        Ok(ResolvedModel {
+        Ok(ResolvedModel::Managed {
             base_url: "u".into(),
             model: "m".into(),
             process_secret: None,
@@ -1884,7 +1876,7 @@ async fn open_and_drive_inject_the_mcp_server_into_session_new_for_an_acp_sessio
     };
     let source = Arc::new(ProjectingChannelSource::new(
         cli,
-        Arc::new(FixedModel(ResolvedModel {
+        Arc::new(FixedModel(ResolvedModel::Managed {
             base_url: "u".into(),
             model: "m".into(),
             process_secret: None,
@@ -1943,7 +1935,7 @@ async fn retained_inline_mcp_credential_is_ignored_before_session_new() {
     };
     let source = Arc::new(ProjectingChannelSource::new(
         cli,
-        Arc::new(FixedModel(ResolvedModel {
+        Arc::new(FixedModel(ResolvedModel::Managed {
             base_url: "u".into(),
             model: "m".into(),
             process_secret: None,
@@ -2007,7 +1999,7 @@ async fn acp_session_id_is_carried_across_the_per_turn_relaunch() {
     };
     let source = Arc::new(ProjectingChannelSource::new(
         cli,
-        Arc::new(FixedModel(ResolvedModel {
+        Arc::new(FixedModel(ResolvedModel::Managed {
             base_url: "u".into(),
             model: "m".into(),
             process_secret: None,
@@ -2068,7 +2060,7 @@ async fn paused_run_resumes_after_executor_replacement_with_the_committed_sessio
     };
     let source: Arc<dyn AgentChannelSource> = Arc::new(ProjectingChannelSource::new(
         cli,
-        Arc::new(FixedModel(ResolvedModel {
+        Arc::new(FixedModel(ResolvedModel::Managed {
             base_url: "u".into(),
             model: "m".into(),
             process_secret: None,
@@ -2129,7 +2121,7 @@ async fn paused_run_resumes_after_executor_replacement_with_the_committed_sessio
 #[test]
 fn projecting_source_reads_the_cli_compact_window_from_config() {
     let cli = *acp_cli("claude").expect("claude in the catalog");
-    let resolver = Arc::new(FixedModel(ResolvedModel {
+    let resolver = Arc::new(FixedModel(ResolvedModel::Managed {
         base_url: "u".to_string(),
         model: "m".to_string(),
         process_secret: None,
@@ -2191,6 +2183,7 @@ async fn a_cancelled_token_ends_the_run_cancelled() {
                 codec: awaken_protocol_acp::Codec::Newline,
                 workspace_cwd: None,
                 mcp_session_servers: Vec::new(),
+                session_config_option: None,
             })
         }
     }
@@ -2310,6 +2303,7 @@ async fn a_relaunch_open_failure_mid_run_classifies_and_ends() {
                 codec: awaken_protocol_acp::Codec::Newline,
                 workspace_cwd: None,
                 mcp_session_servers: Vec::new(),
+                session_config_option: None,
             })
         }
     }
@@ -2397,7 +2391,7 @@ impl LaunchResolver for MatrixModel {
         _a: &RunActivation,
         _context: &RuntimeRunContext,
     ) -> std::result::Result<ResolvedModel, OpenError> {
-        Ok(ResolvedModel {
+        Ok(ResolvedModel::Managed {
             base_url: "https://gateway.example/anthropic".to_string(),
             model: "MiniMax-M2".to_string(),
             process_secret: Some(ProcessSecretRequirement::new("lease://matrix")),
@@ -2418,6 +2412,14 @@ fn every_backend_row_projects_a_launchable_process_through_the_source() {
     let model = MatrixModel
         .model(&activation(), &RuntimeRunContext::new())
         .unwrap();
+    let ResolvedModel::Managed {
+        base_url,
+        model: model_id,
+        ..
+    } = &model
+    else {
+        unreachable!()
+    };
     for cli in known_acp_clis() {
         let source = ProjectingChannelSource::new(*cli, Arc::new(MatrixModel));
         let planned = source.plan(&activation(), &RuntimeRunContext::new());
@@ -2436,13 +2438,13 @@ fn every_backend_row_projects_a_launchable_process_through_the_source() {
         );
         assert_eq!(
             env(d.base_url),
-            Some(model.base_url.as_str()),
+            Some(base_url.as_str()),
             "{}: base_url delivered",
             cli.id
         );
         assert_eq!(
             env(d.model),
-            Some(model.model.as_str()),
+            Some(model_id.as_str()),
             "{}: model delivered",
             cli.id
         );

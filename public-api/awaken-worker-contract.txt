@@ -43,6 +43,13 @@ pub awaken_worker_contract::RegistryMutation::InvalidTransition
 pub awaken_worker_contract::RegistryMutation::NotFound
 pub awaken_worker_contract::RegistryMutation::StaleIncarnation
 pub awaken_worker_contract::RegistryMutation::StaleSequence
+pub enum awaken_worker_contract::WorkerCredentialState
+pub awaken_worker_contract::WorkerCredentialState::Available
+pub awaken_worker_contract::WorkerCredentialState::Disabled
+pub awaken_worker_contract::WorkerCredentialState::Expired
+pub awaken_worker_contract::WorkerCredentialState::Invalid
+pub awaken_worker_contract::WorkerCredentialState::LoginRequired
+pub awaken_worker_contract::WorkerCredentialState::ProbeFailed
 pub enum awaken_worker_contract::WorkerRecoveryMode
 pub awaken_worker_contract::WorkerRecoveryMode::NeverReplace
 pub awaken_worker_contract::WorkerRecoveryMode::RebuildFromCommittedTruth
@@ -117,11 +124,20 @@ pub awaken_worker_contract::WorkerCapacity::max_concurrent: u32
 pub awaken_worker_contract::WorkerCapacity::resources: awaken_provisioning_contract::vocab::ResourceLimits
 impl core::default::Default for awaken_worker_contract::WorkerCapacity
 pub fn awaken_worker_contract::WorkerCapacity::default() -> Self
+pub struct awaken_worker_contract::WorkerCredentialObservation
+pub awaken_worker_contract::WorkerCredentialObservation::credential: awaken_worker_contract::WorkerCredentialRevision
+pub awaken_worker_contract::WorkerCredentialObservation::observed_at_ms: u64
+pub awaken_worker_contract::WorkerCredentialObservation::reason_code: core::option::Option<alloc::string::String>
+pub awaken_worker_contract::WorkerCredentialObservation::state: awaken_worker_contract::WorkerCredentialState
+pub awaken_worker_contract::WorkerCredentialObservation::valid_until_ms: u64
+impl awaken_worker_contract::WorkerCredentialObservation
+pub fn awaken_worker_contract::WorkerCredentialObservation::available(awaken_worker_contract::WorkerCredentialRevision, u64, u64) -> Self
+pub fn awaken_worker_contract::WorkerCredentialObservation::is_selectable_at(&self, &awaken_worker_contract::WorkerCredentialRevision, u64) -> bool
 pub struct awaken_worker_contract::WorkerCredentialRevision
+pub awaken_worker_contract::WorkerCredentialRevision::id: alloc::string::String
 pub awaken_worker_contract::WorkerCredentialRevision::revision: u64
-pub awaken_worker_contract::WorkerCredentialRevision::source_id: alloc::string::String
 pub struct awaken_worker_contract::WorkerHeartbeat
-pub awaken_worker_contract::WorkerHeartbeat::available_credentials: alloc::collections::btree::set::BTreeSet<awaken_worker_contract::WorkerCredentialRevision>
+pub awaken_worker_contract::WorkerHeartbeat::credential_observations: alloc::collections::btree::set::BTreeSet<awaken_worker_contract::WorkerCredentialObservation>
 pub awaken_worker_contract::WorkerHeartbeat::in_flight: u32
 pub awaken_worker_contract::WorkerHeartbeat::ready: bool
 pub awaken_worker_contract::WorkerHeartbeat::sequence: u64
@@ -153,8 +169,8 @@ pub awaken_worker_contract::WorkerRegistration::incarnation_id: alloc::string::S
 pub awaken_worker_contract::WorkerRegistration::manifest: awaken_worker_contract::WorkerManifest
 pub awaken_worker_contract::WorkerRegistration::worker_id: alloc::string::String
 pub struct awaken_worker_contract::WorkerSnapshot
-pub awaken_worker_contract::WorkerSnapshot::available_credentials: alloc::collections::btree::set::BTreeSet<awaken_worker_contract::WorkerCredentialRevision>
 pub awaken_worker_contract::WorkerSnapshot::capability_fingerprint: alloc::string::String
+pub awaken_worker_contract::WorkerSnapshot::credential_observations: alloc::collections::btree::set::BTreeSet<awaken_worker_contract::WorkerCredentialObservation>
 pub awaken_worker_contract::WorkerSnapshot::expires_at_ms: u64
 pub awaken_worker_contract::WorkerSnapshot::identity: awaken_worker_contract::WorkerIdentity
 pub awaken_worker_contract::WorkerSnapshot::in_flight: u32

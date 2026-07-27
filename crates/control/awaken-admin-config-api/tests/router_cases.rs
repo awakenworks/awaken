@@ -608,38 +608,43 @@ async fn oauth_credentials_accept_only_the_allowlisted_gcloud_helper() {
 }
 
 #[tokio::test]
-async fn worker_local_credentials_persist_only_the_non_secret_binding() {
+async fn generic_admin_route_never_creates_worker_local_credentials() {
+    // Cause graph: WorkerLocal identity requires an atomic driver/subject locator
+    // -> only `ensure_worker_local` may create it. The generic credential route
+    // has no such contract and must reject both secretless and secret-bearing
+    // inputs instead of reviving a second registration path.
+    //
+    // | Rule | generic input | secret | result |
+    // | W1 | worker_local | absent | 422; use automatic Worker registration |
+    // | W2 | worker_local | present | 422; secret never crosses control plane |
     let h = harness();
-    let (status, credential) = call(
-        &h.app,
-        "POST",
-        "/v1/config/credentials",
-        Some(json!({
-            "workspace_id": "ws",
-            "kind": "worker_local",
-            "provider_id": "openai"
-        })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "{credential}");
-    assert_eq!(credential["kind"], "worker_local");
-    assert_eq!(credential["provider_id"], "openai");
-    assert!(credential.get("material_ref").is_none());
-
-    let (status, problem) = call(
-        &h.app,
-        "POST",
-        "/v1/config/credentials",
-        Some(json!({
-            "workspace_id": "ws",
-            "kind": "worker_local",
-            "provider_id": "openai",
-            "secret": "must-not-cross-the-control-plane", // awaken-allow: secret
-        })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{problem}");
-    assert_eq!(problem["code"], "credential_invalid");
+    for (rule, body) in [
+        (
+            "W1",
+            json!({
+                "workspace_id": "ws",
+                "kind": "worker_local",
+                "provider_id": "openai"
+            }),
+        ),
+        (
+            "W2",
+            json!({
+                "workspace_id": "ws",
+                "kind": "worker_local",
+                "provider_id": "openai",
+                "secret": "must-not-cross-the-control-plane", // awaken-allow: secret
+            }),
+        ),
+    ] {
+        let (status, problem) = call(&h.app, "POST", "/v1/config/credentials", Some(body)).await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{rule}: {problem}"
+        );
+        assert_eq!(problem["code"], "credential_invalid", "{rule}");
+    }
 }
 
 /// Agent input bindings are a versioned aggregate resolved at Session creation.

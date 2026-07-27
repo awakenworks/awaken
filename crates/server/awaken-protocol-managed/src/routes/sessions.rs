@@ -67,23 +67,6 @@ where
     }
 }
 
-#[cfg(test)]
-mod managed_json_tests {
-    use super::managed_json_message;
-
-    #[test]
-    fn resource_decode_errors_have_a_stable_category_and_keep_the_path() {
-        let detail = "resources[0].type: unknown variant `future_resource`".to_string();
-        let message = managed_json_message(detail.clone());
-        assert!(message.starts_with("invalid resource:"));
-        assert!(message.ends_with(&detail));
-        assert_eq!(
-            managed_json_message("model: missing field".into()),
-            "model: missing field"
-        );
-    }
-}
-
 /// Build the Managed Agents router. Mount it at the server root; the paths are the
 /// public `/v1/sessions...` surface the SDK expects.
 pub fn router(state: Arc<ManagedState>) -> Router {
@@ -758,4 +741,21 @@ async fn stream_events(
     let previews = parse_event_deltas(raw.as_deref())?;
     let (snapshot, rx) = state.stream_subscribe(&id).map_err(error_response)?;
     Ok(Sse::new(live_sse_stream(snapshot, rx, previews, Some)).keep_alive(KeepAlive::default()))
+}
+
+#[cfg(test)]
+mod managed_json_tests {
+    use super::managed_json_message;
+
+    #[test]
+    fn resource_decode_errors_have_a_stable_category_and_keep_the_path() {
+        let detail = "resources[0].type: unknown variant `future_resource`".to_string();
+        let message = managed_json_message(detail.clone());
+        assert!(message.starts_with("invalid resource:"));
+        assert!(message.ends_with(&detail));
+        assert_eq!(
+            managed_json_message("model: missing field".into()),
+            "model: missing field"
+        );
+    }
 }

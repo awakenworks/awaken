@@ -29,6 +29,18 @@ pub struct RuntimeCapability {
     pub kind: String,
     pub cli: Option<String>,
     pub description: String,
+    pub local: Option<LocalRuntimeCapability>,
+}
+
+/// One startup observation of a supported runtime on this host. This is a
+/// read-model projection, not another persisted capability inventory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalRuntimeCapability {
+    pub detected: bool,
+    pub version: Option<String>,
+    pub login_state: Option<String>,
+    pub reason_code: Option<String>,
+    pub remediation: Option<String>,
 }
 
 impl RuntimeCapability {
@@ -41,6 +53,7 @@ impl RuntimeCapability {
             cli: None,
             description: "Runs in-process on the awaken runtime — no external CLI, no sandbox."
                 .into(),
+            local: None,
         }
     }
 
@@ -57,7 +70,14 @@ impl RuntimeCapability {
             kind: "acp".into(),
             cli: Some(cli),
             description: description.into(),
+            local: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_local(mut self, local: LocalRuntimeCapability) -> Self {
+        self.local = Some(local);
+        self
     }
 
     fn to_json(&self) -> Value {
@@ -67,6 +87,14 @@ impl RuntimeCapability {
             "kind": self.kind,
             "cli": self.cli,
             "description": self.description,
+            "supported": true,
+            "local": self.local.as_ref().map(|local| json!({
+                "detected": local.detected,
+                "version": local.version,
+                "login_state": local.login_state,
+                "reason_code": local.reason_code,
+                "remediation": local.remediation,
+            })),
         })
     }
 }
@@ -267,6 +295,17 @@ mod tests {
         assert_eq!(native.cli, None, "C1");
         assert_eq!(acp.id, "acp:codex", "C2");
         assert_eq!(acp.cli.as_deref(), Some("codex"), "C2");
+        let observed = acp.with_local(LocalRuntimeCapability {
+            detected: true,
+            version: Some("1".into()),
+            login_state: Some("available".into()),
+            reason_code: Some("acp_login_available".into()),
+            remediation: None,
+        });
+        let json = observed.to_json();
+        assert_eq!(json["supported"], true, "C2");
+        assert_eq!(json["local"]["detected"], true, "C2");
+        assert_eq!(json["local"]["login_state"], "available", "C2");
     }
 
     #[test]
