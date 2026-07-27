@@ -93,6 +93,32 @@ evidence = "test"
         with mock.patch.object(MODULE.subprocess, "run", side_effect=completed):
             self.assertEqual(MODULE.run("git", "diff"), "模型 ✅\n")
 
+    def test_merges_homogeneous_lcov_groups_by_max_line_count(self) -> None:
+        # Cause graph: C1/C2 are profiles from different feature/binary groups;
+        # E1 their reports are exported independently (so LLVM never hash-merges
+        # incompatible functions); E2 the gate keeps the maximum counter per
+        # source line. This is equivalent to a union of served observations.
+        #
+        # | Rule | group A | group B | merged line 1 / line 2 |
+        # |---|---:|---:|---:|
+        # | L1 | 3 / 0 | 0 / 5 | 3 / 5 |
+        source = (self.root / "crates/example/src/lib.rs").resolve()
+        # Windows may expose the temp root through an 8.3 alias while resolving
+        # the existing child to its long path. Mirror production's resolved ROOT.
+        MODULE.ROOT = source.parents[3]
+        (self.root / "a.lcov").write_text(
+            f"SF:{source}\nDA:1,3\nDA:2,0\nend_of_record\n",
+            encoding="utf-8",
+        )
+        (self.root / "b.lcov").write_text(
+            f"SF:{source}\nDA:1,0\nDA:2,5\nend_of_record\n",
+            encoding="utf-8",
+        )
+
+        merged = MODULE.lcov_lines(None, ["a.lcov", "b.lcov"])
+
+        self.assertEqual(merged["crates/example/src/lib.rs"], {1: 3, 2: 5})
+
 
 if __name__ == "__main__":
     unittest.main()
