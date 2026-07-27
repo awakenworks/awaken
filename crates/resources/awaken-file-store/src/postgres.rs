@@ -28,7 +28,19 @@ impl PgFileStore {
 
     /// Connect to an already-migrated schema without executing DDL.
     pub async fn connect_existing(url: &str) -> Result<Self, FileStoreError> {
-        PgPool::connect(url).await.map(Self::with_pool).map_err(e)
+        let pool = PgPool::connect(url).await.map_err(e)?;
+        Self::with_existing_pool(pool).await
+    }
+
+    /// Wrap an existing pool and verify the externally-owned migration ledger.
+    pub async fn with_existing_pool(pool: PgPool) -> Result<Self, FileStoreError> {
+        let bundle = file_store_bundle().map_err(e)?;
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+            .map_err(e)?
+            .verify_bundle(&bundle)
+            .await
+            .map_err(e)?;
+        Ok(Self { pool })
     }
 
     /// Wrap an existing pool (schema assumed present, or call [`Self::ensure_schema`]).

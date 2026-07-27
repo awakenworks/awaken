@@ -1406,6 +1406,8 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-provisioning-contract",
+ "awaken-scoped-migration",
+ "awaken-scoped-migration-sqlite",
  "rusqlite",
  "serde_json",
  "sqlx",

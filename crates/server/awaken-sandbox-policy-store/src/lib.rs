@@ -8,8 +8,35 @@ use awaken_provisioning_contract::{
     SandboxExecutionPolicy, SandboxExecutionPolicyError, SandboxExecutionPolicyRef,
     SandboxExecutionPolicyStore, SandboxExecutionPolicyVersion,
 };
+use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use sqlx::{PgPool, Row};
+
+const NS: &str = "sandbox_execution_policy";
+
+/// The single portable schema authority shared by the SQLite and Postgres adapters.
+fn sandbox_policy_bundle() -> Result<MigrationBundle, MigrationError> {
+    MigrationBundle::new(
+        "awaken.sandbox_execution_policy",
+        vec![
+            Migration::new(
+                1,
+                "immutable sandbox execution policy versions",
+                "CREATE TABLE IF NOT EXISTS {prefix}_version (policy_id TEXT NOT NULL, version BIGINT NOT NULL, policy_json TEXT NOT NULL, PRIMARY KEY(policy_id, version))",
+            )?,
+            Migration::new(
+                2,
+                "current sandbox execution policy version",
+                "CREATE TABLE IF NOT EXISTS {prefix}_current (policy_id TEXT PRIMARY KEY, version BIGINT NOT NULL)",
+            )?,
+            Migration::new(
+                3,
+                "exact environment sandbox execution policy binding",
+                "CREATE TABLE IF NOT EXISTS {prefix}_environment (environment_id TEXT PRIMARY KEY, policy_id TEXT NOT NULL, version BIGINT NOT NULL)",
+            )?,
+        ],
+    )
+}
 
 fn validate(policy: &SandboxExecutionPolicy) -> Result<(), SandboxExecutionPolicyError> {
     if policy.config.network.is_some() {
@@ -126,25 +153,38 @@ impl PostgresSandboxExecutionPolicyStore {
         let pool = PgPool::connect(url)
             .await
             .map_err(|error| error.to_string())?;
-        for statement in [
-            "CREATE TABLE IF NOT EXISTS sandbox_execution_policy_version (policy_id TEXT NOT NULL, version BIGINT NOT NULL, policy_json TEXT NOT NULL, PRIMARY KEY(policy_id, version))",
-            "CREATE TABLE IF NOT EXISTS sandbox_execution_policy_current (policy_id TEXT PRIMARY KEY, version BIGINT NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS sandbox_execution_policy_environment (environment_id TEXT PRIMARY KEY, policy_id TEXT NOT NULL, version BIGINT NOT NULL)",
-        ] {
-            sqlx::query(statement)
-                .execute(&pool)
-                .await
-                .map_err(|error| error.to_string())?;
-        }
+        Self::with_pool(pool).await
+    }
+
+    /// Wrap a pool and apply the canonical sandbox-policy migration bundle.
+    pub async fn with_pool(pool: PgPool) -> Result<Self, String> {
+        let bundle = sandbox_policy_bundle().map_err(|error| error.to_string())?;
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+            .map_err(|error| error.to_string())?
+            .run_bundle(&bundle)
+            .await
+            .map_err(|error| error.to_string())?;
         Ok(Self { pool })
     }
 
-    /// Connect to an already-provisioned schema without executing startup DDL.
+    /// Connect to an already-provisioned schema, verifying its scoped ledger
+    /// without executing startup DDL.
     pub async fn connect_existing(url: &str) -> Result<Self, String> {
-        PgPool::connect(url)
+        let pool = PgPool::connect(url)
             .await
-            .map(|pool| Self { pool })
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        Self::with_existing_pool(pool).await
+    }
+
+    /// Wrap an existing pool after verifying its scoped migration ledger.
+    pub async fn with_existing_pool(pool: PgPool) -> Result<Self, String> {
+        let bundle = sandbox_policy_bundle().map_err(|error| error.to_string())?;
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+            .map_err(|error| error.to_string())?
+            .verify_bundle(&bundle)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(Self { pool })
     }
 }
 
@@ -276,16 +316,11 @@ fn as_u64(value: i64) -> Result<u64, SandboxExecutionPolicyError> {
 impl SqliteSandboxExecutionPolicyStore {
     pub fn open(path: &str) -> Result<Self, String> {
         let conn = Connection::open(path).map_err(|error| error.to_string())?;
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS sandbox_execution_policy_version (\
-                policy_id TEXT NOT NULL, version INTEGER NOT NULL, policy_json TEXT NOT NULL, \
-                PRIMARY KEY(policy_id, version));\
-             CREATE TABLE IF NOT EXISTS sandbox_execution_policy_current (\
-                policy_id TEXT PRIMARY KEY, version INTEGER NOT NULL);\
-             CREATE TABLE IF NOT EXISTS sandbox_execution_policy_environment (\
-                environment_id TEXT PRIMARY KEY, policy_id TEXT NOT NULL, version INTEGER NOT NULL);",
-        )
-        .map_err(|error| error.to_string())?;
+        let bundle = sandbox_policy_bundle().map_err(|error| error.to_string())?;
+        awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+            .map_err(|error| error.to_string())?
+            .run_bundle(&conn, &bundle)
+            .map_err(|error| error.to_string())?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -516,5 +551,119 @@ mod tests {
                 .isolation,
             Some(IsolationClass::Namespace)
         );
+    }
+
+    #[test]
+    fn sqlite_schema_has_one_scoped_migration_authority() {
+        // Causal graph:
+        // open -> run canonical bundle -> ledger + three tables -> serve
+        // reopen -> ledger verifies checksums -> no duplicate schema path
+        //
+        // Decision table:
+        // | first open | ledger current | expected effect                 |
+        // | yes        | no             | apply exactly three migrations |
+        // | no         | yes            | apply zero pending migrations  |
+        // | no         | checksum drift | fail closed                     |
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("policy-schema.db");
+        let path = path.to_str().unwrap();
+        let first = SqliteSandboxExecutionPolicyStore::open(path).unwrap();
+        let applied: i64 = first
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM sandbox_execution_policy_schema_migrations WHERE bundle_id = 'awaken.sandbox_execution_policy'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(applied, 3);
+        drop(first);
+        let reopened = SqliteSandboxExecutionPolicyStore::open(path).unwrap();
+        let applied_after_reopen: i64 = reopened
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM sandbox_execution_policy_schema_migrations WHERE bundle_id = 'awaken.sandbox_execution_policy'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(applied_after_reopen, 3);
+        reopened
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sandbox_execution_policy_schema_migrations SET checksum = 'drifted' WHERE bundle_id = 'awaken.sandbox_execution_policy' AND version = 1",
+                [],
+            )
+            .unwrap();
+        drop(reopened);
+        assert!(
+            SqliteSandboxExecutionPolicyStore::open(path).is_err(),
+            "checksum drift fails closed instead of being rewritten"
+        );
+    }
+
+    #[tokio::test]
+    async fn postgres_verify_is_fail_closed_and_read_only() {
+        use sqlx::Executor;
+        use sqlx::postgres::PgPoolOptions;
+
+        let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+            return;
+        };
+        let admin = PgPool::connect(&url).await.unwrap();
+        let _ = admin
+            .execute("DROP SCHEMA IF EXISTS t_sandbox_policy CASCADE")
+            .await;
+        admin
+            .execute("CREATE SCHEMA t_sandbox_policy")
+            .await
+            .unwrap();
+        admin.close().await;
+        let pool = PgPoolOptions::new()
+            .after_connect(|connection, _| {
+                Box::pin(async move {
+                    connection
+                        .execute("SET search_path = t_sandbox_policy")
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect(&url)
+            .await
+            .unwrap();
+
+        // Decision table:
+        // | ledger state | operation | DDL allowed | result  |
+        // | absent       | verify    | no          | failure |
+        // | absent       | migrate   | yes         | success |
+        // | current      | verify    | no          | success |
+        assert!(
+            PostgresSandboxExecutionPolicyStore::with_existing_pool(pool.clone())
+                .await
+                .is_err()
+        );
+        let ledger_after_verify: Option<String> = sqlx::query_scalar(
+            "SELECT to_regclass('sandbox_execution_policy_schema_migrations')::text",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            ledger_after_verify, None,
+            "verify must not create its ledger"
+        );
+
+        PostgresSandboxExecutionPolicyStore::with_pool(pool.clone())
+            .await
+            .unwrap();
+        PostgresSandboxExecutionPolicyStore::with_existing_pool(pool)
+            .await
+            .unwrap();
     }
 }

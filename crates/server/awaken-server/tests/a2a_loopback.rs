@@ -77,7 +77,7 @@ fn text_of(message: &Message) -> String {
         .collect()
 }
 
-fn task_response(id: &str, state: &str, message: Option<&str>) -> Vec<u8> {
+fn task_value(id: &str, state: &str, message: Option<&str>) -> serde_json::Value {
     let mut status = serde_json::json!({ "state": state });
     if let Some(text) = message {
         status["message"] = serde_json::json!({
@@ -87,15 +87,24 @@ fn task_response(id: &str, state: &str, message: Option<&str>) -> Vec<u8> {
             "parts": [{ "kind": "text", "text": text }],
         });
     }
+    serde_json::json!({
+        "kind": "task",
+        "id": id,
+        "contextId": "c",
+        "status": status,
+    })
+}
+
+fn send_task_response(id: &str, state: &str, message: Option<&str>) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
-        "task": {
-            "kind": "task",
-            "id": id,
-            "contextId": "c",
-            "status": status,
-        }
+        "task": task_value(id, state, message),
     }))
     .expect("canonical A2A task fixture serializes")
+}
+
+fn get_task_response(id: &str, state: &str, message: Option<&str>) -> Vec<u8> {
+    serde_json::to_vec(&task_value(id, state, message))
+        .expect("canonical A2A task fixture serializes")
 }
 
 fn delegating_host() -> SharedHost {
@@ -240,11 +249,11 @@ async fn a_working_task_is_polled_to_completion() {
         ) -> Result<Response, String> {
             let body = if method == "POST" {
                 // message:send → a working task with an id to poll.
-                task_response("task-1", "working", None)
+                send_task_response("task-1", "working", None)
             } else {
-                // tasks/get → completed, carrying the reply.
+                // tasks/get → the canonical raw Task, carrying the reply.
                 self.gets.fetch_add(1, Ordering::SeqCst);
-                task_response("task-1", "completed", Some("polled answer"))
+                get_task_response("task-1", "completed", Some("polled answer"))
             };
             Ok(Response::new(200, body))
         }
@@ -300,8 +309,15 @@ async fn a_parent_interrupt_cancels_the_remote_task() {
             }
             if method == "GET" {
                 self.polled.notify_one();
+                return Ok(Response::new(
+                    200,
+                    get_task_response("task-1", "working", None),
+                ));
             }
-            Ok(Response::new(200, task_response("task-1", "working", None)))
+            Ok(Response::new(
+                200,
+                send_task_response("task-1", "working", None),
+            ))
         }
     }
 
@@ -316,14 +332,41 @@ async fn a_parent_interrupt_cancels_the_remote_task() {
     );
 
     let driver = host.clone();
-    let task =
+    let mut task =
         tokio::spawn(async move { driver.run(None, "t", vec![user("u1", "research")]).await });
 
-    // Once the remote task has been polled, interrupt the parent thread.
-    polled.notified().await;
+    // Causal graph:
+    // send working -> driver polls -> notify -> interrupt -> remote cancel -> turn ends
+    //                    | decode/driver failure -----> fail immediately
+    //                    | no progress --------------> bounded timeout
+    //
+    // Decision table:
+    // | poll observed | driver ended | deadline | outcome                 |
+    // | yes           | no           | no       | interrupt and cancel    |
+    // | no            | yes          | no       | fail with driver result |
+    // | no            | no           | yes      | fail as stalled         |
+    // The select keeps a malformed fixture or future driver regression from
+    // deadlocking the entire workspace test run.
+    tokio::select! {
+        _ = polled.notified() => {}
+        result = &mut task => {
+            match result {
+                Ok(Ok(_)) => panic!("remote driver completed before its first poll"),
+                Ok(Err(error)) => panic!("remote driver failed before its first poll: {error}"),
+                Err(error) => panic!("remote driver task failed before its first poll: {error}"),
+            }
+        }
+        _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+            panic!("remote driver did not poll within the test deadline");
+        }
+    }
     host.interrupt("t").await.unwrap();
 
-    task.await.unwrap().expect("the turn returns after cancel");
+    tokio::time::timeout(std::time::Duration::from_secs(5), task)
+        .await
+        .expect("the turn returns promptly after cancel")
+        .unwrap()
+        .expect("the turn returns after cancel");
     assert!(
         cancelled.load(Ordering::SeqCst),
         "the remote task received tasks:cancel"
@@ -359,9 +402,9 @@ async fn a_remote_input_required_awaits_the_parent_then_resumes() {
         ) -> Result<Response, String> {
             assert_eq!(method, "POST", "only message:send is used (no polling)");
             let body = if self.sends.fetch_add(1, Ordering::SeqCst) == 0 {
-                task_response("t", "input-required", None)
+                send_task_response("t", "input-required", None)
             } else {
-                task_response("t", "completed", Some("final answer"))
+                send_task_response("t", "completed", Some("final answer"))
             };
             Ok(Response::new(200, body))
         }
