@@ -36,6 +36,63 @@ pub use awaken_control::{
     ManagementIdentityMode, RemoteManagementAuthz, TokenSpec, embedded_iam,
 };
 
+/// Project the one executable ACP catalog into the management read model. This
+/// composition edge is intentionally the only place that knows both contexts;
+/// neither Control nor the executor keeps a synchronized adapter list.
+fn runtime_capabilities() -> Vec<awaken_control::RuntimeCapability> {
+    std::iter::once(awaken_control::RuntimeCapability::native())
+        .chain(awaken_run_executor_acp::known_acp_clis().iter().map(|cli| {
+            awaken_control::RuntimeCapability::acp(cli.id, cli.display_name, cli.description)
+        }))
+        .collect()
+}
+
+#[cfg(test)]
+mod runtime_capability_tests {
+    use super::*;
+
+    #[test]
+    fn management_runtime_projection_is_exactly_the_executable_catalog() {
+        // Cause graph:
+        // C1 native runtime is intrinsic -> E1 exactly one `awaken` row.
+        // C2 an AcpCli catalog row exists -> E2 exactly one matching `acp:<id>` row.
+        // C3 no AcpCli row exists -> E3 no management capability can advertise it.
+        //
+        // Decision table:
+        // | Rule | Native | catalog row | capability |
+        // | R1 | T | - | awaken exactly once |
+        // | R2 | - | T | matching acp:<id> exactly once |
+        // | R3 | - | F | absent |
+        let projected = runtime_capabilities();
+        assert_eq!(
+            projected.iter().filter(|row| row.id == "awaken").count(),
+            1,
+            "R1"
+        );
+
+        let catalog = awaken_run_executor_acp::known_acp_clis();
+        let projected_acp: Vec<_> = projected.iter().filter(|row| row.kind == "acp").collect();
+        assert_eq!(projected_acp.len(), catalog.len(), "R2/R3 cardinality");
+        for cli in catalog {
+            let row = projected_acp
+                .iter()
+                .find(|row| row.cli.as_deref() == Some(cli.id))
+                .unwrap_or_else(|| panic!("R2 missing catalog projection for {}", cli.id));
+            assert_eq!(row.id, format!("acp:{}", cli.id), "R2");
+            assert_eq!(row.label, cli.display_name, "R2 metadata");
+            assert_eq!(row.description, cli.description, "R2 metadata");
+        }
+        assert!(
+            projected.iter().all(|row| row.id != "acp:kimi"),
+            "R3 unsupported Kimi is not advertised"
+        );
+        assert!(
+            projected.iter().all(|row| row.id != "acp:hermes"),
+            "R3 unsupported Hermes is not advertised"
+        );
+    }
+}
+
 /// The live credential probe backing the admin router, backed by provider-genai
 /// here — the only place the model SDK is named in the composition; the admin CRUD
 /// crate stays SDK-free. `ghost` providers simply resolve `Unknown`.
@@ -1391,6 +1448,7 @@ async fn management_router_over(
         deployment_state: deployment_state.clone(),
         plane,
         global_tools: global,
+        runtimes: runtime_capabilities(),
         org_id: Some(org_id),
         iam,
         remote_iam,

@@ -299,9 +299,7 @@ pub struct awaken_session_executor::SessionRuntimeProjectionSource(_)
 pub struct awaken_session_executor::SharedHost
 impl awaken_session_executor::SharedHost
 pub fn awaken_session_executor::SharedHost::acp_launch_observer(&self) -> alloc::sync::Arc<dyn awaken_protocol_acp::LaunchObserver>
-pub fn awaken_session_executor::SharedHost::register_thread_runtime(&self, &str, &str)
 pub fn awaken_session_executor::SharedHost::with_acp(self, alloc::sync::Arc<awaken_run_executor_acp::AcpRunExecutor>) -> Self
-pub fn awaken_session_executor::SharedHost::with_acp_default(self, alloc::sync::Arc<awaken_run_executor_acp::AcpRunExecutor>, impl core::convert::Into<alloc::string::String>) -> Self
 pub async fn awaken_session_executor::SharedHost::with_acp_from_deployment(self, alloc::sync::Arc<dyn awaken_session_executor::HandExecutorFactory>, core::option::Option<awaken_session_executor::PinnedCredentialMaterializer>) -> Self
 pub async fn awaken_session_executor::SharedHost::with_acp_launch_source(self, alloc::sync::Arc<dyn awaken_session_executor::HandExecutorFactory>, awaken_session_executor::LaunchSource) -> Self
 pub fn awaken_session_executor::SharedHost::with_projected_acp(self, awaken_run_executor_acp::acp_cli::AcpCli, alloc::sync::Arc<dyn awaken_run_executor_acp::subprocess::LaunchResolver>, core::option::Option<std::path::PathBuf>) -> Self

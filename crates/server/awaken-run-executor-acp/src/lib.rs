@@ -1313,9 +1313,10 @@ mod config_home;
 mod session_home;
 mod subprocess;
 pub use acp_cli::{
-    AcpCli, CredentialArtifactRequirement, McpDelivery, McpInterface, McpServerConfig,
-    McpTransport, ModelDelivery, ProcessSecretRequirement, ResolvedModel, SessionKey,
-    SessionPersistence, acp_cli, is_dynamic_install, known_acp_clis,
+    AcpCli, CredentialArtifactCodec, CredentialArtifactRequirement, CredentialArtifactSpec,
+    ManagedCredentialDelivery, McpDelivery, McpInterface, McpServerConfig, McpTransport,
+    ModelDelivery, ProcessSecretRequirement, ResolvedModel, SessionKey, SessionPersistence,
+    acp_cli, is_dynamic_install, known_acp_clis,
 };
 // The ACP config-home path convention (shared kernel) and the reference cross-machine
 // session-home provider over it — the host consumes these instead of owning them.

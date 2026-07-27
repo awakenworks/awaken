@@ -87,6 +87,15 @@ pub awaken_config_service::ResolvedPublicationModels::max_output_tokens: core::o
 pub awaken_config_service::ResolvedPublicationModels::primary: awaken_runtime_contract::resolved::ResolvedModelCandidate
 impl awaken_config_service::ResolvedPublicationModels
 pub fn awaken_config_service::ResolvedPublicationModels::host(awaken_runtime_contract::resolved::ModelBinding, alloc::vec::Vec<awaken_runtime_contract::resolved::ModelBinding>, core::option::Option<u32>, core::option::Option<u32>) -> Self
+pub struct awaken_config_service::RuntimeCapability
+pub awaken_config_service::RuntimeCapability::cli: core::option::Option<alloc::string::String>
+pub awaken_config_service::RuntimeCapability::description: alloc::string::String
+pub awaken_config_service::RuntimeCapability::id: alloc::string::String
+pub awaken_config_service::RuntimeCapability::kind: alloc::string::String
+pub awaken_config_service::RuntimeCapability::label: alloc::string::String
+impl awaken_config_service::RuntimeCapability
+pub fn awaken_config_service::RuntimeCapability::acp(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_config_service::RuntimeCapability::native() -> Self
 pub struct awaken_config_service::ScopedToolCatalog
 impl awaken_config_service::ScopedToolCatalog
 pub fn awaken_config_service::ScopedToolCatalog::new(alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>, impl core::convert::Into<awaken_tenancy::ScopeId>, alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>) -> Self
@@ -114,8 +123,7 @@ pub fn awaken_config_service::ScopedToolCatalog::catalog_for(&self, &awaken_tena
 impl awaken_config_service::ToolCatalogSource for awaken_config_service::StaticToolCatalog
 pub fn awaken_config_service::StaticToolCatalog::catalog_for(&self, &awaken_tenancy::ScopeId) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub fn awaken_config_service::agent_config_from_managed(alloc::string::String, &serde_json::value::Value) -> core::result::Result<awaken_config_store::config::AgentConfig, alloc::string::String>
-pub fn awaken_config_service::capabilities_router(alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>) -> axum::routing::Router
+pub fn awaken_config_service::capabilities_router(alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>, alloc::vec::Vec<awaken_config_service::RuntimeCapability>) -> axum::routing::Router
 pub fn awaken_config_service::config_router(awaken_config_service::ConfigPlane) -> axum::routing::Router
 pub fn awaken_config_service::managed_from_agent_config(&awaken_config_store::config::AgentConfig, bool) -> serde_json::value::Value
-pub fn awaken_config_service::runtime_catalog() -> alloc::vec::Vec<serde_json::value::Value>
 pub fn awaken_config_service::sandbox_capability() -> serde_json::value::Value

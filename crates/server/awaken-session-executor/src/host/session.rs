@@ -327,22 +327,32 @@ impl SharedHost {
                 )
             })
         });
+        let published_backend_ref = installed
+            .as_ref()
+            .map(|snapshot| snapshot.resolved_spec.model_binding.backend_ref.clone());
+        let projected_backend_ref = self
+            .session_slots
+            .read(thread, |slot| slot.backend_ref.clone())
+            .flatten();
+        if let (Some(published), Some(projected)) = (&published_backend_ref, &projected_backend_ref)
+            && published != projected
+        {
+            return Err(HostError::internal(format!(
+                "session backend projection `{projected}` does not match publication `{published}`"
+            )));
+        }
+        if installed.is_none() && projected_backend_ref.is_some() {
+            return Err(HostError::internal(
+                "session backend projection has no immutable Agent publication",
+            ));
+        }
         // Runtime selection is known before MCP realization. Native execution
         // connects staged servers as in-process McpPlugins; ACP hands the same
         // typed server set to the CLI's own MCP client and must not open a second
         // competing host-side connection.
-        let execution_backend = self
-            .acp
-            .as_ref()
-            .and_then(|acp| acp.adapter_for(thread))
-            .map(|adapter| awaken_runtime_contract::resolved::Backend::from_ref(&adapter))
-            .or_else(|| {
-                installed.as_ref().map(|snapshot| {
-                    awaken_runtime_contract::resolved::Backend::from_ref(
-                        &snapshot.resolved_spec.model_binding.backend_ref,
-                    )
-                })
-            })
+        let execution_backend = published_backend_ref
+            .as_deref()
+            .map(awaken_runtime_contract::resolved::Backend::from_ref)
             .unwrap_or(awaken_runtime_contract::resolved::Backend::Native);
         let is_acp = execution_backend.is_acp();
         // This thread's staged MCP servers (ADR-0043 Phase 3), registered by the
@@ -611,20 +621,9 @@ impl SharedHost {
         {
             config.resolved_spec.plugin_config.agent.toolsets = toolsets;
         }
-        // A session-selected ACP/A2A runtime is an execution backend choice, not
-        // merely an environment hint. Reflect it into the neutral resolved
-        // snapshot so the shared AttemptExecutorRegistry routes the activation
-        // instead of silently using the native fallback.
-        if let Some(adapter) = self.acp.as_ref().and_then(|acp| acp.adapter_for(thread))
-            && awaken_runtime_contract::resolved::Backend::from_ref(&adapter).is_acp()
-        {
-            config.resolved_spec.model_binding.binding.backend_ref = adapter;
-        }
         // D6: for an ACP run, hand the session's staged MCP servers to the CLI's own MCP
-        // client via `plugin_config.acp.mcp_servers`. Whether this run executes on ACP is
-        // the host's runtime registration (`AcpBackend::is_acp`), not the config's
-        // `backend_ref` — the managed `server_config` stamps a fixed backend_ref, so the
-        // routing decision is the only reliable signal. The credential form is the host's
+        // client via `plugin_config.acp.mcp_servers`. The immutable publication's
+        // `backend_ref` is the routing authority. The credential form is the host's
         // isolation decision: the raw bearer never reaches the CLI; every authenticated
         // ACP server uses the Worker-held exact-generation relay. A native run is untouched
         // (its MCP servers are already the in-process tools connected above).

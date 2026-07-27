@@ -5,8 +5,7 @@
 //! CLI a worker can host, but never supplies provider execution facts.
 
 use awaken_run_executor_acp::{
-    AcpCli, ConfigHome, CredentialArtifactRequirement, LaunchResolver, OpenError,
-    ProcessSecretRequirement, ResolvedModel,
+    AcpCli, ConfigHome, LaunchResolver, OpenError, ProcessSecretRequirement, ResolvedModel,
 };
 #[cfg(test)]
 use awaken_runtime_contract::CredentialRealizationKind;
@@ -67,18 +66,17 @@ impl PublishedAcpLaunchResolver {
                 "published model {model_ref} has incomplete endpoint coordinates"
             )));
         }
-        let artifact_reference = self
+        let credential_artifact = self
             .credentials
-            .plan_claimed_credential_artifact(candidate, context, self.cli.id)
-            .map_err(OpenError)?;
-        let credential_artifact = artifact_reference.map(|reference| {
-            CredentialArtifactRequirement::new(
-                reference,
-                crate::credential_artifact::relative_path(self.cli.id)
-                    .expect("only registered artifact codecs issue references"),
+            .plan_claimed_credential_artifact(
+                candidate,
+                context,
+                self.cli.managed_credential_delivery,
             )
-        });
-        let process_secret = if credential_artifact.is_some() {
+            .map_err(OpenError)?;
+        let process_secret = if credential_artifact.is_some()
+            || !self.cli.managed_credential_delivery.allows_process_secret()
+        {
             None
         } else {
             self.credentials

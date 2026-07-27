@@ -37,7 +37,7 @@ struct PendingProcessSecret {
 struct PendingCredentialArtifact {
     candidate: ResolvedModelCandidate,
     context: awaken_runtime_contract::RuntimeRunContext,
-    cli_id: String,
+    codec: awaken_run_executor_acp::CredentialArtifactCodec,
     expires_at_unix_ms: u64,
 }
 
@@ -157,17 +157,17 @@ impl PinnedCredentialMaterializer {
         &self,
         candidate: &ResolvedModelCandidate,
         context: &awaken_runtime_contract::RuntimeRunContext,
-        cli_id: &str,
-    ) -> Result<Option<String>, String> {
+        delivery: awaken_run_executor_acp::ManagedCredentialDelivery,
+    ) -> Result<Option<awaken_run_executor_acp::CredentialArtifactRequirement>, String> {
         let Some((access, binding)) = Self::claimed_provider_binding(candidate, context)? else {
             return Ok(None);
         };
         if binding.selected_realization_kind != CredentialRealizationKind::WorkerProviderAdapter {
             return Ok(None);
         }
-        if cli_id != "codex" && !(cli_id == "claude" && access.refresh.is_some()) {
+        let Some(artifact) = delivery.credential_artifact(access.refresh.is_some()) else {
             return Ok(None);
-        }
+        };
         let now = unix_time_ms();
         let mut pending = self
             .pending_credential_artifacts
@@ -183,11 +183,16 @@ impl PinnedCredentialMaterializer {
             PendingCredentialArtifact {
                 candidate: candidate.clone(),
                 context: context.clone(),
-                cli_id: cli_id.to_string(),
+                codec: artifact.codec,
                 expires_at_unix_ms: now.saturating_add(PROCESS_SECRET_TTL_MS),
             },
         );
-        Ok(Some(reference))
+        Ok(Some(
+            awaken_run_executor_acp::CredentialArtifactRequirement::new(
+                reference,
+                artifact.relative_path,
+            ),
+        ))
     }
 
     /// Materialize the provider credential selected by the current durable claim.
@@ -572,7 +577,7 @@ impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer
                     })
                 })
                 .map_err(awaken_provisioning_contract::SandboxError::new)?;
-            return crate::credential_artifact::encode(&pending.cli_id, material)
+            return crate::credential_artifact::encode(pending.codec, material)
                 .map(|artifact| artifact.bytes)
                 .map_err(awaken_provisioning_contract::SandboxError::new);
         }
