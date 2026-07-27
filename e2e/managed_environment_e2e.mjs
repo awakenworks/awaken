@@ -2,7 +2,7 @@
 // official Anthropic TS SDK. The environment is bound at session creation, echoed
 // on the Session, defaulted to `env_local` when omitted, and immutable for the
 // session's lifetime — a `POST /v1/sessions/{id}` carrying a different
-// `environment_id` updates only title/metadata and leaves the environment pinned.
+// `environment_id` fails closed and leaves the environment pinned.
 //
 // Deterministic (management mode, no key). This suite locks the wire/record
 // association + immutability. Network realization is covered by
@@ -42,23 +42,24 @@ async function main() {
     pass('omitted environment defaults to env_local');
 
     // ── immutable for the session's lifetime ──────────────────────────────────
-    // Update carries a different environment_id alongside a title change; only the
-    // title takes effect. (Raw POST so the non-updatable field reaches the wire —
-    // the SDK's typed update params do not expose environment_id.)
+    // Cause graph / decision table: supported update fields only -> apply; an
+    // immutable environment_id is present -> reject the entire update; rejection
+    // -> neither title nor environment changes. Raw POST lets this unsupported
+    // field reach the boundary because the SDK correctly omits it from its type.
     const res = await fetch(`${base}/v1/sessions/${session.id}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'anthropic-beta': BETAS[0] },
       body: JSON.stringify({ title: 'renamed', environment_id: env.id + '_other' }),
     });
-    assert.equal(res.status, 200, `update returns 200 (got ${res.status})`);
-    const updated = await res.json();
-    assert.equal(updated.title, 'renamed', 'title is updatable');
-    assert.equal(updated.environment_id, env.id, 'environment is immutable — update env ignored');
-    pass('environment is immutable across update (only title changed)');
+    const rejected = await res.json();
+    assert.equal(res.status, 400, JSON.stringify(rejected));
+    assert.match(rejected.error.message, /environment_id|unknown field/u);
+    pass('environment mutation is rejected atomically');
 
     // A fresh retrieve still reports the create-time environment.
     const got = await client.beta.sessions.retrieve(session.id, { betas: BETAS });
     assert.equal(got.environment_id, env.id, 'retrieve reports the create-time environment');
+    assert.equal(got.title, null, 'a rejected mixed update cannot partially change the title');
     pass('retrieve confirms the pinned environment survived the update');
   });
 
