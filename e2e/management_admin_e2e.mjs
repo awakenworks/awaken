@@ -124,6 +124,10 @@ async function main() {
       assert.ok(anthropicDescriptor);
       checkContract('ProviderDriverDescriptor', anthropicDescriptor);
       assert.ok(anthropicDescriptor.supported_dialects.includes('anthropic_messages'));
+      const deepseekDescriptor = r.json.find((item) => item.provider_kind === 'deepseek');
+      assert.ok(deepseekDescriptor);
+      assert.deepEqual(deepseekDescriptor.supported_dialects, ['open_ai_chat']);
+      assert.equal(deepseekDescriptor.default_endpoints[0].base_url, 'https://api.deepseek.com');
 
       r = await req(base, 'GET', '/v1/config/provider-connections?workspace_id=ws');
       assert.equal(r.status, 200, JSON.stringify(r.json));

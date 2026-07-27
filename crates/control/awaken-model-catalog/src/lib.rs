@@ -271,6 +271,20 @@ pub fn provider_driver_descriptors() -> Vec<ProviderDriverDescriptor> {
             documentation_url: Some("https://developers.openai.com/api/docs".into()),
         },
         ProviderDriverDescriptor {
+            provider_kind: "deepseek".into(),
+            display_name: "DeepSeek".into(),
+            supported_dialects: vec![ApiDialect::OpenAiChat],
+            auth_methods: vec![ProviderAuthMethod::ApiKey],
+            configuration_fields: vec![api_key(), custom_url()],
+            default_endpoints: vec![DefaultProtocolEndpoint {
+                id_suffix: "chat".into(),
+                dialect: ApiDialect::OpenAiChat,
+                base_url: "https://api.deepseek.com".into(),
+            }],
+            supports_model_discovery: true,
+            documentation_url: Some("https://api-docs.deepseek.com/".into()),
+        },
+        ProviderDriverDescriptor {
             provider_kind: "gemini".into(),
             display_name: "Google AI Studio".into(),
             supported_dialects: vec![ApiDialect::Gemini],
@@ -1241,6 +1255,24 @@ mod tests {
             "https://api.openai.com/v1"
         );
         assert!(openai.supports_model_discovery);
+    }
+
+    #[test]
+    fn deepseek_descriptor_uses_its_native_openai_compatible_identity() {
+        // Cause graph / decision table: DeepSeek selected -> DeepSeek card,
+        // /models discovery, and Chat Completions endpoint; it must not masquerade
+        // as OpenAI or advertise the unsupported Responses dialect.
+        let deepseek = provider_driver_descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.provider_kind == "deepseek")
+            .unwrap();
+        assert_eq!(deepseek.display_name, "DeepSeek");
+        assert_eq!(deepseek.supported_dialects, vec![ApiDialect::OpenAiChat]);
+        assert_eq!(
+            deepseek.default_endpoints[0].base_url,
+            "https://api.deepseek.com"
+        );
+        assert!(deepseek.supports_model_discovery);
     }
 
     fn brokered(models: &[(&str, &str, ApiDialect, u64)]) -> BrokeredCatalogProjection {
