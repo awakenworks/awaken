@@ -217,7 +217,6 @@ impl AcpCli {
     /// API key (host-controlled, never overridable by passthrough). So a modeled
     /// fact (model/base_url) always wins over a stray passthrough key, and the key
     /// is always the host's.
-    #[must_use]
     pub fn try_project(
         &self,
         model: &ResolvedModel,

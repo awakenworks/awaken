@@ -61,7 +61,7 @@ impl SandboxExecutionPolicyStore for InMemorySandboxExecutionPolicyStore {
         validate(&policy)?;
         let mut state = self.0.lock().unwrap();
         if state.current.get(&policy.id.0).copied() != Some(expected_current.0)
-            || policy.version.0 != expected_current.0.checked_add(1).unwrap_or(u64::MAX)
+            || policy.version.0 != expected_current.0.saturating_add(1)
         {
             return Err(SandboxExecutionPolicyError::VersionConflict);
         }
@@ -184,7 +184,7 @@ impl SandboxExecutionPolicyStore for PostgresSandboxExecutionPolicyStore {
         policy: SandboxExecutionPolicy,
     ) -> Result<(), SandboxExecutionPolicyError> {
         validate(&policy)?;
-        if policy.version.0 != expected_current.0.checked_add(1).unwrap_or(u64::MAX) {
+        if policy.version.0 != expected_current.0.saturating_add(1) {
             return Err(SandboxExecutionPolicyError::VersionConflict);
         }
         let mut tx = self.pool.begin().await.map_err(store_failed)?;
@@ -340,7 +340,7 @@ impl SandboxExecutionPolicyStore for SqliteSandboxExecutionPolicyStore {
         policy: SandboxExecutionPolicy,
     ) -> Result<(), SandboxExecutionPolicyError> {
         validate(&policy)?;
-        if policy.version.0 != expected_current.0.checked_add(1).unwrap_or(u64::MAX) {
+        if policy.version.0 != expected_current.0.saturating_add(1) {
             return Err(SandboxExecutionPolicyError::VersionConflict);
         }
         let mut conn = self.conn.lock().unwrap();
