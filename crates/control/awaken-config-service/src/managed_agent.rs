@@ -52,6 +52,15 @@ fn managed_client_tool(value: &Value) -> Result<Option<ToolDescriptor>, String> 
     )))
 }
 
+fn managed_toolset(value: &Value) -> Result<Option<awaken_session_contract::AgentTool>, String> {
+    match value.get("type").and_then(Value::as_str) {
+        Some("agent_toolset_20260401" | "mcp_toolset") => serde_json::from_value(value.clone())
+            .map(Some)
+            .map_err(|error| error.to_string()),
+        _ => Ok(None),
+    }
+}
+
 /// Parse a managed-shaped Agent object into the domain compile input.
 pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig, String> {
     let string = |key: &str| body.get(key).and_then(Value::as_str).map(str::to_string);
@@ -137,6 +146,13 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
         .into_iter()
         .flatten()
         .collect();
+    let authored_toolsets = tools
+        .iter()
+        .map(managed_toolset)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
     Ok(AgentConfig {
         id,
         instructions: string("system").unwrap_or_default(),
@@ -145,7 +161,7 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
         model_binding: ModelSelection::pinned(provider_identity_ref, model_ref, backend_ref),
         inference: Default::default(),
         tool_ids: tools.iter().filter_map(managed_tool_id).collect(),
-        toolsets: Vec::new(),
+        toolsets: awaken_session_contract::toolset_policies(&authored_toolsets),
         client_tools,
         plugin_ids: array("plugins")
             .iter()
@@ -194,6 +210,11 @@ pub fn managed_from_agent_config(config: &AgentConfig, published: bool) -> Value
         .iter()
         .map(|id| Value::String(id.clone()))
         .collect::<Vec<_>>();
+    tools.extend(
+        awaken_session_contract::resolved_toolsets(&config.toolsets)
+            .into_iter()
+            .map(|tool| serde_json::to_value(tool).expect("AgentTool serializes")),
+    );
     tools.extend(config.client_tools.iter().map(|tool| {
         json!({
             "type": "custom",
@@ -292,6 +313,26 @@ mod tests {
     #[test]
     fn malformed_tool_overrides_fail_closed() {
         assert!(agent_config_from_managed("a".into(), &json!({ "tool_overrides": 123 })).is_err());
+    }
+
+    #[test]
+    fn managed_toolsets_round_trip_through_the_single_contract_normalizer() {
+        let tools = json!([{
+            "type": "mcp_toolset",
+            "mcp_server_name": "calc",
+            "configs": [],
+            "default_config": {
+                "enabled": true,
+                "permission_policy": { "type": "always_allow" }
+            }
+        }]);
+        let config = agent_config_from_managed(
+            "calculator".into(),
+            &json!({ "model": "test", "tools": tools }),
+        )
+        .expect("typed toolset parses");
+        assert_eq!(config.toolsets.len(), 1);
+        assert_eq!(managed_from_agent_config(&config, false)["tools"], tools);
     }
 
     #[test]
