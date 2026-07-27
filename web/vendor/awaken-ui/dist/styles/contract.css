@@ -1,0 +1,53 @@
+/*
+ * Public semantic token contract. Values are intentionally neutral development
+ * fallbacks; products override them by mapping their own token vocabulary.
+ */
+:root {
+  --ui-color-canvas: #f7f7f8;
+  --ui-color-surface: #ffffff;
+  --ui-color-surface-hover: #f2f2f4;
+  --ui-color-overlay: rgb(0 0 0 / 45%);
+  --ui-color-text: #161618;
+  --ui-color-text-muted: #68686f;
+  --ui-color-border: #dedee3;
+  --ui-color-focus: #4f46e5;
+  --ui-color-accent: #4f46e5;
+  --ui-color-accent-hover: #4338ca;
+  --ui-color-on-accent: #ffffff;
+  --ui-color-danger: #c62828;
+  --ui-color-danger-hover: #a91f1f;
+  --ui-color-on-danger: #ffffff;
+  --ui-color-success: #258044;
+  --ui-color-warning: #a05a00;
+
+  --ui-font-body: ui-sans-serif, system-ui, sans-serif;
+  --ui-font-mono: ui-monospace, monospace;
+
+  --ui-space-1: 0.25rem;
+  --ui-space-2: 0.5rem;
+  --ui-space-3: 0.75rem;
+  --ui-space-4: 1rem;
+  --ui-space-5: 1.25rem;
+  --ui-space-6: 1.5rem;
+
+  --ui-radius-control: 0.375rem;
+  --ui-radius-surface: 0.5rem;
+  --ui-radius-overlay: 0.625rem;
+
+  --ui-control-height-sm: 1.75rem;
+  --ui-control-height-md: 2.25rem;
+  --ui-control-height-lg: 2.75rem;
+
+  --ui-dialog-width-sm: 24rem;
+  --ui-dialog-width-md: 36rem;
+  --ui-dialog-width-lg: 56rem;
+  --ui-drawer-width-sm: 22rem;
+  --ui-drawer-width-md: 32rem;
+  --ui-drawer-width-lg: 44rem;
+
+  --ui-shadow-surface: 0 1px 2px rgb(0 0 0 / 8%);
+  --ui-shadow-overlay: 0 1.5rem 4rem rgb(0 0 0 / 24%);
+  --ui-z-overlay: 1000;
+  --ui-z-toast: 1100;
+}
+
