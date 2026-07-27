@@ -88,11 +88,11 @@ case "$(uname -s)" in
     # counter relocation (LNK1105/code 1224). Use ordinary per-process profiles;
     # the E2E harness closes server stdin so Windows performs a real graceful
     # shutdown and LLVM flushes counters instead of Node force-terminating it.
-    export LLVM_PROFILE_FILE="$CARGO_LLVM_COV_TARGET_DIR/awaken-%p.profraw"
+    export LLVM_PROFILE_FILE="$CARGO_LLVM_COV_TARGET_DIR/awaken-%p-%12m.profraw"
     ;;
   *)
     export RUSTFLAGS="${RUSTFLAGS:-} -C llvm-args=-runtime-counter-relocation"
-    export LLVM_PROFILE_FILE="$CARGO_LLVM_COV_TARGET_DIR/awaken-%p%c.profraw"
+    export LLVM_PROFILE_FILE="$CARGO_LLVM_COV_TARGET_DIR/awaken-%p-%12m%c.profraw"
     ;;
 esac
 if [ "${AWAKEN_COVERAGE_RESUME:-0}" = "1" ]; then
@@ -161,13 +161,24 @@ run_coverage_suites() {
 run_coverage_suites
 popd >/dev/null
 
-cargo llvm-cov report --ignore-filename-regex "$IGNORE" --summary-only
+lcov_directory="$CARGO_LLVM_COV_TARGET_DIR/awaken-homogeneous-lcov"
+mapfile -t lcov_reports < <(
+  "$coverage_python" scripts/ci/export_homogeneous_lcov.py \
+    --profile-directory "$CARGO_LLVM_COV_TARGET_DIR" \
+    --output-directory "$lcov_directory" \
+    --ignore-filename-regex "$IGNORE"
+)
+lcov_arguments=()
+for report in "${lcov_reports[@]}"; do
+  lcov_arguments+=(--lcov-path "$report")
+done
 "$coverage_python" scripts/ci/check_changed_e2e_line_coverage.py \
   --base "${AWAKEN_COVERAGE_BASE:-origin/1.0.0-dev}" \
   --minimum "${AWAKEN_CHANGED_E2E_MINIMUM:-0.95}" \
   --ignore-filename-regex "$IGNORE" \
+  "${lcov_arguments[@]}" \
   --unreachable-manifest scripts/ci/e2e_unreachable.toml \
   --maximum-unreachable-fraction 0.15
 if [ "${1:-}" = "--open" ]; then
-  cargo llvm-cov report --ignore-filename-regex "$IGNORE" --html --open
+  echo "HTML export is unavailable for heterogeneous process profiles; use the LCOV reports in $lcov_directory"
 fi
