@@ -13,19 +13,24 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// the *source* selection, distinct from the resolved concrete [`ModelBinding`] the
 /// runtime consumes: the resolver collapses [`Auto`](ModelSelection::Auto) to a
 /// first-offering at publish, and passes a [`Pinned`](ModelSelection::Pinned)
-/// binding through untouched. The two variants *name* the two intents at the type
+/// binding through untouched. [`BackendDefault`](ModelSelection::BackendDefault)
+/// selects an external backend while leaving the model to that backend. The variants *name* the intents at the type
 /// level, so no reader has to know that an absent value carries behavior.
 ///
 /// Wire compatibility is deliberate: a `Pinned` binding serializes as the bare flat
 /// triple it always was (`{provider_identity_ref, model_ref, backend_ref}`), so
 /// every config authored before this type — and its content-address fingerprint —
-/// is byte-identical. Only `Auto` is new, serialized as `{"mode":"auto"}`.
+/// is byte-identical. The policy variants use explicit tagged objects.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ModelSelection {
     /// Resolve to a first provider-backed offering at publish (the default). The
     /// reconciler re-resolves these on a model-catalog change (ADR-0052 D5).
     #[default]
     Auto,
+    /// Use this exact external backend and let it retain its own configured
+    /// default model. Publication must resolve an exact Worker-local binding;
+    /// this is never a fallback to [`Auto`](Self::Auto).
+    BackendDefault { backend_ref: String },
     /// The operator's explicit concrete binding — never overwritten by resolution.
     Pinned(ModelBinding),
 }
@@ -45,13 +50,13 @@ impl ModelSelection {
         ))
     }
 
-    /// The concrete binding if pinned, `None` if still `Auto`. `compile` requires a
-    /// resolved binding, so `None` here is the fail-closed "resolve me first" signal.
+    /// The concrete binding if pinned. Policy selections return `None` because
+    /// publication must resolve them before compile.
     #[must_use]
     pub fn resolved(&self) -> Option<&ModelBinding> {
         match self {
             ModelSelection::Pinned(binding) => Some(binding),
-            ModelSelection::Auto => None,
+            ModelSelection::Auto | ModelSelection::BackendDefault { .. } => None,
         }
     }
 
@@ -59,6 +64,15 @@ impl ModelSelection {
     #[must_use]
     pub fn is_auto(&self) -> bool {
         matches!(self, ModelSelection::Auto)
+    }
+
+    /// The exact backend requested with backend-owned default-model policy.
+    #[must_use]
+    pub fn backend_default_ref(&self) -> Option<&str> {
+        match self {
+            Self::BackendDefault { backend_ref } => Some(backend_ref),
+            Self::Auto | Self::Pinned(_) => None,
+        }
     }
 }
 
@@ -80,6 +94,13 @@ impl Serialize for ModelSelection {
                 map.serialize_entry("mode", "auto")?;
                 map.end()
             }
+            ModelSelection::BackendDefault { backend_ref } => {
+                use serde::ser::SerializeMap;
+                let mut map = serializer.serialize_map(Some(2))?;
+                map.serialize_entry("mode", "backend_default")?;
+                map.serialize_entry("backend_ref", backend_ref)?;
+                map.end()
+            }
         }
     }
 }
@@ -91,6 +112,15 @@ impl<'de> Deserialize<'de> for ModelSelection {
         let value = serde_json::Value::deserialize(deserializer)?;
         if value.get("mode").and_then(serde_json::Value::as_str) == Some("auto") {
             return Ok(ModelSelection::Auto);
+        }
+        if value.get("mode").and_then(serde_json::Value::as_str) == Some("backend_default") {
+            let backend_ref = value
+                .get("backend_ref")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| serde::de::Error::missing_field("backend_ref"))?;
+            return Ok(ModelSelection::BackendDefault {
+                backend_ref: backend_ref.to_string(),
+            });
         }
         let binding =
             serde_json::from_value::<ModelBinding>(value).map_err(serde::de::Error::custom)?;

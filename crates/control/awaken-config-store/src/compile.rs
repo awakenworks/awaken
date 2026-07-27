@@ -1111,12 +1111,25 @@ mod tests {
             serde_json::from_value::<ModelSelection>(json).unwrap(),
             selection
         );
-        // Auto is the only new wire shape.
+        // Policy selections use explicit tagged shapes and never masquerade as
+        // the historic flat binding.
         let auto = serde_json::to_value(ModelSelection::Auto).unwrap();
         assert_eq!(auto, serde_json::json!({"mode": "auto"}));
         assert_eq!(
             serde_json::from_value::<ModelSelection>(auto).unwrap(),
             ModelSelection::Auto
+        );
+        let backend_default = ModelSelection::BackendDefault {
+            backend_ref: "acp:codex".into(),
+        };
+        let wire = serde_json::to_value(&backend_default).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({"mode":"backend_default","backend_ref":"acp:codex"})
+        );
+        assert_eq!(
+            serde_json::from_value::<ModelSelection>(wire).unwrap(),
+            backend_default
         );
     }
 
@@ -1410,15 +1423,30 @@ mod tests {
     // --- CEG 03 / B5 (ModelSelection) ----------------------------------------
 
     #[test]
-    fn model_selection_resolved_reports_pinned_and_auto() {
-        // (a) Pinned exposes the concrete binding; (b) Auto is the None "resolve me"
-        // signal. (c)/(d) wire shapes are covered by
+    fn model_selection_resolved_reports_pinned_and_policy_variants() {
+        // Cause graph: Pinned already carries a concrete binding; Auto and
+        // BackendDefault require publication resolution. Neither policy may be
+        // mistaken for the other.
+        //
+        // Decision table:
+        // M1 Pinned         -> resolved Some, not auto, no backend default
+        // M2 Auto           -> resolved None, auto, no backend default
+        // M3 BackendDefault -> resolved None, not auto, exact backend ref
+        // Wire shapes are covered by
         // `pinned_selection_is_wire_identical_to_the_flat_triple`.
         let pinned = ModelSelection::pinned("p", "m", "b");
         assert_eq!(pinned.resolved(), Some(&ModelBinding::new("p", "m", "b")));
         assert!(!pinned.is_auto());
+        assert_eq!(pinned.backend_default_ref(), None);
         assert_eq!(ModelSelection::Auto.resolved(), None);
         assert!(ModelSelection::Auto.is_auto());
+        assert_eq!(ModelSelection::Auto.backend_default_ref(), None);
+        let backend_default = ModelSelection::BackendDefault {
+            backend_ref: "acp:codex".into(),
+        };
+        assert_eq!(backend_default.resolved(), None);
+        assert!(!backend_default.is_auto());
+        assert_eq!(backend_default.backend_default_ref(), Some("acp:codex"));
     }
 
     // --- CEG 03 / B6 (CompileError::field_path) ------------------------------

@@ -15,6 +15,9 @@ pub(crate) fn model_realization_capability(
         awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor => {
             HOST_EXECUTOR_CAPABILITY
         }
+        awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { .. } => {
+            awaken_run_ingress::WORKER_LOCAL_CREDENTIALS_CAPABILITY
+        }
         awaken_runtime_contract::resolved::ModelProvisioning::Provider {
             credential: Some(credential),
             ..
@@ -33,6 +36,13 @@ fn worker_local_credentials(
     std::iter::once(&models.model_binding)
         .chain(models.model_candidates.iter())
         .filter_map(|candidate| match &candidate.provisioning {
+            awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned {
+                credential,
+                ..
+            } => Some(awaken_run_ingress::WorkerCredentialRevision {
+                id: credential.id.clone(),
+                revision: credential.revision,
+            }),
             awaken_runtime_contract::resolved::ModelProvisioning::Provider {
                 credential: Some(credential),
                 ..
@@ -535,6 +545,43 @@ mod completion_tests {
                     revision: 2,
                 },
             ])
+        );
+    }
+
+    #[test]
+    fn backend_owned_candidate_uses_the_same_exact_worker_placement_fence() {
+        // Cause graph: BackendOwned candidate -> WorkerLocal capability + exact
+        // credential revision -> RemoteRequired placement -> existing heartbeat
+        // selection and pre-launch revalidation. There is no materialization cause.
+        //
+        // Decision table: BackendOwned always requires its one exact observation;
+        // HostExecutor requires neither this capability nor credential revision.
+        let mut models = host_models();
+        models.model_binding = ResolvedModelCandidate::backend_owned(
+            ModelBinding::new("cred:local", "", "acp:codex"),
+            awaken_runtime_contract::CredentialRef {
+                id: "cred:local".into(),
+                revision: 7,
+            },
+            awaken_runtime_contract::resolved::BackendModelSelection::Default,
+        );
+
+        let placement = remote_worker_placement(&models, None, false);
+        assert_eq!(
+            placement.location,
+            awaken_run_ingress::ExecutionLocation::RemoteRequired
+        );
+        assert!(
+            placement
+                .required_capabilities
+                .contains(awaken_run_ingress::WORKER_LOCAL_CREDENTIALS_CAPABILITY)
+        );
+        assert_eq!(
+            placement.required_credentials,
+            std::collections::BTreeSet::from([awaken_run_ingress::WorkerCredentialRevision {
+                id: "cred:local".into(),
+                revision: 7,
+            },])
         );
     }
 
