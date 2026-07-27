@@ -24,8 +24,8 @@ use tokio::sync::Mutex;
 use crate::{AcpCli, AgentChannelSource, AgentSession, OpenError, ResolvedModel};
 
 /// A resolved launch for an ACP CLI: the argv plus the env to set (model, base
-/// URL, key). Every runtime-specific env-key name lives in a constructor here —
-/// the per-CLI projection, kept as data (G12).
+/// URL, key). Runtime-specific projection lives only in the [`AcpCli`] catalog;
+/// this value is its mechanism-neutral output.
 #[derive(Debug, Clone)]
 pub struct AcpLaunch {
     pub argv: Vec<String>,
@@ -33,37 +33,6 @@ pub struct AcpLaunch {
 }
 
 impl AcpLaunch {
-    /// The Claude Code launch projected from resolved model config (R4): base URL,
-    /// model name, and key land in the Anthropic env the adapter reads. Claude Code
-    /// has no native ACP flag; it is fronted by `@agentclientprotocol/claude-agent-acp`
-    /// via `npx` (see the [`AcpCli`] catalog — this helper mirrors that CLI row).
-    /// `process_secret` remains an opaque broker reference until spawn.
-    #[must_use]
-    pub fn claude(
-        base_url: &str,
-        model: &str,
-        process_secret: crate::ProcessSecretRequirement,
-    ) -> Self {
-        Self {
-            argv: vec![
-                "npx".to_string(),
-                "-y".to_string(),
-                "@agentclientprotocol/claude-agent-acp@0.44".to_string(),
-            ],
-            env: vec![
-                inline_env("ANTHROPIC_BASE_URL", base_url),
-                inline_env("ANTHROPIC_MODEL", model),
-                pc::EnvVar {
-                    name: "ANTHROPIC_API_KEY".to_string(),
-                    value: pc::EnvValue::Secret {
-                        reference: process_secret.reference().to_string(),
-                    },
-                    visibility: pc::EnvVisibility::Process,
-                },
-            ],
-        }
-    }
-
     /// A custom launch (argv + env) — another CLI, or a test ACP agent.
     #[must_use]
     pub fn custom(argv: Vec<String>, env: Vec<(String, String)>) -> Self {
@@ -912,22 +881,6 @@ mod tests {
             !env.iter().any(|var| var.name == "HOME"),
             "absent host key omitted"
         );
-    }
-
-    #[test]
-    fn claude_projection_puts_model_and_base_in_anthropic_env() {
-        let l = AcpLaunch::claude(
-            "https://gw/v1/",
-            "kimi-k2",
-            crate::ProcessSecretRequirement::new("lease://vault-key"),
-        );
-        assert_eq!(
-            l.argv,
-            vec!["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.44"]
-        );
-        assert!(env_value(&l.env, "ANTHROPIC_BASE_URL") == Some("https://gw/v1/"));
-        assert!(env_value(&l.env, "ANTHROPIC_MODEL") == Some("kimi-k2"));
-        assert!(env_value(&l.env, "ANTHROPIC_API_KEY") == Some("lease://vault-key"));
     }
 
     #[tokio::test]

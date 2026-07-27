@@ -63,7 +63,6 @@ pub struct awaken_run_executor_acp::AcpLaunch
 pub awaken_run_executor_acp::AcpLaunch::argv: alloc::vec::Vec<alloc::string::String>
 pub awaken_run_executor_acp::AcpLaunch::env: alloc::vec::Vec<awaken_provisioning_contract::vocab::EnvVar>
 impl awaken_run_executor_acp::AcpLaunch
-pub fn awaken_run_executor_acp::AcpLaunch::claude(&str, &str, awaken_run_executor_acp::ProcessSecretRequirement) -> Self
 pub fn awaken_run_executor_acp::AcpLaunch::custom(alloc::vec::Vec<alloc::string::String>, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>) -> Self
 pub struct awaken_run_executor_acp::AcpRunExecutor
 impl awaken_run_executor_acp::AcpRunExecutor

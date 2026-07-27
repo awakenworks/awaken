@@ -1020,6 +1020,17 @@ mod tests {
 
     #[test]
     fn claude_projects_model_base_url_tier_aliases_and_compact_window() {
+        // Launch-projection cause graph (the catalog is the sole constructor):
+        // C1 catalog row has model delivery + C2 resolved coordinates
+        //   -> E1 catalog argv + E2 typed model env + E3 optional window env.
+        // A CLI without model delivery instead requires its typed artifact driver;
+        // no adapter-specific AcpLaunch constructor can bypass these branches.
+        //
+        // Decision table (covered by this test and the Codex tests above):
+        // | Rule | delivery | artifact | coordinates | result |
+        // | L1 | present | - | present | catalog argv + typed env |
+        // | L2 | absent | absent | any | fail closed |
+        // | L3 | absent | present | any | catalog argv, no provider env |
         let cli = acp_cli("claude").unwrap();
         let launch = cli.project(&resolved(), Some(1_000_000), &[]);
 
