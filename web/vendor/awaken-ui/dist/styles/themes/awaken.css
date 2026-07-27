@@ -1,0 +1,33 @@
+/*
+ * Awaken adapter. Import after the product's tokens.css and @awaken/ui styles.
+ * Values remain owned by Awaken; this file only maps its vocabulary.
+ */
+:root,
+[data-ui-theme="awaken"] {
+  --ui-color-canvas: var(--canvas);
+  --ui-color-surface: var(--surface);
+  --ui-color-surface-hover: var(--soft);
+  --ui-color-overlay: rgb(0 0 0 / 45%);
+  --ui-color-text: var(--fg);
+  --ui-color-text-muted: var(--fg2);
+  --ui-color-border: var(--line);
+  --ui-color-focus: var(--accent);
+  --ui-color-accent: var(--accent);
+  --ui-color-accent-hover: var(--accent-hover);
+  --ui-color-on-accent: var(--accent-fg);
+  --ui-color-danger: var(--danger);
+  --ui-color-danger-hover: var(--danger);
+  --ui-color-on-danger: #fff;
+  --ui-color-success: var(--ok);
+  --ui-color-warning: var(--warn);
+  --ui-font-body: var(--font-sans);
+  --ui-font-mono: var(--font-mono);
+  --ui-radius-control: var(--r-sm);
+  --ui-radius-surface: var(--r-card);
+  --ui-radius-overlay: var(--r-lg);
+  --ui-control-height-sm: 28px;
+  --ui-control-height-md: var(--row-h);
+  --ui-control-height-lg: 40px;
+  --ui-shadow-surface: var(--shadow-card);
+  --ui-shadow-overlay: var(--shadow-pop);
+}

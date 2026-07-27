@@ -42,7 +42,13 @@ fn build_console(web: &Path) {
 }
 
 fn run(program: &str, current_dir: &Path, args: &[&str]) {
+    // Cause graph: the E2E runner needs a TS loader in NODE_OPTIONS, while pnpm is a Node
+    // process too; inheriting that loader changes pnpm's optional pnpmfile resolution and can
+    // turn an absent `.pnpmfile.mjs` into a fatal error. Decision table: ambient loader present
+    // or absent -> the frontend build always receives a clean Node process; command success or
+    // failure -> preserve the existing status contract below.
     let status = Command::new(program)
+        .env_remove("NODE_OPTIONS")
         .current_dir(current_dir)
         .args(args)
         .status()

@@ -1,0 +1,30 @@
+{
+  "name": "@awaken/ui",
+  "version": "0.2.0-awaken.1",
+  "description": "Pinned Awaken UI distributable for cross-platform console builds.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": [
+    "**/*.css"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./styles/contract.css": "./dist/styles/contract.css",
+    "./styles/components.css": "./dist/styles/components.css",
+    "./styles/themes/awaken.css": "./dist/styles/themes/awaken.css",
+    "./styles/themes/oversight.css": "./dist/styles/themes/oversight.css",
+    "./styles.css": "./dist/styles.css"
+  },
+  "dependencies": {
+    "@base-ui/react": "1.6.0",
+    "dompurify": "3.3.0",
+    "marked": "18.0.4"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}

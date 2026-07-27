@@ -1,0 +1,33 @@
+/*
+ * Oversight adapter. Import after generated tokens.css and @awaken/ui styles.
+ * The generated brand tokens remain the single source of truth.
+ */
+:root,
+[data-ui-theme="oversight"] {
+  --ui-color-canvas: var(--brand-bg-canvas);
+  --ui-color-surface: var(--brand-bg-elevated);
+  --ui-color-surface-hover: var(--brand-bg-hover);
+  --ui-color-overlay: var(--brand-overlay);
+  --ui-color-text: var(--brand-text);
+  --ui-color-text-muted: var(--brand-text-soft);
+  --ui-color-border: var(--brand-border);
+  --ui-color-focus: var(--brand-focus);
+  --ui-color-accent: var(--brand-accent);
+  --ui-color-accent-hover: var(--brand-accent-hover);
+  --ui-color-on-accent: var(--brand-accent-text);
+  --ui-color-danger: var(--brand-tone-error);
+  --ui-color-danger-hover: var(--brand-tone-critical);
+  --ui-color-on-danger: var(--brand-on-solid);
+  --ui-color-success: var(--brand-tone-success);
+  --ui-color-warning: var(--brand-tone-warn);
+  --ui-font-body: var(--brand-font-body);
+  --ui-font-mono: var(--brand-font-mono);
+  --ui-radius-control: var(--brand-radius-md);
+  --ui-radius-surface: var(--brand-radius-card);
+  --ui-radius-overlay: var(--brand-radius-xl);
+  --ui-control-height-sm: 30px;
+  --ui-control-height-md: 36px;
+  --ui-control-height-lg: 44px;
+  --ui-shadow-surface: var(--brand-shadow-card);
+  --ui-shadow-overlay: var(--brand-shadow-popover);
+}
