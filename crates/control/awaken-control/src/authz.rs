@@ -110,7 +110,8 @@ use awaken_iam_contract::{
     ActionKey, ActionScopeRule, ActivateAuthorizationProfile, ApiToken, ApiTokenId,
     AuthorizationDecision, AuthorizationProfileDocument, AuthorizationRequest,
     CreateAuthorizationProfile, GrantEffect, GrantSnapshot, GrantSubjectRef, NamespaceId, OrgId,
-    PrincipalRef, ResourceModelRegistration, ScopeKind, ScopeRef, Timestamp, WorkspaceId,
+    PolicySnapshot, PrincipalRef, ResourceModelRegistration, ScopeKind, ScopeRef, Timestamp,
+    WorkspaceId,
 };
 use awaken_iam_core::{
     ApiTokenDirectory, ApiTokenMinter, EntropySource, IamError, IssuedApiToken, OsEntropy,
@@ -613,7 +614,7 @@ pub fn embedded_iam_for_tenant(
         .is_some()
     {
         profiles
-            .hydrate(&mut engine, &namespace)
+            .hydrate(&mut engine, &PolicySnapshot::default(), &namespace)
             .expect("hydrate active management profile");
     } else {
         let patterns = ["workspace.*", "apikey.*"];
@@ -655,6 +656,7 @@ pub fn embedded_iam_for_tenant(
         profiles
             .activate(
                 &mut engine,
+                &PolicySnapshot::default(),
                 &namespace,
                 draft.revision,
                 ActivateAuthorizationProfile {
@@ -674,7 +676,7 @@ pub fn embedded_iam_for_tenant(
         .is_some()
     {
         profiles
-            .hydrate(&mut engine, &resource_namespace)
+            .hydrate(&mut engine, &PolicySnapshot::default(), &resource_namespace)
             .expect("hydrate active resource profile");
     } else {
         let patterns = ["workspace.*", "file.*", "skill.*"];
@@ -736,6 +738,7 @@ pub fn embedded_iam_for_tenant(
         profiles
             .activate(
                 &mut engine,
+                &PolicySnapshot::default(),
                 &resource_namespace,
                 draft.revision,
                 ActivateAuthorizationProfile {
