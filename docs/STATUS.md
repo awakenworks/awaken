@@ -116,6 +116,8 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/credentials-and-vaults.md` | Product/downstream mapping | Not required | n/a |
 | `design/resources-memory-files-skills.md` | Role owner | Required | self |
 | `design/observability-eval-dataset-boundary.md` | Product/downstream mapping | Not required | n/a |
+| `design/prompt-skill-optimization-data-contracts.md` | Proposed implementation contract | Not required | n/a |
+| `design/prompt-skill-optimization-state-machine.md` | Proposed lifecycle owner | Not required | n/a |
 | `design/error-taxonomy.md` | Decision record | Not required | n/a |
 | `design/packaging-enforcement-matrix.md` | Meta / introspection | Not required | n/a |
 | `design/runtime-persistence.md` | Delegated boundary narrative | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |
@@ -190,6 +192,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0065-recoverable-embeddable-remote-worker.md` | Decision record | Not required | n/a |
 | `adr/0066-session-service-binding-and-realization.md` | Accepted target landing in verified slices; whole guardrail remains target until implementation/E2E evidence is complete | Delegated | [remote Worker component catalog](design/remote-worker-protocol.md#10-remote-worker-component-catalog) |
 | `adr/0067-credential-custody-model-exposure-and-secret-delivery.md` | Accepted target landing in verified slices; whole guardrail remains target until implementation/E2E evidence is complete | Delegated | [remote Worker component catalog](design/remote-worker-protocol.md#10-remote-worker-component-catalog) |
+| `adr/0068-unified-prompt-and-skill-optimization.md` | Proposed decision record | Not required | n/a |
 
 ## Implementation Context
 

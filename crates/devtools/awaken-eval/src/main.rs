@@ -5,11 +5,19 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+mod admin_authoring_cli;
+
 type AcpLaunchArgs = (Vec<String>, Vec<(String, String)>);
 
 #[tokio::main]
 async fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("admin-authoring-run-live") {
+        return admin_authoring_cli::run_live(&args[1..]).await;
+    }
+    if args.first().map(String::as_str) == Some("admin-authoring-score") {
+        return admin_authoring_cli::score(&args[1..]);
+    }
     if args.first().map(String::as_str) == Some("outcome-score") {
         return score_outcome(&args[1..]);
     }

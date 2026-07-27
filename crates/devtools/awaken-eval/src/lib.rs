@@ -9,6 +9,7 @@
 //! record-from-real-run path attributes captures to (see `awaken-data-subject`).
 
 pub mod acp_runner;
+pub mod admin_authoring;
 pub mod compact_eval;
 pub mod memory_eval;
 pub mod outcome_acp;
