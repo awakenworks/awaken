@@ -311,6 +311,24 @@ mod tests {
     }
 
     #[test]
+    fn auto_model_and_config_tool_authoring_projection_stays_lossless() {
+        // Cause graph / decision table: auto model preserves `{mode:auto}`;
+        // config authoring keeps tool ids as ids; both present must keep both
+        // effects (Managed wire typing belongs to its repository adapter).
+        let config = agent_config_from_managed(
+            "a".into(),
+            &json!({
+                "model": { "mode": "auto" },
+                "tools": ["bash"]
+            }),
+        )
+        .expect("auto model with config tool");
+        let projected = managed_from_agent_config(&config, true);
+        assert_eq!(projected["model"], json!({ "mode": "auto" }));
+        assert_eq!(projected["tools"], json!(["bash"]));
+    }
+
+    #[test]
     fn complete_runtime_binding_round_trips_losslessly() {
         let config = agent_config_from_managed(
             "remote".into(),
