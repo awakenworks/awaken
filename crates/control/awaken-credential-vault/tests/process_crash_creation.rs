@@ -28,6 +28,7 @@ fn source() -> CredentialSource {
         env_key: None,
         material_ref: Some(SecretRef("sec:cred:ws:process-crash".into())),
         oauth_command: None,
+        worker_local_binding: None,
         status: CredentialStatus::Active,
         version: 1,
     }

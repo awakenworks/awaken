@@ -416,6 +416,7 @@ mod tests {
             env_key: None,
             material_ref: None,
             oauth_command: None,
+            worker_local_binding: None,
             status: awaken_credential_vault::CredentialStatus::Active,
             version: 1,
         };

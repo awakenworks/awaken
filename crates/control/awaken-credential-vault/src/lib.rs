@@ -52,6 +52,28 @@ pub struct SecretRef(pub String);
 #[serde(transparent)]
 pub struct CredentialSourceId(pub String);
 
+/// Non-secret identity of material owned by one Worker-local driver. The
+/// credential source id is derived from this tuple for idempotent registration;
+/// callers never recover the tuple by parsing the id.
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct WorkerLocalBinding {
+    pub driver_id: String,
+    pub subject_id: String,
+}
+
+impl WorkerLocalBinding {
+    #[must_use]
+    pub fn new(driver_id: impl Into<String>, subject_id: impl Into<String>) -> Self {
+        Self {
+            driver_id: driver_id.into(),
+            subject_id: subject_id.into(),
+        }
+    }
+}
+
 /// Where a secret physically lives (the materialization axis).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -135,6 +157,10 @@ pub struct CredentialSource {
     /// other kind. Only a *reference to a command* travels — never a token.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oauth_command: Option<Vec<String>>,
+    /// Present only for [`CredentialKind::WorkerLocal`]. It is a stable locator,
+    /// never authentication material.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_local_binding: Option<WorkerLocalBinding>,
     pub status: CredentialStatus,
     pub version: i64,
 }
@@ -558,17 +584,9 @@ pub(crate) fn validate_create_params(
                 Ok(())
             }
         }
-        CredentialKind::WorkerLocal => {
-            if params.secret.is_some() || params.oauth_command.is_some() || params.env_key.is_some()
-            {
-                Err(CredentialError::InvalidSource(
-                    "worker-local credentials accept only provider metadata; secret material stays on the worker"
-                        .into(),
-                ))
-            } else {
-                Ok(())
-            }
-        }
+        CredentialKind::WorkerLocal => Err(CredentialError::InvalidSource(
+            "worker-local credentials must be registered through ensure_worker_local".into(),
+        )),
     }
 }
 
@@ -596,6 +614,7 @@ pub(crate) fn prepare_source(
             env_key: params.env_key,
             material_ref,
             oauth_command: params.oauth_command,
+            worker_local_binding: None,
             status: CredentialStatus::Active,
             version: 1,
         },
@@ -727,9 +746,27 @@ mod tests {
             env_key: None,
             material_ref: None,
             oauth_command: None,
+            worker_local_binding: None,
             status: CredentialStatus::Active,
             version: 1,
         }
+    }
+
+    #[test]
+    fn legacy_source_without_worker_locator_remains_readable() {
+        // Cause graph: retained JSON row without the additive locator field
+        // -> serde default -> the original non-WorkerLocal source remains valid.
+        // Decision table: missing field => None; no implicit binding is invented.
+        let legacy = r#"{
+            "id":"cred:legacy",
+            "workspace_id":"ws1",
+            "kind":"vault",
+            "status":"active",
+            "version":1
+        }"#;
+        let source: CredentialSource = serde_json::from_str(legacy).unwrap();
+        assert_eq!(source.id.0, "cred:legacy");
+        assert_eq!(source.worker_local_binding, None);
     }
 
     #[cfg(feature = "oauth-command")]
@@ -815,9 +852,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn worker_local_source_persists_only_a_non_secret_binding() {
+    async fn generic_create_rejects_worker_local_without_a_stable_locator() {
         let store = InMemorySecretStore::new();
-        let source = create_source(
+        let result = create_source(
             CredentialCreateParams {
                 workspace_id: "ws1".into(),
                 kind: CredentialKind::WorkerLocal,
@@ -828,12 +865,11 @@ mod tests {
             },
             &store,
         )
-        .await
-        .unwrap();
-        assert!(source.material_ref.is_none());
+        .await;
         assert!(matches!(
-            materialize(&source, &store).await,
-            Err(CredentialError::WorkerLocalSourceUnsupported(id)) if id == source.id.0
+            result,
+            Err(CredentialError::InvalidSource(message))
+                if message.contains("ensure_worker_local")
         ));
     }
 

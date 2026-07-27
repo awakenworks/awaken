@@ -7,8 +7,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 use crate::{
-    CredentialCreateParams, CredentialError, CredentialPool, CredentialPoolId, CredentialSource,
-    CredentialSourceId, SecretStore, prepare_source, validate_create_params,
+    CredentialCreateParams, CredentialError, CredentialKind, CredentialPool, CredentialPoolId,
+    CredentialSource, CredentialSourceId, CredentialStatus, SecretStore, WorkerLocalBinding,
+    prepare_source, validate_create_params,
 };
 
 /// Secret-free durable intent written before secret material is touched.
@@ -22,6 +23,12 @@ pub struct CredentialCreationIntent {
 #[async_trait::async_trait]
 pub trait CredentialRepo: Send + Sync {
     async fn put(&self, source: CredentialSource) -> Result<(), CredentialError>;
+    /// Atomically retain an existing source with the same id or insert `source`.
+    /// The returned row is the durable winner.
+    async fn put_if_absent(
+        &self,
+        source: CredentialSource,
+    ) -> Result<CredentialSource, CredentialError>;
     async fn get(&self, id: &CredentialSourceId) -> Result<CredentialSource, CredentialError>;
     async fn list(&self, workspace_id: &str) -> Result<Vec<CredentialSource>, CredentialError>;
 
@@ -72,6 +79,18 @@ impl CredentialRepo for InMemoryCredentialRepo {
             .rows
             .insert(source.id.0.clone(), source);
         Ok(())
+    }
+
+    async fn put_if_absent(
+        &self,
+        source: CredentialSource,
+    ) -> Result<CredentialSource, CredentialError> {
+        let mut state = self.state.lock().expect("credential repo");
+        Ok(state
+            .rows
+            .entry(source.id.0.clone())
+            .or_insert(source)
+            .clone())
     }
 
     async fn get(&self, id: &CredentialSourceId) -> Result<CredentialSource, CredentialError> {
@@ -177,6 +196,59 @@ impl CredentialRepo for InMemoryCredentialRepo {
             .cloned()
             .collect())
     }
+}
+
+/// Idempotently register one Worker-owned, non-secret local credential binding.
+/// Primary-key identity is a collision-free length-prefixed projection of the
+/// tuple, making the existing repository constraint the uniqueness authority.
+pub async fn ensure_worker_local(
+    repo: &dyn CredentialRepo,
+    workspace_id: &str,
+    binding: WorkerLocalBinding,
+    provider_id: Option<String>,
+) -> Result<CredentialSource, CredentialError> {
+    if workspace_id.trim().is_empty()
+        || binding.driver_id.trim().is_empty()
+        || binding.subject_id.trim().is_empty()
+    {
+        return Err(CredentialError::InvalidSource(
+            "worker-local workspace, driver, and subject must be non-empty".into(),
+        ));
+    }
+    let segment = |value: &str| format!("{}:{value}", value.len());
+    let id = CredentialSourceId(format!(
+        "cred:worker-local:{}:{}:{}",
+        segment(workspace_id),
+        segment(&binding.driver_id),
+        segment(&binding.subject_id)
+    ));
+    let expected = CredentialSource {
+        id,
+        workspace_id: workspace_id.to_string(),
+        kind: CredentialKind::WorkerLocal,
+        provider_id,
+        env_key: None,
+        material_ref: None,
+        oauth_command: None,
+        worker_local_binding: Some(binding),
+        status: CredentialStatus::Active,
+        version: 1,
+    };
+    let durable = repo.put_if_absent(expected.clone()).await?;
+    if durable.workspace_id != expected.workspace_id
+        || durable.kind != CredentialKind::WorkerLocal
+        || durable.provider_id != expected.provider_id
+        || durable.worker_local_binding != expected.worker_local_binding
+        || durable.env_key.is_some()
+        || durable.material_ref.is_some()
+        || durable.oauth_command.is_some()
+    {
+        return Err(CredentialError::InvalidSource(format!(
+            "worker-local binding conflicts with existing source {}",
+            durable.id.0
+        )));
+    }
+    Ok(durable)
 }
 
 /// Enter a credential end-to-end (secret-in / secret-free-out): seal the secret in
@@ -335,6 +407,13 @@ mod tests {
             Err(CredentialError::Storage("injected row failure".into()))
         }
 
+        async fn put_if_absent(
+            &self,
+            _source: CredentialSource,
+        ) -> Result<CredentialSource, CredentialError> {
+            Err(CredentialError::Storage("injected row failure".into()))
+        }
+
         async fn get(&self, id: &CredentialSourceId) -> Result<CredentialSource, CredentialError> {
             Err(CredentialError::SourceNotFound(id.0.clone()))
         }
@@ -454,6 +533,7 @@ mod tests {
             env_key: None,
             material_ref: Some(crate::SecretRef("sec:cred:ws:interrupted".into())),
             oauth_command: None,
+            worker_local_binding: None,
             status: crate::CredentialStatus::Active,
             version: 1,
         };
@@ -570,6 +650,7 @@ mod tests {
             env_key: None,
             material_ref: Some(reference.clone()),
             oauth_command: None,
+            worker_local_binding: None,
             status: crate::CredentialStatus::Active,
             version: 1,
         };
