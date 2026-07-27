@@ -104,6 +104,87 @@ async function main() {
       assert.equal(catalogBefore.json.offerings.length, 0, 'proposal is not persisted catalog truth');
       pass('environment discovery is a secret-free, non-persistent proposal');
 
+      // Provider Connections cause graph:
+      // C1 installed descriptor; C2 dialect supported; C3 non-empty secret;
+      // C4 live discovery succeeds; C5 discovery returns models.
+      // E1 reject before persistence; E2 atomically persist provider, endpoint,
+      // credential, and offerings; E3 expose only a secret-free Ready summary.
+      //
+      // Decision table:
+      // | Rule | C1 | C2 | C3 | C4 | C5 | Expected |
+      // | R1   | N  | -  | -  | -  | -  | 422 provider_unsupported, E1 |
+      // | R2   | Y  | N  | -  | -  | -  | 422 dialect_unsupported, E1  |
+      // | R3   | Y  | Y  | N  | -  | -  | 422 invalid credential, E1  |
+      // | R4   | Y  | Y  | Y  | N  | -  | upstream error, E1           |
+      // | R5   | Y  | Y  | Y  | Y  | N  | 422 no_models_discovered, E1|
+      // | R6   | Y  | Y  | Y  | Y  | Y  | 201, E2 + E3                 |
+      r = await req(base, 'GET', '/v1/config/provider-descriptors');
+      assert.equal(r.status, 200, JSON.stringify(r.json));
+      const anthropicDescriptor = r.json.find((item) => item.provider_kind === 'anthropic');
+      assert.ok(anthropicDescriptor);
+      checkContract('ProviderDriverDescriptor', anthropicDescriptor);
+      assert.ok(anthropicDescriptor.supported_dialects.includes('anthropic_messages'));
+
+      r = await req(base, 'GET', '/v1/config/provider-connections?workspace_id=ws');
+      assert.equal(r.status, 200, JSON.stringify(r.json));
+      r.json.forEach((summary) => checkContract('ProviderConnectionSummary', summary));
+      assert.equal(r.json.find((item) => item.provider_id === 'anthropic').status, 'not_configured');
+
+      const connection = {
+        workspace_id: 'ws',
+        provider_id: 'anthropic',
+        display_name: 'Anthropic E2E',
+        endpoint_id: 'connection-ep',
+        dialect: 'anthropic_messages',
+        base_url: `${directory.url}/v1/`,
+        timeout_secs: 30,
+        secret: 'sk-admin-e2e', // awaken-allow: secret
+      };
+      r = await req(base, 'POST', '/v1/config/provider-connections', {
+        ...connection,
+        provider_id: 'not-installed',
+      });
+      assert.equal(r.status, 422);
+      assert.equal(r.json.code, 'provider_unsupported');
+      r = await req(base, 'POST', '/v1/config/provider-connections', {
+        ...connection,
+        dialect: 'open_ai_responses',
+      });
+      assert.equal(r.status, 422);
+      assert.equal(r.json.code, 'dialect_unsupported');
+      r = await req(base, 'POST', '/v1/config/provider-connections', {
+        ...connection,
+        secret: '  ',
+      });
+      assert.equal(r.status, 422);
+
+      r = await req(base, 'POST', '/v1/config/provider-connections', {
+        ...connection,
+        secret: 'wrong-secret', // awaken-allow: secret
+      });
+      assert.equal(r.status, 502, JSON.stringify(r.json));
+      assert.equal(r.json.code, 'model_discovery_failed');
+      directory.state.models = [];
+      r = await req(base, 'POST', '/v1/config/provider-connections', connection);
+      assert.equal(r.status, 422, JSON.stringify(r.json));
+      assert.equal(r.json.code, 'no_models_discovered');
+
+      directory.state.models = ['connection-model-a', 'connection-model-b'];
+      r = await req(base, 'POST', '/v1/config/provider-connections', connection);
+      assert.equal(r.status, 201, JSON.stringify(r.json));
+      checkContract('ProviderConnectionView', r.json);
+      assert.equal(r.json.sync.discovered, 2);
+      assert.ok(!JSON.stringify(r.json).includes(connection.secret), 'connection response is secret-free');
+      r = await req(base, 'GET', '/v1/config/provider-connections?workspace_id=ws');
+      const readyConnection = r.json.find((item) => item.provider_id === 'anthropic');
+      checkContract('ProviderConnectionSummary', readyConnection);
+      assert.equal(readyConnection.status, 'ready');
+      assert.equal(readyConnection.active_credentials, 1);
+      assert.equal(readyConnection.active_models, 2);
+      directory.state.models = ['provider-model-a', 'provider-model-b'];
+      directory.state.requests.length = 0;
+      pass('Provider Connections Test & Save covers rejection, discovery, atomic save, and Ready state');
+
       // --- author provider / endpoint / offering (path id is authoritative) ---
       r = await req(base, 'PUT', '/v1/config/providers/anthropic', {
         id: 'anthropic',

@@ -331,19 +331,24 @@ impl SharedHost {
                     bindings.push(binding);
                 }
             }
+            // Local attempt authority cause graph: C1 the Session still owns this
+            // run; C2 a candidate needs local credential material. E1 expose an
+            // ownership fence to every side-effecting executor (including brokered
+            // grants); E2 additionally install credential bindings/receipts.
+            // Decision table: C1=N -> fail at verifier; C1=Y,C2=N -> E1 only;
+            // C1=Y,C2=Y -> E1+E2.
+            let authority = Arc::new(LocalAttemptAuthority {
+                session: Arc::downgrade(ctx),
+                run_id: activation.run_id.clone(),
+                bindings: bindings.clone(),
+            });
+            context = context.with_ownership(authority.clone());
             if !bindings.is_empty() {
-                let authority = Arc::new(LocalAttemptAuthority {
-                    session: Arc::downgrade(ctx),
-                    run_id: activation.run_id.clone(),
-                    bindings: bindings.clone(),
-                });
-                context = context
-                    .with_ownership(authority.clone())
-                    .with_credential_realization(
-                        awaken_runtime_contract::AttemptCredentialRealization::new(
-                            bindings, authority,
-                        ),
-                    );
+                context = context.with_credential_realization(
+                    awaken_runtime_contract::AttemptCredentialRealization::new(
+                        bindings, authority,
+                    ),
+                );
             }
             if let (Some(mirror), Some(token)) = (
                 options.cancellation_mirror.as_ref(),
