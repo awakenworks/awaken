@@ -34,7 +34,7 @@ pub struct EnvironmentRevision(pub u64);
 /// Canonical Environment configuration owned by the Session domain. Protocol
 /// adapters translate their wire unions into this closed vocabulary once; stores
 /// and snapshot compilation never inspect arbitrary JSON.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EnvironmentConfig {
     Cloud {
@@ -43,13 +43,8 @@ pub enum EnvironmentConfig {
         #[serde(default)]
         packages: EnvironmentPackages,
     },
+    #[default]
     SelfHosted,
-}
-
-impl Default for EnvironmentConfig {
-    fn default() -> Self {
-        Self::SelfHosted
-    }
 }
 
 impl EnvironmentConfig {
@@ -424,4 +419,14 @@ pub trait EnvRegistry: Send + Sync {
     async fn delete(&self, id: &str) -> bool;
     /// Archive `id` (stamps `archived_at`); `None` when it does not exist.
     async fn archive(&self, id: &str) -> Option<EnvItem>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn environment_default_is_the_self_hosted_decision() {
+        assert_eq!(EnvironmentConfig::default(), EnvironmentConfig::SelfHosted);
+    }
 }
