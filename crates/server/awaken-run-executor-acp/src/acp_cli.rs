@@ -74,6 +74,53 @@ pub enum McpInterface {
     ConfigFileToml { path: &'static str },
 }
 
+/// Provider-owned credential artifact codecs supported by the managed launch
+/// boundary. The codec is catalog data; generic Host code never branches on a
+/// CLI id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialArtifactCodec {
+    CodexAuthJson,
+    ClaudeCredentialsJson,
+}
+
+/// One managed artifact selected from a CLI profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CredentialArtifactSpec {
+    pub codec: CredentialArtifactCodec,
+    pub relative_path: &'static str,
+}
+
+/// How an isolated, Awaken-managed launch receives provider credentials. This
+/// does not describe backend-owned local login; that mutually exclusive mode
+/// never materializes provider material.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagedCredentialDelivery {
+    ProcessSecret,
+    Artifact(CredentialArtifactSpec),
+    RefreshArtifactOrProcessSecret(CredentialArtifactSpec),
+}
+
+impl ManagedCredentialDelivery {
+    /// Select an artifact only when this profile and the pinned credential shape
+    /// require one.
+    #[must_use]
+    pub fn credential_artifact(self, has_refresh: bool) -> Option<CredentialArtifactSpec> {
+        match self {
+            Self::Artifact(spec) => Some(spec),
+            Self::RefreshArtifactOrProcessSecret(spec) if has_refresh => Some(spec),
+            Self::ProcessSecret | Self::RefreshArtifactOrProcessSecret(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn allows_process_secret(self) -> bool {
+        matches!(
+            self,
+            Self::ProcessSecret | Self::RefreshArtifactOrProcessSecret(_)
+        )
+    }
+}
+
 /// The definition of one external ACP CLI: how to launch it and project config onto
 /// it. Referenced by `Backend::Acp { cli }` via [`AcpCli::id`].
 #[derive(Debug, Clone, Copy)]
@@ -96,6 +143,9 @@ pub struct AcpCli {
     /// Environment projection used only by legacy API-key adapters. `None`
     /// means the adapter requires its provider-specific credential driver.
     pub model_delivery: Option<ModelDelivery>,
+    /// Managed provider credential delivery. Local backend-owned login is a
+    /// separate provisioning mode and does not consume this field.
+    pub managed_credential_delivery: ManagedCredentialDelivery,
     /// ACP authentication method selected after initialize, when the adapter
     /// exposes more than one protocol-level method.
     pub auth_method_id: Option<&'static str>,
@@ -430,6 +480,12 @@ const CLAUDE: AcpCli = AcpCli {
             "ANTHROPIC_HAIKU_MODEL",
         ],
     }),
+    managed_credential_delivery: ManagedCredentialDelivery::RefreshArtifactOrProcessSecret(
+        CredentialArtifactSpec {
+            codec: CredentialArtifactCodec::ClaudeCredentialsJson,
+            relative_path: ".credentials.json",
+        },
+    ),
     auth_method_id: None,
     mcp_interface: McpInterface::AcpSession,
     config_home_env: Some("CLAUDE_CONFIG_DIR"),
@@ -458,6 +514,10 @@ const CODEX: AcpCli = AcpCli {
     args: &["-y", "@agentclientprotocol/codex-acp@1.1"],
     container_argv: &["codex-acp"],
     model_delivery: None,
+    managed_credential_delivery: ManagedCredentialDelivery::Artifact(CredentialArtifactSpec {
+        codec: CredentialArtifactCodec::CodexAuthJson,
+        relative_path: ".codex/auth.json",
+    }),
     auth_method_id: None,
     mcp_interface: McpInterface::AcpSession,
     config_home_env: None,
@@ -487,6 +547,7 @@ const GEMINI: AcpCli = AcpCli {
         key: "GEMINI_API_KEY",
         aliases: &[],
     }),
+    managed_credential_delivery: ManagedCredentialDelivery::ProcessSecret,
     auth_method_id: None,
     mcp_interface: McpInterface::AcpSession,
     config_home_env: Some("GEMINI_DIR"),
@@ -523,6 +584,7 @@ const OPENCODE: AcpCli = AcpCli {
         key: "OPENAI_API_KEY",
         aliases: &[],
     }),
+    managed_credential_delivery: ManagedCredentialDelivery::ProcessSecret,
     auth_method_id: None,
     mcp_interface: McpInterface::AcpSession,
     config_home_env: Some("OPENCODE_CONFIG_DIR"),
@@ -621,6 +683,38 @@ mod tests {
         assert!(acp_cli("gemini").is_some());
         assert!(acp_cli("opencode").is_some());
         assert!(acp_cli("no_such_cli").is_none());
+    }
+
+    #[test]
+    fn managed_credential_delivery_is_catalog_data() {
+        // Cause graph: catalog profile + pinned credential shape -> exactly one
+        // managed delivery mechanism. Host code never reclassifies by CLI id.
+        //
+        // | Rule | Profile | Refresh metadata | Artifact | Process secret |
+        // | C1 | Codex | no/yes | auth.json | no |
+        // | C2 | Claude | yes | .credentials.json | no |
+        // | C3 | Claude | no | no | yes |
+        // | C4 | Gemini/OpenCode | no/yes | no | yes |
+        let codex = acp_cli("codex").unwrap().managed_credential_delivery;
+        let codex_artifact = codex.credential_artifact(false).expect("C1");
+        assert_eq!(codex_artifact.relative_path, ".codex/auth.json", "C1");
+        assert!(!codex.allows_process_secret(), "C1");
+
+        let claude = acp_cli("claude").unwrap().managed_credential_delivery;
+        assert_eq!(
+            claude.credential_artifact(true).expect("C2").relative_path,
+            ".credentials.json",
+            "C2"
+        );
+        assert_eq!(claude.credential_artifact(false), None, "C3");
+        assert!(claude.allows_process_secret(), "C3");
+
+        for rule in ["gemini", "opencode"] {
+            let delivery = acp_cli(rule).unwrap().managed_credential_delivery;
+            assert_eq!(delivery.credential_artifact(false), None, "C4 {rule}");
+            assert_eq!(delivery.credential_artifact(true), None, "C4 {rule}");
+            assert!(delivery.allows_process_secret(), "C4 {rule}");
+        }
     }
 
     // ── Property tests over EVERY catalog row ────────────────────────────────────

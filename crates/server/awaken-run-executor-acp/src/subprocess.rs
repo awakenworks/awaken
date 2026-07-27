@@ -278,7 +278,7 @@ pub trait LaunchResolver: Send + Sync {
 
 /// An [`AgentChannelSource`] that projects a run onto a launch via its [`AcpCli`]
 /// row (R4): it reads the run's inputs through a host [`LaunchResolver`] and hands
-/// the data to [`AcpCli::project`], so *which* CLI and *how* the model is delivered
+/// the data to [`AcpCli::try_project`], so *which* CLI and *how* the model is delivered
 /// are data, not a branch.
 pub struct ProjectingChannelSource {
     cli: AcpCli,
@@ -303,7 +303,7 @@ impl ProjectingChannelSource {
 
 /// Project a run onto a concrete [`AcpLaunch`] (no spawn): resolve the model + per-run
 /// env through `resolver`, read the compaction window from the run's config, and hand
-/// all of it to the CLI's [`AcpCli::project`] row. The reusable projection core — a
+/// all of it to the CLI's [`AcpCli::try_project`] row. The reusable projection core — a
 /// sandboxed / containerized ACP source uses it to launch the **per-agent** CLI (the
 /// run's `acp:<cli>` backend_ref) inside its isolation, not a fixed argv.
 pub fn project_launch(

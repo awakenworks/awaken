@@ -6,6 +6,16 @@ pub use awaken_run_executor_acp::Codec
 pub use awaken_run_executor_acp::LaunchObserver
 pub use awaken_run_executor_acp::SandboxError
 pub use awaken_run_executor_acp::SecretBroker
+pub enum awaken_run_executor_acp::CredentialArtifactCodec
+pub awaken_run_executor_acp::CredentialArtifactCodec::ClaudeCredentialsJson
+pub awaken_run_executor_acp::CredentialArtifactCodec::CodexAuthJson
+pub enum awaken_run_executor_acp::ManagedCredentialDelivery
+pub awaken_run_executor_acp::ManagedCredentialDelivery::Artifact(awaken_run_executor_acp::CredentialArtifactSpec)
+pub awaken_run_executor_acp::ManagedCredentialDelivery::ProcessSecret
+pub awaken_run_executor_acp::ManagedCredentialDelivery::RefreshArtifactOrProcessSecret(awaken_run_executor_acp::CredentialArtifactSpec)
+impl awaken_run_executor_acp::ManagedCredentialDelivery
+pub fn awaken_run_executor_acp::ManagedCredentialDelivery::allows_process_secret(self) -> bool
+pub fn awaken_run_executor_acp::ManagedCredentialDelivery::credential_artifact(self, bool) -> core::option::Option<awaken_run_executor_acp::CredentialArtifactSpec>
 pub enum awaken_run_executor_acp::McpDelivery
 pub awaken_run_executor_acp::McpDelivery::ConfigFile
 pub awaken_run_executor_acp::McpDelivery::ConfigFile::contents: alloc::string::String
@@ -50,6 +60,7 @@ pub awaken_run_executor_acp::AcpCli::description: &'static str
 pub awaken_run_executor_acp::AcpCli::display_name: &'static str
 pub awaken_run_executor_acp::AcpCli::env: &'static [(&'static str, &'static str)]
 pub awaken_run_executor_acp::AcpCli::id: &'static str
+pub awaken_run_executor_acp::AcpCli::managed_credential_delivery: awaken_run_executor_acp::ManagedCredentialDelivery
 pub awaken_run_executor_acp::AcpCli::mcp_interface: awaken_run_executor_acp::McpInterface
 pub awaken_run_executor_acp::AcpCli::memory_entrypoint: &'static str
 pub awaken_run_executor_acp::AcpCli::model_delivery: awaken_run_executor_acp::ModelDelivery
@@ -97,6 +108,9 @@ pub fn awaken_run_executor_acp::ConfigHome::prepare(&self, awaken_run_executor_a
 pub fn awaken_run_executor_acp::ConfigHome::read(&self, &str) -> core::io::error::Result<core::option::Option<alloc::vec::Vec<u8>>>
 pub fn awaken_run_executor_acp::ConfigHome::root(&self) -> &std::path::Path
 pub fn awaken_run_executor_acp::ConfigHome::write(&self, &str, &[u8]) -> core::io::error::Result<()>
+pub struct awaken_run_executor_acp::CredentialArtifactSpec
+pub awaken_run_executor_acp::CredentialArtifactSpec::codec: awaken_run_executor_acp::CredentialArtifactCodec
+pub awaken_run_executor_acp::CredentialArtifactSpec::relative_path: &'static str
 pub struct awaken_run_executor_acp::DirSessionHome
 impl awaken_run_executor_acp::DirSessionHome
 pub fn awaken_run_executor_acp::DirSessionHome::new(core::option::Option<std::path::PathBuf>, alloc::sync::Arc<dyn awaken_run_executor_acp::SessionBlobStore>) -> Self
