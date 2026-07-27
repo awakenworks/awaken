@@ -298,7 +298,9 @@ fn notify(sink: Option<LaunchSink<'_>>, event: AcpLaunchEvent) {
 /// so the executor can surface an `Installing` state before the process is usable.
 fn dynamic_install_backend(activation: &RunActivation) -> bool {
     match Backend::from_ref(&activation.snapshot.resolved_spec.model_binding.backend_ref) {
-        Backend::Acp { cli } => acp_cli(&cli).is_some_and(is_dynamic_install),
+        Backend::Acp { cli } => {
+            acp_cli(&cli).is_some_and(|profile| profile.acquisition.is_dynamic_install())
+        }
         _ => false,
     }
 }
@@ -509,7 +511,7 @@ impl AcpRunExecutor {
                 config_home_env: row.config_home_env?.to_string(),
                 session_subpath: session_subpath.to_string(),
                 exclude: row
-                    .retained_paths
+                    .session_export_excludes
                     .iter()
                     .map(|p| (*p).to_string())
                     .collect(),
@@ -1310,17 +1312,22 @@ fn ensure_pending_tool_use(messages: &mut Vec<Message>, ask: &PermissionAsk) {
 
 mod acp_cli;
 mod config_home;
+mod host_discovery;
 mod session_home;
 mod subprocess;
 pub use acp_cli::{
-    AcpCli, CredentialArtifactCodec, CredentialArtifactRequirement, CredentialArtifactSpec,
-    ManagedCredentialDelivery, McpDelivery, McpInterface, McpServerConfig, McpTransport,
-    ModelDelivery, ProcessSecretRequirement, ResolvedModel, SessionKey, SessionPersistence,
-    acp_cli, is_dynamic_install, known_acp_clis,
+    AcpAcquisition, AcpCli, CredentialArtifactCodec, CredentialArtifactRequirement,
+    CredentialArtifactSpec, ManagedCredentialDelivery, McpDelivery, McpInterface, McpServerConfig,
+    McpTransport, ModelDelivery, ProcessSecretRequirement, ResolvedModel, SessionKey,
+    SessionPersistence, acp_cli, known_acp_clis,
 };
 // The ACP config-home path convention (shared kernel) and the reference cross-machine
 // session-home provider over it — the host consumes these instead of owning them.
 pub use config_home::{ConfigHome, RetentionPolicy, SessionReuse};
+pub use host_discovery::{
+    AcpDetectionState, AcpDiscoverySpec, AcpHostDiscovery, AcpHostObservation, AcpLoginProbe,
+    AcpLoginRule, AcpProbeCommand, AcpProbePredicate,
+};
 pub use session_home::{DirSessionHome, FsSessionBlobStore, SessionBlobStore};
 pub use subprocess::{
     AcpLaunch, AcpSettings, LaunchResolver, McpInjection, ProjectingChannelSource,

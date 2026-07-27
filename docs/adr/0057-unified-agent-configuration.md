@@ -386,7 +386,7 @@ already up, just dial); ACP needs acquire + bring-up; Hand needs only bring-up
 A fresh bwrap namespace / container rootfs contains nothing unless bound-in or
 baked-in: the bwrap tier read-only-binds the host userland (`/usr,/bin,/lib,…`,
 `namespace.rs:111`) so host-installed interpreters/CLIs appear, plus the npx cache
-via `retained_paths`; the container tier presents only what the image baked. So a
+via sandbox-owned bind paths; the container tier presents only what the image baked. So a
 **sandboxed** ACP CLI must be host-installed+bound or image-baked, and a
 **sandboxed** Hand — our binary — must likewise be bound/baked. Materialization is
 realized by the tier (bind vs image), not by config.
@@ -426,7 +426,7 @@ granularity, a deployment choice this ADR does not fix.
 
 ### D8 — GDPR builds on ADR-0050, adding ACP content-store registration
 
-ACP session-home / `retained_paths` / `memory_entrypoint` / session blobs are
+ACP session-home / `session_export_excludes` / `memory_entrypoint` / session blobs are
 personal-data content stores. They MUST register with the ADR-0050 erasure
 fan-out (`with_eraser`) and honor `consent_ceiling(purpose)` on transcript
 capture. ACP agents default deny-egress (bwrap `--unshare-net`) and route model
@@ -823,7 +823,7 @@ deny-egress bwrap run with an uncached npx CLI fails fast in e2e.
 
 **G2 `erasable-acp-content`** — *ACP session content joins the ADR-0050
 consent/erasure fan-out.*
-Adds: session-home/`retained_paths`/`memory_entrypoint`/session-blob stores
+Adds: session-home/`session_export_excludes`/`memory_entrypoint`/session-blob stores
 registered `with_eraser`; transcript capture behind `consent_ceiling`.
 Retires: nothing (pure wiring) — closes the GDPR gap.
 Guard: erasure e2e — after Art.17 erase, ACP session blobs for the subject are

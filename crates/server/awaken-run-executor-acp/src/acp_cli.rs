@@ -5,8 +5,55 @@
 //! references by id (`Backend::Acp { cli }`), the same category as a model provider
 //! — never agent config itself.
 
+use crate::host_discovery::{
+    AcpDiscoverySpec, AcpLoginProbe, AcpLoginRule, AcpProbeCommand, AcpProbePredicate,
+};
 use crate::{AcpLaunch, OpenError};
 use awaken_provisioning_contract as pc;
+use awaken_runtime_contract::CredentialObservationState;
+
+/// How the local host obtains the ACP-serving executable. This is the sole local
+/// argv authority; discovery and launch both project it instead of inferring an
+/// install strategy from a command name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcpAcquisition {
+    Direct {
+        executable: &'static str,
+        args: &'static [&'static str],
+    },
+    PinnedNpmWrapper {
+        runner: &'static str,
+        package: &'static str,
+    },
+}
+
+impl AcpAcquisition {
+    #[must_use]
+    pub fn executable(self) -> &'static str {
+        match self {
+            Self::Direct { executable, .. } => executable,
+            Self::PinnedNpmWrapper { runner, .. } => runner,
+        }
+    }
+
+    #[must_use]
+    pub fn local_argv(self) -> Vec<String> {
+        match self {
+            Self::Direct { executable, args } => std::iter::once(executable)
+                .chain(args.iter().copied())
+                .map(str::to_string)
+                .collect(),
+            Self::PinnedNpmWrapper { runner, package } => {
+                vec![runner.to_string(), "-y".into(), package.to_string()]
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn is_dynamic_install(self) -> bool {
+        matches!(self, Self::PinnedNpmWrapper { .. })
+    }
+}
 
 /// How resolved model coordinates reach a CLI. Endpoints and secrets use env keys;
 /// model selection may additionally use the CLI's generic config override (Codex
@@ -52,7 +99,7 @@ pub enum SessionKey {
 pub enum SessionPersistence {
     /// Session state lives in the CLI's local config home. `session_subpath` is the
     /// portable subtree to harvest (the conversation store); credentials/local
-    /// config to exclude are the row's [`AcpCli::retained_paths`].
+    /// config to exclude are the row's [`AcpCli::session_export_excludes`].
     LocalDir {
         session_subpath: &'static str,
         keyed_by: SessionKey,
@@ -133,9 +180,10 @@ pub struct AcpCli {
     /// Operator-facing launch summary. This is descriptive metadata, never a
     /// second launch/configuration source.
     pub description: &'static str,
-    /// Host/local argv. This may use `npx` for on-demand developer installation.
-    pub command: &'static str,
-    pub args: &'static [&'static str],
+    /// Host/local acquisition and argv projection.
+    pub acquisition: AcpAcquisition,
+    /// Host installation, version, and provider-owned login probes.
+    pub discovery: AcpDiscoverySpec,
     /// Equivalent argv for a worker image where the adapter is preinstalled. Keeping
     /// this in the catalog row avoids both runtime package downloads and adapter
     /// branches in the container mechanism.
@@ -157,10 +205,9 @@ pub struct AcpCli {
     pub config_home_aliases: &'static [&'static str],
     /// The memory file the CLI reads from its config home (e.g. `CLAUDE.md`).
     pub memory_entrypoint: &'static str,
-    /// Non-credential paths under the config home that survive across sessions.
-    /// Also the exclusion set when harvesting the portable session-home — these are
-    /// credential/local-config, never carried into a cross-machine session blob.
-    pub retained_paths: &'static [&'static str],
+    /// Credential and machine-local config paths excluded when exporting the
+    /// portable session-home. This is not a persistence/include list.
+    pub session_export_excludes: &'static [&'static str],
     /// Where this CLI keeps its durable session, deciding cross-directory /
     /// cross-machine recovery (see [`SessionPersistence`]).
     pub session_persistence: SessionPersistence,
@@ -301,8 +348,7 @@ impl AcpCli {
             )));
         }
         let Some(d) = d else {
-            let mut argv = vec![self.command.to_string()];
-            argv.extend(self.args.iter().map(|s| (*s).to_string()));
+            let argv = self.acquisition.local_argv();
             return Ok(AcpLaunch {
                 argv,
                 env: env.into_values().collect(),
@@ -337,8 +383,7 @@ impl AcpCli {
             );
         }
 
-        let mut argv = vec![self.command.to_string()];
-        argv.extend(self.args.iter().map(|s| (*s).to_string()));
+        let mut argv = self.acquisition.local_argv();
         if let Some(key) = d.model_config_key
             && !model.model.is_empty()
         {
@@ -465,8 +510,40 @@ const CLAUDE: AcpCli = AcpCli {
     id: "claude",
     display_name: "Claude Code",
     description: "Claude Code via the pinned ACP adapter. Reads CLAUDE.md.",
-    command: "npx",
-    args: &["-y", "@agentclientprotocol/claude-agent-acp@0.44"],
+    acquisition: AcpAcquisition::PinnedNpmWrapper {
+        runner: "npx",
+        package: "@agentclientprotocol/claude-agent-acp@0.44",
+    },
+    discovery: AcpDiscoverySpec {
+        version: AcpProbeCommand {
+            executable: "claude",
+            args: &["--version"],
+        },
+        login: AcpLoginProbe {
+            command: AcpProbeCommand {
+                executable: "claude",
+                args: &["auth", "status", "--json"],
+            },
+            rules: &[
+                AcpLoginRule {
+                    predicate: AcpProbePredicate::StdoutJsonBoolean {
+                        field: "loggedIn",
+                        value: true,
+                    },
+                    state: CredentialObservationState::Available,
+                    reason_code: "acp_login_available",
+                },
+                AcpLoginRule {
+                    predicate: AcpProbePredicate::StdoutJsonBoolean {
+                        field: "loggedIn",
+                        value: false,
+                    },
+                    state: CredentialObservationState::LoginRequired,
+                    reason_code: "acp_login_required",
+                },
+            ],
+        },
+    },
     container_argv: &["claude-agent-acp"],
     model_delivery: Some(ModelDelivery {
         base_url: "ANTHROPIC_BASE_URL",
@@ -491,7 +568,7 @@ const CLAUDE: AcpCli = AcpCli {
     config_home_env: Some("CLAUDE_CONFIG_DIR"),
     config_home_aliases: &[],
     memory_entrypoint: "CLAUDE.md",
-    retained_paths: &[".credentials.json", "settings.json"],
+    session_export_excludes: &[".credentials.json", "settings.json"],
     // Claude Code stores conversations under `projects/<cwd-slug>/`, keyed by cwd.
     session_persistence: SessionPersistence::LocalDir {
         session_subpath: "projects",
@@ -510,8 +587,34 @@ const CODEX: AcpCli = AcpCli {
     id: "codex",
     display_name: "Codex",
     description: "OpenAI Codex via the pinned ACP adapter. Reads AGENTS.md.",
-    command: "npx",
-    args: &["-y", "@agentclientprotocol/codex-acp@1.1"],
+    acquisition: AcpAcquisition::PinnedNpmWrapper {
+        runner: "npx",
+        package: "@agentclientprotocol/codex-acp@1.1",
+    },
+    discovery: AcpDiscoverySpec {
+        version: AcpProbeCommand {
+            executable: "codex",
+            args: &["--version"],
+        },
+        login: AcpLoginProbe {
+            command: AcpProbeCommand {
+                executable: "codex",
+                args: &["login", "status"],
+            },
+            rules: &[
+                AcpLoginRule {
+                    predicate: AcpProbePredicate::CombinedOutputContains("not logged in"),
+                    state: CredentialObservationState::LoginRequired,
+                    reason_code: "acp_login_required",
+                },
+                AcpLoginRule {
+                    predicate: AcpProbePredicate::ExitSuccess,
+                    state: CredentialObservationState::Available,
+                    reason_code: "acp_login_available",
+                },
+            ],
+        },
+    },
     container_argv: &["codex-acp"],
     model_delivery: None,
     managed_credential_delivery: ManagedCredentialDelivery::Artifact(CredentialArtifactSpec {
@@ -523,22 +626,51 @@ const CODEX: AcpCli = AcpCli {
     config_home_env: None,
     config_home_aliases: &[],
     memory_entrypoint: "AGENTS.md",
-    retained_paths: &[],
+    session_export_excludes: &[],
     // Codex writes rollout files under `sessions/`, keyed by an internal id.
     session_persistence: SessionPersistence::None,
     context_window_env: None,
     env: &[],
 };
 
-// Gemini CLI speaks ACP natively via `--experimental-acp` (no npm wrapper), so it
+// Gemini CLI speaks ACP natively via `--acp` (no npm wrapper), so it
 // is a Direct launch with no dynamic-install step.
 const GEMINI: AcpCli = AcpCli {
     id: "gemini",
     display_name: "Gemini CLI",
     description: "Gemini CLI via its native ACP mode. Reads GEMINI.md.",
-    command: "gemini",
-    args: &["--experimental-acp"],
-    container_argv: &["gemini", "--experimental-acp"],
+    acquisition: AcpAcquisition::Direct {
+        executable: "gemini",
+        args: &["--acp"],
+    },
+    discovery: AcpDiscoverySpec {
+        version: AcpProbeCommand {
+            executable: "gemini",
+            args: &["--version"],
+        },
+        login: AcpLoginProbe {
+            // Listing local sessions is non-interactive and makes Gemini validate
+            // its own selected auth method without issuing a model request.
+            command: AcpProbeCommand {
+                executable: "gemini",
+                args: &["--list-sessions"],
+            },
+            rules: &[
+                AcpLoginRule {
+                    // Gemini documents 41 as FatalAuthenticationError.
+                    predicate: AcpProbePredicate::ExitCode(41),
+                    state: CredentialObservationState::LoginRequired,
+                    reason_code: "acp_login_required",
+                },
+                AcpLoginRule {
+                    predicate: AcpProbePredicate::ExitSuccess,
+                    state: CredentialObservationState::Available,
+                    reason_code: "acp_login_available",
+                },
+            ],
+        },
+    },
+    container_argv: &["gemini", "--acp"],
     model_delivery: Some(ModelDelivery {
         base_url: "GOOGLE_GEMINI_BASE_URL",
         model: "GEMINI_MODEL",
@@ -553,7 +685,7 @@ const GEMINI: AcpCli = AcpCli {
     config_home_env: Some("GEMINI_DIR"),
     config_home_aliases: &[],
     memory_entrypoint: "GEMINI.md",
-    retained_paths: &[],
+    session_export_excludes: &[],
     // Gemini keeps chat state under `tmp/<hash>/`, keyed by an internal id
     // (provisional — confirm the exact subtree by capability probe).
     session_persistence: SessionPersistence::LocalDir {
@@ -573,8 +705,34 @@ const OPENCODE: AcpCli = AcpCli {
     id: "opencode",
     display_name: "OpenCode",
     description: "OpenCode via its native ACP mode. Reads AGENTS.md.",
-    command: "opencode",
-    args: &["acp"],
+    acquisition: AcpAcquisition::Direct {
+        executable: "opencode",
+        args: &["acp"],
+    },
+    discovery: AcpDiscoverySpec {
+        version: AcpProbeCommand {
+            executable: "opencode",
+            args: &["--version"],
+        },
+        login: AcpLoginProbe {
+            command: AcpProbeCommand {
+                executable: "opencode",
+                args: &["auth", "list"],
+            },
+            rules: &[
+                AcpLoginRule {
+                    predicate: AcpProbePredicate::CombinedOutputContains("0 credentials"),
+                    state: CredentialObservationState::LoginRequired,
+                    reason_code: "acp_login_required",
+                },
+                AcpLoginRule {
+                    predicate: AcpProbePredicate::ExitSuccess,
+                    state: CredentialObservationState::Available,
+                    reason_code: "acp_login_available",
+                },
+            ],
+        },
+    },
     container_argv: &["opencode", "acp"],
     model_delivery: Some(ModelDelivery {
         base_url: "OPENAI_BASE_URL",
@@ -595,7 +753,7 @@ const OPENCODE: AcpCli = AcpCli {
         "XDG_STATE_HOME",
     ],
     memory_entrypoint: "AGENTS.md",
-    retained_paths: &["auth.json"],
+    session_export_excludes: &["auth.json"],
     // opencode keeps conversation state in a local store, keyed by an internal id
     // (provisional subtree — confirm the exact path by capability probe).
     session_persistence: SessionPersistence::LocalDir {
@@ -605,14 +763,6 @@ const OPENCODE: AcpCli = AcpCli {
     context_window_env: None,
     env: &[],
 };
-
-/// Whether a launch command dynamically installs its agent on first run (an `npx`
-/// wrapper pulls the pinned package into the npm cache), so a caller can surface an
-/// "installing…" phase before the process is usable. A native CLI (Gemini) is not.
-#[must_use]
-pub fn is_dynamic_install(cli: &AcpCli) -> bool {
-    cli.command == "npx"
-}
 
 /// The known ACP CLIs. Adding one is a row here — never a branch elsewhere.
 #[must_use]
@@ -637,7 +787,7 @@ pub(crate) fn legacy_config_file_cli() -> AcpCli {
         path: "config.toml",
     };
     cli.config_home_env = Some("TEST_CONFIG_HOME");
-    cli.retained_paths = &["config.toml"];
+    cli.session_export_excludes = &["config.toml"];
     cli
 }
 
@@ -730,7 +880,27 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), n, "catalog has a duplicate CLI id");
         for cli in known_acp_clis() {
-            assert!(!cli.command.is_empty(), "{}: command is set", cli.id);
+            assert!(
+                !cli.acquisition.executable().is_empty(),
+                "{}: acquisition executable is set",
+                cli.id
+            );
+            assert!(
+                !cli.discovery.version.executable.is_empty()
+                    && !cli.discovery.login.command.executable.is_empty()
+                    && !cli.discovery.login.rules.is_empty(),
+                "{}: discovery is complete",
+                cli.id
+            );
+            assert!(
+                cli.discovery
+                    .login
+                    .rules
+                    .iter()
+                    .any(|rule| { rule.state == CredentialObservationState::Available }),
+                "{}: login rules can prove availability",
+                cli.id
+            );
             assert_eq!(
                 cli.config_home_env.is_some(),
                 cli.model_delivery.is_some(),
@@ -850,7 +1020,7 @@ mod tests {
     #[test]
     fn every_local_dir_cli_declares_a_subtree_and_never_harvests_its_credentials() {
         // A LocalDir CLI must name a harvestable session subtree; its credentials
-        // (retained_paths) must live OUTSIDE that subtree, so a cross-machine session
+        // (session_export_excludes) must live OUTSIDE that subtree, so a cross-machine session
         // blob never carries an auth file.
         for cli in known_acp_clis() {
             if let SessionPersistence::LocalDir {
@@ -862,7 +1032,7 @@ mod tests {
                     "{}: LocalDir needs a session subpath",
                     cli.id
                 );
-                for cred in cli.retained_paths {
+                for cred in cli.session_export_excludes {
                     assert!(
                         !cred.starts_with(session_subpath),
                         "{}: credential {cred} must not live under the harvested session subtree {session_subpath}",
@@ -877,8 +1047,8 @@ mod tests {
     fn every_cli_declares_a_coherent_mcp_interface() {
         // The built side of the MCP-delivery capability: every CLI declares HOW it
         // receives MCP servers. A `ConfigFileToml` CLI writes them into a file in its
-        // config home, so that file must be a retained path (it lives across sessions
-        // alongside the CLI's own config); an `AcpSession` CLI takes them at
+        // config home, so that machine-local file must be excluded from portable
+        // session export; an `AcpSession` CLI takes them at
         // `session/new`, so no config file is named.
         for cli in known_acp_clis() {
             match cli.mcp_interface {
@@ -890,8 +1060,8 @@ mod tests {
                         cli.id
                     );
                     assert!(
-                        cli.retained_paths.contains(&path),
-                        "{}: MCP config file {path} must be a retained config-home path",
+                        cli.session_export_excludes.contains(&path),
+                        "{}: MCP config file {path} must be excluded from session export",
                         cli.id
                     );
                 }
@@ -987,11 +1157,6 @@ mod tests {
     #[test]
     fn opencode_resolves_and_projects_like_a_native_openai_compatible_cli() {
         let cli = acp_cli("opencode").unwrap();
-        assert_eq!(cli.command, "opencode");
-        assert!(
-            !is_dynamic_install(cli),
-            "a native CLI has no npm install step"
-        );
         let launch = cli.project(&resolved(), None, &[]);
         assert_eq!(
             env_of(&launch, "OPENAI_BASE_URL").as_deref(),
@@ -1050,27 +1215,42 @@ mod tests {
     }
 
     #[test]
-    fn claude_launches_via_pinned_npx_adapter_not_a_native_flag() {
-        // Claude Code has no native ACP mode; it is fronted by the npx adapter,
-        // pinned to a MAJOR.MINOR (never `@latest`).
-        let cli = acp_cli("claude").unwrap();
-        assert_eq!(cli.command, "npx");
-        assert_eq!(
-            cli.args,
-            &["-y", "@agentclientprotocol/claude-agent-acp@0.44"]
-        );
-        assert!(
-            is_dynamic_install(cli),
-            "an npx wrapper installs on first run"
-        );
-    }
+    fn acquisition_kind_is_the_single_source_for_local_argv_and_install_phase() {
+        // Acquisition cause graph:
+        // catalog kind ──> exact local argv ──> launch + discovery executable
+        //              └─> dynamic-install phase
+        //
+        // Decision table:
+        // D1 pinned wrapper | runner,-y,pinned package | dynamic
+        // D2 direct native  | executable,native args   | not dynamic
+        let cases: [(&str, &[&str], bool); 4] = [
+            (
+                "claude",
+                &["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.44"],
+                true,
+            ),
+            (
+                "codex",
+                &["npx", "-y", "@agentclientprotocol/codex-acp@1.1"],
+                true,
+            ),
+            ("gemini", &["gemini", "--acp"], false),
+            ("opencode", &["opencode", "acp"], false),
+        ];
 
-    #[test]
-    fn codex_launches_via_the_pinned_official_adapter() {
-        let cli = acp_cli("codex").unwrap();
-        assert_eq!(cli.command, "npx");
-        assert!(cli.args.contains(&"@agentclientprotocol/codex-acp@1.1"));
-        assert!(is_dynamic_install(cli));
+        for (id, expected_argv, expected_dynamic) in cases {
+            let acquisition = acp_cli(id).unwrap().acquisition;
+            assert_eq!(acquisition.executable(), expected_argv[0], "{id}");
+            assert_eq!(acquisition.local_argv(), expected_argv, "{id}");
+            assert_eq!(acquisition.is_dynamic_install(), expected_dynamic, "{id}");
+            assert!(
+                acquisition
+                    .local_argv()
+                    .iter()
+                    .all(|arg| !arg.ends_with("@latest")),
+                "{id}: acquisition must be reproducibly pinned"
+            );
+        }
     }
 
     #[test]
@@ -1078,7 +1258,7 @@ mod tests {
         let cli = acp_cli("codex").unwrap();
         assert!(cli.model_delivery.is_none());
         assert!(cli.config_home_env.is_none());
-        assert!(cli.retained_paths.is_empty());
+        assert!(cli.session_export_excludes.is_empty());
         let error = cli.try_project(&resolved(), None, &[]).unwrap_err();
         assert_eq!(error.0, "credential_driver_required: codex");
     }
@@ -1098,17 +1278,6 @@ mod tests {
                 .env
                 .iter()
                 .all(|var| { !var.name.starts_with("OPENAI_") && !var.name.starts_with("CODEX_") })
-        );
-    }
-
-    #[test]
-    fn gemini_speaks_acp_natively_and_needs_no_install() {
-        let cli = acp_cli("gemini").unwrap();
-        assert_eq!(cli.command, "gemini");
-        assert_eq!(cli.args, &["--experimental-acp"]);
-        assert!(
-            !is_dynamic_install(cli),
-            "a native CLI has no dynamic-install step"
         );
     }
 

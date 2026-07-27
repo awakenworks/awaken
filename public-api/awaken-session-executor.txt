@@ -102,6 +102,7 @@ pub struct awaken_session_executor::AcpWorkerProfile
 impl awaken_session_executor::AcpWorkerProfile
 pub fn awaken_session_executor::AcpWorkerProfile::cli_ids(&self) -> impl core::iter::traits::iterator::Iterator<Item = &str>
 pub fn awaken_session_executor::AcpWorkerProfile::default_cli(&self) -> core::option::Option<&str>
+pub fn awaken_session_executor::AcpWorkerProfile::from_discovery(&[awaken_run_executor_acp::host_discovery::AcpHostObservation], core::option::Option<alloc::string::String>) -> core::result::Result<core::option::Option<Self>, alloc::string::String>
 pub fn awaken_session_executor::AcpWorkerProfile::new(impl core::iter::traits::collect::IntoIterator<Item = alloc::string::String>, core::option::Option<alloc::string::String>) -> core::result::Result<Self, alloc::string::String>
 pub struct awaken_session_executor::ApplicationSessionControlReceipt
 pub awaken_session_executor::ApplicationSessionControlReceipt::contribution: awaken_session_contract::application_contribution::ApplicationSessionContributionReceipt

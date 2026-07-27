@@ -1,7 +1,7 @@
 //! Gated real-CLI cross-directory session-recovery e2e (no stubs — drives the real
 //! adapter binary). `#[ignore]` by default: it needs a real ACP CLI reachable
 //! (`npx @agentclientprotocol/claude-agent-acp`, `codex-acp`, or `gemini
-//! --experimental-acp`) **and** provider credentials, so it self-skips unless
+//! --acp`) **and** provider credentials, so it self-skips unless
 //! `ACP_LIVE_CLI` is set to a known adapter and the model env is present.
 //!
 //! It proves the whole recovery chain end to end: run 1 in config-home **A** tells
@@ -135,8 +135,7 @@ fn live_launch(cli: &awaken_run_executor_acp::AcpCli, config_home: &Path) -> Acp
     let delivery = cli
         .model_delivery
         .expect("live environment projection requires model env keys");
-    let mut argv = vec![cli.command.to_string()];
-    argv.extend(cli.args.iter().map(|a| (*a).to_string()));
+    let argv = cli.acquisition.local_argv();
     let mut env = vec![(
         config_home_env.to_string(),
         config_home.display().to_string(),
