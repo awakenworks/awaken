@@ -20,6 +20,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { withScenarioServer, pass } from './harness.mjs';
 // @ts-ignore -- declarations are intentionally local to the JS harness matrix.
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
+import { alwaysAllowMcpAgent, sendManagedMessage } from './fixtures/managed_mcp_session.ts';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const CALC_TOKEN = 'calc-bearer-token-e2e'; // awaken-allow: secret
@@ -31,13 +32,6 @@ async function listEvents(client: Anthropic, sessionId: string): Promise<Session
   const events: SessionEvent[] = [];
   for await (const ev of client.beta.sessions.events.list(sessionId, { betas: BETAS })) events.push(ev);
   return events;
-}
-
-async function sendMessage(client: Anthropic, sessionId: string, text: string): Promise<void> {
-  await client.beta.sessions.events.send(sessionId, {
-    events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
-    betas: BETAS,
-  });
 }
 
 const textFromContent = (content: unknown): string => {
@@ -105,21 +99,22 @@ async function main(): Promise<void> {
       // The Session URL includes the trailing slash while both credential URLs
       // omit it. The preferred vault is deliberately second-created but first
       // in vault_ids; a successful handshake therefore proves both contracts.
+      const calcServer = { name: 'calc', type: 'url' as const, url: fixture.url };
       const session = await client.beta.sessions.create({
-        agent: 'assistant',
-        mcp_servers: [{ name: 'calc', type: 'url', url: fixture.url }],
+        agent: alwaysAllowMcpAgent('assistant', [calcServer]),
+        environment_id: 'env_local',
         vault_ids: [preferredVault.id, losingVault.id],
         betas: BETAS,
-      } as any);
+      });
       assert.deepEqual(
         session.agent.mcp_servers,
-        [{ name: 'calc', type: 'url', url: fixture.url }],
+        [calcServer],
         'session.agent.mcp_servers echoes the binding',
       );
       pass('Session binds the normalized URL using caller-supplied vault_ids precedence');
 
       // --- turn 1: the agent calls the MCP tool and reports the sum ---
-      await sendMessage(client, session.id, 'add 2 3');
+      await sendManagedMessage(client, session.id, 'add 2 3', BETAS);
       let events = await listEvents(client, session.id);
       // An MCP tool call projects as the distinct agent.mcp_tool_use/result events.
       const toolUse = events.find((e) => e.type === 'agent.mcp_tool_use');
@@ -127,7 +122,10 @@ async function main(): Promise<void> {
       assert.equal(toolUse.name, 'mcp__calc__add');
       assert.equal(toolUse.mcp_server_name, 'calc');
       const toolResult = events.find((e) => e.type === 'agent.mcp_tool_result');
-      assert.ok(toolResult, 'an agent.mcp_tool_result event');
+      assert.ok(
+        toolResult,
+        `an agent.mcp_tool_result event: ${JSON.stringify(events)}`,
+      );
       assert.equal(toolResult.mcp_tool_use_id, toolUse.id);
       assert.equal(textFromContent(toolResult.content), '5');
       assert.ok(
@@ -137,7 +135,7 @@ async function main(): Promise<void> {
       pass('turn 1: add 2 3 -> mcp__calc__add mcp_tool_use, mcp_tool_result 5, "result: 5"');
 
       // --- turn 2 on the SAME session: the connection serves the next turn ---
-      await sendMessage(client, session.id, 'add 40 2');
+      await sendManagedMessage(client, session.id, 'add 40 2', BETAS);
       events = await listEvents(client, session.id);
       assert.ok(
         events.some((e) => e.type === 'agent.mcp_tool_result' && textFromContent(e.content) === '42'),
@@ -150,7 +148,7 @@ async function main(): Promise<void> {
       pass('turn 2 (same session): add 40 2 -> tool_result 42, "result: 42"');
 
       // --- turn 3: a plain message echoes (no tool call) ---
-      await sendMessage(client, session.id, 'just chatting');
+      await sendManagedMessage(client, session.id, 'just chatting', BETAS);
       events = await listEvents(client, session.id);
       assert.ok(
         agentMessages(events).includes('Echo: just chatting'),

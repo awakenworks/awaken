@@ -35,12 +35,18 @@ import Anthropic from '@anthropic-ai/sdk';
 import { withScenarioServer, pass } from './harness.mjs';
 // @ts-ignore -- shared JS fixture deliberately serves both JS and TS scenarios.
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
+import {
+  alwaysAllowMcpAgent,
+  type McpServer,
+  replaceMcpServers,
+  responseEtag,
+  sendManagedMessage,
+} from './fixtures/managed_mcp_session.ts';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const TOKEN_A = 'hot-swap-token-a'; // awaken-allow: secret
 const TOKEN_B = 'hot-swap-token-b'; // awaken-allow: secret
 
-type McpServer = { name: string; type: 'url'; url: string };
 type Event = { type: string; [key: string]: unknown };
 
 async function events(client: Anthropic, sessionId: string): Promise<Event[]> {
@@ -51,32 +57,13 @@ async function events(client: Anthropic, sessionId: string): Promise<Event[]> {
   return result;
 }
 
-async function send(client: Anthropic, sessionId: string, text: string): Promise<void> {
-  await client.beta.sessions.events.send(sessionId, {
-    events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
-    betas: BETAS,
-  });
-}
-
 async function update(
   client: Anthropic,
   sessionId: string,
   servers: McpServer[],
   headers: Record<string, string>,
 ) {
-  return client.beta.sessions
-    .update(
-      sessionId,
-      { agent: { mcp_servers: servers }, betas: BETAS } as never,
-      { headers },
-    )
-    .withResponse();
-}
-
-function etag(response: Response): string {
-  const value = response.headers.get('etag');
-  assert.ok(value, 'a successful Session mutation returns ETag');
-  return value;
+  return replaceMcpServers(client, sessionId, servers, BETAS, headers);
 }
 
 async function startRejectingMcp(): Promise<{
@@ -121,32 +108,32 @@ async function main(): Promise<void> {
       const serverB: McpServer = { name: 'calc', type: 'url', url: fixtureB.url };
       const created = await client.beta.sessions
         .create({
-          agent: 'assistant',
-          mcp_servers: [serverA],
+          agent: alwaysAllowMcpAgent('assistant', [serverA]),
+          environment_id: 'env_local',
           vault_ids: [vault.id],
           betas: BETAS,
-        } as never)
+        })
         .withResponse();
       const sessionId = created.data.id;
-      const originalEtag = etag(created.response);
-      await send(client, sessionId, 'add 1 2');
+      const originalEtag = responseEtag(created.response);
+      await sendManagedMessage(client, sessionId, 'add 1 2', BETAS);
       assert.equal(fixtureA.calls.filter((call: any) => call.method === 'tools/call').length, 1);
 
       const beforeReplaceEvents = (await events(client, sessionId)).filter(
         (event) => event.type === 'session.updated',
       ).length;
       const replaced = await update(client, sessionId, [serverB], { 'Idempotency-Key': 'swap-to-b' });
-      const replacedEtag = etag(replaced.response);
+      const replacedEtag = responseEtag(replaced.response);
       assert.notEqual(replacedEtag, originalEtag, 'H1 advances the root revision');
       assert.deepEqual(replaced.data.agent.mcp_servers, [serverB], 'H1 projects only B');
-      await send(client, sessionId, 'add 3 4');
+      await sendManagedMessage(client, sessionId, 'add 3 4', BETAS);
       assert.equal(fixtureB.calls.filter((call: any) => call.method === 'tools/call').length, 1);
       assert.equal(fixtureA.calls.filter((call: any) => call.method === 'tools/call').length, 1);
       pass('H1 replace switches the exact active generation from A to B');
 
       const beforeReplayIo = fixtureB.calls.length;
       const replay = await update(client, sessionId, [serverB], { 'Idempotency-Key': 'swap-to-b' });
-      assert.equal(etag(replay.response), replacedEtag, 'H2 replays the committed revision');
+      assert.equal(responseEtag(replay.response), replacedEtag, 'H2 replays the committed revision');
       assert.equal(fixtureB.calls.length, beforeReplayIo, 'H2 performs no MCP I/O');
       const afterReplayEvents = (await events(client, sessionId)).filter(
         (event) => event.type === 'session.updated',
@@ -173,7 +160,7 @@ async function main(): Promise<void> {
         'Idempotency-Key': 'remove-b',
         'If-Match': replacedEtag,
       });
-      const removedEtag = etag(removed.response);
+      const removedEtag = responseEtag(removed.response);
       assert.deepEqual(removed.data.agent.mcp_servers, [], 'H5 projects the drained set');
       pass('H5 remove drains B and projects an empty active set');
 
@@ -182,11 +169,11 @@ async function main(): Promise<void> {
         'If-Match': removedEtag,
       });
       assert.deepEqual(added.data.agent.mcp_servers, [serverA], 'H6 projects A generation N+1');
-      await send(client, sessionId, 'add 8 1');
+      await sendManagedMessage(client, sessionId, 'add 8 1', BETAS);
       assert.equal(fixtureA.calls.filter((call: any) => call.method === 'tools/call').length, 2);
       assert.equal(fixtureB.calls.filter((call: any) => call.method === 'tools/call').length, 1);
 
-      const addedEtag = etag(added.response);
+      const addedEtag = responseEtag(added.response);
       const beforeConvergedIo = fixtureA.calls.length;
       const beforeConvergedEvents = (await events(client, sessionId)).filter(
         (event) => event.type === 'session.updated',
@@ -195,7 +182,7 @@ async function main(): Promise<void> {
         'Idempotency-Key': 'same-a-new-command',
         'If-Match': addedEtag,
       });
-      const convergedEtag = etag(converged.response);
+      const convergedEtag = responseEtag(converged.response);
       assert.notEqual(convergedEtag, addedEtag, 'H7 atomically records the new command receipt');
       assert.equal(fixtureA.calls.length, beforeConvergedIo, 'H7 performs no MCP I/O');
       assert.equal(
