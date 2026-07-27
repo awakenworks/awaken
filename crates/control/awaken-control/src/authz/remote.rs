@@ -80,6 +80,15 @@ impl RemoteManagementAuthz {
         }))
     }
 
+    /// Return the cached interactive Cloud credential only to trusted clients
+    /// assembled in this process. Hosted Management has no cached user and
+    /// therefore cannot accidentally broker inference as an end user.
+    pub fn cloud_user_token(&self) -> Option<awaken_agent_contract::RedactedString> {
+        self.user_token
+            .clone()
+            .map(awaken_agent_contract::RedactedString::new)
+    }
+
     pub(super) fn authenticate(
         &self,
         presented: Option<String>,

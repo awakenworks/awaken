@@ -5,18 +5,21 @@
 //
 // Brokered model cause graph / decision table:
 // C1 valid cached Cloud login, C2 Cloud readiness, C3 native model projection,
-// C4 explicit brokered Profile binding, C5 later model removal.
+// C4 explicit brokered Profile binding, C5 current attempt ownership, C6 Cloud
+// grant, C7 native Gateway response, C8 later model removal.
 // T1 C1+C2+C3 -> active brokered Offering + Cloud-provenance token metadata.
 // T2 C1+C2+C3+C4 -> exact credential-free publication preview (never `none`).
-// T3 C1+C2+C5 -> Offering unavailable and only stale brokered metadata removed.
+// T3 C1+C2+C3+C4+C5+C6+C7 -> grant -> Responses API -> close; no Provider key.
+// T4 C1+C2+C8 -> Offering unavailable and only stale brokered metadata removed.
 
 import assert from 'node:assert/strict';
+import Anthropic from '@anthropic-ai/sdk';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { deploymentEnv, spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import { deploymentEnv, spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
 
 const PORT = 38257;
 const ISSUER = 'https://accounts.e2e.awakenworks.test';
@@ -49,6 +52,9 @@ async function startIamFixture() {
   const publicJwk = publicKey.export({ format: 'jwk' });
   const calls = [];
   const cloudCalls = [];
+  const grantCalls = [];
+  const gatewayCalls = [];
+  let fixtureUrl = '';
   let decision = 'allow';
   let cloudModels = [{
     provider: 'openai',
@@ -81,6 +87,54 @@ async function startIamFixture() {
       response.end(JSON.stringify({ data: cloudModels }));
       return;
     }
+    if (request.method === 'POST' && request.url === '/v1/inference/grants') {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      const grantId = `grant-${grantCalls.length + 1}`;
+      grantCalls.push({
+        kind: 'create',
+        body,
+        authorization: request.headers.authorization,
+        idempotencyKey: request.headers['idempotency-key'],
+        grantId,
+      });
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({
+        grant_id: grantId,
+        gateway_base_url: `${fixtureUrl}/v1`,
+        capability: `capability-${grantId}`,
+        grant_expires_at: Math.floor(Date.now() / 1000) + 60,
+      }));
+      return;
+    }
+    const close = request.url.match(/^\/v1\/inference\/grants\/([^/]+)\/close$/u);
+    if (request.method === 'POST' && close) {
+      grantCalls.push({
+        kind: 'close',
+        grantId: close[1],
+        authorization: request.headers.authorization,
+      });
+      response.statusCode = 204;
+      response.end();
+      return;
+    }
+    if (request.method === 'POST' && request.url === '/v1/responses') {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      gatewayCalls.push({ body, authorization: request.headers.authorization });
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({
+        status: 'completed',
+        output: [{
+          type: 'message',
+          content: [{ type: 'output_text', text: 'BROKERED-RESPONSES-E2E' }],
+        }],
+        usage: { input_tokens: 11, output_tokens: 3 },
+      }));
+      return;
+    }
     if (request.method === 'POST' && request.url === '/v1/authorize') {
       const chunks = [];
       for await (const chunk of request) chunks.push(chunk);
@@ -104,11 +158,14 @@ async function startIamFixture() {
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
+  fixtureUrl = `http://127.0.0.1:${address.port}`;
   return {
-    url: `http://127.0.0.1:${address.port}`,
+    url: fixtureUrl,
     token: (subject, options) => accessToken(privateKey, subject, options),
     calls,
     cloudCalls,
+    grantCalls,
+    gatewayCalls,
     decide(value) { decision = value; },
     setCloudModels(value) { cloudModels = value; },
     close: () => new Promise((resolve) => server.close(resolve)),
@@ -131,7 +188,6 @@ async function req(base, method, uri, token, { apiKey = false, body } = {}) {
 async function main() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-cloud-iam-e2e-'));
   const iam = await startIamFixture();
-  const upstream = await startUpstream('mcp');
   const cachedToken = iam.token('account-cached');
   const explicitToken = iam.token('account-explicit');
   const expiredToken = iam.token('account-expired', { expiresIn: -1 });
@@ -150,10 +206,7 @@ async function main() {
         serviceToken: SERVICE_TOKEN,
       },
     });
-    ({ server } = spawnServer('management', PORT, {
-      ...env,
-      ...realServerEnv('mcp', upstream, { mode: 'management' }),
-    }));
+    ({ server } = spawnServer('management-providers', PORT, env));
     await waitForPort(PORT, 180_000, server);
     const base = `http://127.0.0.1:${PORT}`;
     const localWorkspace = fs.readFileSync(path.join(directory, 'platform-workspace-id'), 'utf8').trim();
@@ -233,9 +286,68 @@ async function main() {
       { body: { workspace_id: localWorkspace } },
     );
     assert.equal(result.status, 200, JSON.stringify(result.body));
-    assert.equal(result.body.candidates[0].model_id, 'gpt-5-e2e');
-    assert.equal(result.body.candidates[0].credential_present, false);
+    const candidate = result.body.candidates[0];
+    assert.equal(candidate.model_id, 'gpt-5-e2e');
+    assert.equal(candidate.credential_present, false);
     pass('Cloud model refresh and explicit brokered Profile preserve exact public identity');
+
+    // Execute the publication, not merely its preview. The authored model carries
+    // the preview's exact public binding; publish freezes its brokered provisioning.
+    const brokeredAgent = 'brokered-responses-agent';
+    result = await req(base, 'PUT', `/v1/config/agents/${brokeredAgent}`, cachedToken, {
+      body: {
+        id: brokeredAgent,
+        name: 'Brokered Responses E2E',
+        system: 'Use the managed Cloud model.',
+        max_steps: 2,
+        model: { mode: 'auto' },
+        tools: [],
+      },
+    });
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    result = await req(
+      base,
+      'POST',
+      `/v1/config/agents/${brokeredAgent}/publish`,
+      cachedToken,
+    );
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.equal(result.body.installed, true);
+
+    const client = new Anthropic({ apiKey: cachedToken, baseURL: base });
+    const betas = ['managed-agents-2026-04-01'];
+    const session = await client.beta.sessions.create({
+      agent: brokeredAgent,
+      environment_id: 'env_local',
+      betas,
+    });
+    await client.beta.sessions.events.send(session.id, {
+      events: [{ type: 'user.message', content: [{ type: 'text', text: 'hello cloud' }] }],
+      betas,
+    });
+    const events = [];
+    for await (const event of client.beta.sessions.events.list(session.id, { betas })) {
+      events.push(event);
+    }
+    assert.match(JSON.stringify(events), /BROKERED-RESPONSES-E2E/u);
+    assert.equal(iam.gatewayCalls.length, 1, JSON.stringify(iam.gatewayCalls));
+    assert.equal(iam.gatewayCalls[0].body.model, 'gpt-5-e2e');
+    assert.equal(iam.gatewayCalls[0].body.store, false);
+    const createdGrant = iam.grantCalls.find((call) => call.kind === 'create');
+    const closedGrant = iam.grantCalls.find((call) => call.kind === 'close');
+    assert.ok(createdGrant.idempotencyKey?.startsWith('awaken-'));
+    assert.equal(createdGrant.authorization, `Bearer ${cachedToken}`);
+    assert.deepEqual(
+      {
+        provider: createdGrant.body.provider,
+        model: createdGrant.body.original_model_id,
+        protocol: createdGrant.body.native_protocol,
+      },
+      { provider: 'openai', model: 'gpt-5-e2e', protocol: 'openai_responses' },
+    );
+    assert.equal(iam.gatewayCalls[0].authorization, `Bearer capability-${createdGrant.grantId}`);
+    assert.equal(closedGrant.grantId, createdGrant.grantId);
+    pass('brokered publication executes grant -> native Responses -> close with scoped capability');
 
     iam.setCloudModels([]);
     result = await req(base, 'POST', '/v1/config/brokered-models/refresh');
@@ -278,7 +390,6 @@ async function main() {
     console.log('E2E PASS: Awaken Cloud login and remote authorization stay outside resource services.');
   } finally {
     if (server) await stopServer(server);
-    upstream.close();
     await iam.close();
     fs.rmSync(directory, { recursive: true, force: true });
   }

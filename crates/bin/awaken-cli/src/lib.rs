@@ -1146,19 +1146,22 @@ async fn management_router_over(
         SharedHost::provision_local_workspace,
         SharedHost::provision_local_workspace_at,
     );
-    let brokered_client = remote_iam.as_ref().map(|authz| {
-        let base_url = cloud_api_base_url
-            .clone()
-            .expect("Awaken Cloud identity requires a Cloud inference API URL");
-        Arc::new(
-            awaken_server::brokered_inference::HttpBrokeredInferenceClient::new(
-                base_url,
-                authz.cloud_user_token(),
-                platform_workspace.clone(),
+    let brokered_client = remote_iam
+        .as_ref()
+        .and_then(|authz| authz.cloud_user_token())
+        .map(|token| {
+            let base_url = cloud_api_base_url
+                .clone()
+                .expect("Awaken Cloud identity requires a Cloud inference API URL");
+            Arc::new(
+                awaken_server::brokered_inference::HttpBrokeredInferenceClient::new(
+                    base_url,
+                    token,
+                    platform_workspace.clone(),
+                )
+                .unwrap_or_else(|error| panic!("Cloud inference configuration: {error}")),
             )
-            .unwrap_or_else(|error| panic!("Cloud inference configuration: {error}")),
-        )
-    });
+        });
     if let Some(root) = workspace_root.as_deref() {
         let migrated = awaken_server::migrate_legacy_skill_registry(root, skill_store.as_ref())
             .await
