@@ -1,21 +1,15 @@
-//! Level 2 — A2A outbound, end-to-end over the real wire.
-//!
-//! A parent awaken agent delegates (`agent_run`) to a *remote* agent that is
-//! itself an awaken A2A server. The delegation is fulfilled by posting a real
-//! `message:send` (serialized JSON) to that server through an [`Transport`],
-//! reading the completed `Task`, and resuming the parent with the reply — proving
-//! the inbound router and the outbound client agree on the same wire, in-process
-//! and without a socket (the transport calls the router via `oneshot`).
+//! A delegated A2A Agent uses the same publication, child Run, attempt registry,
+//! credential admission and commit path as a directly admitted remote Run.
 
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_protocol_a2a::{HttpTransport, Response, Transport};
-use awaken_run_executor_a2a::A2aRemoteAgent;
+use awaken_protocol_a2a::{Response, Transport};
+use awaken_run_executor_a2a::{A2aRunExecutor, TransportResolver};
 use awaken_runtime_contract::StaticPublishedAgentSnapshots;
 use awaken_runtime_contract::agent_bindings::AgentBindings;
-use awaken_runtime_contract::resolved::ModelBinding;
+use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
 use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshot};
 use awaken_scenario_host::{DelegatingModel, EchoModel, build_router};
 use awaken_server::SharedHost;
@@ -25,8 +19,6 @@ use axum::http::Request;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
-/// An `Transport` that calls an in-process awaken A2A server via `oneshot`, so
-/// a delegation crosses the real A2A wire without opening a socket.
 struct RouterTransport {
     app: Router,
 }
@@ -39,31 +31,45 @@ impl Transport for RouterTransport {
         path: &str,
         body: Option<Vec<u8>>,
     ) -> Result<Response, String> {
-        let req = Request::builder()
+        let request = Request::builder()
             .method(method)
             .uri(path)
             .header("content-type", "application/json")
             .body(body.map(Body::from).unwrap_or_else(Body::empty))
-            .map_err(|e| e.to_string())?;
-        let resp = self
+            .map_err(|error| error.to_string())?;
+        let response = self
             .app
             .clone()
-            .oneshot(req)
+            .oneshot(request)
             .await
-            .map_err(|e| e.to_string())?;
-        let status = resp.status().as_u16();
-        let bytes = resp
+            .map_err(|error| error.to_string())?;
+        let status = response.status().as_u16();
+        let body = response
             .into_body()
             .collect()
             .await
-            .map_err(|e| e.to_string())?
-            .to_bytes();
-        Ok(Response::new(status, bytes.to_vec()))
+            .map_err(|error| error.to_string())?
+            .to_bytes()
+            .to_vec();
+        Ok(Response::new(status, body))
     }
 }
 
-fn user(id: &str, text: &str) -> Message {
-    Message::text(MessageId(id.into()), Role::User, text)
+struct FixedTransportResolver(Arc<dyn Transport>);
+
+#[async_trait::async_trait]
+impl TransportResolver for FixedTransportResolver {
+    async fn resolve(
+        &self,
+        _candidate: &ResolvedModelCandidate,
+        _context: &awaken_runtime_contract::RuntimeRunContext,
+    ) -> Result<Arc<dyn Transport>, String> {
+        Ok(self.0.clone())
+    }
+}
+
+fn user(text: &str) -> Message {
+    Message::text(MessageId("user".into()), Role::User, text)
 }
 
 fn text_of(message: &Message) -> String {
@@ -77,38 +83,8 @@ fn text_of(message: &Message) -> String {
         .collect()
 }
 
-fn task_value(id: &str, state: &str, message: Option<&str>) -> serde_json::Value {
-    let mut status = serde_json::json!({ "state": state });
-    if let Some(text) = message {
-        status["message"] = serde_json::json!({
-            "kind": "message",
-            "messageId": "a",
-            "role": "agent",
-            "parts": [{ "kind": "text", "text": text }],
-        });
-    }
-    serde_json::json!({
-        "kind": "task",
-        "id": id,
-        "contextId": "c",
-        "status": status,
-    })
-}
-
-fn send_task_response(id: &str, state: &str, message: Option<&str>) -> Vec<u8> {
-    serde_json::to_vec(&serde_json::json!({
-        "task": task_value(id, state, message),
-    }))
-    .expect("canonical A2A task fixture serializes")
-}
-
-fn get_task_response(id: &str, state: &str, message: Option<&str>) -> Vec<u8> {
-    serde_json::to_vec(&task_value(id, state, message))
-        .expect("canonical A2A task fixture serializes")
-}
-
-fn delegating_host() -> SharedHost {
-    let snapshot = ExecutableAgentSnapshot::builder("assistant")
+fn delegating_host(transport: Arc<dyn Transport>) -> SharedHost {
+    let parent = ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("default", "parent", "default"))
         .tools(awaken_runtime_host::authorable_tools())
         .agent_bindings(AgentBindings {
@@ -116,424 +92,55 @@ fn delegating_host() -> SharedHost {
             ..Default::default()
         })
         .build();
-    let publications =
-        StaticPublishedAgentSnapshots::try_new([snapshot]).expect("valid parent publication");
+    let remote = ExecutableAgentSnapshot::builder("researcher")
+        .resolved_model(ResolvedModelCandidate::remote(
+            ModelBinding::new("remote", "", "a2a:http://remote.invalid"),
+            awaken_tenancy::ScopeId::from("default"),
+            None,
+            "test-fixed-transport",
+        ))
+        .build();
+    let publications = StaticPublishedAgentSnapshots::try_new([parent, remote])
+        .expect("parent and delegated remote publications are valid");
     SharedHost::new(Arc::new(DelegatingModel), "parent")
         .with_agent_publications(Arc::new(publications))
+        .with_remote_attempt_executor(awaken_runtime_host::RemoteAttemptInstallation {
+            executor: Arc::new(A2aRunExecutor::new(Arc::new(FixedTransportResolver(
+                transport,
+            )))),
+            credential_realization: Default::default(),
+        })
 }
 
 #[tokio::test]
-async fn a_delegate_call_is_fulfilled_over_the_a2a_wire() {
-    // The remote agent: an awaken A2A server backed by an echo model.
-    let remote = build_router(Arc::new(EchoModel), "remote");
-    let transport = Arc::new(RouterTransport { app: remote });
-
-    // The parent agent delegates to "researcher", which is a REMOTE A2A agent.
-    // `DelegatingModel` calls `agent_run{agent_id: "researcher", input: "do the
-    // research"}`, then replies "delegate said: <result>".
-    let host =
-        delegating_host().with_remote_agent("researcher", Arc::new(A2aRemoteAgent::new(transport)));
-
-    host.run(None, "t", vec![user("u1", "research the answer")])
-        .await
-        .unwrap();
-
-    let history = host.committed_messages("t").await;
-    let reply = history
-        .iter()
-        .rev()
-        .find(|m| matches!(m.role, Role::Assistant) && text_of(m).contains("delegate said:"))
-        .map(text_of)
-        .expect("the parent commits a reply built from the remote agent's result");
-    assert!(
-        reply.contains("delegate said: Echo: do the research"),
-        "the remote A2A agent's reply flowed back to the parent over the wire: {reply:?}"
-    );
-}
-
-/// A retryable remote transport failure returns control to the scheduler instead
-/// of fabricating a terminal tool result for the parent model.
-#[tokio::test]
-async fn a_remote_transport_failure_preserves_the_open_child_run() {
-    struct BrokenTransport;
-    #[async_trait::async_trait]
-    impl Transport for BrokenTransport {
-        async fn request(
-            &self,
-            _method: &str,
-            _path: &str,
-            _body: Option<Vec<u8>>,
-        ) -> Result<Response, String> {
-            Err("connection refused".to_string())
-        }
-    }
-
-    let host = delegating_host().with_remote_agent(
-        "researcher",
-        Arc::new(A2aRemoteAgent::new(Arc::new(BrokenTransport))),
-    );
-
-    let error = match host
-        .run(None, "t", vec![user("u1", "research the answer")])
-        .await
-    {
-        Ok(_) => panic!("a retryable transport failure must reach the run scheduler"),
-        Err(error) => error,
-    };
-    assert!(
-        error.to_string().contains("connection refused"),
-        "the scheduler receives the transport cause: {error}"
-    );
-
-    let history = host.committed_messages("t").await;
-    assert!(
-        !history
-            .iter()
-            .any(|m| matches!(m.role, Role::Assistant) && text_of(m).contains("delegate said:")),
-        "a transient child failure must not be committed as a completed delegation"
-    );
-}
-
-/// The built-in HTTP transport against a real remote A2A server bound to a
-/// localhost socket: a delegation crosses a genuine TCP + HTTP boundary.
-#[tokio::test]
-async fn a_delegate_call_reaches_a_remote_over_real_http() {
-    // Bind a real awaken A2A server on an ephemeral port.
-    let remote = build_router(Arc::new(EchoModel), "remote");
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        axum::serve(listener, remote).await.unwrap();
-    });
-
-    let transport = Arc::new(HttpTransport::new(format!("http://{addr}")));
-    let host =
-        delegating_host().with_remote_agent("researcher", Arc::new(A2aRemoteAgent::new(transport)));
-
-    host.run(None, "t", vec![user("u1", "research the answer")])
-        .await
-        .unwrap();
-
-    let history = host.committed_messages("t").await;
-    let reply = history
-        .iter()
-        .rev()
-        .find(|m| matches!(m.role, Role::Assistant) && text_of(m).contains("delegate said:"))
-        .map(text_of)
-        .expect("the parent commits a reply from the remote HTTP agent");
-    assert!(
-        reply.contains("delegate said: Echo: do the research"),
-        "the remote reply crossed a real HTTP boundary: {reply:?}"
-    );
-}
-
-/// An async remote agent that returns a `working` task first and completes only
-/// after a poll: the outbound client polls `tasks/get` to a terminal state and the
-/// reply reaches the parent. Mirrors goal/awaken-next `poll_to_completion`.
-#[tokio::test]
-async fn a_working_task_is_polled_to_completion() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    /// Returns a `working` task on `message:send`, then a `completed` task on the
-    /// first `tasks/get`.
-    struct PollingTransport {
-        gets: AtomicUsize,
-    }
-    #[async_trait::async_trait]
-    impl Transport for PollingTransport {
-        async fn request(
-            &self,
-            method: &str,
-            _path: &str,
-            _body: Option<Vec<u8>>,
-        ) -> Result<Response, String> {
-            let body = if method == "POST" {
-                // message:send → a working task with an id to poll.
-                send_task_response("task-1", "working", None)
-            } else {
-                // tasks/get → the canonical raw Task, carrying the reply.
-                self.gets.fetch_add(1, Ordering::SeqCst);
-                get_task_response("task-1", "completed", Some("polled answer"))
-            };
-            Ok(Response::new(200, body))
-        }
-    }
-
-    let transport = Arc::new(PollingTransport {
-        gets: AtomicUsize::new(0),
-    });
-    let host =
-        delegating_host().with_remote_agent("researcher", Arc::new(A2aRemoteAgent::new(transport)));
-
-    host.run(None, "t", vec![user("u1", "research the answer")])
-        .await
-        .unwrap();
-
-    let history = host.committed_messages("t").await;
-    let reply = history
-        .iter()
-        .rev()
-        .find(|m| matches!(m.role, Role::Assistant) && text_of(m).contains("delegate said:"))
-        .map(text_of)
-        .expect("the parent commits a reply from the polled task");
-    assert!(
-        reply.contains("delegate said: polled answer"),
-        "a working task was polled to completion and its reply reached the parent: {reply:?}"
-    );
-}
-
-/// A parent interrupt during a remote delegation cancels the remote task and the
-/// delegation ends as a tool error — mirrors goal's `RemoteAbort` / tasks:cancel.
-#[tokio::test]
-async fn a_parent_interrupt_cancels_the_remote_task() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use tokio::sync::Notify;
-
-    /// A remote whose task never completes; it records a `tasks:cancel` and signals
-    /// each poll so the test can interrupt mid-flight.
-    struct HangingTransport {
-        polled: Arc<Notify>,
-        cancelled: Arc<AtomicBool>,
-    }
-    #[async_trait::async_trait]
-    impl Transport for HangingTransport {
-        async fn request(
-            &self,
-            method: &str,
-            path: &str,
-            _body: Option<Vec<u8>>,
-        ) -> Result<Response, String> {
-            if path.ends_with(":cancel") {
-                self.cancelled.store(true, Ordering::SeqCst);
-                return Ok(Response::new(200, b"{}".to_vec()));
-            }
-            if method == "GET" {
-                self.polled.notify_one();
-                return Ok(Response::new(
-                    200,
-                    get_task_response("task-1", "working", None),
-                ));
-            }
-            Ok(Response::new(
-                200,
-                send_task_response("task-1", "working", None),
-            ))
-        }
-    }
-
-    let polled = Arc::new(Notify::new());
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let transport = Arc::new(HangingTransport {
-        polled: polled.clone(),
-        cancelled: cancelled.clone(),
-    });
-    let host = Arc::new(
-        delegating_host().with_remote_agent("researcher", Arc::new(A2aRemoteAgent::new(transport))),
-    );
-
-    let driver = host.clone();
-    let mut task =
-        tokio::spawn(async move { driver.run(None, "t", vec![user("u1", "research")]).await });
-
-    // Causal graph:
-    // send working -> driver polls -> notify -> interrupt -> remote cancel -> turn ends
-    //                    | decode/driver failure -----> fail immediately
-    //                    | no progress --------------> bounded timeout
+async fn delegated_remote_uses_the_published_child_run_and_attempt_executor() {
+    // Cause/effect graph:
+    // C1 parent publication permits researcher; C2 researcher publication pins
+    // a2a:*; C3 one remote attempt executor is installed.
+    // E1 agent_run creates the stable child Run; E2 exact backend routing sends
+    // message:send through A2A; E3 child and parent commit ordinary results.
     //
-    // Decision table:
-    // | poll observed | driver ended | deadline | outcome                 |
-    // | yes           | no           | no       | interrupt and cancel    |
-    // | no            | yes          | no       | fail with driver result |
-    // | no            | no           | yes      | fail as stalled         |
-    // The select keeps a malformed fixture or future driver regression from
-    // deadlocking the entire workspace test run.
-    tokio::select! {
-        _ = polled.notified() => {}
-        result = &mut task => {
-            match result {
-                Ok(Ok(_)) => panic!("remote driver completed before its first poll"),
-                Ok(Err(error)) => panic!("remote driver failed before its first poll: {error}"),
-                Err(error) => panic!("remote driver task failed before its first poll: {error}"),
-            }
-        }
-        _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
-            panic!("remote driver did not poll within the test deadline");
-        }
-    }
-    host.interrupt("t").await.unwrap();
+    // Decision rule U1: C1+C2+C3 => E1+E2+E3. Missing C1 is covered by the
+    // delegation target gate; missing C2/C3 is covered by fail-closed resolver
+    // tests in awaken-runtime-host.
+    let transport = Arc::new(RouterTransport {
+        app: build_router(Arc::new(EchoModel), "remote"),
+    });
+    let host = delegating_host(transport);
 
-    tokio::time::timeout(std::time::Duration::from_secs(5), task)
+    host.run(None, "thread", vec![user("research the answer")])
         .await
-        .expect("the turn returns promptly after cancel")
-        .unwrap()
-        .expect("the turn returns after cancel");
-    assert!(
-        cancelled.load(Ordering::SeqCst),
-        "the remote task received tasks:cancel"
-    );
-    // The interrupt cancels the delegation and ends the run (kernel-observed), so
-    // the thread is not left awaiting or looping.
-    assert!(
-        !host.is_awaiting("t").await,
-        "the run is not left awaiting after the interrupt"
-    );
-}
+        .expect("delegated A2A child settles through the ordinary Run path");
 
-/// A remote agent that asks for input awaits the *parent* for the user (rather than
-/// erroring): delivering input via `resume` forwards a follow-up `message:send`,
-/// and the remote then completes. Mirrors goal/awaken-next `InputRequired` →
-/// user-visible wait.
-#[tokio::test]
-async fn a_remote_input_required_awaits_the_parent_then_resumes() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    /// First `message:send` → input-required; the second (the user's delivered
-    /// input) → completed.
-    struct TwoStepTransport {
-        sends: AtomicUsize,
-    }
-    #[async_trait::async_trait]
-    impl Transport for TwoStepTransport {
-        async fn request(
-            &self,
-            method: &str,
-            _path: &str,
-            _body: Option<Vec<u8>>,
-        ) -> Result<Response, String> {
-            assert_eq!(method, "POST", "only message:send is used (no polling)");
-            let body = if self.sends.fetch_add(1, Ordering::SeqCst) == 0 {
-                send_task_response("t", "input-required", None)
-            } else {
-                send_task_response("t", "completed", Some("final answer"))
-            };
-            Ok(Response::new(200, body))
-        }
-    }
-
-    let host = delegating_host().with_remote_agent(
-        "researcher",
-        Arc::new(A2aRemoteAgent::new(Arc::new(TwoStepTransport {
-            sends: AtomicUsize::new(0),
-        }))),
-    );
-
-    // The turn awaits: the remote asked for input, so the parent waits for the user.
-    let turn = host
-        .run(None, "t", vec![user("u1", "research the answer")])
+    let reply = host
+        .committed_messages("thread")
         .await
-        .unwrap();
-    let pending = turn
-        .pending
-        .expect("the parent awaits awaiting remote input");
-    assert!(
-        pending.client_executed,
-        "the await asks the user to supply input"
-    );
-
-    // The user supplies the input; it is forwarded and the remote completes.
-    host.resume(
-        "t",
-        &pending.tool_use_id,
-        awaken_server::HostResume::ClientResult {
-            content: "the missing detail".into(),
-            is_error: false,
-        },
-    )
-    .await
-    .unwrap();
-
-    let history = host.committed_messages("t").await;
-    let reply = history
         .iter()
         .rev()
-        .find(|m| matches!(m.role, Role::Assistant) && text_of(m).contains("delegate said:"))
+        .find(|message| {
+            matches!(message.role, Role::Assistant) && text_of(message).contains("delegate said:")
+        })
         .map(text_of)
-        .expect("the parent completes after the user delivers input");
-    assert!(
-        reply.contains("delegate said: final answer"),
-        "the forwarded input let the remote complete: {reply:?}"
-    );
-}
-
-/// A remote agent's A2A agent card is discoverable through the transport (outbound
-/// discovery), so a coordinator can inspect a remote before delegating.
-#[tokio::test]
-async fn a_remote_agent_card_is_discoverable() {
-    let remote = build_router(Arc::new(EchoModel), "remote");
-    let transport = Arc::new(RouterTransport { app: remote });
-    let host = SharedHost::new(Arc::new(EchoModel), "parent")
-        .with_remote_agent("researcher", Arc::new(A2aRemoteAgent::new(transport)));
-
-    // The card is neutral JSON (the wire shape lives in the adapter, not host state).
-    let card = host.remote_agent_card("researcher").await.unwrap();
-    assert!(
-        card["name"].as_str().is_some_and(|n| !n.is_empty()),
-        "the card advertises a name"
-    );
-    assert!(
-        card["protocolVersion"]
-            .as_str()
-            .is_some_and(|v| !v.is_empty()),
-        "the card advertises the A2A protocol version"
-    );
-}
-
-/// A completed task's artifacts (A2A `TextAndArtifacts`) are folded into the
-/// delegate reply, not dropped.
-#[tokio::test]
-async fn remote_artifacts_are_included_in_the_reply() {
-    struct ArtifactTransport;
-    #[async_trait::async_trait]
-    impl Transport for ArtifactTransport {
-        async fn request(
-            &self,
-            _method: &str,
-            _path: &str,
-            _body: Option<Vec<u8>>,
-        ) -> Result<Response, String> {
-            let body = serde_json::to_vec(&serde_json::json!({
-                "task": {
-                    "kind": "task",
-                    "id": "t",
-                    "contextId": "c",
-                    "status": {
-                        "state": "completed",
-                        "message": {
-                            "kind": "message",
-                            "messageId": "a",
-                            "role": "agent",
-                            "parts": [{ "kind": "text", "text": "summary" }],
-                        },
-                    },
-                    "artifacts": [{
-                        "artifactId": "report",
-                        "parts": [{ "kind": "text", "text": "the report body" }],
-                    }],
-                }
-            }))
-            .expect("canonical artifact task fixture serializes");
-            Ok(Response::new(200, body))
-        }
-    }
-
-    let host = delegating_host().with_remote_agent(
-        "researcher",
-        Arc::new(A2aRemoteAgent::new(Arc::new(ArtifactTransport))),
-    );
-
-    host.run(None, "t", vec![user("u1", "research the answer")])
-        .await
-        .unwrap();
-
-    let history = host.committed_messages("t").await;
-    let reply = history
-        .iter()
-        .rev()
-        .find(|m| matches!(m.role, Role::Assistant) && text_of(m).contains("delegate said:"))
-        .map(text_of)
-        .expect("the parent commits a reply from the completed task");
-    assert!(
-        reply.contains("summary") && reply.contains("the report body"),
-        "the task message and its artifact both reach the parent: {reply:?}"
-    );
+        .expect("parent commits the child result");
+    assert!(reply.contains("delegate said: Echo: do the research"));
 }

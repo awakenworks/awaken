@@ -464,9 +464,10 @@ state before polling. A cold replacement therefore reattaches with `tasks/get`, 
 awaiting run resumes on the committed context, and durable cancellation addresses
 the committed task before the local `Cancelled` commit. Poll and cancel delivery
 failures leave dispatch retryable; no recovery path sends a second initial message.
-Terminal settlement removes the opaque reference. The peer-execution and
-`agent_run` delegation adapters share one A2A task driver so lifecycle semantics do
-not fork at the wire edge (G39).
+Terminal settlement removes the opaque reference. `agent_run` creates an ordinary
+child Run from the target publication and reaches the same A2A
+`RunAttemptExecutor` as direct peer admission; no remote directory, transport,
+card route or protocol lifecycle is delegation-owned (G39).
 
 ### D10 — Lifecycle end: supersede → disable → archive → erase
 
@@ -779,17 +780,18 @@ Completion evidence is maintained in ADR-0069: the existing pool owns policy
 ordering, resolver owns default/Exact/Pool selection, publication freezes the
 chosen revision, and all three former Server selectors are absent.
 
-**E `authed-remote`** — *A remote agent authenticates exactly like a native one; only the inject exit differs.*
+**E `authed-remote`** — *Complete (2026-07-28). A remote agent authenticates through the same claim-frozen credential path; only the injection exit differs.*
 Adds: counterparty generalization of `provider_id` (docs + origin tags, zero schema); activation-aware transport seam; `connection_plan::CredentialResolver` as adapter over `resolve_credential`.
 Retires: hand-built transports at `with_remote_a2a` call sites; the URL-only `TransportFactory` as production wiring (`over_http()` stays test-only); `NoAuth` as the silent default where a card demands auth.
 Guard: card-demands-auth-with-no-credential fails closed; anonymous endpoints byte-identical to today.
 Done when: one origin-tagged credential authenticates both A2A paths (peer + delegation) in tests with zero per-path wiring.
 
-Implementation progress (2026-07-28): peer execution now publishes a closed `ModelProvisioning::Remote` containing the exact optional `CredentialAccess` and Agent Card security fingerprint.
-One canonical Agent Card projection accepts anonymous or supported single-header requirements, derives the endpoint-origin credential pool through the existing resolver, and fails closed for unsupported or unsatisfied authentication.
-The shared attempt compiler admits Remote only as `HttpHeader` + `WorkerRelay`; the existing pinned materializer verifies claim, revision, holder and receipt before the host builds the transport.
-Launch rediscovers the card and rejects fingerprint drift. `A2aRunExecutor` consumes an async `TransportResolver`; its former production `over_http()` path is test-only.
-The older `RemoteAgentDirectory` delegation adapter still holds a preconstructed transport and therefore remains the final E retirement gate: Phase E is not complete until delegation consumes the same publication/claim-frozen resolver or is consolidated into the ordinary child-Run route.
+Completion evidence (2026-07-28): publication pins `ModelProvisioning::Remote`,
+optional `CredentialAccess` and card fingerprint. The canonical card projection,
+resolver, claim compiler and pinned materializer fail closed on auth, revision,
+holder, receipt or fingerprint drift. The former `RemoteAgent*`, `with_remote_agent` and delegation card route are absent. Direct and durable
+children select the one `A2aRunExecutor` from the published backend and always
+carry placement; loopback, placement and materializer tests cover the chain.
 
 **F `declared-hand`** — *Hand becomes declared intent; placement stays
 host-side; the snapshot stays placement-free.*
@@ -842,7 +844,7 @@ Dependencies: A → D (codec); B independent; C independent; E after D
 (derivation); F after B (kind); G1/G2/H independent after C; I after B (the
 lifecycle gate reuses the publish/admission boundary).
 
-Commitment and order: **0, C, A, B and D are committed; E is in progress** — C
+Commitment and order: **0, C, A, B, D and E are committed** — C
 first because it is pure wiring with immediate production value (the two
 already-merged per-agent-CLI capabilities go live). **F/G1/G2/H/I are
 trigger-gated**, designed now, built when their trigger fires: F on the first

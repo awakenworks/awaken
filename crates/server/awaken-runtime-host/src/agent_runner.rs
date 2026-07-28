@@ -25,11 +25,12 @@ use awaken_run_ingress::{
     AnyDispatchStore, ClaimedRunCommit, Clock, DispatchWorker, PendingInput, RunDispatch,
     SystemClock,
 };
+use awaken_runtime::RunInput;
 use awaken_runtime::memory::MemoryCommitCoordinator;
-use awaken_runtime::{DirectRunIngress, RunInput, RunService};
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::delegation::RunDelegationService;
+use awaken_runtime_contract::execution::{AttemptExecutorRegistry, RunAttemptExecutor};
 use awaken_runtime_contract::llm::{LlmExecutor, ThreadUsage};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -89,20 +90,141 @@ pub(crate) struct RunScheduler {
     pub(crate) session_resources: Option<awaken_protocol_managed::SessionResourceManifest>,
 }
 
+/// Execution-edge adapters already installed by the host composition root.
+///
+/// A delegated child selects only through its immutable `backend_ref`; this
+/// value carries implementations and credential-realization evidence, never a
+/// second target directory or backend-selection rule.
+#[derive(Clone, Default)]
+pub(crate) struct ChildExecutionAdapters {
+    pub(crate) remote: Option<Arc<dyn RunAttemptExecutor>>,
+    pub(crate) remote_credentials: awaken_runtime_contract::CredentialRealizationCapabilities,
+}
+
+struct ChildCredentialRecorder {
+    ownership: Arc<dyn awaken_runtime_contract::AttemptOwnershipVerifier>,
+    bindings: Vec<awaken_runtime_contract::AttemptCredentialBinding>,
+}
+
+#[async_trait::async_trait]
+impl awaken_runtime_contract::CredentialRealizationRecorder for ChildCredentialRecorder {
+    async fn record(
+        &self,
+        receipt: awaken_runtime_contract::CredentialRealizationReceipt,
+    ) -> Result<(), awaken_runtime_contract::CredentialRealizationRecordError> {
+        self.ownership.verify_current().await.map_err(|error| {
+            awaken_runtime_contract::CredentialRealizationRecordError(error.to_string())
+        })?;
+        awaken_runtime_contract::verify_credential_realization_receipt(&self.bindings, &receipt)
+            .map_err(|error| {
+                awaken_runtime_contract::CredentialRealizationRecordError(error.to_string())
+            })
+    }
+}
+
+fn child_attempt_executor(
+    runtime: Arc<awaken_runtime::Runtime>,
+    snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
+    adapters: &ChildExecutionAdapters,
+) -> Result<Arc<dyn RunAttemptExecutor>, AgentRunError> {
+    let mut registry = AttemptExecutorRegistry::new();
+    registry
+        .register_native(runtime)
+        .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
+    for candidate in snapshot.resolved_spec.candidate_bindings() {
+        if matches!(
+            awaken_runtime_contract::resolved::Backend::from_ref(&candidate.backend_ref),
+            awaken_runtime_contract::resolved::Backend::Remote { .. }
+        ) && !registry.supports(&candidate.backend_ref)
+        {
+            let remote = adapters.remote.clone().ok_or_else(|| {
+                AgentRunError::Configuration(format!(
+                    "delegate publication requires unavailable remote backend {:?}",
+                    candidate.backend_ref
+                ))
+            })?;
+            registry
+                .register(candidate.backend_ref.clone(), remote)
+                .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
+        }
+    }
+    Ok(Arc::new(registry))
+}
+
+fn bind_direct_child_credentials(
+    activation: &RunActivation,
+    mut context: RuntimeRunContext,
+    adapters: &ChildExecutionAdapters,
+) -> Result<RuntimeRunContext, AgentRunError> {
+    let candidates = activation
+        .snapshot
+        .resolved_spec
+        .execution_candidates(activation.model_ref_override.as_deref())
+        .into_iter()
+        .filter(|candidate| {
+            matches!(
+                candidate.provisioning,
+                awaken_runtime_contract::resolved::ModelProvisioning::Remote { .. }
+            )
+        })
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return Ok(context);
+    }
+    let ownership = context.ownership.clone().ok_or_else(|| {
+        AgentRunError::Configuration(
+            "direct delegated remote execution requires parent attempt ownership".to_string(),
+        )
+    })?;
+    let epoch = LOCAL_CHILD_ATTEMPT_EPOCH
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        .max(1);
+    let now_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or_default();
+    let holder = awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native()
+        .inference_holder;
+    let bindings = awaken_runtime_contract::compile_candidate_credential_bindings(
+        &candidates,
+        Some(&holder),
+        &adapters.remote_credentials,
+        epoch,
+        now_unix_ms,
+    )
+    .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
+    if !bindings.is_empty() {
+        context = context.with_credential_realization(
+            awaken_runtime_contract::AttemptCredentialRealization::new(
+                bindings.clone(),
+                Arc::new(ChildCredentialRecorder {
+                    ownership,
+                    bindings,
+                }),
+            ),
+        );
+    }
+    Ok(context)
+}
+
+static LOCAL_CHILD_ATTEMPT_EPOCH: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
+
 fn child_dispatch_request(
     activation: RunActivation,
     parent_thread_id: ThreadId,
     session_resources: Option<awaken_protocol_managed::SessionResourceManifest>,
 ) -> Result<RunDispatch, AgentRunError> {
+    let placement = crate::host::remote_worker_placement(
+        &activation.snapshot.resolved_spec,
+        session_resources.as_ref(),
+        false,
+    );
     let mut request = RunDispatch::new(activation)
         .for_session(parent_thread_id)
-        .with_traceparent(awaken_observability::current_traceparent());
+        .with_traceparent(awaken_observability::current_traceparent())
+        .with_placement(placement);
     if let Some(resources) = session_resources {
-        let placement = crate::host::remote_worker_placement(
-            &request.activation.snapshot.resolved_spec,
-            Some(&resources),
-            false,
-        );
         let envelope =
             crate::provisioning::encode_session_resource_envelope(&resources).map_err(|error| {
                 AgentRunError::Configuration(format!(
@@ -113,8 +235,7 @@ fn child_dispatch_request(
             .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
                 awaken_tenancy::ScopeId::from(resources.workspace_id.clone()),
             ))
-            .with_session_resources(envelope)
-            .with_placement(placement);
+            .with_session_resources(envelope);
     }
     Ok(request)
 }
@@ -237,6 +358,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
     run_delegation: Option<Arc<dyn RunDelegationService>>,
     parent_thread_id: ThreadId,
     scheduler: Option<RunScheduler>,
+    adapters: ChildExecutionAdapters,
 ) -> Result<AgentRunBoundary, AgentRunError> {
     let config = config.clone();
     let thread = child_run_id.0.clone();
@@ -321,6 +443,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
         // which can re-claim it and fence the still-running foreground attempt.
         let now_ms = SystemClock.now_ms();
         let runtime = Arc::new(runtime);
+        let attempt_executor = child_attempt_executor(runtime.clone(), &config, &adapters)?;
         let mut worker = DispatchWorker::from_parts(
             runtime,
             scheduler.store.clone(),
@@ -328,7 +451,9 @@ pub(crate) async fn run_configured_agent_until_boundary(
             reader.clone(),
             scheduler.owner,
         )
-        .with_context(context.clone());
+        .with_context(context.clone())
+        .with_local_credential_capabilities(adapters.remote_credentials.clone());
+        worker.install_attempt_executor(attempt_executor);
         if let Some(claimed_commit) = scheduler.claimed_commit {
             worker = worker.with_claimed_commit(claimed_commit);
         }
@@ -404,10 +529,17 @@ pub(crate) async fn run_configured_agent_until_boundary(
             _ => unreachable!("operation construction is exhaustive"),
         }
     } else {
-        let runs = DirectRunIngress::new(Arc::new(runtime));
+        let runtime = Arc::new(runtime);
+        let attempt_executor = child_attempt_executor(runtime, &config, &adapters)?;
         match operation {
-            (Some(activation), None) => runs.start(activation, context).await,
-            (Some(activation), Some(command)) => runs.resume(activation, command, context).await,
+            (Some(activation), None) => {
+                let context = bind_direct_child_credentials(&activation, context, &adapters)?;
+                attempt_executor.execute(activation, context).await
+            }
+            (Some(activation), Some(command)) => {
+                let context = bind_direct_child_credentials(&activation, context, &adapters)?;
+                attempt_executor.resume(activation, command, context).await
+            }
             _ => unreachable!("operation construction is exhaustive"),
         }
         .map_err(AgentRunError::Runtime)?
@@ -688,6 +820,7 @@ pub(crate) async fn run_agent_until_boundary(
         execution.run_delegation,
         request.parent_thread_id,
         execution.scheduler,
+        ChildExecutionAdapters::default(),
     )
     .await
 }
@@ -897,6 +1030,49 @@ mod tests {
         assert_eq!(carried, manifest);
         assert!(
             request
+                .placement
+                .required_capabilities
+                .contains(awaken_run_ingress::SESSION_RESOURCES_CAPABILITY)
+        );
+    }
+
+    #[test]
+    fn child_dispatch_always_carries_backend_placement_without_resources() {
+        // Cause/effect graph:
+        // C1 the child publication pins a Remote backend; C2 the child has no
+        // Session resources. E1 admission still requires the A2A executor
+        // capability; E2 no resource capability is invented.
+        //
+        // Decision rule P1: C1+C2 => E1+E2. The resource-present/provider case
+        // is rule P2 in `child_dispatch_reuses_publication_pinned_model_candidates`.
+        // Together they prevent optional resource staging from controlling
+        // backend or credential placement.
+        let mut config = agent("remote-child", "remote child");
+        config.resolved_spec.model_binding = ResolvedModelCandidate::remote(
+            ModelBinding::new("remote", "", "a2a:https://agent.example"),
+            awaken_tenancy::ScopeId::from("default"),
+            None,
+            "sha256:card",
+        );
+        let runtime = awaken_runtime::Runtime::new();
+        let (_, activation) = runtime.prepare(
+            &config,
+            "remote-child-thread".to_string(),
+            RunInput::from(vec![user("go")]),
+        );
+
+        let request =
+            child_dispatch_request(activation, ThreadId("parent-thread".to_string()), None)
+                .expect("build remote child dispatch");
+
+        assert!(
+            request
+                .placement
+                .required_capabilities
+                .contains(awaken_runtime_contract::A2A_RUNTIME_CAPABILITY)
+        );
+        assert!(
+            !request
                 .placement
                 .required_capabilities
                 .contains(awaken_run_ingress::SESSION_RESOURCES_CAPABILITY)

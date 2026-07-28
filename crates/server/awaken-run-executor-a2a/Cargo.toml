@@ -9,8 +9,7 @@ awaken-runtime-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-protocol-a2a.workspace = true
 async-trait.workspace = true
-# The RemoteAgent adapter polls an A2A task to a terminal state (tokio time/select,
-# cancellation-aware) and serializes the discovery card to neutral JSON.
+# The Run-attempt adapter polls an A2A task to a lifecycle boundary.
 tokio = { workspace = true }
 serde_json.workspace = true
 

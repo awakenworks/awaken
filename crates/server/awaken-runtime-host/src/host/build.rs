@@ -2,7 +2,7 @@
 //! `with_*` methods, per-thread registration, and the process dispatch pool.
 
 use super::*;
-use awaken_runtime_contract::delegation::{RemoteAgent, RunDelegationService};
+use awaken_runtime_contract::delegation::RunDelegationService;
 
 /// Backend-neutral resource ports selected atomically by an outer composition
 /// root. This is a wiring value, not a resource aggregate or authorization
@@ -255,7 +255,6 @@ impl SharedHost {
             local_workspace: local_workspace.clone(),
             session_slots: session_slots.clone(),
             skills,
-            remote_agents: crate::delegate::RemoteAgentDirectory::new(),
             // Subagents share the parent's sandbox by default (`默认共用`).
             skill_fork_placement: crate::skills::SkillForkPlacement::SharedSession,
             plugin_ids: Vec::new(),
@@ -792,19 +791,6 @@ impl SharedHost {
         self
     }
 
-    /// Register a remote Agent behind the neutral [`RemoteAgent`] interface. The
-    /// composition root builds the protocol adapter (e.g. an A2A delegate over an
-    /// `HttpTransport`) and injects it here, so the host names no wire type.
-    pub fn with_remote_agent(
-        mut self,
-        agent_id: impl Into<String>,
-        delegate: Arc<dyn RemoteAgent>,
-    ) -> Self {
-        let agent_id = agent_id.into();
-        self.remote_agents.add_remote(agent_id, delegate);
-        self
-    }
-
     /// Build the per-session delegation executor. `sandbox` is the calling thread's
     /// live environment: a native delegate shares it, so the parent
     /// and its native child collaborate in one Session-owned workspace.
@@ -818,7 +804,6 @@ impl SharedHost {
         if allowed_targets.is_empty() {
             return Ok(None);
         }
-        let remote_agents = self.remote_agents.clone();
         let scheduler = if self.deployment.durable {
             let recovery_projection = commit.recovery_projection();
             let claimed_commit = self
@@ -842,7 +827,10 @@ impl SharedHost {
             self.llm.clone(),
             sandbox,
             allowed_targets,
-            remote_agents,
+            crate::agent_runner::ChildExecutionAdapters {
+                remote: self.remote_attempt_executor.clone(),
+                remote_credentials: self.remote_credential_realization.clone(),
+            },
         )
         .with_publications(
             self.agent_publications.clone(),

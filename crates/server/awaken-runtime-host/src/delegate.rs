@@ -2,25 +2,22 @@
 //!
 //! This is the composition-root implementation of [`RunDelegationService`].
 //! The kernel routes the delegation tool to it; here, native (in-process Agent Run)
-//! and remote agents are *peer* implementations chosen by `agent_id`. A remote agent
-//! is reached through the neutral [`RemoteAgent`] interface, so the wire (message shape,
-//! task polling, discovery card) lives entirely in the adapter that implements it
-//! (e.g. `awaken-run-executor-a2a`); this module owns only the *dispatch* — routing an
-//! `agent_id` to its native or remote Agent execution — and names no protocol.
+//! and remote agents are peer backends selected only from the delegated Agent's
+//! immutable publication. This module owns child-Run admission; ordinary attempt
+//! routing owns the Native/ACP/A2A execution edge.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_ext_builtin_tools::AGENT_RUN;
 use awaken_runtime_contract::delegation::{
     ChildRunCancellation, DelegationExecutionError, DelegationRequest, DelegationResume,
-    DelegationStep, DelegationToolInput, RemoteAgent, RunDelegationService,
+    DelegationStep, DelegationToolInput, RunDelegationService,
 };
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resolved::CatalogFingerprint;
 use awaken_runtime_contract::resolver::PublishedAgentSnapshotSource;
-use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshot};
 #[cfg(test)]
 use awaken_sandbox_local::LocalProvider;
@@ -28,41 +25,10 @@ use awaken_sandbox_local::LocalProvider;
 use crate::agent_runner::{AgentRunBoundary, AgentRunSandbox, ChildRunRequest, RunScheduler};
 use serde_json::Value;
 
-use crate::host::{HostError, SharedHost};
-
 #[derive(serde::Serialize)]
 struct NativeDelegationContinuation {
     kind: &'static str,
     child_run_id: awaken_agent_contract::agent::run::Id,
-}
-
-/// Remote placement adapters keyed by published Agent identity.
-///
-/// This directory owns routing only. Executable publications own Agent identity,
-/// delegation capability, and the targets visible to a model.
-#[derive(Clone, Default)]
-pub(crate) struct RemoteAgentDirectory {
-    /// Agent id → neutral remote placement adapter. Native identities and
-    /// capabilities are owned solely by executable publications.
-    remotes: HashMap<String, Arc<dyn RemoteAgent>>,
-}
-
-impl RemoteAgentDirectory {
-    /// An empty placement directory.
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
-    /// Register a remote placement adapter. Publication still decides whether an
-    /// Agent may address this identity.
-    pub(crate) fn add_remote(&mut self, agent_id: String, delegate: Arc<dyn RemoteAgent>) {
-        self.remotes.insert(agent_id, delegate);
-    }
-
-    /// The remote-delegate port for `agent_id`, or `None` if it is local/unknown.
-    pub(crate) fn remote(&self, agent_id: &str) -> Option<&Arc<dyn RemoteAgent>> {
-        self.remotes.get(agent_id)
-    }
 }
 
 /// Runs delegates behind `agent_run`: local and remote Agents share the same
@@ -75,9 +41,7 @@ pub(crate) struct HostRunDelegationService {
     sandbox: Arc<crate::session_environment::SessionEnvironment>,
     /// Exact targets frozen into the snapshot of the Run using this service.
     allowed_targets: HashSet<AgentId>,
-    /// Placement directory. It contains only remote adapters; native identity and
-    /// capabilities come from immutable publications.
-    remote_agents: RemoteAgentDirectory,
+    adapters: crate::agent_runner::ChildExecutionAdapters,
     publications: Option<Arc<dyn PublishedAgentSnapshotSource>>,
     workspace: String,
     scheduler: Option<RunScheduler>,
@@ -88,13 +52,13 @@ impl HostRunDelegationService {
         llm: Arc<dyn LlmExecutor>,
         sandbox: Arc<crate::session_environment::SessionEnvironment>,
         allowed_targets: HashSet<AgentId>,
-        remote_agents: RemoteAgentDirectory,
+        adapters: crate::agent_runner::ChildExecutionAdapters,
     ) -> Self {
         Self {
             llm,
             sandbox,
             allowed_targets,
-            remote_agents,
+            adapters,
             publications: None,
             workspace: String::new(),
             scheduler: None,
@@ -187,6 +151,7 @@ impl HostRunDelegationService {
             run_delegation,
             request.parent_thread_id,
             self.scheduler.clone(),
+            self.adapters.clone(),
         )
         .await
         .map_err(|error| {
@@ -246,16 +211,6 @@ impl RunDelegationService for HostRunDelegationService {
                 agent_id.0
             )));
         }
-        if let Some(remote) = self.remote_agents.remotes.get(&agent_id.0) {
-            return remote
-                .run(
-                    &agent_id.0,
-                    &request.child_run_id.0,
-                    &input,
-                    request.context.cancellation.as_ref(),
-                )
-                .await;
-        }
         let snapshot = self.current_snapshot(&agent_id)?;
         if snapshot.root_agent_id != agent_id {
             return Err(DelegationExecutionError::new(
@@ -282,24 +237,6 @@ impl RunDelegationService for HostRunDelegationService {
     ) -> Result<DelegationStep, DelegationExecutionError> {
         // The continuation identifies placement only; lifecycle authority remains
         // the child Run's committed state and ResumeTicket.
-        if let Some(remote) = self.remote_agents.remotes.get(&request.target_agent_id.0) {
-            let input = match request.result {
-                ResumeResult::ToolResult(output) => output.content,
-                ResumeResult::Input(text) => text,
-                ResumeResult::Decision { allow, note } => {
-                    note.unwrap_or_else(|| if allow { "allow" } else { "deny" }.to_string())
-                }
-            };
-            return remote
-                .resume(
-                    &request.target_agent_id.0,
-                    &request.child_run_id.0,
-                    &request.continuation,
-                    &input,
-                    request.context.cancellation.as_ref(),
-                )
-                .await;
-        }
         let agent_id = request.target_agent_id;
         if !self.allowed_targets.contains(&agent_id) {
             return Err(DelegationExecutionError::new(format!(
@@ -339,20 +276,6 @@ impl RunDelegationService for HostRunDelegationService {
         &self,
         cancellation: ChildRunCancellation,
     ) -> Result<(), DelegationExecutionError> {
-        if let Some(remote) = self
-            .remote_agents
-            .remotes
-            .get(&cancellation.target_agent_id)
-        {
-            return remote
-                .cancel(
-                    &cancellation.target_agent_id,
-                    &cancellation.child_run_id,
-                    cancellation.execution_reference.as_ref(),
-                )
-                .await;
-        }
-
         let Some(scheduler) = &self.scheduler else {
             // A non-durable native child shares the parent's live cancellation
             // token and has no independent queue entry to reconcile after exit.
@@ -386,21 +309,6 @@ impl RunDelegationService for HostRunDelegationService {
             .cancel(&cancellation.child_run_id.0)
             .await
             .map_err(|error| DelegationExecutionError::retryable(error.to_string()))
-    }
-}
-
-impl SharedHost {
-    /// Fetch a remote delegate's discovery card (outbound discovery) as neutral JSON.
-    /// Fails if the agent is not a registered remote. The wire card shape lives in the
-    /// adapter behind the [`RemoteAgent`] interface; the host only echoes the value.
-    pub async fn remote_agent_card(&self, agent_id: &str) -> Result<Value, HostError> {
-        let remote = self.remote_agents.remote(agent_id).ok_or_else(|| {
-            HostError::bad_request(format!("agent {agent_id:?} is not a remote agent"))
-        })?;
-        remote
-            .card(agent_id)
-            .await
-            .map_err(|e| HostError::internal(e.to_string()))
     }
 }
 
@@ -477,7 +385,6 @@ mod durable_cancel_tests {
             recovery_projection: None,
             session_resources: None,
         };
-        let remote_agents = RemoteAgentDirectory::new();
         let snapshot = crate::config::server_config(
             "researcher",
             "stub",
@@ -492,7 +399,7 @@ mod durable_cancel_tests {
             Arc::new(AwaitPermission),
             sandbox,
             HashSet::from([AgentId("researcher".to_string())]),
-            remote_agents,
+            crate::agent_runner::ChildExecutionAdapters::default(),
         )
         .with_publications(Some(Arc::new(TestPublications(snapshot))), "default".into())
         .with_scheduler(Some(scheduler));

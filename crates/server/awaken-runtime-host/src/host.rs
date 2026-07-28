@@ -181,9 +181,6 @@ pub struct SharedHost {
     /// `/v1/skills` catalog, and its sync-read cache — grouped behind one type that
     /// owns the cache↔store coherence invariant. See [`crate::skill_catalog`].
     pub(crate) skills: crate::skill_catalog::SkillCatalog,
-    /// Optional remote placement adapters. Published snapshots exclusively own
-    /// Agent identity and delegation capability.
-    pub(crate) remote_agents: crate::delegate::RemoteAgentDirectory,
     /// Whether a `context: fork` Skill reuses the parent Session environment.
     /// Ordinary delegated child Runs always share that environment.
     pub(crate) skill_fork_placement: crate::skills::SkillForkPlacement,

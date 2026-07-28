@@ -35,7 +35,7 @@ use awaken_runtime_contract::agent_bindings::AgentBindings;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
-use awaken_runtime_contract::resolved::{ModelBinding, ToolKind};
+use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate, ToolKind};
 use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshot};
 use axum::Router;
 
@@ -43,9 +43,6 @@ use axum::Router;
 // the two port adapters, the per-plane routers, and the authoring/transport
 // re-exports a composition root (and the integration tests) drive directly.
 pub use awaken_managed_routers::{default_models, files_router, models_router};
-// The A2A remote-delegate adapter + its transport constructor: the composition root
-// builds the adapter here and injects it behind the host's neutral RemoteAgent interface.
-use awaken_run_executor_a2a::{A2aRemoteAgent, HttpTransport};
 pub use awaken_runtime_host::{
     ConfigService, ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost,
     ProtocolHost, SharedHost, SkillContext, SkillSpec, ThreadEvent, ThreadEventHub, VaultRefresher,
@@ -1600,10 +1597,9 @@ pub fn build_remote_delegation_router() -> Router {
     let url = std::env::var("AWAKEN_REMOTE_AGENT_URL")
         .expect("AWAKEN_REMOTE_AGENT_URL must be set for delegate-remote mode");
     let (model, model_ref) = scenario_model(Arc::new(DelegatingModel), "delegate-remote");
-    // Remote delegation still uses the neutral publication/binding contract:
-    // advertise `agent_run` on the coordinator and bind `researcher` as its
-    // target. `with_remote_agent` supplies the transport implementation only;
-    // it must not be responsible for capability advertisement.
+    // Both parent and child are ordinary immutable publications. The child's
+    // resolved backend selects the shared A2A attempt executor; delegation owns
+    // no transport registry or protocol-specific execution path.
     let mut tools = awaken_runtime_host::authorable_tools();
     tools.retain(|tool| tool.kind == ToolKind::AgentDelegation);
     let assistant = ExecutableAgentSnapshot::builder("assistant")
@@ -1614,14 +1610,19 @@ pub fn build_remote_delegation_router() -> Router {
             ..Default::default()
         })
         .build();
-    let publications = StaticPublishedAgentSnapshots::try_new([assistant])
+    let researcher = ExecutableAgentSnapshot::builder("researcher")
+        .resolved_model(ResolvedModelCandidate::remote(
+            ModelBinding::new("remote", "", format!("a2a:{url}")),
+            awaken_tenancy::ScopeId::from("default"),
+            None,
+            "scenario-http-transport",
+        ))
+        .build();
+    let publications = StaticPublishedAgentSnapshots::try_new([assistant, researcher])
         .expect("valid remote delegation publication");
     let host = resource_host(model, model_ref)
         .with_agent_publications(Arc::new(publications))
-        .with_remote_agent(
-            "researcher",
-            Arc::new(A2aRemoteAgent::new(Arc::new(HttpTransport::new(url)))),
-        );
+        .with_remote_attempt_executor(awaken_server::a2a_attempt_executor(None));
     mount(Arc::new(host))
 }
 

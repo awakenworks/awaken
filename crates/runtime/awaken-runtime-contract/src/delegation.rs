@@ -15,7 +15,6 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-use crate::CancellationToken;
 use crate::llm::ThreadUsage;
 use crate::resume::ResumeResult;
 use crate::runtime_context::RuntimeRunContext;
@@ -331,76 +330,9 @@ impl StateKey for PendingChildRunResults {
     type Value = ChildRunResultInbox;
 }
 
-/// A registered Agent hosted outside this process. Protocol-specific task ids,
-/// polling, and cancellation remain inside its adapter.
-#[async_trait]
-pub trait RemoteAgent: Send + Sync {
-    async fn run(
-        &self,
-        agent_id: &str,
-        request_id: &str,
-        input: &str,
-        cancellation: Option<&CancellationToken>,
-    ) -> Result<DelegationStep, DelegationExecutionError>;
-
-    /// Continue the exact remote execution named by a previously committed
-    /// opaque reference. The default preserves compatibility for adapters whose
-    /// stable `request_id` alone reconnects; task-oriented adapters override it
-    /// so follow-up input uses the retained task/context instead of starting a
-    /// second conversation.
-    async fn resume(
-        &self,
-        agent_id: &str,
-        request_id: &str,
-        execution_reference: &Value,
-        input: &str,
-        cancellation: Option<&CancellationToken>,
-    ) -> Result<DelegationStep, DelegationExecutionError> {
-        let _ = execution_reference;
-        self.run(agent_id, request_id, input, cancellation).await
-    }
-
-    async fn card(&self, agent_id: &str) -> Result<Value, DelegationExecutionError>;
-
-    /// Idempotently cancel the remote child addressed by the durable execution
-    /// reference returned at its awaiting boundary.
-    async fn cancel(
-        &self,
-        _agent_id: &str,
-        _child_run_id: &RunId,
-        _execution_reference: Option<&Value>,
-    ) -> Result<(), DelegationExecutionError> {
-        Err(DelegationExecutionError::new(
-            "remote Agent does not support durable cancellation",
-        ))
-    }
-}
-
 #[cfg(test)]
 mod result_tests {
     use super::*;
-
-    struct StableRequestRemote;
-
-    #[async_trait]
-    impl RemoteAgent for StableRequestRemote {
-        async fn run(
-            &self,
-            agent_id: &str,
-            request_id: &str,
-            input: &str,
-            _cancellation: Option<&CancellationToken>,
-        ) -> Result<DelegationStep, DelegationExecutionError> {
-            Ok(DelegationStep::Ended {
-                text: format!("{agent_id}:{request_id}:{input}"),
-                usage: ThreadUsage::default(),
-            })
-        }
-
-        async fn card(&self, agent_id: &str) -> Result<Value, DelegationExecutionError> {
-            Ok(serde_json::json!({ "agent_id": agent_id }))
-        }
-    }
 
     fn result(id: &DelegationId, text: &str) -> ChildRunResult {
         ChildRunResult {
@@ -460,26 +392,6 @@ mod result_tests {
             .unwrap();
         assert_eq!(inbox.discard_on_parent_end(), 2);
         assert!(inbox.is_empty());
-    }
-
-    #[tokio::test]
-    async fn default_remote_resume_reuses_the_stable_request_path() {
-        let step = StableRequestRemote
-            .resume(
-                "remote-agent",
-                "request-7",
-                &serde_json::json!({ "opaque_task_id": "task-3" }),
-                "continued input",
-                None,
-            )
-            .await
-            .expect("legacy request-id adapters reconnect through run");
-
-        assert!(matches!(
-            step,
-            DelegationStep::Ended { text, .. }
-                if text == "remote-agent:request-7:continued input"
-        ));
     }
 }
 
