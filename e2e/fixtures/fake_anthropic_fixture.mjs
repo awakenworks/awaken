@@ -399,8 +399,9 @@ function systemLines(parsed) {
   return systemText(parsed);
 }
 
-// `opts`: `{ behavior, failuresBeforeSuccess, alwaysFail, failArrivalKind,
-// faultStatus, delayMs, firstDelayMs }`.
+// `opts`: `{ behavior, models, failuresBeforeSuccess, alwaysFail, failArrivalKind,
+// faultStatus, delayMs, firstDelayMs }`. `models` enables the same fixture's
+// Anthropic model-directory endpoint for Provider Connection tests.
 // `behavior` (default `'default'`) selects the reproduced scenario model; the
 // fault-injection knobs drive the runtime's retry + circuit-breaker + error paths.
 export function startFakeAnthropic(apiKey, opts = {}) {
@@ -411,6 +412,7 @@ export function startFakeAnthropic(apiKey, opts = {}) {
     faultStatus = 503,
     delayMs = 0,
     firstDelayMs = 0,
+    models = [],
     failModel = null,
     failArrivalKind = null,
   } = opts;
@@ -421,6 +423,22 @@ export function startFakeAnthropic(apiKey, opts = {}) {
     let body = '';
     req.on('data', (c) => (body += c));
     req.on('end', async () => {
+      const presented = req.headers['x-api-key'] ?? (req.headers.authorization ?? '').replace(/^Bearer /, '');
+      if (req.method === 'GET' && req.url.startsWith('/v1/models') && models.length > 0) {
+        if (presented !== apiKey) {
+          state.unauthorized += 1;
+          res.writeHead(401, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } }));
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          data: models.map((id) => ({ id })),
+          has_more: false,
+          last_id: models.at(-1) ?? null,
+        }));
+        return;
+      }
       // Count arrival before an optional response delay. Crash/recovery e2e use
       // this externally observable socket fact to kill a worker while inference
       // is genuinely in flight, without peeking into the Rust process.
@@ -435,7 +453,6 @@ export function startFakeAnthropic(apiKey, opts = {}) {
       state.arrivals.push(arrivalKind);
       const responseDelay = state.received === 1 ? firstDelayMs || delayMs : delayMs;
       if (responseDelay > 0) await new Promise((r) => setTimeout(r, responseDelay));
-      const presented = req.headers['x-api-key'] ?? (req.headers.authorization ?? '').replace(/^Bearer /, '');
       if (req.method !== 'POST' || !req.url.endsWith('/messages')) {
         res.writeHead(404, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ type: 'error', error: { type: 'not_found_error', message: `no ${req.method} ${req.url}` } }));
