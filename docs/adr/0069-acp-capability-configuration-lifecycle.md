@@ -10,7 +10,9 @@
   composition, descendant process-group reaping, event-triggered all-scope
   publication reconciliation, typed capture authoring, request-grained subject
   attribution, subject-scoped erasable ACP session homes, and the product-level
-  Art.17 fan-out E2E. PostgreSQL pool sizing is also resolved once as a non-zero
+  Art.17 fan-out E2E. The Agent lifecycle now has explicit
+  Published/Disabled/Archived admission and fingerprint-retention behavior.
+  PostgreSQL pool sizing is also resolved once as a non-zero
   typed deployment value and injected into both runtime stores. A real
   persisted-login Claude session remains an external release gate. Typed
   migration of the remaining runtime environment settings is still an explicit
@@ -925,8 +927,8 @@ subject-scoped ACP continuity, a registered `ContentEraser`, and an Art.17 HTTP
 E2E proving one erasure request removes captured content plus a genuinely
 harvested session blob while preserving another subject and remaining
 idempotent. Hand placement (F) and Agent disable/archive semantics (I) are
-broader ADR-0057 phases, not alternative ACP discovery or execution paths;
-their status remains owned by ADR-0057.
+completed broader ADR-0057 phases, not alternative ACP discovery or execution
+paths; their evidence and status remain owned by ADR-0057.
 
 Managed `CodexAuthJson` is a separate product decision. BackendOwned never
 enters that Provider-only artifact path. A global prohibition on creating

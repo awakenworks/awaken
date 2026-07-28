@@ -342,6 +342,8 @@ export interface Agent {
   multiagent?: unknown;
   metadata: Record<string, string>;
   version: number;
+  status: "published" | "disabled" | "archived";
+  disabled_at?: string | null;
   archived_at?: string | null;
   created_at: string;
   updated_at: string;
@@ -369,6 +371,10 @@ export interface AgentConfig {
   mcp_servers: unknown[];
   skills: unknown[];
   multiagent?: unknown;
+  /** Logical deployment Hand id; transport remains typed deployment config. */
+  hand?: string | null;
+  disabled_at?: string | null;
+  archived_at?: string | null;
   // extensions (our differentiated value, additive to the managed object):
   max_steps: number;
   plugins: string[];

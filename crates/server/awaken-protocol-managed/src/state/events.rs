@@ -379,6 +379,18 @@ impl ManagedState {
             }
             record.agent_id.clone()
         };
+        let owner_scope = self
+            .owner_scope(session_id)
+            .unwrap_or_else(|| super::DEFAULT_SCOPE.to_string());
+        if self
+            .config_source
+            .as_ref()
+            .is_some_and(|source| source.agent_unavailable_in(&owner_scope, &agent_id))
+        {
+            return Err(StateError::Run(RunError::bad_request(format!(
+                "agent_unavailable: agent `{agent_id}` cannot admit a new event"
+            ))));
+        }
 
         let mut receipts = Vec::new();
         for inbound in &req.events {

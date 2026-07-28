@@ -788,16 +788,34 @@ holder, receipt or fingerprint drift. The former `RemoteAgent*`, `with_remote_ag
 children select the one `A2aRunExecutor` from the published backend and always
 carry placement; the authenticated delegation loopback plus peer-resolution,
 placement and materializer tests cover the same production chain.
-**F `declared-hand`** — *Hand becomes declared intent; placement stays
-host-side; the snapshot stays placement-free.*
-Adds: `NativeSpec.hand` → deploy-time bridge emitting `PlacementEntry` into the
-existing `ConfigToolExecutorProvider` (transport via `DialAddr`).
-Retires: manual per-agent placement wiring in production composition roots
-(scenario/test wiring stays).
-Guard: snapshot-schema test asserting no placement field; kernel behavior
-byte-identical with/without hand.
-Done when: flipping `hand` in config moves tool execution to a `serve_hand`
-process without touching composition-root code.
+**F `declared-hand`** — *Complete (2026-07-29). Hand is declared intent;
+placement stays host-side; the snapshot stays placement-free.*
+Adds: `AgentConfig.hand: Option<String>` as a logical deployment id; typed
+`hand_connections: BTreeMap<String, ConnectionPlan>` in deployment config; and a
+declared-source mode on the existing `ConfigToolExecutorProvider`.
+Retires: production per-Agent `PlacementEntry` assembly. Static entries remain
+the deterministic scenario/test adapter, not a second product registry.
+
+Static structure: config-store validates the logical id; ConfigService's one
+installed-publication projection retains it beside (never inside) the executable
+snapshot; the CLI composition root dials each deployment-owned `ConnectionPlan`
+once; the existing Server placement provider joins the Agent id to that ready
+executor. Runtime, the kernel and tool executors depend only on the existing
+`ToolExecutorProvider` port and know nothing about discovery, topology or dialing.
+
+Dynamic behavior: startup validates all plans and connects Unix/TCP Hands or
+fails before serving; publish/warm-load atomically installs snapshot plus logical
+declaration; activation asks the provider for the current declaration; absent
+declaration preserves local execution, a known declaration selects its already
+connected remote executor, and an unknown/ambiguous declaration fails closed.
+Changing `hand` republishes placement intent without changing snapshot bytes or
+fingerprint. Connection retry remains a deployment restart/reconciliation
+concern—never attempt-time discovery.
+
+Guard evidence: cause/effect decision tables cover placement-free fingerprinting,
+empty-id validation, installed-projection ambiguity/uninstall, typed topology
+acceptance/rejection, and provider outcomes for absent/known/unknown/source-error
+declarations.
 
 **G1 `startup-acquisition`** — *Complete.* Exact wrapper metadata lives on the
 canonical `AcpCli` row; the local product composition root installs it below the
@@ -825,8 +843,8 @@ Guard: a mixed queue never strands a run on an incapable worker in the k3d
 harness.
 Done when: codex runs drain only to codex workers under load.
 
-**I `retire-and-archive`** — *An agent's end of life is explicit and
-fail-closed (D10).*
+**I `retire-and-archive`** — *Complete (2026-07-29).* An agent's end of life is
+explicit and fail-closed (D10).
 Adds: `AgentLifecycle{Published,Disabled,Archived}` + ingress admission gate;
 fingerprint-referenced retention rule; erasure stays content-only (ADR-0050).
 Retires: nothing (closes the lifecycle gap).
@@ -835,17 +853,31 @@ erasure e2e leaves archived snapshots resolvable for replay.
 Done when: disable → in-flight settle → archive → erase runs green in e2e, and
 replaying an old run against an archived fingerprint still resolves.
 
+Completion evidence: `AgentConfig::lifecycle()` is the single typed
+`Published | Disabled | Archived` projection. The existing durable Agent
+repository owns both transitions; disable and archive uninstall only the
+current executable pointer, while the installed/durable publication catalogs
+retain exact fingerprint lookup. Session creation and event admission consult
+that same unavailable projection. A run that crossed admission before disable
+can settle, while neither a new Session nor a new event can start a new run
+afterward. The cause/effect lifecycle test covers transition idempotency,
+mutation/publication fences and fingerprint retention; the Managed HTTP/official
+SDK E2E covers disable, existing/new Session admission, archive and wire state.
+ADR-0069's product Art.17 fan-out E2E proves the subsequent content-only erase
+without deleting replay metadata.
+
 Dependencies: A → D (codec); B independent; C independent; E after D
 (derivation); F after B (kind); G1/G2/H independent after C; I after B (the
 lifecycle gate reuses the publish/admission boundary).
 
-Commitment and order: **0, C, A, B, D and E are committed** — C
+Commitment and order: **0, C, A, B, D, E and F are committed** — C
 first because it is pure wiring with immediate production value (the two
-already-merged per-agent-CLI capabilities go live). **F/G1/G2/H/I are
-trigger-gated**, designed now, built when their trigger fires: F on the first
-real declared-hand need; G1 on container GA; G2 on a compliance requirement; H
-on a heterogeneous worker fleet in production; I on the first agent
-decommission. A fired trigger promotes the phase into the committed queue —
+already-merged per-agent-CLI capabilities go live). F was promoted and completed
+when declared deployment placement became a product requirement.
+**G1/G2/H were trigger-gated** and G1/G2 have since completed; H remains gated
+on a heterogeneous worker fleet in production. I was promoted and completed
+when Agent decommission became a product requirement. A fired trigger promotes
+a remaining phase into the committed queue —
 plan-level YAGNI: the design cost is paid (this ADR), the build cost waits for
 evidence.
 
@@ -1050,146 +1082,11 @@ Runtime constructor, repository query, or normal `open()` read path.
 
 ## Amendment (2026-07-27): backend-owned local ACP login is trusted host execution
 
-This amendment fixes the boundary for zero-configuration local ACP use. It does
-not add another executor, credential store, discovery inventory, or isolation
-abstraction. The existing `AcpCli` catalog, WorkerLocal credential lifecycle,
-Worker placement, `AgentChannelSource`, `AcpRunExecutor`, Session Environment,
-and Sandbox providers remain the authoritative mechanisms.
-
-### Decision and static structure
-
-An Agent publication selects exactly one of two mutually exclusive provisioning
-modes:
-
-```text
-Agent publication / ResolvedModelCandidate
-  |
-  +-- Provider (Awaken-managed)
-  |     exact endpoint/model/CredentialAccess
-  |     -> Worker/Workload materialization
-  |     -> isolated config HOME
-  |     -> Namespace or Container Sandbox
-  |
-  +-- BackendOwned (CLI-managed)
-        backend_ref = acp:<catalog id>
-        exact WorkerLocal credential reference
-        model = BackendDefault | Exact
-        -> trusted Local Session Environment
-        -> host PATH + host HOME
-        -> CLI owns login files, refresh, provider and default model
-```
-
-`BackendOwned` means Awaken can prove that an exact local CLI login is live, but
-cannot open or materialize its secret. The `CredentialRef` is a non-secret
-placement and liveness handle. Awaken must not read, parse, copy, mount, encode,
-or persist the CLI's authentication files. In particular, backend-owned Codex
-and Claude execution never enters the managed `CredentialArtifactRequirement`
-or `ProcessSecretRequirement` paths.
-
-`SandboxTier::Local` is a provisioning choice with
-`IsolationClass::Workdir`. It may provide a Session working directory and
-resource projection, but it provides no OS isolation, network isolation,
-read-only enforcement, or secret boundary. In this amendment, “isolation” means
-the capabilities actually reported by the selected Sandbox provider; it is not
-a synonym for every Session Environment. Namespace and Container tiers are
-sandboxed execution. Local backend-owned login is explicitly trusted host
-execution.
-
-The bounded-context ownership is:
-
-| Fact | Authoritative owner |
-|---|---|
-| supported ACP adapters and their probes/delivery interfaces | `AcpCli` catalog |
-| adapter installed on one Worker | Worker manifest capability |
-| exact local login state and observation TTL | WorkerLocal resolver/observation |
-| selected backend and provisioning mode | immutable Agent publication |
-| exact credential revision required for placement | claim-frozen attempt binding |
-| host process launch and HOME projection | Session Environment + `AgentChannelSource` |
-| OAuth files, refresh and account state | external CLI itself |
-
-Discovery and diagnostics are query projections over catalog + Worker manifest +
-credential observations. They are not persisted as another capability inventory.
-
-### Dynamic behavior
-
-```text
-local startup
-  -> probe each AcpCli profile through the process-probe port
-  -> acquire any exact wrapper into the Awaken data directory
-  -> resolve one canonical absolute launch argv per acquired route
-  -> advertise only launchable acp:<id> capabilities
-  -> ensure one idempotent WorkerLocal binding per driver/subject
-  -> publish Available/LoginRequired/Expired/Invalid/ProbeFailed observation
-
-publish and run
-  -> publish backend_ref + BackendOwned model selection + exact WorkerLocal ref
-  -> Session copies publication facts into its frozen baseline
-  -> placement matches capability + exact live credential revision
-  -> claim fixes Worker/incarnation/epoch
-  -> Worker revalidates the exact login immediately before launch
-  -> Local source starts the catalog command with cleared env plus host PATH/HOME
-  -> CLI reads and refreshes its own login and serves ACP
-  -> ordinary ACP executor commits the result
-```
-
-The failure decision table is normative:
-
-| Rule | Provisioning | Environment | Exact login live | Outcome |
-|---|---|---|---|---|
-| L1 | BackendOwned | Local | yes | launch resolved executable with host HOME; no credential materialization |
-| L2 | BackendOwned | Local | no/stale | `LoginRequired` or probe failure; do not launch |
-| L3 | BackendOwned | Namespace/Container | any | reject incompatible placement |
-| L4 | Provider | Namespace/Container | n/a | existing managed secret/artifact path |
-| L5 | Provider | Local | n/a | allowed only by an explicit trusted managed policy; never treated as backend-owned login |
-| L6 | either | any | selected mechanism fails | fail closed; never switch provisioning mode or adapter |
-
-Adapter-acquisition failures occur before L1-L6: the observation becomes
-`ProbeFailed`, no Worker route or WorkerLocal binding is created, and a later
-restart may retry the exact catalog package. Runs never perform installation.
-
-`BackendDefault` deliberately records that the CLI chooses its default model.
-`Exact` is valid only when the selected profile has a typed model-delivery
-interface that can prove delivery; otherwise publication or admission rejects it.
-Failure never silently falls back to the CLI default.
-
-### Consequences and implementation gate
-
-- Local installation can be configuration-free without importing OAuth into
-  Awaken: discovery, WorkerLocal registration and observations are automatic.
-- Flow consumes Awaken's Agent/capability API. It does not inspect PATH/HOME,
-  credentials, Worker state, or ACP processes.
-- Managed provider credentials remain supported for isolated deployments. They
-  are a different provisioning variant, not a fallback for local login.
-- Managed Claude credentials use one process-secret path selected by the
-  publication-pinned `CredentialAccess.usage`: an Anthropic API key is delivered
-  as `ANTHROPIC_API_KEY`, while a long-lived token produced by
-  `claude setup-token` is delivered as `CLAUDE_CODE_OAUTH_TOKEN` and is valid
-  only for `acp:claude`. Both are sealed Vault bearers and materialize only at
-  the claimed Workload boundary. Awaken does not synthesize or persist Claude's
-  `.credentials.json`; that former parallel OAuth-artifact path is removed.
-- Native provider execution, provider model discovery, and every other ACP CLI
-  reject a Claude setup token. When an API key and setup token coexist, Native
-  selects the API key and managed `acp:claude` selects the setup token; the
-  selected environment usage is fingerprinted in the immutable candidate and
-  cannot downgrade at launch.
-- Reusing host HOME intentionally trusts the external CLI with the user's host
-  identity and files accessible to that process. Product diagnostics must label
-  this mode “trusted local”, not “sandboxed”.
-- A missing executable, unsupported wrapper version, ambiguous default among
-  multiple CLIs, expired observation, lost claim, exact-model delivery failure,
-  or sandbox mismatch is terminal for that attempt and has a stable remediation.
-
-Implementation is complete only when tests generated from L1-L6 prove that
-backend-owned launch preserves host HOME without Awaken reading auth files,
-managed launch still uses an isolated HOME, non-Local placement rejects
-backend-owned credentials, observation expiry and pre-launch revalidation fence
-the race, and no failure switches adapter or provisioning variant.
-
-The complete discovery → observation → configuration → publication → placement
-→ claim → launch revalidation → execution → readiness/reconciliation lifecycle,
-including adapter-specific modes and config options, is owned exclusively by
-[ADR-0069](0069-acp-capability-configuration-lifecycle.md). This ADR owns the
-Agent aggregate, provisioning union and secret-free publication boundary; it
-does not duplicate ACP lifecycle states or sequencing. ADR-0069 amends this
-decision without introducing another Agent configuration, capability inventory,
-Worker kind, Session Environment abstraction or ACP execution path.
+The amendment's complete static structure, dynamic lifecycle, L1–L6 failure
+table, trusted-local security consequences and implementation evidence are
+owned by
+[ADR-0069](0069-acp-capability-configuration-lifecycle.md). ADR-0057 retains
+ownership of the Agent aggregate, mutually exclusive `Provider | BackendOwned`
+provisioning union and secret-free publication boundary. Keeping the detailed
+ACP lifecycle only in ADR-0069 prevents two normative descriptions of
+discovery, observation, placement and launch revalidation from drifting.

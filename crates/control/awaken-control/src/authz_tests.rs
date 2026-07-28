@@ -927,6 +927,10 @@ fn af_covers_the_deployment_environment_and_agent_families() {
         Some(WORKSPACE_READ)
     );
     assert_eq!(
+        scoped(post.clone(), "/v1/agents/a1/disable"),
+        Some(WORKSPACE_WRITE)
+    );
+    assert_eq!(
         scoped(post.clone(), "/v1/agents/a1/archive"),
         Some(WORKSPACE_WRITE)
     );
