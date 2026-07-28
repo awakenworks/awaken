@@ -968,10 +968,12 @@ mod tests {
         let workdir = SessionEnvironmentProvider::workdir(first.path()).at_root(second.path());
         assert!(matches!(workdir, SessionEnvironmentProvider::Workdir(_)));
 
-        let namespace = SessionEnvironmentProvider::namespace(first.path()).at_root(second.path());
+        let namespace = SessionEnvironmentProvider::namespace_with_agent_stderr(first.path(), true)
+            .at_root(second.path());
         assert!(matches!(
-            namespace,
-            SessionEnvironmentProvider::Namespace(_)
+            &namespace,
+            SessionEnvironmentProvider::Namespace(provider)
+                if provider.inherits_agent_stderr()
         ));
         let mut namespace_spec = spec();
         namespace_spec.scope = "provider-namespace-adopt".into();

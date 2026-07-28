@@ -490,8 +490,15 @@ also one typed `ResolvedDeployment::observability` policy: the existing
 `OtelConfig` remains the sole exporter value object, and logging, trace-file,
 OTLP trace/metric endpoints, headers and timing are injected into
 `awaken-observability`; that crate has no ambient configuration reader.
-Other remaining production readers still require migration before D12 is
-complete. A2A projection persistence also consumes the Host's injected
+Podman executable selection and local-agent stderr projection are fields of the
+same typed sandbox policy. The Windows Bash tool now performs only OS metadata
+discovery (`PATH`/`ProgramFiles`) instead of accepting a second product override.
+The memoryd execution-plane sidecar receives store, mount, mode and shutdown
+policy through explicit argv from the Kubernetes plan/local supervisor; its old
+environment process protocol is removed. With those migrations, D12 is
+complete: remaining non-test reads are the explicitly admitted OS metadata and
+trusted-host ACP metadata projection. A2A projection persistence also consumes
+the Host's injected
 `DeploymentConfig::storage_dir`; the protocol adapter owns only its state
 filename and serialization and no longer discovers a second path from the
 environment. Worker transport identity is likewise authored as typed
@@ -916,7 +923,7 @@ the remaining external/reconciliation gates:
 | automatic Assistant | exactly one Available+Verified local backend is required; zero remains unconfigured and multiple are resolved through the ordinary persisted Agent model editor | no separate default-backend preference exists |
 | frontend contract | OpenAPI-generated TypeScript consumes the Rust discriminated union and live Worker ACP projection | keep generated-contract freshness gated |
 | Flow | pinned to the pushed Awaken revision; one existing Worker/executor consumes the shared preparation service | keep the revision and lockfile updated atomically |
-| ambient configuration | environment Provider proposals and Flow ACP inventory/default fields are removed; sandbox/container, content-capture, database-pool and observability policy consume typed deployment configuration; enrollment signing is internal; OAuth cache lifetime is fixed credential-domain behavior | migrate remaining production executable/process-protocol readers; keep PATH/HOME/DISPLAY as execution metadata and test gates as harness inputs only |
+| ambient configuration | Complete: Provider proposals and Flow ACP inventory/default fields are removed; sandbox/container, content-capture, database-pool and observability policy consume typed deployment configuration; memoryd uses explicit argv; enrollment signing is internal; OAuth cache lifetime is fixed credential-domain behavior | retain the automated reader audit: only PATH/HOME/DISPLAY/OS metadata and test gates may remain ambient |
 | content attribution/erasure | Managed request attribution is durable across dispatch and resume; Host-owned capture sink and subject-scoped ACP blob store share the erasure resolver; HTTP E2E proves capture + real session harvest fan-out, cross-subject isolation and idempotency | add automatic retention-expiry policy for ACP session homes |
 | real host proof | installed Codex `0.145.0` completed the zero-configuration host-login release gate through real wrapper negotiation, BackendDefault publication, LLM response and committed running→idle transcript; installed Claude `2.1.220` is correctly login-required when ambient `ANTHROPIC_API_KEY` is cleared | run the same release-gated real LLM session after a persisted Claude host login is available |
 

@@ -142,9 +142,11 @@ impl crate::host::SharedHost {
         session_home: Option<Arc<dyn SessionHomeProvider>>,
     ) -> Self {
         if self.backend_owned_session_provider.is_none() {
-            let provider = crate::session_environment::SessionEnvironmentProvider::workdir(
-                acp_sandbox_base(&self.deployment).join("backend-owned"),
-            );
+            let provider =
+                crate::session_environment::SessionEnvironmentProvider::workdir_with_agent_stderr(
+                    acp_sandbox_base(&self.deployment).join("backend-owned"),
+                    self.deployment.sandbox.inherit_agent_stderr,
+                );
             if let Some(mounter) = self.memory_mounter() {
                 provider.install_memory_mounter(mounter);
             }
@@ -240,7 +242,10 @@ impl crate::host::SharedHost {
         match tier {
             crate::SandboxTier::Local => {
                 host.session_provider =
-                    crate::session_environment::SessionEnvironmentProvider::workdir(base.clone());
+                    crate::session_environment::SessionEnvironmentProvider::workdir_with_agent_stderr(
+                        base.clone(),
+                        dep.sandbox.inherit_agent_stderr,
+                    );
                 if let Some(mounter) = host.memory_mounter() {
                     host.session_provider.install_memory_mounter(mounter);
                 }
@@ -248,7 +253,10 @@ impl crate::host::SharedHost {
             }
             crate::SandboxTier::Namespace => {
                 host.session_provider =
-                    crate::session_environment::SessionEnvironmentProvider::namespace(base.clone());
+                    crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
+                        base.clone(),
+                        dep.sandbox.inherit_agent_stderr,
+                    );
                 if let Some(mounter) = host.memory_mounter() {
                     host.session_provider.install_memory_mounter(mounter);
                 }
@@ -417,9 +425,11 @@ mod tests {
             Arc::new(FixedModel),
             None,
         );
-        host.session_provider = crate::session_environment::SessionEnvironmentProvider::namespace(
-            std::env::temp_dir().join("awaken-managed-environment"),
-        );
+        host.session_provider =
+            crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
+                std::env::temp_dir().join("awaken-managed-environment"),
+                false,
+            );
         let backend_owned = awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned {
             credential: awaken_runtime_contract::CredentialRef {
                 id: "local".into(),

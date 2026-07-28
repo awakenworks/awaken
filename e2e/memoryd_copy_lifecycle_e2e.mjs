@@ -55,16 +55,18 @@ async function startGeneration(binary, storeDir, mountPath, { requestFuse = fals
   fs.mkdirSync(mountPath, { recursive: true });
   const emptyPath = path.join(storeDir, 'empty-path');
   fs.mkdirSync(emptyPath, { recursive: true });
-  const child = spawn(binary, ['memoryd'], {
+  const child = spawn(binary, [
+    'memoryd',
+    '--store-id', 'memstore-e2e',
+    '--store-dir', storeDir,
+    '--mount-path', mountPath,
+    '--mode', requestFuse ? 'fuse' : 'copy',
+    '--shutdown-on-stdin-eof',
+  ], {
     cwd: REPO_ROOT,
     env: {
       ...process.env,
       PATH: requestFuse ? emptyPath : process.env.PATH,
-      AWAKEN_MEMORY_STORE_ID: 'memstore-e2e',
-      AWAKEN_MEMORY_STORE_DIR: storeDir,
-      AWAKEN_MOUNT_PATH: mountPath,
-      AWAKEN_MEMORY_MODE: requestFuse ? 'fuse' : 'copy',
-      AWAKEN_MEMORY_SHUTDOWN_ON_STDIN_EOF: '1',
     },
     stdio: ['pipe', 'ignore', 'pipe'],
   });
@@ -128,7 +130,7 @@ async function main() {
       encoding: 'utf8',
     });
     assert.equal(missingConfig.status, 2);
-    assert.match(missingConfig.stderr, /AWAKEN_MEMORY_STORE_ID is required/);
+    assert.match(missingConfig.stderr, /--store-id is required/);
 
     const first = await runGeneration(
       binary,

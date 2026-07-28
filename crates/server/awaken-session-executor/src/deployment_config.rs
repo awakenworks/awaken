@@ -195,6 +195,10 @@ pub struct SandboxSettings {
     pub k8s_namespace: String,
     /// Executable path for the Awaken Hand inside a container image.
     pub container_hand_bin: String,
+    /// Podman executable used by the rootless container adapter.
+    pub podman_bin: String,
+    /// Whether locally launched ACP agents inherit the Worker process stderr.
+    pub inherit_agent_stderr: bool,
     /// Whether Docker/Podman orphan reconciliation is active.
     pub reaper_enabled: bool,
     /// Interval between orphan-reconciliation sweeps.
@@ -211,6 +215,8 @@ impl Default for SandboxSettings {
             container_forward_proxy: None,
             k8s_namespace: "default".to_owned(),
             container_hand_bin: "/usr/local/bin/awaken-sandbox".to_owned(),
+            podman_bin: "podman".to_owned(),
+            inherit_agent_stderr: false,
             reaper_enabled: true,
             reaper_interval_secs: awaken_sandbox_container::DEFAULT_REAPER_INTERVAL_SECS,
             reaper_max_age_secs: awaken_sandbox_container::DEFAULT_REAPER_MAX_AGE_SECS,

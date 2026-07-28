@@ -2,20 +2,17 @@
 //!
 //! A pod-local sidecar that projects a durable, path-addressed memory store into a
 //! shared volume the agent container reads as plain files. Two realizations, chosen
-//! by `AWAKEN_MEMORY_MODE`:
+//! by the typed `--mode` argument:
 //!   - `fuse` — a live write-through FUSE mount at the shared path (needs `/dev/fuse`
 //!     + `SYS_ADMIN`; the k8s `pod_plan` grants that only to this minimal sidecar,
 //!     never the agent). Edits are lazy-read and CAS-flushed back to the store.
 //!   - `copy` (default) — materialize the store to files at startup, then harvest the
 //!     agent's edits back on teardown. Portable: works on a node without `/dev/fuse`.
 //!
-//! The store is a store-owned sqlite database under `AWAKEN_MEMORY_STORE_DIR`; mount
+//! The store is a store-owned sqlite database under `--store-dir`; mount
 //! that dir on a PVC for durability across pod restarts, or leave it pod-local
-//! (emptyDir) for an ephemeral scratch store. The env contract mirrors exactly what
-//! `awaken-sandbox-container`'s `pod_plan` sets on the `memoryd-<i>` sidecar:
-//! `AWAKEN_MEMORY_STORE_ID`, `AWAKEN_MOUNT_PATH`, `AWAKEN_MEMORY_MODE`.
-//! Local process supervisors may additionally set
-//! `AWAKEN_MEMORY_SHUTDOWN_ON_STDIN_EOF=1` for a portable graceful-stop channel.
+//! (emptyDir) for an ephemeral scratch store. The Kubernetes plan passes the same
+//! explicit arguments as any local supervisor.
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -25,48 +22,61 @@ use std::sync::Arc;
 use awaken_memory_store::{MemoryRepository, SqliteMemoryRepository};
 use awaken_sandbox_memoryd::{fuse_available, harvest, materialize};
 
-/// The sidecar configuration read from the pod env (set by the k8s `pod_plan`).
+/// Explicit sidecar process configuration.
 pub struct MemorydConfig {
-    /// The store namespace this sidecar serves (`AWAKEN_MEMORY_STORE_ID`).
+    /// The store namespace this sidecar serves.
     pub store_id: String,
-    /// The shared volume the store is projected into (`AWAKEN_MOUNT_PATH`).
+    /// The shared volume the store is projected into.
     pub mount_path: PathBuf,
-    /// The durable sqlite backing dir (`AWAKEN_MEMORY_STORE_DIR`); a PVC for
+    /// The durable sqlite backing dir; a PVC for
     /// cross-restart durability, or a pod-local emptyDir for an ephemeral store.
     pub store_dir: PathBuf,
-    /// Whether a live FUSE mount was requested (`AWAKEN_MEMORY_MODE=fuse`); the copy
+    /// Whether a live FUSE mount was requested; the copy
     /// fallback runs when it is unset or when `/dev/fuse` is unavailable.
     pub want_fuse: bool,
 }
 
 impl MemorydConfig {
-    /// Read the sidecar env, failing closed on the two required keys.
-    pub fn from_env() -> Result<Self, String> {
-        let store_id = std::env::var("AWAKEN_MEMORY_STORE_ID")
-            .map_err(|_| "AWAKEN_MEMORY_STORE_ID is required".to_string())?;
-        let mount_path = std::env::var("AWAKEN_MOUNT_PATH")
-            .map_err(|_| "AWAKEN_MOUNT_PATH is required".to_string())?;
-        let store_dir = std::env::var("AWAKEN_MEMORY_STORE_DIR")
-            .unwrap_or_else(|_| "/var/lib/awaken/memory".to_string());
-        Ok(Self {
-            store_id,
-            mount_path: mount_path.into(),
-            store_dir: store_dir.into(),
-            want_fuse: std::env::var("AWAKEN_MEMORY_MODE").as_deref() == Ok("fuse"),
-        })
+    /// Decode the role's explicit flag/value protocol.
+    pub fn from_args(args: &[String]) -> Result<(Self, bool), String> {
+        let value = |flag: &str| {
+            args.windows(2)
+                .find(|pair| pair[0] == flag)
+                .map(|pair| pair[1].clone())
+        };
+        let store_id = value("--store-id").ok_or("--store-id is required")?;
+        let mount_path = value("--mount-path").ok_or("--mount-path is required")?;
+        let mode = value("--mode").unwrap_or_else(|| "copy".to_owned());
+        if store_id.trim().is_empty() || mount_path.trim().is_empty() {
+            return Err("--store-id and --mount-path must be non-empty".to_owned());
+        }
+        if !matches!(mode.as_str(), "copy" | "fuse") {
+            return Err("--mode must be `copy` or `fuse`".to_owned());
+        }
+        Ok((
+            Self {
+                store_id,
+                mount_path: mount_path.into(),
+                store_dir: value("--store-dir")
+                    .unwrap_or_else(|| "/var/lib/awaken/memory".to_owned())
+                    .into(),
+                want_fuse: mode == "fuse",
+            },
+            args.iter().any(|arg| arg == "--shutdown-on-stdin-eof"),
+        ))
     }
 }
 
-/// The role entrypoint: read the env, open the store, and serve until a stop signal.
+/// The role entrypoint: decode argv, open the store, and serve until a stop signal.
 pub async fn run(_args: &[String]) -> ExitCode {
-    let cfg = match MemorydConfig::from_env() {
+    let (cfg, shutdown_on_stdin_eof) = match MemorydConfig::from_args(_args) {
         Ok(cfg) => cfg,
         Err(msg) => {
             eprintln!("awaken-sandbox memoryd: {msg}");
             return ExitCode::from(2);
         }
     };
-    match serve(&cfg, shutdown_signal()).await {
+    match serve(&cfg, shutdown_signal(shutdown_on_stdin_eof)).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(msg) => {
             eprintln!("awaken-sandbox memoryd: {msg}");
@@ -188,8 +198,8 @@ pub async fn serve_copy(
 /// Resolve on SIGTERM (the orchestrator's graceful stop, sent before SIGKILL) or
 /// SIGINT (a developer's foreground stop), so the copy harvest / FUSE unmount runs
 /// before exit rather than being lost to an abrupt kill.
-async fn shutdown_signal() {
-    if std::env::var("AWAKEN_MEMORY_SHUTDOWN_ON_STDIN_EOF").as_deref() == Ok("1") {
+async fn shutdown_signal(shutdown_on_stdin_eof: bool) {
+    if shutdown_on_stdin_eof {
         use tokio::io::{AsyncReadExt, stdin};
 
         let mut byte = [0_u8; 1];
@@ -219,7 +229,57 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
-    use super::should_serve_fuse;
+    use super::{MemorydConfig, should_serve_fuse};
+
+    #[test]
+    fn explicit_process_protocol_is_complete_and_fail_closed() {
+        // Cause/effect graph: explicit role argv -> one MemorydConfig + shutdown
+        // policy. Missing/empty required values or an unknown mode prevents startup;
+        // no ambient fallback can change the realized store.
+        //
+        // | store/mount | mode | EOF flag | result |
+        // | present | absent/copy | absent | copy + signal shutdown |
+        // | present | fuse | present | fuse + stdin shutdown |
+        // | missing/empty | any | any | reject |
+        // | present | unknown | any | reject |
+        let args = ["--store-id", "s1", "--mount-path", "/memory"].map(str::to_owned);
+        let (copy, eof) = MemorydConfig::from_args(&args).unwrap();
+        assert_eq!(copy.store_id, "s1");
+        assert!(!copy.want_fuse);
+        assert!(!eof);
+
+        let args = [
+            "--store-id",
+            "s1",
+            "--mount-path",
+            "/memory",
+            "--mode",
+            "fuse",
+            "--shutdown-on-stdin-eof",
+        ]
+        .map(str::to_owned);
+        let (fuse, eof) = MemorydConfig::from_args(&args).unwrap();
+        assert!(fuse.want_fuse);
+        assert!(eof);
+
+        for args in [
+            vec!["--store-id", "s1"],
+            vec!["--store-id", "", "--mount-path", "/memory"],
+            vec![
+                "--store-id",
+                "s1",
+                "--mount-path",
+                "/memory",
+                "--mode",
+                "other",
+            ],
+        ] {
+            assert!(
+                MemorydConfig::from_args(&args.into_iter().map(str::to_owned).collect::<Vec<_>>())
+                    .is_err()
+            );
+        }
+    }
 
     #[test]
     fn fuse_selection_cause_graph_decision_table() {

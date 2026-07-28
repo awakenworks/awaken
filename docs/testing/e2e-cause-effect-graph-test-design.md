@@ -53,7 +53,7 @@
 | D19 | Hand 拓扑 | brain 侧:`AWAKEN_REMOTE_HAND_UNIX`(C5 colocated) · `AWAKEN_REMOTE_HAND`(direct) · `AWAKEN_REMOTE_HAND_LISTEN`(reverse) · `AWAKEN_REMOTE_HAND_NATS`+`_SUBJECT`(relay);sandbox 侧 `awaken-sandbox hand --unix/--listen/--dial/--nats` | 四拓扑之一 | — |
 | D20 | 每会话出口 | 会话 environment networking → `NetworkPolicy::None/Unrestricted` | deny · allow | allow |
 | D21 | Worker 上游 & 秘密 | `AWAKEN_UPSTREAM_URL`/`AWAKEN_WORKER_SERVE_URL`;`AWAKEN_WORKER_GATEWAY_ONLY` | 本地凭证 · gateway-only(secretless) | 本地凭证 |
-| D22 | memoryd 实现 | `AWAKEN_MEMORY_MODE`(+`_STORE_ID`/`MOUNT_PATH`) | fuse · copy | copy |
+| D22 | memoryd 实现 | typed `memoryd --mode/--store-id/--mount-path` argv | fuse · copy | copy |
 
 > 生产模型源(provider/endpoint/credential)在**配置发布时**由 DB 目录 + vault (`/v1/config/*`+`/v1/vaults/*`→`CatalogModelPublicationResolver`)解析一次，作为完整 `ResolvedModelCandidate` 写入快照；执行期只由 `CredentialInferenceMaterializer` 注入该候选已固定的凭证，**禁作 env 选择轴**。e2e 用 `AWAKEN_MODEL_MODE`(scenario-host 专用)选桩/上游路由,不是生产选择器。
 

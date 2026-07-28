@@ -545,23 +545,13 @@ fn build_pod(
             sidecars.push(Container {
                 name: format!("memoryd-{i}"),
                 image: Some(memoryd_image.to_string()),
-                env: Some(vec![
-                    EnvVar {
-                        name: "AWAKEN_MEMORY_STORE_ID".into(),
-                        value: Some(mm.store_id.clone()),
-                        value_from: None,
-                    },
-                    EnvVar {
-                        name: "AWAKEN_MOUNT_PATH".into(),
-                        value: Some(mm.mount_path.clone()),
-                        value_from: None,
-                    },
-                    // The sidecar reads this to FUSE-mount or fall back to copy.
-                    EnvVar {
-                        name: "AWAKEN_MEMORY_MODE".into(),
-                        value: Some(if memoryd_fuse { "fuse" } else { "copy" }.into()),
-                        value_from: None,
-                    },
+                args: Some(vec![
+                    "--store-id".into(),
+                    mm.store_id.clone(),
+                    "--mount-path".into(),
+                    mm.mount_path.clone(),
+                    "--mode".into(),
+                    if memoryd_fuse { "fuse" } else { "copy" }.into(),
                 ]),
                 volume_mounts: Some(vec![mount]),
                 // FUSE needs SYS_ADMIN; copy mode stays unprivileged (portable, so a
@@ -1370,22 +1360,31 @@ mod tests {
         let agent = &spec.containers[0];
         assert_eq!(agent.volume_mounts.as_ref().unwrap().len(), 2 + 3);
         assert!(agent.resources.is_some());
-        // the sidecar names the store + mount path + image (the privilege lives here).
+        // The sidecar names store/mount/mode through explicit argv; no environment
+        // configuration path exists (the privilege lives only on this container).
         let sc = spec
             .containers
             .iter()
             .find(|c| c.name == "memoryd-0")
             .unwrap();
         assert_eq!(sc.image.as_deref(), Some("memoryd:9"));
-        let env = sc.env.as_ref().unwrap();
-        assert!(
-            env.iter()
-                .any(|e| e.name == "AWAKEN_MEMORY_STORE_ID" && e.value.as_deref() == Some("s1"))
+        assert_eq!(
+            sc.args
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [
+                "--store-id",
+                "s1",
+                "--mount-path",
+                "/workspace/.mnt/a",
+                "--mode",
+                "copy",
+            ]
         );
-        assert!(
-            env.iter().any(|e| e.name == "AWAKEN_MOUNT_PATH"
-                && e.value.as_deref() == Some("/workspace/.mnt/a"))
-        );
+        assert!(sc.env.is_none());
     }
 
     #[test]
@@ -1590,11 +1589,7 @@ mod tests {
         }]);
         let spec = build_pod("r", &plan, &None, "m", None, false).spec.unwrap();
         let sc = memoryd_sidecar(&spec);
-        let env = sc.env.as_ref().unwrap();
-        assert!(
-            env.iter()
-                .any(|e| e.name == "AWAKEN_MEMORY_MODE" && e.value.as_deref() == Some("copy"))
-        );
+        assert!(sc.args.as_ref().unwrap().iter().any(|arg| arg == "copy"));
         assert!(
             sc.security_context.is_none(),
             "copy-mode sidecar must be unprivileged (no /dev/fuse needed)"
@@ -1610,11 +1605,7 @@ mod tests {
         // FUSE opt-in: the sidecar is told fuse mode and granted SYS_ADMIN for /dev/fuse.
         let spec = build_pod("r", &plan, &None, "m", None, true).spec.unwrap();
         let sc = memoryd_sidecar(&spec);
-        let env = sc.env.as_ref().unwrap();
-        assert!(
-            env.iter()
-                .any(|e| e.name == "AWAKEN_MEMORY_MODE" && e.value.as_deref() == Some("fuse"))
-        );
+        assert!(sc.args.as_ref().unwrap().iter().any(|arg| arg == "fuse"));
         let caps = sc
             .security_context
             .as_ref()

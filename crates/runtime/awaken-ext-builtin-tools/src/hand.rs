@@ -230,12 +230,6 @@ fn platform_shell_command(command: &str) -> std::process::Command {
 
 #[cfg(windows)]
 fn windows_posix_shell() -> Option<String> {
-    if let Some(shell) = std::env::var_os("AWAKEN_BASH") {
-        let shell = std::path::PathBuf::from(shell);
-        if shell.is_file() {
-            return Some(shell.to_string_lossy().into_owned());
-        }
-    }
     for directory in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
         let shell = directory.join("sh.exe");
         if shell.is_file() {
