@@ -827,6 +827,7 @@ impl DeploymentSessionLauncher for crate::ManagedState {
         // directly into the shared Session event command; no second JSON parser.
         let events = crate::types::SendEventsRequest {
             events: request.initial_events.into_iter().map(Into::into).collect(),
+            user_profile_id: None,
         };
         let mut metadata = request.metadata;
         metadata.insert(

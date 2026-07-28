@@ -62,6 +62,7 @@ fn activation(run: &str, thread: &str) -> RunActivation {
         input: vec![],
         delegation_origin: None,
         model_ref_override: None,
+        data_subject_id: None,
         tool_capability_narrowing: Default::default(),
     }
 }

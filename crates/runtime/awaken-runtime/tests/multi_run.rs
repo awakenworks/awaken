@@ -101,6 +101,7 @@ fn activation(message_id: &str, text: &str) -> RunActivation {
         }],
         delegation_origin: None,
         model_ref_override: None,
+        data_subject_id: None,
         tool_capability_narrowing: Default::default(),
     }
 }

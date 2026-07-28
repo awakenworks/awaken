@@ -14,19 +14,16 @@ use awaken_runtime_contract::{
 };
 use regex::Regex;
 
-/// Parse a content-capture decision from `level`/`redaction` strings (the
-/// single-machine env default, ADR-0050 D5/D9). `level` = off|structured|full
-/// (default `structured`); `redaction` = none|regex (default none = `Noop`).
-fn parse_capture(level: Option<&str>, redaction: Option<&str>) -> CaptureDecision {
-    let level = match level {
-        Some("off") => ContentCapture::Off,
-        Some("full") => ContentCapture::Full,
-        _ => ContentCapture::Structured,
+/// Project the typed deployment ceiling into the runtime's opaque decision.
+pub(crate) fn capture_decision(
+    settings: crate::deployment_config::ContentCaptureSettings,
+    trace_file_present: bool,
+) -> CaptureDecision {
+    let redactor: Arc<dyn ContentRedactor> = match settings.redaction {
+        crate::deployment_config::ContentRedaction::Regex => Arc::new(PiiRedactor::new()),
+        crate::deployment_config::ContentRedaction::None => Arc::new(NoopRedactor),
     };
-    let redactor: Arc<dyn ContentRedactor> = match redaction {
-        Some("regex") => Arc::new(PiiRedactor::new()),
-        _ => Arc::new(NoopRedactor),
-    };
+    let level = clamp_for_trace_file(settings.level, trace_file_present);
     CaptureDecision::with_redactor(level, redactor)
 }
 
@@ -39,18 +36,6 @@ fn clamp_for_trace_file(level: ContentCapture, trace_file_present: bool) -> Cont
     } else {
         level
     }
-}
-
-/// Resolve the content-capture decision from the environment: the open/
-/// single-machine default. Managed builds override this with the resolved
-/// ceiling × request × consent `meet`.
-pub(crate) fn env_capture_decision() -> CaptureDecision {
-    let d = parse_capture(
-        std::env::var("AWAKEN_CONTENT_CAPTURE").ok().as_deref(),
-        std::env::var("AWAKEN_CONTENT_REDACTION").ok().as_deref(),
-    );
-    let level = clamp_for_trace_file(d.level, std::env::var("AWAKEN_TRACE_FILE").is_ok());
-    CaptureDecision::with_redactor(level, d.redactor)
 }
 
 /// Regex-based PII redactor. Compiled patterns are process-shared.
@@ -154,54 +139,63 @@ mod tests {
     }
 
     #[test]
-    fn parse_capture_defaults_to_structured_noop() {
+    fn typed_capture_policy_projects_level_redaction_and_trace_clamp() {
+        // Cause/effect graph:
+        // configured level selects the ceiling; Regex selects PII redaction;
+        // an append-only trace sink clamps Full to Structured.
+        //
+        // | Rule | level | redaction | trace file | Effect |
+        // |---|---|---|---:|---|
+        // | C1 | Structured | None | 0 | structured, no content |
+        // | C2 | Full | Regex | 0 | full, scrubbed content |
+        // | C3 | Off | Regex | 0 | no content |
+        // | C4 | Full | either | 1 | structured |
+        use crate::deployment_config::{ContentCaptureSettings, ContentRedaction};
         use awaken_runtime_contract::{ContentCapture, ContentKind};
-        let d = super::parse_capture(None, None);
-        assert_eq!(d.level, ContentCapture::Structured);
-        // Structured records no content.
-        assert!(d.content(ContentKind::InputMessages, "a@b.com").is_none());
-    }
-
-    #[test]
-    fn parse_capture_full_with_regex_scrubs() {
-        use awaken_runtime_contract::{ContentCapture, ContentKind};
-        let d = super::parse_capture(Some("full"), Some("regex"));
-        assert_eq!(d.level, ContentCapture::Full);
+        let structured = super::capture_decision(ContentCaptureSettings::default(), false);
+        assert_eq!(structured.level, ContentCapture::Structured, "C1");
+        assert!(
+            structured
+                .content(ContentKind::InputMessages, "a@b.com")
+                .is_none(),
+            "C1"
+        );
+        let full = super::capture_decision(
+            ContentCaptureSettings {
+                level: ContentCapture::Full,
+                redaction: ContentRedaction::Regex,
+            },
+            false,
+        );
+        assert_eq!(full.level, ContentCapture::Full, "C2");
         assert_eq!(
-            d.content(ContentKind::InputMessages, "mail a@b.com")
+            full.content(ContentKind::InputMessages, "mail a@b.com")
                 .as_deref(),
-            Some("mail [redacted-email]")
+            Some("mail [redacted-email]"),
+            "C2"
         );
-    }
-
-    #[test]
-    fn parse_capture_off_records_nothing_even_full_text() {
-        use awaken_runtime_contract::ContentKind;
-        let d = super::parse_capture(Some("off"), Some("regex"));
-        assert!(d.content(ContentKind::OutputMessages, "x").is_none());
-    }
-
-    #[test]
-    fn trace_file_downgrades_full_to_structured() {
-        use awaken_runtime_contract::ContentCapture;
-        // With the append-only trace file active, Full content is not allowed.
-        assert_eq!(
-            super::clamp_for_trace_file(ContentCapture::Full, true),
-            ContentCapture::Structured
+        let off = super::capture_decision(
+            ContentCaptureSettings {
+                level: ContentCapture::Off,
+                redaction: ContentRedaction::Regex,
+            },
+            false,
         );
-        // Without it, Full stands.
-        assert_eq!(
-            super::clamp_for_trace_file(ContentCapture::Full, false),
-            ContentCapture::Full
-        );
-        // Structured/Off are unaffected either way.
-        assert_eq!(
-            super::clamp_for_trace_file(ContentCapture::Structured, true),
-            ContentCapture::Structured
+        assert!(
+            off.content(ContentKind::OutputMessages, "x").is_none(),
+            "C3"
         );
         assert_eq!(
-            super::clamp_for_trace_file(ContentCapture::Off, true),
-            ContentCapture::Off
+            super::capture_decision(
+                ContentCaptureSettings {
+                    level: ContentCapture::Full,
+                    redaction: ContentRedaction::None,
+                },
+                true,
+            )
+            .level,
+            ContentCapture::Structured,
+            "C4"
         );
     }
 }

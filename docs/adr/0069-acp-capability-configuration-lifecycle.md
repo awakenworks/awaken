@@ -7,12 +7,14 @@
   observations, prompt-free capability negotiation, generated Agent option
   contracts, publication/placement/launch fingerprints, provisioning-derived
   Session Environment selection, live readiness, and shared CLI/Flow
-  composition, descendant process-group reaping, and event-triggered all-scope
-  publication reconciliation. A real persisted-login Claude session remains an
-  external release gate. Typed migration of the remaining runtime environment
-  settings and ADR-0057 G2 ACP-content erasure remain separate, explicit
-  implementation gaps. “Proposed” therefore means the complete decision is not
-  yet accepted; it does not mean the listed foundation is hypothetical.
+  composition, descendant process-group reaping, event-triggered all-scope
+  publication reconciliation, typed capture authoring, request-grained subject
+  attribution, and subject-scoped erasable ACP session homes. A real
+  persisted-login Claude session and the product-level Art.17 E2E remain
+  release gates. Typed migration of the remaining runtime environment settings
+  is still an explicit implementation gap. “Proposed” therefore means the
+  complete decision is not yet accepted; it does not mean the listed foundation
+  is hypothetical.
 - Amends:
   [ADR-0057](0057-unified-agent-configuration.md), especially its
   backend-owned trusted-host amendment
@@ -87,6 +89,8 @@ catalog declaration
   -> launch-time revalidation
   -> resolved launch
   -> protocol execution and terminal outcome
+  -> credential-excluding, subject-scoped session harvest
+  -> retention expiry or Art.17 erasure
 ```
 
 The immediate focus is the boundary between Worker preparation and execution.
@@ -470,10 +474,42 @@ This is a target invariant, not a claim that every historic runtime environment
 read has already been migrated. The Provider-proposal authoring path and Flow's
 parallel ACP inventory/default have been removed. Sandbox fallback, warm-pool,
 proxy, Kubernetes namespace, container Hand location and reaper settings have
-been consolidated into `DeploymentConfig::sandbox`. Remaining operator settings
-such as content capture and enrollment still require migration to the existing
-typed deployment configuration before D12 is complete. PATH, HOME, DISPLAY and
-test gate variables are not part of that migration.
+been consolidated into `DeploymentConfig::sandbox`. Content capture level and
+redaction are authored once in typed deployment configuration; enrollment
+signing is an internally generated process capability rather than an ambient
+operator secret. Remaining production readers such as OAuth lifetime,
+database-pool and observability settings still require migration before D12 is
+complete. PATH, HOME, DISPLAY and test gate variables are not part of that
+migration.
+
+### D13 — Request attribution and retained ACP content have one lifecycle
+
+Data-subject identity is request-grained. Managed `POST .../events` may carry a
+`user_profile_id`; the adapter projects it to neutral `DataSubjectId` on
+`RunActivation`. It is not stored as a Session default and is never inferred
+from an environment variable. Durable dispatch, remote claim and native, ACP or
+A2A awaiting tickets retain the exact id so retry and same-Run resume cannot
+change attribution.
+
+The Runtime Host owns the one capture sink. A process-global fallback is
+forbidden: the composition root installs the same sink instance that the
+erasure resolver owns, and `SessionCtx::context_for` attaches it only when the
+activation has an explicit subject.
+
+Portable ACP session homes are opaque retained content. Their key is:
+
+```text
+subject scope × thread × adapter
+```
+
+Each component is mapped to a safe digest before filesystem use. Subject scope
+prevents a Session that serves different users over time from merging their
+opaque CLI session data. `FsSessionBlobStore` implements the neutral
+`ContentEraser` port; the Host shares that canonical store with ACP recovery and
+registers it in the data-subject resolver. Erasing one subject removes every
+subject-scoped ACP blob without touching another subject or CLI authentication
+files. Unattributed runs use a separate non-subject scope and are not falsely
+claimed by a subject erasure receipt.
 
 ## Complete dynamic lifecycle
 
@@ -863,7 +899,8 @@ the remaining external/reconciliation gates:
 | automatic Assistant | exactly one Available+Verified local backend is required; zero remains unconfigured and multiple are resolved through the ordinary persisted Agent model editor | no separate default-backend preference exists |
 | frontend contract | OpenAPI-generated TypeScript consumes the Rust discriminated union and live Worker ACP projection | keep generated-contract freshness gated |
 | Flow | pinned to the pushed Awaken revision; one existing Worker/executor consumes the shared preparation service | keep the revision and lockfile updated atomically |
-| ambient configuration | environment Provider proposals and Flow ACP inventory/default fields are removed; sandbox/container realization policy consumes `DeploymentConfig::sandbox` and lower-layer environment readers are absent | migrate remaining content-capture and enrollment settings; keep PATH/HOME/DISPLAY as execution metadata only |
+| ambient configuration | environment Provider proposals and Flow ACP inventory/default fields are removed; sandbox/container and content-capture policy consume typed `DeploymentConfig`; enrollment signing is internal | migrate remaining OAuth lifetime, database-pool and observability readers; keep PATH/HOME/DISPLAY as execution metadata only |
+| content attribution/erasure | Managed request attribution is durable across dispatch and resume; Host-owned capture sink and subject-scoped ACP blob store share the erasure resolver | add the product-level run → harvest → erasure HTTP E2E and retention-expiry policy |
 | real host proof | installed Codex `0.145.0` completed the zero-configuration host-login release gate through real wrapper negotiation, BackendDefault publication, LLM response and committed running→idle transcript; installed Claude `2.1.220` is correctly login-required when ambient `ANTHROPIC_API_KEY` is cleared | run the same release-gated real LLM session after a persisted Claude host login is available |
 
 Therefore discovery, generic ACP configuration, live Worker projection,
@@ -872,15 +909,13 @@ path are implemented. A real Claude persisted-login LLM session remains the
 explicit external release gate; the ADR does not equate hermetic protocol
 coverage or an ambient API key with that proof.
 
-The table does not close ADR-0057's trigger-gated G2 requirement. The generic
-ADR-0050 captured-content stores implement consent and subject erasure, but
-`FsSessionBlobStore` is currently keyed only by thread and adapter and is not a
-registered `ContentEraser`. Subject attribution, an erasable session-blob
-adapter, composition-root registration and an Art.17 end-to-end test are still
-required before ACP session continuity can be described as erasable. Hand
-placement (F) and Agent disable/archive semantics (I) are broader ADR-0057
-phases, not alternative ACP discovery or execution paths; their status remains
-owned by ADR-0057.
+ADR-0057's trigger-gated G2 implementation now has request attribution,
+subject-scoped ACP continuity, a registered `ContentEraser`, and store-level
+isolation/erasure proof. Its final product gate is the Art.17 HTTP E2E proving a
+real run harvests a session blob and one erasure request removes both captured
+content and that blob while preserving another subject. Hand placement (F) and
+Agent disable/archive semantics (I) are broader ADR-0057 phases, not alternative
+ACP discovery or execution paths; their status remains owned by ADR-0057.
 
 Managed `CodexAuthJson` is a separate product decision. BackendOwned never
 enters that Provider-only artifact path. A global prohibition on creating

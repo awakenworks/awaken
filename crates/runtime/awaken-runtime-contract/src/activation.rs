@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::DataSubjectId;
 use crate::permission::{DenyAllTools, ToolCapabilityNarrowing};
 use crate::runtime_context::RuntimeRunContext;
 
@@ -24,6 +25,11 @@ pub struct RunActivation {
     /// outside the published candidate set is rejected before any model call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_ref_override: Option<String>,
+    /// Request-grained content owner. This neutral id is durable because retries,
+    /// remote claims, and same-Run resumes must retain attribution without
+    /// consulting ambient process state or a protocol-specific session default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_subject_id: Option<DataSubjectId>,
     /// Durable, backend-neutral restriction on the executor's configured tool
     /// authority. It belongs to the activation because recovery must enforce the
     /// same restriction on every attempt and every worker process.
@@ -59,6 +65,7 @@ impl RunActivation {
             input,
             delegation_origin: None,
             model_ref_override: None,
+            data_subject_id: None,
             tool_capability_narrowing: ToolCapabilityNarrowing::Configured,
         }
     }
@@ -99,6 +106,13 @@ impl RunActivation {
     #[must_use]
     pub fn with_model_ref_override(mut self, model_ref: Option<String>) -> Self {
         self.model_ref_override = model_ref;
+        self
+    }
+
+    /// Attach the request-grained neutral content owner.
+    #[must_use]
+    pub fn with_data_subject(mut self, subject: Option<DataSubjectId>) -> Self {
+        self.data_subject_id = subject;
         self
     }
 
@@ -200,6 +214,8 @@ mod serde_contract {
         for act in [
             RunActivation::for_binding("bound"),
             RunActivation::for_binding("bound").with_model_ref_override(Some("chosen".into())),
+            RunActivation::for_binding("bound")
+                .with_data_subject(Some(crate::DataSubjectId("dsub_1".into()))),
             RunActivation::for_binding("bound").without_tools(),
         ] {
             let json = serde_json::to_string(&act).expect("serializes");
@@ -304,5 +320,35 @@ mod serde_contract {
         object.insert("initiator".into(), legacy);
         let recovered_legacy: RunActivation = serde_json::from_value(value).unwrap();
         assert!(recovered_legacy.delegation_origin.is_some());
+    }
+
+    /// Cause/effect decision table for attribution wire compatibility:
+    /// R1 subject=Some -> field is durable and round-trips; R2 subject=None ->
+    /// field is omitted; R3 legacy field=absent -> None. These are the complete
+    /// combinations because attribution is an optional opaque value.
+    #[test]
+    fn request_subject_is_optional_evolvable_and_durable() {
+        let attributed = RunActivation::for_binding("bound")
+            .with_data_subject(Some(crate::DataSubjectId("dsub_alice".into())));
+        let value = serde_json::to_value(&attributed).unwrap();
+        assert_eq!(
+            value.get("data_subject_id"),
+            Some(&serde_json::json!("dsub_alice"))
+        );
+        assert_eq!(
+            serde_json::from_value::<RunActivation>(value)
+                .unwrap()
+                .data_subject_id,
+            attributed.data_subject_id
+        );
+
+        let legacy = serde_json::to_value(RunActivation::for_binding("bound")).unwrap();
+        assert!(legacy.get("data_subject_id").is_none());
+        assert!(
+            serde_json::from_value::<RunActivation>(legacy)
+                .unwrap()
+                .data_subject_id
+                .is_none()
+        );
     }
 }

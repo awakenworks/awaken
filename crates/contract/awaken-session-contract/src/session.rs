@@ -303,6 +303,20 @@ pub trait SessionRuntime: Send + Sync {
         content: Vec<ContentBlock>,
     ) -> Result<StepOutcome, RunError>;
 
+    /// Run one request with its protocol-projected, backend-neutral content
+    /// owner. Adapters that do not support attributed capture may use the
+    /// compatibility default; runtime hosts override it and persist attribution
+    /// on the durable activation.
+    async fn run_attributed(
+        &self,
+        agent: &str,
+        thread: &str,
+        content: Vec<ContentBlock>,
+        _data_subject_id: Option<String>,
+    ) -> Result<StepOutcome, RunError> {
+        self.run(agent, thread, content).await
+    }
+
     /// Run one user turn, installing `sink` as the run's best-effort live-progress
     /// channel so the adapter can project in-flight `stream::Kind` into
     /// `event_start`/`event_delta` previews. The committed [`StepOutcome`] is
@@ -317,6 +331,18 @@ pub trait SessionRuntime: Send + Sync {
         _sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
     ) -> Result<StepOutcome, RunError> {
         self.run(agent, thread, content).await
+    }
+
+    /// Streaming counterpart of [`run_attributed`](Self::run_attributed).
+    async fn run_streaming_attributed(
+        &self,
+        agent: &str,
+        thread: &str,
+        content: Vec<ContentBlock>,
+        _data_subject_id: Option<String>,
+        sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
+    ) -> Result<StepOutcome, RunError> {
+        self.run_streaming(agent, thread, content, sink).await
     }
 
     /// Answer a built-in tool the run awaits (allow/deny) and continue.

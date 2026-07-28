@@ -166,7 +166,20 @@ impl SharedHost {
         thread: &str,
         input: Vec<Message>,
     ) -> Result<RunResult, HostError> {
-        self.deliver_run(agent, thread, input, false, None).await
+        self.deliver_run(agent, thread, input, false, None, None)
+            .await
+    }
+
+    /// Run one request with its neutral, request-grained content owner.
+    pub async fn run_attributed(
+        &self,
+        agent: Option<&str>,
+        thread: &str,
+        input: Vec<Message>,
+        data_subject_id: Option<awaken_runtime_contract::DataSubjectId>,
+    ) -> Result<RunResult, HostError> {
+        self.deliver_run(agent, thread, input, false, None, data_subject_id)
+            .await
     }
 
     /// Like [`SharedHost::run`] but forwards the engine's best-effort live
@@ -179,7 +192,20 @@ impl SharedHost {
         input: Vec<Message>,
         sink: Arc<dyn StreamSink>,
     ) -> Result<RunResult, HostError> {
-        self.deliver_run(agent, thread, input, false, Some(sink))
+        self.deliver_run(agent, thread, input, false, Some(sink), None)
+            .await
+    }
+
+    /// Streaming counterpart of [`run_attributed`](Self::run_attributed).
+    pub async fn run_streaming_attributed(
+        &self,
+        agent: Option<&str>,
+        thread: &str,
+        input: Vec<Message>,
+        sink: Arc<dyn StreamSink>,
+        data_subject_id: Option<awaken_runtime_contract::DataSubjectId>,
+    ) -> Result<RunResult, HostError> {
+        self.deliver_run(agent, thread, input, false, Some(sink), data_subject_id)
             .await
     }
 
@@ -194,7 +220,8 @@ impl SharedHost {
         thread: &str,
         input: Vec<Message>,
     ) -> Result<RunResult, HostError> {
-        self.deliver_run(agent, thread, input, true, None).await
+        self.deliver_run(agent, thread, input, true, None, None)
+            .await
     }
 
     async fn deliver_run(
@@ -204,6 +231,7 @@ impl SharedHost {
         input: Vec<Message>,
         supersede: bool,
         sink: Option<Arc<dyn StreamSink>>,
+        data_subject_id: Option<awaken_runtime_contract::DataSubjectId>,
     ) -> Result<RunResult, HostError> {
         let ctx = self.ctx_for(thread, agent).await?;
         let _execution = ctx.execution.lock().await;
@@ -259,6 +287,7 @@ impl SharedHost {
         };
         activation.run_id = run_id.clone();
         activation.model_ref_override = self.inference_routing.override_for(thread);
+        activation.data_subject_id = data_subject_id;
         let executor = crate::run_exec::BoundRunExecutor::new(self, ctx.clone())
             .with_supersede(supersede)
             .with_stream_sink(sink);
@@ -796,6 +825,7 @@ mod ticket_projection_tests {
             snapshot_id: "snapshot-7".into(),
             catalog_fingerprint: "fingerprint-7".into(),
             delegation_origin: None,
+            data_subject_id: None,
             reason: AwaitReason::UserInput,
             call_id: Some("remote-7".into()),
             pending_tool: None,

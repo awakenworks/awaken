@@ -13,8 +13,8 @@ use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use awaken_runtime_host::{
-    AcpWorkerProfile, DeploymentConfig, DispatchBackend, SandboxSettings, SandboxTier, StoreKind,
-    Wake,
+    AcpWorkerProfile, ContentCaptureSettings, ContentRedaction, DeploymentConfig, DispatchBackend,
+    SandboxSettings, SandboxTier, StoreKind, Wake,
 };
 use serde::Deserialize;
 
@@ -427,6 +427,19 @@ impl ResolvedDeployment {
                 "sandbox reaper interval and max age must be non-zero when enabled".to_owned(),
             );
         }
+        let content_capture = ContentCaptureSettings {
+            level: match file.content_capture.as_deref() {
+                Some("off") => awaken_runtime_contract::ContentCapture::Off,
+                Some("structured") | None => awaken_runtime_contract::ContentCapture::Structured,
+                Some("full") => awaken_runtime_contract::ContentCapture::Full,
+                Some(other) => return Err(format!("invalid content_capture={other:?}")),
+            },
+            redaction: match file.content_redaction.as_deref() {
+                Some("none") | None => ContentRedaction::None,
+                Some("regex") => ContentRedaction::Regex,
+                Some(other) => return Err(format!("invalid content_redaction={other:?}")),
+            },
+        };
         let runtime = DeploymentConfig {
             durable: true,
             storage_dir: Some(data_dir.clone()),
@@ -451,6 +464,7 @@ impl ResolvedDeployment {
             sandbox_tier,
             sandbox_dir: file.sandbox_dir.clone(),
             sandbox,
+            content_capture,
             acp_session_blob_root: file.acp_session_blob_root.clone(),
             acp,
             container_image: file.container_image.clone(),
@@ -806,6 +820,8 @@ struct FileConfig {
     sandbox_reaper_enabled: Option<bool>,
     sandbox_reaper_interval_secs: Option<u64>,
     sandbox_reaper_max_age_secs: Option<u64>,
+    content_capture: Option<String>,
+    content_redaction: Option<String>,
     acp_session_blob_root: Option<PathBuf>,
     acp_clis: Option<Vec<String>>,
     acp_default_cli: Option<String>,
@@ -1117,6 +1133,72 @@ mod tests {
             ConfigOverrides::default(),
         );
         assert!(!dormant.runtime.sandbox.reaper_enabled, "V3");
+    }
+
+    #[test]
+    fn content_capture_policy_has_one_typed_authoring_boundary() {
+        // Cause/effect graph: omitted values select the privacy-preserving
+        // Structured/None defaults; known strings project to typed values;
+        // unknown strings fail before Host construction.
+        //
+        // | Rule | capture | redaction | Effect |
+        // |---|---|---|---|
+        // | P1 | omitted | omitted | Structured + None |
+        // | P2 | Full | Regex | exact typed policy |
+        // | P3 | unknown | either | reject |
+        // | P4 | either | unknown | reject |
+        let defaults = resolve(FileConfig::default(), ConfigOverrides::default())
+            .runtime
+            .content_capture;
+        assert_eq!(
+            defaults.level,
+            awaken_runtime_contract::ContentCapture::Structured,
+            "P1"
+        );
+        assert_eq!(defaults.redaction, ContentRedaction::None, "P1");
+
+        let selected = resolve(
+            FileConfig {
+                content_capture: Some("full".into()),
+                content_redaction: Some("regex".into()),
+                ..FileConfig::default()
+            },
+            ConfigOverrides::default(),
+        )
+        .runtime
+        .content_capture;
+        assert_eq!(
+            selected.level,
+            awaken_runtime_contract::ContentCapture::Full,
+            "P2"
+        );
+        assert_eq!(selected.redaction, ContentRedaction::Regex, "P2");
+
+        let resolve_error = |file: FileConfig| {
+            ResolvedDeployment::resolve_file(
+                ConfigOverrides::default(),
+                Some(PathBuf::from("/home/dev")),
+                PathBuf::from("/home/dev/.awaken/config.toml"),
+                file,
+            )
+            .unwrap_err()
+        };
+        assert!(
+            resolve_error(FileConfig {
+                content_capture: Some("everything".into()),
+                ..FileConfig::default()
+            })
+            .contains("content_capture"),
+            "P3"
+        );
+        assert!(
+            resolve_error(FileConfig {
+                content_redaction: Some("external".into()),
+                ..FileConfig::default()
+            })
+            .contains("content_redaction"),
+            "P4"
+        );
     }
 
     #[test]

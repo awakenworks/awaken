@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_runtime_contract::{ContentEraser, DataSubjectId, ErasureError};
 
 use crate::config_home::ConfigHome;
 use crate::{SessionHomeKey, SessionHomePlan, SessionHomeProvider};
@@ -45,6 +46,7 @@ pub trait SessionBlobStore: Send + Sync {
 /// A [`SessionBlobStore`] backed by a local directory: `root/<thread>/<adapter>/`.
 /// For a single machine this is the durable store; point `root` at a shared mount
 /// (or replace with a content-addressed adapter) for cross-machine recovery.
+#[derive(Clone)]
 pub struct FsSessionBlobStore {
     root: PathBuf,
 }
@@ -55,8 +57,22 @@ impl FsSessionBlobStore {
         Self { root }
     }
 
+    fn digest(value: &str) -> String {
+        awaken_runtime_contract::resolution::content_fingerprint(value)
+            .expect("a string always serializes")
+    }
+
+    fn subject_dir(&self, subject: Option<&str>) -> PathBuf {
+        let scope = subject
+            .map(Self::digest)
+            .unwrap_or_else(|| "unattributed".to_string());
+        self.root.join(scope)
+    }
+
     fn key_dir(&self, key: &SessionHomeKey) -> PathBuf {
-        self.root.join(&key.thread_id).join(&key.adapter)
+        self.subject_dir(key.data_subject_id.as_deref())
+            .join(Self::digest(&key.thread_id))
+            .join(Self::digest(&key.adapter))
     }
 }
 
@@ -78,6 +94,30 @@ impl SessionBlobStore for FsSessionBlobStore {
             std::fs::remove_dir_all(&dst)?;
         }
         copy_tree(src, &dst)
+    }
+}
+
+#[async_trait]
+impl ContentEraser for FsSessionBlobStore {
+    async fn erase_subject(&self, subject: &DataSubjectId) -> Result<usize, ErasureError> {
+        let dir = self.subject_dir(Some(subject.as_str()));
+        if !dir.exists() {
+            return Ok(0);
+        }
+        let records = std::fs::read_dir(&dir)
+            .map_err(|error| ErasureError(error.to_string()))?
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().is_dir())
+            .flat_map(|thread| {
+                std::fs::read_dir(thread.path())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Result::ok)
+            })
+            .filter(|entry| entry.path().is_dir())
+            .count();
+        std::fs::remove_dir_all(&dir).map_err(|error| ErasureError(error.to_string()))?;
+        Ok(records)
     }
 }
 
@@ -159,6 +199,7 @@ mod tests {
         let blob_root = tempfile::tempdir().unwrap();
         let blobs = Arc::new(FsSessionBlobStore::new(blob_root.path().to_path_buf()));
         let key = SessionHomeKey {
+            data_subject_id: Some("dsub_alice".to_string()),
             thread_id: "t1".to_string(),
             adapter: "claude".to_string(),
         };
@@ -203,6 +244,7 @@ mod tests {
         let blob_root = tempfile::tempdir().unwrap();
         let blobs = Arc::new(FsSessionBlobStore::new(blob_root.path().to_path_buf()));
         let key = SessionHomeKey {
+            data_subject_id: Some("dsub_alice".to_string()),
             thread_id: "never-seen".to_string(),
             adapter: "claude".to_string(),
         };
@@ -212,5 +254,46 @@ mod tests {
             .await;
         let home = ConfigHome::open(Some(store.path()), "never-seen").unwrap();
         assert!(home.read("projects/conv/session.jsonl").unwrap().is_none());
+    }
+
+    /// Cause/effect graph:
+    /// - C1: two subjects use the same thread+adapter; C2: only Alice is erased.
+    /// - E1: their opaque blobs never collide; E2: Alice's exact subtree is
+    ///   removed and counted; E3: Bob's blob remains fetchable.
+    /// Decision-table rule R1 = C1(true) × C2(Alice) -> E1+E2+E3. Unknown-subject
+    /// no-op is covered by `restore_of_an_unknown_session_is_a_no_op`.
+    #[tokio::test]
+    async fn subject_scopes_are_isolated_and_independently_erasable() {
+        let root = tempfile::tempdir().unwrap();
+        let alice_source = tempfile::tempdir().unwrap();
+        let bob_source = tempfile::tempdir().unwrap();
+        std::fs::write(alice_source.path().join("session"), b"alice").unwrap();
+        std::fs::write(bob_source.path().join("session"), b"bob").unwrap();
+        let store = FsSessionBlobStore::new(root.path().to_path_buf());
+        let alice = SessionHomeKey {
+            data_subject_id: Some("dsub_alice".into()),
+            thread_id: "shared-thread".into(),
+            adapter: "codex".into(),
+        };
+        let bob = SessionHomeKey {
+            data_subject_id: Some("dsub_bob".into()),
+            ..alice.clone()
+        };
+        store.store(&alice, alice_source.path()).await.unwrap();
+        store.store(&bob, bob_source.path()).await.unwrap();
+
+        let removed = store
+            .erase_subject(&DataSubjectId("dsub_alice".into()))
+            .await
+            .unwrap();
+        let alice_dest = tempfile::tempdir().unwrap();
+        let bob_dest = tempfile::tempdir().unwrap();
+        assert_eq!(removed, 1);
+        assert!(!store.fetch(&alice, alice_dest.path()).await.unwrap());
+        assert!(store.fetch(&bob, bob_dest.path()).await.unwrap());
+        assert_eq!(
+            std::fs::read(bob_dest.path().join("session")).unwrap(),
+            b"bob"
+        );
     }
 }

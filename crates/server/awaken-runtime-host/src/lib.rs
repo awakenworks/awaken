@@ -111,7 +111,7 @@ pub use crate::worker_control_client::WorkerControlClient;
 pub use awaken_protocol_managed::McpAttachmentRealizer;
 pub use awaken_sandbox_container::{ContainerEnvironment, ContainerEnvironmentProvider};
 // ACP launch projection consumes the Session environment selected by the host.
-pub use crate::data_subject_api::{consent_router, erasure_router, install_capture_sink};
+pub use crate::data_subject_api::{consent_router, erasure_router};
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::memory_store_api::memory_stores_router_with_catalog;
 pub use crate::redact::PiiRedactor;
@@ -142,8 +142,8 @@ pub use crate::commit_ingest::{
     ClaimedCommitService, RemoteClaimedRunCommit, claimed_commit_router,
 };
 pub use crate::deployment_config::{
-    AcpWorkerProfile, DeploymentConfig, DispatchBackend, SandboxSettings, SandboxTier, StoreKind,
-    Wake,
+    AcpWorkerProfile, ContentCaptureSettings, ContentRedaction, DeploymentConfig, DispatchBackend,
+    SandboxSettings, SandboxTier, StoreKind, Wake,
 };
 pub use crate::dispatch_transport::{
     WorkerDispatchService, dispatch_transport_router_with_service,
@@ -943,6 +943,27 @@ impl SessionRuntime for ManagedHost {
         to_step_outcome(result)
     }
 
+    async fn run_attributed(
+        &self,
+        agent: &str,
+        thread: &str,
+        content: Vec<ContentBlock>,
+        data_subject_id: Option<String>,
+    ) -> Result<StepOutcome, RunError> {
+        self.validate_thread_resource_bindings(thread).await?;
+        let result = self
+            .host
+            .run_attributed(
+                Some(agent),
+                thread,
+                vec![user_message(content)],
+                data_subject_id.map(awaken_runtime_contract::DataSubjectId),
+            )
+            .await
+            .map_err(to_run_error)?;
+        to_step_outcome(result)
+    }
+
     async fn run_streaming(
         &self,
         agent: &str,
@@ -956,6 +977,29 @@ impl SessionRuntime for ManagedHost {
         let result = self
             .host
             .run_streaming(Some(agent), thread, vec![user_message(content)], sink)
+            .await
+            .map_err(to_run_error)?;
+        to_step_outcome(result)
+    }
+
+    async fn run_streaming_attributed(
+        &self,
+        agent: &str,
+        thread: &str,
+        content: Vec<ContentBlock>,
+        data_subject_id: Option<String>,
+        sink: std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>,
+    ) -> Result<StepOutcome, RunError> {
+        self.validate_thread_resource_bindings(thread).await?;
+        let result = self
+            .host
+            .run_streaming_attributed(
+                Some(agent),
+                thread,
+                vec![user_message(content)],
+                sink,
+                data_subject_id.map(awaken_runtime_contract::DataSubjectId),
+            )
             .await
             .map_err(to_run_error)?;
         to_step_outcome(result)

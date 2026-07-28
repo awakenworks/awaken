@@ -216,6 +216,9 @@ pub struct SharedHost {
     /// worker. Point it at a **shared** location for cross-machine recovery; leave
     /// `None` on a single machine (the per-thread config home is already stable).
     pub(crate) session_blob_root: Option<PathBuf>,
+    /// Canonical adapter over `session_blob_root`, shared by ACP recovery and
+    /// data-subject erasure so those paths cannot drift.
+    pub(crate) session_blob_store: Option<Arc<awaken_run_executor_acp::FsSessionBlobStore>>,
     /// Host-level memory auxiliary-agent capability. It owns no store: every
     /// recall/extraction operation requires a Session-scoped governed binding.
     pub(crate) memory: Arc<crate::memory::MemoryRuntime>,
@@ -281,10 +284,14 @@ pub struct SharedHost {
     /// their precedence (provider placement overrides the hand). Cloned into each
     /// `SessionCtx`. See [`crate::hand_placement`].
     pub(crate) hand_placement: crate::hand_placement::HandPlacement,
-    /// Subject-tagged captured-content sink (ADR-0050): when set, a run whose
-    /// capture level permits content writes it here (attributed to the
-    /// `AWAKEN_CONTENT_SUBJECT` on the open surface). `None` = spans only.
-    pub(crate) capture_sink: Option<Arc<dyn awaken_runtime_contract::CaptureSink>>,
+    /// The one Host-owned subject-tagged captured-content sink (ADR-0050).
+    /// Composition may install it after the shared Host is assembled; sessions
+    /// snapshot the current sink when they are created. `None` = spans only.
+    pub(crate) capture_sink:
+        std::sync::RwLock<Option<Arc<dyn awaken_runtime_contract::CaptureSink>>>,
+    /// Deployment-resolved capture ceiling/redactor. Per-request consent and
+    /// subject attribution may only narrow or activate this value.
+    pub(crate) capture_decision: awaken_runtime_contract::CaptureDecision,
     /// Globally-registered management tool executables (ADR-0052 D3/D4). Registered
     /// on every thread's runtime (the executor registry stays global); only the
     /// reserved-scope assistant's compiled config *names* them, so no other run can

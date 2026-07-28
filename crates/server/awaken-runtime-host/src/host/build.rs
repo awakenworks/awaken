@@ -232,6 +232,10 @@ impl SharedHost {
         let resource_lifecycle =
             resource_lifecycle.or_else(|| Some(super::tests::test_resource_lifecycle()));
         let session_slots = crate::session_slot::SessionRuntimeSlots::default();
+        let capture_decision = crate::redact::capture_decision(
+            deployment.content_capture,
+            std::env::var_os("AWAKEN_TRACE_FILE").is_some(),
+        );
         Self {
             llm,
             model_ref,
@@ -265,6 +269,10 @@ impl SharedHost {
             // A shared root (e.g. a networked mount) enables cross-machine ACP
             // session recovery; unset means single-machine (stable config home).
             session_blob_root: deployment.acp_session_blob_root.clone(),
+            session_blob_store: deployment
+                .acp_session_blob_root
+                .clone()
+                .map(|root| Arc::new(awaken_run_executor_acp::FsSessionBlobStore::new(root))),
             upstream: None,
             worker_credential_resolver: None,
             deployment,
@@ -284,7 +292,8 @@ impl SharedHost {
             dispatch_store_override: None,
             completion: Arc::new(CompletionRegistry::default()),
             hand_placement: crate::hand_placement::HandPlacement::new(),
-            capture_sink: None,
+            capture_sink: std::sync::RwLock::new(None),
+            capture_decision,
             admin_tools: Vec::new(),
         }
     }
@@ -435,16 +444,32 @@ impl SharedHost {
         self
     }
 
-    /// Wire the subject-tagged captured-content sink (ADR-0050). A run whose
-    /// resolved capture level permits content writes it here, attributed to the
-    /// `AWAKEN_CONTENT_SUBJECT` on the open surface.
+    /// Wire the subject-tagged captured-content sink before sharing the Host.
     #[must_use]
-    pub fn with_capture_sink(
-        mut self,
-        sink: Arc<dyn awaken_runtime_contract::CaptureSink>,
-    ) -> Self {
-        self.capture_sink = Some(sink);
+    pub fn with_capture_sink(self, sink: Arc<dyn awaken_runtime_contract::CaptureSink>) -> Self {
+        *self
+            .capture_sink
+            .write()
+            .expect("capture sink lock poisoned") = Some(sink);
         self
+    }
+
+    /// Install the canonical Host-owned capture sink at a late composition edge.
+    ///
+    /// This is intentionally the same storage used by [`with_capture_sink`], not
+    /// a process-global fallback. Existing sessions retain their immutable
+    /// per-session dependencies; subsequently created sessions receive this sink.
+    pub fn install_capture_sink(&self, sink: Arc<dyn awaken_runtime_contract::CaptureSink>) {
+        *self
+            .capture_sink
+            .write()
+            .expect("capture sink lock poisoned") = Some(sink);
+    }
+
+    /// Deployment-resolved capture ceiling used by protocol decision projections.
+    #[must_use]
+    pub fn content_capture_ceiling(&self) -> awaken_runtime_contract::ContentCapture {
+        self.capture_decision.level
     }
 
     /// Enable context compaction. Once a turn's conversation exceeds `threshold`
@@ -670,8 +695,20 @@ impl SharedHost {
     /// on a single machine, where the per-thread config home is already stable.
     #[must_use]
     pub fn with_session_blob_root(mut self, dir: impl Into<PathBuf>) -> Self {
-        self.session_blob_root = Some(dir.into());
+        let dir = dir.into();
+        self.session_blob_store = Some(Arc::new(awaken_run_executor_acp::FsSessionBlobStore::new(
+            dir.clone(),
+        )));
+        self.session_blob_root = Some(dir);
         self
+    }
+
+    /// The ACP session-content eraser, when portable session persistence is on.
+    #[must_use]
+    pub fn session_blob_eraser(&self) -> Option<Arc<dyn awaken_runtime_contract::ContentEraser>> {
+        self.session_blob_store
+            .as_ref()
+            .map(|store| store.clone() as Arc<dyn awaken_runtime_contract::ContentEraser>)
     }
 
     /// Install runtime-only inference materialization. Remote workers use this

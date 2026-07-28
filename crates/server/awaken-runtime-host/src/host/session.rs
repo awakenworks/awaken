@@ -748,7 +748,12 @@ impl SharedHost {
             stream_checkpoint,
             session_plugins: mcp.plugins,
             hand_placement,
-            capture_sink: self.capture_sink.clone(),
+            capture_sink: self
+                .capture_sink
+                .read()
+                .expect("capture sink lock poisoned")
+                .clone(),
+            capture_decision: self.capture_decision.clone(),
             thread_id,
             env,
             skill_registry,

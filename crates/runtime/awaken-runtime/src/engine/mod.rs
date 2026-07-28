@@ -1042,6 +1042,7 @@ async fn drive(
                         ledger.push_message(message);
                     }
                     disposition = Some(RunDisposition::awaiting(pause_ticket(
+                        context,
                         resolved,
                         run_id,
                         delegation_origin,
@@ -1510,6 +1511,7 @@ fn feedback_message(run_id: &RunId, nth: usize, feedback: String) -> Message {
 /// operator resume rather than a tool result. The drain/re-identify discipline
 /// this used to sit next to now lives in `awaken-runtime-contract::boundary`.
 fn pause_ticket(
+    context: &RuntimeRunContext,
     resolved: &ResolvedRun,
     run_id: &RunId,
     delegation_origin: Option<&DelegationOrigin>,
@@ -1522,6 +1524,11 @@ fn pause_ticket(
         snapshot_id: resolved.snapshot_id.0.clone(),
         catalog_fingerprint: resolved.spec.catalog_fingerprint.0.clone(),
         delegation_origin: delegation_origin.cloned(),
+        data_subject_id: context
+            .capture
+            .subject
+            .as_ref()
+            .map(|subject| subject.0.clone()),
         reason,
         call_id: None,
         pending_tool: None,
@@ -1532,6 +1539,7 @@ fn pause_ticket(
 /// Build the committed ticket for an awaiting tool call. Adapter execution
 /// references live only in `RunDelegations`, their single durable owner.
 fn resume_ticket(
+    context: &RuntimeRunContext,
     resolved: &ResolvedRun,
     run_id: &RunId,
     delegation_origin: Option<&DelegationOrigin>,
@@ -1546,6 +1554,11 @@ fn resume_ticket(
         snapshot_id: resolved.snapshot_id.0.clone(),
         catalog_fingerprint: resolved.spec.catalog_fingerprint.0.clone(),
         delegation_origin: delegation_origin.cloned(),
+        data_subject_id: context
+            .capture
+            .subject
+            .as_ref()
+            .map(|subject| subject.0.clone()),
         reason,
         call_id: Some(call.call_id.clone()),
         pending_tool: Some(PendingTool {

@@ -153,6 +153,7 @@ pub(super) async fn drive_resumed(
                     &mut delegation_state,
                 )?;
                 let next_ticket = resume_ticket(
+                    context,
                     resolved,
                     run_id,
                     ticket.delegation_origin.as_ref(),

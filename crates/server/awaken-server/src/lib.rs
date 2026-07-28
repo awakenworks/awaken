@@ -572,18 +572,21 @@ fn mount_with_managed_over(
     let skills = skills_router(host.skill_store(), resource_purge);
     // The Models API (`/v1/models`) over the deployment's model directory.
     let models = models_router(std::sync::Arc::new(default_models()));
-    // ADR-0050: install the process-global captured-content sink and expose the
+    // ADR-0050: install the Host-owned captured-content sink and expose the
     // erasure + consent routes over the SAME store, so content a run captures is
     // erasable within this one server (the run→capture→store→erase loop). Durable
     // (sqlite under DeploymentConfig::storage_dir) so captured content + consent survive a
     // restart; in-memory otherwise.
     let (sink, eraser, ds_repo) = data_subject_plane();
-    awaken_runtime_host::install_capture_sink(sink);
-    let resolver: Arc<dyn awaken_runtime_contract::DataSubjectResolver> = Arc::new(
-        awaken_data_subject::RepoDataSubjectResolver::new(ds_repo.clone()).with_eraser(eraser),
-    );
+    host.install_capture_sink(sink);
+    let mut resolver =
+        awaken_data_subject::RepoDataSubjectResolver::new(ds_repo.clone()).with_eraser(eraser);
+    if let Some(session_blobs) = host.session_blob_eraser() {
+        resolver = resolver.with_eraser(session_blobs);
+    }
+    let resolver: Arc<dyn awaken_runtime_contract::DataSubjectResolver> = Arc::new(resolver);
     let erasure = awaken_runtime_host::erasure_router(resolver);
-    let consent = awaken_runtime_host::consent_router(ds_repo);
+    let consent = awaken_runtime_host::consent_router(ds_repo, host.content_capture_ceiling());
     let local_workspace = host.local_workspace().to_string();
     managed
         .merge(ai_sdk)

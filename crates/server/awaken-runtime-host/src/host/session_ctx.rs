@@ -53,6 +53,7 @@ pub(crate) struct SessionCtx {
     /// Subject-tagged captured-content sink for this session (ADR-0050), from
     /// the host. `None` = content is recorded to spans only.
     pub(crate) capture_sink: Option<Arc<dyn awaken_runtime_contract::CaptureSink>>,
+    pub(crate) capture_decision: awaken_runtime_contract::CaptureDecision,
     pub(crate) thread_id: ThreadId,
     /// The thread's sandbox environment, reused to build an Outcome Worker runtime
     /// for `define_outcome` (same tools, same environment).
@@ -99,6 +100,10 @@ impl SessionCtx {
             Vec::new(),
         );
         activation.delegation_origin = ticket.delegation_origin.clone();
+        activation.data_subject_id = ticket
+            .data_subject_id
+            .clone()
+            .map(awaken_runtime_contract::DataSubjectId);
         activation
     }
 
@@ -122,22 +127,9 @@ impl SessionCtx {
             // ADR-0050 D5: resolve the content-capture decision for this turn.
             // Open/single-machine reads the env default; managed overrides with
             // the ceiling × request × consent meet.
-            .with_capture(crate::redact::env_capture_decision());
+            .with_capture(self.capture_decision.clone());
         for plugin in &self.session_plugins {
             ctx = ctx.with_session_plugin(plugin.clone());
-        }
-        // ADR-0050: attribute captured content to a subject and write it to the
-        // sink, when a sink (session-wired or the process-global) and a subject
-        // (open surface: AWAKEN_CONTENT_SUBJECT) are set. Content only flows when
-        // the capture level permits.
-        let sink = self
-            .capture_sink
-            .clone()
-            .or_else(crate::data_subject_api::process_capture_sink);
-        if let (Some(sink), Ok(subject)) = (sink, std::env::var("AWAKEN_CONTENT_SUBJECT"))
-            && !subject.is_empty()
-        {
-            ctx = ctx.with_capture_sink(awaken_runtime_contract::DataSubjectId(subject), sink);
         }
         // ADR-0044: route this run's tool calls to the host's remote hand, if one
         // is wired; otherwise the kernel's in-process LocalToolExecutor runs them.
@@ -159,6 +151,12 @@ impl SessionCtx {
         activation: &RunActivation,
     ) -> Result<RuntimeRunContext, awaken_runtime_contract::tool::ToolExecutorSelectionError> {
         let mut ctx = self.context();
+        if let Some(subject) = activation.data_subject_id.clone() {
+            ctx = match self.capture_sink.clone() {
+                Some(sink) => ctx.with_capture_sink(subject, sink),
+                None => ctx.with_data_subject(subject),
+            };
+        }
         if let Some(executor) = self.hand_placement.placed(activation).await? {
             ctx = ctx.with_tool_executor(executor);
         }

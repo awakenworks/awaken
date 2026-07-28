@@ -62,6 +62,10 @@ pub struct ResumeTicket {
     /// process restart, and resume; a directly admitted Run stores `None`.
     #[serde(default, alias = "initiator", skip_serializing_if = "Option::is_none")]
     pub delegation_origin: Option<crate::agent::delegation::DelegationOrigin>,
+    /// Request-grained neutral content owner retained across same-Run resume.
+    /// Kept as a plain id so the agent contract does not depend on runtime types.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_subject_id: Option<String>,
     pub reason: AwaitReason,
     /// The tool call awaiting a result, when the wait is a tool decision.
     pub call_id: Option<String>,
@@ -119,6 +123,7 @@ mod tests {
             snapshot_id: "s".into(),
             catalog_fingerprint: "f".into(),
             delegation_origin: None,
+            data_subject_id: None,
             reason: AwaitReason::ToolPermission,
             call_id: Some("call".into()),
             pending_tool: Some(pt),

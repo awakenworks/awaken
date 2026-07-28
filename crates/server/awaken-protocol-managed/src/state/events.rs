@@ -405,7 +405,13 @@ impl ManagedState {
                     ));
                     let outcome = self
                         .runtime
-                        .run_streaming(&agent_id, session_id, content.clone(), sink.clone())
+                        .run_streaming_attributed(
+                            &agent_id,
+                            session_id,
+                            content.clone(),
+                            req.user_profile_id.clone(),
+                            sink.clone(),
+                        )
                         .await;
                     // Context creation precedes execution, so even a failed first
                     // turn may own a live environment. Persist that identity before

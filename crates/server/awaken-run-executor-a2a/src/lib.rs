@@ -292,6 +292,10 @@ fn awaiting_ticket(activation: &RunActivation, task: &Task) -> ResumeTicket {
             .0
             .clone(),
         delegation_origin: activation.delegation_origin.clone(),
+        data_subject_id: activation
+            .data_subject_id
+            .as_ref()
+            .map(|subject| subject.0.clone()),
         reason: match task.status.state {
             TaskState::InputRequired => AwaitReason::UserInput,
             TaskState::AuthRequired => AwaitReason::ExternalEvent,
@@ -775,6 +779,7 @@ mod tests {
             input: vec![Message::text(MessageId("u".into()), Role::User, "go")],
             delegation_origin: None,
             model_ref_override: None,
+            data_subject_id: None,
             tool_capability_narrowing: Default::default(),
         }
     }

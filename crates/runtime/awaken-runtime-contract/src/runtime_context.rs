@@ -297,6 +297,14 @@ impl RuntimeRunContext {
         self
     }
 
+    /// Retain request attribution even when this Worker has no persistence sink.
+    /// This keeps durable resume identity independent of capture deployment.
+    #[must_use]
+    pub fn with_data_subject(mut self, subject: DataSubjectId) -> Self {
+        self.capture.subject = Some(subject);
+        self
+    }
+
     /// Attribute this attempt's captured content to `subject` and write it to
     /// `sink` (ADR-0050). Both are needed for the engine to persist content.
     #[must_use]
