@@ -52,10 +52,6 @@ pub fn contract_schemas() -> Map<String, Value> {
     );
     add!("ApiDialect", awaken_model_catalog::ApiDialect);
     add!("ProviderCatalog", awaken_model_catalog::ProviderCatalog);
-    add!(
-        "EnvironmentProviderProposal",
-        crate::EnvironmentProviderProposal
-    );
 
     // Credential domain (secret-free projections only).
     add!("CredentialSource", crate::CredentialSourceView);
@@ -236,10 +232,6 @@ fn paths() -> Value {
         "/v1/config/capabilities": {
             "get": op("get_config_capabilities", "catalog", "Report identity and local/BYOK/Cloud model feature posture without probing external services",
                 &[], None, 200, schema_ref("ConfigCapabilitiesView"))
-        },
-        "/v1/config/provider-proposals": {
-            "get": op("get_provider_proposals", "catalog", "Discover secret-free environment hints; proposals are not persisted or executable",
-                &[], None, 200, array_of("EnvironmentProviderProposal"))
         },
         "/v1/config/provider-descriptors": {
             "get": op("get_provider_descriptors", "catalog", "List supported provider form descriptors without creating configuration",

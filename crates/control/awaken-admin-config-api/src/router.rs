@@ -39,13 +39,10 @@ use axum::routing::{get, post, put};
 use axum::{Json, Router};
 
 mod provider_connections;
-mod provider_proposals;
 use provider_connections::list_provider_connections;
 pub use provider_connections::{
     ProviderConnectionStatus, ProviderConnectionSummary, ProviderConnectionView,
 };
-pub use provider_proposals::EnvironmentProviderProposal;
-use provider_proposals::provider_proposals_from;
 
 /// The admin config plane's injected stores. The router depends on the domain
 /// ports, not a concrete backend, so the same routes serve the in-memory dev
@@ -218,7 +215,6 @@ pub fn admin_router_with_capabilities(
             "/v1/config/provider-connections",
             post(test_and_save_provider_connection).get(list_provider_connections),
         )
-        .route("/v1/config/provider-proposals", get(get_provider_proposals))
         .route(
             "/v1/config/model-attributes/{model_id}",
             put(put_model_attributes),
@@ -334,10 +330,6 @@ async fn refresh_brokered_models(
         .await
         .map_err(|error| repo_problem(&error, &rid))?;
     Ok(Json(result))
-}
-
-async fn get_provider_proposals() -> Json<Vec<EnvironmentProviderProposal>> {
-    Json(provider_proposals_from(|key| std::env::var(key).ok()))
 }
 
 /// An [`ApiError`] rendered as an RFC-9457 `application/problem+json` response.
@@ -1684,24 +1676,6 @@ mod tests {
             assert_eq!(p.0.status, 422, "{e:?}");
             assert_eq!(p.0.code, "credential_invalid", "{e:?}");
         }
-    }
-
-    #[test]
-    fn environment_discovery_is_secret_free_and_non_persistent() {
-        let values = std::collections::HashMap::from([
-            ("ANTHROPIC_BASE_URL", "https://proposal.example/v1"),
-            ("ANTHROPIC_MODEL", "proposal-model"),
-            ("ANTHROPIC_API_KEY", "must-not-leave-process"),
-        ]);
-        let proposals = provider_proposals_from(|key| values.get(key).map(ToString::to_string));
-        assert_eq!(proposals.len(), 1);
-        let proposal = &proposals[0];
-        assert_eq!(proposal.provider_id, "anthropic");
-        assert_eq!(proposal.model_id.as_deref(), Some("proposal-model"));
-        assert!(proposal.credential_present);
-        let json = serde_json::to_string(proposal).unwrap();
-        assert!(!json.contains("must-not-leave-process"));
-        assert!(json.contains("ANTHROPIC_API_KEY"));
     }
 
     // --- resolve_problem: (a) ModelUnresolved→404; (b) EndpointMissing→422;

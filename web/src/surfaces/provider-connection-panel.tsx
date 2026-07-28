@@ -10,7 +10,6 @@ import {
 import { api, ws } from "../lib/api/client";
 import type {
   CredentialSource,
-  EnvironmentProviderProposal,
   ProviderConnectionView,
   ProviderConnectionSummary,
   ProviderDriverDescriptor,
@@ -21,7 +20,6 @@ interface ProviderConnectionPanelProps {
   credentials: CredentialSource[];
   descriptors: ProviderDriverDescriptor[];
   connections: ProviderConnectionSummary[];
-  proposals: EnvironmentProviderProposal[];
 }
 
 interface ProviderDraft {
@@ -75,7 +73,6 @@ export default function ProviderConnectionPanel({
   credentials,
   descriptors,
   connections,
-  proposals,
 }: ProviderConnectionPanelProps) {
   const app = useApp();
   const workspace = app.workspaceId;
@@ -204,37 +201,6 @@ export default function ProviderConnectionPanel({
             );
           })}
         </div>
-        {proposals.length > 0 && (
-          <div className="banner info" style={{ marginBottom: 12 }}>
-            <span>ⓘ</span>
-            <span>
-              {app.t(
-                "Environment discoveries are suggestions only. Choose one to prefill this form; nothing is executable until you explicitly save catalog and vault records.",
-                "环境发现仅是建议。选择后只会预填表单；只有显式保存 Catalog 与 Vault 记录后才可执行。",
-              )}
-              <span className="row" style={{ marginTop: 8 }}>
-                {proposals.map((proposal) => (
-                  <Button
-                    key={proposal.provider_id}
-                    variant="ghost"
-                    onClick={() =>
-                      setDraft({
-                        ...draft,
-                        provider: proposal.provider_id,
-                        endpoint: proposal.endpoint_id,
-                        baseUrl: proposal.base_url ?? "",
-                        dialect: proposal.dialect,
-                      })
-                    }
-                  >
-                    {proposal.provider_id} · {proposal.credential_env}
-                    {proposal.credential_present ? " ✓" : ""}
-                  </Button>
-                ))}
-              </span>
-            </span>
-          </div>
-        )}
         <div className="row" style={{ alignItems: "flex-end" }}>
           {(selectedDescriptor?.configuration_fields ?? [])
             .filter((field) => field.kind !== "secret" && !field.advanced)

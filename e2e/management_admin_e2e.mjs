@@ -88,24 +88,18 @@ async function startModelDirectory(apiKey) {
 }
 
 async function main() {
-  // Provider environment is discovery input only. The spawned server may report
-  // these coordinates as a secret-free proposal, but cannot execute them.
-  process.env.ANTHROPIC_API_KEY = 'sk-proposal-only'; // awaken-allow: secret
-  process.env.ANTHROPIC_BASE_URL = 'https://proposal.invalid/v1';
-  process.env.ANTHROPIC_MODEL = 'proposal-only-model';
+  process.env.ANTHROPIC_API_KEY = 'must-not-be-config-input'; // awaken-allow: secret
+  process.env.ANTHROPIC_MODEL = 'must-not-be-selected';
   const directory = await startModelDirectory('sk-admin-e2e'); // awaken-allow: secret
   try {
     await withScenarioServer('management', 'mcp', 38150, async (base) => {
+      // Cause/effect decision table for G36's single persisted input path:
+      // E1 provider env present -> proposal route absent and catalog unchanged;
+      // E2 explicit Provider Connection write -> catalog/credential facts appear.
       let r = await req(base, 'GET', '/v1/config/provider-proposals');
-      assert.equal(r.status, 200);
-      const proposal = r.json.find((item) => item.provider_id === 'anthropic');
-      assert.ok(proposal);
-      assert.ok(proposal.model_id, 'the inherited model coordinate is proposed');
-      assert.equal(proposal.credential_present, true);
-      assert.ok(!JSON.stringify(r.json).includes('sk-proposal-only'));
-      let catalogBefore = await req(base, 'GET', '/v1/config/catalog');
-      assert.equal(catalogBefore.json.offerings.length, 0, 'proposal is not persisted catalog truth');
-      pass('environment discovery is a secret-free, non-persistent proposal');
+      assert.equal(r.status, 404, 'E1 environment proposal path is removed');
+      const catalogBefore = await req(base, 'GET', '/v1/config/catalog');
+      assert.equal(catalogBefore.json.offerings.length, 0, 'E1 env cannot author catalog truth');
 
       // Provider Connections cause graph:
       // C1 installed descriptor; C2 dialect supported; C3 non-empty secret;

@@ -39,10 +39,9 @@ pub use awaken_config_resolver::{
 };
 pub use router::{
     AdminState, BrokeredCatalogDiscovery, ConfigCapabilitiesView, CooldownRequest, CredentialProbe,
-    CredentialSourceView, CredentialValidation, EnterCredentialRequest,
-    EnvironmentProviderProposal, IdentityCapabilityView, ModelCatalogDiscovery,
-    ModelCatalogDiscoveryError, ModelSupplyCapabilityView, PoolEligibleView, ProbeStatus,
-    ProviderConnectionStatus, ProviderConnectionSummary, ProviderConnectionView,
+    CredentialSourceView, CredentialValidation, EnterCredentialRequest, IdentityCapabilityView,
+    ModelCatalogDiscovery, ModelCatalogDiscoveryError, ModelSupplyCapabilityView, PoolEligibleView,
+    ProbeStatus, ProviderConnectionStatus, ProviderConnectionSummary, ProviderConnectionView,
     PutModelAttributesRequest, ResolveProfileRequest, ResolveRequest, ResolvedCandidatesView,
     ResolvedInferenceView, SaveProviderConnectionRequest, ValidateCredentialRequest, admin_router,
     admin_router_with_capabilities,

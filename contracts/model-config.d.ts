@@ -358,41 +358,6 @@ export interface EnterCredentialRequest {
 }
 
 /**
- * A read-only, non-executable hint derived from process environment. It is not a
- * catalog row, credential source, profile or publication and carries no secret.
- * The UI may use it to prefill existing authoring forms; only their explicit writes
- * create execution truth.
- */
-export interface EnvironmentProviderProposal {
-    base_url?:          null | string;
-    credential_env:     string;
-    credential_present: boolean;
-    dialect:            APIDialect;
-    endpoint_id:        string;
-    model_id?:          null | string;
-    provider_id:        string;
-    [property: string]: unknown;
-}
-
-/**
- * The wire/model-API dialect a surface speaks. Replaces oversight's `WireFormat`;
- * the credential/model bindings are resolved against this dialect (ADR-0043).
- *
- * The `claude` adapter's wire.
- *
- * The `codex`/OpenAI chat wire.
- *
- * The OpenAI Responses API wire. This remains distinct from Chat
- * Completions even though both are served by the OpenAI adapter family.
- *
- * The Gemini wire.
- *
- * Gemini on Vertex AI: native Gemini payloads with OAuth Bearer auth and
- * a project/location endpoint.
- */
-export type APIDialect = "anthropic_messages" | "open_ai_chat" | "open_ai_responses" | "gemini" | "vertex_gemini";
-
-/**
  * An authored "how to run this model" unit (ADR-0043 `InferenceProfile` /
  * oversight-next `ProviderIdentity`): it names an exact primary and ordered
  * fallback candidates, each with a vault-backed (never inline) credential
@@ -573,6 +538,24 @@ export interface Offering {
     upstream_model?: null | string;
     [property: string]: unknown;
 }
+
+/**
+ * The wire/model-API dialect a surface speaks. Replaces oversight's `WireFormat`;
+ * the credential/model bindings are resolved against this dialect (ADR-0043).
+ *
+ * The `claude` adapter's wire.
+ *
+ * The `codex`/OpenAI chat wire.
+ *
+ * The OpenAI Responses API wire. This remains distinct from Chat
+ * Completions even though both are served by the OpenAI adapter family.
+ *
+ * The Gemini wire.
+ *
+ * Gemini on Vertex AI: native Gemini payloads with OAuth Bearer auth and
+ * a project/location endpoint.
+ */
+export type APIDialect = "anthropic_messages" | "open_ai_chat" | "open_ai_responses" | "gemini" | "vertex_gemini";
 
 /**
  * Who owns the catalog fact. Manually authored rows are never demoted by a
