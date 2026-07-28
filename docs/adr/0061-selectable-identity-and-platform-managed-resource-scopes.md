@@ -335,6 +335,11 @@ credentials, Management configuration, IAM decisions, billing and Gateway
 leases are absent. A host must consume the profile emitted by the exact Awaken
 image; it must not reproduce this action/role matrix in closed code.
 
+Each concrete lifecycle action carries its own Workspace scope rule. This is
+the canonical IAM profile shape: action registration remains explicit, while
+the role grant may use the bounded `awaken.runtime::run.*` pattern. The release
+contract is validated through the IAM PAP before it is considered deployable.
+
 This release projection does not merge hosted closed code into Awaken. The open
 Management image remains independently deployable; a hosted release composes
 its immutable image and contract with external IAM lifecycle management.

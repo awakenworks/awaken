@@ -171,21 +171,25 @@ pub fn management_resource_authorization_profile() -> CreateAuthorizationProfile
 /// hosting platform owns profile activation and exact Workspace bindings.
 pub fn hosted_runtime_authorization_profile() -> CreateAuthorizationProfile {
     let created_at = Timestamp(AUTHORIZATION_PROFILE_EPOCH.to_owned());
+    let actions = ["run.create", "run.read", "run.resume", "run.cancel"];
     let action_pattern = qualify_hosted_runtime_action("run.*").0;
     CreateAuthorizationProfile {
         namespace: NamespaceId(HOSTED_RUNTIME_POLICY_NAMESPACE.to_owned()),
         document: AuthorizationProfileDocument {
             resource_model: ResourceModelRegistration {
-                actions: ["run.create", "run.read", "run.resume", "run.cancel"]
+                actions: actions
                     .into_iter()
                     .map(qualify_hosted_runtime_action)
                     .collect(),
                 ..ResourceModelRegistration::default()
             },
-            action_scope_rules: vec![ActionScopeRule {
-                action_pattern: action_pattern.clone(),
-                allowed_scope_kinds: vec![ScopeKind::Workspace],
-            }],
+            action_scope_rules: actions
+                .into_iter()
+                .map(|action| ActionScopeRule {
+                    action_pattern: qualify_hosted_runtime_action(action).0,
+                    allowed_scope_kinds: vec![ScopeKind::Workspace],
+                })
+                .collect(),
             grants: [
                 HOSTED_RUNTIME_WORKSPACE_ADMIN_ROLE,
                 HOSTED_RUNTIME_AGENT_EXECUTOR_ROLE,

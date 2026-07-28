@@ -75,3 +75,5 @@
 - Exported the same contract through
   `awaken management iam profile runtime` so hosts reconcile exact image data
   rather than copying the role/action matrix.
+- Validated the release value through the IAM PAP and attached an exact
+  Workspace scope rule to every registered lifecycle action.
