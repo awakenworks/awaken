@@ -552,6 +552,7 @@ pub fn classify_error(message: &str) -> Error {
         "usage limit",
         "quota",
         "insufficient_quota",
+        "insufficient balance",
         "billing",
         "credit balance",
         "out of credit",
@@ -559,6 +560,7 @@ pub fn classify_error(message: &str) -> Error {
         "weekly limit",
         "monthly limit",
         "exceeded your current",
+        "402",
     ];
     // The credential needs re-authentication (expired grant / login) — recognised
     // distinctly from a generic authorization failure.
@@ -847,10 +849,20 @@ mod classify_tests {
 
     #[test]
     fn a_hard_usage_limit_is_recognised_and_not_retryable() {
+        // Cause graph: hard-limit signal H takes precedence over generic invalid I;
+        // transient rate R remains retryable; unmatched U uses the provider backstop.
+        //
+        // | Rule | H | I | R | U | Classification | Retry |
+        // | R1 | yes | no  | no  | no  | usage_limit | no |
+        // | R2 | yes | yes | no  | no  | usage_limit | no |
+        // | R3 | no  | yes | no  | no  | invalid_request | no |
+        // | R4 | no  | no  | yes | no  | rate_limited | yes |
+        // | R5 | no  | no  | no  | yes | provider_error | yes |
         for msg in [
             "You have exceeded your current quota",
             "429 insufficient_quota",
             "Your credit balance is too low",
+            r#"HTTP 402 Payment Required: {"error":{"message":"Insufficient Balance","code":"invalid_request_error"}}"#,
             "weekly limit reached",
             "monthly spending limit exceeded",
         ] {
