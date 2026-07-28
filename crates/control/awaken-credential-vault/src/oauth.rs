@@ -21,24 +21,15 @@ use awaken_agent_contract::RedactedString;
 
 use crate::{CredentialError, CredentialSourceId};
 
-/// Default safety-window TTL for a minted OAuth token: it is reused for this long
-/// before a refresh, bounding helper spawns (real access tokens live ~1h) without
-/// risking a stale token. Overridable via `AWAKEN_OAUTH_TOKEN_TTL_SECS` so a
-/// short-lived-token provider can tighten it.
+/// Product safety-window TTL for a minted OAuth token. This is execution
+/// behavior, not ambient operator configuration: a provider that needs a
+/// different lifetime must persist that fact in its credential contract rather
+/// than changing every credential through one process variable.
 const DEFAULT_OAUTH_CACHE_TTL_SECS: u64 = 300;
 
-/// The effective cache TTL, from `AWAKEN_OAUTH_TOKEN_TTL_SECS` (seconds) or the
-/// default. A non-numeric or empty value falls back to the default.
+/// The effective cache TTL owned by the credential bounded context.
 fn oauth_cache_ttl() -> Duration {
-    parse_ttl(std::env::var("AWAKEN_OAUTH_TOKEN_TTL_SECS").ok().as_deref())
-}
-
-/// Pure TTL parse: `Some("<secs>")` → that many seconds; anything else → default.
-fn parse_ttl(raw: Option<&str>) -> Duration {
-    let secs = raw
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .unwrap_or(DEFAULT_OAUTH_CACHE_TTL_SECS);
-    Duration::from_secs(secs)
+    Duration::from_secs(DEFAULT_OAUTH_CACHE_TTL_SECS)
 }
 
 /// A source of fresh OAuth access tokens. Each call performs (or delegates) a
@@ -360,17 +351,13 @@ mod tests {
         ));
     }
 
+    /// Cause/effect rationale: OAuth source kind is fixed and no per-source
+    /// lifetime exists in the persisted contract, therefore the only legal rule
+    /// is R1 = any process environment -> the bounded-context safety TTL.
     #[test]
-    fn ttl_parses_seconds_and_falls_back_to_the_default() {
-        assert_eq!(parse_ttl(Some("30")), Duration::from_secs(30));
-        assert_eq!(parse_ttl(Some("  90 ")), Duration::from_secs(90));
-        // Non-numeric / empty / unset → the conservative default.
+    fn oauth_cache_ttl_is_not_ambient_configuration() {
         assert_eq!(
-            parse_ttl(Some("nope")),
-            Duration::from_secs(DEFAULT_OAUTH_CACHE_TTL_SECS)
-        );
-        assert_eq!(
-            parse_ttl(None),
+            oauth_cache_ttl(),
             Duration::from_secs(DEFAULT_OAUTH_CACHE_TTL_SECS)
         );
     }
