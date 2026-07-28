@@ -459,6 +459,12 @@ pub struct AgentConfig {
     pub skill_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multiagent: Option<MultiagentConfig>,
+    /// Logical Hand deployment id for Native tool placement. The compiled
+    /// executable snapshot deliberately excludes this deployment coordinate;
+    /// the config-to-placement bridge joins it to a startup-resolved
+    /// ConnectionPlan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hand: Option<String>,
     /// Time at which new execution was disabled. Disabled Agents remain
     /// readable and retain their immutable publications, but cannot be selected
     /// for new execution.

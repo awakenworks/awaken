@@ -927,8 +927,8 @@ subject-scoped ACP continuity, a registered `ContentEraser`, and an Art.17 HTTP
 E2E proving one erasure request removes captured content plus a genuinely
 harvested session blob while preserving another subject and remaining
 idempotent. Hand placement (F) and Agent disable/archive semantics (I) are
-broader ADR-0057 phases, not alternative ACP discovery or execution paths;
-their status remains owned by ADR-0057.
+completed broader ADR-0057 phases, not alternative ACP discovery or execution
+paths; their evidence and status remain owned by ADR-0057.
 
 Managed `CodexAuthJson` is a separate product decision. BackendOwned never
 enters that Provider-only artifact path. A global prohibition on creating

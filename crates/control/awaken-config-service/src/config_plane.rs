@@ -272,8 +272,13 @@ impl ConfigService {
         if let ConfigWrite::Conflict { current_revision } = write {
             return Err(PublishError::StaleRevision(current_revision));
         }
-        self.installed
-            .install(workspace.as_str(), id, source_revision, snapshot);
+        self.installed.install(
+            workspace.as_str(),
+            id,
+            source_revision,
+            snapshot,
+            resolved.config.hand.clone(),
+        );
         Ok(publication)
     }
 

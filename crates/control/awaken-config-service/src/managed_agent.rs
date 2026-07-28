@@ -165,6 +165,7 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
         mcp_servers,
         skill_ids,
         multiagent,
+        hand: string("hand"),
         // Lifecycle commands are owned by ManagedAgentRepository. Generic
         // config authoring cannot forge a transition while leaving the live
         // installed-catalog pointer unreconciled.
@@ -344,6 +345,7 @@ pub fn managed_from_agent_config(config: &AgentConfig, published: bool) -> Value
         "mcp_servers": config.mcp_servers,
         "skills": config.skill_ids,
         "multiagent": config.multiagent,
+        "hand": config.hand,
         "disabled_at": config.disabled_at,
         "archived_at": config.archived_at,
         "max_steps": config.max_steps,

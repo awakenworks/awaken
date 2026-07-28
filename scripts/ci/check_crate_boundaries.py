@@ -1416,13 +1416,11 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-server": {
         "awaken-acp-contract",
         "awaken-scenario-host",
-        # dev-only: transport conformance assembles the real dispatch service over
-        # the in-memory queue while exercising the server's worker registry.
+        # dev-only: transport conformance exercises dispatch + Worker registry.
         "awaken-run-ingress", "awaken-runtime-host",
-        # Outer composition owns the hand relay; runtime-host exposes only its port.
-        "awaken-tool-relay", "awaken-worker-registry", "awaken-managed-routers",
-        # dev-only: the a2a-loopback e2e wraps its mock transports in the A2A
-        # remote-Agent adapter (the host now holds the neutral RemoteAgent interface).
+        # Outer composition owns Hand topology/relay; runtime-host exposes only ports.
+        "awaken-connection-plan", "awaken-tool-relay", "awaken-worker-registry", "awaken-managed-routers",
+        # dev-only: A2A loopback wraps mocks in the remote-Agent adapter.
         "awaken-run-executor-a2a",
         # ADR-0052: the management assistant's descriptors seed the scope-keyed tool
         # catalog, and its executables/ports are wired at assembly.
@@ -1567,6 +1565,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-run-executor-acp",
         # Trusted-host ACP discovery/binding application service shared with Flow.
         "awaken-acp-application",
+        # Deployment Hand topology is composed into Runtime's neutral executor port.
+        "awaken-connection-plan",
         "awaken-acp-contract",
         "awaken-protocol-acp",
         "awaken-observability",

@@ -371,6 +371,8 @@ export interface AgentConfig {
   mcp_servers: unknown[];
   skills: unknown[];
   multiagent?: unknown;
+  /** Logical deployment Hand id; transport remains typed deployment config. */
+  hand?: string | null;
   disabled_at?: string | null;
   archived_at?: string | null;
   // extensions (our differentiated value, additive to the managed object):

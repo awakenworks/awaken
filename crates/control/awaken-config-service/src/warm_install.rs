@@ -41,22 +41,22 @@ impl ConfigService {
         };
         let mut installed = 0;
         for publication in publications {
-            let active = registry
+            let config = registry
                 .get_config_scoped(configuration_scope, &publication.agent_id)
                 .await
                 .ok()
-                .flatten()
-                .is_some_and(|config| {
-                    config.lifecycle() == awaken_config_store::AgentLifecycle::Published
-                });
-            if !active {
+                .flatten();
+            let Some(config) = config.filter(|config| {
+                config.lifecycle() == awaken_config_store::AgentLifecycle::Published
+            }) else {
                 continue;
-            }
+            };
             self.installed.install(
                 execution_workspace,
                 &publication.agent_id,
                 publication.source_revision,
                 publication.snapshot,
+                config.hand,
             );
             installed += 1;
         }

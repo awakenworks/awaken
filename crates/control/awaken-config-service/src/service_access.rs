@@ -54,4 +54,12 @@ impl ConfigService {
     pub fn agent_unavailable_in(&self, workspace: &str, agent: &str) -> bool {
         self.installed.is_unavailable(workspace, agent)
     }
+
+    /// Current logical Hand declaration for a globally unambiguous Agent id.
+    ///
+    /// Placement is deliberately absent from executable snapshots. A collision
+    /// across Workspaces fails closed rather than selecting one deployment.
+    pub fn declared_hand_for_agent(&self, agent: &str) -> Result<Option<String>, String> {
+        self.installed.declared_hand_for_agent(agent)
+    }
 }

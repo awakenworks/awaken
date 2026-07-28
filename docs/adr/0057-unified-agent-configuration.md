@@ -792,16 +792,34 @@ holder, receipt or fingerprint drift. The former `RemoteAgent*`, `with_remote_ag
 children select the one `A2aRunExecutor` from the published backend and always
 carry placement; the authenticated delegation loopback plus peer-resolution,
 placement and materializer tests cover the same production chain.
-**F `declared-hand`** — *Hand becomes declared intent; placement stays
-host-side; the snapshot stays placement-free.*
-Adds: `NativeSpec.hand` → deploy-time bridge emitting `PlacementEntry` into the
-existing `ConfigToolExecutorProvider` (transport via `DialAddr`).
-Retires: manual per-agent placement wiring in production composition roots
-(scenario/test wiring stays).
-Guard: snapshot-schema test asserting no placement field; kernel behavior
-byte-identical with/without hand.
-Done when: flipping `hand` in config moves tool execution to a `serve_hand`
-process without touching composition-root code.
+**F `declared-hand`** — *Complete (2026-07-29). Hand is declared intent;
+placement stays host-side; the snapshot stays placement-free.*
+Adds: `AgentConfig.hand: Option<String>` as a logical deployment id; typed
+`hand_connections: BTreeMap<String, ConnectionPlan>` in deployment config; and a
+declared-source mode on the existing `ConfigToolExecutorProvider`.
+Retires: production per-Agent `PlacementEntry` assembly. Static entries remain
+the deterministic scenario/test adapter, not a second product registry.
+
+Static structure: config-store validates the logical id; ConfigService's one
+installed-publication projection retains it beside (never inside) the executable
+snapshot; the CLI composition root dials each deployment-owned `ConnectionPlan`
+once; the existing Server placement provider joins the Agent id to that ready
+executor. Runtime, the kernel and tool executors depend only on the existing
+`ToolExecutorProvider` port and know nothing about discovery, topology or dialing.
+
+Dynamic behavior: startup validates all plans and connects Unix/TCP Hands or
+fails before serving; publish/warm-load atomically installs snapshot plus logical
+declaration; activation asks the provider for the current declaration; absent
+declaration preserves local execution, a known declaration selects its already
+connected remote executor, and an unknown/ambiguous declaration fails closed.
+Changing `hand` republishes placement intent without changing snapshot bytes or
+fingerprint. Connection retry remains a deployment restart/reconciliation
+concern—never attempt-time discovery.
+
+Guard evidence: cause/effect decision tables cover placement-free fingerprinting,
+empty-id validation, installed-projection ambiguity/uninstall, typed topology
+acceptance/rejection, and provider outcomes for absent/known/unknown/source-error
+declarations.
 
 **G1 `startup-acquisition`** — *Complete.* Exact wrapper metadata lives on the
 canonical `AcpCli` row; the local product composition root installs it below the
@@ -856,14 +874,14 @@ Dependencies: A → D (codec); B independent; C independent; E after D
 (derivation); F after B (kind); G1/G2/H independent after C; I after B (the
 lifecycle gate reuses the publish/admission boundary).
 
-Commitment and order: **0, C, A, B, D and E are committed** — C
+Commitment and order: **0, C, A, B, D, E and F are committed** — C
 first because it is pure wiring with immediate production value (the two
-already-merged per-agent-CLI capabilities go live). **F/G1/G2/H are
-trigger-gated**, designed now, built when their trigger fires: F on the first
-real declared-hand need; G1 on container GA; G2 on a compliance requirement; H
+already-merged per-agent-CLI capabilities go live). F was promoted and completed
+when declared deployment placement became a product requirement.
+**G1/G2/H were trigger-gated** and G1/G2 have since completed; H remains gated
 on a heterogeneous worker fleet in production. I was promoted and completed
 when Agent decommission became a product requirement. A fired trigger promotes
-the remaining phase into the committed queue —
+a remaining phase into the committed queue —
 plan-level YAGNI: the design cost is paid (this ADR), the build cost waits for
 evidence.
 

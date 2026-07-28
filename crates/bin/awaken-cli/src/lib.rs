@@ -18,6 +18,7 @@ pub mod config;
 mod management_surface;
 mod observation_reconcile;
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -315,6 +316,15 @@ struct AssemblyOverrides {
     cloud_api_base_url: Option<String>,
     cloud_models_enabled: bool,
     local_acp_observations: Vec<awaken_acp_application::AcpHostObservation>,
+    hand_executors: BTreeMap<String, Arc<dyn awaken_runtime_contract::tool::ToolExecutor>>,
+}
+
+struct ConfigDeclaredHandSource(Arc<ConfigService>);
+
+impl awaken_server::placement::DeclaredHandSource for ConfigDeclaredHandSource {
+    fn declared_hand(&self, agent_id: &str) -> Result<Option<String>, String> {
+        self.0.declared_hand_for_agent(agent_id)
+    }
 }
 
 type IdentityWiring = (
@@ -908,6 +918,8 @@ pub async fn build_management_router_with_deployment(
         postgres_schema,
     )
     .await?;
+    let hand_executors =
+        awaken_server::placement::connect_declared_hands(&deployment.hand_connections).await?;
     Ok(management_router_over(
         stores,
         iam,
@@ -921,6 +933,7 @@ pub async fn build_management_router_with_deployment(
             cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url.clone()),
             cloud_models_enabled: deployment.cloud_models.is_enabled(),
             local_acp_observations: deployment.local_acp_observations.clone(),
+            hand_executors,
         },
         None,
     )
@@ -965,6 +978,7 @@ pub async fn build_control_router_with_deployment(
             cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url.clone()),
             cloud_models_enabled: deployment.cloud_models.is_enabled(),
             local_acp_observations: Vec::new(),
+            hand_executors: BTreeMap::new(),
         },
         None,
     )
@@ -1042,6 +1056,10 @@ async fn build_management_router_with_composition(
     )
     .await
     .unwrap_or_else(|error| panic!("open management stores: {error}"));
+    let hand_executors =
+        awaken_server::placement::connect_declared_hands(&deployment.hand_connections)
+            .await
+            .unwrap_or_else(|error| panic!("declared Hand topology: {error}"));
     management_router_over(
         stores,
         iam,
@@ -1055,6 +1073,7 @@ async fn build_management_router_with_composition(
             cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url),
             cloud_models_enabled: deployment.cloud_models.is_enabled(),
             local_acp_observations: deployment.local_acp_observations,
+            hand_executors,
         },
         None,
     )
@@ -1253,6 +1272,7 @@ async fn management_router_over(
 ) -> Router {
     let management_only = assembly.management_only;
     let deployment = assembly.deployment;
+    let hand_executors = assembly.hand_executors;
     let cloud_api_base_url = assembly.cloud_api_base_url;
     let cloud_models_enabled = assembly.cloud_models_enabled;
     let org_id = assembly.org_id.unwrap_or_else(local_org_id);
@@ -1588,6 +1608,12 @@ async fn management_router_over(
         )))
         .with_config_service(config_service.clone())
         .with_admin_tools(admin_execs);
+    host_builder = host_builder.with_tool_executor_provider(Arc::new(
+        awaken_server::placement::ConfigToolExecutorProvider::from_declared_hands(
+            Arc::new(ConfigDeclaredHandSource(config_service.clone())),
+            hand_executors,
+        ),
+    ));
     if let Some(materializer) = model_wiring.materializer {
         host_builder = host_builder.with_inference_materializer(materializer);
     }
