@@ -728,6 +728,11 @@ Implemented consolidation evidence:
   Worker manifest;
 - `CredentialObservationSource` and `WorkerLocalReferenceRevalidator` are
   segregated from `CredentialMaterialResolver`;
+- `CredentialPool::selection_order_at` owns `RotateSpread`,
+  `derive_vendor_pool` owns the default Workspace × counterparty × backend
+  derivation, and `credential_candidates` owns Exact/Pool traversal for both
+  secret-free publication and permitted materialization; the former Server
+  default/Exact/Pool selectors are removed;
 - Runtime Host selects the Session provider from immutable
   `ModelProvisioning`: BackendOwned uses its trusted Workdir provider while
   Provider/HostExecutor retain the configured managed tier.

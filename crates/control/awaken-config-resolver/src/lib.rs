@@ -23,7 +23,12 @@ pub use awaken_resource_contract::{
     BindingId, FileId, InputBinding, InputResourceId, MemoryStoreId, RepositoryId, ResourceAccess,
 };
 
+mod credential_selection;
 mod reference_stores;
+pub use credential_selection::{
+    CredentialCandidateSet, can_consume, credential_can_supply, credential_candidates,
+    derive_vendor_pool, expected_acp_dialect, validate_acp_dialect,
+};
 /// Read ports for authored aggregates. The runtime host reads through these
 /// application contracts without depending on the authoring HTTP crate.
 pub mod stores;
@@ -141,39 +146,6 @@ pub enum ResolveError {
     },
     #[error(transparent)]
     Credential(#[from] CredentialError),
-}
-
-/// Resolver-owned projection from executor identity to model API dialect.
-///
-/// This table joins two independent axes. It intentionally does not live on
-/// the ACP executor catalog: that leaf consumes resolved model strings and
-/// must not depend on `awaken-model-catalog`.
-#[must_use]
-pub fn expected_acp_dialect(backend_ref: &str) -> Option<ApiDialect> {
-    match backend_ref {
-        "acp:claude" => Some(ApiDialect::AnthropicMessages),
-        "acp:codex" => Some(ApiDialect::OpenAiChat),
-        "acp:gemini" => Some(ApiDialect::Gemini),
-        _ => None,
-    }
-}
-
-/// Assert that an ACP executor can speak one catalog Offering's model API
-/// dialect. Native/A2A coordinates are outside this join and pass unchanged.
-pub fn validate_acp_dialect(backend_ref: &str, actual: ApiDialect) -> Result<(), ResolveError> {
-    if !backend_ref.starts_with("acp:") {
-        return Ok(());
-    }
-    let expected = expected_acp_dialect(backend_ref)
-        .ok_or_else(|| ResolveError::AcpDialectUnknown(backend_ref.to_string()))?;
-    if expected != actual {
-        return Err(ResolveError::DialectIncompatible {
-            backend_ref: backend_ref.to_string(),
-            expected: expected.as_str(),
-            actual: actual.as_str(),
-        });
-    }
-    Ok(())
 }
 
 /// A credential lookup the assembly provides: individual sources by id, and pools
@@ -470,18 +442,6 @@ pub async fn resolve_profile_candidates(
 /// stops an otherwise-materializable key or local CLI login being paired with a
 /// model it cannot authenticate — the invalid `(model × credential)` combination
 /// the ADR calls out.
-#[must_use]
-pub fn can_consume(offering_provider_id: &str, source: &CredentialSource) -> bool {
-    if source.env_key.as_deref() == Some(awaken_credential_vault::CLAUDE_CODE_SETUP_TOKEN_ENV) {
-        return false;
-    }
-    match (source.kind, source.provider_id.as_deref()) {
-        (awaken_credential_vault::CredentialKind::WorkerLocal, None) => false,
-        (_, None) => true,
-        (_, Some(scoped)) => scoped == offering_provider_id,
-    }
-}
-
 /// Materialize the credential a binding selects, gated by [`can_consume`] when an
 /// `offering_provider` is given (the inference path); `None` skips the join (e.g.
 /// an MCP-server credential, which is not a model provider). `None` binding yields
@@ -497,79 +457,49 @@ async fn resolve_credential(
     availability: Option<(&AvailabilityLedger, u64)>,
     expected_workspace: Option<&str>,
 ) -> Result<Option<RedactedString>, ResolveError> {
-    match binding {
+    match credential_candidates(
+        binding,
+        sources,
+        offering_provider,
+        None,
+        availability,
+        expected_workspace,
+        0,
+    )? {
         // Brokered access has no locally materializable Provider secret. The
         // management preview resolves the public model/protocol shape only; the
         // runtime broker materializer performs live entitlement admission.
-        CredentialBinding::None | CredentialBinding::Brokered => Ok(None),
-        CredentialBinding::Exact {
-            credential_source_id,
+        CredentialCandidateSet::None | CredentialCandidateSet::Brokered => Ok(None),
+        CredentialCandidateSet::Direct {
+            sources,
+            pool_id: None,
+            ..
         } => {
             let source = sources
-                .get(credential_source_id.0.as_str())
-                .ok_or_else(|| ResolveError::SourceMissing(credential_source_id.0.clone()))?;
-            // Read-side tenant fence (SEC): when the caller knows the owning
-            // workspace, a source belonging to a DIFFERENT workspace is treated as
-            // ABSENT — the same `SourceMissing` an unknown id yields, so a
-            // cross-tenant `Exact` binding neither materializes B's secret nor leaks
-            // that the id exists. `SourceLookup.get` is a by-id primitive; tenancy is
-            // enforced here, at the resolution layer where both workspaces are known.
-            if let Some(ws) = expected_workspace
-                && source.workspace_id != ws
-            {
-                return Err(ResolveError::SourceMissing(credential_source_id.0.clone()));
-            }
-            if let Some(provider) = offering_provider
-                && !can_consume(provider, source)
-            {
-                return Err(ResolveError::IncompatibleCredential {
-                    source_id: credential_source_id.0.clone(),
-                    provider_id: provider.to_string(),
-                });
-            }
+                .into_iter()
+                .next()
+                .expect("an Exact binding always produces one candidate");
             Ok(Some(
                 awaken_credential_vault::materialize(source, secret_store).await?,
             ))
         }
-        CredentialBinding::OneOfCredentialPool { credential_pool_id } => {
-            let pool = sources
-                .get_pool(credential_pool_id.0.as_str())
-                .ok_or_else(|| ResolveError::PoolMissing(credential_pool_id.0.clone()))?;
-            // The eligible order drops cooled members (mid-run rotation) when a ledger
-            // is supplied; `cooled` is how many the cooldown excluded, for the
-            // fail-closed diagnostic.
-            let full = pool.selection_order();
-            let total = full.len();
-            let order = match availability {
-                Some((ledger, now_ms)) => pool.eligible_order(ledger, now_ms),
-                None => full,
-            };
-            let cooled = total - order.len();
+        CredentialCandidateSet::Direct {
+            sources,
+            pool_id: Some(pool_id),
+            total,
+            cooled,
+        } => {
             // Try members in eligible order; skip a member whose source is absent,
             // incompatible with the provider, or fails to materialize, so one bad key
             // does not fail the run.
-            for member in order {
-                let Some(source) = sources.get(member.credential_source_id.0.as_str()) else {
-                    continue;
-                };
-                // Read-side tenant fence (SEC): a pool may only draw on sources it
-                // owns. A member whose source belongs to a different workspace than
-                // the pool is skipped like an absent member (fail over); if that
-                // leaves nothing eligible the pool errors NoEligibleCredential — a
-                // cross-tenant source is never smuggled through the pool.
-                if source.workspace_id != pool.workspace_id {
-                    continue;
-                }
-                if offering_provider.is_some_and(|provider| !can_consume(provider, source)) {
-                    continue;
-                }
+            for source in sources {
                 if let Ok(secret) = awaken_credential_vault::materialize(source, secret_store).await
                 {
                     return Ok(Some(secret));
                 }
             }
             Err(ResolveError::NoEligibleCredential {
-                pool_id: credential_pool_id.0.clone(),
+                pool_id,
                 total,
                 cooled,
                 // Quota buckets are not modeled yet; capacity exclusion stays 0.
@@ -818,35 +748,6 @@ mod tests {
         Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
     };
     use std::collections::HashMap;
-
-    // Cause/effect decision table for executor×model-dialect reconciliation:
-    // R1 non-ACP backend + any dialect -> outside the join, accept;
-    // R2 known ACP + expected dialect -> accept;
-    // R3 known ACP + different dialect -> DialectIncompatible;
-    // R4 unknown/bare ACP mapping -> AcpDialectUnknown.
-    #[test]
-    fn acp_executor_and_model_api_dialect_are_reconciled_independently() {
-        assert!(
-            validate_acp_dialect("genai", ApiDialect::Gemini).is_ok(),
-            "R1"
-        );
-        assert!(
-            validate_acp_dialect("acp:claude", ApiDialect::AnthropicMessages).is_ok(),
-            "R2"
-        );
-        assert!(matches!(
-            validate_acp_dialect("acp:claude", ApiDialect::OpenAiChat),
-            Err(ResolveError::DialectIncompatible {
-                backend_ref,
-                expected: "anthropic_messages",
-                actual: "open_ai_chat",
-            }) if backend_ref == "acp:claude"
-        ));
-        assert!(matches!(
-            validate_acp_dialect("acp:opencode", ApiDialect::OpenAiChat),
-            Err(ResolveError::AcpDialectUnknown(backend)) if backend == "acp:opencode"
-        ));
-    }
 
     fn catalog() -> ProviderCatalog {
         let mut c = ProviderCatalog::default();

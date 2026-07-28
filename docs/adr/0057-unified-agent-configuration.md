@@ -329,7 +329,9 @@ the same derivation (see D3). If a profile ever needs to say "auto"
 follow-up — not needed while absence-of-profile already means auto. Default
 policy stays `FirstHealthy` (behavior-identical to today's "first Active" with
 one key; rotation appears only when several exist). The inline selection at
-`config_executor.rs:69` becomes the one `resolve_credential` path.
+`config_executor.rs:69` becomes one resolver-owned pipeline:
+`credential_candidates` selects for secret-free publication and
+`resolve_credential` materializes that same ordering where permitted.
 
 ### D6 — Config authors intent; the runtime snapshot stays secret-free and kind-unaware
 
@@ -641,7 +643,7 @@ right column; introducing a parallel type is a defect, not a phase.
 |---|---|---|---|
 | Credential selection incl. auto-pool | existing `CredentialBinding` + upgraded default derivation (`derive_vendor_pool`) | `awaken-credential-vault` / `awaken-config-resolver` | ~~`CredentialRequirement`~~, ~~`CredentialOverride`~~, any agent-side credential field |
 | Credential pool selection/rotation | `CredentialPool` / `SelectionPolicy` / `AvailabilityLedger` / `eligible_order` | `awaken-credential-vault` | a second selector |
-| Resolve a binding → credential | `config-resolver::resolve_credential` | `awaken-config-resolver` | the inline `.find` at `config_executor.rs:69` (retire it) |
+| Resolve a binding → credential | `config-resolver::credential_candidates` → `resolve_credential` materialization | `awaken-config-resolver` | inline Exact/default/Pool `.find` selectors in publication or execution |
 | Authored MCP server | `McpServerDef` (already carries `CredentialBinding`) | `awaken-config-resolver` | ~~`McpServerSpec`~~ (would be the 8th MCP type) |
 | Skill definition | `SkillSpec` | `awaken-ext-skills` | ~~`SkillRef`~~ struct (reference `SkillSpec.id`) |
 | "select one / spread across pool" | `AxisBinding<T>` (`Pin`/`Pool`) | `awaken-config-resolver` | a fourth model/credential-axis shape |
@@ -681,7 +683,9 @@ Pre-existing (clean up as adjacent phases land):
   projections (runtime/acp/managed-wire) — but the two protocol-managed shapes
   (`McpServer` + `McpServerBinding`) overlap and should collapse to one.
 - **Two credential-selection paths** — `config_executor.rs:69` inline `.find`
-  vs `resolve_credential`. D5 collapses them to one (`resolve_credential`).
+  vs `resolve_credential`. D5 collapses them to one resolver-owned candidate
+  operation; secret-free publication and permitted management materialization
+  consume the same ordering instead of selecting independently.
 - **Three model-axis representations** — `ModelSelection`+`model_fallbacks`
   (config), `AxisBinding<T>` (resolver), `model_binding`+`model_candidates`
   (ResolvedSpec). Do not add a fourth; longer-term, express the config-side pair
@@ -762,7 +766,7 @@ Done when: one Worker can exact-route `acp:codex` and `acp:claude`; an
 unadvertised CLI fails closed, and bare `acp` is accepted only when the profile
 has an unambiguous configured default.
 
-**D `one-resolution-path`** — *Exactly one counterparty resolution; dialect
+**D `one-resolution-path`** — *Complete (2026-07-28).* Exactly one counterparty resolution; dialect
 checked; vendor keys auto-pool.*
 Adds: a resolver CLI-id→`ApiDialect` table + check A (`DialectIncompatible`); `AcpCli` fields → `Cow`; `derive_vendor_pool`
 default + check B; `LaunchResolver` as adapter over `resolve_inference`.
@@ -771,8 +775,9 @@ Retires: the inline `.find(first Active)` at `config_executor.rs:69` and
 ambient provider configuration.
 Guard: single-key behavior-identity test (`FirstHealthy` ≡ today); dialect
 mismatch → `ResolveError::DialectIncompatible`.
-Done when: two same-vendor keys rotate under `RotateSpread` in an integration
-test; `resolve_credential` is the only credential-selection call site.
+Completion evidence is maintained in ADR-0069: the existing pool owns policy
+ordering, resolver owns default/Exact/Pool selection, publication freezes the
+chosen revision, and all three former Server selectors are absent.
 
 **E `authed-remote`** — *A remote agent authenticates exactly like a native one;
 only the inject exit differs.*

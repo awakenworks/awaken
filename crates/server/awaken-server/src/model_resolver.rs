@@ -5,24 +5,22 @@
 //! provisioning in that consistency window. Runtime code never calls this
 //! adapter; it receives only the resulting immutable candidates.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
+use awaken_config_resolver::validate_acp_dialect;
 use awaken_config_resolver::{
-    InferenceProfile, InferenceProfileStore, ModelTarget, ProfileCandidate, get_workspace_profile,
+    InferenceProfile, InferenceProfileStore, ModelTarget, derive_vendor_pool, get_workspace_profile,
 };
-use awaken_config_resolver::{can_consume, validate_acp_dialect};
 use awaken_config_store::ModelSelection;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_credential_vault::{
     CredentialBinding, CredentialKind, CredentialSource, CredentialStatus,
 };
 use awaken_model_catalog::{Offering, ProviderCatalog};
+use awaken_runtime_contract::CredentialRef;
 use awaken_runtime_contract::resolved::{
     Backend, BackendModelSelection, ModelBinding, ResolvedModelCandidate,
-};
-use awaken_runtime_contract::{
-    CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
-    CredentialUsage, InferenceEndpoint,
 };
 use awaken_runtime_host::{
     ModelPublicationResolver, PublicationResolutionError, ResolvedPublicationModels,
@@ -31,13 +29,10 @@ use awaken_tenancy::ScopeId;
 
 mod acp_configuration;
 mod composition;
+mod credential_publication;
 use acp_configuration::validate_acp_session_configuration;
 use composition::CatalogSource;
-
-enum PublicationAccess<'a> {
-    Direct(Option<&'a CredentialSource>),
-    Brokered,
-}
+use credential_publication::PublicationCredentialLookup;
 
 /// Configuration-plane adapter that freezes model, route and credential facts
 /// into a publication. Every candidate must exist in the catalog; explicit
@@ -49,6 +44,7 @@ pub struct CatalogModelPublicationResolver {
     profiles: Option<Arc<dyn InferenceProfileStore>>,
     brokered_access_enabled: bool,
     workers: Option<Arc<dyn awaken_worker_registry::WorkerDirectory>>,
+    credential_selection_sequences: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 impl CatalogModelPublicationResolver {
@@ -255,162 +251,6 @@ impl CatalogModelPublicationResolver {
         }
     }
 
-    fn credential_for<'a>(
-        sources: &'a [CredentialSource],
-        offering: &Offering,
-        binding: &ModelBinding,
-    ) -> Option<&'a CredentialSource> {
-        sources
-            .iter()
-            .filter(|source| {
-                source.status == CredentialStatus::Active
-                    && source.kind != CredentialKind::Env
-                    && Self::credential_can_supply(offering, binding, source)
-            })
-            .min_by_key(|source| {
-                (
-                    source.env_key.as_deref()
-                        != Some(awaken_credential_vault::CLAUDE_CODE_SETUP_TOKEN_ENV),
-                    source.id.0.as_str(),
-                )
-            })
-    }
-
-    fn credential_can_supply(
-        offering: &Offering,
-        binding: &ModelBinding,
-        source: &CredentialSource,
-    ) -> bool {
-        if source.env_key.as_deref() == Some(awaken_credential_vault::CLAUDE_CODE_SETUP_TOKEN_ENV) {
-            return offering.provider_id.as_str() == "anthropic"
-                && binding.backend_ref == "acp:claude"
-                && source.provider_id.as_deref() == Some("anthropic");
-        }
-        can_consume(offering.provider_id.as_str(), source)
-            && Self::credential_usage(binding, source).is_ok()
-    }
-
-    fn credential_usage(
-        binding: &ModelBinding,
-        source: &CredentialSource,
-    ) -> Result<CredentialUsage, String> {
-        let Backend::Acp { cli } = Backend::from_ref(&binding.backend_ref) else {
-            if source.env_key.as_deref()
-                == Some(awaken_credential_vault::CLAUDE_CODE_SETUP_TOKEN_ENV)
-            {
-                return Err("Claude Code setup tokens require backend acp:claude".into());
-            }
-            return Ok(CredentialUsage::ProviderAdapter);
-        };
-        let profile = awaken_run_executor_acp::acp_cli(&cli)
-            .ok_or_else(|| format!("ACP backend {cli} is not in the executable catalog"))?;
-        let Some(delivery) = profile.model_delivery else {
-            return Ok(CredentialUsage::ProviderAdapter);
-        };
-        let Some(name) = source.env_key.as_deref() else {
-            return Ok(CredentialUsage::ProviderAdapter);
-        };
-        if !delivery.supports_credential_env(name) {
-            return Err(format!(
-                "ACP backend {cli} does not accept credential environment {name}"
-            ));
-        }
-        Ok(CredentialUsage::EnvironmentVariable {
-            name: name.to_string(),
-        })
-    }
-
-    fn provider_candidate(
-        catalog: &ProviderCatalog,
-        workspace: &ScopeId,
-        binding: ModelBinding,
-        offering: &Offering,
-        access: PublicationAccess<'_>,
-    ) -> Result<ResolvedModelCandidate, PublicationResolutionError> {
-        let unavailable = |reason| PublicationResolutionError::CandidateUnavailable {
-            binding: binding.clone(),
-            reason,
-        };
-        let provider = catalog
-            .providers
-            .get(offering.provider_id.as_str())
-            .ok_or_else(|| unavailable(format!("provider {} is missing", offering.provider_id)))?;
-        let endpoint = catalog
-            .endpoints
-            .get(offering.protocol_endpoint_id.as_str())
-            .ok_or_else(|| {
-                unavailable(format!(
-                    "endpoint {} is missing",
-                    offering.protocol_endpoint_id
-                ))
-            })?;
-        let credential = match access {
-            PublicationAccess::Direct(credential) => credential
-                .map(|credential| {
-                    let revision = u64::try_from(credential.version).map_err(|_| {
-                        unavailable(format!(
-                            "credential {} has a negative version",
-                            credential.id.0
-                        ))
-                    })?;
-                    let usage =
-                        Self::credential_usage(&binding, credential).map_err(unavailable)?;
-                    Ok(CredentialAccess::new(
-                        CredentialRef {
-                            id: credential.id.0.clone(),
-                            revision,
-                        },
-                        match credential.kind {
-                            CredentialKind::WorkerLocal => {
-                                CredentialMaterialSource::WorkerReference
-                            }
-                            CredentialKind::Vault | CredentialKind::Oauth => {
-                                CredentialMaterialSource::ControlPlaneReference
-                            }
-                            CredentialKind::Env => {
-                                return Err(unavailable(
-                                    "environment credentials cannot be frozen into a publication"
-                                        .into(),
-                                ));
-                            }
-                        },
-                        usage,
-                        CredentialExecutionPolicy::self_hosted_provider(),
-                    ))
-                })
-                .transpose()?,
-            PublicationAccess::Brokered => None,
-        };
-        let base_url = endpoint
-            .base_url
-            .clone()
-            .ok_or_else(|| unavailable(format!("endpoint {} has no base URL", endpoint.id.0)))?;
-        let route_ref = if offering.source == awaken_model_catalog::OfferingSource::Brokered {
-            format!(
-                "brokered:{}@{}",
-                offering.protocol_endpoint_id.0, endpoint.version
-            )
-        } else {
-            format!("{}@{}", offering.protocol_endpoint_id.0, endpoint.version)
-        };
-        Ok(ResolvedModelCandidate::provider(
-            binding,
-            format!("{}@{}", offering.provider_id.0, provider.version),
-            route_ref,
-            workspace.clone(),
-            credential,
-            InferenceEndpoint {
-                adapter_kind: endpoint.dialect.adapter_kind().to_string(),
-                api_dialect: endpoint.dialect.as_str().to_string(),
-                base_url,
-                upstream_model: offering
-                    .upstream_model
-                    .clone()
-                    .unwrap_or_else(|| offering.model_id.clone()),
-            },
-        ))
-    }
-
     async fn candidate(
         &self,
         catalog: &ProviderCatalog,
@@ -425,22 +265,29 @@ impl CatalogModelPublicationResolver {
                     reason: error.to_string(),
                 }
             })?;
-            let credential = Self::credential_for(sources, offering, &binding).ok_or_else(|| {
-                PublicationResolutionError::CandidateUnavailable {
+            let pool = derive_vendor_pool(
+                workspace.as_str(),
+                offering.provider_id.as_str(),
+                &binding.backend_ref,
+                sources,
+            );
+            let derived_binding = CredentialBinding::OneOfCredentialPool {
+                credential_pool_id: pool.id.clone(),
+            };
+            let lookup = PublicationCredentialLookup {
+                sources,
+                pool: Some(&pool),
+            };
+            let access = self
+                .publication_access(&lookup, workspace, offering, &derived_binding, &binding)
+                .map_err(|reason| PublicationResolutionError::CandidateUnavailable {
                     binding: binding.clone(),
                     reason: format!(
-                        "no active persisted credential can consume model {} in Workspace {workspace}",
+                        "no active persisted credential can consume model {} in Workspace {workspace}: {reason}",
                         binding.model_ref
                     ),
-                }
-            })?;
-            return Self::provider_candidate(
-                catalog,
-                workspace,
-                binding,
-                offering,
-                PublicationAccess::Direct(Some(credential)),
-            );
+                })?;
+            return Self::provider_candidate(catalog, workspace, binding, offering, access);
         }
         if matches!(Backend::from_ref(&binding.backend_ref), Backend::Acp { .. }) {
             let configuration = Default::default();
@@ -457,120 +304,6 @@ impl CatalogModelPublicationResolver {
             reason: format!("model offering {} is not published", binding.model_ref),
             binding,
         })
-    }
-
-    fn source_for_profile_candidate<'a>(
-        sources: &'a [CredentialSource],
-        offering: &Offering,
-        binding: &CredentialBinding,
-    ) -> Result<PublicationAccess<'a>, String> {
-        let eligible = |source: &&CredentialSource| {
-            source.status == CredentialStatus::Active
-                && source.kind != CredentialKind::Env
-                && can_consume(offering.provider_id.as_str(), source)
-        };
-        match binding {
-            CredentialBinding::None => {
-                if offering.source == awaken_model_catalog::OfferingSource::Brokered {
-                    return Err(
-                        "brokered offering requires an explicit brokered access binding".into(),
-                    );
-                }
-                Ok(PublicationAccess::Direct(None))
-            }
-            CredentialBinding::Brokered => {
-                if offering.source != awaken_model_catalog::OfferingSource::Brokered {
-                    return Err(
-                        "brokered access binding requires a brokered catalog offering".into(),
-                    );
-                }
-                Ok(PublicationAccess::Brokered)
-            }
-            CredentialBinding::Exact {
-                credential_source_id,
-            } => {
-                if offering.source == awaken_model_catalog::OfferingSource::Brokered {
-                    return Err("brokered offering cannot consume a local credential".into());
-                }
-                sources
-                    .iter()
-                    .find(|source| source.id == *credential_source_id)
-                    .filter(eligible)
-                    .map(|source| PublicationAccess::Direct(Some(source)))
-                    .ok_or_else(|| {
-                    format!(
-                        "exact credential {} is absent, inactive, or incompatible with provider {}",
-                        credential_source_id.0, offering.provider_id
-                    )
-                    })
-            }
-            CredentialBinding::OneOfCredentialPool { .. } => {
-                if offering.source == awaken_model_catalog::OfferingSource::Brokered {
-                    return Err("brokered offering cannot consume a local credential pool".into());
-                }
-                Err("credential pool must be resolved through its authored membership".into())
-            }
-        }
-    }
-
-    async fn profile_source<'a>(
-        &self,
-        sources: &'a [CredentialSource],
-        workspace: &ScopeId,
-        offering: &Offering,
-        candidate: &ProfileCandidate,
-    ) -> Result<PublicationAccess<'a>, PublicationResolutionError> {
-        if offering.source == awaken_model_catalog::OfferingSource::Brokered
-            && !self.brokered_access_enabled
-        {
-            return Err(PublicationResolutionError::CandidateUnavailable {
-                binding: Self::binding_of(offering),
-                reason: "cloud_models_disabled: brokered model supply is disabled".into(),
-            });
-        }
-        if let CredentialBinding::OneOfCredentialPool { credential_pool_id } =
-            &candidate.credential_binding
-        {
-            let pool = self
-                .credentials
-                .get_pool(credential_pool_id)
-                .await
-                .map_err(|error| {
-                    PublicationResolutionError::CredentialInventoryUnavailable(error.to_string())
-                })?;
-            if pool.workspace_id != workspace.as_str() {
-                return Err(PublicationResolutionError::CandidateUnavailable {
-                    binding: Self::binding_of(offering),
-                    reason: "credential pool belongs to another Workspace".into(),
-                });
-            }
-            return pool
-                .selection_order()
-                .into_iter()
-                .filter_map(|member| {
-                    sources
-                        .iter()
-                        .find(|source| source.id == member.credential_source_id)
-                })
-                .find(|source| {
-                    source.status == CredentialStatus::Active
-                        && source.kind != CredentialKind::Env
-                        && can_consume(offering.provider_id.as_str(), source)
-                })
-                .map(|source| PublicationAccess::Direct(Some(source)))
-                .ok_or_else(|| PublicationResolutionError::CandidateUnavailable {
-                    binding: Self::binding_of(offering),
-                    reason: format!(
-                        "credential pool {} has no active compatible member",
-                        credential_pool_id.0
-                    ),
-                });
-        }
-        Self::source_for_profile_candidate(sources, offering, &candidate.credential_binding)
-            .map_err(|reason| PublicationResolutionError::CandidateUnavailable {
-                binding: Self::binding_of(offering),
-                reason,
-            })
     }
 
     async fn resolve_profile_models(
@@ -615,15 +348,49 @@ impl CatalogModelPublicationResolver {
         };
         let mut resolved = Vec::with_capacity(authored.len());
         for (candidate, offering) in authored.into_iter().zip(offerings) {
+            if offering.source == awaken_model_catalog::OfferingSource::Brokered
+                && !self.brokered_access_enabled
+            {
+                return Err(PublicationResolutionError::CandidateUnavailable {
+                    binding: Self::binding_of(offering),
+                    reason: "cloud_models_disabled: brokered model supply is disabled".into(),
+                });
+            }
+            let pool = if let CredentialBinding::OneOfCredentialPool { credential_pool_id } =
+                &candidate.credential_binding
+            {
+                Some(
+                    self.credentials
+                        .get_pool(credential_pool_id)
+                        .await
+                        .map_err(|error| {
+                            PublicationResolutionError::CredentialInventoryUnavailable(
+                                error.to_string(),
+                            )
+                        })?,
+                )
+            } else {
+                None
+            };
+            let lookup = PublicationCredentialLookup {
+                sources: &sources,
+                pool: pool.as_ref(),
+            };
+            let binding = Self::binding_of(offering);
             let access = self
-                .profile_source(&sources, workspace, offering, candidate)
-                .await?;
+                .publication_access(
+                    &lookup,
+                    workspace,
+                    offering,
+                    &candidate.credential_binding,
+                    &binding,
+                )
+                .map_err(|reason| PublicationResolutionError::CandidateUnavailable {
+                    binding: binding.clone(),
+                    reason,
+                })?;
             resolved.push(Self::provider_candidate(
-                catalog,
-                workspace,
-                Self::binding_of(offering),
-                offering,
-                access,
+                catalog, workspace, binding, offering, access,
             )?);
         }
         let primary = resolved.remove(0);
@@ -909,17 +676,19 @@ mod tests {
 
     use super::*;
     use awaken_agent_contract::RedactedString;
-    use awaken_config_resolver::InMemoryProfileStore;
+    use awaken_config_resolver::{InMemoryProfileStore, ProfileCandidate};
     use awaken_credential_vault::repo::{
         InMemoryCredentialRepo, ensure_worker_local, enter_credential,
     };
     use awaken_credential_vault::{
-        CredentialCreateParams, InMemorySecretStore, WorkerLocalBinding,
+        CredentialCreateParams, CredentialPool, CredentialPoolId, CredentialPoolMember,
+        InMemorySecretStore, SelectionPolicy, WorkerLocalBinding,
     };
     use awaken_model_catalog::{
         ApiDialect, ModelAttributes, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
     };
     use awaken_runtime_contract::resolved::ModelProvisioning;
+    use awaken_runtime_contract::{CredentialMaterialSource, CredentialUsage};
     use awaken_worker_registry::{
         MemoryWorkerDirectory, WorkerAcpCapabilityObservation, WorkerCredentialObservation,
         WorkerCredentialRevision, WorkerDirectory, WorkerHeartbeat, WorkerManifest,
@@ -1169,6 +938,109 @@ mod tests {
                 ("fallback", "ep2@9", fallback_credential.id.0.as_str()),
             ]
         );
+    }
+
+    // Cause/effect decision table for D5 publication-time pool selection:
+    // R1 one RotateSpread pool + sequence 0 -> first authored healthy member;
+    // R2 same resolver/pool + next publication -> next healthy member;
+    // E1 each immutable publication freezes exactly the selected revision;
+    // E2 Runtime receives no pool or reselection authority.
+    #[tokio::test]
+    async fn rotate_spread_pool_rotates_across_publications_before_freezing_exact_access() {
+        let credentials = Arc::new(InMemoryCredentialRepo::new());
+        let secrets = InMemorySecretStore::new();
+        let first = enter_credential(
+            CredentialCreateParams {
+                workspace_id: "workspace-a".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("openai".into()),
+                env_key: Some("OPENAI_API_KEY".into()),
+                secret: Some(RedactedString::new("first")),
+                oauth_command: None,
+            },
+            &secrets,
+            credentials.as_ref(),
+        )
+        .await
+        .unwrap();
+        let second = enter_credential(
+            CredentialCreateParams {
+                workspace_id: "workspace-a".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("openai".into()),
+                env_key: Some("OPENAI_API_KEY".into()),
+                secret: Some(RedactedString::new("second")),
+                oauth_command: None,
+            },
+            &secrets,
+            credentials.as_ref(),
+        )
+        .await
+        .unwrap();
+        let pool_id = CredentialPoolId("pool:rotate".into());
+        credentials
+            .put_pool(CredentialPool {
+                id: pool_id.clone(),
+                workspace_id: "workspace-a".into(),
+                members: vec![
+                    CredentialPoolMember {
+                        credential_source_id: first.id.clone(),
+                        ordinal: 0,
+                        enabled: true,
+                        selection_weight: 0,
+                    },
+                    CredentialPoolMember {
+                        credential_source_id: second.id.clone(),
+                        ordinal: 1,
+                        enabled: true,
+                        selection_weight: 0,
+                    },
+                ],
+                policy: SelectionPolicy::RotateSpread,
+            })
+            .await
+            .unwrap();
+        let profiles = Arc::new(InMemoryProfileStore::new());
+        profiles
+            .put(
+                "profile-a".into(),
+                InferenceProfile {
+                    workspace_id: "workspace-a".into(),
+                    primary: ProfileCandidate {
+                        target: ModelTarget {
+                            model_id: "primary".into(),
+                            provider_id: Some("openai".into()),
+                            protocol_endpoint_id: Some("ep1".into()),
+                        },
+                        credential_binding: CredentialBinding::OneOfCredentialPool {
+                            credential_pool_id: pool_id,
+                        },
+                    },
+                    fallbacks: Vec::new(),
+                    disabled_endpoint_ids: Vec::new(),
+                },
+            )
+            .unwrap();
+        let resolver = CatalogModelPublicationResolver::new(catalog(&["primary"]), credentials)
+            .with_profiles(profiles);
+        let selected_id = |models: &ResolvedPublicationModels| match &models.primary.provisioning {
+            ModelProvisioning::Provider {
+                credential: Some(access),
+                ..
+            } => access.credential.id.clone(),
+            _ => panic!("pool publication must freeze one exact credential"),
+        };
+
+        let publication_0 = resolver
+            .resolve_models(&ScopeId::from("workspace-a"), &explicit_profile(), &[])
+            .await
+            .unwrap();
+        let publication_1 = resolver
+            .resolve_models(&ScopeId::from("workspace-a"), &explicit_profile(), &[])
+            .await
+            .unwrap();
+        assert_eq!(selected_id(&publication_0), first.id.0, "R1/E1");
+        assert_eq!(selected_id(&publication_1), second.id.0, "R2/E1");
     }
 
     #[tokio::test]

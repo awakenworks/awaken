@@ -259,9 +259,24 @@ impl CredentialPool {
     /// source id). This is the order the resolver tries for failover.
     #[must_use]
     pub fn selection_order(&self) -> Vec<&CredentialPoolMember> {
+        self.selection_order_at(0)
+    }
+
+    /// The enabled members in policy order for one resolver-owned selection
+    /// sequence. `FirstHealthy` and `StickyResume` retain the stable authored
+    /// order when no affinity key is available. `RotateSpread` moves the first
+    /// candidate by `sequence`, while preserving deterministic failover order
+    /// for the remainder.
+    #[must_use]
+    pub fn selection_order_at(&self, sequence: u64) -> Vec<&CredentialPoolMember> {
         let mut members: Vec<&CredentialPoolMember> =
             self.members.iter().filter(|m| m.enabled).collect();
         members.sort_by(|a, b| member_ordering(a, b));
+        if matches!(self.policy, SelectionPolicy::RotateSpread) && !members.is_empty() {
+            let offset = usize::try_from(sequence % members.len() as u64)
+                .expect("rotation offset is bounded by the member count");
+            members.rotate_left(offset);
+        }
         members
     }
 
@@ -275,7 +290,18 @@ impl CredentialPool {
         ledger: &crate::availability::AvailabilityLedger,
         now_ms: u64,
     ) -> Vec<&CredentialPoolMember> {
-        self.selection_order()
+        self.eligible_order_at(ledger, now_ms, 0)
+    }
+
+    /// Availability-filtered [`selection_order_at`](Self::selection_order_at).
+    #[must_use]
+    pub fn eligible_order_at(
+        &self,
+        ledger: &crate::availability::AvailabilityLedger,
+        now_ms: u64,
+        sequence: u64,
+    ) -> Vec<&CredentialPoolMember> {
+        self.selection_order_at(sequence)
             .into_iter()
             .filter(|m| {
                 member_is_eligible(m.enabled, ledger.state(&m.credential_source_id, now_ms))
@@ -944,6 +970,42 @@ mod tests {
             .collect();
         // The disabled ordinal-0 member is skipped; the ordinal-1 tie breaks by id.
         assert_eq!(order, ["cred:b", "cred:c", "cred:d"]);
+    }
+
+    // Cause/effect decision table for policy-owned candidate ordering:
+    // R1 FirstHealthy + any sequence -> stable ordinal/id order;
+    // R2 RotateSpread + sequence 0 -> stable order;
+    // R3 RotateSpread + sequence 1..N -> rotate the first candidate modulo N;
+    // R4 disabled member -> absent before rotation.
+    #[test]
+    fn selection_policy_is_applied_by_the_pool_without_a_second_selector() {
+        let member = |id: &str, ordinal: u32, enabled: bool| CredentialPoolMember {
+            credential_source_id: CredentialSourceId(id.into()),
+            ordinal,
+            enabled,
+            selection_weight: 0,
+        };
+        let mut pool = CredentialPool {
+            id: CredentialPoolId("pool:rotate".into()),
+            workspace_id: "ws1".into(),
+            members: vec![
+                member("cred:a", 0, true),
+                member("cred:disabled", 1, false),
+                member("cred:b", 2, true),
+            ],
+            policy: SelectionPolicy::FirstHealthy,
+        };
+        let ids = |pool: &CredentialPool, sequence| {
+            pool.selection_order_at(sequence)
+                .into_iter()
+                .map(|member| member.credential_source_id.0.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&pool, 1), ["cred:a", "cred:b"], "R1/R4");
+        pool.policy = SelectionPolicy::RotateSpread;
+        assert_eq!(ids(&pool, 0), ["cred:a", "cred:b"], "R2/R4");
+        assert_eq!(ids(&pool, 1), ["cred:b", "cred:a"], "R3/R4");
+        assert_eq!(ids(&pool, 2), ["cred:a", "cred:b"], "R3 modulo N");
     }
 
     #[test]
