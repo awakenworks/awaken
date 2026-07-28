@@ -68,6 +68,14 @@ async fn run(command: console::Command) -> Result<(), String> {
             let seal_key = deployment.seal_key.load_or_create()?;
             awaken_cli::migrate_management_schema_with_deployment(&deployment, &seal_key).await
         }
+        console::Command::ManagementIamProfile => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&awaken_control::management_authorization_profile())
+                    .map_err(|error| format!("serialize Management IAM profile: {error}"))?
+            );
+            Ok(())
+        }
         console::Command::Worker {
             server,
             config_path,

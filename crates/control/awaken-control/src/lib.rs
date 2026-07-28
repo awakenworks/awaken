@@ -36,9 +36,10 @@ pub use crate::admin_assistant::{
 // Embedded management-plane IAM (ADR-0042/0043 P1): the authorizer, its boot
 // fn, the mint spec (tests / operator embeddings), and the bootstrap constants.
 pub use crate::authz::{
-    ADMIN_TOKEN_FILE, BOOTSTRAP_PRINCIPAL, BOOTSTRAP_WORKSPACE, DEFAULT_ORG_ID, ManagementAuthz,
-    ManagementIdentityMode, RemoteManagementAuthz, TokenSpec, embedded_iam,
-    embedded_iam_for_tenant, embedded_iam_for_workspace,
+    ADMIN_TOKEN_FILE, BOOTSTRAP_PRINCIPAL, BOOTSTRAP_WORKSPACE, DEFAULT_ORG_ID,
+    MANAGEMENT_POLICY_NAMESPACE, ManagementAuthz, ManagementIdentityMode, RemoteManagementAuthz,
+    TokenSpec, embedded_iam, embedded_iam_for_tenant, embedded_iam_for_workspace,
+    management_authorization_profile,
 };
 pub use crate::control_stores::{ControlStoreConfig, StoreBackend};
 pub use crate::credential_reference::CredentialRevisionValidator;
