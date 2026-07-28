@@ -183,8 +183,10 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
             "PUT",
             "/v1/config/inference-profiles/prof1",
             Some(json!({
-                "model_id": "claude-opus-4-8",
-                "credential_binding": { "type": "exact", "credential_source_id": cred_id },
+                "primary": {
+                    "target": { "model_id": "claude-opus-4-8" },
+                    "credential_binding": { "type": "exact", "credential_source_id": cred_id }
+                },
                 "disabled_endpoint_ids": []
             })),
         )
@@ -272,7 +274,7 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
         "POST",
         "/v1/config/inference/resolve",
         Some(json!({
-            "workspace_id": "ws", "model_id": "claude-opus-4-8",
+            "workspace_id": "ws", "target": { "model_id": "claude-opus-4-8" },
             "binding": { "type": "exact", "credential_source_id": cred_id }
         })),
     )
@@ -319,7 +321,7 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
         "POST",
         "/v1/config/inference/resolve",
         Some(json!({
-            "workspace_id": "ws", "model_id": "claude-opus-4-8",
+            "workspace_id": "ws", "target": { "model_id": "claude-opus-4-8" },
             "binding": { "type": "exact", "credential_source_id": cred_id }
         })),
     )

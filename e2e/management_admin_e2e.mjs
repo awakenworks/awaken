@@ -252,7 +252,7 @@ async function main() {
       // --- resolve dry-run through the resolver, validated against the contract ---
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
         workspace_id: 'ws',
-        model_id: 'connection-model-a',
+        target: { model_id: 'connection-model-a' },
         binding: { type: 'exact', credential_source_id: credId },
       });
       assert.equal(r.status, 200, JSON.stringify(r.json));
@@ -304,7 +304,7 @@ async function main() {
       // --- resolve with an Exact binding to a missing credential fails closed ---
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
         workspace_id: 'ws',
-        model_id: 'connection-model-a',
+        target: { model_id: 'connection-model-a' },
         binding: { type: 'exact', credential_source_id: 'cred_missing' },
       });
       assert.equal(r.status, 404, JSON.stringify(r.json));
@@ -347,7 +347,7 @@ async function main() {
 
       // Resolve the pool binding: A (ordinal 0) fails to materialize -> fail over to B.
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
-        workspace_id: 'ws', model_id: 'connection-model-a',
+        workspace_id: 'ws', target: { model_id: 'connection-model-a' },
         binding: { type: 'one_of_credential_pool', credential_pool_id: 'pool1' },
       });
       assert.equal(r.status, 200, JSON.stringify(r.json));
@@ -362,7 +362,7 @@ async function main() {
       });
       assert.equal(r.status, 200);
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
-        workspace_id: 'ws', model_id: 'connection-model-a',
+        workspace_id: 'ws', target: { model_id: 'connection-model-a' },
         binding: { type: 'one_of_credential_pool', credential_pool_id: 'pool_bad' },
       });
       assert.equal(r.status, 409);
@@ -371,7 +371,7 @@ async function main() {
 
       // A binding to a pool that does not exist -> missing (404).
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
-        workspace_id: 'ws', model_id: 'connection-model-a',
+        workspace_id: 'ws', target: { model_id: 'connection-model-a' },
         binding: { type: 'one_of_credential_pool', credential_pool_id: 'pool_missing' },
       });
       assert.equal(r.status, 404);
@@ -473,7 +473,7 @@ async function main() {
       // --- a binding to an unknown model fails closed (404) ---
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
         workspace_id: 'ws',
-        model_id: 'no-such-model',
+        target: { model_id: 'no-such-model' },
         binding: { type: 'none' },
       });
       assert.equal(r.status, 404);

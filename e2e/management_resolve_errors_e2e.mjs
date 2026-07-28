@@ -20,7 +20,7 @@ async function main() {
     // Resolve an unauthored model → fail closed.
     let r = await req(base, '/v1/config/inference/resolve', {
       workspace_id: 'ws',
-      model_id: 'ghost-model',
+      target: { model_id: 'ghost-model' },
       binding: { type: 'exact', credential_source_id: 'ghost-cred' },
     });
     assert.ok(r.status >= 400 && r.status < 500, `resolve unauthored model -> 4xx (got ${r.status})`);
@@ -28,7 +28,7 @@ async function main() {
     // Resolve against a missing pool → fail closed.
     r = await req(base, '/v1/config/inference/resolve', {
       workspace_id: 'ws',
-      model_id: 'ghost-model',
+      target: { model_id: 'ghost-model' },
       binding: { type: 'pool', credential_pool_id: 'ghost-pool' },
     });
     assert.ok(r.status >= 400 && r.status < 500, `resolve missing pool -> 4xx (got ${r.status})`);

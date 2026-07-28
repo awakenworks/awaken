@@ -108,7 +108,7 @@ await step("catalog snapshot", "GET", "/v1/config/catalog", undefined, (s, p) =>
 await step("list credentials", "GET", "/v1/config/credentials?workspace_id=wrkspc_default", undefined, (s, p) => s === 200 && Array.isArray(p) && p.length >= 1);
 await step("resolve dry-run (exact)", "POST", "/v1/config/inference/resolve", {
   workspace_id: "wrkspc_default",
-  model_id: "claude-sonnet-4-5",
+  target: { model_id: "claude-sonnet-4-5" },
   binding: { type: "exact", credential_source_id: cred.id },
 }, (s, p) => s === 200 && p.credential_present === true);
 

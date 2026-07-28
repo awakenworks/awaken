@@ -83,10 +83,10 @@ async function main() {
     pass('authored a 2-model catalog + a 2-member credential pool');
 
     // ── A profile: model-a pinned, model-b as a fallback; pool credential ────
+    const poolBinding = { type: 'one_of_credential_pool', credential_pool_id: 'pool1' };
     ok(await cfg('PUT', '/v1/config/inference-profiles/prof1', {
-      model_id: 'model-a',
-      model_fallbacks: ['model-b'],
-      credential_binding: { type: 'one_of_credential_pool', credential_pool_id: 'pool1' },
+      primary: { target: { model_id: 'model-a' }, credential_binding: poolBinding },
+      fallbacks: [{ target: { model_id: 'model-b' }, credential_binding: poolBinding }],
       disabled_endpoint_ids: [],
     }), 200, 'profile');
 
@@ -101,8 +101,7 @@ async function main() {
     // A single-model profile (no fallbacks) resolves to ONE candidate — the
     // AxisBinding::Pin branch of the model axis.
     ok(await cfg('PUT', '/v1/config/inference-profiles/pin1', {
-      model_id: 'model-a',
-      credential_binding: { type: 'one_of_credential_pool', credential_pool_id: 'pool1' },
+      primary: { target: { model_id: 'model-a' }, credential_binding: poolBinding },
       disabled_endpoint_ids: [],
     }), 200, 'pinned profile');
     const pin = await cfg('POST', '/v1/config/inference-profiles/pin1/resolve-candidates', { workspace_id: WS });
@@ -113,9 +112,8 @@ async function main() {
     // A profile whose every model is unauthored → fail-closed (the all-candidates-
     // failed path of resolve_profile_candidates).
     ok(await cfg('PUT', '/v1/config/inference-profiles/dead', {
-      model_id: 'ghost-1',
-      model_fallbacks: ['ghost-2'],
-      credential_binding: { type: 'one_of_credential_pool', credential_pool_id: 'pool1' },
+      primary: { target: { model_id: 'ghost-1' }, credential_binding: poolBinding },
+      fallbacks: [{ target: { model_id: 'ghost-2' }, credential_binding: poolBinding }],
       disabled_endpoint_ids: [],
     }), 200, 'dead profile');
     const deadCand = await cfg('POST', '/v1/config/inference-profiles/dead/resolve-candidates', { workspace_id: WS });
@@ -173,7 +171,7 @@ async function main() {
     }), 200, 'dead pool');
     const dead = await cfg('POST', '/v1/config/inference/resolve', {
       workspace_id: WS,
-      model_id: 'model-a',
+      target: { model_id: 'model-a' },
       binding: { type: 'one_of_credential_pool', credential_pool_id: 'deadpool' },
     });
     assert.equal(dead.status, 409, `an all-unmaterializable pool is fail-closed 409 (got ${dead.status}: ${JSON.stringify(dead.body)})`);
@@ -195,7 +193,7 @@ async function main() {
     }), 200, 'mixed pool');
     const mixed = await cfg('POST', '/v1/config/inference/resolve', {
       workspace_id: WS,
-      model_id: 'model-a',
+      target: { model_id: 'model-a' },
       binding: { type: 'one_of_credential_pool', credential_pool_id: 'mixed' },
     });
     ok(mixed, 200, 'mixed-pool resolve skips the incompatible member and uses the compatible one');

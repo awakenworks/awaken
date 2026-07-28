@@ -233,8 +233,10 @@ async function main(): Promise<void> {
     }
 
     response = await request('PUT', `/v1/config/inference-profiles/profile-${process.pid}`, {
-      model_id: MODEL,
-      credential_binding: { type: 'exact', credential_source_id: credentialId },
+      primary: {
+        target: { model_id: MODEL },
+        credential_binding: { type: 'exact', credential_source_id: credentialId },
+      },
       disabled_endpoint_ids: [],
     });
     assert.equal(response.status, 200, JSON.stringify(response.body));

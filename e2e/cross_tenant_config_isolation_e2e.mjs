@@ -115,8 +115,10 @@ async function main() {
     assert.equal((await req(base, 'PUT', '/v1/config/credential-pools/shared-pool', tokenA, poolBody)).status, 200);
     const profileBody = {
       workspace_id: WS_A,
-      model_id: 'tenant-model',
-      credential_binding: { type: 'exact', credential_source_id: credentialId },
+      primary: {
+        target: { model_id: 'tenant-model' },
+        credential_binding: { type: 'exact', credential_source_id: credentialId },
+      },
       disabled_endpoint_ids: [],
     };
     assert.equal((await req(base, 'PUT', '/v1/config/inference-profiles/shared-profile', tokenA, profileBody)).status, 200);
@@ -164,7 +166,10 @@ async function main() {
     const profileBodyB = {
       ...profileBody,
       workspace_id: WS_B,
-      credential_binding: { type: 'exact', credential_source_id: credentialB.json.id },
+      primary: {
+        ...profileBody.primary,
+        credential_binding: { type: 'exact', credential_source_id: credentialB.json.id },
+      },
     };
     const putProfileB = await req(
       base,

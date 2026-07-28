@@ -266,11 +266,10 @@ pub async fn resolve_inference_target(
 /// it is never flowed into the runtime.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[cfg_attr(feature = "schema", schemars(!try_from))]
-#[serde(try_from = "InferenceProfileWire")]
+#[serde(deny_unknown_fields)]
 pub struct InferenceProfile {
-    /// Owning workspace, stamped by the trusted configuration edge. Empty only
-    /// for legacy rows, which scoped APIs treat as unowned.
+    /// Owning workspace, stamped by the trusted configuration edge. An empty
+    /// value represents an unstamped domain value and is never treated as owned.
     #[serde(default)]
     pub workspace_id: String,
     /// Exact preferred offering. Provider and endpoint qualifiers prevent a model
@@ -292,84 +291,6 @@ pub struct InferenceProfile {
 pub struct ProfileCandidate {
     pub target: ModelTarget,
     pub credential_binding: CredentialBinding,
-}
-
-/// Read compatibility for profile rows authored before structured model targets.
-/// New writes serialize only `primary` / `fallbacks`, keeping the public contract
-/// clear while allowing an in-place upgrade of existing JSON stores.
-#[derive(serde::Deserialize)]
-struct InferenceProfileWire {
-    #[serde(default)]
-    workspace_id: String,
-    #[serde(default)]
-    primary: Option<ProfileCandidateWire>,
-    #[serde(default)]
-    fallbacks: Vec<ProfileCandidateWire>,
-    #[serde(default)]
-    model_id: Option<String>,
-    #[serde(default)]
-    model_fallbacks: Vec<String>,
-    #[serde(default)]
-    credential_binding: Option<CredentialBinding>,
-    #[serde(default)]
-    disabled_endpoint_ids: Vec<String>,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(untagged)]
-enum ProfileCandidateWire {
-    Candidate(ProfileCandidate),
-    Target(ModelTarget),
-}
-
-impl ProfileCandidateWire {
-    fn into_candidate(self, legacy_binding: &CredentialBinding) -> ProfileCandidate {
-        match self {
-            Self::Candidate(candidate) => candidate,
-            Self::Target(target) => ProfileCandidate {
-                target,
-                credential_binding: legacy_binding.clone(),
-            },
-        }
-    }
-}
-
-impl TryFrom<InferenceProfileWire> for InferenceProfile {
-    type Error = &'static str;
-
-    fn try_from(wire: InferenceProfileWire) -> Result<Self, Self::Error> {
-        let legacy_binding = wire.credential_binding.unwrap_or(CredentialBinding::None);
-        let primary = wire
-            .primary
-            .map(|candidate| candidate.into_candidate(&legacy_binding))
-            .or_else(|| {
-                wire.model_id.map(|model_id| ProfileCandidate {
-                    target: ModelTarget::unqualified(model_id),
-                    credential_binding: legacy_binding.clone(),
-                })
-            })
-            .ok_or("inference profile requires `primary`")?;
-        let fallbacks = if wire.fallbacks.is_empty() {
-            wire.model_fallbacks
-                .into_iter()
-                .map(|model_id| ProfileCandidate {
-                    target: ModelTarget::unqualified(model_id),
-                    credential_binding: legacy_binding.clone(),
-                })
-                .collect()
-        } else {
-            wire.fallbacks
-                .into_iter()
-                .map(|candidate| candidate.into_candidate(&legacy_binding))
-                .collect()
-        };
-        Ok(Self {
-            workspace_id: wire.workspace_id,
-            primary,
-            fallbacks,
-            disabled_endpoint_ids: wire.disabled_endpoint_ids,
-        })
-    }
 }
 
 impl InferenceProfile {
@@ -1143,17 +1064,13 @@ mod tests {
             serde_json::to_string(&pin).unwrap(),
             r#"{"kind":"pin","value":"m"}"#
         );
-        // A profile row written before `model_fallbacks` existed still loads.
+    }
+
+    #[test]
+    fn inference_profile_rejects_the_retired_flat_contract() {
         let legacy = r#"{"model_id":"m","credential_binding":{"type":"none"}}"#;
-        let profile: InferenceProfile = serde_json::from_str(legacy).unwrap();
-        assert!(profile.fallbacks.is_empty());
-        assert_eq!(
-            profile.model_axis(),
-            AxisBinding::Pin(ProfileCandidate {
-                target: ModelTarget::unqualified("m"),
-                credential_binding: CredentialBinding::None,
-            })
-        );
+        let error = serde_json::from_str::<InferenceProfile>(legacy).unwrap_err();
+        assert!(error.to_string().contains("unknown field `model_id`"));
     }
 
     #[tokio::test]
