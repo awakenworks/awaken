@@ -107,7 +107,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use awaken_iam_contract::{
-    ActionKey, ActionScopeRule, ActivateAuthorizationProfile, ApiToken, ApiTokenId,
+    AccountId, ActionKey, ActionScopeRule, ActivateAuthorizationProfile, ApiToken, ApiTokenId,
     AuthorizationDecision, AuthorizationProfileDocument, AuthorizationRequest,
     CreateAuthorizationProfile, GrantEffect, GrantSnapshot, GrantSubjectRef, NamespaceId, OrgId,
     PolicySnapshot, PrincipalRef, ResourceModelRegistration, ScopeKind, ScopeRef, Timestamp,
@@ -120,7 +120,7 @@ use awaken_iam_core::{
 use awaken_iam_core::{ApiTokenRepo, RoleBindingRepo};
 #[cfg(test)]
 use awaken_iam_core::{Effect, Grant, GrantId, GrantSubject};
-use awaken_iam_host::{AuthReject, IamClient, IamGate, LocalIamState};
+use awaken_iam_host::{AuthReject, IamClient, IamGate, LocalBrowserAuth, LocalIamState};
 use awaken_iam_preset::{named_role_catalog, seed_named_roles};
 use awaken_iam_server::{
     AuthorizationProfileAdmin, AuthzApi, SqlStore, SqliteBackend, sqlite_migrated_store,
@@ -128,7 +128,7 @@ use awaken_iam_server::{
 use awaken_protocol_managed::types::ErrorResponse;
 use axum::body::Body;
 use axum::extract::{Query, Request, State};
-use axum::http::header::CONTENT_TYPE;
+use axum::http::header::{CONTENT_TYPE, COOKIE};
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -242,6 +242,8 @@ pub struct ManagementAuthz {
     /// Hidden/platform Org that owns every workspace administered by this
     /// embedded single-machine IAM instance.
     org_id: OrgId,
+    /// Installation workspace selected for browser sessions.
+    workspace_id: WorkspaceId,
 }
 
 /// User-selectable identity posture for the local product.
@@ -285,6 +287,45 @@ pub struct TokenSpec {
 }
 
 impl ManagementAuthz {
+    /// Bind the stable local browser account as this installation's Org admin
+    /// and attach IAM's canonical session authority to the existing gate.
+    pub fn enable_local_browser(&self, browser: &LocalBrowserAuth, account_id: &AccountId) {
+        let principal = PrincipalRef::Account {
+            account_id: account_id.clone(),
+        };
+        for role in [qualify_role("admin"), qualify_resource_role("admin")] {
+            let binding = RoleBinding {
+                principal: principal.clone(),
+                role,
+                scope: ScopeRef::Org {
+                    org_id: self.org_id.clone(),
+                },
+            };
+            RoleBindingRepo::add(&self.store, binding.clone())
+                .expect("persist local browser admin binding");
+            self.state
+                .lock()
+                .expect("local IAM state lock")
+                .authz
+                .policy_mut()
+                .bind_role(binding);
+        }
+        browser.attach_to(&self.gate);
+    }
+
+    fn authenticate_browser(
+        &self,
+        headers: &HeaderMap,
+    ) -> Result<(PrincipalRef, WorkspaceId), AuthReject> {
+        let cookie = headers
+            .get(COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .ok_or(AuthReject::Invalid)?;
+        self.gate
+            .authenticate_session_cookie(cookie, Timestamp(now_rfc3339()))
+            .map(|principal| (principal, self.workspace_id.clone()))
+    }
+
     /// Mint a token: engine write (directory + workspace role binding) and the
     /// durable rows, atomically under the state lock. Returns the one-time
     /// cleartext `sk-awaken-…` credential.
@@ -796,6 +837,7 @@ pub fn embedded_iam_for_tenant(
         gate,
         store,
         org_id: OrgId(org_id.to_owned()),
+        workspace_id: WorkspaceId(workspace_id.to_owned()),
     });
 
     if hydrated_tokens == 0 {
@@ -1166,10 +1208,10 @@ pub async fn management_guard(
         return forbidden("no management action is mapped for this route");
     };
 
-    let Some(presented) = bearer_token(req.headers()) else {
-        return unauthorized("missing management API token (Authorization: Bearer or x-api-key)");
-    };
-    let (principal, workspace) = match authz.authenticate(&presented) {
+    let authenticated = bearer_token(req.headers())
+        .map(|presented| authz.authenticate(&presented))
+        .unwrap_or_else(|| authz.authenticate_browser(req.headers()));
+    let (principal, workspace) = match authenticated {
         Ok(identity) => identity,
         Err(AuthReject::Expired) => return unauthorized("API token is expired"),
         Err(AuthReject::Revoked) => return unauthorized("API token is revoked"),

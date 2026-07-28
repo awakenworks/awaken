@@ -15,6 +15,7 @@ mod acp_local_credentials;
 mod assistant_selection;
 mod brain_admin;
 pub mod config;
+mod identity;
 mod management_surface;
 mod observation_reconcile;
 
@@ -37,6 +38,7 @@ pub use crate::brain_admin::{
 pub use acp_local_credentials::{
     AcpLocalCredentialResolver, PreparedLocalAcp, local_acp_diagnostics, prepare_local_acp,
 };
+use identity::identity_wiring;
 // Embedded management-plane IAM (ADR-0042/0043 P1) + the mint spec and bootstrap
 // constants a test / operator embedding drives — re-exported from the authoring plane.
 pub use awaken_control::{
@@ -327,10 +329,11 @@ impl awaken_server::placement::DeclaredHandSource for ConfigDeclaredHandSource {
     }
 }
 
-type IdentityWiring = (
-    Option<Arc<ManagementAuthz>>,
-    Option<Arc<RemoteManagementAuthz>>,
-);
+/// Router plus the cleartext local setup handoff printed by the CLI once.
+pub struct ManagementAssembly {
+    pub router: Router,
+    pub local_setup: Option<awaken_control::LocalSetupHandoff>,
+}
 
 struct ExactHostModelPublicationResolver {
     binding: awaken_runtime_contract::resolved::ModelBinding,
@@ -885,6 +888,7 @@ pub async fn build_ephemeral_management_router() -> Router {
         in_memory_management_stores(),
         None,
         None,
+        None,
         ManagementModelComposition::PublishedProviders,
         AssemblyOverrides::default(),
         None,
@@ -897,7 +901,16 @@ pub async fn build_management_router_with_deployment(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
 ) -> Result<Router, String> {
-    let (iam, remote_iam) = identity_wiring(
+    build_management_assembly_with_deployment(deployment, key)
+        .await
+        .map(|assembly| assembly.router)
+}
+
+pub async fn build_management_assembly_with_deployment(
+    deployment: &config::ResolvedDeployment,
+    key: &[u8; 32],
+) -> Result<ManagementAssembly, String> {
+    let identity = identity_wiring(
         deployment.identity_mode,
         Some(&deployment.data_dir),
         &deployment.org_id,
@@ -920,10 +933,11 @@ pub async fn build_management_router_with_deployment(
     .await?;
     let hand_executors =
         awaken_server::placement::connect_declared_hands(&deployment.hand_connections).await?;
-    Ok(management_router_over(
+    let router = management_router_over(
         stores,
-        iam,
-        remote_iam,
+        identity.iam,
+        identity.remote_iam,
+        identity.local_browser_auth,
         ManagementModelComposition::PublishedProviders,
         AssemblyOverrides {
             deployment: Some(deployment.runtime.clone()),
@@ -937,7 +951,11 @@ pub async fn build_management_router_with_deployment(
         },
         None,
     )
-    .await)
+    .await;
+    Ok(ManagementAssembly {
+        router,
+        local_setup: identity.local_setup,
+    })
 }
 
 /// Canonical hosted authoring/control assembly. It reuses the same stores,
@@ -947,7 +965,16 @@ pub async fn build_control_router_with_deployment(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
 ) -> Result<Router, String> {
-    let (iam, remote_iam) = identity_wiring(
+    build_control_assembly_with_deployment(deployment, key)
+        .await
+        .map(|assembly| assembly.router)
+}
+
+pub async fn build_control_assembly_with_deployment(
+    deployment: &config::ResolvedDeployment,
+    key: &[u8; 32],
+) -> Result<ManagementAssembly, String> {
+    let identity = identity_wiring(
         deployment.identity_mode,
         Some(&deployment.data_dir),
         &deployment.org_id,
@@ -965,10 +992,11 @@ pub async fn build_control_router_with_deployment(
         PostgresSchemaMode::Verify,
     )
     .await?;
-    Ok(management_router_over(
+    let router = management_router_over(
         stores,
-        iam,
-        remote_iam,
+        identity.iam,
+        identity.remote_iam,
+        identity.local_browser_auth,
         ManagementModelComposition::PublishedProviders,
         AssemblyOverrides {
             deployment: None,
@@ -982,7 +1010,11 @@ pub async fn build_control_router_with_deployment(
         },
         None,
     )
-    .await)
+    .await;
+    Ok(ManagementAssembly {
+        router,
+        local_setup: identity.local_setup,
+    })
 }
 
 /// Explicit deployment migration phase for every management-owned store.
@@ -1032,7 +1064,7 @@ async fn build_management_router_with_composition(
         .seal_key
         .load_or_create()
         .unwrap_or_else(|error| panic!("control seal key: {error}"));
-    let (iam, remote_iam) = identity_wiring(
+    let identity = identity_wiring(
         deployment.identity_mode,
         Some(&deployment.data_dir),
         &deployment.org_id,
@@ -1062,8 +1094,9 @@ async fn build_management_router_with_composition(
             .unwrap_or_else(|error| panic!("declared Hand topology: {error}"));
     management_router_over(
         stores,
-        iam,
-        remote_iam,
+        identity.iam,
+        identity.remote_iam,
+        identity.local_browser_auth,
         model_composition,
         AssemblyOverrides {
             deployment: Some(deployment.runtime),
@@ -1080,59 +1113,6 @@ async fn build_management_router_with_composition(
     .await
 }
 
-fn identity_wiring(
-    identity_mode: ManagementIdentityMode,
-    data_dir: Option<&std::path::Path>,
-    org_id: &str,
-    iam_workspaces: &[String],
-    cloud_iam: &config::CloudIamConfig,
-) -> Result<IdentityWiring, String> {
-    match identity_mode {
-        ManagementIdentityMode::SelfManaged => {
-            let dir = data_dir.ok_or_else(|| {
-                "self-managed IAM requires a persistent data directory".to_owned()
-            })?;
-            let workspace = SharedHost::provision_local_workspace_at(dir);
-            let iam = awaken_control::embedded_iam_for_tenant(dir, org_id, &workspace);
-            for workspace_id in iam_workspaces {
-                iam.register_workspace(workspace_id);
-            }
-            Ok((Some(iam), None))
-        }
-        ManagementIdentityMode::AwakenCloud => Ok((None, Some(awaken_cloud_authz(cloud_iam)?))),
-        ManagementIdentityMode::NoLogin => Ok((None, None)),
-    }
-}
-
-fn awaken_cloud_authz(
-    config: &config::CloudIamConfig,
-) -> Result<Arc<RemoteManagementAuthz>, String> {
-    if let Some(path) = &config.service_token_file {
-        return RemoteManagementAuthz::connect_with_projected_service_token(
-            config.base_url.clone(),
-            config.audience.clone(),
-            config.issuer.clone(),
-            path.clone(),
-        );
-    }
-    let user_token = config
-        .access_token
-        .clone()
-        .or_else(|| {
-            awaken_iam_client::CredentialCache::open()
-                .load(&config.base_url)
-                .map(|entry| entry.token.expose().to_owned())
-        })
-        .ok_or_else(|| "Awaken Cloud login credential is missing or expired".to_string())?;
-    RemoteManagementAuthz::connect(
-        config.base_url.clone(),
-        config.audience.clone(),
-        config.issuer.clone(),
-        user_token,
-        config.service_token.clone(),
-    )
-}
-
 /// [`build_management_router_with_model`] plus a last-mile hook on the assembled host
 /// (`customize_host`) — the seam a composition root uses to wire a runtime backend the
 /// management plane does not assemble itself, e.g. `host.with_acp(executor)` so `acp:*`
@@ -1145,6 +1125,7 @@ pub async fn build_management_router_with_host_customizer(
 ) -> Router {
     management_router_over(
         in_memory_management_stores(),
+        None,
         None,
         None,
         ManagementModelComposition::Host {
@@ -1176,6 +1157,7 @@ pub async fn build_durable_management_router_with_host_customizer(
             .unwrap_or_else(|error| panic!("open local management stores: {error}")),
         None,
         None,
+        None,
         ManagementModelComposition::Host {
             executor: model,
             binding,
@@ -1196,6 +1178,7 @@ pub async fn build_management_router_with_model(
 ) -> Router {
     management_router_over(
         in_memory_management_stores(),
+        None,
         None,
         None,
         ManagementModelComposition::Host {
@@ -1222,6 +1205,7 @@ pub async fn build_durable_management_router(dir: &std::path::Path, key: &[u8; 3
             .unwrap_or_else(|error| panic!("open local management stores: {error}")),
         None,
         None,
+        None,
         ManagementModelComposition::PublishedProviders,
         AssemblyOverrides::default(),
         None,
@@ -1244,6 +1228,7 @@ pub async fn build_secured_management_router(
             .unwrap_or_else(|error| panic!("open local management stores: {error}")),
         Some(iam.clone()),
         None,
+        None,
         ManagementModelComposition::PublishedProviders,
         AssemblyOverrides::default(),
         None,
@@ -1261,6 +1246,7 @@ async fn management_router_over(
     stores: ManagementStores,
     iam: Option<Arc<ManagementAuthz>>,
     remote_iam: Option<Arc<RemoteManagementAuthz>>,
+    local_browser_auth: Option<awaken_control::LocalBrowserAuth>,
     model_composition: ManagementModelComposition,
     assembly: AssemblyOverrides,
     // An optional last-mile hook on the assembled data-plane host, applied before it is
@@ -1569,6 +1555,7 @@ async fn management_router_over(
         org_id: Some(org_id),
         iam,
         remote_iam,
+        local_browser_auth,
         application_access: application_access.clone(),
     });
 
@@ -1925,6 +1912,7 @@ mod management_only_surface_tests {
     async fn management_only_mounts_control_and_omits_runtime_authority() {
         let app = management_router_over(
             in_memory_management_stores(),
+            None,
             None,
             None,
             ManagementModelComposition::PublishedProviders,

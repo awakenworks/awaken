@@ -672,7 +672,7 @@ impl ResolvedDeployment {
                     })
                 })
                 .transpose()?)
-            .unwrap_or(awaken_control::ManagementIdentityMode::NoLogin);
+            .unwrap_or(awaken_control::ManagementIdentityMode::SelfManaged);
         let cloud_models = overrides
             .cloud_models
             .or(file
@@ -1607,14 +1607,14 @@ mod tests {
         //
         // | Rule | C1 Cloud identity | C2 Cloud models | Result |
         // |---|---:|---:|---|
-        // | F1 | 0 | 0 | no-login + local/BYOK only |
+        // | F1 | 0 | 0 | self-managed local session + local/BYOK only |
         // | F2 | 1 | 0 | Cloud login + local/BYOK only |
         // | F3 | 1 | 1 | Cloud login + brokered supply |
         // | F4 | 0 | 1 | startup configuration error |
         let local = resolve(FileConfig::default(), ConfigOverrides::default());
         assert_eq!(
             local.identity_mode,
-            awaken_control::ManagementIdentityMode::NoLogin
+            awaken_control::ManagementIdentityMode::SelfManaged
         );
         assert_eq!(local.cloud_models, CloudModelMode::Disabled);
 
