@@ -88,6 +88,7 @@ async fn compatible_claim_skips_ineligible_work_and_pins_the_incarnation() {
         capability_fingerprint: fingerprint.clone(),
         in_flight: 0,
         credential_observations: Default::default(),
+        acp_capability_observations: Default::default(),
         expires_at_ms: 10_000,
     };
     let claimed = store
@@ -113,6 +114,7 @@ fn worker_snapshot(id: &str, boot: &str, generation: u64) -> WorkerSnapshot {
         capability_fingerprint,
         in_flight: 0,
         credential_observations: Default::default(),
+        acp_capability_observations: Default::default(),
         expires_at_ms: 100_000,
     }
 }

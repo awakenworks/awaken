@@ -22,58 +22,27 @@ use agent_client_protocol::{
     ClientCapabilities, ContentBlock, InitializeRequest, InitializeResponse, LoadSessionRequest,
     LoadSessionResponse, NewSessionRequest, NewSessionResponse, PermissionOptionKind,
     PromptRequest, PromptResponse, ProtocolVersion, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
-    SessionConfigOption, SessionId, SessionModeId, SessionModeState, SessionNotification,
-    SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionId,
+    SessionModeId, SessionNotification, SetSessionConfigOptionRequest,
+    SetSessionConfigOptionResponse, SetSessionModeRequest,
 };
+use awaken_acp_contract::{AcpCapabilityProbeConfig, NegotiatedAcpCapabilities};
 use awaken_agent_channel::AgentChannel;
 use serde::Serialize;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-/// Map the neutral [`crate::SessionMcpServer`]s onto the ACP `session/new` `mcpServers`
-/// param: an HTTP server carries its auth as a header, a stdio server as an env var
-/// (α: a broker reference the gateway resolves; β: a raw secret on a trusted launch).
-fn to_acp_mcp_servers(
-    servers: &[crate::SessionMcpServer],
-) -> Vec<agent_client_protocol::McpServer> {
-    use agent_client_protocol::{
-        EnvVariable, HttpHeader, McpServer, McpServerHttp, McpServerStdio,
-    };
-    servers
-        .iter()
-        .map(|s| match &s.url {
-            Some(url) => {
-                let headers = s
-                    .auth
-                    .iter()
-                    .map(|(n, v)| HttpHeader::new(n.clone(), v.clone()))
-                    .collect();
-                McpServer::Http(McpServerHttp::new(s.name.clone(), url.clone()).headers(headers))
-            }
-            None => {
-                let env = s
-                    .auth
-                    .iter()
-                    .map(|(n, v)| EnvVariable::new(n.clone(), v.clone()))
-                    .collect();
-                McpServer::Stdio(
-                    McpServerStdio::new(s.name.clone(), s.command.clone().unwrap_or_default())
-                        .args(s.args.clone())
-                        .env(env),
-                )
-            }
-        })
-        .collect()
-}
+mod mcp;
+mod wire;
+use wire::{JSONRPC, Wire};
+
+use mcp::to_acp_mcp_servers;
 
 use crate::real_acp::{project_update, termination_from_stop_reason};
 use crate::{
-    AcpError, AcpLaunchEvent, AcpLaunchStage, AcpProjectedEvent, AllowAll, LaunchSink,
+    AcpError, AcpLaunchEvent, AcpLaunchStage, AcpProjectedEvent, AllowAll, AppendError, LaunchSink,
     PermissionAsk, PermissionResolver, PermissionVerdict, RunFactAppender, TerminationReason,
     TurnConfig, notify_launch,
 };
 
-const JSONRPC: &str = "2.0";
 const ID_INITIALIZE: u64 = 1;
 const ID_NEW_SESSION: u64 = 2;
 const ID_PROMPT: u64 = 3;
@@ -87,15 +56,6 @@ const ID_AUTHENTICATE: u64 = 5;
 const ID_SET_CONFIG_OPTION: u64 = 6;
 /// JSON-RPC "method not found" (the reply to any capability we do not advertise).
 const METHOD_NOT_FOUND: i64 = -32601;
-
-/// One outbound JSON-RPC request: `{"jsonrpc","id","method","params"}`.
-#[derive(Serialize)]
-struct OutRequest<'a, P: Serialize> {
-    jsonrpc: &'a str,
-    id: u64,
-    method: &'a str,
-    params: P,
-}
 
 /// One outbound JSON-RPC result response to an inbound request id.
 #[derive(Serialize)]
@@ -119,88 +79,101 @@ struct RpcErrorBody<'a> {
     message: &'a str,
 }
 
-/// A parsed inbound line — response (`result`/`error` + `id`), agent→client
-/// request (`id` + `method`), or notification (`method`, no `id`).
-#[derive(serde::Deserialize)]
-struct Incoming {
-    #[serde(default)]
-    id: Option<serde_json::Value>,
-    #[serde(default)]
-    method: Option<String>,
-    #[serde(default)]
-    params: Option<serde_json::Value>,
-    #[serde(default)]
-    result: Option<serde_json::Value>,
-    #[serde(default)]
-    error: Option<serde_json::Value>,
+async fn initialize_agent(
+    wire: &mut Wire<'_>,
+    sink: &mut dyn RunFactAppender,
+    seq: &mut u64,
+    resolver: &dyn PermissionResolver,
+    auth_method_id: Option<&str>,
+) -> Result<InitializeResponse, AcpError> {
+    wire.send_request(
+        ID_INITIALIZE,
+        AGENT_METHOD_NAMES.initialize,
+        InitializeRequest::new(ProtocolVersion::LATEST)
+            .client_capabilities(ClientCapabilities::default()),
+    )
+    .await?;
+    let init: InitializeResponse =
+        parse(pump_to_response(wire, ID_INITIALIZE, sink, seq, resolver).await?)?;
+    if let Some(method_id) = auth_method_id {
+        if !init
+            .auth_methods
+            .iter()
+            .any(|method| method.id().0.as_ref() == method_id)
+        {
+            return Err(AcpError::Frame(format!(
+                "configured ACP authentication method `{method_id}` was not advertised"
+            )));
+        }
+        wire.send_request(
+            ID_AUTHENTICATE,
+            AGENT_METHOD_NAMES.authenticate,
+            AuthenticateRequest::new(method_id.to_string()),
+        )
+        .await?;
+        let _: AuthenticateResponse =
+            parse(pump_to_response(wire, ID_AUTHENTICATE, sink, seq, resolver).await?)?;
+    }
+    Ok(init)
 }
 
-/// The newline-delimited JSON-RPC transport over one agent channel: one message
-/// per line (the wire the official stdio connection uses).
-struct Wire<'a> {
-    reader: BufReader<&'a mut dyn AgentChannel>,
-    line: String,
+async fn open_new_session(
+    wire: &mut Wire<'_>,
+    sink: &mut dyn RunFactAppender,
+    seq: &mut u64,
+    resolver: &dyn PermissionResolver,
+    cwd: &str,
+    mcp_servers: &[crate::SessionMcpServer],
+) -> Result<NewSessionResponse, AcpError> {
+    wire.send_request(
+        ID_NEW_SESSION,
+        AGENT_METHOD_NAMES.session_new,
+        NewSessionRequest::new(cwd).mcp_servers(to_acp_mcp_servers(mcp_servers)),
+    )
+    .await?;
+    parse(pump_to_response(wire, ID_NEW_SESSION, sink, seq, resolver).await?)
 }
 
-impl<'a> Wire<'a> {
-    fn new(channel: &'a mut dyn AgentChannel) -> Self {
-        Self {
-            reader: BufReader::new(channel),
-            line: String::new(),
+/// Negotiate one prompt-free ACP Session and retain the full advertised
+/// capability descriptors. The caller bounds and reaps the process.
+pub async fn negotiate_capabilities(
+    channel: &mut dyn AgentChannel,
+    config: &AcpCapabilityProbeConfig,
+) -> Result<NegotiatedAcpCapabilities, AcpError> {
+    struct RejectPermission;
+    #[async_trait::async_trait]
+    impl PermissionResolver for RejectPermission {
+        async fn resolve(&self, _ask: &PermissionAsk) -> PermissionVerdict {
+            PermissionVerdict::Deny
+        }
+    }
+    struct DiscardFacts;
+    #[async_trait::async_trait]
+    impl RunFactAppender for DiscardFacts {
+        async fn append(
+            &mut self,
+            _seq: u64,
+            _event: &AcpProjectedEvent,
+        ) -> Result<(), AppendError> {
+            Ok(())
         }
     }
 
-    async fn send<P: Serialize>(&mut self, msg: &P) -> Result<(), AcpError> {
-        let mut buf = serde_json::to_vec(msg).map_err(|e| AcpError::Frame(e.to_string()))?;
-        buf.push(b'\n');
-        self.reader
-            .get_mut()
-            .write_all(&buf)
-            .await
-            .map_err(|e| AcpError::Io(e.to_string()))?;
-        self.reader
-            .get_mut()
-            .flush()
-            .await
-            .map_err(|e| AcpError::Io(e.to_string()))
-    }
-
-    async fn send_request<P: Serialize>(
-        &mut self,
-        id: u64,
-        method: &str,
-        params: P,
-    ) -> Result<(), AcpError> {
-        self.send(&OutRequest {
-            jsonrpc: JSONRPC,
-            id,
-            method,
-            params,
-        })
-        .await
-    }
-
-    /// Read one message, or `None` at end of stream.
-    async fn read(&mut self) -> Result<Option<Incoming>, AcpError> {
-        loop {
-            self.line.clear();
-            let n = self
-                .reader
-                .read_line(&mut self.line)
-                .await
-                .map_err(|e| AcpError::Io(e.to_string()))?;
-            if n == 0 {
-                return Ok(None);
-            }
-            let trimmed = self.line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            return serde_json::from_str::<Incoming>(trimmed)
-                .map(Some)
-                .map_err(|e| AcpError::Frame(e.to_string()));
-        }
-    }
+    let cwd = config.session_cwd.as_deref().unwrap_or("/");
+    let resolver = RejectPermission;
+    let mut sink = DiscardFacts;
+    let mut seq = 0;
+    let mut wire = Wire::new(channel);
+    let init = initialize_agent(
+        &mut wire,
+        &mut sink,
+        &mut seq,
+        &resolver,
+        config.auth_method_id.as_deref(),
+    )
+    .await?;
+    let session = open_new_session(&mut wire, &mut sink, &mut seq, &resolver, cwd, &[]).await?;
+    Ok(crate::capabilities::project(init, session))
 }
 
 /// Drive one ACP prompt turn over `channel`, projecting each `session/update`
@@ -250,102 +223,99 @@ pub async fn run_turn_with_config(
     //    capabilities (default `ClientCapabilities`), so those agent requests are
     //    refused fail-closed later. Read back the agent's capabilities to gate a
     //    session resume fail-closed (only load when the agent advertises it).
-    wire.send_request(
-        ID_INITIALIZE,
-        AGENT_METHOD_NAMES.initialize,
-        InitializeRequest::new(ProtocolVersion::LATEST)
-            .client_capabilities(ClientCapabilities::default()),
+    let init = initialize_agent(
+        &mut wire,
+        sink,
+        &mut seq,
+        resolver,
+        config.auth_method_id.as_deref(),
     )
     .await?;
-    let init: InitializeResponse =
-        parse(pump_to_response(&mut wire, ID_INITIALIZE, sink, &mut seq, resolver).await?)?;
     let can_load = init.agent_capabilities.load_session;
-    if let Some(method_id) = config.auth_method_id.as_deref() {
-        if !init
-            .auth_methods
-            .iter()
-            .any(|method| method.id().0.as_ref() == method_id)
-        {
-            return Err(AcpError::Frame(format!(
-                "configured ACP authentication method `{method_id}` was not advertised"
-            )));
-        }
-        wire.send_request(
-            ID_AUTHENTICATE,
-            AGENT_METHOD_NAMES.authenticate,
-            AuthenticateRequest::new(method_id.to_string()),
-        )
-        .await?;
-        let _: AuthenticateResponse =
-            parse(pump_to_response(&mut wire, ID_AUTHENTICATE, sink, &mut seq, resolver).await?)?;
-    }
 
     // 2. session/load (resume the CLI's own session across the relaunch) when we
     //    hold a prior id and the agent supports it; else session/new. Fail-safe:
     //    an agent that does not advertise `loadSession` falls back to a fresh
     //    session (the neutral thread history is the authority — never lost).
-    let (session_id, available_modes, available_config_options): (
-        SessionId,
-        Vec<String>,
-        Vec<String>,
-    ) = match config.session_id.clone() {
-        Some(prior) if can_load => {
-            wire.send_request(
-                ID_NEW_SESSION,
-                AGENT_METHOD_NAMES.session_load,
-                LoadSessionRequest::new(SessionId::new(prior.as_str()), cwd.as_str()),
-            )
-            .await?;
-            match pump_response(&mut wire, ID_NEW_SESSION, sink, &mut seq, resolver).await? {
-                RpcResponse::Result(result) => {
-                    let resp: LoadSessionResponse = parse(result)?;
-                    (
-                        SessionId::new(prior.as_str()),
-                        mode_ids(resp.modes),
-                        config_option_ids(resp.config_options),
-                    )
-                }
-                RpcResponse::Error(error) if is_missing_session_error(&error) => {
-                    // Some agents advertise loadSession but retain ids only for the
-                    // lifetime of one ACP process (Kimi Code is one example). No
-                    // prompt has been sent yet, so opening a fresh session is a safe
-                    // compatibility fallback and cannot replay agent work.
-                    wire.send_request(
-                        ID_NEW_SESSION,
-                        AGENT_METHOD_NAMES.session_new,
-                        NewSessionRequest::new(cwd.as_str())
-                            .mcp_servers(to_acp_mcp_servers(&config.mcp_servers)),
-                    )
-                    .await?;
-                    let new_session: NewSessionResponse = parse(
-                        pump_to_response(&mut wire, ID_NEW_SESSION, sink, &mut seq, resolver)
-                            .await?,
-                    )?;
-                    let modes = mode_ids(new_session.modes);
-                    let options = config_option_ids(new_session.config_options);
-                    (new_session.session_id, modes, options)
-                }
-                RpcResponse::Error(error) => {
-                    return Err(AcpError::Frame(error.to_string()));
+    let (session_id, negotiated): (SessionId, NegotiatedAcpCapabilities) =
+        match config.session_id.clone() {
+            Some(prior) if can_load => {
+                wire.send_request(
+                    ID_NEW_SESSION,
+                    AGENT_METHOD_NAMES.session_load,
+                    LoadSessionRequest::new(SessionId::new(prior.as_str()), cwd.as_str()),
+                )
+                .await?;
+                match pump_response(&mut wire, ID_NEW_SESSION, sink, &mut seq, resolver).await? {
+                    RpcResponse::Result(result) => {
+                        let resp: LoadSessionResponse = parse(result)?;
+                        let negotiated = crate::capabilities::project_parts(
+                            init.clone(),
+                            resp.modes,
+                            resp.config_options,
+                        );
+                        (SessionId::new(prior.as_str()), negotiated)
+                    }
+                    RpcResponse::Error(error) if is_missing_session_error(&error) => {
+                        // Some agents advertise loadSession but retain ids only for the
+                        // lifetime of one ACP process (Kimi Code is one example). No
+                        // prompt has been sent yet, so opening a fresh session is a safe
+                        // compatibility fallback and cannot replay agent work.
+                        let new_session = open_new_session(
+                            &mut wire,
+                            sink,
+                            &mut seq,
+                            resolver,
+                            &cwd,
+                            &config.mcp_servers,
+                        )
+                        .await?;
+                        let session_id = new_session.session_id.clone();
+                        let negotiated = crate::capabilities::project(init.clone(), new_session);
+                        (session_id, negotiated)
+                    }
+                    RpcResponse::Error(error) => {
+                        return Err(AcpError::Frame(error.to_string()));
+                    }
                 }
             }
+            _ => {
+                let new_session = open_new_session(
+                    &mut wire,
+                    sink,
+                    &mut seq,
+                    resolver,
+                    &cwd,
+                    &config.mcp_servers,
+                )
+                .await?;
+                let session_id = new_session.session_id.clone();
+                let negotiated = crate::capabilities::project(init.clone(), new_session);
+                (session_id, negotiated)
+            }
+        };
+    if let Some(expected) = &config.expected_capability {
+        let actual = awaken_acp_contract::capability_fingerprint(
+            &expected.adapter_id,
+            &expected.adapter_version,
+            &negotiated,
+        );
+        if actual != expected.fingerprint {
+            return Err(AcpError::Frame(
+                "ACP capability fingerprint changed after publication".into(),
+            ));
         }
-        _ => {
-            wire.send_request(
-                ID_NEW_SESSION,
-                AGENT_METHOD_NAMES.session_new,
-                NewSessionRequest::new(cwd.as_str())
-                    .mcp_servers(to_acp_mcp_servers(&config.mcp_servers)),
-            )
-            .await?;
-            let new_session: NewSessionResponse = parse(
-                pump_to_response(&mut wire, ID_NEW_SESSION, sink, &mut seq, resolver).await?,
-            )?;
-            let modes = mode_ids(new_session.modes);
-            let options = config_option_ids(new_session.config_options);
-            (new_session.session_id, modes, options)
-        }
-    };
+    }
+    let available_modes = negotiated
+        .modes
+        .iter()
+        .map(|mode| mode.native_id.clone())
+        .collect::<Vec<_>>();
+    let available_config_options = negotiated
+        .config_options
+        .iter()
+        .map(|option| option.native_id.clone())
+        .collect::<Vec<_>>();
     // Record the negotiated id so the caller resumes this session next turn.
     config.session_id = Some(session_id.to_string());
 
@@ -368,7 +338,12 @@ pub async fn run_turn_with_config(
     // 2c. session/set_config_option — exact backend-owned model selection. The
     // option must be advertised by this exact Session and the agent must accept
     // the value; either failure is terminal and never falls back to its default.
-    if let Some(selection) = config.session_config_option.clone() {
+    for (index, selection) in config
+        .session_config_options
+        .clone()
+        .into_iter()
+        .enumerate()
+    {
         if !available_config_options.contains(&selection.config_id) {
             return Err(AcpError::Frame(format!(
                 "configured ACP session option `{}` was not advertised",
@@ -376,7 +351,7 @@ pub async fn run_turn_with_config(
             )));
         }
         wire.send_request(
-            ID_SET_CONFIG_OPTION,
+            ID_SET_CONFIG_OPTION + index as u64,
             AGENT_METHOD_NAMES.session_set_config_option,
             SetSessionConfigOptionRequest::new(
                 session_id.clone(),
@@ -386,7 +361,14 @@ pub async fn run_turn_with_config(
         )
         .await?;
         let _: SetSessionConfigOptionResponse = parse(
-            pump_to_response(&mut wire, ID_SET_CONFIG_OPTION, sink, &mut seq, resolver).await?,
+            pump_to_response(
+                &mut wire,
+                ID_SET_CONFIG_OPTION + index as u64,
+                sink,
+                &mut seq,
+                resolver,
+            )
+            .await?,
         )?;
     }
 
@@ -654,36 +636,12 @@ fn parse<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, 
     serde_json::from_value(value).map_err(|e| AcpError::Frame(e.to_string()))
 }
 
-/// The ids of the modes an agent advertised for a session (empty when it declares
-/// none), used to validate a mode pin fail-closed.
-fn mode_ids(modes: Option<SessionModeState>) -> Vec<String> {
-    modes
-        .map(|state| {
-            state
-                .available_modes
-                .into_iter()
-                .map(|mode| mode.id.0.to_string())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn config_option_ids(options: Option<Vec<SessionConfigOption>>) -> Vec<String> {
-    options
-        .unwrap_or_default()
-        .into_iter()
-        .map(|option| option.id.0.to_string())
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
-
-    use crate::AppendError;
 
     #[derive(Default)]
     struct RecordingSink {
@@ -758,6 +716,83 @@ mod tests {
             stream.write_all(b"\n").await.unwrap();
             stream.flush().await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn capability_probe_reuses_the_handshake_and_sends_no_prompt() {
+        // Cause graph:
+        // C1 initialize capabilities -> E1 neutral protocol flags.
+        // C2 session mode state -> E2 ids/labels/current mode.
+        // C3 native select option -> E3 category/current/choices retained.
+        // C4 prompt-free probe -> E4 exactly initialize + session/new.
+        //
+        // Decision table:
+        // N1 advertised flags/modes/options -> complete neutral descriptors
+        // N2 absent optional capability     -> false/empty (schema defaults)
+        // N3 probe lifecycle                -> no session/prompt request
+        let (mut ours, theirs) = channel();
+        let methods = Arc::new(Mutex::new(Vec::<String>::new()));
+        let observed = methods.clone();
+        let agent = tokio::spawn(async move {
+            let mut io = AgentIo::new(theirs);
+            let initialize = io.read().await.unwrap();
+            observed.lock().unwrap().push(
+                initialize["method"]
+                    .as_str()
+                    .expect("initialize method")
+                    .to_string(),
+            );
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"promptCapabilities":{"image":true,"embeddedContext":true},"mcpCapabilities":{"http":true}}}}"#,
+            )
+            .await;
+            let new_session = io.read().await.unwrap();
+            observed.lock().unwrap().push(
+                new_session["method"]
+                    .as_str()
+                    .expect("session/new method")
+                    .to_string(),
+            );
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"probe","modes":{"currentModeId":"code","availableModes":[{"id":"code","name":"Code"},{"id":"plan","name":"Plan","description":"Plan first"}]},"configOptions":[{"id":"reasoning","name":"Reasoning effort","description":"Native effort","category":"thought_level","type":"select","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High","description":"More reasoning"}]}]}}"#,
+            )
+            .await;
+        });
+
+        let capabilities = negotiate_capabilities(
+            ours.as_mut(),
+            &AcpCapabilityProbeConfig {
+                session_cwd: Some("/probe".into()),
+                auth_method_id: None,
+            },
+        )
+        .await
+        .expect("N1");
+        agent.await.unwrap();
+
+        assert_eq!(
+            methods.lock().unwrap().as_slice(),
+            &[
+                AGENT_METHOD_NAMES.initialize.to_string(),
+                AGENT_METHOD_NAMES.session_new.to_string(),
+            ],
+            "N3"
+        );
+        assert!(capabilities.load_session && capabilities.prompt_image);
+        assert!(capabilities.prompt_embedded_context && capabilities.mcp_http);
+        assert!(!capabilities.prompt_audio && !capabilities.mcp_sse, "N2");
+        assert_eq!(capabilities.modes.len(), 2);
+        assert!(capabilities.modes[0].current, "N1 current mode");
+        assert_eq!(capabilities.modes[1].native_id, "plan");
+        let option = &capabilities.config_options[0];
+        assert_eq!(option.native_id, "reasoning");
+        assert_eq!(option.category.as_deref(), Some("thought_level"));
+        assert_eq!(option.current_value, "high");
+        assert_eq!(option.choices[1].native_value, "high");
+        assert_eq!(
+            option.choices[1].description.as_deref(),
+            Some("More reasoning")
+        );
     }
 
     /// A scripted in-process ACP agent speaking real JSON-RPC over the duplex: it
@@ -1409,10 +1444,10 @@ mod tests {
         // terminates before either selection fallback or prompt.
         //
         // Decision table:
-        // C1 advertised + accepted -> exact configId/value, then prompt
+        // C1 multiple advertised + accepted -> stable exact values, then prompt
         // C2 not advertised        -> error, no set request and no prompt
         let (mut ours, theirs) = channel();
-        let selected = Arc::new(Mutex::new(None));
+        let selected = Arc::new(Mutex::new(Vec::new()));
         let selected_by_agent = selected.clone();
         let agent = tokio::spawn(async move {
             let mut io = AgentIo::new(theirs);
@@ -1423,12 +1458,16 @@ mod tests {
             .await;
             io.read().await; // session/new
             io.write_line(
-                r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1","configOptions":[{"id":"model","name":"Model","type":"select","currentValue":"default","options":[{"value":"gpt-exact","name":"GPT Exact"}]}]}}"#,
+                r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1","configOptions":[{"id":"model","name":"Model","type":"select","currentValue":"default","options":[{"value":"gpt-exact","name":"GPT Exact"}]},{"id":"reasoning_effort","name":"Reasoning","type":"select","currentValue":"medium","options":[{"value":"high","name":"High"}]}]}}"#,
             )
             .await;
-            let set = io.read().await.unwrap(); // session/set_config_option (id 6)
-            *selected_by_agent.lock().unwrap() = Some(set.clone());
+            let set = io.read().await.unwrap(); // first session/set_config_option (id 6)
+            selected_by_agent.lock().unwrap().push(set);
             io.write_line(r#"{"jsonrpc":"2.0","id":6,"result":{"configOptions":[]}}"#)
+                .await;
+            let set = io.read().await.unwrap(); // second session/set_config_option (id 7)
+            selected_by_agent.lock().unwrap().push(set);
+            io.write_line(r#"{"jsonrpc":"2.0","id":7,"result":{"configOptions":[]}}"#)
                 .await;
             let prompt = io.read().await.unwrap();
             assert_eq!(
@@ -1442,16 +1481,22 @@ mod tests {
 
         let mut sink = RecordingSink::default();
         let mut config = TurnConfig::new(&AllowAll);
-        config.session_config_option = Some(crate::SessionConfigOptionSelection {
-            config_id: "model".into(),
-            value: "gpt-exact".into(),
-        });
+        config.session_config_options = vec![
+            crate::SessionConfigOptionSelection {
+                config_id: "model".into(),
+                value: "gpt-exact".into(),
+            },
+            crate::SessionConfigOptionSelection {
+                config_id: "reasoning_effort".into(),
+                value: "high".into(),
+            },
+        ];
         run_turn_with_config(ours.as_mut(), "p", &mut sink, &mut config, None)
             .await
             .expect("C1");
         {
             let selected = selected.lock().unwrap();
-            let request = selected.as_ref().expect("C1 set request");
+            let request = selected.first().expect("C1 first set request");
             assert_eq!(
                 request.get("method").and_then(|value| value.as_str()),
                 Some(AGENT_METHOD_NAMES.session_set_config_option),
@@ -1459,6 +1504,10 @@ mod tests {
             );
             assert_eq!(request["params"]["configId"], "model", "C1");
             assert_eq!(request["params"]["value"], "gpt-exact", "C1");
+            let request = selected.get(1).expect("C1 second set request");
+            assert_eq!(request["id"], 7, "C1 unique request id");
+            assert_eq!(request["params"]["configId"], "reasoning_effort", "C1");
+            assert_eq!(request["params"]["value"], "high", "C1");
         }
         agent.await.unwrap();
 
@@ -1476,14 +1525,96 @@ mod tests {
         });
         let mut sink = RecordingSink::default();
         let mut config = TurnConfig::new(&AllowAll);
-        config.session_config_option = Some(crate::SessionConfigOptionSelection {
+        config.session_config_options = vec![crate::SessionConfigOptionSelection {
             config_id: "model".into(),
             value: "gpt-exact".into(),
-        });
+        }];
         let error = run_turn_with_config(ours.as_mut(), "p", &mut sink, &mut config, None)
             .await
             .expect_err("C2");
         assert!(error.to_string().contains("was not advertised"), "C2");
+        agent.await.unwrap();
+    }
+
+    // Cause/effect decision table for the claim-to-launch capability fence:
+    // F1 live handshake fingerprint equals publication pin -> continue.
+    // F2 any mode/option/protocol difference changes fingerprint -> fail before
+    // set_mode, set_config_option, or prompt; no backend/default fallback.
+    #[tokio::test]
+    async fn capability_fingerprint_matches_or_fails_before_prompt() {
+        let live = NegotiatedAcpCapabilities {
+            protocol_version: "1".into(),
+            load_session: false,
+            prompt_image: false,
+            prompt_audio: false,
+            prompt_embedded_context: false,
+            mcp_http: false,
+            mcp_sse: false,
+            session_list: false,
+            modes: Vec::new(),
+            config_options: Vec::new(),
+        };
+        let expected = awaken_acp_contract::capability_fingerprint("codex", "test", &live);
+        let (mut ours, theirs) = channel();
+        let matching_agent = tokio::spawn(async move {
+            let mut io = AgentIo::new(theirs);
+            io.read().await;
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#,
+            )
+            .await;
+            io.read().await;
+            io.write_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1"}}"#)
+                .await;
+            let prompt = io.read().await.expect("F1 prompt");
+            assert_eq!(
+                prompt.get("method").and_then(|value| value.as_str()),
+                Some(AGENT_METHOD_NAMES.session_prompt),
+                "F1"
+            );
+            io.write_line(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#)
+                .await;
+        });
+        let mut sink = RecordingSink::default();
+        let mut config = TurnConfig::new(&AllowAll);
+        config.expected_capability = Some(crate::AcpCapabilityExpectation {
+            adapter_id: "codex".into(),
+            adapter_version: "test".into(),
+            fingerprint: expected,
+        });
+        run_turn_with_config(ours.as_mut(), "p", &mut sink, &mut config, None)
+            .await
+            .expect("F1");
+        matching_agent.await.unwrap();
+
+        let (mut ours, theirs) = channel();
+        let agent = tokio::spawn(async move {
+            let mut io = AgentIo::new(theirs);
+            io.read().await; // initialize
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#,
+            )
+            .await;
+            io.read().await; // session/new
+            io.write_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1"}}"#)
+                .await;
+            assert!(
+                io.read().await.is_none(),
+                "F2: no configuration or prompt follows a mismatched handshake"
+            );
+        });
+        let mut sink = RecordingSink::default();
+        let mut config = TurnConfig::new(&AllowAll);
+        config.expected_capability = Some(crate::AcpCapabilityExpectation {
+            adapter_id: "codex".into(),
+            adapter_version: "test".into(),
+            fingerprint: "sha256:not-the-live-profile".into(),
+        });
+        let error = run_turn_with_config(ours.as_mut(), "p", &mut sink, &mut config, None)
+            .await
+            .expect_err("F2");
+        assert!(error.to_string().contains("fingerprint"), "F2");
+        drop(ours);
         agent.await.unwrap();
     }
 

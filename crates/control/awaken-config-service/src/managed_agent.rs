@@ -221,8 +221,44 @@ fn managed_model_selection(model: Option<&Value>) -> Result<ModelSelection, Stri
                 "backend-default model cannot also name a model or provider identity".to_string(),
             );
         }
+        let configuration = object
+            .get("configuration")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| format!("invalid backend ACP configuration: {error}"))?
+            .unwrap_or_default();
         return Ok(ModelSelection::BackendDefault {
             backend_ref: backend_ref.to_string(),
+            configuration,
+        });
+    }
+    if let Some(object) = model.as_object()
+        && object.get("mode").and_then(Value::as_str) == Some("backend_exact")
+    {
+        let backend_ref = object
+            .get("backend_ref")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "backend-exact model requires a non-empty backend_ref".to_string())?;
+        let model_ref = object
+            .get("model_ref")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "backend-exact model requires a non-empty model_ref".to_string())?;
+        let configuration = object
+            .get("configuration")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| format!("invalid backend ACP configuration: {error}"))?
+            .unwrap_or_default();
+        return Ok(ModelSelection::BackendExact {
+            backend_ref: backend_ref.to_string(),
+            model_ref: model_ref.to_string(),
+            configuration,
         });
     }
     let (provider_identity_ref, model_ref, backend_ref) = match model {
@@ -258,10 +294,9 @@ fn managed_model_selection(model: Option<&Value>) -> Result<ModelSelection, Stri
 pub fn managed_from_agent_config(config: &AgentConfig, published: bool) -> Value {
     let binding = config.model_binding.resolved();
     let model = match &config.model_binding {
-        ModelSelection::BackendDefault { backend_ref } => json!({
-            "mode": "backend_default",
-            "backend_ref": backend_ref,
-        }),
+        ModelSelection::BackendDefault { .. } | ModelSelection::BackendExact { .. } => {
+            serde_json::to_value(&config.model_binding).expect("ModelSelection serializes")
+        }
         ModelSelection::Auto => json!({ "mode": "auto" }),
         ModelSelection::Profile { profile_id } => json!({
             "mode": "profile",
@@ -424,6 +459,25 @@ mod tests {
             )
             .is_err(),
             "B3"
+        );
+
+        // B4 exact backend + native configuration -> lossless canonical wire.
+        let exact_wire = json!({
+            "mode": "backend_exact",
+            "backend_ref": "acp:codex",
+            "model_ref": "gpt-exact",
+            "configuration": {
+                "mode": "plan",
+                "options": { "reasoning_effort": "high" }
+            }
+        });
+        let exact =
+            agent_config_from_managed("exact".into(), &json!({ "model": exact_wire.clone() }))
+                .expect("B4");
+        assert_eq!(
+            managed_from_agent_config(&exact, false)["model"],
+            exact_wire,
+            "B4"
         );
     }
 

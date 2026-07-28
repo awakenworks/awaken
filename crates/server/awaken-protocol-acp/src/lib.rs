@@ -14,6 +14,10 @@
 //! are OS-jailed, not routed through our tool layer.
 
 use async_trait::async_trait;
+#[cfg(feature = "real-acp")]
+use awaken_acp_contract::{
+    AcpCapabilityHandshake, AcpCapabilityProbeConfig, NegotiatedAcpCapabilities,
+};
 use awaken_agent_channel::AgentChannel;
 use awaken_provisioning_contract as pc;
 use serde::{Deserialize, Serialize};
@@ -26,7 +30,30 @@ pub mod real_acp;
 
 /// The official JSON-RPC 2.0 ACP client driver (`real-acp` feature).
 #[cfg(feature = "real-acp")]
+mod capabilities;
+#[cfg(feature = "real-acp")]
 pub mod jsonrpc;
+#[cfg(feature = "real-acp")]
+pub use jsonrpc::negotiate_capabilities;
+
+/// Official ACP JSON-RPC implementation of the neutral capability handshake
+/// port. Composition roots inject this leaf adapter into the Worker application.
+#[cfg(feature = "real-acp")]
+pub struct ProtocolAcpCapabilityHandshake;
+
+#[cfg(feature = "real-acp")]
+#[async_trait]
+impl AcpCapabilityHandshake for ProtocolAcpCapabilityHandshake {
+    async fn negotiate(
+        &self,
+        channel: &mut dyn AgentChannel,
+        config: &AcpCapabilityProbeConfig,
+    ) -> Result<NegotiatedAcpCapabilities, String> {
+        negotiate_capabilities(channel, config)
+            .await
+            .map_err(|error| error.to_string())
+    }
+}
 
 /// Which wire the bridge speaks to the agent. A per-session datum (each ACP CLI
 /// row declares its own), not a build-time global: a test/fixture agent speaks the
@@ -264,7 +291,7 @@ pub struct TurnConfig<'a> {
     pub session_mode: Option<String>,
     /// Exact backend-owned model option to set after session creation/loading and
     /// before the first prompt. `None` preserves the CLI's own default.
-    pub session_config_option: Option<SessionConfigOptionSelection>,
+    pub session_config_options: Vec<SessionConfigOptionSelection>,
     /// In: the interior working directory the CLI runs the session under (the
     /// sandbox's fixed workspace path). For a CLI that keys sessions by cwd (Claude
     /// Code), holding this stable across relaunches/machines is what lets
@@ -274,6 +301,16 @@ pub struct TurnConfig<'a> {
     /// credential itself stays in the launched process environment; the protocol
     /// carries only this advertised method id.
     pub auth_method_id: Option<String>,
+    /// Exact publication-time profile that the live initialize/session
+    /// handshake must reproduce before any configured option or prompt is sent.
+    pub expected_capability: Option<AcpCapabilityExpectation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcpCapabilityExpectation {
+    pub adapter_id: String,
+    pub adapter_version: String,
+    pub fingerprint: String,
 }
 
 impl<'a> TurnConfig<'a> {
@@ -286,9 +323,10 @@ impl<'a> TurnConfig<'a> {
             mcp_servers: Vec::new(),
             session_id: None,
             session_mode: None,
-            session_config_option: None,
+            session_config_options: Vec::new(),
             session_cwd: None,
             auth_method_id: None,
+            expected_capability: None,
         }
     }
 }

@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use async_trait::async_trait;
+use awaken_acp_contract::{AcpCapabilityObservation, AcpCapabilityObservationState};
 use awaken_provisioning_contract::{
     IsolationClass, ResourceLimits, SandboxCapabilities, capability_requirements_satisfied,
 };
@@ -98,6 +99,37 @@ impl WorkerCredentialObservation {
             && self.observed_at_ms <= now_ms
             && now_ms < self.valid_until_ms
     }
+}
+
+/// Worker-leased wrapper around one ACP capability observation. The inner
+/// profile is protocol-neutral and secret-free; expiry is Worker authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerAcpCapabilityObservation {
+    pub observation: AcpCapabilityObservation,
+    #[serde(default)]
+    pub valid_until_ms: u64,
+}
+
+impl WorkerAcpCapabilityObservation {
+    #[must_use]
+    pub fn is_selectable_at(
+        &self,
+        requirement: &WorkerAcpCapabilityRequirement,
+        now_ms: u64,
+    ) -> bool {
+        self.observation.state == AcpCapabilityObservationState::Verified
+            && self.observation.backend_ref == requirement.backend_ref
+            && self.observation.fingerprint.as_deref() == Some(requirement.fingerprint.as_str())
+            && self.observation.observed_at_ms <= now_ms
+            && now_ms < self.valid_until_ms
+    }
+}
+
+/// Exact dynamic ACP profile required by an immutable publication.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct WorkerAcpCapabilityRequirement {
+    pub backend_ref: String,
+    pub fingerprint: String,
 }
 
 pub const CURRENT_CONTRACT_VERSION: u32 = 1;
@@ -317,6 +349,9 @@ pub struct PlacementRequirements {
     /// candidate set. Shared-vault references do not belong here.
     #[serde(default)]
     pub required_credentials: BTreeSet<WorkerCredentialRevision>,
+    /// Exact, expiring ACP profiles frozen by BackendOwned publications.
+    #[serde(default)]
+    pub required_acp_capabilities: BTreeSet<WorkerAcpCapabilityRequirement>,
     pub required_zone: Option<String>,
     pub architecture: Option<String>,
     #[serde(default = "workdir_isolation")]
@@ -349,6 +384,7 @@ impl Default for PlacementRequirements {
             contract_version: 0,
             required_capabilities: BTreeSet::new(),
             required_credentials: BTreeSet::new(),
+            required_acp_capabilities: BTreeSet::new(),
             required_zone: None,
             architecture: None,
             isolation: IsolationClass::Workdir,
@@ -498,6 +534,7 @@ pub fn can_claim(
 pub fn can_claim_locally(requirements: &PlacementRequirements) -> bool {
     requirements.location != ExecutionLocation::RemoteRequired
         && requirements.required_credentials.is_empty()
+        && requirements.required_acp_capabilities.is_empty()
 }
 
 /// Registry view consumed by placement. Live executor/channel handles are never
@@ -514,6 +551,8 @@ pub struct WorkerSnapshot {
     /// revocation may change while the worker process remains alive.
     #[serde(default)]
     pub credential_observations: BTreeSet<WorkerCredentialObservation>,
+    #[serde(default)]
+    pub acp_capability_observations: Vec<WorkerAcpCapabilityObservation>,
     pub expires_at_ms: u64,
 }
 
@@ -615,6 +654,8 @@ pub struct WorkerHeartbeat {
     /// No secret, local path, environment name, or broker token crosses here.
     #[serde(default)]
     pub credential_observations: BTreeSet<WorkerCredentialObservation>,
+    #[serde(default)]
+    pub acp_capability_observations: Vec<WorkerAcpCapabilityObservation>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -695,6 +736,14 @@ impl WorkerSnapshot {
                     .iter()
                     .any(|observation| observation.is_selectable_at(required, now_ms))
             })
+            && requirements
+                .required_acp_capabilities
+                .iter()
+                .all(|required| {
+                    self.acp_capability_observations
+                        .iter()
+                        .any(|observation| observation.is_selectable_at(required, now_ms))
+                })
     }
 }
 
@@ -949,6 +998,7 @@ mod tests {
             capability_fingerprint,
             in_flight: load,
             credential_observations: BTreeSet::new(),
+            acp_capability_observations: Vec::new(),
             expires_at_ms: 1_000,
         }
     }
@@ -1058,6 +1108,60 @@ mod tests {
             !worker.accepts(&requirements, 200),
             "valid-until is an exclusive upper bound"
         );
+    }
+
+    // Cause/effect decision table for publication-pinned ACP capability:
+    // A1 exact backend+fingerprint, Verified, inside TTL -> selectable.
+    // A2 wrong fingerprint/backend or negative state       -> reject.
+    // A3 future observation or now >= valid_until          -> reject.
+    #[test]
+    fn acp_capability_requires_the_exact_live_fingerprint() {
+        let required = WorkerAcpCapabilityRequirement {
+            backend_ref: "acp:codex".into(),
+            fingerprint: "sha256:expected".into(),
+        };
+        let mut requirements = requirements();
+        requirements
+            .required_acp_capabilities
+            .insert(required.clone());
+        let mut worker = manifest("a", 0);
+        let observation =
+            |backend_ref: &str, fingerprint: &str, state: AcpCapabilityObservationState| {
+                WorkerAcpCapabilityObservation {
+                    observation: AcpCapabilityObservation {
+                        backend_ref: backend_ref.into(),
+                        adapter_version: "test".into(),
+                        state,
+                        observed_at_ms: 100,
+                        fingerprint: Some(fingerprint.into()),
+                        negotiated: None,
+                        reason_code: None,
+                    },
+                    valid_until_ms: 200,
+                }
+            };
+
+        worker.acp_capability_observations = vec![observation(
+            "acp:codex",
+            "sha256:other",
+            AcpCapabilityObservationState::Verified,
+        )];
+        assert!(!worker.accepts(&requirements, 150), "A2");
+        worker.acp_capability_observations = vec![observation(
+            "acp:codex",
+            "sha256:expected",
+            AcpCapabilityObservationState::Unavailable,
+        )];
+        assert!(!worker.accepts(&requirements, 150), "A2");
+        worker.acp_capability_observations = vec![observation(
+            "acp:codex",
+            "sha256:expected",
+            AcpCapabilityObservationState::Verified,
+        )];
+        assert!(!worker.accepts(&requirements, 99), "A3");
+        assert!(worker.accepts(&requirements, 100), "A1");
+        assert!(worker.accepts(&requirements, 199), "A1");
+        assert!(!worker.accepts(&requirements, 200), "A3");
     }
 
     #[test]

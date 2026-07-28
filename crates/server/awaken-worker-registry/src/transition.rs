@@ -53,6 +53,7 @@ pub(crate) fn register(
                 capability_fingerprint: fingerprint,
                 in_flight: 0,
                 credential_observations: Default::default(),
+                acp_capability_observations: Default::default(),
                 expires_at_ms: now_ms.saturating_add(ttl_ms),
             },
             heartbeat_sequence: 0,
@@ -106,6 +107,7 @@ pub(crate) fn heartbeat(
     }
     next.snapshot.in_flight = heartbeat.in_flight;
     next.snapshot.credential_observations = heartbeat.credential_observations;
+    next.snapshot.acp_capability_observations = heartbeat.acp_capability_observations;
     next.snapshot.expires_at_ms = now_ms.saturating_add(ttl_ms);
     next.heartbeat_sequence = heartbeat.sequence;
     next.heartbeat_at_ms = now_ms;
@@ -231,6 +233,7 @@ mod tests {
                 ready: true,
                 in_flight: 1,
                 credential_observations: Default::default(),
+                acp_capability_observations: Default::default(),
             },
             20,
             100,
@@ -257,6 +260,7 @@ mod tests {
                 ready: true,
                 in_flight: 0,
                 credential_observations: std::collections::BTreeSet::from([observation.clone()]),
+                acp_capability_observations: Default::default(),
             },
             20,
             100,

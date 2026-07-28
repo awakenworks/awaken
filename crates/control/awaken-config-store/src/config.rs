@@ -5,7 +5,9 @@ use std::collections::BTreeMap;
 use awaken_runtime_contract::agent_bindings::InferenceOptions;
 use awaken_runtime_contract::agent_bindings::ToolsetPolicy;
 use awaken_runtime_contract::delegation::DelegationLimits;
-use awaken_runtime_contract::resolved::{ContextPolicy, ModelBinding, ToolDescriptor};
+use awaken_runtime_contract::resolved::{
+    AcpSessionConfiguration, ContextPolicy, ModelBinding, ToolDescriptor,
+};
 use awaken_runtime_contract::tool::ToolRecoveryPolicy;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -31,7 +33,17 @@ pub enum ModelSelection {
     /// Use this exact external backend and let it retain its own configured
     /// default model. Publication must resolve an exact Worker-local binding;
     /// this is never a fallback to [`Auto`](Self::Auto).
-    BackendDefault { backend_ref: String },
+    BackendDefault {
+        backend_ref: String,
+        configuration: AcpSessionConfiguration,
+    },
+    /// Use one exact model delivered through the external ACP together with
+    /// adapter-native Session mode/options.
+    BackendExact {
+        backend_ref: String,
+        model_ref: String,
+        configuration: AcpSessionConfiguration,
+    },
     /// The operator's explicit concrete binding — never overwritten by resolution.
     Pinned(ModelBinding),
 }
@@ -59,7 +71,8 @@ impl ModelSelection {
             ModelSelection::Pinned(binding) => Some(binding),
             ModelSelection::Auto
             | ModelSelection::Profile { .. }
-            | ModelSelection::BackendDefault { .. } => None,
+            | ModelSelection::BackendDefault { .. }
+            | ModelSelection::BackendExact { .. } => None,
         }
     }
 
@@ -69,18 +82,26 @@ impl ModelSelection {
         matches!(self, ModelSelection::Auto)
     }
 
-    /// Whether catalog/profile changes can alter the next publication.
+    /// Whether an authoritative catalog, profile, or Worker observation change
+    /// can alter publication readiness. Backend-owned reconciliation preserves
+    /// the authored backend/configuration; it only refreshes its live pins.
     #[must_use]
     pub fn requires_reconciliation(&self) -> bool {
-        matches!(self, Self::Auto | Self::Profile { .. })
+        matches!(
+            self,
+            Self::Auto
+                | Self::Profile { .. }
+                | Self::BackendDefault { .. }
+                | Self::BackendExact { .. }
+        )
     }
 
     /// The exact backend requested with backend-owned default-model policy.
     #[must_use]
     pub fn backend_default_ref(&self) -> Option<&str> {
         match self {
-            Self::BackendDefault { backend_ref } => Some(backend_ref),
-            Self::Auto | Self::Profile { .. } | Self::Pinned(_) => None,
+            Self::BackendDefault { backend_ref, .. } => Some(backend_ref),
+            Self::Auto | Self::Profile { .. } | Self::BackendExact { .. } | Self::Pinned(_) => None,
         }
     }
 
@@ -89,7 +110,31 @@ impl ModelSelection {
     pub fn profile_ref(&self) -> Option<&str> {
         match self {
             Self::Profile { profile_id } => Some(profile_id),
-            Self::Auto | Self::BackendDefault { .. } | Self::Pinned(_) => None,
+            Self::Auto
+            | Self::BackendDefault { .. }
+            | Self::BackendExact { .. }
+            | Self::Pinned(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn backend_exact(&self) -> Option<(&str, &str)> {
+        match self {
+            Self::BackendExact {
+                backend_ref,
+                model_ref,
+                ..
+            } => Some((backend_ref, model_ref)),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn acp_configuration(&self) -> Option<&AcpSessionConfiguration> {
+        match self {
+            Self::BackendDefault { configuration, .. }
+            | Self::BackendExact { configuration, .. } => Some(configuration),
+            _ => None,
         }
     }
 }
@@ -125,11 +170,32 @@ impl Serialize for ModelSelection {
                 map.serialize_entry("profile_id", profile_id)?;
                 map.end()
             }
-            ModelSelection::BackendDefault { backend_ref } => {
+            ModelSelection::BackendDefault {
+                backend_ref,
+                configuration,
+            } => {
                 use serde::ser::SerializeMap;
-                let mut map = serializer.serialize_map(Some(2))?;
+                let mut map = serializer.serialize_map(Some(3))?;
                 map.serialize_entry("mode", "backend_default")?;
                 map.serialize_entry("backend_ref", backend_ref)?;
+                if !configuration.is_empty() {
+                    map.serialize_entry("configuration", configuration)?;
+                }
+                map.end()
+            }
+            ModelSelection::BackendExact {
+                backend_ref,
+                model_ref,
+                configuration,
+            } => {
+                use serde::ser::SerializeMap;
+                let mut map = serializer.serialize_map(Some(4))?;
+                map.serialize_entry("mode", "backend_exact")?;
+                map.serialize_entry("backend_ref", backend_ref)?;
+                map.serialize_entry("model_ref", model_ref)?;
+                if !configuration.is_empty() {
+                    map.serialize_entry("configuration", configuration)?;
+                }
                 map.end()
             }
         }
@@ -146,9 +212,22 @@ impl<'de> Deserialize<'de> for ModelSelection {
             ModelSelectionWire::Profile { .. } => {
                 Err(serde::de::Error::custom("profile_id must not be empty"))
             }
-            ModelSelectionWire::BackendDefault { backend_ref } => {
-                Ok(Self::BackendDefault { backend_ref })
-            }
+            ModelSelectionWire::BackendDefault {
+                backend_ref,
+                configuration,
+            } => Ok(Self::BackendDefault {
+                backend_ref,
+                configuration,
+            }),
+            ModelSelectionWire::BackendExact {
+                backend_ref,
+                model_ref,
+                configuration,
+            } => Ok(Self::BackendExact {
+                backend_ref,
+                model_ref,
+                configuration,
+            }),
             ModelSelectionWire::Pinned {
                 provider_identity_ref,
                 model_ref,
@@ -167,6 +246,14 @@ enum ModelSelectionWire {
     },
     BackendDefault {
         backend_ref: String,
+        #[serde(default)]
+        configuration: AcpSessionConfiguration,
+    },
+    BackendExact {
+        backend_ref: String,
+        model_ref: String,
+        #[serde(default)]
+        configuration: AcpSessionConfiguration,
     },
     Pinned {
         provider_identity_ref: String,
@@ -364,7 +451,8 @@ mod model_selection_tests {
         // | Choice | profile_ref | requires reconciliation |
         // | Auto | none | yes |
         // | Profile | exact id | yes |
-        // | Backend/Pinned | none | no |
+        // | BackendDefault/Exact | none | yes (live Worker observation) |
+        // | Pinned | none | no |
         let selection = ModelSelection::Profile {
             profile_id: "latency-route".into(),
         };
@@ -382,6 +470,21 @@ mod model_selection_tests {
             selection
         );
         assert!(ModelSelection::Auto.requires_reconciliation());
+        assert!(
+            ModelSelection::BackendDefault {
+                backend_ref: "acp:codex".into(),
+                configuration: Default::default(),
+            }
+            .requires_reconciliation()
+        );
+        assert!(
+            ModelSelection::BackendExact {
+                backend_ref: "acp:codex".into(),
+                model_ref: "gpt-exact".into(),
+                configuration: Default::default(),
+            }
+            .requires_reconciliation()
+        );
         assert!(!ModelSelection::pinned("provider", "model", "genai").requires_reconciliation());
     }
 

@@ -271,7 +271,7 @@ impl ConfigService {
         Ok(publication)
     }
 
-    /// Re-resolve and re-publish an `Auto`-bound agent (ADR-0052 D5), reading and
+    /// Re-resolve and re-publish a policy-bound agent (ADR-0052 D5), reading and
     /// writing through the caller-supplied scope-bound `registry`. Returns `true` if it
     /// re-published (a `Pinned` agent is skipped; a missing one is skipped). Idempotent
     /// by content address, so a retry after a catalog change is safe. This is what
@@ -286,7 +286,8 @@ impl ConfigService {
     ) -> Result<bool, String> {
         let stored = registry.get_config(id).await.map_err(|e| e.to_string())?;
         match stored {
-            // Only auto bindings are re-resolved; an operator pin is authoritative.
+            // Policy selections refresh their authority-owned pins; an operator's
+            // concrete pinned binding remains authoritative.
             Some(config) if config.model_binding.requires_reconciliation() => {
                 self.publish(workspace, registry, id, catalog)
                     .await

@@ -58,6 +58,19 @@ pub(crate) async fn prepare_agent_publication(
         .map_err(|error| PublishError::Unresolvable(error.to_string()))?;
     let mut bindings = std::collections::BTreeSet::new();
     for candidate in std::iter::once(&models.primary).chain(models.candidates.iter()) {
+        if matches!(
+            &candidate.provisioning,
+            awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned {
+                capability_fingerprint,
+                capability_adapter_version,
+                ..
+            } if capability_fingerprint.trim().is_empty()
+                || capability_adapter_version.trim().is_empty()
+        ) {
+            return Err(PublishError::Unresolvable(
+                "backend-owned publication requires a fresh exact ACP capability pin".into(),
+            ));
+        }
         if !bindings.insert(candidate.binding.clone()) {
             return Err(PublishError::Unresolvable(
                 PublicationResolutionError::DuplicateBinding(candidate.binding.clone()).to_string(),
@@ -83,6 +96,24 @@ pub(crate) async fn prepare_agent_publication(
             ));
         }
     }
+    if let Some((backend_ref, model_ref)) = config.model_binding.backend_exact() {
+        let valid = models.primary.binding.backend_ref == backend_ref
+            && models.primary.binding.model_ref == model_ref
+            && matches!(
+                models.primary.provisioning,
+                awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned {
+                    model_selection:
+                        awaken_runtime_contract::resolved::BackendModelSelection::Exact,
+                    ..
+                }
+            );
+        if !valid {
+            return Err(PublishError::Unresolvable(
+                "backend-exact resolution must preserve the exact backend, model, and Worker-local ownership"
+                    .into(),
+            ));
+        }
+    }
     if let Some(authored) = config.model_binding.resolved()
         && !resolved_binding_matches_authored(&models.primary.binding, authored)
     {
@@ -91,7 +122,8 @@ pub(crate) async fn prepare_agent_publication(
         ));
     }
     if (config.model_binding.resolved().is_some()
-        || config.model_binding.backend_default_ref().is_some())
+        || config.model_binding.backend_default_ref().is_some()
+        || config.model_binding.backend_exact().is_some())
         && (models.candidates.len() != config.model_candidates.len()
             || models.candidates.iter().zip(&config.model_candidates).any(
                 |(resolved, authored)| {
@@ -308,6 +340,7 @@ mod tests {
         // D1 exact backend + empty model + BackendOwned(Default) => accept
         // D2 HostExecutor                                      => reject
         // D3 BackendOwned(Exact)                               => reject
+        // D4 BackendOwned without fresh capability pin         => reject
         let binding = ModelBinding::new("local-codex", "", "acp:codex");
         let credential = CredentialRef {
             id: "local-codex".into(),
@@ -317,6 +350,9 @@ mod tests {
             binding.clone(),
             credential.clone(),
             BackendModelSelection::Default,
+            "test",
+            "sha256:test-capability",
+            Default::default(),
         );
         let resolver = FixedResolver {
             expected_workspace: "workspace-a",
@@ -333,6 +369,7 @@ mod tests {
             revision(
                 ModelSelection::BackendDefault {
                     backend_ref: "acp:codex".into(),
+                    configuration: Default::default(),
                 },
                 vec![],
             ),
@@ -347,6 +384,9 @@ mod tests {
                 ModelBinding::new("local-codex", "gpt-exact", "acp:codex"),
                 credential.clone(),
                 BackendModelSelection::Exact,
+                "test",
+                "sha256:test-capability",
+                Default::default(),
             ),
         ] {
             let resolver = FixedResolver {
@@ -364,6 +404,7 @@ mod tests {
                 revision(
                     ModelSelection::BackendDefault {
                         backend_ref: "acp:codex".into(),
+                        configuration: Default::default(),
                     },
                     vec![],
                 ),
@@ -372,5 +413,36 @@ mod tests {
             .unwrap_err();
             assert!(error.to_string().contains("backend-default resolution"));
         }
+
+        let resolver = FixedResolver {
+            expected_workspace: "workspace-a",
+            output: ResolvedPublicationModels {
+                primary: ResolvedModelCandidate::backend_owned(
+                    binding,
+                    credential,
+                    BackendModelSelection::Default,
+                    "",
+                    "",
+                    Default::default(),
+                ),
+                candidates: vec![],
+                context_window: None,
+                max_output_tokens: None,
+            },
+        };
+        let error = prepare_agent_publication(
+            &resolver,
+            &awaken_tenancy::ScopeId::from("workspace-a"),
+            revision(
+                ModelSelection::BackendDefault {
+                    backend_ref: "acp:codex".into(),
+                    configuration: Default::default(),
+                },
+                vec![],
+            ),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("capability pin"), "D4");
     }
 }

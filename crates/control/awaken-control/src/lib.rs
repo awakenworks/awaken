@@ -43,7 +43,9 @@ pub use crate::authz::{
 pub use crate::control_stores::{ControlStoreConfig, StoreBackend};
 pub use crate::credential_reference::CredentialRevisionValidator;
 pub use crate::managed_agents::ConfigPlaneManagedAgentRepository;
-pub use awaken_config_service::{LocalRuntimeCapability, RuntimeCapability};
+pub use awaken_config_service::{
+    LocalRuntimeCapability, RuntimeCapability, RuntimeCapabilitySource, static_runtime_capabilities,
+};
 // The database-less worker's materialization subset (Stage C): only the credential
 // vault + secret store needed by snapshot-pinned inference access.
 pub use crate::worker_stores::{
@@ -53,7 +55,7 @@ pub use crate::worker_stores::{
 
 use awaken_admin_config_api::{AdminState, CredentialProbe, InferenceProfileStore, WebhookStore};
 use awaken_config_resolver::AgentInputBindingRepository;
-use awaken_config_service::{ConfigPlane, capabilities_router, config_router};
+use awaken_config_service::{ConfigPlane, config_router};
 use awaken_config_store::{AuditedConfigWrite, DEFAULT_SCOPE, ManagementAuditRecord};
 use awaken_credential_vault::SecretStore;
 use awaken_credential_vault::repo::CredentialRepo;
@@ -199,7 +201,7 @@ pub struct ControlRouterInput {
     pub global_tools: Vec<ToolDescriptor>,
     /// Runtime capabilities projected by the composition root from the one
     /// executable catalog.
-    pub runtimes: Vec<RuntimeCapability>,
+    pub runtimes: Arc<dyn RuntimeCapabilitySource>,
     /// The org id stamped on webhook deliveries (`AWAKEN_ORG_ID`).
     pub org_id: Option<String>,
     /// The embedded IAM guard, when enabled by typed deployment identity mode.
@@ -315,7 +317,8 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
     ))));
     // Capability snapshot (`GET /v1/capabilities`): the host's tool descriptors +
     // installable plugins (with config schema) so the console authors data-driven.
-    let capabilities = capabilities_router(global_tools, runtimes);
+    let capabilities =
+        awaken_config_service::capabilities_router_with_source(global_tools, runtimes);
 
     // The IAM guard (when enabled) wraps the admin + vault routers only. An
     // axum layer binds to the routes present when it is applied, so merging

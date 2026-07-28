@@ -427,6 +427,9 @@ mod tests {
                 revision: 1,
             },
             model_selection: awaken_runtime_contract::resolved::BackendModelSelection::Default,
+            capability_adapter_version: "test".into(),
+            capability_fingerprint: "sha256:test-capability".into(),
+            session_configuration: Default::default(),
         };
         let provider = awaken_runtime_contract::resolved::ModelProvisioning::Provider {
             provider_ref: "provider".into(),
