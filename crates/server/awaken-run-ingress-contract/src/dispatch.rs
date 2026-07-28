@@ -981,7 +981,7 @@ mod tests {
     /// | B7 | T | T | T | T | ACP/Workload | T | T | process secret env |
     /// | B8 | T | T | T | T | ACP/Worker | T | T | worker relay |
     /// | B9 | T | T | T | T | Native/Workload | - | - | unsupported |
-    /// | B10 | T | T | T | T | Remote/Worker | - | - | unsupported |
+    /// | B10 | T | T | T | T | Remote/Worker | T | T | worker relay |
     /// | B11 | T | T | T | T | valid | F(holder) | - | unsupported holder |
     /// | B12 | T | T | T | T | valid | F(source) | - | unsupported source |
     /// | B13 | T | T | T | T | valid | F(policy) | - | forbidden holder |
@@ -1058,12 +1058,7 @@ mod tests {
                 id: "B10",
                 fixture: BindingFixture::RemoteWorker,
                 claim_epoch: 3,
-                expected: BindingExpected::Error(
-                    AttemptCredentialBindingError::UnsupportedRealization {
-                        boundary: PlaintextBoundary::Worker,
-                        backend: "a2a:https://agent.invalid".into(),
-                    },
-                ),
+                expected: BindingExpected::One(CredentialRealizationKind::WorkerRelay),
             },
             BindingRule {
                 id: "B11",
@@ -1140,7 +1135,7 @@ mod tests {
                 BindingFixture::RemoteWorker => (
                     "a2a:https://agent.invalid",
                     worker_holder.clone(),
-                    CredentialRealizationKind::WorkerProviderAdapter,
+                    CredentialRealizationKind::WorkerRelay,
                 ),
                 _ => (
                     "genai",
@@ -1155,7 +1150,10 @@ mod tests {
                 "credential-a",
                 &selected_holder,
             );
-            if matches!(rule.fixture, BindingFixture::InvalidUsage) {
+            if matches!(
+                rule.fixture,
+                BindingFixture::InvalidUsage | BindingFixture::RemoteWorker
+            ) {
                 credential_access_mut(&mut candidate).usage = CredentialUsage::HttpHeader {
                     name: "authorization".into(),
                     scheme: Some("Bearer".into()),

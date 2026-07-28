@@ -210,6 +210,11 @@ pub use awaken_tenancy::DEFAULT_WORKSPACE_ID as DEFAULT_SCOPE;
 /// scope.
 #[async_trait::async_trait]
 pub trait ScopedConfigRegistry: Send + Sync {
+    /// Enumerate authoring owners that currently have Agent configs. This is a
+    /// system-reconciliation port, not a tenant read: callers must bind every
+    /// returned scope again before reading or publishing its aggregates.
+    async fn list_config_scopes(&self) -> Result<Vec<ScopeId>, ConfigStoreError>;
+
     /// Upsert an agent config owned by `scope` (a write never crosses into
     /// another scope's row of the same id).
     async fn put_config_scoped(

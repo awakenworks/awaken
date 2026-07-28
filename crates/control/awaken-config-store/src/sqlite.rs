@@ -79,6 +79,25 @@ fn reject(err: impl std::fmt::Display) -> ConfigStoreError {
 
 #[async_trait]
 impl ScopedConfigRegistry for SqliteConfigStore {
+    async fn list_config_scopes(&self) -> Result<Vec<ScopeId>, ConfigStoreError> {
+        self.with_conn(move |conn, p| {
+            let mut statement = conn
+                .prepare(&format!(
+                    "SELECT DISTINCT scope_id FROM {p}_agent ORDER BY scope_id ASC"
+                ))
+                .map_err(reject)?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(reject)?;
+            let mut scopes = Vec::new();
+            for row in rows {
+                scopes.push(ScopeId::from(row.map_err(reject)?));
+            }
+            Ok(scopes)
+        })
+        .await
+    }
+
     async fn put_config_scoped(
         &self,
         scope: &ScopeId,

@@ -15,6 +15,8 @@ mod acp_local_credentials;
 mod assistant_selection;
 mod brain_admin;
 pub mod config;
+mod management_surface;
+mod observation_reconcile;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -1551,7 +1553,7 @@ async fn management_router_over(
     });
 
     if management_only {
-        return finish_management_surface(mgmt, mcp_export, reconciler, platform_workspace);
+        return management_surface::finish(mgmt, mcp_export, reconciler, platform_workspace);
     }
 
     // The data plane: the host runs the server model, resolves a session's agent to
@@ -1713,52 +1715,7 @@ async fn management_router_over(
         ));
     }
     let flat = data.merge(mgmt);
-    finish_management_surface(flat, mcp_export, reconciler, platform_workspace)
-}
-
-fn finish_management_surface(
-    mut flat: Router,
-    mcp_export: Router,
-    reconciler: Arc<awaken_runtime_host::ConfigServiceReconciler>,
-    platform_workspace: String,
-) -> Router {
-    // Serving tools to an external MCP client is disabled until an operator sets a
-    // dedicated bearer. This avoids turning the management toolset into an open
-    // mutation surface while still making the `awaken` binary the complete adapter.
-    flat = flat.merge(mcp_export);
-    // After a successful model-supply write, re-publish the reserved-scope
-    // assistant so its `Auto` binding picks up the current catalog.
-    // The layer
-    // sits on the flat surface INSIDE the workspace path rewrite (which rewrites a
-    // `/v1/workspaces/{ws}/config/...` request to its flat `/v1/config/...` form BEFORE
-    // re-entering this router), so matching the flat shape covers both address forms.
-    // Best-effort: a failed reconcile never fails the operator's request.
-    let reconcile_on_catalog_write = axum::middleware::from_fn(
-        move |req: axum::extract::Request, next: axum::middleware::Next| {
-            let reconciler = reconciler.clone();
-            async move {
-                let method = req.method().clone();
-                let path = req.uri().path().to_string();
-                let is_write =
-                    method == axum::http::Method::POST || method == axum::http::Method::PUT;
-                let is_model_resolution_input = path.contains("/config/provider-connections")
-                    || path.contains("/config/model-attributes")
-                    || path.contains("/config/inference-profiles/")
-                    || path.contains("/config/brokered-models/refresh");
-                let should_reconcile = is_write && is_model_resolution_input;
-                let resp = next.run(req).await;
-                if should_reconcile && resp.status().is_success() {
-                    // Ignore the Result — reconcile is best-effort.
-                    use awaken_runtime_host::AssistantBindingReconciler;
-                    let _ = reconciler.reconcile().await;
-                }
-                resp
-            }
-        },
-    );
-    let flat = flat.layer(reconcile_on_catalog_write);
-    let flat = awaken_server::workspace_path::with_platform_workspace(flat, platform_workspace);
-    awaken_server::workspace_path::with_workspace_path_addressing(flat)
+    management_surface::finish(flat, mcp_export, reconciler, platform_workspace)
 }
 
 /// Resolve the hidden local Org from one composition-root seam. Self-managed
