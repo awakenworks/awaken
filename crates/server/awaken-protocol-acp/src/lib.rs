@@ -291,7 +291,7 @@ pub struct TurnConfig<'a> {
     pub session_mode: Option<String>,
     /// Exact backend-owned model option to set after session creation/loading and
     /// before the first prompt. `None` preserves the CLI's own default.
-    pub session_config_option: Option<SessionConfigOptionSelection>,
+    pub session_config_options: Vec<SessionConfigOptionSelection>,
     /// In: the interior working directory the CLI runs the session under (the
     /// sandbox's fixed workspace path). For a CLI that keys sessions by cwd (Claude
     /// Code), holding this stable across relaunches/machines is what lets
@@ -323,7 +323,7 @@ impl<'a> TurnConfig<'a> {
             mcp_servers: Vec::new(),
             session_id: None,
             session_mode: None,
-            session_config_option: None,
+            session_config_options: Vec::new(),
             session_cwd: None,
             auth_method_id: None,
             expected_capability: None,

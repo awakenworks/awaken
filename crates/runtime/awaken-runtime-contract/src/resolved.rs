@@ -17,6 +17,23 @@ fn is_default_delegation_limits(
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CatalogFingerprint(pub String);
 
+/// Adapter-native ACP Session intent frozen with one BackendOwned candidate.
+/// Omission preserves backend defaults; no discovered schema is copied here.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcpSessionConfiguration {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub options: BTreeMap<String, String>,
+}
+
+impl AcpSessionConfiguration {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.mode.is_none() && self.options.is_empty()
+    }
+}
+
 /// Provider-facing endpoint facts frozen into a complete model candidate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InferenceEndpoint {
@@ -272,6 +289,8 @@ pub enum ModelProvisioning {
         capability_fingerprint: String,
         #[serde(default)]
         capability_adapter_version: String,
+        #[serde(default, skip_serializing_if = "AcpSessionConfiguration::is_empty")]
+        session_configuration: AcpSessionConfiguration,
     },
     /// Exact provider route and credential delivery frozen by publication.
     Provider {
@@ -343,6 +362,7 @@ impl ResolvedModelCandidate {
         model_selection: BackendModelSelection,
         capability_adapter_version: impl Into<String>,
         capability_fingerprint: impl Into<String>,
+        session_configuration: AcpSessionConfiguration,
     ) -> Self {
         Self {
             binding,
@@ -351,6 +371,7 @@ impl ResolvedModelCandidate {
                 model_selection,
                 capability_adapter_version: capability_adapter_version.into(),
                 capability_fingerprint: capability_fingerprint.into(),
+                session_configuration,
             },
         }
     }
@@ -878,6 +899,7 @@ mod tests {
                 selection,
                 "test",
                 "sha256:test-capability",
+                Default::default(),
             );
             let wire = serde_json::to_string(&candidate).unwrap();
             assert!(!wire.contains("base_url"));

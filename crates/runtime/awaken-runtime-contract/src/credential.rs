@@ -311,6 +311,7 @@ mod tests {
                 selection,
                 "test",
                 "sha256:test-capability",
+                Default::default(),
             );
             assert_eq!(
                 compile_candidate_credential_bindings(

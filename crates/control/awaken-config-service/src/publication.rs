@@ -96,6 +96,24 @@ pub(crate) async fn prepare_agent_publication(
             ));
         }
     }
+    if let Some((backend_ref, model_ref)) = config.model_binding.backend_exact() {
+        let valid = models.primary.binding.backend_ref == backend_ref
+            && models.primary.binding.model_ref == model_ref
+            && matches!(
+                models.primary.provisioning,
+                awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned {
+                    model_selection:
+                        awaken_runtime_contract::resolved::BackendModelSelection::Exact,
+                    ..
+                }
+            );
+        if !valid {
+            return Err(PublishError::Unresolvable(
+                "backend-exact resolution must preserve the exact backend, model, and Worker-local ownership"
+                    .into(),
+            ));
+        }
+    }
     if let Some(authored) = config.model_binding.resolved()
         && !resolved_binding_matches_authored(&models.primary.binding, authored)
     {
@@ -104,7 +122,8 @@ pub(crate) async fn prepare_agent_publication(
         ));
     }
     if (config.model_binding.resolved().is_some()
-        || config.model_binding.backend_default_ref().is_some())
+        || config.model_binding.backend_default_ref().is_some()
+        || config.model_binding.backend_exact().is_some())
         && (models.candidates.len() != config.model_candidates.len()
             || models.candidates.iter().zip(&config.model_candidates).any(
                 |(resolved, authored)| {
@@ -333,6 +352,7 @@ mod tests {
             BackendModelSelection::Default,
             "test",
             "sha256:test-capability",
+            Default::default(),
         );
         let resolver = FixedResolver {
             expected_workspace: "workspace-a",
@@ -349,6 +369,7 @@ mod tests {
             revision(
                 ModelSelection::BackendDefault {
                     backend_ref: "acp:codex".into(),
+                    configuration: Default::default(),
                 },
                 vec![],
             ),
@@ -365,6 +386,7 @@ mod tests {
                 BackendModelSelection::Exact,
                 "test",
                 "sha256:test-capability",
+                Default::default(),
             ),
         ] {
             let resolver = FixedResolver {
@@ -382,6 +404,7 @@ mod tests {
                 revision(
                     ModelSelection::BackendDefault {
                         backend_ref: "acp:codex".into(),
+                        configuration: Default::default(),
                     },
                     vec![],
                 ),
@@ -400,6 +423,7 @@ mod tests {
                     BackendModelSelection::Default,
                     "",
                     "",
+                    Default::default(),
                 ),
                 candidates: vec![],
                 context_window: None,
@@ -412,6 +436,7 @@ mod tests {
             revision(
                 ModelSelection::BackendDefault {
                     backend_ref: "acp:codex".into(),
+                    configuration: Default::default(),
                 },
                 vec![],
             ),

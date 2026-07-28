@@ -112,7 +112,8 @@ impl AgentChannelSource for ScriptedSource {
             codec: awaken_protocol_acp::Codec::Newline,
             workspace_cwd: None,
             mcp_session_servers: Vec::new(),
-            session_config_option: None,
+            session_mode: None,
+            session_config_options: Vec::new(),
             expected_capability: None,
         })
     }
@@ -874,7 +875,8 @@ async fn a_session_persisted_in_one_dir_is_recovered_in_another_through_the_exec
                 codec: awaken_protocol_acp::Codec::Newline,
                 workspace_cwd: Some("/workspace".to_string()),
                 mcp_session_servers: Vec::new(),
-                session_config_option: None,
+                session_mode: None,
+                session_config_options: Vec::new(),
                 expected_capability: None,
             })
         }
@@ -1238,7 +1240,8 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
                 codec: Codec::Acp,
                 workspace_cwd: None,
                 mcp_session_servers: Vec::new(),
-                session_config_option: None,
+                session_mode: None,
+                session_config_options: Vec::new(),
                 expected_capability: None,
             })
         }
@@ -1671,7 +1674,8 @@ async fn acp_relaunches_the_cli_every_turn_so_a_model_switch_takes_effect() {
                 codec: awaken_protocol_acp::Codec::Newline,
                 workspace_cwd: None,
                 mcp_session_servers: Vec::new(),
-                session_config_option: None,
+                session_mode: None,
+                session_config_options: Vec::new(),
                 expected_capability: None,
             })
         }
@@ -2187,7 +2191,8 @@ async fn a_cancelled_token_ends_the_run_cancelled() {
                 codec: awaken_protocol_acp::Codec::Newline,
                 workspace_cwd: None,
                 mcp_session_servers: Vec::new(),
-                session_config_option: None,
+                session_mode: None,
+                session_config_options: Vec::new(),
                 expected_capability: None,
             })
         }
@@ -2308,7 +2313,8 @@ async fn a_relaunch_open_failure_mid_run_classifies_and_ends() {
                 codec: awaken_protocol_acp::Codec::Newline,
                 workspace_cwd: None,
                 mcp_session_servers: Vec::new(),
-                session_config_option: None,
+                session_mode: None,
+                session_config_options: Vec::new(),
                 expected_capability: None,
             })
         }

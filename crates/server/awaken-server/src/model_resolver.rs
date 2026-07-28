@@ -16,7 +16,6 @@ use awaken_credential_vault::repo::CredentialRepo;
 use awaken_credential_vault::{
     CredentialBinding, CredentialKind, CredentialSource, CredentialStatus,
 };
-use awaken_model_catalog::repo::CatalogRepo;
 use awaken_model_catalog::{Offering, ProviderCatalog};
 use awaken_runtime_contract::resolved::{
     Backend, BackendModelSelection, ModelBinding, ResolvedModelCandidate,
@@ -30,11 +29,10 @@ use awaken_runtime_host::{
 };
 use awaken_tenancy::ScopeId;
 
-#[derive(Clone)]
-enum CatalogSource {
-    Static(ProviderCatalog),
-    Live(Arc<dyn CatalogRepo>),
-}
+mod acp_configuration;
+mod composition;
+use acp_configuration::validate_acp_session_configuration;
+use composition::CatalogSource;
 
 enum PublicationAccess<'a> {
     Direct(Option<&'a CredentialSource>),
@@ -54,66 +52,11 @@ pub struct CatalogModelPublicationResolver {
 }
 
 impl CatalogModelPublicationResolver {
-    /// Resolve against a frozen catalog snapshot. This is useful for deterministic
-    /// tests; production composition should use [`Self::from_repo`].
-    #[must_use]
-    pub fn new(catalog: ProviderCatalog, credentials: Arc<dyn CredentialRepo>) -> Self {
-        Self {
-            source: CatalogSource::Static(catalog),
-            credentials,
-            profiles: None,
-            brokered_access_enabled: true,
-            workers: None,
-        }
-    }
-
-    /// Resolve against the live catalog repository at publication time.
-    #[must_use]
-    pub fn from_repo(repo: Arc<dyn CatalogRepo>, credentials: Arc<dyn CredentialRepo>) -> Self {
-        Self {
-            source: CatalogSource::Live(repo),
-            credentials,
-            profiles: None,
-            brokered_access_enabled: true,
-            workers: None,
-        }
-    }
-
-    /// Install the authored Profile read port for explicit
-    /// [`ModelSelection::Profile`] choices.
-    #[must_use]
-    pub fn with_profiles(mut self, profiles: Arc<dyn InferenceProfileStore>) -> Self {
-        self.profiles = Some(profiles);
-        self
-    }
-
-    /// Install the sole live Worker observation authority used to freeze an
-    /// exact ACP capability profile into BackendOwned publications.
-    #[must_use]
-    pub fn with_worker_directory(
-        mut self,
-        workers: Arc<dyn awaken_worker_registry::WorkerDirectory>,
-    ) -> Self {
-        self.workers = Some(workers);
-        self
-    }
-
-    /// Select whether brokered Offering/Profile pairs may enter a new immutable
-    /// publication. Disabling this never relabels them as direct/BYOK candidates.
-    #[must_use]
-    pub fn with_brokered_access(mut self, enabled: bool) -> Self {
-        self.brokered_access_enabled = enabled;
-        self
-    }
-
     async fn snapshot(&self) -> Result<ProviderCatalog, PublicationResolutionError> {
-        match &self.source {
-            CatalogSource::Static(catalog) => Ok(catalog.clone()),
-            CatalogSource::Live(repo) => repo
-                .snapshot()
-                .await
-                .map_err(|error| PublicationResolutionError::CatalogUnavailable(error.to_string())),
-        }
+        self.source
+            .snapshot()
+            .await
+            .map_err(PublicationResolutionError::CatalogUnavailable)
     }
 
     fn binding_of(offering: &Offering) -> ModelBinding {
@@ -137,6 +80,17 @@ impl CatalogModelPublicationResolver {
         if let Some(backend_ref) = selection.backend_default_ref() {
             let primary = ModelBinding::new("", "", backend_ref);
             Self::validate_acp_binding(&primary, BackendModelSelection::Default)?;
+            return Ok((
+                primary,
+                fallbacks
+                    .iter()
+                    .map(|binding| Self::canonical_binding(catalog, binding))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ));
+        }
+        if let Some((backend_ref, model_ref)) = selection.backend_exact() {
+            let primary = ModelBinding::new("", model_ref, backend_ref);
+            Self::validate_acp_binding(&primary, BackendModelSelection::Exact)?;
             return Ok((
                 primary,
                 fallbacks
@@ -483,8 +437,14 @@ impl CatalogModelPublicationResolver {
             );
         }
         if matches!(Backend::from_ref(&binding.backend_ref), Backend::Acp { .. }) {
+            let configuration = Default::default();
             return self
-                .backend_candidate(binding, sources, BackendModelSelection::Exact)
+                .backend_candidate(
+                    binding,
+                    sources,
+                    BackendModelSelection::Exact,
+                    &configuration,
+                )
                 .await;
         }
         Err(PublicationResolutionError::CandidateUnavailable {
@@ -675,6 +635,7 @@ impl CatalogModelPublicationResolver {
         binding: ModelBinding,
         sources: &[CredentialSource],
         model_selection: BackendModelSelection,
+        session_configuration: &awaken_runtime_contract::resolved::AcpSessionConfiguration,
     ) -> Result<ResolvedModelCandidate, PublicationResolutionError> {
         Self::validate_acp_binding(&binding, model_selection)?;
         let mut matches = sources.iter().filter(|source| {
@@ -723,13 +684,14 @@ impl CatalogModelPublicationResolver {
             id: source.id.0.clone(),
             revision,
         };
-        let (capability_adapter_version, capability_fingerprint) = self
+        let (capability_adapter_version, capability_fingerprint, negotiated) = self
             .verified_backend_capability(
                 &resolved_binding.backend_ref,
                 &required_credential,
                 wall_clock_ms(),
             )
             .await?;
+        validate_acp_session_configuration(&resolved_binding, session_configuration, &negotiated)?;
         Ok(ResolvedModelCandidate::backend_owned(
             resolved_binding,
             CredentialRef {
@@ -739,6 +701,7 @@ impl CatalogModelPublicationResolver {
             model_selection,
             capability_adapter_version,
             capability_fingerprint,
+            session_configuration.clone(),
         ))
     }
 
@@ -747,7 +710,14 @@ impl CatalogModelPublicationResolver {
         backend_ref: &str,
         credential: &awaken_worker_registry::WorkerCredentialRevision,
         now_ms: u64,
-    ) -> Result<(String, String), PublicationResolutionError> {
+    ) -> Result<
+        (
+            String,
+            String,
+            awaken_acp_contract::NegotiatedAcpCapabilities,
+        ),
+        PublicationResolutionError,
+    > {
         let workers = self.workers.as_ref().ok_or_else(|| {
             PublicationResolutionError::CandidateUnavailable {
                 binding: ModelBinding::new(&credential.id, "", backend_ref),
@@ -780,17 +750,24 @@ impl CatalogModelPublicationResolver {
                         == awaken_acp_contract::AcpCapabilityObservationState::Verified
             })
             .filter_map(|capability| {
-                capability
-                    .observation
-                    .fingerprint
-                    .map(|fingerprint| (capability.observation.adapter_version, fingerprint))
+                capability.observation.fingerprint.and_then(|fingerprint| {
+                    capability.observation.negotiated.map(|negotiated| {
+                        (
+                            capability.observation.adapter_version,
+                            fingerprint,
+                            negotiated,
+                        )
+                    })
+                })
             })
-            .collect::<std::collections::BTreeSet<_>>();
-        match (fingerprints.pop_first(), fingerprints.is_empty()) {
-            (Some((version, fingerprint)), true)
+            .collect::<Vec<_>>();
+        fingerprints.sort_by(|left, right| (&left.0, &left.1).cmp(&(&right.0, &right.1)));
+        fingerprints.dedup_by(|left, right| left.0 == right.0 && left.1 == right.1);
+        match (fingerprints.pop(), fingerprints.is_empty()) {
+            (Some((version, fingerprint, negotiated)), true)
                 if !version.trim().is_empty() && !fingerprint.trim().is_empty() =>
             {
-                Ok((version, fingerprint))
+                Ok((version, fingerprint, negotiated))
             }
             (None, _) => Err(PublicationResolutionError::CandidateUnavailable {
                 binding: ModelBinding::new(&credential.id, "", backend_ref),
@@ -868,6 +845,19 @@ impl ModelPublicationResolver for CatalogModelPublicationResolver {
                 primary_binding.clone(),
                 &sources,
                 BackendModelSelection::Default,
+                selection
+                    .acp_configuration()
+                    .expect("backend default has ACP configuration"),
+            )
+            .await?
+        } else if selection.backend_exact().is_some() {
+            self.backend_candidate(
+                primary_binding.clone(),
+                &sources,
+                BackendModelSelection::Exact,
+                selection
+                    .acp_configuration()
+                    .expect("backend exact has ACP configuration"),
             )
             .await?
         } else {
@@ -973,7 +963,18 @@ mod tests {
                             state: awaken_acp_contract::AcpCapabilityObservationState::Verified,
                             observed_at_ms: now,
                             fingerprint: Some(fingerprint.into()),
-                            negotiated: None,
+                            negotiated: Some(awaken_acp_contract::NegotiatedAcpCapabilities {
+                                protocol_version: "1".into(),
+                                load_session: false,
+                                prompt_image: false,
+                                prompt_audio: false,
+                                prompt_embedded_context: false,
+                                mcp_http: false,
+                                mcp_sse: false,
+                                session_list: false,
+                                modes: Vec::new(),
+                                config_options: Vec::new(),
+                            }),
                             reason_code: None,
                         },
                         valid_until_ms: now + 30_000,
@@ -1833,6 +1834,7 @@ mod tests {
                 &ScopeId::from("workspace-a"),
                 &ModelSelection::BackendDefault {
                     backend_ref: "acp:codex".into(),
+                    configuration: Default::default(),
                 },
                 &[],
             )
@@ -1889,6 +1891,7 @@ mod tests {
                         &ScopeId::from("workspace-a"),
                         &ModelSelection::BackendDefault {
                             backend_ref: "acp:claude".into(),
+                            configuration: Default::default(),
                         },
                         &[],
                     )
@@ -1913,6 +1916,7 @@ mod tests {
                         &ScopeId::from("workspace-a"),
                         &ModelSelection::BackendDefault {
                             backend_ref: "acp:codex".into(),
+                            configuration: Default::default(),
                         },
                         &[],
                     )
@@ -1951,6 +1955,7 @@ mod tests {
                         &ScopeId::from("workspace-a"),
                         &ModelSelection::BackendDefault {
                             backend_ref: "acp:not-installed".into(),
+                            configuration: Default::default(),
                         },
                         &[],
                     )

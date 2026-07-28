@@ -30,44 +30,11 @@ use awaken_acp_contract::{AcpCapabilityProbeConfig, NegotiatedAcpCapabilities};
 use awaken_agent_channel::AgentChannel;
 use serde::Serialize;
 
+mod mcp;
 mod wire;
 use wire::{JSONRPC, Wire};
 
-/// Map the neutral [`crate::SessionMcpServer`]s onto the ACP `session/new` `mcpServers`
-/// param: an HTTP server carries its auth as a header, a stdio server as an env var
-/// (α: a broker reference the gateway resolves; β: a raw secret on a trusted launch).
-fn to_acp_mcp_servers(
-    servers: &[crate::SessionMcpServer],
-) -> Vec<agent_client_protocol::McpServer> {
-    use agent_client_protocol::{
-        EnvVariable, HttpHeader, McpServer, McpServerHttp, McpServerStdio,
-    };
-    servers
-        .iter()
-        .map(|s| match &s.url {
-            Some(url) => {
-                let headers = s
-                    .auth
-                    .iter()
-                    .map(|(n, v)| HttpHeader::new(n.clone(), v.clone()))
-                    .collect();
-                McpServer::Http(McpServerHttp::new(s.name.clone(), url.clone()).headers(headers))
-            }
-            None => {
-                let env = s
-                    .auth
-                    .iter()
-                    .map(|(n, v)| EnvVariable::new(n.clone(), v.clone()))
-                    .collect();
-                McpServer::Stdio(
-                    McpServerStdio::new(s.name.clone(), s.command.clone().unwrap_or_default())
-                        .args(s.args.clone())
-                        .env(env),
-                )
-            }
-        })
-        .collect()
-}
+use mcp::to_acp_mcp_servers;
 
 use crate::real_acp::{project_update, termination_from_stop_reason};
 use crate::{
@@ -371,7 +338,12 @@ pub async fn run_turn_with_config(
     // 2c. session/set_config_option — exact backend-owned model selection. The
     // option must be advertised by this exact Session and the agent must accept
     // the value; either failure is terminal and never falls back to its default.
-    if let Some(selection) = config.session_config_option.clone() {
+    for (index, selection) in config
+        .session_config_options
+        .clone()
+        .into_iter()
+        .enumerate()
+    {
         if !available_config_options.contains(&selection.config_id) {
             return Err(AcpError::Frame(format!(
                 "configured ACP session option `{}` was not advertised",
@@ -379,7 +351,7 @@ pub async fn run_turn_with_config(
             )));
         }
         wire.send_request(
-            ID_SET_CONFIG_OPTION,
+            ID_SET_CONFIG_OPTION + index as u64,
             AGENT_METHOD_NAMES.session_set_config_option,
             SetSessionConfigOptionRequest::new(
                 session_id.clone(),
@@ -389,7 +361,14 @@ pub async fn run_turn_with_config(
         )
         .await?;
         let _: SetSessionConfigOptionResponse = parse(
-            pump_to_response(&mut wire, ID_SET_CONFIG_OPTION, sink, &mut seq, resolver).await?,
+            pump_to_response(
+                &mut wire,
+                ID_SET_CONFIG_OPTION + index as u64,
+                sink,
+                &mut seq,
+                resolver,
+            )
+            .await?,
         )?;
     }
 
@@ -1465,10 +1444,10 @@ mod tests {
         // terminates before either selection fallback or prompt.
         //
         // Decision table:
-        // C1 advertised + accepted -> exact configId/value, then prompt
+        // C1 multiple advertised + accepted -> stable exact values, then prompt
         // C2 not advertised        -> error, no set request and no prompt
         let (mut ours, theirs) = channel();
-        let selected = Arc::new(Mutex::new(None));
+        let selected = Arc::new(Mutex::new(Vec::new()));
         let selected_by_agent = selected.clone();
         let agent = tokio::spawn(async move {
             let mut io = AgentIo::new(theirs);
@@ -1479,12 +1458,16 @@ mod tests {
             .await;
             io.read().await; // session/new
             io.write_line(
-                r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1","configOptions":[{"id":"model","name":"Model","type":"select","currentValue":"default","options":[{"value":"gpt-exact","name":"GPT Exact"}]}]}}"#,
+                r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1","configOptions":[{"id":"model","name":"Model","type":"select","currentValue":"default","options":[{"value":"gpt-exact","name":"GPT Exact"}]},{"id":"reasoning_effort","name":"Reasoning","type":"select","currentValue":"medium","options":[{"value":"high","name":"High"}]}]}}"#,
             )
             .await;
-            let set = io.read().await.unwrap(); // session/set_config_option (id 6)
-            *selected_by_agent.lock().unwrap() = Some(set.clone());
+            let set = io.read().await.unwrap(); // first session/set_config_option (id 6)
+            selected_by_agent.lock().unwrap().push(set);
             io.write_line(r#"{"jsonrpc":"2.0","id":6,"result":{"configOptions":[]}}"#)
+                .await;
+            let set = io.read().await.unwrap(); // second session/set_config_option (id 7)
+            selected_by_agent.lock().unwrap().push(set);
+            io.write_line(r#"{"jsonrpc":"2.0","id":7,"result":{"configOptions":[]}}"#)
                 .await;
             let prompt = io.read().await.unwrap();
             assert_eq!(
@@ -1498,16 +1481,22 @@ mod tests {
 
         let mut sink = RecordingSink::default();
         let mut config = TurnConfig::new(&AllowAll);
-        config.session_config_option = Some(crate::SessionConfigOptionSelection {
-            config_id: "model".into(),
-            value: "gpt-exact".into(),
-        });
+        config.session_config_options = vec![
+            crate::SessionConfigOptionSelection {
+                config_id: "model".into(),
+                value: "gpt-exact".into(),
+            },
+            crate::SessionConfigOptionSelection {
+                config_id: "reasoning_effort".into(),
+                value: "high".into(),
+            },
+        ];
         run_turn_with_config(ours.as_mut(), "p", &mut sink, &mut config, None)
             .await
             .expect("C1");
         {
             let selected = selected.lock().unwrap();
-            let request = selected.as_ref().expect("C1 set request");
+            let request = selected.first().expect("C1 first set request");
             assert_eq!(
                 request.get("method").and_then(|value| value.as_str()),
                 Some(AGENT_METHOD_NAMES.session_set_config_option),
@@ -1515,6 +1504,10 @@ mod tests {
             );
             assert_eq!(request["params"]["configId"], "model", "C1");
             assert_eq!(request["params"]["value"], "gpt-exact", "C1");
+            let request = selected.get(1).expect("C1 second set request");
+            assert_eq!(request["id"], 7, "C1 unique request id");
+            assert_eq!(request["params"]["configId"], "reasoning_effort", "C1");
+            assert_eq!(request["params"]["value"], "high", "C1");
         }
         agent.await.unwrap();
 
@@ -1532,10 +1525,10 @@ mod tests {
         });
         let mut sink = RecordingSink::default();
         let mut config = TurnConfig::new(&AllowAll);
-        config.session_config_option = Some(crate::SessionConfigOptionSelection {
+        config.session_config_options = vec![crate::SessionConfigOptionSelection {
             config_id: "model".into(),
             value: "gpt-exact".into(),
-        });
+        }];
         let error = run_turn_with_config(ours.as_mut(), "p", &mut sink, &mut config, None)
             .await
             .expect_err("C2");

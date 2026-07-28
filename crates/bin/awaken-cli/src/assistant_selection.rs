@@ -71,6 +71,7 @@ pub(crate) fn select(
     if let [cli] = available.as_slice() {
         return Some(ModelSelection::BackendDefault {
             backend_ref: format!("acp:{}", cli.id),
+            configuration: Default::default(),
         });
     }
 
@@ -177,7 +178,8 @@ mod tests {
                 &[observation("codex")],
             ),
             Some(ModelSelection::BackendDefault {
-                backend_ref: "acp:codex".into()
+                backend_ref: "acp:codex".into(),
+                configuration: Default::default(),
             })
         );
     }
@@ -227,7 +229,8 @@ mod tests {
                 &[observation("codex")]
             ),
             Some(ModelSelection::BackendDefault {
-                backend_ref: "acp:codex".into()
+                backend_ref: "acp:codex".into(),
+                configuration: Default::default(),
             }),
             "S2"
         );

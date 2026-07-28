@@ -354,6 +354,7 @@ pub enum ResolvedModel {
         model_selection: BackendModelSelection,
         model: String,
         capability: awaken_protocol_acp::AcpCapabilityExpectation,
+        session_configuration: awaken_runtime_contract::resolved::AcpSessionConfiguration,
     },
 }
 
@@ -401,6 +402,7 @@ impl ResolvedModel {
         adapter_id: impl Into<String>,
         adapter_version: impl Into<String>,
         fingerprint: impl Into<String>,
+        session_configuration: awaken_runtime_contract::resolved::AcpSessionConfiguration,
     ) -> Self {
         Self::BackendOwned {
             model_selection,
@@ -410,6 +412,7 @@ impl ResolvedModel {
                 adapter_version: adapter_version.into(),
                 fingerprint: fingerprint.into(),
             },
+            session_configuration,
         }
     }
 
@@ -472,13 +475,19 @@ impl AcpCli {
                 "resolved ACP launch argv must not be empty".into(),
             ));
         }
-        let mut session_config_option = None;
+        let mut session_config_options = BTreeMap::new();
+        let mut session_mode = None;
         if let ResolvedModel::BackendOwned {
             model_selection,
             model,
             capability,
+            session_configuration,
         } = model
         {
+            session_mode.clone_from(&session_configuration.mode);
+            for (config_id, value) in &session_configuration.options {
+                session_config_options.insert(config_id.clone(), value.clone());
+            }
             // A retained managed projection cannot shadow the CLI-owned account,
             // endpoint, model, or home. Production supplies no extra env for this
             // mode; stripping catalog-known keys makes the boundary fail safe for
@@ -520,11 +529,17 @@ impl AcpCli {
                         argv.push(model.clone());
                     }
                     BackendModelInterface::SessionConfigOption { config_id } => {
-                        session_config_option =
-                            Some(awaken_protocol_acp::SessionConfigOptionSelection {
-                                config_id: config_id.to_string(),
-                                value: model.clone(),
-                            });
+                        match session_config_options.get(config_id) {
+                            Some(value) if value != model => {
+                                return Err(OpenError(format!(
+                                    "backend model conflicts with ACP option `{config_id}`"
+                                )));
+                            }
+                            Some(_) => {}
+                            None => {
+                                session_config_options.insert(config_id.to_string(), model.clone());
+                            }
+                        }
                     }
                     BackendModelInterface::Unsupported => {
                         return Err(OpenError(format!(
@@ -538,7 +553,16 @@ impl AcpCli {
                 argv,
                 env: env.into_values().collect(),
                 identity: AcpLaunchIdentity::BackendOwned,
-                session_config_option,
+                session_mode,
+                session_config_options: session_config_options
+                    .into_iter()
+                    .map(
+                        |(config_id, value)| awaken_protocol_acp::SessionConfigOptionSelection {
+                            config_id,
+                            value,
+                        },
+                    )
+                    .collect(),
                 expected_capability: Some(capability.clone()),
             });
         }
@@ -564,7 +588,8 @@ impl AcpCli {
                 argv,
                 env: env.into_values().collect(),
                 identity: AcpLaunchIdentity::Managed,
-                session_config_option,
+                session_mode: None,
+                session_config_options: Vec::new(),
                 expected_capability: None,
             });
         };
@@ -613,7 +638,8 @@ impl AcpCli {
             argv,
             env: env.into_values().collect(),
             identity: AcpLaunchIdentity::Managed,
-            session_config_option,
+            session_mode: None,
+            session_config_options: Vec::new(),
             expected_capability: None,
         })
     }
@@ -1110,12 +1136,13 @@ mod tests {
                         cli.id,
                         "test",
                         "sha256:test",
+                        Default::default(),
                     ),
                     Some(999),
                     &stale_managed_env,
                 )
                 .unwrap_or_else(|error| panic!("B1 {}: {error}", cli.id));
-            assert!(launch.session_config_option.is_none(), "B1 {}", cli.id);
+            assert!(launch.session_config_options.is_empty(), "B1 {}", cli.id);
             if let Some(delivery) = cli.model_delivery {
                 for key in std::iter::once(delivery.base_url)
                     .chain(std::iter::once(delivery.model))
@@ -1136,6 +1163,7 @@ mod tests {
             "codex",
             "test",
             "sha256:test",
+            Default::default(),
         );
         let claude = acp_cli("claude")
             .unwrap()
@@ -1153,11 +1181,11 @@ mod tests {
             .try_project(&exact, None, &[])
             .unwrap();
         assert_eq!(
-            codex.session_config_option,
-            Some(awaken_protocol_acp::SessionConfigOptionSelection {
+            codex.session_config_options,
+            vec![awaken_protocol_acp::SessionConfigOptionSelection {
                 config_id: "model".into(),
                 value: "model-x".into(),
-            }),
+            }],
             "B3"
         );
 
@@ -1644,6 +1672,7 @@ mod tests {
                     "codex",
                     "test",
                     "sha256:test",
+                    Default::default(),
                 ),
                 None,
                 &[],
@@ -1660,6 +1689,7 @@ mod tests {
                     "codex",
                     "test",
                     "sha256:test",
+                    Default::default(),
                 ),
                 None,
                 &[],
@@ -1680,6 +1710,7 @@ mod tests {
                         "codex",
                         "test",
                         "sha256:test",
+                        Default::default(),
                     ),
                     None,
                     &[],

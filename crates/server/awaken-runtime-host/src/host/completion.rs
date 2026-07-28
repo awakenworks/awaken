@@ -587,6 +587,7 @@ mod completion_tests {
             awaken_runtime_contract::resolved::BackendModelSelection::Default,
             "test",
             "sha256:test-capability",
+            Default::default(),
         );
 
         let placement = remote_worker_placement(&models, None, false);

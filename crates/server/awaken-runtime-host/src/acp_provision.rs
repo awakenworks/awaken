@@ -71,6 +71,7 @@ impl PublishedAcpLaunchResolver {
                 model_selection,
                 capability_adapter_version,
                 capability_fingerprint,
+                session_configuration,
                 ..
             } = &candidate.provisioning
             {
@@ -96,6 +97,7 @@ impl PublishedAcpLaunchResolver {
                     self.cli.id,
                     capability_adapter_version,
                     capability_fingerprint,
+                    session_configuration.clone(),
                 ));
             }
             return Err(OpenError(format!(
@@ -717,6 +719,7 @@ mod tests {
                     selection,
                     "test",
                     "sha256:test-capability",
+                    Default::default(),
                 );
             let resolver = PublishedAcpLaunchResolver::new(
                 *awaken_run_executor_acp::acp_cli("codex").unwrap(),

@@ -37,7 +37,8 @@ pub struct AcpLaunch {
     pub argv: Vec<String>,
     pub env: Vec<pc::EnvVar>,
     pub identity: AcpLaunchIdentity,
-    pub session_config_option: Option<awaken_protocol_acp::SessionConfigOptionSelection>,
+    pub session_mode: Option<String>,
+    pub session_config_options: Vec<awaken_protocol_acp::SessionConfigOptionSelection>,
     pub expected_capability: Option<awaken_protocol_acp::AcpCapabilityExpectation>,
 }
 
@@ -56,7 +57,8 @@ impl AcpLaunch {
                 })
                 .collect(),
             identity: AcpLaunchIdentity::Managed,
-            session_config_option: None,
+            session_mode: None,
+            session_config_options: Vec::new(),
             expected_capability: None,
         }
     }
@@ -221,7 +223,8 @@ async fn spawn(
         workspace_cwd: None,
         // Populated by `ProjectingChannelSource::open` for an `AcpSession` CLI.
         mcp_session_servers: Vec::new(),
-        session_config_option: launch.session_config_option.clone(),
+        session_mode: launch.session_mode.clone(),
+        session_config_options: launch.session_config_options.clone(),
         expected_capability: launch.expected_capability.clone(),
     })
 }
@@ -1085,7 +1088,8 @@ mod tests {
                 visibility: pc::EnvVisibility::Process,
             }],
             identity: AcpLaunchIdentity::Managed,
-            session_config_option: None,
+            session_mode: None,
+            session_config_options: Vec::new(),
             expected_capability: None,
         };
         let debug = format!("{launch:?}");

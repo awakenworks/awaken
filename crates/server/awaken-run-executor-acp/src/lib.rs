@@ -73,9 +73,10 @@ pub struct AgentSession {
     /// claude/gemini/opencode). Populated by [`ProjectingChannelSource::open`] for those
     /// CLIs; empty for a legacy config-file adapter and for fixtures.
     pub mcp_session_servers: Vec<awaken_protocol_acp::SessionMcpServer>,
-    /// Exact backend-owned model selection to apply over ACP after opening the
-    /// session. `None` leaves the CLI's own default untouched.
-    pub session_config_option: Option<awaken_protocol_acp::SessionConfigOptionSelection>,
+    /// Backend-owned native ACP configuration to apply after opening the
+    /// session. Empty leaves the CLI's own defaults untouched.
+    pub session_mode: Option<String>,
+    pub session_config_options: Vec<awaken_protocol_acp::SessionConfigOptionSelection>,
     pub expected_capability: Option<awaken_protocol_acp::AcpCapabilityExpectation>,
 }
 
@@ -170,9 +171,6 @@ pub struct AcpRunExecutor {
     /// via [`with_permission_policy`](Self::with_permission_policy) to apply org
     /// policy / HITL uniformly across native and ACP runs.
     permission: Arc<dyn PermissionResolver>,
-    /// The ACP session mode to pin (adapter-local; `None` leaves the agent's
-    /// default). Validated fail-closed against the agent's advertised modes.
-    session_mode: Option<String>,
     /// Recovers a local-dir CLI's session across directories/machines. Defaults to
     /// no-op (local config home as-is); a host wires a durable, cross-machine one.
     session_home: Arc<dyn SessionHomeProvider>,
@@ -198,7 +196,6 @@ impl AcpRunExecutor {
             policy: SupervisePolicy::default(),
             observer: None,
             permission: Arc::new(AllowAll),
-            session_mode: None,
             session_home: Arc::new(NoSessionHome),
             session_mcp_servers: None,
         }
@@ -248,7 +245,6 @@ impl AcpRunExecutor {
             policy: self.policy,
             observer: self.observer.clone(),
             permission: Arc::new(NeutralPermissionResolver { policy }),
-            session_mode: self.session_mode.clone(),
             session_home: self.session_home.clone(),
             session_mcp_servers: Some(
                 mcp_servers
@@ -263,14 +259,6 @@ impl AcpRunExecutor {
         if let Some(servers) = &self.session_mcp_servers {
             session.mcp_session_servers.clone_from(servers);
         }
-    }
-
-    /// Pin the ACP session mode (e.g. `plan`), applied via `session/set_mode` after
-    /// the handshake and validated fail-closed against the agent's advertised modes.
-    #[must_use]
-    pub fn with_session_mode(mut self, mode: impl Into<String>) -> Self {
-        self.session_mode = Some(mode.into());
-        self
     }
 
     /// Observe this executor's agent bring-up (install → launch → initialize →
@@ -626,8 +614,8 @@ impl AcpRunExecutor {
             let mut config = TurnConfig::new(permission);
             config.mcp_servers = session.mcp_session_servers.clone();
             config.session_id = acp_session_id.take();
-            config.session_mode = self.session_mode.clone();
-            config.session_config_option = session.session_config_option.clone();
+            config.session_mode = session.session_mode.clone();
+            config.session_config_options = session.session_config_options.clone();
             config.expected_capability = session.expected_capability.clone();
             config.session_cwd = session.workspace_cwd.clone();
             config.auth_method_id = match Backend::from_ref(&backend_ref) {
