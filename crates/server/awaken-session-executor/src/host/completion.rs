@@ -127,7 +127,12 @@ pub fn self_hosted_inference_holder(
     }))
 }
 
-pub(crate) fn remote_worker_placement(
+/// Compile the complete immutable Worker claim requirements for one resolved
+/// model set. Application adapters that author their own [`RunDispatch`] must
+/// use this function instead of projecting backend or credential capabilities
+/// independently.
+#[must_use]
+pub fn remote_worker_placement(
     models: &awaken_runtime_contract::resolved::ResolvedSpec,
     resources: Option<&awaken_protocol_managed::SessionResourceManifest>,
     remote_required: bool,
