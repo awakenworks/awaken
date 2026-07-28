@@ -298,6 +298,12 @@ read credentials, open storage, contact IAM, or publish policy.
 | embedded IAM startup | local durable state | activates the same generated document |
 | hosted Management startup | remote IAM configured | does not publish or mutate a profile |
 
+Cross-product automation binds the product-owned
+`awaken.runtime.management:agent_publisher` role. That role grants only
+`workspace.*`; it deliberately excludes `apikey.*`. Human Workspace owners may
+hold `workspace_admin`, but a Flow workload must not inherit credential
+administration merely because both capabilities use the Management API.
+
 This release projection does not merge hosted closed code into Awaken. The open
 Management image remains independently deployable; a hosted release composes
 its immutable image and contract with external IAM lifecycle management.

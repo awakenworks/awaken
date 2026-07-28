@@ -47,6 +47,24 @@ fn management_profile_is_one_deterministic_workspace_scoped_contract() {
                     if role_id.starts_with("awaken.runtime.management:")
             )
     }));
+    let publisher_grants = first
+        .document
+        .grants
+        .iter()
+        .filter(|grant| {
+            matches!(
+                &grant.subject,
+                GrantSubjectRef::Role { role_id }
+                    if role_id == MANAGEMENT_AGENT_PUBLISHER_ROLE
+            )
+        })
+        .map(|grant| grant.action_pattern.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        publisher_grants,
+        ["awaken.runtime.management::workspace.*"],
+        "the cross-product publisher may author configuration but must not receive apikey.*"
+    );
 }
 
 #[test]

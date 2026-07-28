@@ -34,6 +34,21 @@ fn management_profile_is_a_side_effect_free_release_projection() {
         profile["namespace"],
         serde_json::json!("awaken.runtime.management")
     );
+    let grants = profile["document"]["grants"]
+        .as_array()
+        .expect("profile grants");
+    let publisher = grants
+        .iter()
+        .filter(|grant| {
+            grant["subject"]["role_id"]
+                == serde_json::json!("awaken.runtime.management:agent_publisher")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(publisher.len(), 1);
+    assert_eq!(
+        publisher[0]["action_pattern"],
+        serde_json::json!("awaken.runtime.management::workspace.*")
+    );
 }
 
 #[test]
