@@ -414,24 +414,24 @@ function seedRepository(root: string): string {
 }
 
 async function publishAgent(endpoint: string): Promise<void> {
-  assert.equal((await json('PUT', scoped(WORKSPACE, 'config/providers/resource-e2e'), {
-    id: 'resource-e2e', slug: 'resource-e2e', display_name: 'Resource E2E', version: 1,
-  })).status, 200);
-  assert.equal((await json('PUT', scoped(WORKSPACE, 'config/endpoints/resource-e2e'), {
-    id: 'resource-e2e', provider_id: 'resource-e2e', dialect: 'anthropic_messages',
-    base_url: `${endpoint}/v1/`, timeout_secs: 10, display_name: 'memory extraction', version: 1,
-  })).status, 200);
-  assert.equal((await json('POST', scoped(WORKSPACE, 'config/offerings'), {
-    model_id: MODEL, provider_id: 'resource-e2e', protocol_endpoint_id: 'resource-e2e',
-    dialect: 'anthropic_messages', upstream_model: null,
-  })).status, 200);
-  assert.equal((await json('PUT', scoped(WORKSPACE, `config/model-attributes/${MODEL}`), {
-    context_window: 4096, max_output_tokens: 1024,
-  })).status, 200);
-  assert.equal((await json('POST', scoped(WORKSPACE, 'config/credentials'), {
-    workspace_id: WORKSPACE, kind: 'vault', provider_id: 'resource-e2e',
-    env_key: null, secret: 'resource-e2e-model-key', // awaken-allow: secret
-  })).status, 201);
+  const connected = await json('POST', scoped(WORKSPACE, 'config/provider-connections'), {
+    workspace_id: WORKSPACE,
+    provider_id: 'anthropic',
+    display_name: 'Resource E2E',
+    endpoint_id: 'resource-e2e',
+    dialect: 'anthropic_messages',
+    base_url: `${endpoint}/v1/`,
+    timeout_secs: 10,
+    secret: 'resource-e2e-model-key', // awaken-allow: secret
+  });
+  assert.equal(connected.status, 201, JSON.stringify(connected.body));
+  const catalog = await json('GET', scoped(WORKSPACE, 'config/catalog'));
+  assert.ok(
+    catalog.status === 200
+      && Array.isArray(catalog.body.offerings)
+      && catalog.body.offerings.some((offering: { model_id?: string }) => offering.model_id === MODEL),
+    `Provider Connection discovered ${MODEL}: ${JSON.stringify(catalog.body)}`,
+  );
   assert.equal((await json('PUT', scoped(WORKSPACE, `config/agents/${AGENT}`), {
     name: AGENT, model: { id: MODEL }, system: 'Resource lifecycle test.',
     max_steps: 2, plugins: ['memory'], plugin_config: { memory: {} },
@@ -464,7 +464,10 @@ async function publishAgent(endpoint: string): Promise<void> {
 
 async function main(): Promise<void> {
   const pg = await postgres();
-  const upstream = await startFakeAnthropic('resource-e2e-model-key', { behavior: 'memory' });
+  const upstream = await startFakeAnthropic('resource-e2e-model-key', {
+    behavior: 'memory',
+    models: [MODEL],
+  });
   const firstDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-resource-pg-a-'));
   const secondDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-resource-pg-b-'));
   let server = start(firstDirectory, pg.url);
