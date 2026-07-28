@@ -797,7 +797,6 @@ pub async fn build_acp_container_router() -> Router {
         Ok("k8s") | Ok("kubernetes") => awaken_runtime_host::SandboxTier::K8s,
         Ok(other) => panic!("unsupported scenario Session environment tier: {other}"),
     };
-    deployment.sandbox_tier_explicit = true;
     deployment.container_image = std::env::var("AWAKEN_CONTAINER_IMAGE")
         .ok()
         .filter(|value| !value.trim().is_empty());

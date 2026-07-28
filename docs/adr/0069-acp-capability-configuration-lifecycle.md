@@ -468,11 +468,12 @@ removed rather than synchronized with the persisted Catalog.
 
 This is a target invariant, not a claim that every historic runtime environment
 read has already been migrated. The Provider-proposal authoring path and Flow's
-parallel ACP inventory/default have been removed. Remaining operator settings
-such as sandbox fallback/pool/reaping, dispatch wake, container metadata,
-content capture and enrollment still require migration to the existing typed
-deployment configuration before D12 is complete. PATH, HOME, DISPLAY and test
-gate variables are not part of that migration.
+parallel ACP inventory/default have been removed. Sandbox fallback, warm-pool,
+proxy, Kubernetes namespace, container Hand location and reaper settings have
+been consolidated into `DeploymentConfig::sandbox`. Remaining operator settings
+such as content capture and enrollment still require migration to the existing
+typed deployment configuration before D12 is complete. PATH, HOME, DISPLAY and
+test gate variables are not part of that migration.
 
 ## Complete dynamic lifecycle
 
@@ -862,7 +863,7 @@ the remaining external/reconciliation gates:
 | automatic Assistant | exactly one Available+Verified local backend is required; zero remains unconfigured and multiple are resolved through the ordinary persisted Agent model editor | no separate default-backend preference exists |
 | frontend contract | OpenAPI-generated TypeScript consumes the Rust discriminated union and live Worker ACP projection | keep generated-contract freshness gated |
 | Flow | pinned to the pushed Awaken revision; one existing Worker/executor consumes the shared preparation service | keep the revision and lockfile updated atomically |
-| ambient configuration | environment Provider proposals and Flow ACP inventory/default fields are removed | migrate the remaining operator settings to typed deployment configuration; keep PATH/HOME/DISPLAY as execution metadata only |
+| ambient configuration | environment Provider proposals and Flow ACP inventory/default fields are removed; sandbox/container realization policy consumes `DeploymentConfig::sandbox` and lower-layer environment readers are absent | migrate remaining content-capture and enrollment settings; keep PATH/HOME/DISPLAY as execution metadata only |
 | real host proof | installed Codex `0.145.0` completed the zero-configuration host-login release gate through real wrapper negotiation, BackendDefault publication, LLM response and committed running→idle transcript; installed Claude `2.1.220` is correctly login-required when ambient `ANTHROPIC_API_KEY` is cleared | run the same release-gated real LLM session after a persisted Claude host login is available |
 
 Therefore discovery, generic ACP configuration, live Worker projection,

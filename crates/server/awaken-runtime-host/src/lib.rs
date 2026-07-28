@@ -142,7 +142,8 @@ pub use crate::commit_ingest::{
     ClaimedCommitService, RemoteClaimedRunCommit, claimed_commit_router,
 };
 pub use crate::deployment_config::{
-    AcpWorkerProfile, DeploymentConfig, DispatchBackend, SandboxTier, StoreKind, Wake,
+    AcpWorkerProfile, DeploymentConfig, DispatchBackend, SandboxSettings, SandboxTier, StoreKind,
+    Wake,
 };
 pub use crate::dispatch_transport::{
     WorkerDispatchService, dispatch_transport_router_with_service,

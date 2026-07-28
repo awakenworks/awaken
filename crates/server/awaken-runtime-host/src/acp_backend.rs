@@ -232,9 +232,10 @@ impl crate::host::SharedHost {
         // environment still runs) and fails closed only when `AWAKEN_SANDBOX_TIER=namespace`
         // was requested EXPLICITLY, so an operator who asked for isolation never silently
         // loses it. So a worker without bwrap works out of the box.
-        let tier = crate::resolve_sandbox_tier(dep.sandbox_tier, dep.sandbox_tier_explicit, &base)
-            .await
-            .unwrap_or_else(|e| panic!("configure the ACP sandbox tier: {e}"));
+        let tier =
+            crate::resolve_sandbox_tier(dep.sandbox_tier, dep.sandbox.allow_local_fallback, &base)
+                .await
+                .unwrap_or_else(|e| panic!("configure the ACP sandbox tier: {e}"));
         let mut host = self;
         match tier {
             crate::SandboxTier::Local => {
@@ -256,13 +257,14 @@ impl crate::host::SharedHost {
             _ => {}
         }
         let (provider, extra_mounts) =
-            crate::container_environment::build(tier, dep.container_image.as_deref())
+            crate::container_environment::build(tier, dep.container_image.as_deref(), &dep.sandbox)
                 .await
                 .unwrap_or_else(|e| panic!("configure the ACP sandbox tier: {e}"));
         host.session_provider = crate::session_environment::SessionEnvironmentProvider::container(
             provider,
             extra_mounts,
             hand_factory,
+            dep.sandbox.container_hand_bin.clone(),
         );
         if let Some(mounter) = host.memory_mounter() {
             host.session_provider.install_memory_mounter(mounter);

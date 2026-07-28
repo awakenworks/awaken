@@ -13,7 +13,8 @@ use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use awaken_runtime_host::{
-    AcpWorkerProfile, DeploymentConfig, DispatchBackend, SandboxTier, StoreKind, Wake,
+    AcpWorkerProfile, DeploymentConfig, DispatchBackend, SandboxSettings, SandboxTier, StoreKind,
+    Wake,
 };
 use serde::Deserialize;
 
@@ -395,6 +396,37 @@ impl ResolvedDeployment {
             Some("none") | None => Wake::None,
             Some(other) => return Err(format!("invalid dispatch_wake={other:?}")),
         };
+        let sandbox_defaults = SandboxSettings::default();
+        let sandbox = SandboxSettings {
+            allow_local_fallback: file.sandbox_allow_local_fallback.unwrap_or(false),
+            warm_pool_size: file.sandbox_warm_pool_size.unwrap_or(0),
+            container_forward_proxy: file.container_forward_proxy.clone(),
+            k8s_namespace: file
+                .k8s_namespace
+                .clone()
+                .unwrap_or_else(|| "default".to_owned()),
+            container_hand_bin: file
+                .container_hand_bin
+                .clone()
+                .unwrap_or_else(|| sandbox_defaults.container_hand_bin.clone()),
+            reaper_enabled: file.sandbox_reaper_enabled.unwrap_or(true),
+            reaper_interval_secs: file
+                .sandbox_reaper_interval_secs
+                .unwrap_or(sandbox_defaults.reaper_interval_secs),
+            reaper_max_age_secs: file
+                .sandbox_reaper_max_age_secs
+                .unwrap_or(sandbox_defaults.reaper_max_age_secs),
+        };
+        if sandbox.k8s_namespace.trim().is_empty() || sandbox.container_hand_bin.trim().is_empty() {
+            return Err("k8s_namespace and container_hand_bin must not be empty".to_owned());
+        }
+        if sandbox.reaper_enabled
+            && (sandbox.reaper_interval_secs == 0 || sandbox.reaper_max_age_secs == 0)
+        {
+            return Err(
+                "sandbox reaper interval and max age must be non-zero when enabled".to_owned(),
+            );
+        }
         let runtime = DeploymentConfig {
             durable: true,
             storage_dir: Some(data_dir.clone()),
@@ -417,8 +449,8 @@ impl ResolvedDeployment {
                 .unwrap_or_else(|| format!("host-{}", std::process::id())),
             upstream: worker_server.clone(),
             sandbox_tier,
-            sandbox_tier_explicit: file.sandbox_tier.is_some(),
             sandbox_dir: file.sandbox_dir.clone(),
+            sandbox,
             acp_session_blob_root: file.acp_session_blob_root.clone(),
             acp,
             container_image: file.container_image.clone(),
@@ -766,6 +798,14 @@ struct FileConfig {
     control_seal_key_file: Option<PathBuf>,
     sandbox_tier: Option<String>,
     sandbox_dir: Option<PathBuf>,
+    sandbox_allow_local_fallback: Option<bool>,
+    sandbox_warm_pool_size: Option<usize>,
+    container_forward_proxy: Option<String>,
+    k8s_namespace: Option<String>,
+    container_hand_bin: Option<String>,
+    sandbox_reaper_enabled: Option<bool>,
+    sandbox_reaper_interval_secs: Option<u64>,
+    sandbox_reaper_max_age_secs: Option<u64>,
     acp_session_blob_root: Option<PathBuf>,
     acp_clis: Option<Vec<String>>,
     acp_default_cli: Option<String>,
@@ -969,6 +1009,114 @@ mod tests {
         assert!(config.runtime.durable);
         assert!(matches!(config.seal_key, SealKeySource::LocalFile(_)));
         assert_eq!(config.role, Role::Serve);
+    }
+
+    #[test]
+    fn sandbox_operator_policy_is_projected_once_from_typed_config() {
+        // Cause/effect graph: each explicit file value selects one field on the
+        // authoritative DeploymentConfig; omission selects SandboxSettings defaults.
+        // No runtime adapter may add environment precedence.
+        //
+        // | Rule | file values | Effect |
+        // |---|---|---|
+        // | S1 | all omitted | fail-closed fallback, no pool/proxy, default namespace/reaper |
+        // | S2 | all explicit valid | exact typed values projected losslessly |
+        let defaults = resolve(FileConfig::default(), ConfigOverrides::default())
+            .runtime
+            .sandbox;
+        assert!(!defaults.allow_local_fallback, "S1");
+        assert_eq!(defaults.warm_pool_size, 0, "S1");
+        assert_eq!(defaults.container_forward_proxy, None, "S1");
+        assert_eq!(defaults.k8s_namespace, "default", "S1");
+        assert_eq!(
+            defaults.container_hand_bin, "/usr/local/bin/awaken-sandbox",
+            "S1"
+        );
+        assert!(defaults.reaper_enabled, "S1");
+
+        let selected = resolve(
+            FileConfig {
+                sandbox_allow_local_fallback: Some(true),
+                sandbox_warm_pool_size: Some(3),
+                container_forward_proxy: Some("http://proxy.internal:8080".into()),
+                k8s_namespace: Some("agents".into()),
+                container_hand_bin: Some("/opt/awaken/bin/hand".into()),
+                sandbox_reaper_enabled: Some(true),
+                sandbox_reaper_interval_secs: Some(17),
+                sandbox_reaper_max_age_secs: Some(91),
+                ..FileConfig::default()
+            },
+            ConfigOverrides::default(),
+        )
+        .runtime
+        .sandbox;
+        assert!(selected.allow_local_fallback, "S2");
+        assert_eq!(selected.warm_pool_size, 3, "S2");
+        assert_eq!(
+            selected.container_forward_proxy.as_deref(),
+            Some("http://proxy.internal:8080"),
+            "S2"
+        );
+        assert_eq!(selected.k8s_namespace, "agents", "S2");
+        assert_eq!(selected.container_hand_bin, "/opt/awaken/bin/hand", "S2");
+        assert_eq!(selected.reaper_interval_secs, 17, "S2");
+        assert_eq!(selected.reaper_max_age_secs, 91, "S2");
+    }
+
+    #[test]
+    fn sandbox_operator_policy_rejects_invalid_active_values() {
+        // Cause/effect graph: an empty namespace is never usable; an enabled
+        // reaper needs non-zero cadence and age. Disabling the reaper makes its
+        // dormant numeric values irrelevant.
+        //
+        // | Rule | namespace | enabled | interval/max | Effect |
+        // |---|---|---:|---|---|
+        // | V1 | empty | either | any | reject |
+        // | V2 | valid | true | either zero | reject |
+        // | V3 | valid | false | zero/zero | accept |
+        let resolve_error = |file: FileConfig| {
+            ResolvedDeployment::resolve_file(
+                ConfigOverrides::default(),
+                Some(PathBuf::from("/home/dev")),
+                PathBuf::from("/home/dev/.awaken/config.toml"),
+                file,
+            )
+            .unwrap_err()
+        };
+        assert!(
+            resolve_error(FileConfig {
+                k8s_namespace: Some(" ".into()),
+                ..FileConfig::default()
+            })
+            .contains("k8s_namespace"),
+            "V1"
+        );
+        assert!(
+            resolve_error(FileConfig {
+                container_hand_bin: Some(String::new()),
+                ..FileConfig::default()
+            })
+            .contains("container_hand_bin"),
+            "V1"
+        );
+        assert!(
+            resolve_error(FileConfig {
+                sandbox_reaper_interval_secs: Some(0),
+                ..FileConfig::default()
+            })
+            .contains("reaper"),
+            "V2"
+        );
+        let dormant = resolve(
+            FileConfig {
+                sandbox_reaper_enabled: Some(false),
+                sandbox_reaper_interval_secs: Some(0),
+                sandbox_reaper_max_age_secs: Some(0),
+                ..FileConfig::default()
+            },
+            ConfigOverrides::default(),
+        );
+        assert!(!dormant.runtime.sandbox.reaper_enabled, "V3");
     }
 
     #[test]

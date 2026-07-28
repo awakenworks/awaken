@@ -15,6 +15,7 @@ pub(crate) enum SessionEnvironmentProvider {
         provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
         extra_mounts: Vec<pc::MountRequirement>,
         hand_factory: Arc<dyn HandExecutorFactory>,
+        hand_bin: String,
     },
 }
 
@@ -44,11 +45,13 @@ impl SessionEnvironmentProvider {
         provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
         extra_mounts: Vec<pc::MountRequirement>,
         hand_factory: Arc<dyn HandExecutorFactory>,
+        hand_bin: impl Into<String>,
     ) -> Self {
         Self::Container {
             provider,
             extra_mounts,
             hand_factory,
+            hand_bin: hand_bin.into(),
         }
     }
 
@@ -61,10 +64,12 @@ impl SessionEnvironmentProvider {
                 provider,
                 extra_mounts,
                 hand_factory,
+                hand_bin,
             } => Self::Container {
                 provider: provider.clone(),
                 extra_mounts: extra_mounts.clone(),
                 hand_factory: hand_factory.clone(),
+                hand_bin: hand_bin.clone(),
             },
         }
     }
@@ -106,6 +111,7 @@ impl SessionEnvironmentProvider {
                 provider,
                 extra_mounts,
                 hand_factory,
+                hand_bin,
             } => {
                 let mut spec = spec.clone();
                 spec.isolation = pc::IsolationClass::Container;
@@ -116,7 +122,7 @@ impl SessionEnvironmentProvider {
                     }
                 }
                 let environment = provider.create_environment(&spec).await?;
-                SessionEnvironment::container(environment, hand_factory.as_ref()).await
+                SessionEnvironment::container(environment, hand_factory.as_ref(), hand_bin).await
             }
         }
     }
@@ -137,11 +143,12 @@ impl SessionEnvironmentProvider {
             Self::Container {
                 provider,
                 hand_factory,
+                hand_bin,
                 ..
             } => {
                 let environment = provider.adopt_environment(handle).await?;
                 environment.renew_lease().await?;
-                SessionEnvironment::container(environment, hand_factory.as_ref()).await
+                SessionEnvironment::container(environment, hand_factory.as_ref(), hand_bin).await
             }
         }
     }
