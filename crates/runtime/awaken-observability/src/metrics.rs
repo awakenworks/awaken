@@ -253,16 +253,10 @@ pub fn init_meters(
             .with_http()
             .with_endpoint(endpoint)
             .build()?;
-        // Export interval: default 60s, overridable via the standard
-        // `OTEL_METRIC_EXPORT_INTERVAL` (ms) so a test/dev can flush quickly.
-        let interval_ms = std::env::var("OTEL_METRIC_EXPORT_INTERVAL")
-            .ok()
-            .and_then(|v| v.trim().parse::<u64>().ok())
-            .unwrap_or(60_000);
         // The async-runtime reader drives the reqwest-based OTLP exporter on the
         // Tokio runtime; the plain std-thread reader cannot run the async export.
         let reader = PeriodicReader::builder(exporter, runtime::Tokio)
-            .with_interval(std::time::Duration::from_millis(interval_ms))
+            .with_interval(config.metric_export_interval)
             .build();
         builder = builder.with_reader(reader);
     }
