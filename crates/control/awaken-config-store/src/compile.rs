@@ -7,7 +7,7 @@ use awaken_runtime_contract::snapshot::AgentSnapshotMetadata;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 use sha2::{Digest, Sha256};
 
-use crate::config::AgentConfig;
+use crate::config::{AgentConfig, AgentKind};
 
 /// A compilation failure, before anything is published (the design's Failure
 /// Rules: reject, never partially publish).
@@ -83,7 +83,7 @@ pub fn compile_resolved(
         .cloned()
         .map(ResolvedModelCandidate::host);
     let candidates = config
-        .model_candidates
+        .model_fallbacks
         .iter()
         .cloned()
         .map(ResolvedModelCandidate::host)
@@ -305,7 +305,7 @@ fn compile_with_models(
             reason: "primary candidate does not match the resolved authoring binding".into(),
         });
     }
-    let authored_candidates = &config.model_candidates;
+    let authored_candidates = &config.model_fallbacks;
     if candidates.len() != authored_candidates.len()
         || candidates
             .iter()
@@ -322,9 +322,7 @@ fn compile_with_models(
     // `backend_ref` — must be able to honor the declared capabilities. A remote (a2a)
     // agent runs everything on the far side, so local skills/MCP would be a silent
     // runtime no-op; reject at publish so the mistake surfaces at authoring time.
-    if let awaken_runtime_contract::resolved::Backend::Remote { .. } =
-        awaken_runtime_contract::resolved::Backend::from_ref(&model.binding.backend_ref)
-    {
+    if matches!(config.kind(), AgentKind::A2a { .. }) {
         if !config.skill_ids.is_empty() {
             return Err(CompileError::UnsupportedCapability {
                 agent: config.id.clone(),
@@ -621,7 +619,7 @@ mod tests {
             model_binding: ModelSelection::pinned("p", "m", "b"),
             inference: Default::default(),
             tool_ids: tools.iter().map(|s| s.to_string()).collect(),
-            model_candidates: Vec::new(),
+            model_fallbacks: Vec::new(),
             plugin_ids: Vec::new(),
             plugin_config: Default::default(),
             context_policy: awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
@@ -875,7 +873,7 @@ mod tests {
         let tools = vec![tool("echo")];
 
         let mut pooled = config(&["echo"]);
-        pooled.model_candidates = vec![ModelBinding::new("p", "fallback", "b")];
+        pooled.model_fallbacks = vec![ModelBinding::new("p", "fallback", "b")];
         let compiled = compile(&pooled, &tools).unwrap();
         let spec = &compiled.resolved_spec;
         // The pool is carried onto the resolved spec: primary + one fallback.

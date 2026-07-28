@@ -601,7 +601,7 @@ pub(crate) mod resource_prompt_tests {
             model_binding: awaken_config_store::ModelSelection::pinned("p", "m", "b"),
             inference: Default::default(),
             tool_ids: vec![],
-            model_candidates: Vec::new(),
+            model_fallbacks: Vec::new(),
             plugin_ids: vec![],
             plugin_config: Default::default(),
             context_policy: ContextPolicy::KeepAll,

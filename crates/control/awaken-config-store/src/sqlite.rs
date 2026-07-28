@@ -791,7 +791,7 @@ mod scope_tests {
             delegation_limits: Default::default(),
             model_binding: crate::config::ModelSelection::pinned("p", "m", "b"),
             tool_ids: Vec::new(),
-            model_candidates: Vec::new(),
+            model_fallbacks: Vec::new(),
             plugin_ids: Vec::new(),
             plugin_config: Default::default(),
             context_policy: awaken_runtime_contract::resolved::ContextPolicy::KeepAll,

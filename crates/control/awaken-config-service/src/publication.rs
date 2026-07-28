@@ -53,7 +53,7 @@ pub(crate) async fn prepare_agent_publication(
     let source_revision = source.revision;
     let mut config = source.config;
     let models = model_resolver
-        .resolve_models(workspace, &config.model_binding, &config.model_candidates)
+        .resolve_models(workspace, &config.model_binding, &config.model_fallbacks)
         .await
         .map_err(|error| PublishError::Unresolvable(error.to_string()))?;
     let mut bindings = std::collections::BTreeSet::new();
@@ -124,19 +124,21 @@ pub(crate) async fn prepare_agent_publication(
     if (config.model_binding.resolved().is_some()
         || config.model_binding.backend_default_ref().is_some()
         || config.model_binding.backend_exact().is_some())
-        && (models.candidates.len() != config.model_candidates.len()
-            || models.candidates.iter().zip(&config.model_candidates).any(
-                |(resolved, authored)| {
+        && (models.candidates.len() != config.model_fallbacks.len()
+            || models
+                .candidates
+                .iter()
+                .zip(&config.model_fallbacks)
+                .any(|(resolved, authored)| {
                     !resolved_binding_matches_authored(&resolved.binding, authored)
-                },
-            ))
+                }))
     {
         return Err(PublishError::Unresolvable(
             "resolved fallback candidates do not match the pinned authoring order".into(),
         ));
     }
     config.model_binding = ModelSelection::Pinned(models.primary.binding.clone());
-    config.model_candidates = models
+    config.model_fallbacks = models
         .candidates
         .iter()
         .map(|candidate| candidate.binding.clone())
@@ -150,7 +152,7 @@ pub(crate) async fn prepare_agent_publication(
     );
     let model_bytes = serde_json::to_vec(&(
         config.model_binding.resolved(),
-        &config.model_candidates,
+        &config.model_fallbacks,
         &config.compaction,
     ))
     .map_err(|error| PublishError::Unresolvable(error.to_string()))?;
@@ -219,7 +221,7 @@ mod tests {
             config: AgentConfig {
                 id: "agent-a".into(),
                 model_binding: selection,
-                model_candidates: fallbacks,
+                model_fallbacks: fallbacks,
                 ..Default::default()
             },
             revision: 7,
@@ -267,7 +269,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(draft.config.model_binding.resolved(), Some(&primary));
-        assert_eq!(draft.config.model_candidates, vec![fallback]);
+        assert_eq!(draft.config.model_fallbacks, vec![fallback]);
     }
 
     #[tokio::test]

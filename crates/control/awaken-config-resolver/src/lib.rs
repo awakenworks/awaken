@@ -23,7 +23,12 @@ pub use awaken_resource_contract::{
     BindingId, FileId, InputBinding, InputResourceId, MemoryStoreId, RepositoryId, ResourceAccess,
 };
 
+mod credential_selection;
 mod reference_stores;
+pub use credential_selection::{
+    CredentialCandidateSet, can_consume, credential_can_supply, credential_candidates,
+    derive_vendor_pool, expected_acp_dialect, validate_acp_dialect,
+};
 /// Read ports for authored aggregates. The runtime host reads through these
 /// application contracts without depending on the authoring HTTP crate.
 pub mod stores;
@@ -98,6 +103,16 @@ pub enum ResolveError {
     ModelAmbiguous {
         model_id: String,
         candidates: Vec<String>,
+    },
+    #[error("ACP backend `{0}` has no resolver-owned model API dialect mapping")]
+    AcpDialectUnknown(String),
+    #[error(
+        "ACP backend `{backend_ref}` expects model API dialect `{expected}` but the offering uses `{actual}`"
+    )]
+    DialectIncompatible {
+        backend_ref: String,
+        expected: &'static str,
+        actual: &'static str,
     },
     #[error("endpoint `{0}` missing from catalog")]
     EndpointMissing(String),
@@ -427,18 +442,6 @@ pub async fn resolve_profile_candidates(
 /// stops an otherwise-materializable key or local CLI login being paired with a
 /// model it cannot authenticate — the invalid `(model × credential)` combination
 /// the ADR calls out.
-#[must_use]
-pub fn can_consume(offering_provider_id: &str, source: &CredentialSource) -> bool {
-    if source.env_key.as_deref() == Some(awaken_credential_vault::CLAUDE_CODE_SETUP_TOKEN_ENV) {
-        return false;
-    }
-    match (source.kind, source.provider_id.as_deref()) {
-        (awaken_credential_vault::CredentialKind::WorkerLocal, None) => false,
-        (_, None) => true,
-        (_, Some(scoped)) => scoped == offering_provider_id,
-    }
-}
-
 /// Materialize the credential a binding selects, gated by [`can_consume`] when an
 /// `offering_provider` is given (the inference path); `None` skips the join (e.g.
 /// an MCP-server credential, which is not a model provider). `None` binding yields
@@ -454,79 +457,49 @@ async fn resolve_credential(
     availability: Option<(&AvailabilityLedger, u64)>,
     expected_workspace: Option<&str>,
 ) -> Result<Option<RedactedString>, ResolveError> {
-    match binding {
+    match credential_candidates(
+        binding,
+        sources,
+        offering_provider,
+        None,
+        availability,
+        expected_workspace,
+        0,
+    )? {
         // Brokered access has no locally materializable Provider secret. The
         // management preview resolves the public model/protocol shape only; the
         // runtime broker materializer performs live entitlement admission.
-        CredentialBinding::None | CredentialBinding::Brokered => Ok(None),
-        CredentialBinding::Exact {
-            credential_source_id,
+        CredentialCandidateSet::None | CredentialCandidateSet::Brokered => Ok(None),
+        CredentialCandidateSet::Direct {
+            sources,
+            pool_id: None,
+            ..
         } => {
             let source = sources
-                .get(credential_source_id.0.as_str())
-                .ok_or_else(|| ResolveError::SourceMissing(credential_source_id.0.clone()))?;
-            // Read-side tenant fence (SEC): when the caller knows the owning
-            // workspace, a source belonging to a DIFFERENT workspace is treated as
-            // ABSENT — the same `SourceMissing` an unknown id yields, so a
-            // cross-tenant `Exact` binding neither materializes B's secret nor leaks
-            // that the id exists. `SourceLookup.get` is a by-id primitive; tenancy is
-            // enforced here, at the resolution layer where both workspaces are known.
-            if let Some(ws) = expected_workspace
-                && source.workspace_id != ws
-            {
-                return Err(ResolveError::SourceMissing(credential_source_id.0.clone()));
-            }
-            if let Some(provider) = offering_provider
-                && !can_consume(provider, source)
-            {
-                return Err(ResolveError::IncompatibleCredential {
-                    source_id: credential_source_id.0.clone(),
-                    provider_id: provider.to_string(),
-                });
-            }
+                .into_iter()
+                .next()
+                .expect("an Exact binding always produces one candidate");
             Ok(Some(
                 awaken_credential_vault::materialize(source, secret_store).await?,
             ))
         }
-        CredentialBinding::OneOfCredentialPool { credential_pool_id } => {
-            let pool = sources
-                .get_pool(credential_pool_id.0.as_str())
-                .ok_or_else(|| ResolveError::PoolMissing(credential_pool_id.0.clone()))?;
-            // The eligible order drops cooled members (mid-run rotation) when a ledger
-            // is supplied; `cooled` is how many the cooldown excluded, for the
-            // fail-closed diagnostic.
-            let full = pool.selection_order();
-            let total = full.len();
-            let order = match availability {
-                Some((ledger, now_ms)) => pool.eligible_order(ledger, now_ms),
-                None => full,
-            };
-            let cooled = total - order.len();
+        CredentialCandidateSet::Direct {
+            sources,
+            pool_id: Some(pool_id),
+            total,
+            cooled,
+        } => {
             // Try members in eligible order; skip a member whose source is absent,
             // incompatible with the provider, or fails to materialize, so one bad key
             // does not fail the run.
-            for member in order {
-                let Some(source) = sources.get(member.credential_source_id.0.as_str()) else {
-                    continue;
-                };
-                // Read-side tenant fence (SEC): a pool may only draw on sources it
-                // owns. A member whose source belongs to a different workspace than
-                // the pool is skipped like an absent member (fail over); if that
-                // leaves nothing eligible the pool errors NoEligibleCredential — a
-                // cross-tenant source is never smuggled through the pool.
-                if source.workspace_id != pool.workspace_id {
-                    continue;
-                }
-                if offering_provider.is_some_and(|provider| !can_consume(provider, source)) {
-                    continue;
-                }
+            for source in sources {
                 if let Ok(secret) = awaken_credential_vault::materialize(source, secret_store).await
                 {
                     return Ok(Some(secret));
                 }
             }
             Err(ResolveError::NoEligibleCredential {
-                pool_id: credential_pool_id.0.clone(),
+                pool_id,
                 total,
                 cooled,
                 // Quota buckets are not modeled yet; capacity exclusion stays 0.

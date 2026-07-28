@@ -49,6 +49,22 @@ pub enum ModelSelection {
 }
 
 impl ModelSelection {
+    /// The authored executor coordinate when one is already explicit.
+    ///
+    /// Auto/profile selections are native until publication resolves their
+    /// model route. Backend-owned and pinned selections retain the exact
+    /// encoded coordinate; this method never invents a second executor field.
+    #[must_use]
+    pub fn backend_ref(&self) -> Option<&str> {
+        match self {
+            Self::Auto | Self::Profile { .. } => None,
+            Self::BackendDefault { backend_ref, .. } | Self::BackendExact { backend_ref, .. } => {
+                Some(backend_ref)
+            }
+            Self::Pinned(binding) => Some(&binding.backend_ref),
+        }
+    }
+
     /// A pinned binding from its three refs (ergonomic constructor for the many
     /// call sites that authored a concrete `ModelBinding::new(...)`).
     pub fn pinned(
@@ -135,6 +151,44 @@ impl ModelSelection {
             Self::BackendDefault { configuration, .. }
             | Self::BackendExact { configuration, .. } => Some(configuration),
             _ => None,
+        }
+    }
+}
+
+/// Typed authoring view of ADR-0057's executor axis.
+///
+/// This value is derived from `ModelSelection.backend_ref`; it is deliberately
+/// neither serialized nor stored on [`AgentConfig`]. Runtime keeps its own
+/// [`Backend`](awaken_runtime_contract::resolved::Backend) context form, and
+/// this config form is an explicit projection from that one parser.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AgentKind {
+    Native,
+    Acp { cli: String },
+    A2a { endpoint: String },
+}
+
+impl AgentKind {
+    #[must_use]
+    pub fn from_backend_ref(backend_ref: &str) -> Self {
+        match awaken_runtime_contract::resolved::Backend::from_ref(backend_ref) {
+            awaken_runtime_contract::resolved::Backend::Native => Self::Native,
+            awaken_runtime_contract::resolved::Backend::Acp { cli } => Self::Acp { cli },
+            awaken_runtime_contract::resolved::Backend::Remote { endpoint } => {
+                Self::A2a { endpoint }
+            }
+        }
+    }
+
+    /// Canonical runtime coordinate for this derived kind.
+    #[must_use]
+    pub fn backend_ref(&self) -> String {
+        match self {
+            Self::Native => "genai".into(),
+            Self::Acp { cli } if cli.is_empty() => "acp".into(),
+            Self::Acp { cli } => format!("acp:{cli}"),
+            Self::A2a { endpoint } => format!("a2a:{endpoint}"),
         }
     }
 }
@@ -374,8 +428,13 @@ pub struct AgentConfig {
     /// candidate fails cleanly, so an agent survives a model outage. Appended last
     /// with `skip_serializing_if` so a single-model config's fingerprint stays
     /// byte-identical; a non-empty pool enters the content address like any field.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub model_candidates: Vec<ModelBinding>,
+    #[serde(
+        default,
+        rename = "model_candidates",
+        alias = "model_fallbacks",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub model_fallbacks: Vec<ModelBinding>,
     /// Managed-Agent identity fields, carried so the config plane's agent object
     /// stays consistent with the SDK `/v1/agents` object. Identity metadata is
     /// excluded from the behavioral fingerprint; the typed MCP/Skill/delegation
@@ -426,6 +485,20 @@ pub struct AgentConfig {
     pub compaction: Option<CompactionStrategy>,
 }
 
+impl AgentConfig {
+    /// Project the executor kind without adding a parallel persisted
+    /// discriminant. Unresolved Auto/Profile selections belong to the native
+    /// resolver; every explicit selection is parsed by the canonical runtime
+    /// backend vocabulary.
+    #[must_use]
+    pub fn kind(&self) -> AgentKind {
+        self.model_binding
+            .backend_ref()
+            .map(AgentKind::from_backend_ref)
+            .unwrap_or(AgentKind::Native)
+    }
+}
+
 fn deserialize_skill_ids<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: Deserializer<'de>,
@@ -456,7 +529,7 @@ fn delegation_limits_are_default(limits: &DelegationLimits) -> bool {
 
 #[cfg(test)]
 mod model_selection_tests {
-    use super::ModelSelection;
+    use super::{AgentConfig, AgentKind, ModelSelection};
 
     #[test]
     fn profile_is_explicit_and_catalog_reconciled() {
@@ -498,6 +571,90 @@ mod model_selection_tests {
             .requires_reconciliation()
         );
         assert!(!ModelSelection::pinned("provider", "model", "genai").requires_reconciliation());
+    }
+
+    // Cause/effect decision table for the derived executor lens:
+    // R1 Auto/Profile -> Native; R2 ordinary provider ref -> Native;
+    // R3 acp/acp:<cli> -> Acp preserving optional CLI; R4 a2a:<endpoint> ->
+    // A2a preserving endpoint. Effects: no serialized `kind` field and the
+    // canonical encoded coordinate parses back to the same discriminant.
+    #[test]
+    fn agent_kind_is_a_stable_derived_executor_view() {
+        let cases = [
+            ("genai", AgentKind::Native),
+            ("provider:custom", AgentKind::Native),
+            ("acp", AgentKind::Acp { cli: String::new() }),
+            (
+                "acp:codex",
+                AgentKind::Acp {
+                    cli: "codex".into(),
+                },
+            ),
+            (
+                "a2a:https://agent.example",
+                AgentKind::A2a {
+                    endpoint: "https://agent.example".into(),
+                },
+            ),
+        ];
+        for (backend_ref, expected) in cases {
+            let config = AgentConfig {
+                model_binding: ModelSelection::pinned("provider", "model", backend_ref),
+                ..Default::default()
+            };
+            assert_eq!(config.kind(), expected);
+            assert_eq!(
+                AgentKind::from_backend_ref(&config.kind().backend_ref()),
+                expected
+            );
+            assert!(
+                serde_json::to_value(&config)
+                    .expect("serialize config")
+                    .get("kind")
+                    .is_none(),
+                "kind remains a projection, never stored twice"
+            );
+        }
+        for selection in [
+            ModelSelection::Auto,
+            ModelSelection::Profile {
+                profile_id: "default".into(),
+            },
+        ] {
+            assert_eq!(
+                AgentConfig {
+                    model_binding: selection,
+                    ..Default::default()
+                }
+                .kind(),
+                AgentKind::Native
+            );
+        }
+    }
+
+    // Cause/effect decision table for the model-fallback terminology migration:
+    // R1 historical `model_candidates` input -> populate model_fallbacks;
+    // R2 preferred `model_fallbacks` input -> populate the same field;
+    // R3 either input -> serialize the historical fingerprint key only.
+    #[test]
+    fn model_fallbacks_accept_both_authoring_names_without_wire_drift() {
+        let fallback = serde_json::json!([{
+            "provider_identity_ref": "provider",
+            "model_ref": "fallback",
+            "backend_ref": "genai"
+        }]);
+        for input_key in ["model_candidates", "model_fallbacks"] {
+            let mut value = serde_json::to_value(AgentConfig::default()).unwrap();
+            value
+                .as_object_mut()
+                .unwrap()
+                .insert(input_key.into(), fallback.clone());
+            let config: AgentConfig = serde_json::from_value(value).unwrap();
+            assert_eq!(config.model_fallbacks.len(), 1, "{input_key}");
+            let encoded = serde_json::to_value(config).unwrap();
+            assert_eq!(encoded["model_candidates"], fallback, "{input_key}");
+            assert!(encoded.get("model_fallbacks").is_none(), "{input_key}");
+        }
     }
 
     #[test]
