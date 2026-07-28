@@ -9,9 +9,9 @@
   Session Environment selection, live readiness, and shared CLI/Flow
   composition, descendant process-group reaping, event-triggered all-scope
   publication reconciliation, typed capture authoring, request-grained subject
-  attribution, and subject-scoped erasable ACP session homes. A real
-  persisted-login Claude session and the product-level Art.17 E2E remain
-  release gates. Typed migration of the remaining runtime environment settings
+  attribution, subject-scoped erasable ACP session homes, and the product-level
+  Art.17 fan-out E2E. A real persisted-login Claude session remains an external
+  release gate. Typed migration of the remaining runtime environment settings
   is still an explicit implementation gap. “Proposed” therefore means the
   complete decision is not yet accepted; it does not mean the listed foundation
   is hypothetical.
@@ -900,7 +900,7 @@ the remaining external/reconciliation gates:
 | frontend contract | OpenAPI-generated TypeScript consumes the Rust discriminated union and live Worker ACP projection | keep generated-contract freshness gated |
 | Flow | pinned to the pushed Awaken revision; one existing Worker/executor consumes the shared preparation service | keep the revision and lockfile updated atomically |
 | ambient configuration | environment Provider proposals and Flow ACP inventory/default fields are removed; sandbox/container and content-capture policy consume typed `DeploymentConfig`; enrollment signing is internal | migrate remaining OAuth lifetime, database-pool and observability readers; keep PATH/HOME/DISPLAY as execution metadata only |
-| content attribution/erasure | Managed request attribution is durable across dispatch and resume; Host-owned capture sink and subject-scoped ACP blob store share the erasure resolver | add the product-level run → harvest → erasure HTTP E2E and retention-expiry policy |
+| content attribution/erasure | Managed request attribution is durable across dispatch and resume; Host-owned capture sink and subject-scoped ACP blob store share the erasure resolver; HTTP E2E proves capture + real session harvest fan-out, cross-subject isolation and idempotency | add automatic retention-expiry policy for ACP session homes |
 | real host proof | installed Codex `0.145.0` completed the zero-configuration host-login release gate through real wrapper negotiation, BackendDefault publication, LLM response and committed running→idle transcript; installed Claude `2.1.220` is correctly login-required when ambient `ANTHROPIC_API_KEY` is cleared | run the same release-gated real LLM session after a persisted Claude host login is available |
 
 Therefore discovery, generic ACP configuration, live Worker projection,
@@ -910,12 +910,12 @@ explicit external release gate; the ADR does not equate hermetic protocol
 coverage or an ambient API key with that proof.
 
 ADR-0057's trigger-gated G2 implementation now has request attribution,
-subject-scoped ACP continuity, a registered `ContentEraser`, and store-level
-isolation/erasure proof. Its final product gate is the Art.17 HTTP E2E proving a
-real run harvests a session blob and one erasure request removes both captured
-content and that blob while preserving another subject. Hand placement (F) and
-Agent disable/archive semantics (I) are broader ADR-0057 phases, not alternative
-ACP discovery or execution paths; their status remains owned by ADR-0057.
+subject-scoped ACP continuity, a registered `ContentEraser`, and an Art.17 HTTP
+E2E proving one erasure request removes captured content plus a genuinely
+harvested session blob while preserving another subject and remaining
+idempotent. Hand placement (F) and Agent disable/archive semantics (I) are
+broader ADR-0057 phases, not alternative ACP discovery or execution paths;
+their status remains owned by ADR-0057.
 
 Managed `CodexAuthJson` is a separate product decision. BackendOwned never
 enters that Provider-only artifact path. A global prohibition on creating
