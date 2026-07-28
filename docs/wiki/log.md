@@ -5,6 +5,10 @@
 - **Update**: Amended ADR-0061 so embedded IAM and the side-effect-free
   `awaken management iam profile` release projection share one deterministic,
   Management-owned authorization contract.
+- **Update**: Extracted the existing `awaken.runtime.resources` policy into the
+  same authoritative path and exposed it through
+  `awaken management iam profile resources`, so hosted File/Skill authorization
+  cannot drift from embedded Management.
 
 ## 2026-07-26
 

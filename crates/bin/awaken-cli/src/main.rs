@@ -76,6 +76,16 @@ async fn run(command: console::Command) -> Result<(), String> {
             );
             Ok(())
         }
+        console::Command::ManagementIamResourceProfile => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &awaken_control::management_resource_authorization_profile()
+                )
+                .map_err(|error| format!("serialize Management resource IAM profile: {error}"))?
+            );
+            Ok(())
+        }
         console::Command::Worker {
             server,
             config_path,

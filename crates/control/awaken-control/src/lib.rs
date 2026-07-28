@@ -40,6 +40,7 @@ pub use crate::authz::{
     MANAGEMENT_AGENT_PUBLISHER_ROLE, MANAGEMENT_POLICY_NAMESPACE, ManagementAuthz,
     ManagementIdentityMode, RemoteManagementAuthz, TokenSpec, embedded_iam,
     embedded_iam_for_tenant, embedded_iam_for_workspace, management_authorization_profile,
+    management_resource_authorization_profile,
 };
 pub use crate::control_stores::{ControlStoreConfig, StoreBackend};
 pub use crate::credential_reference::CredentialRevisionValidator;
