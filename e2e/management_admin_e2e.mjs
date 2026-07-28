@@ -263,13 +263,8 @@ async function main() {
       assert.equal(r.json.credential_present, true);
       pass('POST /v1/config/inference/resolve — resolver output matches ResolvedInferenceView contract');
 
-      // Target-shape cause graph: exactly one of structured target (C1) and legacy
-      // model_id (C2) is required. XOR succeeds; both/none fail before resolution.
-      // | Rule | C1 | C2 | Expected |
-      // | T1   | Y  | N  | structured resolution |
-      // | T2   | N  | Y  | legacy resolution |
-      // | T3   | Y  | Y  | 400 model_target_invalid |
-      // | T4   | N  | N  | 400 model_target_invalid |
+      // Target-shape boundary: `target` is the sole contract. The retired
+      // top-level `model_id` and a missing target both fail before resolution.
       for (const request of [
         {
           workspace_id: 'ws', model_id: 'connection-model-a',
@@ -278,10 +273,9 @@ async function main() {
         { workspace_id: 'ws', binding: { type: 'none' } },
       ]) {
         r = await req(base, 'POST', '/v1/config/inference/resolve', request);
-        assert.equal(r.status, 400, JSON.stringify(r.json));
-        assert.equal(r.json.code, 'model_target_invalid');
+        assert.equal(r.status, 422, JSON.stringify(r.json));
       }
-      pass('resolve request enforces target/model_id XOR at the HTTP boundary');
+      pass('resolve request rejects retired or missing target shapes at the HTTP boundary');
 
       // --- credential read-back + list (validated) ---
       r = await req(base, 'GET', `/v1/config/credentials/${credId}`);

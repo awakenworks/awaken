@@ -8,7 +8,6 @@ import CredentialsSurface from "./surfaces/credentials";
 import DeploymentsSurface from "./surfaces/deployments";
 import EnvironmentsSurface from "./surfaces/environments";
 import HomeSurface from "./surfaces/home";
-import McpServersSurface from "./surfaces/mcp-servers";
 import MemorySurface from "./surfaces/memory";
 import ModelsSurface from "./surfaces/models";
 import SkillsSurface from "./surfaces/skills";
@@ -43,7 +42,6 @@ export const router = createBrowserRouter([
       { path: "w/:ws/skills", element: <SkillsSurface /> },
       { path: "w/:ws/models", element: <ModelsSurface /> },
       { path: "w/:ws/credentials", element: <CredentialsSurface /> },
-      { path: "w/:ws/mcp-servers", element: <McpServersSurface /> },
       { path: "w/:ws/a2a-servers", element: <A2aSurface /> },
       { path: "w/:ws/protocols", element: <ProtocolsSurface /> },
       { path: "w/:ws/access", element: <AccessSurface /> },

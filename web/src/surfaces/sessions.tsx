@@ -139,7 +139,7 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
           <Button variant="ghost" onClick={() => setMcp([...mcp, { name: "", url: "" }])}>
             + {app.t("add inline server", "添加内联服务器")}
           </Button>
-          <span className="mut">{app.t("Project-bound MCP servers merge in automatically.", "项目绑定的 MCP 自动并入。")}</span>
+          <span className="mut">{app.t("MCP servers declared by the Agent are included automatically.", "Agent 声明的 MCP 服务器会自动包含。")}</span>
         </div>
         {create.error instanceof Error && <div className="err">{create.error.message}</div>}
         <div className="row" style={{ justifyContent: "flex-end" }}>

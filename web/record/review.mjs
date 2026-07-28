@@ -124,7 +124,7 @@ const checks = [
   }],
   ["protocol composition proof", () => {
     const source = requiredFlow("09-protocol-composition.mjs");
-    for (const claim of ["Managed Agents", "acp:claude", "credential_binding", "Project-bound MCP servers merge"]) {
+    for (const claim of ["Managed Agents", "acp:claude", "mcp_servers", "Agent MCP servers are included"]) {
       assert.ok(source.includes(claim), `09-protocol-composition.mjs: missing ${claim}`);
     }
   }],
