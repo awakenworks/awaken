@@ -726,9 +726,9 @@ the remaining external/reconciliation gates:
 | Lifecycle slice | Current state | Remaining work |
 |---|---|---|
 | adapter catalog | authoritative `AcpCli` plus neutral ACP capability contract | keep protocol-external descriptors versioned with adapter changes |
-| installation/login probe | `awaken-acp-application` owns PATH/HOME-only process I/O and classification | add event-triggered refresh in addition to the bounded periodic loop |
+| installation/login probe | `awaken-acp-application` owns PATH/HOME-only process I/O and classification; startup, bounded periodic probing and `POST /admin/refresh-observations` share one coalescing atomic refresh operation | wire product-specific login-remediation completion events to the explicit Worker trigger |
 | reusable CLI/Flow preparation | CLI and Flow call the same application service, binding use case, resolver and atomic launch-plan projection | no parallel inventory or composition path remains |
-| capability negotiation | bounded Worker probe invokes the canonical prompt-free protocol operation and shares the one Worker observation loop | add event-triggered refresh/reconcile and process-group reap |
+| capability negotiation | bounded Worker probe invokes the canonical prompt-free protocol operation; periodic and explicit event refreshes coalesce through the same Worker observation cache | add process-group reap proof for adapters that fork descendants |
 | effective profile/fingerprint | typed profile and SHA-256 evidence are published dynamically with TTL and pinned by publication/placement/launch fences | retain exact-version compatibility tests |
 | Agent ACP mode/options | generated discriminated selection carries default/exact model, native mode and arbitrary native option values; publication validates them | add richer widgets only as presentation concerns |
 | environment selection | provisioning selects trusted/isolated provider | retain as the sole Session Environment policy |

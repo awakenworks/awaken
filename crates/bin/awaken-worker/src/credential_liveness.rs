@@ -6,6 +6,7 @@
 //! can reuse that exact host observation instead of probing login twice.
 
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -22,6 +23,8 @@ use awaken_worker_contract::{
 pub(crate) struct WorkerObservationCache {
     credentials: RwLock<BTreeSet<WorkerCredentialObservation>>,
     acp_capabilities: RwLock<Vec<WorkerAcpCapabilityObservation>>,
+    refresh_generation: AtomicU64,
+    refresh_guard: tokio::sync::Mutex<()>,
 }
 
 impl WorkerObservationCache {
@@ -46,6 +49,14 @@ impl WorkerObservationCache {
         now_ms: u64,
         ttl: Duration,
     ) -> Result<(), String> {
+        // Every trigger uses this one operation. A caller that waited behind a
+        // successful concurrent refresh consumes that causal batch instead of
+        // probing the same host identity a second time.
+        let observed_generation = self.refresh_generation.load(Ordering::Acquire);
+        let _refresh = self.refresh_guard.lock().await;
+        if self.refresh_generation.load(Ordering::Acquire) != observed_generation {
+            return Ok(());
+        }
         let credentials = credential_observations(resolver, now_ms, ttl)
             .await
             .map_err(|error| error.to_string())?;
@@ -61,6 +72,7 @@ impl WorkerObservationCache {
             .acp_capabilities
             .write()
             .expect("ACP capability observation cache poisoned") = acp_capabilities;
+        self.refresh_generation.fetch_add(1, Ordering::Release);
         Ok(())
     }
 }
@@ -169,6 +181,7 @@ mod tests {
         CredentialObservation, CredentialObservationSource, CredentialRef,
         WorkerLocalReferenceRevalidator,
     };
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct AvailableResolver;
 
@@ -252,6 +265,33 @@ mod tests {
     impl AcpCapabilityObservationSource for FailedCapabilitySource {
         async fn capability_observations(&self) -> Result<Vec<AcpCapabilityObservation>, String> {
             Err("handshake transport failed".into())
+        }
+    }
+
+    struct CountingResolver {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl CredentialObservationSource for CountingResolver {
+        async fn credential_observations(
+            &self,
+        ) -> Result<BTreeSet<CredentialObservation>, CredentialMaterialError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            AvailableResolver.credential_observations().await
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WorkerLocalReferenceRevalidator for CountingResolver {
+        async fn revalidate_worker_reference(
+            &self,
+            credential: &CredentialRef,
+        ) -> Result<CredentialObservation, CredentialMaterialError> {
+            AvailableResolver
+                .revalidate_worker_reference(credential)
+                .await
         }
     }
 
@@ -343,5 +383,55 @@ mod tests {
         );
         assert_eq!(cache.credential_snapshot(), credentials_before, "R2");
         assert_eq!(cache.acp_capability_snapshot(), capabilities_before, "R2");
+    }
+
+    // Cause/effect graph for concurrent refresh triggers:
+    // C1 two triggers overlap before the first batch commits;
+    // E1 one host probe runs, E2 both callers observe success, E3 the committed
+    // batch has one generation. Sequential triggers are unconstrained and may
+    // refresh again. Rule R1 = C1 -> E1+E2+E3.
+    #[tokio::test]
+    async fn overlapping_refresh_triggers_coalesce_into_one_probe_batch() {
+        let cache = Arc::new(WorkerObservationCache::default());
+        let resolver = Arc::new(CountingResolver {
+            calls: AtomicUsize::new(0),
+        });
+        let first = {
+            let cache = cache.clone();
+            let resolver = resolver.clone();
+            tokio::spawn(async move {
+                cache
+                    .refresh(
+                        Some(resolver.as_ref()),
+                        None,
+                        100,
+                        Duration::from_millis(30),
+                    )
+                    .await
+            })
+        };
+        tokio::task::yield_now().await;
+        let second = {
+            let cache = cache.clone();
+            let resolver = resolver.clone();
+            tokio::spawn(async move {
+                cache
+                    .refresh(
+                        Some(resolver.as_ref()),
+                        None,
+                        101,
+                        Duration::from_millis(30),
+                    )
+                    .await
+            })
+        };
+
+        first.await.expect("first task").expect("first refresh");
+        second
+            .await
+            .expect("second task")
+            .expect("coalesced refresh");
+        assert_eq!(resolver.calls.load(Ordering::SeqCst), 1, "R1/E1");
+        assert_eq!(cache.refresh_generation.load(Ordering::Acquire), 1, "R1/E3");
     }
 }

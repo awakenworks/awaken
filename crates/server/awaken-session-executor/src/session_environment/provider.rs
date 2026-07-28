@@ -19,6 +19,7 @@ pub(crate) enum SessionEnvironmentProvider {
 }
 
 impl SessionEnvironmentProvider {
+    #[cfg(test)]
     pub(crate) fn supports_host_identity(&self) -> bool {
         matches!(self, Self::Workdir(_))
     }

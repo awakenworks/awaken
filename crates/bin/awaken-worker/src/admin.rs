@@ -10,6 +10,8 @@
 //!   503 before the pool starts or once draining, so the orchestrator stops routing.
 //! - `POST /admin/drain` — begin a graceful drain: stop claiming, let in-flight runs
 //!   finish (a `preStop` hook calls this before SIGTERM).
+//! - `POST /admin/refresh-observations` — coalesce an immediate login/capability
+//!   refresh with the canonical Worker observation lifecycle.
 //! - `GET /metrics` — the drain gauge in Prometheus text format.
 
 use std::sync::Arc;
@@ -26,6 +28,10 @@ pub(crate) fn worker_admin_router_with_lifecycle(lifecycle: Arc<crate::WorkerLif
         .route("/readyz", get(lifecycle_readyz))
         .route("/metrics", get(metrics))
         .route("/admin/drain", post(lifecycle_drain))
+        .route(
+            "/admin/refresh-observations",
+            post(lifecycle_refresh_observations),
+        )
         .with_state(lifecycle)
 }
 
@@ -43,6 +49,18 @@ async fn lifecycle_drain(
         Err(_) => (
             StatusCode::SERVICE_UNAVAILABLE,
             "draining locally; registry unavailable\n",
+        ),
+    }
+}
+
+async fn lifecycle_refresh_observations(
+    State(lifecycle): State<Arc<crate::WorkerLifecycle>>,
+) -> impl IntoResponse {
+    match lifecycle.refresh_observations().await {
+        Ok(()) => (StatusCode::OK, "observations refreshed\n"),
+        Err(_) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "observation refresh failed; prior evidence keeps its original deadline\n",
         ),
     }
 }
@@ -103,6 +121,7 @@ mod tests {
             credential_observation_resolver: None,
             acp_capability_observation_source: None,
             observations: Arc::new(crate::WorkerObservationCache::default()),
+            observation_ttl: std::time::Duration::from_secs(30),
         });
         let app = worker_admin_router_with_lifecycle(lifecycle);
         assert_eq!(
@@ -116,6 +135,13 @@ mod tests {
         assert_eq!(
             call(&app, "POST", "/admin/drain").await.0,
             StatusCode::SERVICE_UNAVAILABLE
+        );
+        // Cause/effect rule O1: an explicit refresh with no configured dynamic
+        // sources still commits the canonical empty batch and returns success.
+        // Drain state is orthogonal and cannot disable diagnostic refresh.
+        assert_eq!(
+            call(&app, "POST", "/admin/refresh-observations").await.0,
+            StatusCode::OK
         );
         // /metrics renders the process's Prometheus scrape (the global OTel registry).
         // In this unit test no meter provider is installed, so it is an empty 200 —
