@@ -8,8 +8,7 @@
 //!       Serve the neutral tool-execution endpoint (ADR-0044/0045). `--features hand`.
 //!   awaken-sandbox memoryd
 //!       Project a durable memory store into the shared pod volume (ADR-0053), FUSE-first
-//!       with a copy fallback. Env-driven (AWAKEN_MEMORY_STORE_ID / _MOUNT_PATH /
-//!       _MEMORY_MODE / _MEMORY_STORE_DIR). `--features memoryd`.
+//!       with a copy fallback. Explicit flag/value configuration. `--features memoryd`.
 
 use std::process::ExitCode;
 

@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Real-container memoryd sidecar e2e (ADR-0053): build the memoryd image and prove the
 # copy realization end-to-end — the harvest→persist→re-materialize round-trip — inside
-# a REAL Docker container, over the exact env contract the k8s `pod_plan` sets on the
-# `memoryd-<i>` sidecar (AWAKEN_MEMORY_STORE_ID / _MOUNT_PATH / _MEMORY_STORE_DIR /
-# _MEMORY_MODE). This exercises the actual image ENTRYPOINT (`awaken-sandbox memoryd`),
+# a REAL Docker container, over the exact explicit argv contract the k8s `pod_plan`
+# sets on the `memoryd-<i>` sidecar. This exercises the actual image ENTRYPOINT,
 # the role's SIGTERM harvest, and the store-owned sqlite persistence across a container
 # restart — none of which the in-process copy-cycle unit test covers.
 #
@@ -63,9 +62,7 @@ trap cleanup EXIT
 
 run_memoryd() { # run_memoryd <name> <mount-host-dir>
   docker run -d --name "$1" -v "$STORE:/store" -v "$2:/mnt" \
-    -e AWAKEN_MEMORY_STORE_ID=s -e AWAKEN_MOUNT_PATH=/mnt \
-    -e AWAKEN_MEMORY_STORE_DIR=/store -e AWAKEN_MEMORY_MODE=copy \
-    "$IMAGE" >/dev/null
+    "$IMAGE" --store-id s --mount-path /mnt --store-dir /store --mode copy >/dev/null
 }
 
 log "3/4 run1: materialize empty, write a memory file, SIGTERM → harvest to the store"

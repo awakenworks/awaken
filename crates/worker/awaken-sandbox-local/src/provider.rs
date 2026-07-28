@@ -221,6 +221,7 @@ pub(crate) fn restrict_to_owner(_path: &std::path::Path) -> Result<(), pc::Sandb
 /// Realizes [`LocalSandbox`] environments as directories under a base path.
 pub struct LocalProvider {
     base: PathBuf,
+    inherit_agent_stderr: bool,
     /// In-memory blob seed for `File`/`Resource` mounts (keyed by id).
     blobs: HashMap<String, Vec<u8>>,
     /// Optional content-addressed store consulted after the seed map (Slice 4).
@@ -238,11 +239,24 @@ impl LocalProvider {
     pub fn new(base: impl Into<PathBuf>) -> Self {
         Self {
             base: base.into(),
+            inherit_agent_stderr: false,
             blobs: HashMap::new(),
             file_store: None,
             secret_broker: Arc::new(std::sync::RwLock::new(None)),
             memory_mounter: Arc::new(std::sync::RwLock::new(None)),
         }
+    }
+
+    /// Select whether an opaque agent child inherits the host stderr.
+    #[must_use]
+    pub fn with_agent_stderr(mut self, inherit: bool) -> Self {
+        self.inherit_agent_stderr = inherit;
+        self
+    }
+
+    #[must_use]
+    pub fn inherits_agent_stderr(&self) -> bool {
+        self.inherit_agent_stderr
     }
 
     /// Register bytes a `File`/`Resource` mount can resolve to (test/seed helper).
@@ -508,6 +522,7 @@ impl LocalProvider {
             root: IsolatedRoot::new(dir),
             outputs_path: outputs_path.to_string(),
             deny_egress: false,
+            inherit_agent_stderr: self.inherit_agent_stderr,
             base_env: Vec::new(),
             secret_broker: self.secret_broker.clone(),
             realized: Vec::new(),
@@ -547,6 +562,7 @@ pub struct LocalSandbox {
     /// Egress denied for this sandbox's rooted in-process tools (derived from the
     /// spec's [`NetworkPolicy`](pc::NetworkPolicy)); threaded into [`rooted_tools`].
     deny_egress: bool,
+    inherit_agent_stderr: bool,
     base_env: Vec<pc::EnvVar>,
     /// Shared broker installation; only opaque refs are retained in `base_env`.
     secret_broker: Arc<std::sync::RwLock<Option<Arc<dyn pc::SecretBroker>>>>,
@@ -668,7 +684,7 @@ impl LocalSandbox {
         command: pc::Command,
     ) -> Result<(Box<dyn pc::ProcessHandle>, Box<dyn AgentChannel>), pc::SandboxError> {
         let mut cmd = self.build_command(command).await?;
-        let stderr = if std::env::var_os("AWAKEN_SANDBOX_AGENT_STDERR").is_some() {
+        let stderr = if self.inherit_agent_stderr {
             ProcStdio::inherit()
         } else {
             ProcStdio::null()

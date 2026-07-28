@@ -341,6 +341,7 @@ pub fn sandbox_exec_argv(input: &RenderInput) -> Vec<String> {
 /// Realizes [`NamespaceSandbox`] environments (bubblewrap tier).
 pub struct NamespaceProvider {
     base: PathBuf,
+    inherit_agent_stderr: bool,
     blobs: std::collections::HashMap<String, Vec<u8>>,
     file_store: Option<Arc<dyn pc::BlobSource>>,
     secret_broker: Arc<std::sync::RwLock<Option<Arc<dyn pc::SecretBroker>>>>,
@@ -360,11 +361,24 @@ impl NamespaceProvider {
     pub fn new(base: impl Into<PathBuf>) -> Self {
         Self {
             base: base.into(),
+            inherit_agent_stderr: false,
             blobs: std::collections::HashMap::new(),
             file_store: None,
             secret_broker: Arc::new(std::sync::RwLock::new(None)),
             memory_mounter: Arc::new(std::sync::RwLock::new(None)),
         }
+    }
+
+    /// Select whether an opaque agent child inherits the host stderr.
+    #[must_use]
+    pub fn with_agent_stderr(mut self, inherit: bool) -> Self {
+        self.inherit_agent_stderr = inherit;
+        self
+    }
+
+    #[must_use]
+    pub fn inherits_agent_stderr(&self) -> bool {
+        self.inherit_agent_stderr
     }
 
     #[must_use]
@@ -647,6 +661,7 @@ impl NamespaceProvider {
             host_workspace,
             host_outputs,
             base_env,
+            inherit_agent_stderr: self.inherit_agent_stderr,
             secret_broker: self.secret_broker.clone(),
             network: spec.network.clone(),
             layout,
@@ -700,6 +715,7 @@ impl NamespaceProvider {
                 .cloned()
                 .and_then(|value| serde_json::from_value(value).ok())
                 .unwrap_or_default(),
+            inherit_agent_stderr: self.inherit_agent_stderr,
             secret_broker: self.secret_broker.clone(),
             network: pc::NetworkPolicy::Unrestricted,
             layout: Vec::new(),
@@ -718,6 +734,7 @@ pub struct NamespaceSandbox {
     host_workspace: PathBuf,
     host_outputs: PathBuf,
     base_env: Vec<pc::EnvVar>,
+    inherit_agent_stderr: bool,
     secret_broker: Arc<std::sync::RwLock<Option<Arc<dyn pc::SecretBroker>>>>,
     network: pc::NetworkPolicy,
     layout: Vec<RenderMount>,
@@ -981,7 +998,7 @@ impl NamespaceSandbox {
         awaken_local_process::configure_process_group(&mut cmd);
         cmd.args(&argv[1..]);
         self.configure_command(&mut cmd, &command)?;
-        let stderr = if std::env::var_os("AWAKEN_SANDBOX_AGENT_STDERR").is_some() {
+        let stderr = if self.inherit_agent_stderr {
             ProcStdio::inherit()
         } else {
             ProcStdio::null()

@@ -37,8 +37,18 @@ impl SessionEnvironmentProvider {
         Self::Workdir(LocalProvider::new(base))
     }
 
-    pub(crate) fn namespace(base: impl Into<std::path::PathBuf>) -> Self {
-        Self::Namespace(NamespaceProvider::new(base))
+    pub(crate) fn workdir_with_agent_stderr(
+        base: impl Into<std::path::PathBuf>,
+        inherit: bool,
+    ) -> Self {
+        Self::Workdir(LocalProvider::new(base).with_agent_stderr(inherit))
+    }
+
+    pub(crate) fn namespace_with_agent_stderr(
+        base: impl Into<std::path::PathBuf>,
+        inherit: bool,
+    ) -> Self {
+        Self::Namespace(NamespaceProvider::new(base).with_agent_stderr(inherit))
     }
 
     pub(crate) fn container(
@@ -58,8 +68,12 @@ impl SessionEnvironmentProvider {
     pub(crate) fn at_root(&self, base: impl Into<std::path::PathBuf>) -> Self {
         let base = base.into();
         match self {
-            Self::Workdir(_) => Self::workdir(base),
-            Self::Namespace(_) => Self::namespace(base),
+            Self::Workdir(provider) => {
+                Self::workdir_with_agent_stderr(base, provider.inherits_agent_stderr())
+            }
+            Self::Namespace(provider) => {
+                Self::namespace_with_agent_stderr(base, provider.inherits_agent_stderr())
+            }
             Self::Container {
                 provider,
                 extra_mounts,
