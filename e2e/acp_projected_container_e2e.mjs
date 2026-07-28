@@ -312,7 +312,10 @@ async function main() {
       reply,
       `the production projected container returned an ACP message: ${JSON.stringify(observed.events)}`,
     );
-    assert.match(reply, /base=http:\/\/container-db\.invalid\/v1/u);
+    assert.ok(
+      reply.includes(`base=${directory.url}/v1beta/`),
+      `the published provider endpoint beats ambient env: ${reply}`,
+    );
     assert.match(reply, /model=container-upstream/u, 'the published upstream model beats ambient env');
     assert.ok(!reply.includes('ambient-container'));
     assert.ok(!reply.includes('environment-fallback-must-not-win'));
