@@ -68,3 +68,10 @@
 
 - **Initialization**: Created the source-document ownership index, fact indexes, agent instructions, and root navigation index.
 - **Update**: Added retrieval facts for runtime behavior, runtime interface boundaries, tool and capability policy, deployment, resources, credentials, and product adapter boundaries.
+## 2026-07-29 (Hosted Runtime authorization release contract)
+
+- Added one Awaken-owned deterministic Hosted lifecycle authorization profile
+  for `run.create/read/resume/cancel`.
+- Exported the same contract through
+  `awaken management iam profile runtime` so hosts reconcile exact image data
+  rather than copying the role/action matrix.

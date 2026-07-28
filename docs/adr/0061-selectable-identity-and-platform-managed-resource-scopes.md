@@ -313,6 +313,28 @@ Cross-product automation binds the product-owned
 hold `workspace_admin`, but a Flow workload must not inherit credential
 administration merely because both capabilities use the Management API.
 
+## Amendment (2026-07-29): Hosted Runtime lifecycle profile is Awaken-owned
+
+The `run.create`, `run.read`, `run.resume`, and `run.cancel` vocabulary belongs
+to Awaken even when a closed platform hosts the Coordinator. Awaken therefore
+exports one deterministic `hosted_runtime_authorization_profile()` and projects
+it through `awaken management iam profile runtime`.
+
+```text
+Awaken Hosted lifecycle vocabulary
+  -> hosted_runtime_authorization_profile()
+  -> exact Awaken image release JSON
+  -> hosting PAP validation/CAS activation
+  -> hosting-owned exact Workspace role bindings
+```
+
+The profile defines only two roles: `awaken.runtime:workspace_admin` for a human
+Workspace owner and `awaken.runtime:agent_executor` for a product workload.
+Both receive only `run.*` lifecycle authority at Workspace scope. Provider
+credentials, Management configuration, IAM decisions, billing and Gateway
+leases are absent. A host must consume the profile emitted by the exact Awaken
+image; it must not reproduce this action/role matrix in closed code.
+
 This release projection does not merge hosted closed code into Awaken. The open
 Management image remains independently deployable; a hosted release composes
 its immutable image and contract with external IAM lifecycle management.
