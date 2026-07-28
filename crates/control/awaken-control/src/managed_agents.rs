@@ -195,7 +195,7 @@ fn config_from_create(
         plugin_config: BTreeMap::new(),
         context_policy: Default::default(),
         tool_patterns: Vec::new(),
-        model_candidates: Vec::new(),
+        model_fallbacks: Vec::new(),
         name: Some(params.name),
         description: params.description,
         metadata: params.metadata,

@@ -92,7 +92,7 @@ pub fn admin_assistant_config() -> AgentConfig {
         plugin_config: Default::default(),
         context_policy: Default::default(),
         tool_patterns: Vec::new(),
-        model_candidates: Vec::new(),
+        model_fallbacks: Vec::new(),
         // Managed identity/wire fields (config-plane authoring metadata); unused here.
         ..Default::default()
     }
@@ -962,7 +962,7 @@ impl RawTool for DraftAgent {
             plugin_config: args.plugin_config,
             context_policy: args.context_policy.unwrap_or_default(),
             tool_patterns: args.tool_patterns,
-            model_candidates: Vec::new(),
+            model_fallbacks: Vec::new(),
             name: args.name,
             description: args.description,
             tool_overrides: args.tool_overrides,

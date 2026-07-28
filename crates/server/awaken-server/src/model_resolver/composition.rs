@@ -31,6 +31,9 @@ impl CatalogModelPublicationResolver {
             profiles: None,
             brokered_access_enabled: true,
             workers: None,
+            credential_selection_sequences: Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
         }
     }
 
@@ -43,6 +46,9 @@ impl CatalogModelPublicationResolver {
             profiles: None,
             brokered_access_enabled: true,
             workers: None,
+            credential_selection_sequences: Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
         }
     }
 
