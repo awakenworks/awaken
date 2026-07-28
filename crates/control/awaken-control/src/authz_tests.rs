@@ -117,6 +117,17 @@ fn embedded_iam_registers_only_org_to_workspace_scope() {
 }
 
 #[test]
+/// Causal graph:
+/// Cloud Account token -> typed IAM verification -> Account principal
+/// -> remote Management authorization -> guarded Awaken route.
+///
+/// Decision table:
+///
+/// | Account credential source | bearer validity | result |
+/// |---|---|---|
+/// | cached Cloud login | valid | authorize |
+/// | explicit bearer | valid | authorize |
+/// | explicit bearer | invalid | `401` |
 fn cloud_guard_uses_cached_login_and_explicit_bearer_override() {
     use std::net::TcpListener as StdListener;
     use std::sync::mpsc;
@@ -173,6 +184,7 @@ fn cloud_guard_uses_cached_login_and_explicit_bearer_override() {
             .mint(&AccessTokenClaims {
                 iss: ISSUER.into(),
                 sub: "account-alice".into(),
+                subject_kind: awaken_iam_host::AccessTokenSubjectKind::Account,
                 aud: AUDIENCE.into(),
                 exp: now + 3600,
                 iat: now,
