@@ -180,6 +180,9 @@ const FILE_WRITE: &str = "file.write";
 const SKILL_READ: &str = "skill.read";
 const SKILL_WRITE: &str = "skill.write";
 pub const MANAGEMENT_POLICY_NAMESPACE: &str = "awaken.runtime.management";
+/// Qualified role intended for an external product that publishes Agent
+/// configuration but must never administer API credentials.
+pub const MANAGEMENT_AGENT_PUBLISHER_ROLE: &str = "awaken.runtime.management:agent_publisher";
 const RESOURCE_POLICY_NAMESPACE: &str = "awaken.runtime.resources";
 const AUTHORIZATION_PROFILE_EPOCH: &str = "2020-01-01T00:00:00Z";
 
@@ -250,6 +253,15 @@ pub fn management_authorization_profile() -> CreateAuthorizationProfile {
             });
         }
     }
+    grants.push(GrantSnapshot {
+        id: format!("{MANAGEMENT_POLICY_NAMESPACE}:grant:role:agent_publisher"),
+        subject: GrantSubjectRef::Role {
+            role_id: MANAGEMENT_AGENT_PUBLISHER_ROLE.to_owned(),
+        },
+        action_pattern: qualify_action("workspace.*").0,
+        scope: ScopeRef::Global,
+        effect: GrantEffect::Allow,
+    });
 
     CreateAuthorizationProfile {
         namespace: NamespaceId(MANAGEMENT_POLICY_NAMESPACE.to_owned()),
