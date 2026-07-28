@@ -169,7 +169,7 @@ async function executePublishedAgent(expectedCalls: number): Promise<void> {
 
 async function main(): Promise<void> {
   const database = await postgres();
-  const upstream = await startFakeAnthropic(FAKE_KEY);
+  const upstream = await startFakeAnthropic(FAKE_KEY, { models: [MODEL] });
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-control-pg-'));
   const bin = awakenBin();
   let server = start(bin, directory, database.url);
