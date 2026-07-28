@@ -103,6 +103,80 @@ async fn compatible_claim_skips_ineligible_work_and_pins_the_incarnation() {
     assert_eq!(assignment.capability_fingerprint, fingerprint);
 }
 
+async fn exact_backend_capability_claim_conformance(store: &dyn DispatchQueue) {
+    // Cause/effect graph:
+    // immutable backend_ref -> exact required capability -> atomic claim
+    // compatibility. Queue priority/order cannot let an incapable Worker take a
+    // Run; the other backend remains pending for its matching Worker.
+    //
+    // | queued runs | Worker manifest | claim outcomes |
+    // | codex + claude interleaved | acp:codex | every codex, zero claude |
+    // | remaining claude | acp:claude | every claude |
+    for index in 0..12 {
+        let backend = if index % 2 == 0 {
+            "acp:codex"
+        } else {
+            "acp:claude"
+        };
+        let mut placement = PlacementRequirements::remote_required();
+        placement.required_capabilities.insert(backend.to_owned());
+        store
+            .enqueue(
+                RunDispatch::new(activation_on(
+                    &format!("{backend}-{index}"),
+                    &format!("thread-{index}"),
+                ))
+                .with_placement(placement),
+            )
+            .await
+            .unwrap();
+    }
+
+    let worker = |id: &str, backend: &str| {
+        let mut manifest = WorkerManifest::default();
+        manifest.capabilities.insert(backend.to_owned());
+        WorkerSnapshot {
+            identity: WorkerIdentity::new(id, "boot", 1),
+            capability_fingerprint: manifest.fingerprint().unwrap(),
+            manifest,
+            state: WorkerState::Ready,
+            in_flight: 0,
+            credential_observations: Default::default(),
+            acp_capability_observations: Default::default(),
+            expires_at_ms: 10_000,
+        }
+    };
+
+    for (backend, expected) in [("acp:codex", 6), ("acp:claude", 6)] {
+        let worker = worker(backend, backend);
+        let mut claimed = 0;
+        while let Some(run) = store.claim_compatible(&worker, 100, 0).await.unwrap() {
+            assert!(
+                run.request.run_id().0.starts_with(backend),
+                "{backend} Worker claimed {}",
+                run.request.run_id().0
+            );
+            store
+                .settle(
+                    run.request.run_id(),
+                    run.lease.epoch,
+                    DispatchOutcome::Done,
+                    &[],
+                )
+                .await
+                .unwrap();
+            claimed += 1;
+        }
+        assert_eq!(claimed, expected, "{backend}");
+    }
+}
+
+#[tokio::test]
+async fn exact_backend_capability_routes_a_mixed_queue_on_every_local_store() {
+    exact_backend_capability_claim_conformance(&MemoryDispatchStore::new()).await;
+    exact_backend_capability_claim_conformance(&any_in_memory()).await;
+}
+
 fn worker_snapshot(id: &str, boot: &str, generation: u64) -> WorkerSnapshot {
     let mut manifest = WorkerManifest::default();
     manifest.capabilities.insert("cpu".to_string());

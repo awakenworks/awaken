@@ -711,8 +711,8 @@ phase), **Adds**, **Retires** (a hard deliverable, not a follow-up), **Guard**
 phase name in scope, e.g. `feat(config): typed-axes — …` (thin ≤4-line messages,
 lefthook-enforced).
 
-**0 `pin-invariants`** — *Before any refactor, every "byte-identical /
-behavior-identical" claim becomes an executable test.*
+**0 `pin-invariants`** — *Complete. Every "byte-identical /
+behavior-identical" claim is an executable test.*
 Adds: characterization tests — publication-fingerprint byte-stability over a
 corpus of existing configs; `plugin_config` wire round-trip; single-credential
 selection behavior identity; the `backend_ref` routing table.
@@ -721,8 +721,8 @@ Guard: this suite IS the guard every later phase leans on.
 Done when: the suite runs in lefthook/CI and fails on any wire or fingerprint
 drift.
 
-**A `typed-axes`** — *One codec for ACP settings; skills/MCP become id
-references; zero wire change.*
+**A `typed-axes`** — *Complete. One codec owns ACP settings; skills/MCP are id
+references; zero historical wire change.*
 Adds: `AcpSpec::{from,into}_plugin_config` codec; `skill_ids`/`mcp_server_ids`
 refs; `tools`/`plugins` grouping (serde-flatten views); `model_fallbacks` alias;
 `project_mcp_for` shared by all channel sources.
@@ -734,8 +734,8 @@ Guard: wire round-trip test — old `plugin_config` JSON decodes bit-identically
 Done when: sandboxed CLI receives MCP in k3d e2e; no direct `.get("acp")` outside
 the codec.
 
-**B `kind-lens`** — *The executor axis becomes a typed authoring view; the wire
-does not change.*
+**B `kind-lens`** — *Complete. The executor axis is a typed authoring view; the
+wire does not change.*
 Adds: `AgentKind` on the `ModelSelection` serde-lens precedent; publish-time
 capability `CompileError` checks (D2).
 Retires: nothing (pure view) — but bans a stored `kind` field.
@@ -744,8 +744,8 @@ test over pre-existing configs.
 Done when: an A2A config declaring `skills` fails publish with
 `UnsupportedCapability`.
 
-**C `serve-selected-cli`** — *The config plane's CLI choice takes effect in
-production, on server AND worker roots.*
+**C `serve-selected-cli`** — *Complete. The config plane's CLI choice takes
+effect in production, on server and worker roots.*
 Principle (user-affirmed): the ACP executor runs both **directly in the runtime
 (unsandboxed)** and **inside a sandbox**, and is **unaware of which** — it drives
 whatever `AgentChannelSource` it is handed. Selecting the environment is a
@@ -829,8 +829,8 @@ the `Installing` lifecycle state.
 Guard: missing acquisition evidence prevents route registration; restart reuses
 the installed path without network; container Workers remain pre-provisioned.
 
-**G2 `erasable-acp-content`** — *ACP session content joins the ADR-0050
-consent/erasure fan-out.*
+**G2 `erasable-acp-content`** — *Complete. ACP session content joins the
+ADR-0050 consent/erasure fan-out.*
 Adds: session-home/`session_export_excludes`/`memory_entrypoint`/session-blob stores
 registered `with_eraser`; transcript capture behind `consent_ceiling`.
 Retires: nothing (pure wiring) — closes the GDPR gap.
@@ -838,14 +838,23 @@ Guard: erasure e2e — after Art.17 erase, ACP session blobs for the subject are
 gone.
 Done when: the eraser fan-out inventory lists every ACP content store.
 
-**H `capability-claim`** — *The queue routes runs to workers that can serve
-them.*
+**H `capability-claim`** — *Complete (2026-07-29). The queue routes runs only
+to workers that can serve them.*
 Adds: worker `serves` declaration (`native`/`acp:<cli>`/`a2a`); enqueue stamps
 the routing key from the snapshot's `backend_ref`; claim filters on it.
 Retires: nothing — open-time cli-match stays as enforcement (filter is routing).
 Guard: a mixed queue never strands a run on an incapable worker in the k3d
 harness.
 Done when: codex runs drain only to codex workers under load.
+
+Completion evidence: `execution_capability(backend_ref)` is the single
+backend-to-capability projection (`native-runtime`, exact `acp:<cli>`, generic
+`a2a-runtime`). `remote_worker_placement` stamps it for the primary and every
+fallback candidate; `derive_standard_manifest` advertises the same exact ACP ids
+from `AcpWorkerProfile`; and every Memory/SQLite/Postgres atomic claim invokes
+the shared `WorkerSnapshot::accepts`/`can_claim` compatibility kernel. The
+mixed-queue conformance test interleaves twelve Codex/Claude Runs and proves each
+Worker drains only its six exact routes on both local dispatch backends.
 
 **I `retire-and-archive`** — *Complete (2026-07-29).* An agent's end of life is
 explicit and fail-closed (D10).
@@ -874,12 +883,11 @@ Dependencies: A → D (codec); B independent; C independent; E after D
 (derivation); F after B (kind); G1/G2/H independent after C; I after B (the
 lifecycle gate reuses the publish/admission boundary).
 
-Commitment and order: **0, C, A, B, D, E and F are committed** — C
+Commitment and order: **0, A, B, C, D, E, F, G1, G2, H and I are complete** — C
 first because it is pure wiring with immediate production value (the two
 already-merged per-agent-CLI capabilities go live). F was promoted and completed
 when declared deployment placement became a product requirement.
-**G1/G2/H were trigger-gated** and G1/G2 have since completed; H remains gated
-on a heterogeneous worker fleet in production. I was promoted and completed
+**G1/G2/H were trigger-gated** and all have since completed. I was promoted and completed
 when Agent decommission became a product requirement. A fired trigger promotes
 a remaining phase into the committed queue —
 plan-level YAGNI: the design cost is paid (this ADR), the build cost waits for
