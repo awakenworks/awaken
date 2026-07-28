@@ -200,15 +200,6 @@ impl SharedHost {
             .map_or(base.clone(), |sandbox| sandbox.apply(base))
     }
 
-    /// The one read-only process projection source shared by Native and ACP
-    /// provisioning. It exposes frozen Environment plus staged Session inputs,
-    /// never an independently mutable network or Sandbox registry.
-    pub fn session_projection_source(
-        &self,
-    ) -> crate::sandbox_source::SessionRuntimeProjectionSource {
-        crate::sandbox_source::SessionRuntimeProjectionSource::new(self.session_slots.clone())
-    }
-
     /// Stage a thread's resources (mounts + prompt fragments); consumed by
     /// `sandbox_spec` and injected into the run's system prompt. From `prepare_session`.
     /// REPLACES the thread's set (correct at create time, before any first turn).

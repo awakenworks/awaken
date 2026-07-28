@@ -110,17 +110,12 @@ pub use crate::postgres_migration_lock::PostgresMigrationLock;
 pub use crate::worker_control_client::WorkerControlClient;
 pub use awaken_protocol_managed::McpAttachmentRealizer;
 pub use awaken_sandbox_container::{ContainerEnvironment, ContainerEnvironmentProvider};
-// The sandboxed ACP channel source and the sole Session projection handle a
-// composition root wires it with.
+// ACP launch projection consumes the Session environment selected by the host.
 pub use crate::data_subject_api::{consent_router, erasure_router, install_capture_sink};
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::memory_store_api::memory_stores_router_with_catalog;
 pub use crate::redact::PiiRedactor;
-pub use crate::sandbox_source::{
-    AcpLaunchRegistry, AcpSandboxBindings, BoundLocalChannelSource, LaunchSource,
-    SandboxChannelSource, SessionRuntimeProjectionSource, build_acp_channel_source,
-    resolve_sandbox_tier,
-};
+pub use crate::sandbox_source::{AcpLaunchRegistry, LaunchSource, resolve_sandbox_tier};
 pub use crate::skills::SkillForkPlacement;
 pub use crate::skills_api::skills_router;
 // The config data plane (ADR-0036/slice A): the service + its router + the

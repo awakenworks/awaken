@@ -877,7 +877,7 @@ Worker-to-Control transport; only Control finalizes the baseline and generation
 Managed networking, legacy Sandbox networking, and `deny_egress` normalize once
 by safe intersection into the baseline `NetworkPolicy`.
 Runtime carries the resulting `EnvironmentSnapshot` intact through `SessionInit`;
-Native and ACP consume one `SessionRuntimeProjectionSource`. The former
+Native and ACP consume one Session-owned `SessionEnvironment`. The former
 `ThreadEgress`/`ThreadSandbox` registries and their late setters have been
 removed.
 

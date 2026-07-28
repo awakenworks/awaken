@@ -619,7 +619,7 @@ a replacement Sandbox.
 
 The implemented projection has no `ThreadEgress` or `ThreadSandbox` mutation
 surface. `SessionInit` carries the exact `EnvironmentSnapshot`; Native and ACP
-read it through one process-local `SessionRuntimeProjectionSource`. Empty
+use the same realized, Session-owned `SessionEnvironment`. Empty
 allowlists canonicalize to `None`, and a retained `sandbox.network` field is
 discarded before provider realization, so it cannot widen or replace the frozen
 network fact.
