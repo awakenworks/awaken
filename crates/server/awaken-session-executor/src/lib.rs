@@ -123,7 +123,7 @@ pub use crate::skills_api::skills_router;
 pub use crate::acp_provision::PublishedAcpLaunchResolver;
 pub use crate::acp_serve::{AcpServeHost, AcpStop, AcpTurn};
 pub use crate::binding_resolver::{
-    AssistantBindingReconciler, ConfigServiceReconciler, ModelPublicationResolver,
+    ConfigServiceReconciler, ModelPublicationResolver, PublicationBindingReconciler,
     PublicationResolutionError, ResolvedPublicationModels,
 };
 pub use crate::capabilities::capabilities_router;

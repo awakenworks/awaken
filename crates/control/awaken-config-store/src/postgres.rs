@@ -86,6 +86,22 @@ fn reject(err: impl std::fmt::Display) -> ConfigStoreError {
 
 #[async_trait::async_trait]
 impl ScopedConfigRegistry for PostgresConfigStore {
+    async fn list_config_scopes(&self) -> Result<Vec<ScopeId>, ConfigStoreError> {
+        let rows = sqlx::query(&format!(
+            "SELECT DISTINCT scope_id FROM {NS}_agent ORDER BY scope_id ASC"
+        ))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(reject)?;
+        rows.into_iter()
+            .map(|row| {
+                row.try_get::<String, _>("scope_id")
+                    .map(ScopeId::from)
+                    .map_err(reject)
+            })
+            .collect()
+    }
+
     async fn put_config_scoped(
         &self,
         scope: &ScopeId,

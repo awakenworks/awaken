@@ -28,7 +28,7 @@ mod warm_install;
 
 pub use agent_projection::ConfigServiceAgentSource;
 pub use binding_resolver::{
-    AssistantBindingReconciler, ConfigServiceReconciler, ModelPublicationResolver,
+    ConfigServiceReconciler, ModelPublicationResolver, PublicationBindingReconciler,
     PublicationResolutionError, ResolvedPublicationModels,
 };
 pub use capabilities::{

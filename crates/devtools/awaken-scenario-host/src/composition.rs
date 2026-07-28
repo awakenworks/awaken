@@ -166,6 +166,25 @@ impl awaken_protocol_managed::AgentConfigSource for FixedAgentPublication {
     }
 }
 
+/// Resource HTTP adapters without the product composition root's local Workspace
+/// injector. This intentionally incomplete test composition proves that File,
+/// MemoryStore, and Skill routes fail closed instead of deriving a Workspace from
+/// the Host. Production always supplies either the local default-scope layer or an
+/// authenticated PEP before these routers.
+pub fn build_unscoped_resource_router() -> Router {
+    let host = Arc::new(resource_host(Arc::new(EchoModel), "unscoped-resource"));
+    let purge: Arc<dyn awaken_protocol_managed::resource_plane::ResourcePurgeScheduler> =
+        host.clone();
+    Router::new()
+        .merge(files_router(host.clone()))
+        .merge(memory_stores_router_with_catalog(
+            host.memory_repository(),
+            scenario_resource_catalog(),
+            purge.clone(),
+        ))
+        .merge(skills_router(host.skill_store(), purge))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,23 +205,4 @@ mod tests {
             "acp:claude"
         );
     }
-}
-
-/// Resource HTTP adapters without the product composition root's local Workspace
-/// injector. This intentionally incomplete test composition proves that File,
-/// MemoryStore, and Skill routes fail closed instead of deriving a Workspace from
-/// the Host. Production always supplies either the local default-scope layer or an
-/// authenticated PEP before these routers.
-pub fn build_unscoped_resource_router() -> Router {
-    let host = Arc::new(resource_host(Arc::new(EchoModel), "unscoped-resource"));
-    let purge: Arc<dyn awaken_protocol_managed::resource_plane::ResourcePurgeScheduler> =
-        host.clone();
-    Router::new()
-        .merge(files_router(host.clone()))
-        .merge(memory_stores_router_with_catalog(
-            host.memory_repository(),
-            scenario_resource_catalog(),
-            purge.clone(),
-        ))
-        .merge(skills_router(host.skill_store(), purge))
 }
