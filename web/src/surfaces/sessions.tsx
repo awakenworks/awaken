@@ -1,4 +1,4 @@
-// Project · Sessions: the workspace-scoped session list (GET /v1/sessions,
+// Workspace · Sessions: the scoped session list (GET /v1/sessions,
 // tenant-scoped via ws()), Anthropic-console style — mono ids, status pills, one
 // primary action. Tenancy fences the list by the active workspace (ADR-0051);
 // archive marks a row without removing it.
@@ -19,7 +19,7 @@ import type {
 } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 import EnvironmentsSurface from "./environments";
-import ProjectAgentsSurface from "./project-agents";
+import AgentsSurface from "./agents";
 
 export function StatusPill({ session }: { session: Session }) {
   const app = useApp();
@@ -48,12 +48,12 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
   const [manage, setManage] = useState<"agents" | "environments" | null>(null);
   // Inline pickers over the config plane (published agents) + environments.
   const agents = useQuery({
-    queryKey: ["config-agents"],
-    queryFn: () => api.get<AgentConfigList>("/v1/config/agents"),
+    queryKey: ["config-agents", wsId],
+    queryFn: () => api.get<AgentConfigList>(ws("/v1/config/agents")),
   });
   const envs = useQuery({
-    queryKey: ["environments"],
-    queryFn: () => api.get<Page<Environment>>("/v1/environments"),
+    queryKey: ["environments", wsId],
+    queryFn: () => api.get<Page<Environment>>(ws("/v1/environments")),
   });
   const create = useMutation({
     mutationFn: (body: CreateSessionRequest) =>
@@ -168,7 +168,7 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
       </Modal>
       {manage === "agents" && (
         <Drawer title={app.t("Agents", "Agents")} onClose={() => setManage(null)}>
-          <ProjectAgentsSurface />
+          <AgentsSurface />
         </Drawer>
       )}
       {manage === "environments" && (

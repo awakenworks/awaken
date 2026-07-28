@@ -1,10 +1,10 @@
-// Project · Environments: the reusable container templates sessions run in
+// Workspace · Environments: the reusable execution templates sessions run in
 // (Managed Agents `/v1/environments`). A session references one by
 // `environment_id`. cloud = Anthropic-hosted; self_hosted = your own worker.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { api } from "../lib/api/client";
+import { api, ws } from "../lib/api/client";
 import type { Environment, EnvironmentConfig, Page, WorkQueueStats } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 import { Button, Card, Modal, Pill, Segmented, TextField } from "../components/ui";
@@ -17,7 +17,7 @@ function EnvQueue({ id }: { id: string }) {
   const app = useApp();
   const stats = useQuery({
     queryKey: ["env-work-stats", id],
-    queryFn: () => api.get<WorkQueueStats>(`/v1/environments/${id}/work/stats`),
+    queryFn: () => api.get<WorkQueueStats>(ws(`/v1/environments/${id}/work/stats`)),
     refetchInterval: 15_000,
     retry: false,
   });
@@ -34,6 +34,7 @@ function EnvQueue({ id }: { id: string }) {
 
 function CreateModal({ onClose }: { onClose: () => void }) {
   const app = useApp();
+  const workspace = app.workspaceId;
   const qc = useQueryClient();
   const [name, setName] = useState("");
   const [placement, setPlacement] = useState<"cloud" | "self_hosted">("cloud");
@@ -42,10 +43,10 @@ function CreateModal({ onClose }: { onClose: () => void }) {
   const create = useMutation({
     mutationFn: () => {
       const config = buildEnvironmentConfig(placement, net, hosts);
-      return api.post<Environment>("/v1/environments", { name: name || "environment", config });
+      return api.post<Environment>(ws("/v1/environments"), { name: name || "environment", config });
     },
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["environments"] });
+      void qc.invalidateQueries({ queryKey: ["environments", workspace] });
       onClose();
     },
   });
@@ -101,16 +102,17 @@ function CreateModal({ onClose }: { onClose: () => void }) {
 
 export default function EnvironmentsSurface() {
   const app = useApp();
+  const workspace = app.workspaceId;
   const qc = useQueryClient();
   const [creating, setCreating] = useState(false);
   const envs = useQuery({
-    queryKey: ["environments"],
-    queryFn: () => api.get<Page<Environment>>("/v1/environments"),
+    queryKey: ["environments", workspace],
+    queryFn: () => api.get<Page<Environment>>(ws("/v1/environments")),
     refetchInterval: 30_000,
   });
   const archive = useMutation({
-    mutationFn: (id: string) => api.post(`/v1/environments/${id}/archive`),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["environments"] }),
+    mutationFn: (id: string) => api.post(ws(`/v1/environments/${id}/archive`)),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["environments", workspace] }),
   });
   const rows = envs.data?.data ?? [];
 

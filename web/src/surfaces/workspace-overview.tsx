@@ -1,4 +1,4 @@
-// Project · Overview: the container's live pulse, fed by the workspace-scoped
+// Workspace · Overview: readiness and recent runtime activity for the active scope.
 // session list (GET /v1/sessions via ws()). Observation only — the console
 // operates the platform; end users interact through the SDK.
 
@@ -8,9 +8,10 @@ import { api, ws } from "../lib/api/client";
 import type { ListSessionsResponse } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 import { StatusPill } from "./sessions";
-import { Card } from "../components/ui";
+import { Button, Card } from "../components/ui";
+import ReadinessPanel from "../components/app/ReadinessPanel";
 
-export default function ProjectOverviewSurface() {
+export default function WorkspaceOverviewSurface() {
   const app = useApp();
   const nav = useNavigate();
   const { ws: wsId = "default" } = useParams();
@@ -26,9 +27,22 @@ export default function ProjectOverviewSurface() {
 
   return (
     <>
-      <p className="mut" style={{ margin: 0 }}>
-        {wsId} · {app.t("this workspace's runtime right now.", "本工作区当前的运行面。")}
-      </p>
+      <div className="page-intro">
+        <span>
+          <h1>{app.t("Workspace overview", "工作区概览")}</h1>
+          <p className="mut">
+            {app.t("Connect capabilities, build an Agent, then prove it with a real Session.", "连接能力、构建 Agent，并通过真实会话验证结果。")}
+          </p>
+        </span>
+        <span className="row">
+          <Button onClick={() => nav(`/w/${wsId}/models`)}>{app.t("Connect provider", "连接供应商")}</Button>
+          <Button onClick={() => nav(`/w/${wsId}/agents/new`)}>{app.t("Create Agent", "创建 Agent")}</Button>
+          <Button variant="primary" onClick={() => nav(`/w/${wsId}/sessions`)}>
+            {app.t("Run a Session", "运行会话")}
+          </Button>
+        </span>
+      </div>
+      <ReadinessPanel />
       <div className="kpis">
         <button className="kpi" onClick={() => nav(`/w/${wsId}/sessions`)}>
           <span className="val">{sessions.data ? active.length : "—"}</span>
@@ -39,14 +53,6 @@ export default function ProjectOverviewSurface() {
             {sessions.data ? running : "—"}
           </span>
           <span className="label">{app.t("Running now", "正在运行")}</span>
-        </button>
-        <button className="kpi" onClick={() => nav(`/w/${wsId}/vaults`)}>
-          <span className="val">→</span>
-          <span className="label">Vaults</span>
-        </button>
-        <button className="kpi" onClick={() => nav(`/w/${wsId}/agents`)}>
-          <span className="val">→</span>
-          <span className="label">{app.t("Agent MCP bindings", "Agent MCP 绑定")}</span>
         </button>
       </div>
       <Card style={{ padding: 0 }}>

@@ -88,16 +88,16 @@ export default function ModelsSurface() {
   const workspace = app.workspaceId;
   const qc = useQueryClient();
   const catalog = useQuery({
-    queryKey: ["catalog"],
+    queryKey: ["catalog", workspace],
     queryFn: () => api.get<ProviderCatalog>(ws("/v1/config/catalog")),
   });
   const capabilities = useQuery({
-    queryKey: ["config-capabilities"],
+    queryKey: ["config-capabilities", workspace],
     queryFn: () => api.get<ConfigCapabilitiesView>(ws("/v1/config/capabilities")),
     staleTime: Infinity,
   });
   const descriptors = useQuery({
-    queryKey: ["provider-descriptors"],
+    queryKey: ["provider-descriptors", workspace],
     queryFn: () => api.get<ProviderDriverDescriptor[]>(ws("/v1/config/provider-descriptors")),
     staleTime: Infinity,
   });
@@ -117,7 +117,7 @@ export default function ModelsSurface() {
     mutationFn: () =>
       api.post<CatalogSyncResult>(ws("/v1/config/brokered-models/refresh")),
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["catalog"] });
+      void qc.invalidateQueries({ queryKey: ["catalog", workspace] });
       void qc.invalidateQueries({ queryKey: ["provider-connections", workspace] });
     },
   });

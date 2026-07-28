@@ -17,7 +17,8 @@ import PermissionEditor from "../components/agent/PermissionEditor";
 import ResourcesTab from "../components/agent/ResourcesTab";
 import { useAgentDraftReview } from "../components/agent/useAgentDraftReview";
 import AgentEditorHeader from "../components/agent/AgentEditorHeader";
-import { api, isAbsent } from "../lib/api/client";
+import ReadinessPanel from "../components/app/ReadinessPanel";
+import { api, isAbsent, ws } from "../lib/api/client";
 import type {
   AgentConfig,
   AgentConfigItem,
@@ -79,9 +80,9 @@ export default function AgentEditorSurface() {
 
   // Existing agent: hydrate the draft from the config plane (managed object shape).
   const existing = useQuery({
-    queryKey: ["config-agent", id],
+    queryKey: ["config-agent", wsId, id],
     enabled: !isNew,
-    queryFn: () => api.get<AgentConfigItem>(`/v1/config/agents/${id}`),
+    queryFn: () => api.get<AgentConfigItem>(ws(`/v1/config/agents/${id}`)),
     retry: (n, err) => !isAbsent(err) && n < 2,
   });
   const caps = useCapabilities();
@@ -134,7 +135,7 @@ export default function AgentEditorSurface() {
   // Validation issues from the config domain (compile), field-routed. The UI only
   // projects them — it never re-derives a rule (that truth lives in compile).
   const validate = useMutation({
-    mutationFn: () => api.post<ValidationResult>(`/v1/config/agents/${targetId()}/validate`, body()),
+    mutationFn: () => api.post<ValidationResult>(ws(`/v1/config/agents/${targetId()}/validate`), body()),
     onSuccess: (r) => {
       setIssues(r.issues ?? []);
       review.setValidationResult(r.valid);
@@ -155,7 +156,7 @@ export default function AgentEditorSurface() {
   }, [savedId, dirty, wsId, nav]);
 
   const save = useMutation({
-    mutationFn: () => api.put<{ id: string }>(`/v1/config/agents/${targetId()}`, body()),
+    mutationFn: () => api.put<{ id: string }>(ws(`/v1/config/agents/${targetId()}`), body()),
     onSuccess: () => {
       setDirty(false);
       review.markSaved();
@@ -166,11 +167,11 @@ export default function AgentEditorSurface() {
     onError: (e) => toast.err(e instanceof Error ? e.message : "error"),
   });
   const publish = useMutation({
-    mutationFn: () => api.post<PublishResult>(`/v1/config/agents/${targetId()}/publish`),
+    mutationFn: () => api.post<PublishResult>(ws(`/v1/config/agents/${targetId()}/publish`)),
     onSuccess: (r) => {
       toast.ok(app.t(`Published · ${r.fingerprint.slice(0, 12)}`, `已发布 · ${r.fingerprint.slice(0, 12)}`));
       void qc.invalidateQueries({ queryKey: ["config-agents"] });
-      void qc.invalidateQueries({ queryKey: ["config-agent", id] });
+      void qc.invalidateQueries({ queryKey: ["config-agent", wsId, id] });
       review.markReady();
       if (isNew) nav(`/w/${wsId}/agents/${targetId()}`, { replace: true });
     },
@@ -217,6 +218,7 @@ export default function AgentEditorSurface() {
         onSave={() => save.mutate()}
         onPublish={() => void review.preparePublish(publish.isPending)}
       />
+      <ReadinessPanel compact />
       <div className="agent-editor">
         {/* Guided chapters follow the workflow/issue-editor pattern: the operator
             always knows where they are, while JSON remains a lossless peer view. */}

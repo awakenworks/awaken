@@ -7,13 +7,13 @@ import AssistantSurface from "./surfaces/assistant";
 import CredentialsSurface from "./surfaces/credentials";
 import DeploymentsSurface from "./surfaces/deployments";
 import EnvironmentsSurface from "./surfaces/environments";
-import HomeSurface from "./surfaces/home";
+import { Navigate } from "react-router";
 import MemorySurface from "./surfaces/memory";
 import ModelsSurface from "./surfaces/models";
 import SkillsSurface from "./surfaces/skills";
 import AgentEditorSurface from "./surfaces/agent-editor";
-import ProjectAgentsSurface from "./surfaces/project-agents";
-import ProjectOverviewSurface from "./surfaces/project-overview";
+import AgentsSurface from "./surfaces/agents";
+import WorkspaceOverviewSurface from "./surfaces/workspace-overview";
 import ProtocolsSurface from "./surfaces/protocols";
 import SessionDetailSurface from "./surfaces/session-detail";
 import SessionsSurface from "./surfaces/sessions";
@@ -25,14 +25,14 @@ export const router = createBrowserRouter([
     path: "/",
     element: <AppShell />,
     children: [
-      { index: true, element: <HomeSurface /> },
+      { index: true, element: <Navigate to="/w/default/overview" replace /> },
 
       // A workspace owns BOTH its run resources and its config/supply (ADR-0051):
       // everything is addressed under /w/:ws/… with the active workspace scope.
-      { path: "w/:ws/overview", element: <ProjectOverviewSurface /> },
+      { path: "w/:ws/overview", element: <WorkspaceOverviewSurface /> },
       { path: "w/:ws/sessions", element: <SessionsSurface /> },
       { path: "w/:ws/sessions/:sid", element: <SessionDetailSurface /> },
-      { path: "w/:ws/agents", element: <ProjectAgentsSurface /> },
+      { path: "w/:ws/agents", element: <AgentsSurface /> },
       { path: "w/:ws/agents/:id", element: <AgentEditorSurface /> },
       { path: "w/:ws/assistant", element: <AssistantSurface /> },
       { path: "w/:ws/environments", element: <EnvironmentsSurface /> },
@@ -51,7 +51,7 @@ export const router = createBrowserRouter([
       { path: "w/:ws/audit-log", element: <GatedPage title="Audit log" endpoint="/v1/audit-log" probe="/v1/audit-log" /> },
       { path: "w/:ws/datasets", element: <GatedPage title="Datasets" endpoint="/v1/eval/datasets" probe="/v1/eval/datasets" /> },
       { path: "w/:ws/eval-runs", element: <GatedPage title="Eval runs" endpoint="/v1/eval/runs" probe="/v1/eval/runs" /> },
-      { path: "*", element: <HomeSurface /> },
+      { path: "*", element: <Navigate to="/w/default/overview" replace /> },
     ],
   },
 ]);

@@ -1,4 +1,4 @@
-// Project · Agents: the config-plane authoring list (GET /v1/config/agents).
+// Workspace · Agents: the config-plane authoring list (GET /v1/config/agents).
 // The console authors the rich agent object here directly — our own management
 // API — rather than the SDK-facing /v1/agents registry. Publish (in the editor)
 // compiles + installs a config so sessions run it. Row → the tabbed editor.
@@ -7,7 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router";
 import { DataGrid, type Column } from "../components/ui/DataGrid";
 import { Button, Pill } from "../components/ui";
-import { api } from "../lib/api/client";
+import { api, ws } from "../lib/api/client";
 import type { AgentConfig, AgentConfigItem, AgentConfigList } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 import { useListState } from "../lib/useListState";
@@ -22,14 +22,14 @@ function modelId(m: AgentConfig["model"]): string {
   return "auto";
 }
 
-export default function ProjectAgentsSurface() {
+export default function AgentsSurface() {
   const app = useApp();
   const nav = useNavigate();
   const { ws: wsId = "default" } = useParams();
   const list = useListState("id");
   const agents = useQuery({
-    queryKey: ["config-agents"],
-    queryFn: () => api.get<AgentConfigList>("/v1/config/agents"),
+    queryKey: ["config-agents", wsId],
+    queryFn: () => api.get<AgentConfigList>(ws("/v1/config/agents")),
     refetchInterval: 30_000,
   });
   const rows: AgentConfigItem[] = agents.data?.data ?? [];

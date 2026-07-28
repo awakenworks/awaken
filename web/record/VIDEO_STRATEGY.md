@@ -41,9 +41,6 @@ before asking the viewer to learn the architecture.
 | 04 · Grounding | What knowledge does it use? | Resources, Skills, Memory, session trace | Inputs and evidence stay visible |
 | 05 · AI authoring | Can the model configure the platform? | Assistant, capability contract, config diff | AI proposes only capabilities the runtime advertises |
 | 06 · Runtime proof | Are constraints real? | State Machine, live read-before-write violation | The unsafe write is stopped before the tool executes |
-| 07 · Isolation | Where and how does it run? | Environments, Native/ACP, sandbox | Protocol, placement, and containment are replaceable config |
-| 08 · Agent control plane | Can every behavior be tuned per Agent? | context, compaction, Memory prompts, reminders, continuation | What the model sees, remembers, and must finish lives together |
-| 09 · Protocol composition | Can I use Managed Agents and MCP directly? | Managed session, environment, ACP, inline MCP, Vault hint | Protocol choices compose at the boundary without changing the Agent |
 | 10 · Skill effect | Can a short goal invoke a repeatable procedure? | Skill upload, Agent binding, live Gemini result | Two words produce the exact specialist result because the procedure travels with the Agent |
 | 11 · Resource provenance | What did this Session actually receive? | Memory, file, Skill, Agent resources, Session Files | Every mounted input has a type, path, and source id |
 | 12 · Deployment | Can a published Agent become recurring operation? | Deployment, Environment, cron, real Session | One trigger creates and drives an inspectable Session |
@@ -67,8 +64,6 @@ before asking the viewer to learn the architecture.
 | 05 · AI authoring | Plain intent becomes a validated Draft; the human publishes | Faster creation raises repeat usage without losing ownership | No manual form marathon; exact config remains reviewable | “AI drafts, human decides” addresses a common objection |
 | 06 · State Machine | An unread write is visibly blocked with the configured reason | Hard invariants build confidence in deeper automation | Failure is clear and actionable, not mysterious | This is the strongest standalone Aha in the series |
 | 07 · ACP sandbox | A Managed session visibly inherits `acp:claude` and no-egress policy | Replaceable runtime protects Agent investment | Runtime provenance confirms that configuration reached the boundary | Portable Agent plus locked runtime appeals to platform teams |
-| 08 · Agent control | Context, prompts, reminder and completion policy publish as one diff | Teams can keep improving behavior instead of migrating away | Related controls are discoverable and auditable together | Editable “hidden prompts” differentiates the product |
-| 09 · Protocol composition | Creating the session shows ACP runtime while MCP/Vault stay boundary config | Protocol evolution does not invalidate Agents | One form makes ownership and composition explicit | The unchanged-Agent architecture is easy to explain peer-to-peer |
 | 10 · Skill effect | A two-word request returns `SKILL READY` through a bound Skill | Reusable procedure compounds across Agents | Users stop repeating operational detail | The tiny-input/precise-output contrast is inherently shareable |
 | 11 · Resource provenance | Session Files exposes Memory, file, and Skill mounts | Reusable knowledge stays transparent | One view answers “what did it receive?” | Security teams can inspect the proof without narration |
 | 12 · Deployment | A schedule launches a Session whose Agent output is inspectable | Recurring work makes Awaken part of operations | Output plus linked Session removes click uncertainty | Chat becoming scheduled operation signals production value |
@@ -85,9 +80,8 @@ short time-to-proof and actionable failures; advocacy comes from a visually obvi
 contrast that still makes sense when clipped away from the full video.
 
 Access and Deployments now enter the series because their backend effects are asserted.
-Vault participates in protocol composition and credential provenance; a standalone
-Vault video is unnecessary until it can prove a distinct customer outcome. Settings
-supports administration but does not yet have a story-specific payoff.
+Runtime secrets and Settings are supporting configuration surfaces; neither gets
+a standalone video until it can prove a distinct executed customer outcome.
 
 Dashboard, Eval, Datasets, and Audit remain in the UI smoke inventory only while their
 routes are gated. They enter the series after the backend is enabled and a recording can
@@ -96,8 +90,8 @@ prove a result; a gated or empty page is not a product payoff.
 ## Series groups
 
 - Start: 00–02 — promise, Gemini connection, and the first useful published Agent.
-- Control: 03–08 — tools, Memory, AI editing, State Machine, sandbox/ACP, and behavior.
-- Integrate: 09–10, 13, 15, 17–19 — MCP both ways, Managed Agents, A2A, AI SDK, AG-UI, Skills, and a real Codex ACP engine.
+- Control: 03–06 — tools, Memory, AI editing, and State Machine behavior with runtime effects.
+- Integrate: 10, 13, 15, 17–19 — MCP both ways, Managed Agents, A2A, AI SDK, AG-UI, Skills, and a real Codex ACP engine.
 - Operate: 11–12, 14 — provenance, recurring Deployment Sessions, and lifecycle enforcement.
 - Govern: 16 — issue, scope, and revoke access.
 
@@ -105,6 +99,10 @@ The release still has no publishable closed-loop story for Dashboard, Eval, Data
 Audit, Webhooks, self-hosted worker placement, or data-subject erasure. Keep them out
 until their UI can create an effect and inspect the result. This is a release-truth
 constraint, not a copywriting omission.
+
+Agent behavior controls are proven by the Memory and State Machine runtime stories,
+not by a configuration-only video. Protocol composition is proven by the
+runtime MCP and Codex ACP stories, not by a metadata-only Session setup video.
 
 ## Release matrix
 

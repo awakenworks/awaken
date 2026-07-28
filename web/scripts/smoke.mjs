@@ -117,7 +117,7 @@ await step("resolve dry-run (exact)", "POST", "/v1/config/inference/resolve", {
 // ADR-0048): there is no `/v1/config/projects` resource and no `/projects/{id}`
 // ingress; the tenant is the workspace (addressed by key or `/v1/workspaces/{ws}/…`).
 
-// ---- Project · Agents authoring via config plane (surfaces/agent-editor.tsx) ----
+// ---- Workspace · Agents authoring via config plane (surfaces/agent-editor.tsx) ----
 // The console authors the rich AgentConfig against our own management API, then
 // publishes (compile + install). Publish/compile is inference-agnostic.
 // The object model IS the managed /v1/agents object (name/model/system/tools/…)
@@ -226,7 +226,7 @@ const dep = await step("create deployment", "POST", "/v1/deployments", {
 }, (s, p) => (s === 200 || s === 201) && typeof p.id === "string");
 await step("list deployments", "GET", "/v1/deployments", undefined, (s, p) => s === 200 && p.data.some((x) => x.id === dep.id));
 
-// ---- Project · Vaults (surfaces/vaults.tsx; bare face until §7.10) ----
+// ---- Workspace · Runtime secrets (surfaces/vaults.tsx) ----
 const vault = await step("create vault", "POST", "/v1/vaults", { display_name: "smoke" });
 await step("vault credential (static_bearer)", "POST", `/v1/vaults/${vault.id}/credentials`, {
   type: "static_bearer",

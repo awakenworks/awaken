@@ -1,10 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   DialogSurface,
   useCommandPalette,
   useCommandPaletteShortcut,
 } from "@awaken/ui";
-import { Outlet, useNavigate } from "react-router";
+import { Outlet, useLocation, useNavigate } from "react-router";
 import { useApp } from "../../lib/app-state";
 import { NAV, navPath } from "../../lib/navigation/paths";
 import { ConfirmProvider } from "../ui/Confirm";
@@ -75,11 +75,24 @@ function CommandPalette() {
   );
 }
 
+/** The route is the UI scope authority. Synchronize the one API addressing seam;
+ * never maintain a second client-side Workspace roster. */
+function RouteScope() {
+  const app = useApp();
+  const location = useLocation();
+  const workspace = location.pathname.match(/^\/w\/([^/]+)/)?.[1] ?? "default";
+  useEffect(() => {
+    if (workspace !== app.workspaceId) app.setWorkspaceId(workspace);
+  }, [app, workspace]);
+  return null;
+}
+
 export default function AppShell() {
   return (
     <ToastProvider>
       <ConfirmProvider>
         <div className="shell">
+          <RouteScope />
           <div className="dawn" />
           <TopChrome />
           <div className="shell-body">
