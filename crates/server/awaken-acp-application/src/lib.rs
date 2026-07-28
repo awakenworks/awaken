@@ -19,8 +19,8 @@ use awaken_run_executor_acp::{
 };
 use awaken_runtime_contract::resolved::Backend;
 use awaken_runtime_contract::{
-    CredentialMaterialError, CredentialMaterialRequest, CredentialMaterialResolver,
-    CredentialObservation, CredentialObservationState, CredentialRef, ResolvedCredentialMaterial,
+    CredentialMaterialError, CredentialObservation, CredentialObservationSource,
+    CredentialObservationState, CredentialRef, WorkerLocalReferenceRevalidator,
 };
 
 /// Acquisition port for an ACP protocol wrapper declared by the canonical catalog.
@@ -320,7 +320,7 @@ fn require_available(
 }
 
 #[async_trait]
-impl CredentialMaterialResolver for AcpLocalCredentialResolver {
+impl CredentialObservationSource for AcpLocalCredentialResolver {
     async fn credential_observations(
         &self,
     ) -> Result<BTreeSet<CredentialObservation>, CredentialMaterialError> {
@@ -330,7 +330,10 @@ impl CredentialMaterialResolver for AcpLocalCredentialResolver {
         }
         Ok(observations)
     }
+}
 
+#[async_trait]
+impl WorkerLocalReferenceRevalidator for AcpLocalCredentialResolver {
     async fn revalidate_worker_reference(
         &self,
         credential: &CredentialRef,
@@ -341,12 +344,5 @@ impl CredentialMaterialResolver for AcpLocalCredentialResolver {
             .filter(|binding| binding.credential.revision == credential.revision)
             .ok_or(CredentialMaterialError::Unavailable)?;
         require_available(self.observe(binding).await)
-    }
-
-    async fn resolve_exact(
-        &self,
-        _request: CredentialMaterialRequest<'_>,
-    ) -> Result<ResolvedCredentialMaterial, CredentialMaterialError> {
-        Err(CredentialMaterialError::MaterialKindMismatch)
     }
 }

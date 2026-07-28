@@ -27,6 +27,19 @@ impl awaken_runtime_contract::CredentialMaterialResolver for ExternalCredentialR
         true
     }
 
+    async fn resolve_exact(
+        &self,
+        _request: awaken_runtime_contract::CredentialMaterialRequest<'_>,
+    ) -> Result<
+        awaken_runtime_contract::ResolvedCredentialMaterial,
+        awaken_runtime_contract::CredentialMaterialError,
+    > {
+        Err(awaken_runtime_contract::CredentialMaterialError::Unavailable)
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_runtime_contract::CredentialObservationSource for ExternalCredentialResolver {
     async fn credential_observations(
         &self,
     ) -> Result<
@@ -43,15 +56,21 @@ impl awaken_runtime_contract::CredentialMaterialResolver for ExternalCredentialR
             ),
         ]))
     }
+}
 
-    async fn resolve_exact(
+#[async_trait::async_trait]
+impl awaken_runtime_contract::WorkerLocalReferenceRevalidator for ExternalCredentialResolver {
+    async fn revalidate_worker_reference(
         &self,
-        _request: awaken_runtime_contract::CredentialMaterialRequest<'_>,
+        credential: &awaken_runtime_contract::CredentialRef,
     ) -> Result<
-        awaken_runtime_contract::ResolvedCredentialMaterial,
+        awaken_runtime_contract::CredentialObservation,
         awaken_runtime_contract::CredentialMaterialError,
     > {
-        Err(awaken_runtime_contract::CredentialMaterialError::Unavailable)
+        Ok(awaken_runtime_contract::CredentialObservation::available(
+            credential.clone(),
+            1,
+        ))
     }
 }
 
@@ -184,6 +203,7 @@ fn external_credential_resolver_composes_with_the_canonical_materializer() {
     let worker = WorkerNodeBuilder::new(awaken_runtime_host::WorkerUpstream::new("http://control"))
         .with_credential_stores(credentials, secrets)
         .with_external_credential_resolver(Arc::new(ExternalCredentialResolver))
+        .with_worker_local_credential_resolver(Arc::new(ExternalCredentialResolver))
         .with_standard_manifest(Default::default())
         .build()
         .expect("X2 exact resolver topology");

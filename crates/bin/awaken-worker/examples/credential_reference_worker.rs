@@ -99,6 +99,19 @@ impl awaken_runtime_contract::CredentialMaterialResolver for ReferenceMaterializ
         BTreeSet::from([awaken_runtime_contract::CredentialMaterialSource::WorkerReference])
     }
 
+    async fn resolve_exact(
+        &self,
+        _request: awaken_runtime_contract::CredentialMaterialRequest<'_>,
+    ) -> Result<
+        awaken_runtime_contract::ResolvedCredentialMaterial,
+        awaken_runtime_contract::CredentialMaterialError,
+    > {
+        Err(awaken_runtime_contract::CredentialMaterialError::Unavailable)
+    }
+}
+
+#[async_trait]
+impl awaken_runtime_contract::CredentialObservationSource for ReferenceMaterializer {
     async fn credential_observations(
         &self,
     ) -> Result<
@@ -130,7 +143,10 @@ impl awaken_runtime_contract::CredentialMaterialResolver for ReferenceMaterializ
             },
         ]))
     }
+}
 
+#[async_trait]
+impl awaken_runtime_contract::WorkerLocalReferenceRevalidator for ReferenceMaterializer {
     async fn revalidate_worker_reference(
         &self,
         credential: &awaken_runtime_contract::CredentialRef,
@@ -144,27 +160,17 @@ impl awaken_runtime_contract::CredentialMaterialResolver for ReferenceMaterializ
         if self.state() == "available_then_login_required" {
             return Err(awaken_runtime_contract::CredentialMaterialError::LoginRequired);
         }
-        let observation = self
-            .credential_observations()
-            .await?
-            .into_iter()
-            .next()
-            .ok_or(awaken_runtime_contract::CredentialMaterialError::Unavailable)?;
+        let observation =
+            awaken_runtime_contract::CredentialObservationSource::credential_observations(self)
+                .await?
+                .into_iter()
+                .next()
+                .ok_or(awaken_runtime_contract::CredentialMaterialError::Unavailable)?;
         if observation.state == awaken_runtime_contract::CredentialObservationState::Available {
             Ok(observation)
         } else {
             Err(awaken_runtime_contract::CredentialMaterialError::Unavailable)
         }
-    }
-
-    async fn resolve_exact(
-        &self,
-        _request: awaken_runtime_contract::CredentialMaterialRequest<'_>,
-    ) -> Result<
-        awaken_runtime_contract::ResolvedCredentialMaterial,
-        awaken_runtime_contract::CredentialMaterialError,
-    > {
-        Err(awaken_runtime_contract::CredentialMaterialError::Unavailable)
     }
 }
 

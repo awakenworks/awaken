@@ -110,6 +110,8 @@ pub struct WorkerNodeBuilder {
     credential_materializer: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
     external_credential_resolver:
         Option<Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>>,
+    worker_local_credential_resolver:
+        Option<Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>>,
     credential_inference_derived: bool,
     session_container_provider: Option<InstalledSessionContainerProvider>,
     mcp_attachment_realizer: Option<Arc<dyn awaken_runtime_host::McpAttachmentRealizer>>,
@@ -133,6 +135,7 @@ impl WorkerNodeBuilder {
             materializer: None,
             credential_materializer: None,
             external_credential_resolver: None,
+            worker_local_credential_resolver: None,
             credential_inference_derived: false,
             session_container_provider: None,
             mcp_attachment_realizer: None,
@@ -293,6 +296,17 @@ impl WorkerNodeBuilder {
         self
     }
 
+    /// Install the liveness-only adapter for host-owned credential identities.
+    /// This port cannot materialize Provider secrets.
+    #[must_use]
+    pub fn with_worker_local_credential_resolver(
+        mut self,
+        resolver: Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>,
+    ) -> Self {
+        self.worker_local_credential_resolver = Some(resolver);
+        self
+    }
+
     /// Install the provider that realizes every Session-owned container on this
     /// Worker. `backend` is the stable backend identifier published in the
     /// derived Worker manifest (for example `awaken-cloud`).
@@ -367,7 +381,7 @@ impl WorkerNodeBuilder {
                 "Session container provider backend must not be empty".to_string(),
             ));
         }
-        let credential_observation_resolver = self.external_credential_resolver.clone();
+        let credential_observation_resolver = self.worker_local_credential_resolver.clone();
         if let Some(resolver) = self.external_credential_resolver.take() {
             let Some(materializer) = self.credential_materializer.take() else {
                 return Err(WorkerNodeBuildError(
@@ -476,7 +490,7 @@ pub struct WorkerNode {
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
     credential_materializer: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
     credential_observation_resolver:
-        Option<Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>>,
+        Option<Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>>,
     session_container_provider: Option<InstalledSessionContainerProvider>,
     mcp_attachment_realizer: Option<Arc<dyn awaken_runtime_host::McpAttachmentRealizer>>,
     resources: Option<WorkerResourcePlane>,
@@ -546,6 +560,7 @@ pub async fn run_with_inference_materializer(
         materializer,
         None,
         None,
+        None,
     )
     .await?
     .run_until_shutdown()
@@ -554,15 +569,21 @@ pub async fn run_with_inference_materializer(
 
 /// Run a secretless Worker whose one authoritative adapter supplies both exact
 /// executor materialization and typed Worker-local credential observations.
-pub async fn run_with_inference_and_credential_resolver(
+pub async fn run_with_inference_and_credential_resolver<R>(
     upstream: &str,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
-    resolver: Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    resolver: Arc<R>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+where
+    R: awaken_runtime_contract::CredentialMaterialResolver
+        + awaken_runtime_contract::WorkerLocalCredentialResolver
+        + 'static,
+{
     build_secretless_worker(
         WorkerUpstream::new(upstream),
         WorkerProcessConfig::embedded_defaults(),
         materializer,
+        Some(resolver.clone()),
         Some(resolver),
         None,
     )
@@ -574,14 +595,19 @@ pub async fn run_with_inference_and_credential_resolver(
 /// Embedded secretless Worker with an explicitly resolved deployment and shared
 /// ResourcePlane. This extends the same authoritative builder used above; it
 /// performs no environment/config rediscovery and installs no second resolver.
-pub async fn run_with_inference_and_credential_resolver_and_resources(
+pub async fn run_with_inference_and_credential_resolver_and_resources<R>(
     upstream: &str,
     deployment: awaken_runtime_host::DeploymentConfig,
     resource_url: &str,
     admin_backend: &awaken_control::StoreBackend,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
-    resolver: Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    resolver: Arc<R>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+where
+    R: awaken_runtime_contract::CredentialMaterialResolver
+        + awaken_runtime_contract::WorkerLocalCredentialResolver
+        + 'static,
+{
     let resources = shared_resource_wiring(None, Some(resource_url), Some(admin_backend)).await?;
     let mut process = WorkerProcessConfig::embedded_defaults();
     process.deployment = deployment;
@@ -589,6 +615,7 @@ pub async fn run_with_inference_and_credential_resolver_and_resources(
         WorkerUpstream::new(upstream),
         process,
         materializer,
+        Some(resolver.clone()),
         Some(resolver),
         resources,
     )
@@ -619,6 +646,7 @@ where
         materializer,
         None,
         None,
+        None,
     )
     .await?
     .run_until(shutdown)
@@ -629,17 +657,21 @@ async fn build_secretless_worker(
     upstream: WorkerUpstream,
     process: WorkerProcessConfig,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
-    credential_resolver: Option<Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>>,
+    material_resolver: Option<Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>>,
+    local_resolver: Option<Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>>,
     resources: Option<WorkerResourcePlane>,
 ) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
     let mut builder = WorkerNodeBuilder::new(upstream).with_process_config(process);
-    if let Some(resolver) = credential_resolver {
+    if let Some(resolver) = material_resolver {
         builder = builder
             .with_credential_stores(
                 Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
                 Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
             )
             .with_external_credential_resolver(resolver);
+    }
+    if let Some(resolver) = local_resolver {
+        builder = builder.with_worker_local_credential_resolver(resolver);
     }
     builder = builder
         .with_inference_materializer(materializer)

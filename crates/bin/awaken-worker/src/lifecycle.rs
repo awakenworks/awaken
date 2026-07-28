@@ -24,7 +24,7 @@ pub(crate) struct WorkerLifecycle {
     pub(crate) control: WorkerControlClient,
     pub(crate) identity: WorkerIdentity,
     pub(crate) credential_observation_resolver:
-        Option<Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>>,
+        Option<Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>>,
     pub(crate) credential_observations: Arc<CredentialObservationCache>,
 }
 
