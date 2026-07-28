@@ -66,6 +66,7 @@ awaken-iam-client = { workspace = true, features = ["credential-cache"] }
 awaken-provider-genai = { workspace = true }
 awaken-agent-contract = { workspace = true }
 awaken-runtime-contract = { workspace = true }
+awaken-connection-plan = { workspace = true }
 async-trait.workspace = true
 axum = "0.8"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "process", "signal", "sync"] }

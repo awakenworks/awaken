@@ -459,6 +459,17 @@ pub struct AgentConfig {
     pub skill_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multiagent: Option<MultiagentConfig>,
+    /// Logical Hand deployment id for Native tool placement. The compiled
+    /// executable snapshot deliberately excludes this deployment coordinate;
+    /// the config-to-placement bridge joins it to a startup-resolved
+    /// ConnectionPlan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hand: Option<String>,
+    /// Time at which new execution was disabled. Disabled Agents remain
+    /// readable and retain their immutable publications, but cannot be selected
+    /// for new execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_at: Option<String>,
     /// Soft-deletion lifecycle of the authoring aggregate. Archived Agents remain
     /// readable (including revision history) but cannot be published or selected
     /// for new execution. Kept on the aggregate rather than hidden in metadata so
@@ -483,6 +494,27 @@ pub struct AgentConfig {
     /// headroom) and stamped into both realizations' `plugin_config` slots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction: Option<CompactionStrategy>,
+}
+
+/// The one lifecycle projection of an Agent authoring aggregate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentLifecycle {
+    Published,
+    Disabled,
+    Archived,
+}
+
+impl AgentConfig {
+    #[must_use]
+    pub fn lifecycle(&self) -> AgentLifecycle {
+        if self.archived_at.is_some() {
+            AgentLifecycle::Archived
+        } else if self.disabled_at.is_some() {
+            AgentLifecycle::Disabled
+        } else {
+            AgentLifecycle::Published
+        }
+    }
 }
 
 impl AgentConfig {

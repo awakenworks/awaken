@@ -354,8 +354,56 @@ async function main() {
         'rejected update creates no revision',
       );
 
+      // Cause/effect graph:
+      // Published --disable--> Disabled removes only the current executable
+      // pointer; a repeated disable is idempotent and mutations fail closed.
+      // Disabled --archive--> Archived appends one terminal revision.
+      //
+      // Decision table:
+      // | L1 | Published + disable | Disabled; version +1 |
+      // | L2 | Disabled + disable  | same version          |
+      // | L3 | Disabled + update   | 400                   |
+      // | L4 | Disabled + archive  | Archived; version +1  |
+      const preDisableSession = await client.beta.sessions.create({
+        agent: rich.body.id,
+        betas: BETAS,
+      });
+      const richDisabled = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}/disable`);
+      assert.equal(richDisabled.status, 200, 'L1');
+      assert.equal(richDisabled.body.status, 'disabled', 'L1');
+      assert.ok(richDisabled.body.disabled_at, 'L1');
+      const disabledAgain = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}/disable`);
+      assert.equal(disabledAgain.body.version, richDisabled.body.version, 'L2');
+      await assert.rejects(
+        () => client.beta.sessions.create({
+          agent: rich.body.id,
+          betas: BETAS,
+        }),
+        (error) => error.status === 400 && error.message.includes('cannot start a new session'),
+        'L1: Disabled Agent is rejected before a new Session is admitted',
+      );
+      await assert.rejects(
+        () => client.beta.sessions.events.send(preDisableSession.id, {
+          events: [{ type: 'user.message', content: [{ type: 'text', text: 'must not start' }] }],
+          betas: BETAS,
+        }),
+        (error) => error.status === 400 && error.message.includes('cannot admit a new event'),
+        'L1: an existing Session cannot admit a new Run after disable',
+      );
+      assert.equal(
+        (await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}`, {
+          version: richDisabled.body.version,
+          name: 'must-not-update-disabled',
+        })).status,
+        400,
+        'L3',
+      );
+
       const richArchived = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}/archive`);
       assert.equal(richArchived.status, 200);
+      assert.equal(richArchived.body.status, 'archived', 'L4');
+      assert.equal(richArchived.body.disabled_at, null, 'L4');
+      assert.equal(richArchived.body.version, richDisabled.body.version + 1, 'L4');
       const archivedAgain = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}/archive`);
       assert.equal(archivedAgain.status, 200);
       assert.equal(archivedAgain.body.version, richArchived.body.version);
@@ -370,6 +418,7 @@ async function main() {
       for (const [method, route, body] of [
         ['GET', '/v1/agents/agent_missing', undefined],
         ['POST', '/v1/agents/agent_missing', { version: 1, name: 'missing' }],
+        ['POST', '/v1/agents/agent_missing/disable', undefined],
         ['POST', '/v1/agents/agent_missing/archive', undefined],
         ['GET', '/v1/agents/agent_missing/versions', undefined],
       ]) {
