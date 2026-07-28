@@ -249,12 +249,12 @@ fn acp_config_mount(
 /// ONCE (memoized) for the `Namespace` tier so an unsupported host gets a clear startup
 /// decision instead of an opaque per-run spawn error. An unavailable provider fails
 /// closed (`Err`) by default — the caller turns it into a startup abort with guidance.
-/// Only when the operator opts in with `AWAKEN_SANDBOX_ALLOW_LOCAL_FALLBACK=1` do we degrade to
-/// the UNSANDBOXED `Local` tier with a loud notice so a dev/single-tenant worker runs.
+/// Only when typed deployment policy opts in do we degrade to the UNSANDBOXED
+/// `Local` tier with a loud notice so a dev/single-tenant worker runs.
 /// Every other tier passes through unchanged.
 pub async fn resolve_sandbox_tier(
     tier: crate::deployment_config::SandboxTier,
-    _tier_explicit: bool,
+    allow_local_fallback: bool,
     namespace_base: &std::path::Path,
 ) -> Result<crate::deployment_config::SandboxTier, String> {
     use crate::deployment_config::SandboxTier;
@@ -267,19 +267,19 @@ pub async fn resolve_sandbox_tier(
         .await
     {
         Ok(()) => Ok(SandboxTier::Namespace),
-        Err(e) if namespace_degrades_to_local(allow_local_fallback()) => {
+        Err(e) if namespace_degrades_to_local(allow_local_fallback) => {
             eprintln!(
                 "awaken: OS-native sandbox unavailable ({e}); running UNSANDBOXED local ACP \
                  execution (no OS isolation for this worker). Install bwrap on Linux or enable \
-                 macOS Seatbelt, or \
-                 unset AWAKEN_SANDBOX_ALLOW_LOCAL_FALLBACK to require isolation (fail closed)."
+                 macOS Seatbelt, or disable sandbox.allow_local_fallback to require \
+                 isolation (fail closed)."
             );
             Ok(SandboxTier::Local)
         }
         Err(e) => Err(format!(
-            "OS-native sandbox unavailable: {e}. Install bwrap (Linux) / use macOS Seatbelt, set \
-             AWAKEN_SANDBOX_ALLOW_LOCAL_FALLBACK=1 for an explicit unsafe fallback, or set \
-             AWAKEN_SANDBOX_TIER=local to run unsandboxed"
+            "OS-native sandbox unavailable: {e}. Install bwrap (Linux) / use macOS Seatbelt, \
+             configure sandbox_allow_local_fallback=true for an explicit unsafe fallback, or \
+             configure sandbox_tier=local to run unsandboxed"
         )),
     }
 }
@@ -290,13 +290,6 @@ pub async fn resolve_sandbox_tier(
 /// default. Pure, so the policy is unit-testable off-host.
 fn namespace_degrades_to_local(fallback_optin: bool) -> bool {
     fallback_optin
-}
-
-/// Whether an operator opted in (`AWAKEN_SANDBOX_ALLOW_LOCAL_FALLBACK=1`) to degrade a
-/// bwrap-less namespace-tier worker to UNSANDBOXED local execution rather than fail
-/// closed — a deliberate isolation downgrade for dev / single-tenant hosts.
-fn allow_local_fallback() -> bool {
-    std::env::var("AWAKEN_SANDBOX_ALLOW_LOCAL_FALLBACK").as_deref() == Ok("1")
 }
 
 /// The image a container tier requires, or a fail-closed error naming the config var.
@@ -312,54 +305,25 @@ pub(crate) fn container_image(image: Option<&str>) -> Result<String, String> {
         .ok_or_else(|| "a container sandbox tier requires AWAKEN_CONTAINER_IMAGE".to_string())
 }
 
-/// The warm-pool size from `AWAKEN_SANDBOX_WARM_POOL` (default 0 = disabled). A
-/// deployment opts into pre-provisioned reusable container capacity (cutting
-/// cold-start latency for mount-less agent sessions) by setting it > 0.
-#[cfg(any(
-    feature = "container-docker",
-    feature = "container-podman",
-    feature = "container-k8s"
-))]
-pub(crate) fn warm_pool_size() -> usize {
-    std::env::var("AWAKEN_SANDBOX_WARM_POOL")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0)
-}
-
-#[cfg(any(
-    feature = "container-docker",
-    feature = "container-podman",
-    feature = "container-k8s"
-))]
-pub(crate) fn configured_container_forward_proxy() -> Option<awaken_sandbox_container::ForwardProxy>
-{
-    std::env::var("AWAKEN_CONTAINER_FORWARD_PROXY")
-        .ok()
-        .filter(|url| !url.trim().is_empty())
-        .map(|url| awaken_sandbox_container::ForwardProxy { url })
-}
-
 /// Spawn the cross-restart container reaper on `runtime` (docker/podman): a background
 /// sweep that reaps awaken-labeled containers a *crashed* worker left behind — exited
 /// (agent done) or aged past the cap (hung / leaked warm instance). On by default (a
-/// safety net); `AWAKEN_SANDBOX_REAP=0` disables it, `AWAKEN_SANDBOX_REAP_INTERVAL`
-/// (seconds) tunes the cadence. NOT wired for k8s: pods carry `ownerReferences`, so
+/// safety net); typed [`SandboxSettings`](crate::deployment_config::SandboxSettings)
+/// selects enablement, cadence and maximum age. NOT wired for k8s: pods carry
+/// `ownerReferences`, so
 /// native GC reaps them (its `list_managed` is empty → a reaper there is a no-op).
 /// Called once per host from the composition seam, so exactly one loop runs.
 #[cfg(any(feature = "container-docker", feature = "container-podman"))]
 pub(crate) fn spawn_container_reaper<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     runtime: Arc<R>,
+    settings: &crate::deployment_config::SandboxSettings,
 ) {
-    if std::env::var("AWAKEN_SANDBOX_REAP").as_deref() == Ok("0") {
+    if !settings.reaper_enabled {
         return;
     }
-    let interval = std::env::var("AWAKEN_SANDBOX_REAP_INTERVAL")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(awaken_sandbox_container::reaper::DEFAULT_INTERVAL_SECS);
-    awaken_sandbox_container::SandboxReaper::from_env(runtime)
-        .spawn(std::time::Duration::from_secs(interval));
+    awaken_sandbox_container::SandboxReaper::new(runtime, settings.reaper_max_age_secs).spawn(
+        std::time::Duration::from_secs(settings.reaper_interval_secs),
+    );
 }
 
 #[cfg(test)]
@@ -1064,16 +1028,12 @@ mod tests {
     #[tokio::test]
     async fn resolve_sandbox_tier_never_errors_for_namespace_with_the_local_fallback_optin() {
         use crate::deployment_config::SandboxTier;
-        // The goal guarantee: with the opt-in, a namespace-tier worker resolves without
-        // error on ANY host — Namespace where bwrap works, or Local (degraded) where it
-        // is absent — so a bwrap-less worker still runs.
-        unsafe {
-            std::env::set_var("AWAKEN_SANDBOX_ALLOW_LOCAL_FALLBACK", "1");
-        }
+        // Cause/effect decision table:
+        // | Namespace ready | typed fallback | Effect |
+        // | yes             | either         | Namespace |
+        // | no              | true           | Local |
+        // The assertion covers either host state without ambient configuration.
         let resolved = resolve_sandbox_tier(SandboxTier::Namespace, true, &base()).await;
-        unsafe {
-            std::env::remove_var("AWAKEN_SANDBOX_ALLOW_LOCAL_FALLBACK");
-        }
         assert!(matches!(
             resolved,
             Ok(SandboxTier::Namespace | SandboxTier::Local)
@@ -1082,8 +1042,11 @@ mod tests {
 
     #[test]
     fn namespace_degrade_policy_requires_an_explicit_unsafe_optin() {
-        // An unavailable namespace provider is unavailable, even when it was selected
-        // by default. Never turn an isolation request into plain local execution silently.
+        // Cause/effect decision table:
+        // | Namespace ready | typed fallback | Effect |
+        // | no              | false          | reject |
+        // | no              | true           | Local |
+        // Readiness is tested at the impure caller; this covers the pure policy.
         assert!(
             !namespace_degrades_to_local(false),
             "namespace fails closed without an explicit fallback opt-in"

@@ -133,12 +133,11 @@ impl SessionEnvironment {
     async fn container(
         sandbox: Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
         hand_factory: &dyn HandExecutorFactory,
+        hand_bin: &str,
     ) -> Result<Self, pc::SandboxError> {
-        let hand_bin = std::env::var("AWAKEN_CONTAINER_HAND_BIN")
-            .unwrap_or_else(|_| "/usr/local/bin/awaken-sandbox".to_string());
         let process = sandbox
             .spawn_agent_process(pc::Command {
-                argv: vec![hand_bin, "hand".into(), "--stdio".into()],
+                argv: vec![hand_bin.to_owned(), "hand".into(), "--stdio".into()],
                 cwd: "/workspace".into(),
                 env: Vec::new(),
                 stdio: pc::Stdio::Piped,
@@ -780,6 +779,7 @@ mod tests {
             provider.clone(),
             Vec::new(),
             Arc::new(FakeHandExecutorFactory),
+            "/usr/local/bin/awaken-sandbox",
         )
         .create(&spec())
         .await
@@ -868,6 +868,7 @@ mod tests {
             provider.clone(),
             Vec::new(),
             Arc::new(FakeHandExecutorFactory),
+            "/usr/local/bin/awaken-sandbox",
         );
         let adopted = environments
             .adopt(&pc::SandboxHandle::new("container", "session-container"))
@@ -996,6 +997,7 @@ mod tests {
             provider,
             vec![unsafe_mount],
             Arc::new(FakeHandExecutorFactory),
+            "/usr/local/bin/awaken-sandbox",
         )
         .at_root(second.path());
         assert!(matches!(
@@ -1047,6 +1049,7 @@ mod tests {
             provider,
             Vec::new(),
             Arc::new(FakeHandExecutorFactory),
+            "/usr/local/bin/awaken-sandbox",
         )
         .create(&docker_spec)
         .await

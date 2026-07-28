@@ -1898,6 +1898,12 @@ pub mod pool;
 #[cfg(feature = "connection")]
 pub use pool::{WarmContainerPool, pool_key};
 
+/// Default maximum age of a still-running managed container before orphan
+/// reconciliation removes it.
+pub const DEFAULT_REAPER_MAX_AGE_SECS: u64 = 6 * 60 * 60;
+/// Default interval between orphan-reconciliation sweeps.
+pub const DEFAULT_REAPER_INTERVAL_SECS: u64 = 60;
+
 /// The cross-restart container reaper (docker/podman leaked-container GC; k8s uses
 /// native `ownerReferences` GC). Gated on `connection` for the background loop's timer.
 #[cfg(feature = "connection")]

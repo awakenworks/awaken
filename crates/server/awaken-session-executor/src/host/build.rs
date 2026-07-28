@@ -715,10 +715,12 @@ impl SharedHost {
         provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
         hand_factory: Arc<dyn crate::HandExecutorFactory>,
     ) -> Self {
+        let hand_bin = self.deployment.sandbox.container_hand_bin.clone();
         self.session_provider = crate::session_environment::SessionEnvironmentProvider::container(
             provider,
             Vec::new(),
             hand_factory,
+            hand_bin,
         );
         self.session_provider_explicit = true;
         if let Some(mounter) = self.memory_mounter() {

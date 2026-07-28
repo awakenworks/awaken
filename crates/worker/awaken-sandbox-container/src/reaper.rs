@@ -50,14 +50,10 @@ pub fn should_reap(mc: &ManagedContainer, max_age_secs: u64) -> Option<ReapReaso
     }
 }
 
-/// The default max-age cap for a still-running container (`AWAKEN_SANDBOX_REAP_MAX_AGE`
-/// overrides). Deliberately generous — a legitimate long session must not be reaped out
-/// from under itself; the primary signal for a normal teardown is `Exited`, and the age
-/// cap is only the backstop for a hung agent or a leaked warm instance.
-pub const DEFAULT_MAX_AGE_SECS: u64 = 6 * 60 * 60; // 6 hours
-
-/// The default sweep interval (`AWAKEN_SANDBOX_REAP_INTERVAL` overrides).
-pub const DEFAULT_INTERVAL_SECS: u64 = 60;
+pub use crate::{
+    DEFAULT_REAPER_INTERVAL_SECS as DEFAULT_INTERVAL_SECS,
+    DEFAULT_REAPER_MAX_AGE_SECS as DEFAULT_MAX_AGE_SECS,
+};
 
 /// The cross-restart reaper over a [`ContainerRuntime`]. Cheap to clone (an `Arc`), so
 /// the background loop and a caller can share one.
@@ -74,17 +70,6 @@ impl<R: ContainerRuntime + 'static> SandboxReaper<R> {
             runtime,
             max_age_secs,
         }
-    }
-
-    /// Read the max-age cap from `AWAKEN_SANDBOX_REAP_MAX_AGE` (seconds), else the
-    /// generous default.
-    #[must_use]
-    pub fn from_env(runtime: Arc<R>) -> Self {
-        let max_age_secs = std::env::var("AWAKEN_SANDBOX_REAP_MAX_AGE")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(DEFAULT_MAX_AGE_SECS);
-        Self::new(runtime, max_age_secs)
     }
 
     /// One sweep: discover the managed containers, decide each with [`should_reap`], and

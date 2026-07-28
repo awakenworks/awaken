@@ -12,14 +12,14 @@ use awaken_sandbox_container::ContainerEnvironmentProvider;
 use awaken_sandbox_container::ContainerProvider;
 
 use crate::deployment_config::SandboxTier;
-#[cfg(any(feature = "container-docker", feature = "container-podman"))]
-use crate::sandbox_source::spawn_container_reaper;
 #[cfg(any(
     feature = "container-docker",
     feature = "container-podman",
     feature = "container-k8s"
 ))]
-use crate::sandbox_source::{configured_container_forward_proxy, container_image, warm_pool_size};
+use crate::sandbox_source::container_image;
+#[cfg(any(feature = "container-docker", feature = "container-podman"))]
+use crate::sandbox_source::spawn_container_reaper;
 
 #[cfg(any(
     feature = "container-docker",
@@ -48,12 +48,19 @@ fn wrap<R: awaken_sandbox_container::ContainerRuntime + 'static>(
 fn finish<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     runtime: Arc<R>,
     image: Option<&str>,
+    settings: &crate::deployment_config::SandboxSettings,
 ) -> Result<Arc<dyn ContainerEnvironmentProvider>, String> {
     let mut provider = ContainerProvider::new(runtime, container_image(image)?);
-    if let Some(proxy) = configured_container_forward_proxy() {
-        provider = provider.with_forward_proxy(proxy);
+    if let Some(url) = settings
+        .container_forward_proxy
+        .as_deref()
+        .filter(|url| !url.trim().is_empty())
+    {
+        provider = provider.with_forward_proxy(awaken_sandbox_container::ForwardProxy {
+            url: url.to_owned(),
+        });
     }
-    Ok(wrap(provider, warm_pool_size()))
+    Ok(wrap(provider, settings.warm_pool_size))
 }
 
 /// Build the one provider used by both Native tools and ACP attempts in a Session,
@@ -66,6 +73,7 @@ fn finish<R: awaken_sandbox_container::ContainerRuntime + 'static>(
 pub(crate) async fn build(
     tier: SandboxTier,
     image: Option<&str>,
+    settings: &crate::deployment_config::SandboxSettings,
 ) -> Result<
     (
         Arc<dyn ContainerEnvironmentProvider>,
@@ -80,19 +88,18 @@ pub(crate) async fn build(
                 awaken_sandbox_container::docker::DockerRuntime::connect_local(8080)
                     .map_err(|error| format!("docker runtime: {error}"))?,
             );
-            spawn_container_reaper(runtime.clone());
-            finish(runtime, image)?
+            spawn_container_reaper(runtime.clone(), settings);
+            finish(runtime, image, settings)?
         }
         #[cfg(feature = "container-podman")]
         SandboxTier::Podman => {
             let runtime = Arc::new(awaken_sandbox_container::podman::PodmanRuntime::new(8080));
-            spawn_container_reaper(runtime.clone());
-            finish(runtime, image)?
+            spawn_container_reaper(runtime.clone(), settings);
+            finish(runtime, image, settings)?
         }
         #[cfg(feature = "container-k8s")]
         SandboxTier::K8s => {
-            let namespace =
-                std::env::var("AWAKEN_K8S_NAMESPACE").unwrap_or_else(|_| "default".into());
+            let namespace = settings.k8s_namespace.clone();
             // Exec-attached Session environments do not publish an ACP port. Keep the
             // constructor's legacy address inert until that adapter parameter is removed.
             let inert = "127.0.0.1:1".parse().expect("literal socket address");
@@ -101,7 +108,7 @@ pub(crate) async fn build(
                     .await
                     .map_err(|error| format!("k8s runtime: {error}"))?,
             );
-            finish(runtime, image)?
+            finish(runtime, image, settings)?
         }
         SandboxTier::Local | SandboxTier::Namespace => {
             return Err("local/namespace tiers do not use a container provider".into());
@@ -130,6 +137,7 @@ pub(crate) async fn build(
 pub(crate) async fn build(
     tier: SandboxTier,
     _image: Option<&str>,
+    _settings: &crate::deployment_config::SandboxSettings,
 ) -> Result<
     (
         Arc<dyn ContainerEnvironmentProvider>,
@@ -168,7 +176,15 @@ mod tests {
     fn provider_composition_requires_an_image() {
         use awaken_sandbox_container::podman::PodmanRuntime;
 
-        assert!(finish(Arc::new(PodmanRuntime::new(8080)), None).is_err());
-        assert!(finish(Arc::new(PodmanRuntime::new(8080)), Some("busybox")).is_ok());
+        let settings = crate::deployment_config::SandboxSettings::default();
+        assert!(finish(Arc::new(PodmanRuntime::new(8080)), None, &settings).is_err());
+        assert!(
+            finish(
+                Arc::new(PodmanRuntime::new(8080)),
+                Some("busybox"),
+                &settings
+            )
+            .is_ok()
+        );
     }
 }
