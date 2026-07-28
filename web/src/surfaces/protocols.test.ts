@@ -4,6 +4,7 @@ import {
   FRONTEND_AI_SDK,
   MANAGED_CURL,
   PROTOCOLS,
+  runtimeStatus,
 } from "./protocols";
 
 describe("built-in protocol guide", () => {
@@ -32,5 +33,19 @@ describe("built-in protocol guide", () => {
     expect(FRONTEND_AI_SDK).toContain("Bearer ${access_token}");
     expect(MANAGED_CURL).toContain("/v1/sessions");
     expect(MANAGED_CURL).toContain("$AWAKEN_API_KEY");
+  });
+
+  it("projects authoritative ACP detection and login state", () => {
+    const runtime = {
+      id: "acp:claude",
+      label: "Claude Code",
+      kind: "acp" as const,
+      description: "ACP",
+    };
+    expect(runtimeStatus(runtime)).toBe("not_detected");
+    expect(runtimeStatus({ ...runtime, local: { detected: true, login_state: "login_required" } }))
+      .toBe("login_required");
+    expect(runtimeStatus({ ...runtime, local: { detected: true, login_state: "available" } }))
+      .toBe("ready");
   });
 });

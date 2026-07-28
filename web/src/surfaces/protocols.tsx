@@ -3,6 +3,8 @@
 
 import { useApp } from "../lib/app-state";
 import { Card, Pill } from "../components/ui";
+import { useCapabilities } from "../lib/useCapabilities";
+import type { RuntimeCap } from "../lib/api/types";
 
 export const PROTOCOLS = [
   { id: "managed", name: "Managed Agents", endpoint: "/v1/sessions", mode: "HTTP + SSE", token: "service" },
@@ -46,8 +48,15 @@ export const MANAGED_CURL = `curl http://localhost:8080/v1/sessions \\
   -H 'content-type: application/json' \\
   -d '{"agent":"support","title":"backend job"}'`;
 
+export function runtimeStatus(runtime: RuntimeCap): "ready" | "login_required" | "not_detected" {
+  if (!runtime.local?.detected) return "not_detected";
+  return runtime.local.login_state === "available" ? "ready" : "login_required";
+}
+
 export default function ProtocolsSurface() {
   const app = useApp();
+  const capabilities = useCapabilities();
+  const runtimes = capabilities.data?.runtimes ?? [];
   return (
     <div className="stack">
       <Card>
@@ -127,6 +136,24 @@ export default function ProtocolsSurface() {
         <p className="mut">
           <strong>A2A discovery</strong> — <code>/.well-known/agent-card.json</code> · <code>/v1/a2a/message:send</code> · <code>/v1/a2a/message:stream</code>
         </p>
+        <div className="stack" style={{ marginTop: 12 }}>
+          {runtimes.map((runtime) => {
+            const status = runtime.kind === "native" ? "ready" : runtimeStatus(runtime);
+            return (
+              <div className="row" key={runtime.id} style={{ justifyContent: "space-between" }}>
+                <span>
+                  <strong>{runtime.label}</strong>{" "}
+                  <code>{runtime.id}</code>
+                  {runtime.local?.version && <span className="mut"> · {runtime.local.version}</span>}
+                </span>
+                <Pill tone={status === "ready" ? "ok" : status === "login_required" ? "warn" : "neutral"}>
+                  {status.replaceAll("_", " ")}
+                </Pill>
+                {runtime.local?.remediation && <span className="hint">{runtime.local.remediation}</span>}
+              </div>
+            );
+          })}
+        </div>
       </Card>
     </div>
   );

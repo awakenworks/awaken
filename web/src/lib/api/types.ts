@@ -472,6 +472,13 @@ export interface RuntimeCap {
   kind: "native" | "acp";
   cli?: string | null;
   description: string;
+  local?: {
+    detected: boolean;
+    version?: string | null;
+    login_state?: string | null;
+    reason_code?: string | null;
+    remediation?: string | null;
+  } | null;
 }
 /** A one-click sandbox starting point over `sandbox.config_schema`. */
 export interface SandboxPreset {
