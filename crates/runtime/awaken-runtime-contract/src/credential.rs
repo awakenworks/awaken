@@ -19,7 +19,7 @@ pub enum AttemptCredentialBindingError {
     InvalidClaimEpoch,
     #[error("credential-bearing inference has no exact plaintext holder request")]
     MissingPlaintextHolder,
-    #[error("inference credential usage must be provider_adapter")]
+    #[error("inference credential usage is incompatible with the selected backend")]
     InvalidCredentialUsage,
     #[error("plaintext boundary {boundary:?} is unsupported for inference backend {backend}")]
     UnsupportedRealization {
@@ -59,11 +59,22 @@ pub fn compile_candidate_credential_bindings(
         else {
             continue;
         };
-        if access.usage != CredentialUsage::ProviderAdapter {
-            return Err(AttemptCredentialBindingError::InvalidCredentialUsage);
-        }
         let holder = holder.ok_or(AttemptCredentialBindingError::MissingPlaintextHolder)?;
         let backend = Backend::from_ref(&candidate.binding.backend_ref);
+        match &backend {
+            Backend::Native if access.usage != CredentialUsage::ProviderAdapter => {
+                return Err(AttemptCredentialBindingError::InvalidCredentialUsage);
+            }
+            Backend::Acp { .. }
+                if !matches!(
+                    access.usage,
+                    CredentialUsage::ProviderAdapter | CredentialUsage::EnvironmentVariable { .. }
+                ) =>
+            {
+                return Err(AttemptCredentialBindingError::InvalidCredentialUsage);
+            }
+            _ => {}
+        }
         let realization = match (&backend, holder.boundary) {
             (Backend::Native, PlaintextBoundary::Worker) => {
                 CredentialRealizationKind::WorkerProviderAdapter
@@ -311,5 +322,64 @@ mod tests {
                 Vec::new()
             );
         }
+    }
+
+    #[test]
+    fn managed_acp_accepts_a_published_process_environment_usage_only_for_acp() {
+        let holder =
+            PlaintextHolder::new(PlaintextBoundary::Workload, SELF_HOSTED_ACP_TRUST_DOMAIN);
+        let access = CredentialAccess::new(
+            CredentialRef {
+                id: "claude-setup".into(),
+                revision: 1,
+            },
+            CredentialMaterialSource::ControlPlaneReference,
+            CredentialUsage::EnvironmentVariable {
+                name: "CLAUDE_CODE_OAUTH_TOKEN".into(),
+            },
+            CredentialExecutionPolicy::self_hosted_provider(),
+        );
+        let candidate = ResolvedModelCandidate::provider(
+            ModelBinding::new("anthropic", "claude-test", "acp:claude"),
+            "anthropic@1",
+            "anthropic-messages@1",
+            "workspace-a",
+            Some(access),
+            crate::InferenceEndpoint {
+                adapter_kind: "anthropic".into(),
+                api_dialect: "anthropic_messages".into(),
+                base_url: "https://api.anthropic.com/v1".into(),
+                upstream_model: "claude-test".into(),
+            },
+        );
+        let capabilities = CredentialRealizationCapabilities {
+            holders: [holder.clone()].into_iter().collect(),
+            material_sources: [CredentialMaterialSource::ControlPlaneReference]
+                .into_iter()
+                .collect(),
+            realization_kinds: [CredentialRealizationKind::ProcessSecretEnvironment]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        assert_eq!(
+            compile_candidate_credential_bindings(
+                &[&candidate],
+                Some(&holder),
+                &capabilities,
+                1,
+                0,
+            )
+            .expect("ACP environment usage")
+            .len(),
+            1
+        );
+
+        let mut native = candidate;
+        native.binding.backend_ref = "genai".into();
+        assert_eq!(
+            compile_candidate_credential_bindings(&[&native], Some(&holder), &capabilities, 1, 0,),
+            Err(AttemptCredentialBindingError::InvalidCredentialUsage)
+        );
     }
 }

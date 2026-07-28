@@ -113,9 +113,15 @@ function ResolveChain({ view }: { view: ResolvedInferenceView }) {
 export default function ModelProfileEditor({
   offerings,
   credentials,
+  suggestion,
 }: {
   offerings: Offering[];
   credentials: CredentialSource[];
+  suggestion?: {
+    providerId: string;
+    credentialId: string;
+    revision: number;
+  } | null;
 }) {
   const app = useApp();
   const workspace = app.workspaceId;
@@ -127,6 +133,8 @@ export default function ModelProfileEditor({
   const [primaryCredentialId, setPrimaryCredentialId] = useState("");
   const [profileFallbacks, setProfileFallbacks] = useState<ProfileDraftCandidate[]>([]);
   const profileHydrated = useRef<string | null>(null);
+  const appliedSuggestion = useRef<number | null>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
   const profile = useQuery({
     queryKey: ["inference-profile", workspace, profileId],
     queryFn: async () => {
@@ -145,17 +153,17 @@ export default function ModelProfileEditor({
       setPrimaryTargetKey(targetKey(profile.data.primary.target));
       setPrimaryCredentialId(
         profile.data.primary.credential_binding.type === "exact"
-          ? profile.data.primary.credential_binding.credential_source_id
+          ? profile.data.primary.credential_binding.credential_source_id ?? ""
           : "",
       );
       setPrimaryAccessMode(accessModeOf(profile.data.primary.credential_binding));
       setProfileFallbacks(
-        profile.data.fallbacks.map((candidate) => ({
+        (profile.data.fallbacks ?? []).map((candidate) => ({
           targetKey: targetKey(candidate.target),
           accessMode: accessModeOf(candidate.credential_binding),
           credentialId:
             candidate.credential_binding.type === "exact"
-              ? candidate.credential_binding.credential_source_id
+              ? candidate.credential_binding.credential_source_id ?? ""
               : "",
         })),
       );
@@ -166,6 +174,22 @@ export default function ModelProfileEditor({
       profileHydrated.current = workspace;
     }
   }, [offeringOptions, profile.data, profile.isLoading, workspace]);
+  useEffect(() => {
+    if (!suggestion || appliedSuggestion.current === suggestion.revision) return;
+    const offering = offeringOptions.find(
+      (candidate) => candidate.provider_id === suggestion.providerId,
+    );
+    if (!offering) return;
+    const nextTarget = targetKey(offeringTarget(offering));
+    setPrimaryTargetKey(nextTarget);
+    setPrimaryAccessMode("exact");
+    setPrimaryCredentialId(suggestion.credentialId);
+    setProfileFallbacks((current) =>
+      current.filter((candidate) => candidate.targetKey !== nextTarget),
+    );
+    appliedSuggestion.current = suggestion.revision;
+    cardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [offeringOptions, suggestion]);
   const saveProfile = useMutation({
     mutationFn: () => {
       if (!primaryTargetKey) throw new Error("Choose a primary model");
@@ -220,9 +244,10 @@ export default function ModelProfileEditor({
     );
 
   return (
-    <Card>
-      <div className="row" style={{ justifyContent: "space-between" }}>
-        <div>
+    <div ref={cardRef}>
+      <Card>
+        <div className="row" style={{ justifyContent: "space-between" }}>
+          <div>
           <h2>{app.t("Workspace inference profile", "工作区推理配置")}</h2>
           <p className="hint">
             {app.t(
@@ -233,6 +258,17 @@ export default function ModelProfileEditor({
         </div>
         <Pill tone="neutral">{profileId}</Pill>
       </div>
+      {suggestion && appliedSuggestion.current === suggestion.revision && (
+        <div className="banner info" style={{ marginBottom: 12 }}>
+          <span>→</span>
+          <span>
+            {app.t(
+              "The verified connection is selected. Review the exact model and credential, then save this explicit routing policy.",
+              "已选中刚验证的连接。请检查精确模型与凭证，然后保存这条显式路由策略。",
+            )}
+          </span>
+        </div>
+      )}
       <div className="row" style={{ alignItems: "flex-end" }}>
         <SelectField label={app.t("Primary model", "主模型")} value={primaryTargetKey} onChange={(event) => {
           const next = event.target.value;
@@ -280,5 +316,6 @@ export default function ModelProfileEditor({
       {previewProfile.error instanceof Error && <div className="err">{previewProfile.error.message}</div>}
       {previewProfile.data?.candidates.map((candidate, index) => <div key={`${candidate.provider_id}-${candidate.protocol_endpoint_id}-${index}`}><span className="mut">{index === 0 ? app.t("Primary", "主模型") : `Fallback ${index}`}</span><ResolveChain view={candidate} /></div>)}
     </Card>
+    </div>
   );
 }

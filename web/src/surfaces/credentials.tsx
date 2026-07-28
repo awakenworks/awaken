@@ -4,27 +4,36 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { useNavigate } from "react-router";
 import { api, ws } from "../lib/api/client";
-import type { CredentialSource, CredentialValidation } from "../lib/api/types";
+import type {
+  CredentialSource,
+  CredentialValidation,
+  ProviderCatalog,
+} from "../lib/api/types";
 import { useApp } from "../lib/app-state";
-import { Button, Card, Modal, Pill, SecretField, TextField } from "../components/ui";
+import { Button, Card, Modal, Pill, SecretField } from "../components/ui";
 
-function SourceRow({ source }: { source: CredentialSource }) {
+const CLAUDE_CODE_SETUP_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
+
+function SourceRow({ source, probeModel }: { source: CredentialSource; probeModel?: string }) {
   const app = useApp();
   const qc = useQueryClient();
-  const [model, setModel] = useState("claude-sonnet-4-5");
   const validate = useMutation({
-    mutationFn: () =>
-      api.post<CredentialValidation>(ws(`/v1/config/credentials/${source.id}/validate`), {
+    mutationFn: () => {
+      if (!probeModel) throw new Error("No compatible active model is available");
+      return api.post<CredentialValidation>(ws(`/v1/config/credentials/${source.id}/validate`), {
         workspace_id: source.workspace_id,
-        model_id: model,
-      }),
+        model_id: probeModel,
+      });
+    },
   });
   const archive = useMutation({
     mutationFn: () => api.post(ws(`/v1/config/credentials/${source.id}/archive`)),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["credentials"] }),
   });
   const statusTone = source.status === "active" ? "ok" : "neutral";
+  const isClaudeSetupToken = source.env_key === CLAUDE_CODE_SETUP_TOKEN_ENV;
   return (
     <tr>
       <td className="mono">{source.id}</td>
@@ -46,20 +55,24 @@ function SourceRow({ source }: { source: CredentialSource }) {
         {validate.error instanceof Error && <span className="err">{validate.error.message}</span>}
       </td>
       <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-        <input
-          className="input mono"
-          style={{ width: 150, height: 26, marginRight: 6 }}
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-          title={app.t("model to probe with", "用于探针的模型")}
-        />
         <Button
           variant="ghost"
           style={{ height: 26 }}
-          disabled={validate.isPending || source.kind === "worker_local"}
+          disabled={
+            validate.isPending || source.kind === "worker_local" || isClaudeSetupToken || !probeModel
+          }
           onClick={() => validate.mutate()}
+          title={
+            probeModel
+              ? app.t(`Validate with ${probeModel}`, `使用 ${probeModel} 验证`)
+              : app.t("Connect a compatible model first", "请先连接兼容模型")
+          }
         >
-          {source.kind === "worker_local" ? app.t("Worker-reported", "Worker 上报") : app.t("Validate", "验证")}
+          {source.kind === "worker_local"
+            ? app.t("Worker-reported", "Worker 上报")
+            : isClaudeSetupToken
+              ? app.t("Checked at ACP launch", "ACP 启动时校验")
+              : app.t("Validate", "验证")}
         </Button>{" "}
         <Button
           variant="ghost"
@@ -77,26 +90,31 @@ function SourceRow({ source }: { source: CredentialSource }) {
 export default function CredentialsSurface() {
   const app = useApp();
   const workspace = app.workspaceId;
+  const navigate = useNavigate();
   const qc = useQueryClient();
+  const [addingSetupToken, setAddingSetupToken] = useState(false);
+  const [setupToken, setSetupToken] = useState("");
   const sources = useQuery({
     queryKey: ["credentials", workspace],
     queryFn: () => api.get<CredentialSource[]>(ws(`/v1/config/credentials?workspace_id=${workspace}`)),
   });
-  const [entering, setEntering] = useState(false);
-  const [form, setForm] = useState({ kind: "vault", provider: "anthropic", secret: "", oauthHelper: "gcloud" });
-  const enter = useMutation({
+  const catalog = useQuery({
+    queryKey: ["catalog"],
+    queryFn: () => api.get<ProviderCatalog>(ws("/v1/config/catalog")),
+  });
+  const addSetupToken = useMutation({
     mutationFn: () =>
       api.post<CredentialSource>(ws("/v1/config/credentials"), {
         workspace_id: workspace,
-        kind: form.kind,
-        provider_id: form.provider || undefined,
-        secret: form.kind === "vault" ? form.secret : undefined,
-        oauth_helper: form.kind === "oauth" ? form.oauthHelper : undefined,
+        kind: "vault",
+        provider_id: "anthropic",
+        env_key: CLAUDE_CODE_SETUP_TOKEN_ENV,
+        secret: setupToken,
       }),
     onSuccess: () => {
-      setEntering(false);
-      setForm({ ...form, secret: "" });
-      void qc.invalidateQueries({ queryKey: ["credentials"] });
+      setSetupToken("");
+      setAddingSetupToken(false);
+      void qc.invalidateQueries({ queryKey: ["credentials", workspace] });
     },
   });
   return (
@@ -114,9 +132,14 @@ export default function CredentialsSurface() {
         <span className="mut">
           {app.t("Credential sources — materialized only at the outbound adapter boundary.", "凭证源——仅在出站适配器边界实例化。")}
         </span>
-        <Button variant="primary" onClick={() => setEntering(true)}>
-          + {app.t("Enter credential", "录入凭证")}
-        </Button>
+        <span className="row">
+          <Button variant="ghost" onClick={() => setAddingSetupToken(true)}>
+            + {app.t("Claude Code setup token", "Claude Code setup token")}
+          </Button>
+          <Button variant="primary" onClick={() => navigate(`/w/${workspace}/models`)}>
+            + {app.t("Connect model provider", "连接模型供应商")}
+          </Button>
+        </span>
       </div>
       <Card style={{ padding: 0 }}>
         <table className="table">
@@ -132,7 +155,15 @@ export default function CredentialsSurface() {
           </thead>
           <tbody>
             {(sources.data ?? []).map((s) => (
-              <SourceRow key={s.id} source={s} />
+              <SourceRow
+                key={s.id}
+                source={s}
+                probeModel={(catalog.data?.offerings ?? []).find(
+                  (offering) =>
+                    (offering.status ?? "active") === "active" &&
+                    (s.provider_id == null || offering.provider_id === s.provider_id),
+                )?.model_id}
+              />
             ))}
             {(sources.data ?? []).length === 0 && (
               <tr>
@@ -155,56 +186,36 @@ export default function CredentialsSurface() {
           )}
         </span>
       </div>
-
-      {entering && (
-        <Modal title={app.t("Enter credential", "录入凭证")} onClose={() => setEntering(false)}>
-            <div className="row">
-              {["vault", "oauth", "worker_local"].map((k) => (
-                <Button key={k} variant={form.kind === k ? "primary" : "ghost"} onClick={() => setForm({ ...form, kind: k })}>
-                  {k}
-                </Button>
-              ))}
-            </div>
-            <TextField label="provider_id" mono value={form.provider} onChange={(e) => setForm({ ...form, provider: e.target.value })} />
-            {form.kind === "oauth" ? (
-              <label className="field">
-                <span>{app.t("OAuth helper", "OAuth 辅助程序")}</span>
-                <select className="input mono" value={form.oauthHelper} onChange={(e) => setForm({ ...form, oauthHelper: e.target.value })}>
-                  <option value="gcloud">gcloud · active account</option>
-                </select>
-                <small className="hint">
-                  {app.t(
-                    "Awaken stores only the helper id and refreshes a short-lived token when a run starts.",
-                    "Awaken 只保存 helper id，并在 run 开始时刷新短期 token。",
-                  )}
-                </small>
-              </label>
-            ) : form.kind === "vault" ? (
-              // The single secret-entry seam (ADR-0038 invariant: a stored secret is
-              // never read back into the UI — write-only). For a new credential nothing
-              // is stored yet, so it renders as a masked "replace" input.
-              <SecretField
-                label={app.t("secret (write-only, sealed)", "秘密(只写,密封)")}
-                hasStored={false}
-                onChange={(intent) => setForm({ ...form, secret: intent.value ?? "" })}
-              />
-            ) : (
-              <div className="banner info">
-                <span>ⓘ</span>
-                <span>
-                  {app.t(
-                    "Only a non-secret source binding is saved. Install the secret on a worker using that source ID; worker heartbeats report availability.",
-                    "这里只保存无秘密的来源绑定。请用该来源 ID 在 Worker 本地安装秘密；可用性由 Worker 心跳上报。",
-                  )}
-                </span>
-              </div>
+      {addingSetupToken && (
+        <Modal
+          title={app.t("Add Claude Code setup token", "添加 Claude Code setup token")}
+          onClose={() => setAddingSetupToken(false)}
+        >
+          <p className="hint">
+            {app.t(
+              "Run `claude setup-token` on a trusted machine, then paste the resulting long-lived token once. It is sealed in the Vault and is available only to managed acp:claude launches as CLAUDE_CODE_OAUTH_TOKEN.",
+              "在可信机器上运行 `claude setup-token`，然后仅粘贴一次生成的长期 token。它会密封进 Vault，并且只能作为 CLAUDE_CODE_OAUTH_TOKEN 提供给受管 acp:claude 运行。",
             )}
-            {enter.error instanceof Error && <div className="err">{enter.error.message}</div>}
-            <div className="row" style={{ justifyContent: "flex-end" }}>
-              <Button variant="primary" disabled={enter.isPending} onClick={() => enter.mutate()}>
-                {form.kind === "vault" ? app.t("Seal & save", "密封保存") : app.t("Save binding", "保存绑定")}
-              </Button>
-            </div>
+          </p>
+          <SecretField
+            label={app.t("Setup token (write-only)", "Setup token（仅写入）")}
+            hasStored={false}
+            onChange={(intent) => setSetupToken(intent.value ?? "")}
+          />
+          {addSetupToken.error instanceof Error && (
+            <div className="err">{addSetupToken.error.message}</div>
+          )}
+          <div className="row" style={{ justifyContent: "flex-end" }}>
+            <Button
+              variant="primary"
+              disabled={!setupToken || addSetupToken.isPending}
+              onClick={() => addSetupToken.mutate()}
+            >
+              {addSetupToken.isPending
+                ? app.t("Saving…", "正在保存…")
+                : app.t("Save setup token", "保存 setup token")}
+            </Button>
+          </div>
         </Modal>
       )}
     </>

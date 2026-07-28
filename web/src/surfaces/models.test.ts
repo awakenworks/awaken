@@ -7,7 +7,11 @@ import {
   targetKey,
 } from "./model-profile-editor";
 import { cloudModelUiState } from "./model-cloud-capability";
-import { providerDraftDefaults } from "./models";
+import {
+  providerConfigurationDefaults,
+  providerDraftDefaults,
+  providerEndpointCoordinates,
+} from "./provider-connection-panel";
 
 // UI cause/effect rules kept beside the executable tests:
 // T1: C1 descriptor has a preferred endpoint -> E1 form uses its protocol, URL,
@@ -63,6 +67,35 @@ describe("providerDraftDefaults", () => {
       endpoint: "vertex-endpoint",
       baseUrl: "",
       dialect: "vertex_gemini",
+    });
+  });
+
+  it("derives Vertex endpoint coordinates from descriptor-owned configuration fields", () => {
+    const vertex: ProviderDriverDescriptor = {
+      ...openai,
+      provider_kind: "vertex",
+      auth_methods: ["oauth"],
+      supported_dialects: ["vertex_gemini"],
+      configuration_fields: [
+        { key: "project_id", label: "Project", kind: "text", required: true, advanced: false },
+        { key: "location", label: "Location", kind: "text", required: true, advanced: false, placeholder: "global" },
+      ],
+      default_endpoints: [],
+    };
+    expect(providerConfigurationDefaults(vertex)).toEqual({
+      project_id: "",
+      location: "global",
+    });
+    expect(
+      providerEndpointCoordinates(
+        vertex,
+        { endpoint: "vertex-gemini", baseUrl: "" },
+        { project_id: "demo-project", location: "us-central1" },
+      ),
+    ).toEqual({
+      endpoint: "vertex-gemini",
+      baseUrl:
+        "https://us-central1-aiplatform.googleapis.com/v1/projects/demo-project/locations/us-central1/",
     });
   });
 });

@@ -1159,6 +1159,18 @@ Failure never silently falls back to the CLI default.
   credentials, Worker state, or ACP processes.
 - Managed provider credentials remain supported for isolated deployments. They
   are a different provisioning variant, not a fallback for local login.
+- Managed Claude credentials use one process-secret path selected by the
+  publication-pinned `CredentialAccess.usage`: an Anthropic API key is delivered
+  as `ANTHROPIC_API_KEY`, while a long-lived token produced by
+  `claude setup-token` is delivered as `CLAUDE_CODE_OAUTH_TOKEN` and is valid
+  only for `acp:claude`. Both are sealed Vault bearers and materialize only at
+  the claimed Workload boundary. Awaken does not synthesize or persist Claude's
+  `.credentials.json`; that former parallel OAuth-artifact path is removed.
+- Native provider execution, provider model discovery, and every other ACP CLI
+  reject a Claude setup token. When an API key and setup token coexist, Native
+  selects the API key and managed `acp:claude` selects the setup token; the
+  selected environment usage is fingerprinted in the immutable candidate and
+  cannot downgrade at launch.
 - Reusing host HOME intentionally trusts the external CLI with the user's host
   identity and files accessible to that process. Product diagnostics must label
   this mode “trusted local”, not “sandboxed”.

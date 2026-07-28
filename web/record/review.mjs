@@ -88,6 +88,24 @@ const checks = [
     assert.match(source, /not\.toHaveProperty\("oauth_command"\)/);
     assert.doesNotMatch(source, /console\.log\([^\n]*KEY/);
   }],
+  ["single model-connection workflow", () => {
+    const source = requiredFlow("01-connect-model.mjs");
+    for (const claim of [
+      "Provider connections",
+      "Verify & import models",
+      "Configure as workspace default",
+      "/v1/config/provider-connections",
+    ]) {
+      assert.ok(source.includes(claim), `01-connect-model.mjs: missing ${claim}`);
+    }
+    for (const redundantPath of [
+      "/v1/config/providers/",
+      "/v1/config/endpoints/",
+      "/v1/config/offerings",
+    ]) {
+      assert.ok(!source.includes(redundantPath), `01-connect-model.mjs: still uses ${redundantPath}`);
+    }
+  }],
   ["feature breadth", () => {
     const corpus = [...flows.values()].join("\n");
     for (const claim of [

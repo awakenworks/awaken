@@ -2229,7 +2229,7 @@
           "description": "Authentication input a provider connection can request. This describes the\nauthoring UI only; credential material remains owned by the vault.",
           "enum": [
             "api_key",
-            "o_auth"
+            "oauth"
           ],
           "type": "string"
         },
@@ -2630,6 +2630,20 @@
               "type": "string"
             }
           ]
+        },
+        "CredentialSourceId": {
+          "description": "Stable id of a [`CredentialSource`].",
+          "type": "string"
+        },
+        "OAuthHelper": {
+          "description": "Server-owned OAuth token helper. The API carries this allowlisted id, never\nan operator-supplied command line; the credential bounded context owns how\nit becomes a token source for model, MCP, and A2A consumers alike.",
+          "oneOf": [
+            {
+              "const": "gcloud",
+              "description": "Mint a Google access token from the active gcloud account.",
+              "type": "string"
+            }
+          ]
         }
       },
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2641,6 +2655,18 @@
             "null"
           ]
         },
+        "credential_source_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CredentialSourceId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Reuse one active Workspace credential instead of creating a duplicate."
+        },
         "dialect": {
           "$ref": "#/$defs/ApiDialect"
         },
@@ -2650,12 +2676,28 @@
         "endpoint_id": {
           "type": "string"
         },
+        "oauth_helper": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OAuthHelper"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Server-owned OAuth helper used to mint a short-lived token for both the\npre-save discovery and the persisted credential source."
+        },
         "provider_id": {
           "type": "string"
         },
         "secret": {
-          "description": "Write-only API key. It is tested before entering the vault and never\nappears in the response or any catalog row.",
-          "type": "string"
+          "default": null,
+          "description": "Write-only API key. Exactly one of `secret`, `oauth_helper`, or\n`credential_source_id` must be supplied. The legacy `secret` field stays\nwire-compatible while the connection command becomes the one authoring\npath for every supported credential source.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "timeout_secs": {
           "default": 60,
@@ -2672,8 +2714,7 @@
         "provider_id",
         "display_name",
         "endpoint_id",
-        "dialect",
-        "secret"
+        "dialect"
       ],
       "title": "SaveProviderConnectionRequest",
       "type": "object"

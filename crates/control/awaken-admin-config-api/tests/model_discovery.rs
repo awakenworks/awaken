@@ -467,6 +467,154 @@ async fn test_and_save_activates_all_facts_only_after_discovery_succeeds() {
 }
 
 #[tokio::test]
+async fn oauth_connection_uses_the_same_command_and_persists_only_the_helper() {
+    let harness = harness();
+    let (status, result) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/provider-connections",
+        json!({
+            "workspace_id":"workspace-a",
+            "provider_id":"vertex",
+            "display_name":"Vertex AI",
+            "endpoint_id":"vertex-gemini",
+            "dialect":"vertex_gemini",
+            "base_url":"https://aiplatform.googleapis.com/v1/projects/p/locations/global/",
+            "oauth_helper":"gcloud"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    assert_eq!(result["credential"]["kind"], "oauth");
+    assert_eq!(result["credential"]["oauth_helper"], "gcloud");
+    assert!(result.get("oauth_command").is_none());
+    assert_eq!(
+        harness.discovery.calls.lock().unwrap().as_slice(),
+        &[(
+            "vertex-gemini".into(),
+            "cred:provider-connection-probe".into()
+        )]
+    );
+    let sources = harness.credentials.list("workspace-a").await.unwrap();
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0].provider_id.as_deref(), Some("vertex"));
+}
+
+#[tokio::test]
+async fn existing_credential_connection_reuses_the_source_without_creating_a_duplicate() {
+    let harness = harness();
+    let (status, entered) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/credentials",
+        json!({
+            "workspace_id":"workspace-a",
+            "kind":"vault",
+            "provider_id":"openai",
+            "secret":"test-value" // awaken-allow: secret
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{entered}");
+    let credential_id = entered["id"].as_str().unwrap();
+    let (status, result) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/provider-connections",
+        json!({
+            "workspace_id":"workspace-a",
+            "provider_id":"openai",
+            "display_name":"OpenAI",
+            "endpoint_id":"openai-responses",
+            "dialect":"open_ai_responses",
+            "credential_source_id":credential_id
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    assert_eq!(result["credential"]["id"], credential_id);
+    assert_eq!(
+        harness.credentials.list("workspace-a").await.unwrap().len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn provider_connection_rejects_a_claude_code_setup_token_before_discovery() {
+    let harness = harness();
+    let (status, entered) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/credentials",
+        json!({
+            "workspace_id":"workspace-a",
+            "kind":"vault",
+            "provider_id":"anthropic",
+            "env_key":"CLAUDE_CODE_OAUTH_TOKEN",
+            "secret":"test-value" // awaken-allow: secret
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{entered}");
+    let (status, problem) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/provider-connections",
+        json!({
+            "workspace_id":"workspace-a",
+            "provider_id":"anthropic",
+            "display_name":"Anthropic",
+            "endpoint_id":"anthropic-messages",
+            "dialect":"anthropic_messages",
+            "credential_source_id":entered["id"]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{problem}");
+    assert_eq!(problem["code"], "connection_auth_unsupported");
+    assert!(harness.discovery.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn connection_rejects_parallel_or_unsupported_auth_inputs() {
+    let harness = harness();
+    let (status, problem) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/provider-connections",
+        json!({
+            "workspace_id":"workspace-a",
+            "provider_id":"anthropic",
+            "display_name":"Anthropic",
+            "endpoint_id":"anthropic-messages",
+            "dialect":"anthropic_messages",
+            "secret":"one",
+            "oauth_helper":"gcloud"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{problem}");
+    assert_eq!(problem["code"], "connection_auth_invalid");
+
+    let (status, problem) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/provider-connections",
+        json!({
+            "workspace_id":"workspace-a",
+            "provider_id":"anthropic",
+            "display_name":"Anthropic",
+            "endpoint_id":"anthropic-messages",
+            "dialect":"anthropic_messages",
+            "oauth_helper":"gcloud"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{problem}");
+    assert_eq!(problem["code"], "connection_auth_unsupported");
+}
+
+#[tokio::test]
 async fn failed_connection_test_leaves_no_executable_catalog_facts() {
     let harness = harness();
     *harness.discovery.fail.lock().unwrap() = true;

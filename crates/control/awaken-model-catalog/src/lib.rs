@@ -163,6 +163,10 @@ pub struct ModelAttributes {
 #[serde(rename_all = "snake_case")]
 pub enum ProviderAuthMethod {
     ApiKey,
+    // `rename_all = "snake_case"` would split this initialism into `o_auth`,
+    // creating a second spelling beside CredentialKind::Oauth and the Console
+    // contract. Keep one public vocabulary.
+    #[serde(rename = "oauth")]
     OAuth,
 }
 

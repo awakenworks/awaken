@@ -3,6 +3,8 @@
 // surfaces issue (same paths, same bodies) against a management-mode host.
 //   AWAKEN_HTTP_URL=http://127.0.0.1:38091 node web/scripts/smoke.mjs
 
+import { createServer } from "node:http";
+
 const BASE = process.env.AWAKEN_HTTP_URL ?? "http://127.0.0.1:38080";
 let failures = 0;
 
@@ -49,38 +51,60 @@ async function uploadStep(name, path, filename, mime, text, fields, check) {
   return payload;
 }
 
-// ---- Workspace · Models (surfaces/models.tsx) ----
-await step("author provider", "PUT", "/v1/config/providers/anthropic", {
-  id: "anthropic",
-  slug: "anthropic",
+// ---- Workspace · Provider Connections (surfaces/models.tsx) ----
+// The real command verifies provider discovery before committing any catalog
+// facts. This local directory is transport-only test evidence; the backend still
+// runs the production connection/discovery/commit path.
+const directory = createServer((request, response) => {
+  if (request.url?.startsWith("/v1/models")) {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      data: [{ id: "claude-sonnet-4-5" }],
+      has_more: false,
+    }));
+    return;
+  }
+  response.writeHead(404);
+  response.end();
+});
+await new Promise((resolve, reject) => {
+  directory.once("error", reject);
+  directory.listen(0, "127.0.0.1", resolve);
+});
+directory.unref();
+const directoryAddress = directory.address();
+if (typeof directoryAddress !== "object" || directoryAddress === null) {
+  throw new Error("model directory did not expose a TCP address");
+}
+const existingCredentials = await step(
+  "read reusable credentials",
+  "GET",
+  "/v1/config/credentials?workspace_id=wrkspc_default",
+  undefined,
+  (s, p) => s === 200 && Array.isArray(p),
+);
+const reusableCredential = existingCredentials.find(
+  (source) =>
+    source.status === "active" &&
+    source.provider_id === "anthropic" &&
+    source.env_key !== "CLAUDE_CODE_OAUTH_TOKEN",
+);
+const connection = await step("verify and save provider connection", "POST", "/v1/config/provider-connections", {
+  workspace_id: "wrkspc_default",
+  provider_id: "anthropic",
   display_name: "Anthropic",
-  version: 1,
-});
-await step("author endpoint", "PUT", "/v1/config/endpoints/anthropic-messages", {
-  id: "anthropic-messages",
-  provider_id: "anthropic",
+  endpoint_id: "anthropic-messages",
   dialect: "anthropic_messages",
-  base_url: null,
+  base_url: `http://127.0.0.1:${directoryAddress.port}/v1`,
   timeout_secs: 60,
-  display_name: "Anthropic Messages",
-  version: 1,
-});
-await step("author offering", "POST", "/v1/config/offerings", {
-  model_id: "claude-sonnet-4-5",
-  provider_id: "anthropic",
-  protocol_endpoint_id: "anthropic-messages",
-  dialect: "anthropic_messages",
-  upstream_model: null,
-});
+  ...(reusableCredential
+    ? { credential_source_id: reusableCredential.id }
+    : { secret: "sk-test-not-a-real-key" }), // awaken-allow: secret (synthetic smoke fixture)
+}, (s, p) => s === 201 && p.sync.discovered === 1 && p.credential.status === "active");
+const cred = connection.credential;
 await step("catalog snapshot", "GET", "/v1/config/catalog", undefined, (s, p) => s === 200 && p.offerings.length >= 1);
 
-// ---- Workspace · Credentials (surfaces/credentials.tsx) ----
-const cred = await step("enter credential", "POST", "/v1/config/credentials", {
-  workspace_id: "wrkspc_default",
-  kind: "vault",
-  provider_id: "anthropic",
-  secret: "sk-test-not-a-real-key", // awaken-allow: secret (synthetic smoke fixture)
-});
+// ---- Workspace · Credentials inventory (surfaces/credentials.tsx) ----
 await step("list credentials", "GET", "/v1/config/credentials?workspace_id=wrkspc_default", undefined, (s, p) => s === 200 && Array.isArray(p) && p.length >= 1);
 await step("resolve dry-run (exact)", "POST", "/v1/config/inference/resolve", {
   workspace_id: "wrkspc_default",
@@ -248,4 +272,5 @@ await step("archived row stays listed", "GET", "/v1/sessions", undefined, (s, p)
 await step("workspace-path session list", "GET", "/v1/workspaces/default/sessions", undefined, (s, p) => s === 200 && p.data.some((x) => x.id === session.id));
 
 console.log(failures === 0 ? "\nSMOKE OK" : `\nSMOKE FAILED (${failures})`);
+directory.close();
 process.exit(failures === 0 ? 0 : 1);

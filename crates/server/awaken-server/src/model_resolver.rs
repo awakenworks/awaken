@@ -294,15 +294,66 @@ impl CatalogModelPublicationResolver {
     fn credential_for<'a>(
         sources: &'a [CredentialSource],
         offering: &Offering,
+        binding: &ModelBinding,
     ) -> Option<&'a CredentialSource> {
         sources
             .iter()
             .filter(|source| {
                 source.status == CredentialStatus::Active
                     && source.kind != CredentialKind::Env
-                    && can_consume(offering.provider_id.as_str(), source)
+                    && Self::credential_can_supply(offering, binding, source)
             })
-            .min_by(|left, right| left.id.0.cmp(&right.id.0))
+            .min_by_key(|source| {
+                (
+                    source.env_key.as_deref()
+                        != Some(awaken_credential_vault::CLAUDE_CODE_SETUP_TOKEN_ENV),
+                    source.id.0.as_str(),
+                )
+            })
+    }
+
+    fn credential_can_supply(
+        offering: &Offering,
+        binding: &ModelBinding,
+        source: &CredentialSource,
+    ) -> bool {
+        if source.env_key.as_deref() == Some(awaken_credential_vault::CLAUDE_CODE_SETUP_TOKEN_ENV) {
+            return offering.provider_id.as_str() == "anthropic"
+                && binding.backend_ref == "acp:claude"
+                && source.provider_id.as_deref() == Some("anthropic");
+        }
+        can_consume(offering.provider_id.as_str(), source)
+            && Self::credential_usage(binding, source).is_ok()
+    }
+
+    fn credential_usage(
+        binding: &ModelBinding,
+        source: &CredentialSource,
+    ) -> Result<CredentialUsage, String> {
+        let Backend::Acp { cli } = Backend::from_ref(&binding.backend_ref) else {
+            if source.env_key.as_deref()
+                == Some(awaken_credential_vault::CLAUDE_CODE_SETUP_TOKEN_ENV)
+            {
+                return Err("Claude Code setup tokens require backend acp:claude".into());
+            }
+            return Ok(CredentialUsage::ProviderAdapter);
+        };
+        let profile = awaken_run_executor_acp::acp_cli(&cli)
+            .ok_or_else(|| format!("ACP backend {cli} is not in the executable catalog"))?;
+        let Some(delivery) = profile.model_delivery else {
+            return Ok(CredentialUsage::ProviderAdapter);
+        };
+        let Some(name) = source.env_key.as_deref() else {
+            return Ok(CredentialUsage::ProviderAdapter);
+        };
+        if !delivery.supports_credential_env(name) {
+            return Err(format!(
+                "ACP backend {cli} does not accept credential environment {name}"
+            ));
+        }
+        Ok(CredentialUsage::EnvironmentVariable {
+            name: name.to_string(),
+        })
     }
 
     fn provider_candidate(
@@ -338,6 +389,8 @@ impl CatalogModelPublicationResolver {
                             credential.id.0
                         ))
                     })?;
+                    let usage =
+                        Self::credential_usage(&binding, credential).map_err(unavailable)?;
                     Ok(CredentialAccess::new(
                         CredentialRef {
                             id: credential.id.0.clone(),
@@ -357,7 +410,7 @@ impl CatalogModelPublicationResolver {
                                 ));
                             }
                         },
-                        CredentialUsage::ProviderAdapter,
+                        usage,
                         CredentialExecutionPolicy::self_hosted_provider(),
                     ))
                 })
@@ -402,7 +455,7 @@ impl CatalogModelPublicationResolver {
         binding: ModelBinding,
     ) -> Result<ResolvedModelCandidate, PublicationResolutionError> {
         if let Some(offering) = Self::offering_for(catalog, &binding) {
-            let credential = Self::credential_for(sources, offering).ok_or_else(|| {
+            let credential = Self::credential_for(sources, offering, &binding).ok_or_else(|| {
                 PublicationResolutionError::CandidateUnavailable {
                     binding: binding.clone(),
                     reason: format!(
@@ -1336,6 +1389,142 @@ mod tests {
             .await
             .expect("P3");
         assert_eq!(native.primary.binding.backend_ref, "genai", "P3");
+    }
+
+    #[tokio::test]
+    async fn claude_setup_token_is_selected_only_for_the_managed_claude_backend() {
+        // Cause graph: exact provider offering + selected backend + credential
+        // env semantics -> one published CredentialAccess usage.
+        //
+        // | Rule | Backend | API key | setup token | Selected usage |
+        // | S1 | genai | yes | yes | API key / ProviderAdapter |
+        // | S2 | acp:claude | yes | yes | setup token / exact env |
+        // | S3 | acp:gemini | yes | yes | no compatible credential |
+        let mut catalog = ProviderCatalog::default();
+        catalog.providers.insert(
+            "anthropic".into(),
+            Provider {
+                id: ProviderId::new("anthropic"),
+                slug: "anthropic".into(),
+                display_name: "Anthropic".into(),
+                version: 1,
+            },
+        );
+        catalog.endpoints.insert(
+            "anthropic-messages".into(),
+            ProtocolEndpoint {
+                id: ProtocolEndpointId::new("anthropic-messages"),
+                provider_id: ProviderId::new("anthropic"),
+                dialect: ApiDialect::AnthropicMessages,
+                base_url: Some("https://api.anthropic.com/v1".into()),
+                timeout_secs: 30,
+                display_name: "Anthropic".into(),
+                version: 1,
+            },
+        );
+        catalog.offerings = vec![Offering {
+            model_id: "claude-test".into(),
+            provider_id: ProviderId::new("anthropic"),
+            protocol_endpoint_id: ProtocolEndpointId::new("anthropic-messages"),
+            dialect: ApiDialect::AnthropicMessages,
+            upstream_model: None,
+            source: Default::default(),
+            status: Default::default(),
+            last_seen_at_unix_ms: None,
+        }];
+        let credentials = Arc::new(InMemoryCredentialRepo::new());
+        let secrets = InMemorySecretStore::new();
+        let api_key = enter_credential(
+            CredentialCreateParams {
+                workspace_id: "workspace-a".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("anthropic".into()),
+                env_key: Some("ANTHROPIC_API_KEY".into()),
+                secret: Some(RedactedString::new("api-key")),
+                oauth_command: None,
+            },
+            &secrets,
+            credentials.as_ref(),
+        )
+        .await
+        .unwrap();
+        let setup_token = enter_credential(
+            CredentialCreateParams {
+                workspace_id: "workspace-a".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("anthropic".into()),
+                env_key: Some(awaken_credential_vault::CLAUDE_CODE_SETUP_TOKEN_ENV.into()),
+                secret: Some(RedactedString::new("setup-token")),
+                oauth_command: None,
+            },
+            &secrets,
+            credentials.as_ref(),
+        )
+        .await
+        .unwrap();
+        let resolver = CatalogModelPublicationResolver::new(catalog, credentials);
+
+        let native = resolver
+            .resolve_models(
+                &ScopeId::from("workspace-a"),
+                &ModelSelection::Pinned(ModelBinding::new("anthropic", "claude-test", "genai")),
+                &[],
+            )
+            .await
+            .expect("S1");
+        let ModelProvisioning::Provider {
+            credential: Some(native_access),
+            ..
+        } = native.primary.provisioning
+        else {
+            panic!("S1 provider credential")
+        };
+        assert_eq!(native_access.credential.id, api_key.id.0, "S1");
+        assert_eq!(native_access.usage, CredentialUsage::ProviderAdapter, "S1");
+
+        let claude = resolver
+            .resolve_models(
+                &ScopeId::from("workspace-a"),
+                &ModelSelection::Pinned(ModelBinding::new(
+                    "anthropic",
+                    "claude-test",
+                    "acp:claude",
+                )),
+                &[],
+            )
+            .await
+            .expect("S2");
+        let ModelProvisioning::Provider {
+            credential: Some(claude_access),
+            ..
+        } = claude.primary.provisioning
+        else {
+            panic!("S2 provider credential")
+        };
+        assert_eq!(claude_access.credential.id, setup_token.id.0, "S2");
+        assert_eq!(
+            claude_access.usage,
+            CredentialUsage::EnvironmentVariable {
+                name: awaken_credential_vault::CLAUDE_CODE_SETUP_TOKEN_ENV.into(),
+            },
+            "S2"
+        );
+
+        assert!(
+            resolver
+                .resolve_models(
+                    &ScopeId::from("workspace-a"),
+                    &ModelSelection::Pinned(ModelBinding::new(
+                        "anthropic",
+                        "claude-test",
+                        "acp:gemini",
+                    )),
+                    &[],
+                )
+                .await
+                .is_err(),
+            "S3"
+        );
     }
 
     #[tokio::test]

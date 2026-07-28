@@ -76,6 +76,18 @@ test("live-model videos assert agent output, never the user's prompt or page cop
   assert.match(agent, /expect\(agentReply\)\.toContainText\(\/Features\|Fixes\|Breaking changes\/i/);
 });
 
+test("model setup records the single Provider Connection workflow", () => {
+  const model = readFileSync(resolve(flowsDir, "01-connect-model.mjs"), "utf8");
+  assert.match(model, /Provider connections/);
+  assert.match(model, /Verify & import models/);
+  assert.match(model, /Configure as workspace default/);
+  assert.match(model, /\/v1\/config\/provider-connections/);
+  assert.doesNotMatch(model, /\/v1\/config\/providers/);
+  assert.doesNotMatch(model, /\/v1\/config\/endpoints/);
+  assert.doesNotMatch(model, /\/v1\/config\/offerings/);
+  assert.doesNotMatch(model, /goto\(["']\/w\/default\/credentials/);
+});
+
 test("the complete series covers every release-ready platform capability", () => {
   assert.deepEqual(flows, [
     "00-platform-overview.mjs",

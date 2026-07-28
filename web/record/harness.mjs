@@ -2,7 +2,7 @@
 // against a REAL backend (:38080) with Playwright, records the browser to a .webm,
 // and muxes it to a YouTube-ready .mp4 via ffmpeg. Nothing is faked: the model
 // replies are live (Vertex Gemini via gcloud OAuth, wired through the console's
-// own Models/Credentials UI).
+// single Provider Connection workflow).
 //
 // It layers two demo affordances on top of the real DOM, both injected (never part
 // of the product): an on-screen caption bar (the "narration", mirroring the example

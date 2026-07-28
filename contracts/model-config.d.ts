@@ -889,7 +889,7 @@ export interface ProviderDriverDescriptor {
  * Authentication input a provider connection can request. This describes the
  * authoring UI only; credential material remains owned by the vault.
  */
-export type AuthMethodElement = "api_key" | "o_auth";
+export type AuthMethodElement = "api_key" | "oauth";
 
 export interface ConfigurationFieldElement {
     advanced:     boolean;
@@ -1020,16 +1020,27 @@ export interface ResolvedInferenceView {
 }
 
 export interface SaveProviderConnectionRequest {
-    base_url?:    null | string;
-    dialect:      APIDialect;
-    display_name: string;
-    endpoint_id:  string;
-    provider_id:  string;
+    base_url?: null | string;
     /**
-     * Write-only API key. It is tested before entering the vault and never
-     * appears in the response or any catalog row.
+     * Reuse one active Workspace credential instead of creating a duplicate.
      */
-    secret:        string;
+    credential_source_id?: null | string;
+    dialect:               APIDialect;
+    display_name:          string;
+    endpoint_id:           string;
+    /**
+     * Server-owned OAuth helper used to mint a short-lived token for both the
+     * pre-save discovery and the persisted credential source.
+     */
+    oauth_helper?: CredentialSource | null;
+    provider_id:   string;
+    /**
+     * Write-only API key. Exactly one of `secret`, `oauth_helper`, or
+     * `credential_source_id` must be supplied. The legacy `secret` field stays
+     * wire-compatible while the connection command becomes the one authoring
+     * path for every supported credential source.
+     */
+    secret?:       null | string;
     timeout_secs?: number;
     workspace_id:  string;
     [property: string]: unknown;
