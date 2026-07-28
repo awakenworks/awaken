@@ -123,8 +123,10 @@ async function main() {
     });
     assert.equal(r.status, 200);
     r = await req(base, 'PUT', '/v1/config/inference-profiles/prof1', {
-      model_id: 'claude-opus-4-8',
-      credential_binding: { type: 'exact', credential_source_id: credId },
+      primary: {
+        target: { model_id: 'claude-opus-4-8' },
+        credential_binding: { type: 'exact', credential_source_id: credId },
+      },
       disabled_endpoint_ids: [],
     });
     assert.equal(r.status, 200);

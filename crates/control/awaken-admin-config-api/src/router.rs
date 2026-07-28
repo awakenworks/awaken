@@ -901,29 +901,15 @@ fn resolve_problem(error: &ResolveError, rid: &str) -> Problem {
     ))
 }
 
-/// A dry-run resolve request. New callers send a complete `target`; legacy
-/// `model_id` remains accepted only when it resolves to exactly one active offering.
+/// A dry-run resolve request. An unqualified target is valid when the model id
+/// identifies exactly one active offering; callers always use the same target shape.
 #[derive(serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ResolveRequest {
     workspace_id: String,
-    #[serde(default)]
-    model_id: Option<String>,
-    #[serde(default)]
-    target: Option<ModelTarget>,
+    target: ModelTarget,
     binding: CredentialBinding,
-}
-
-impl ResolveRequest {
-    fn target(&self) -> Result<ModelTarget, &'static str> {
-        match (&self.target, &self.model_id) {
-            (Some(target), None) => Ok(target.clone()),
-            (None, Some(model_id)) => Ok(ModelTarget::unqualified(model_id)),
-            (Some(_), Some(_)) => Err("send target or legacy model_id, not both"),
-            (None, None) => Err("target is required"),
-        }
-    }
 }
 
 /// The **secret-free** result of a resolve (ADR-0043): the execution triple + the
@@ -958,20 +944,11 @@ async fn resolve_route(
         .snapshot()
         .await
         .map_err(|e| repo_problem(&e, &rid))?;
-    let target = request.target().map_err(|detail| {
-        Problem(ApiError::new(
-            400,
-            "model_target_invalid",
-            "Invalid model target",
-            detail,
-            &rid,
-        ))
-    })?;
     let workspace = scope.map_or_else(|| request.workspace_id.clone(), |Extension(scope)| scope.0);
     let lookup = workspace_lookup(&state, &workspace, &rid).await?;
     let resolved = resolve_inference_target(
         &catalog,
-        &target,
+        &request.target,
         &[],
         &request.binding,
         &lookup,

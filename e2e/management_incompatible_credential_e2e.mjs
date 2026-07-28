@@ -71,7 +71,7 @@ async function main() {
     // Resolving the anthropic model with the openai key is fail-closed (422).
     const bad = await cfg('POST', '/v1/config/inference/resolve', {
       workspace_id: WS,
-      model_id: MODEL,
+      target: { model_id: MODEL },
       binding: { type: 'exact', credential_source_id: foreignId },
     });
     assert.equal(
@@ -96,7 +96,7 @@ async function main() {
     assert.equal(good.status, 201, 'compatible credential created');
     const okResolve = await cfg('POST', '/v1/config/inference/resolve', {
       workspace_id: WS,
-      model_id: MODEL,
+      target: { model_id: MODEL },
       binding: { type: 'exact', credential_source_id: good.body.id },
     });
     assert.equal(
@@ -119,7 +119,7 @@ async function main() {
     assert.equal(unscoped.status, 201, 'unscoped credential created');
     const anyResolve = await cfg('POST', '/v1/config/inference/resolve', {
       workspace_id: WS,
-      model_id: MODEL,
+      target: { model_id: MODEL },
       binding: { type: 'exact', credential_source_id: unscoped.body.id },
     });
     assert.equal(

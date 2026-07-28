@@ -507,8 +507,12 @@ async function main() {
     };
     assert.equal((await req(base, 'PUT', scoped(WS_A, 'credential-pools/owned-pool'), pool)).status, 200);
     const profile = {
-      workspace_id: 'forged-body-owner', model_id: MODEL,
-      credential_binding: { type: 'exact', credential_source_id: ownedId }, disabled_endpoint_ids: [],
+      workspace_id: 'forged-body-owner',
+      primary: {
+        target: { model_id: MODEL },
+        credential_binding: { type: 'exact', credential_source_id: ownedId },
+      },
+      disabled_endpoint_ids: [],
     };
     assert.equal((await req(base, 'PUT', scoped(WS_A, 'inference-profiles/owned-profile'), profile)).status, 200);
     const agentMcp = {
@@ -581,7 +585,10 @@ async function main() {
     assert.equal(ownedCredentialB.status, 201, JSON.stringify(ownedCredentialB.json));
     const profileB = {
       ...profile,
-      credential_binding: { type: 'exact', credential_source_id: ownedCredentialB.json.id },
+      primary: {
+        ...profile.primary,
+        credential_binding: { type: 'exact', credential_source_id: ownedCredentialB.json.id },
+      },
     };
     assert.equal((await req(base, 'PUT', scoped(WS_B, 'inference-profiles/owned-profile'), profileB)).status, 200);
     const storedProfileB = await req(base, 'GET', scoped(WS_B, 'inference-profiles/owned-profile'));

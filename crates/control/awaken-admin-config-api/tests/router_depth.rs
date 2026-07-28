@@ -288,7 +288,7 @@ async fn resolve_over_http_reports_the_binding_and_credential_presence() {
         "/v1/config/inference/resolve",
         Some(json!({
             "workspace_id": "ws",
-            "model_id": "claude-opus-4-8",
+            "target": { "model_id": "claude-opus-4-8" },
             "binding": { "type": "none" }
         })),
     )
@@ -298,7 +298,7 @@ async fn resolve_over_http_reports_the_binding_and_credential_presence() {
 }
 
 #[tokio::test]
-async fn resolve_target_rejects_ambiguous_legacy_identity_and_conflicting_shapes() {
+async fn resolve_target_rejects_ambiguity_and_the_retired_flat_shape() {
     let app = router(None);
     author_model(&app, "anthropic", "anthropic_messages", "same-model").await;
     support::seed_model(
@@ -315,7 +315,7 @@ async fn resolve_target_rejects_ambiguous_legacy_identity_and_conflicting_shapes
         "POST",
         "/v1/config/inference/resolve",
         Some(json!({
-            "workspace_id":"ws", "model_id":"same-model", "binding":{"type":"none"}
+            "workspace_id":"ws", "target":{"model_id":"same-model"}, "binding":{"type":"none"}
         })),
     )
     .await;
@@ -334,8 +334,7 @@ async fn resolve_target_rejects_ambiguous_legacy_identity_and_conflicting_shapes
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{problem}");
-    assert_eq!(problem["code"], "model_target_invalid");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{problem}");
 
     let (status, _, problem) = call(
         &app,
@@ -344,8 +343,7 @@ async fn resolve_target_rejects_ambiguous_legacy_identity_and_conflicting_shapes
         Some(json!({"workspace_id":"ws", "binding":{"type":"none"}})),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{problem}");
-    assert_eq!(problem["code"], "model_target_invalid");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{problem}");
 }
 
 #[tokio::test]
@@ -358,7 +356,7 @@ async fn resolve_over_http_fails_closed_for_an_unknown_model() {
         "/v1/config/inference/resolve",
         Some(json!({
             "workspace_id": "ws",
-            "model_id": "ghost-model",
+            "target": { "model_id": "ghost-model" },
             "binding": { "type": "none" }
         })),
     )

@@ -107,8 +107,10 @@ async fn a_flat_management_request_is_untouched_by_the_path_middleware() {
 async fn workspace_path_isolates_inference_profiles() {
     let app = build_management_router().await;
     let body = json!({
-        "model_id": "kimi",
-        "credential_binding": { "type": "none" }
+        "primary": {
+            "target": { "model_id": "kimi" },
+            "credential_binding": { "type": "none" }
+        }
     });
 
     // Author profile `prof1` under ws_a via the path form.
@@ -149,8 +151,10 @@ async fn workspace_path_isolates_inference_profiles() {
         "PUT",
         "/v1/workspaces/ws_b/config/inference-profiles/prof1",
         Some(json!({
-            "model_id": "qwen",
-            "credential_binding": { "type": "none" }
+            "primary": {
+                "target": { "model_id": "qwen" },
+                "credential_binding": { "type": "none" }
+            }
         })),
     )
     .await;
