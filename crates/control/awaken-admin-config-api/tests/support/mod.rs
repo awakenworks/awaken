@@ -31,7 +31,7 @@ pub async fn seed_model(
     repo.put_endpoint(ProtocolEndpoint {
         id: ProtocolEndpointId::new(endpoint),
         provider_id: ProviderId::new(provider),
-        dialect: dialect.clone(),
+        dialect,
         base_url: Some("https://api.example.com/v1/".into()),
         timeout_secs: 300,
         display_name: "fixture".into(),

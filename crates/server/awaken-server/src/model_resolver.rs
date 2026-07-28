@@ -7,10 +7,10 @@
 
 use std::sync::Arc;
 
-use awaken_config_resolver::can_consume;
 use awaken_config_resolver::{
     InferenceProfile, InferenceProfileStore, ModelTarget, ProfileCandidate, get_workspace_profile,
 };
+use awaken_config_resolver::{can_consume, validate_acp_dialect};
 use awaken_config_store::ModelSelection;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_credential_vault::{
@@ -419,6 +419,12 @@ impl CatalogModelPublicationResolver {
         binding: ModelBinding,
     ) -> Result<ResolvedModelCandidate, PublicationResolutionError> {
         if let Some(offering) = Self::offering_for(catalog, &binding) {
+            validate_acp_dialect(&binding.backend_ref, offering.dialect).map_err(|error| {
+                PublicationResolutionError::CandidateUnavailable {
+                    binding: binding.clone(),
+                    reason: error.to_string(),
+                }
+            })?;
             let credential = Self::credential_for(sources, offering, &binding).ok_or_else(|| {
                 PublicationResolutionError::CandidateUnavailable {
                     binding: binding.clone(),

@@ -2,6 +2,15 @@
 
 - Status: Proposed
 - Date: 2026-07-28
+- Implemented foundation (2026-07-28): the repository has one reusable
+  local-ACP application service, one adapter catalog, atomic expiring Worker
+  observations, prompt-free capability negotiation, generated Agent option
+  contracts, publication/placement/launch fingerprints, provisioning-derived
+  Session Environment selection, live readiness, and shared CLI/Flow
+  composition. Event-triggered publication reconciliation, descendant
+  process-group reap proof, and release-gated real persisted-login LLM sessions
+  remain completion gates. “Proposed” therefore means the complete decision is
+  not yet fully accepted; it does not mean the listed foundation is hypothetical.
 - Amends:
   [ADR-0057](0057-unified-agent-configuration.md), especially its
   backend-owned trusted-host amendment
@@ -456,6 +465,12 @@ Environment-derived Provider proposals are a duplicate authoring path and are
 removed rather than synchronized with the persisted Catalog.
 
 ## Complete dynamic lifecycle
+
+This section is the authoritative lifecycle specification. ADR-0057 owns the
+Agent aggregate and secret-free publication boundary; it intentionally links
+here instead of maintaining a second discovery/configuration/execution sequence.
+Implementation status later in this ADR records which transitions are already
+enforced and which remain release gates.
 
 ```text
 startup / refresh

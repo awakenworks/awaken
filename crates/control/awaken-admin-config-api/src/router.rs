@@ -876,6 +876,8 @@ fn resolve_problem(error: &ResolveError, rid: &str) -> Problem {
     let (status, code) = match error {
         ResolveError::ModelUnresolved(_) => (404, "model_unresolved"),
         ResolveError::ModelAmbiguous { .. } => (409, "model_ambiguous"),
+        ResolveError::AcpDialectUnknown(_) => (422, "acp_dialect_unknown"),
+        ResolveError::DialectIncompatible { .. } => (422, "dialect_incompatible"),
         ResolveError::EndpointMissing(_) => (422, "endpoint_missing"),
         ResolveError::SourceMissing(_) | ResolveError::PoolMissing(_) => (404, "not_found"),
         ResolveError::IncompatibleCredential { .. } => (422, "incompatible_credential"),
@@ -1699,6 +1701,36 @@ mod tests {
         );
         assert_eq!(p.0.status, 409);
         assert_eq!(p.0.code, "model_ambiguous");
+    }
+
+    // Cause/effect decision table for ACP dialect-resolution failures:
+    // R1 resolver has no executor→dialect mapping -> 422/acp_dialect_unknown;
+    // R2 executor and Offering dialect conflict -> 422/dialect_incompatible.
+    // Both are valid authored shapes that cannot be executed safely, so neither
+    // is reported as a missing resource or a transient conflict.
+    #[test]
+    fn resolve_problem_acp_dialect_failures_are_stable_422_contracts() {
+        let cases = [
+            (
+                ResolveError::AcpDialectUnknown("acp:other".into()),
+                "acp_dialect_unknown",
+                "R1",
+            ),
+            (
+                ResolveError::DialectIncompatible {
+                    backend_ref: "acp:claude".into(),
+                    expected: "anthropic_messages",
+                    actual: "openai_chat",
+                },
+                "dialect_incompatible",
+                "R2",
+            ),
+        ];
+        for (error, expected_code, rule) in cases {
+            let p = resolve_problem(&error, "rid");
+            assert_eq!(p.0.status, 422, "{rule}");
+            assert_eq!(p.0.code, expected_code, "{rule}");
+        }
     }
 
     #[test]

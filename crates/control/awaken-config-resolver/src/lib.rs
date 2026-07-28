@@ -99,6 +99,16 @@ pub enum ResolveError {
         model_id: String,
         candidates: Vec<String>,
     },
+    #[error("ACP backend `{0}` has no resolver-owned model API dialect mapping")]
+    AcpDialectUnknown(String),
+    #[error(
+        "ACP backend `{backend_ref}` expects model API dialect `{expected}` but the offering uses `{actual}`"
+    )]
+    DialectIncompatible {
+        backend_ref: String,
+        expected: &'static str,
+        actual: &'static str,
+    },
     #[error("endpoint `{0}` missing from catalog")]
     EndpointMissing(String),
     #[error("credential source `{0}` not provided")]
@@ -131,6 +141,39 @@ pub enum ResolveError {
     },
     #[error(transparent)]
     Credential(#[from] CredentialError),
+}
+
+/// Resolver-owned projection from executor identity to model API dialect.
+///
+/// This table joins two independent axes. It intentionally does not live on
+/// the ACP executor catalog: that leaf consumes resolved model strings and
+/// must not depend on `awaken-model-catalog`.
+#[must_use]
+pub fn expected_acp_dialect(backend_ref: &str) -> Option<ApiDialect> {
+    match backend_ref {
+        "acp:claude" => Some(ApiDialect::AnthropicMessages),
+        "acp:codex" => Some(ApiDialect::OpenAiChat),
+        "acp:gemini" => Some(ApiDialect::Gemini),
+        _ => None,
+    }
+}
+
+/// Assert that an ACP executor can speak one catalog Offering's model API
+/// dialect. Native/A2A coordinates are outside this join and pass unchanged.
+pub fn validate_acp_dialect(backend_ref: &str, actual: ApiDialect) -> Result<(), ResolveError> {
+    if !backend_ref.starts_with("acp:") {
+        return Ok(());
+    }
+    let expected = expected_acp_dialect(backend_ref)
+        .ok_or_else(|| ResolveError::AcpDialectUnknown(backend_ref.to_string()))?;
+    if expected != actual {
+        return Err(ResolveError::DialectIncompatible {
+            backend_ref: backend_ref.to_string(),
+            expected: expected.as_str(),
+            actual: actual.as_str(),
+        });
+    }
+    Ok(())
 }
 
 /// A credential lookup the assembly provides: individual sources by id, and pools
@@ -775,6 +818,35 @@ mod tests {
         Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
     };
     use std::collections::HashMap;
+
+    // Cause/effect decision table for executor×model-dialect reconciliation:
+    // R1 non-ACP backend + any dialect -> outside the join, accept;
+    // R2 known ACP + expected dialect -> accept;
+    // R3 known ACP + different dialect -> DialectIncompatible;
+    // R4 unknown/bare ACP mapping -> AcpDialectUnknown.
+    #[test]
+    fn acp_executor_and_model_api_dialect_are_reconciled_independently() {
+        assert!(
+            validate_acp_dialect("genai", ApiDialect::Gemini).is_ok(),
+            "R1"
+        );
+        assert!(
+            validate_acp_dialect("acp:claude", ApiDialect::AnthropicMessages).is_ok(),
+            "R2"
+        );
+        assert!(matches!(
+            validate_acp_dialect("acp:claude", ApiDialect::OpenAiChat),
+            Err(ResolveError::DialectIncompatible {
+                backend_ref,
+                expected: "anthropic_messages",
+                actual: "open_ai_chat",
+            }) if backend_ref == "acp:claude"
+        ));
+        assert!(matches!(
+            validate_acp_dialect("acp:opencode", ApiDialect::OpenAiChat),
+            Err(ResolveError::AcpDialectUnknown(backend)) if backend == "acp:opencode"
+        ));
+    }
 
     fn catalog() -> ProviderCatalog {
         let mut c = ProviderCatalog::default();

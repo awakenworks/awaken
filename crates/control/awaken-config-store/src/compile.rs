@@ -7,7 +7,7 @@ use awaken_runtime_contract::snapshot::AgentSnapshotMetadata;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 use sha2::{Digest, Sha256};
 
-use crate::config::AgentConfig;
+use crate::config::{AgentConfig, AgentKind};
 
 /// A compilation failure, before anything is published (the design's Failure
 /// Rules: reject, never partially publish).
@@ -322,9 +322,7 @@ fn compile_with_models(
     // `backend_ref` — must be able to honor the declared capabilities. A remote (a2a)
     // agent runs everything on the far side, so local skills/MCP would be a silent
     // runtime no-op; reject at publish so the mistake surfaces at authoring time.
-    if let awaken_runtime_contract::resolved::Backend::Remote { .. } =
-        awaken_runtime_contract::resolved::Backend::from_ref(&model.binding.backend_ref)
-    {
+    if matches!(config.kind(), AgentKind::A2a { .. }) {
         if !config.skill_ids.is_empty() {
             return Err(CompileError::UnsupportedCapability {
                 agent: config.id.clone(),
