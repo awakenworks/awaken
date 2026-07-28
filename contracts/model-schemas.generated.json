@@ -1029,7 +1029,7 @@
           "type": "string"
         },
         "ModelTarget": {
-          "description": "Stable, secret-free identity used to select one catalog offering. `model_id`\nalone remains accepted for compatibility only when it resolves uniquely.",
+          "description": "Stable, secret-free identity used to select one catalog offering. Qualifiers\nmay be omitted when `model_id` identifies exactly one active offering.",
           "properties": {
             "model_id": {
               "type": "string"
@@ -1070,6 +1070,7 @@
         }
       },
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
       "description": "An authored \"how to run this model\" unit (ADR-0043 `InferenceProfile` /\noversight-next `ProviderIdentity`): it names an exact primary and ordered\nfallback candidates, each with a vault-backed (never inline) credential\nbinding, plus endpoints the operator has toggled off. The resolver reads it —\nit is never flowed into the runtime.",
       "properties": {
         "disabled_endpoint_ids": {
@@ -1093,7 +1094,7 @@
         },
         "workspace_id": {
           "default": "",
-          "description": "Owning workspace, stamped by the trusted configuration edge. Empty only\nfor legacy rows, which scoped APIs treat as unowned.",
+          "description": "Owning workspace, stamped by the trusted configuration edge. An empty\nvalue represents an unstamped domain value and is never treated as owned.",
           "type": "string"
         }
       },
@@ -1166,9 +1167,136 @@
       "title": "ModelAttributes",
       "type": "object"
     },
+    "ModelSelection": {
+      "$defs": {
+        "AcpSessionConfiguration": {
+          "description": "Adapter-native ACP Session intent frozen with one BackendOwned candidate.\nOmission preserves backend defaults; no discovered schema is copied here.",
+          "properties": {
+            "mode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "options": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "const": "auto",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "const": "profile",
+              "type": "string"
+            },
+            "profile_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode",
+            "profile_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "backend_ref": {
+              "type": "string"
+            },
+            "configuration": {
+              "$ref": "#/$defs/AcpSessionConfiguration",
+              "default": {}
+            },
+            "mode": {
+              "const": "backend_default",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode",
+            "backend_ref"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "backend_ref": {
+              "type": "string"
+            },
+            "configuration": {
+              "$ref": "#/$defs/AcpSessionConfiguration",
+              "default": {}
+            },
+            "mode": {
+              "const": "backend_exact",
+              "type": "string"
+            },
+            "model_ref": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode",
+            "backend_ref",
+            "model_ref"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "backend_ref": {
+              "type": "string"
+            },
+            "mode": {
+              "const": "pinned",
+              "type": "string"
+            },
+            "model_ref": {
+              "type": "string"
+            },
+            "provider_identity_ref": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode",
+            "provider_identity_ref",
+            "model_ref",
+            "backend_ref"
+          ],
+          "type": "object"
+        }
+      ],
+      "title": "ModelSelection"
+    },
     "ModelTarget": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Stable, secret-free identity used to select one catalog offering. `model_id`\nalone remains accepted for compatibility only when it resolves uniquely.",
+      "description": "Stable, secret-free identity used to select one catalog offering. Qualifiers\nmay be omitted when `model_id` identifies exactly one active offering.",
       "properties": {
         "model_id": {
           "type": "string"
@@ -2347,7 +2475,7 @@
           "type": "string"
         },
         "ModelTarget": {
-          "description": "Stable, secret-free identity used to select one catalog offering. `model_id`\nalone remains accepted for compatibility only when it resolves uniquely.",
+          "description": "Stable, secret-free identity used to select one catalog offering. Qualifiers\nmay be omitted when `model_id` identifies exactly one active offering.",
           "properties": {
             "model_id": {
               "type": "string"
@@ -2373,28 +2501,13 @@
       },
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
-      "description": "A dry-run resolve request. New callers send a complete `target`; legacy\n`model_id` remains accepted only when it resolves to exactly one active offering.",
+      "description": "A dry-run resolve request. An unqualified target is valid when the model id\nidentifies exactly one active offering; callers always use the same target shape.",
       "properties": {
         "binding": {
           "$ref": "#/$defs/CredentialBinding"
         },
-        "model_id": {
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "target": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ModelTarget"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
+          "$ref": "#/$defs/ModelTarget"
         },
         "workspace_id": {
           "type": "string"
@@ -2402,6 +2515,7 @@
       },
       "required": [
         "workspace_id",
+        "target",
         "binding"
       ],
       "title": "ResolveRequest",

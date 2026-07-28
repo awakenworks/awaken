@@ -274,6 +274,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-agent-contract",
         "awaken-api-contract",
         "awaken-config-resolver",
+        # Schema-only dependency: export the config store's authoritative
+        # ModelSelection wire instead of maintaining a parallel UI contract.
+        "awaken-config-store",
         # Resource Catalog port only: resource identity, Workspace ownership,
         # config versions and lifecycle. Authorization remains at the PEP.
         "awaken-resource-contract",
@@ -335,6 +338,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "futures-util",
         "tokio",
         "tokio-util",
+        # Optional schema derive for contract generation; no runtime behavior.
+        "schemars",
     },
     "awaken-runtime": {
         "awaken-agent-contract",
@@ -686,6 +691,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde",
         "serde_json",
         "thiserror",
+        # Optional JsonSchema implementation delegates to the existing serde
+        # wire enum, keeping serialization and generated UI types co-owned.
+        "schemars",
     },
     # Host-layer teaching examples: the one place that wires every concrete
     # adapter into a runnable runtime. Composition root, so it may name them all.
