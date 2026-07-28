@@ -8,9 +8,11 @@
   contracts, publication/placement/launch fingerprints, provisioning-derived
   Session Environment selection, live readiness, and shared CLI/Flow
   composition, descendant process-group reaping, and event-triggered all-scope
-  publication reconciliation. Release-gated real persisted-login LLM sessions
-  remain the external completion gate. “Proposed” therefore means the decision is
-  not yet fully accepted; it does not mean the listed foundation is hypothetical.
+  publication reconciliation. A real persisted-login Claude session remains an
+  external release gate. Typed migration of the remaining runtime environment
+  settings and ADR-0057 G2 ACP-content erasure remain separate, explicit
+  implementation gaps. “Proposed” therefore means the complete decision is not
+  yet accepted; it does not mean the listed foundation is hypothetical.
 - Amends:
   [ADR-0057](0057-unified-agent-configuration.md), especially its
   backend-owned trusted-host amendment
@@ -28,7 +30,7 @@ ADR-0057 defines one Agent configuration, one immutable publication path, and
 two mutually exclusive model-provisioning variants: Awaken-managed `Provider`
 and CLI-managed `BackendOwned`. Its trusted-host amendment establishes local ACP
 login discovery, WorkerLocal liveness, placement and pre-launch revalidation.
-The remaining lifecycle is incomplete:
+At the time this decision was written, the remaining lifecycle was incomplete:
 
 - installation discovery, login liveness and ACP protocol capability
   negotiation are treated as one concern even though they have different
@@ -464,6 +466,14 @@ cannot select Provider, model, credential, adapter, mode or option.
 Environment-derived Provider proposals are a duplicate authoring path and are
 removed rather than synchronized with the persisted Catalog.
 
+This is a target invariant, not a claim that every historic runtime environment
+read has already been migrated. The Provider-proposal authoring path and Flow's
+parallel ACP inventory/default have been removed. Remaining operator settings
+such as sandbox fallback/pool/reaping, dispatch wake, container metadata,
+content capture and enrollment still require migration to the existing typed
+deployment configuration before D12 is complete. PATH, HOME, DISPLAY and test
+gate variables are not part of that migration.
+
 ## Complete dynamic lifecycle
 
 This section is the authoritative lifecycle specification. ADR-0057 owns the
@@ -852,7 +862,7 @@ the remaining external/reconciliation gates:
 | automatic Assistant | exactly one Available+Verified local backend is required; zero remains unconfigured and multiple are resolved through the ordinary persisted Agent model editor | no separate default-backend preference exists |
 | frontend contract | OpenAPI-generated TypeScript consumes the Rust discriminated union and live Worker ACP projection | keep generated-contract freshness gated |
 | Flow | pinned to the pushed Awaken revision; one existing Worker/executor consumes the shared preparation service | keep the revision and lockfile updated atomically |
-| ambient configuration | environment Provider proposals and Flow ACP inventory/default fields are removed; typed deployment configuration owns product choices | continue auditing OS metadata so PATH/HOME never become authoring inputs |
+| ambient configuration | environment Provider proposals and Flow ACP inventory/default fields are removed | migrate the remaining operator settings to typed deployment configuration; keep PATH/HOME/DISPLAY as execution metadata only |
 | real host proof | installed Codex `0.145.0` completed the zero-configuration host-login release gate through real wrapper negotiation, BackendDefault publication, LLM response and committed running→idle transcript; installed Claude `2.1.220` is correctly login-required when ambient `ANTHROPIC_API_KEY` is cleared | run the same release-gated real LLM session after a persisted Claude host login is available |
 
 Therefore discovery, generic ACP configuration, live Worker projection,
@@ -860,6 +870,16 @@ event-triggered reconciliation, Flow reuse and the real Codex persisted-login
 path are implemented. A real Claude persisted-login LLM session remains the
 explicit external release gate; the ADR does not equate hermetic protocol
 coverage or an ambient API key with that proof.
+
+The table does not close ADR-0057's trigger-gated G2 requirement. The generic
+ADR-0050 captured-content stores implement consent and subject erasure, but
+`FsSessionBlobStore` is currently keyed only by thread and adapter and is not a
+registered `ContentEraser`. Subject attribution, an erasable session-blob
+adapter, composition-root registration and an Art.17 end-to-end test are still
+required before ACP session continuity can be described as erasable. Hand
+placement (F) and Agent disable/archive semantics (I) are broader ADR-0057
+phases, not alternative ACP discovery or execution paths; their status remains
+owned by ADR-0057.
 
 Managed `CodexAuthJson` is a separate product decision. BackendOwned never
 enters that Provider-only artifact path. A global prohibition on creating
