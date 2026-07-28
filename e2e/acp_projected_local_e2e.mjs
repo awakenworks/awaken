@@ -238,6 +238,20 @@ async function main() {
       secret: 'persisted-codex-key', // awaken-allow: secret (fixture)
     });
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
+    const assistantSession = await client.beta.sessions.create({
+      agent: '__admin_assistant',
+      betas: BETAS,
+    });
+    await client.beta.sessions.events.send(assistantSession.id, {
+      events: [{ type: 'user.message', content: [{ type: 'text', text: 'prove ACP assistant selection' }] }],
+      betas: BETAS,
+    });
+    const assistantTexts = await messages(client, assistantSession.id);
+    assert.ok(
+      assistantTexts.some((text) => text.includes('PROJECTED')),
+      `reserved Assistant automatically used the existing Gemini ACP binding: ${assistantTexts}`,
+    );
+
     const session = await client.beta.sessions.create({
       agent: GEMINI_AGENT,
       betas: BETAS,
@@ -249,7 +263,7 @@ async function main() {
     const geminiTexts = await messages(client, session.id);
     const reply = geminiTexts.find((text) => text.includes('PROJECTED'));
     assert.ok(reply, `the production projected ACP process returned an agent message: ${JSON.stringify(geminiTexts)}`);
-    assert.match(reply, /base=http:\/\/gemini-db\.invalid\/v1/u);
+    assert.match(reply, new RegExp(`base=${directory.url.replaceAll(".", "\\.")}/gemini/v1beta/`, "u"));
     assert.match(reply, /model=gemini-upstream/u);
     assert.match(reply, /key=persis/u);
     assert.ok(!reply.includes('ambient-gemini'));

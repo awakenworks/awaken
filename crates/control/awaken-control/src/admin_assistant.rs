@@ -18,7 +18,7 @@ use awaken_config_resolver::{
     InputResourceId, MemoryStoreId, RepositoryId, ResourceAccess,
 };
 use awaken_config_service::{ConfigPlane, RESERVED_ADMIN_SCOPE};
-use awaken_config_store::{AgentConfig, ManagementEffect};
+use awaken_config_store::{AgentConfig, ManagementEffect, ModelSelection};
 use awaken_model_catalog::repo::CatalogRepo;
 use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::resolved::ToolDescriptor;
@@ -31,9 +31,12 @@ use awaken_tenancy::ScopeId;
 pub async fn seed_admin_assistant(
     plane: &ConfigPlane,
     execution_workspace: &str,
+    model_selection: ModelSelection,
 ) -> Result<(), String> {
     let scope = ScopeId::from(RESERVED_ADMIN_SCOPE);
-    plane.put(&scope, &admin_assistant_config()).await?;
+    let mut config = admin_assistant_config();
+    config.model_binding = model_selection;
+    plane.put(&scope, &config).await?;
     plane
         .publish_for_execution_workspace(&scope, execution_workspace, ADMIN_ASSISTANT_AGENT_ID)
         .await
@@ -706,7 +709,7 @@ mod tests {
         let plane = ConfigPlane::new(service.clone(), store, tools);
 
         let execution_workspace = "wrkspc_live";
-        seed_admin_assistant(&plane, execution_workspace)
+        seed_admin_assistant(&plane, execution_workspace, ModelSelection::Auto)
             .await
             .expect("seed");
 
@@ -948,7 +951,7 @@ mod tests {
             ProviderCatalog::default(),
         ))));
         let plane = ConfigPlane::new(service, store, tools);
-        let err = seed_admin_assistant(&plane, DEFAULT_SCOPE)
+        let err = seed_admin_assistant(&plane, DEFAULT_SCOPE, ModelSelection::Auto)
             .await
             .expect_err("no provider-backed model → publish fails");
         assert!(!err.is_empty(), "the publish error is surfaced: {err}");
@@ -966,7 +969,7 @@ mod tests {
         let service = Arc::new(test_config_service());
         let plane = ConfigPlane::new(service.clone(), store, tools);
 
-        seed_admin_assistant(&plane, DEFAULT_SCOPE)
+        seed_admin_assistant(&plane, DEFAULT_SCOPE, ModelSelection::Auto)
             .await
             .expect("first seed");
         let first_model = service
@@ -983,7 +986,7 @@ mod tests {
             .tool_descriptors
             .len();
 
-        seed_admin_assistant(&plane, DEFAULT_SCOPE)
+        seed_admin_assistant(&plane, DEFAULT_SCOPE, ModelSelection::Auto)
             .await
             .expect("re-seed is idempotent");
         let handle = service
