@@ -879,80 +879,6 @@
         "title": "EnterCredentialRequest",
         "type": "object"
       },
-      "EnvironmentProviderProposal": {
-        "$defs": {
-          "ApiDialect": {
-            "description": "The wire/model-API dialect a surface speaks. Replaces oversight's `WireFormat`;\nthe credential/model bindings are resolved against this dialect (ADR-0043).",
-            "oneOf": [
-              {
-                "const": "anthropic_messages",
-                "description": "The `claude` adapter's wire.",
-                "type": "string"
-              },
-              {
-                "const": "open_ai_chat",
-                "description": "The `codex`/OpenAI chat wire.",
-                "type": "string"
-              },
-              {
-                "const": "open_ai_responses",
-                "description": "The OpenAI Responses API wire. This remains distinct from Chat\nCompletions even though both are served by the OpenAI adapter family.",
-                "type": "string"
-              },
-              {
-                "const": "gemini",
-                "description": "The Gemini wire.",
-                "type": "string"
-              },
-              {
-                "const": "vertex_gemini",
-                "description": "Gemini on Vertex AI: native Gemini payloads with OAuth Bearer auth and\na project/location endpoint.",
-                "type": "string"
-              }
-            ]
-          }
-        },
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "A read-only, non-executable hint derived from process environment. It is not a\ncatalog row, credential source, profile or publication and carries no secret.\nThe UI may use it to prefill existing authoring forms; only their explicit writes\ncreate execution truth.",
-        "properties": {
-          "base_url": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "credential_env": {
-            "type": "string"
-          },
-          "credential_present": {
-            "type": "boolean"
-          },
-          "dialect": {
-            "$ref": "#/$defs/ApiDialect"
-          },
-          "endpoint_id": {
-            "type": "string"
-          },
-          "model_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "provider_id": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "provider_id",
-          "endpoint_id",
-          "dialect",
-          "credential_env",
-          "credential_present"
-        ],
-        "title": "EnvironmentProviderProposal",
-        "type": "object"
-      },
       "InferenceProfile": {
         "$defs": {
           "CredentialBinding": {
@@ -3794,40 +3720,6 @@
           }
         },
         "summary": "List supported provider form descriptors without creating configuration",
-        "tags": [
-          "catalog"
-        ]
-      }
-    },
-    "/v1/config/provider-proposals": {
-      "get": {
-        "operationId": "get_provider_proposals",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/EnvironmentProviderProposal"
-                  },
-                  "type": "array"
-                }
-              }
-            },
-            "description": "Success"
-          },
-          "default": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            },
-            "description": "Error (RFC 9457 problem details)"
-          }
-        },
-        "summary": "Discover secret-free environment hints; proposals are not persisted or executable",
         "tags": [
           "catalog"
         ]

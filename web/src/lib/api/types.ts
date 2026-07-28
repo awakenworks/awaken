@@ -12,7 +12,6 @@ export type {
   ApiDialect,
   CatalogSyncResult,
   ConfigCapabilitiesView,
-  EnvironmentProviderProposal,
   ModelAttributes,
   ModelTarget,
   Offering,
