@@ -485,9 +485,13 @@ operator secret. OAuth cache lifetime is fixed credential-domain behavior until
 a per-source persisted lifetime contract exists; it is no longer process
 configuration. The database-pool reader has now been removed: the CLI authors
 `postgres_max_connections`, `DeploymentConfig` makes zero unrepresentable, and
-the commit/dispatch adapters receive the exact resolved number. Observability
-settings and other remaining production readers still require migration before
-D12 is complete. A2A projection persistence also consumes the Host's injected
+the commit/dispatch adapters receive the exact resolved number. Observability is
+also one typed `ResolvedDeployment::observability` policy: the existing
+`OtelConfig` remains the sole exporter value object, and logging, trace-file,
+OTLP trace/metric endpoints, headers and timing are injected into
+`awaken-observability`; that crate has no ambient configuration reader.
+Other remaining production readers still require migration before D12 is
+complete. A2A projection persistence also consumes the Host's injected
 `DeploymentConfig::storage_dir`; the protocol adapter owns only its state
 filename and serialization and no longer discovers a second path from the
 environment. Worker transport identity is likewise authored as typed
@@ -912,7 +916,7 @@ the remaining external/reconciliation gates:
 | automatic Assistant | exactly one Available+Verified local backend is required; zero remains unconfigured and multiple are resolved through the ordinary persisted Agent model editor | no separate default-backend preference exists |
 | frontend contract | OpenAPI-generated TypeScript consumes the Rust discriminated union and live Worker ACP projection | keep generated-contract freshness gated |
 | Flow | pinned to the pushed Awaken revision; one existing Worker/executor consumes the shared preparation service | keep the revision and lockfile updated atomically |
-| ambient configuration | environment Provider proposals and Flow ACP inventory/default fields are removed; sandbox/container and content-capture policy consume typed `DeploymentConfig`; enrollment signing is internal; OAuth cache lifetime is fixed credential-domain behavior | migrate remaining database-pool and observability readers; keep PATH/HOME/DISPLAY as execution metadata only |
+| ambient configuration | environment Provider proposals and Flow ACP inventory/default fields are removed; sandbox/container, content-capture, database-pool and observability policy consume typed deployment configuration; enrollment signing is internal; OAuth cache lifetime is fixed credential-domain behavior | migrate remaining production executable/process-protocol readers; keep PATH/HOME/DISPLAY as execution metadata and test gates as harness inputs only |
 | content attribution/erasure | Managed request attribution is durable across dispatch and resume; Host-owned capture sink and subject-scoped ACP blob store share the erasure resolver; HTTP E2E proves capture + real session harvest fan-out, cross-subject isolation and idempotency | add automatic retention-expiry policy for ACP session homes |
 | real host proof | installed Codex `0.145.0` completed the zero-configuration host-login release gate through real wrapper negotiation, BackendDefault publication, LLM response and committed running→idle transcript; installed Claude `2.1.220` is correctly login-required when ambient `ANTHROPIC_API_KEY` is cleared | run the same release-gated real LLM session after a persisted Claude host login is available |
 

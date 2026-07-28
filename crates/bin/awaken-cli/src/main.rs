@@ -97,7 +97,7 @@ async fn run(command: console::Command) -> Result<(), String> {
             if let Some(max_concurrent) = worker.max_concurrent {
                 manifest = manifest.with_max_concurrent(max_concurrent);
             }
-            awaken_observability::init();
+            awaken_observability::init(&deployment.observability);
             let result = awaken_worker::run_with_config(
                 &server,
                 deployment.runtime,
@@ -160,7 +160,7 @@ async fn serve(
         return Err(error.to_owned());
     }
 
-    awaken_observability::init();
+    awaken_observability::init(&deployment.observability);
     let result = serve_resolved(
         deployment,
         seal_key,

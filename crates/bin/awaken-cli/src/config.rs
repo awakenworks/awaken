@@ -220,6 +220,8 @@ pub struct ResolvedDeployment {
     pub runtime: DeploymentConfig,
     /// Deployment-owned topology for logical Agent `hand` declarations.
     pub hand_connections: BTreeMap<String, awaken_connection_plan::ConnectionPlan>,
+    /// Process-global logging, tracing and metrics policy.
+    pub observability: awaken_observability::ObservabilityConfig,
     /// Secret-free local ACP observations captured once during product startup.
     /// Empty means discovery was not run (for example in Server mode).
     pub local_acp_observations: Vec<awaken_acp_application::AcpHostObservation>,
@@ -483,6 +485,68 @@ impl ResolvedDeployment {
                 ));
             }
         }
+        for (field, value) in [
+            ("otlp_protocol", file.otlp_protocol.as_deref()),
+            ("otlp_traces_protocol", file.otlp_traces_protocol.as_deref()),
+        ] {
+            if let Some(value) = value
+                && !matches!(value, "grpc" | "http/protobuf" | "http/json")
+            {
+                return Err(format!("invalid {field}={value:?}"));
+            }
+        }
+        if file
+            .otlp_headers
+            .as_ref()
+            .is_some_and(|headers| headers.keys().any(|key| key.trim().is_empty()))
+        {
+            return Err("otlp_headers keys must be non-empty".to_owned());
+        }
+        let observability = awaken_observability::ObservabilityConfig {
+            filter: file.log_filter.clone().unwrap_or_else(|| "info".to_owned()),
+            log_format: match file.log_format.as_deref() {
+                Some("json") => awaken_observability::LogFormat::Json,
+                Some("text") | None => awaken_observability::LogFormat::Text,
+                Some(other) => return Err(format!("invalid log_format={other:?}")),
+            },
+            trace_file: file.trace_file.clone(),
+            otel: awaken_observability::OtelConfig {
+                endpoint: file.otlp_endpoint.clone(),
+                traces_endpoint: file.otlp_traces_endpoint.clone(),
+                protocol: file
+                    .otlp_protocol
+                    .as_deref()
+                    .unwrap_or("http/protobuf")
+                    .parse()
+                    .unwrap_or_default(),
+                traces_protocol: file
+                    .otlp_traces_protocol
+                    .as_deref()
+                    .map(str::parse)
+                    .transpose()
+                    .unwrap_or_default(),
+                headers: file
+                    .otlp_headers
+                    .clone()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect(),
+                timeout: std::time::Duration::from_millis(file.otlp_timeout_ms.unwrap_or(10_000)),
+                service_name: file.otel_service_name.clone(),
+                service_version: file.otel_service_version.clone(),
+                metric_export_interval: std::time::Duration::from_millis(
+                    file.otel_metric_export_interval_ms.unwrap_or(60_000),
+                ),
+            },
+        };
+        if observability.filter.trim().is_empty()
+            || observability.otel.timeout.is_zero()
+            || observability.otel.metric_export_interval.is_zero()
+        {
+            return Err(
+                "log_filter and OTel timeout/export interval must be non-empty/non-zero".to_owned(),
+            );
+        }
         let runtime = DeploymentConfig {
             durable: true,
             storage_dir: Some(data_dir.clone()),
@@ -673,6 +737,7 @@ impl ResolvedDeployment {
             admin_listen: file.admin_listen,
             runtime,
             hand_connections,
+            observability,
             local_acp_observations: Vec::new(),
             control,
             resources,
@@ -836,6 +901,18 @@ struct FileConfig {
     runtime_database_url: Option<String>,
     postgres_max_connections: Option<u32>,
     hand_connections: Option<BTreeMap<String, awaken_connection_plan::ConnectionPlan>>,
+    log_filter: Option<String>,
+    log_format: Option<String>,
+    trace_file: Option<PathBuf>,
+    otlp_endpoint: Option<String>,
+    otlp_traces_endpoint: Option<String>,
+    otlp_protocol: Option<String>,
+    otlp_traces_protocol: Option<String>,
+    otlp_headers: Option<BTreeMap<String, String>>,
+    otlp_timeout_ms: Option<u64>,
+    otel_service_name: Option<String>,
+    otel_service_version: Option<String>,
+    otel_metric_export_interval_ms: Option<u64>,
     management_database_url_file: Option<PathBuf>,
     resource_database_url: Option<String>,
     catalog_db: Option<String>,
@@ -1051,6 +1128,81 @@ mod tests {
                 },
             );
             assert!(result.is_err(), "invalid Hand rule {id:?} was accepted");
+        }
+    }
+
+    #[test]
+    fn observability_is_explicit_typed_deployment_policy() {
+        // Cause/effect graph:
+        // config.toml observability fields -> one ResolvedDeployment value ->
+        // subscriber/tracer/meter initialization; no observability library reads
+        // ambient process configuration.
+        //
+        // Decision table:
+        // | log/protocol/timing input | result |
+        // | absent | text + info + disabled OTLP + 10s/60s defaults |
+        // | valid explicit JSON/HTTP/timings/headers | exact typed projection |
+        // | invalid log/protocol, empty filter/header, zero timing | reject |
+        let defaults = resolve(FileConfig::default(), ConfigOverrides::default());
+        assert_eq!(defaults.observability, Default::default());
+
+        let explicit = resolve(
+            FileConfig {
+                log_filter: Some("awaken=debug".to_owned()),
+                log_format: Some("json".to_owned()),
+                trace_file: Some(PathBuf::from("/tmp/trace.jsonl")),
+                otlp_endpoint: Some("http://collector:4318".to_owned()),
+                otlp_protocol: Some("http/protobuf".to_owned()),
+                otlp_headers: Some(BTreeMap::from([(
+                    "authorization".to_owned(),
+                    "Bearer token".to_owned(),
+                )])),
+                otlp_timeout_ms: Some(2500),
+                otel_metric_export_interval_ms: Some(5000),
+                ..Default::default()
+            },
+            ConfigOverrides::default(),
+        );
+        assert_eq!(
+            explicit.observability.log_format,
+            awaken_observability::LogFormat::Json
+        );
+        assert_eq!(
+            explicit.observability.otel.metric_export_interval,
+            std::time::Duration::from_secs(5)
+        );
+
+        for file in [
+            FileConfig {
+                log_format: Some("yaml".to_owned()),
+                ..Default::default()
+            },
+            FileConfig {
+                log_filter: Some(" ".to_owned()),
+                ..Default::default()
+            },
+            FileConfig {
+                otlp_protocol: Some("udp".to_owned()),
+                ..Default::default()
+            },
+            FileConfig {
+                otlp_timeout_ms: Some(0),
+                ..Default::default()
+            },
+            FileConfig {
+                otlp_headers: Some(BTreeMap::from([(" ".to_owned(), "x".to_owned())])),
+                ..Default::default()
+            },
+        ] {
+            assert!(
+                ResolvedDeployment::resolve_file(
+                    ConfigOverrides::default(),
+                    Some(PathBuf::from("/home/dev")),
+                    PathBuf::from("/home/dev/.awaken/config.toml"),
+                    file,
+                )
+                .is_err()
+            );
         }
     }
 

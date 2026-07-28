@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 # Cross-cutting telemetry infrastructure (NOT a runtime `ext-*`): the process-global
-# `tracing` subscriber, optional OTLP / `AWAKEN_TRACE_FILE` span export, the W3C
+# `tracing` subscriber, optional typed OTLP / trace-file span export, the W3C
 # `traceparent` propagator, and the axum ingress middleware that roots each request
 # span. Service binaries call `init()` / `shutdown()`; the spans themselves are emitted
 # by `#[instrument]` woven into the real call path, so this crate owns the exporter

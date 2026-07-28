@@ -106,7 +106,7 @@ impl awaken_runtime_host::ApplicationSessionProvisioner for ApplicationProvision
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    awaken_observability::init();
+    awaken_observability::init(&Default::default());
     let upstream = std::env::var("AWAKEN_UPSTREAM_URL")?;
     let decorator: awaken_runtime_host::AttemptExecutorDecorator = Arc::new(|inner| inner);
     awaken_worker::WorkerNodeBuilder::new(awaken_runtime_host::WorkerUpstream::new(upstream))

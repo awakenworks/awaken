@@ -67,7 +67,7 @@ impl CredentialMaterialResolver for ExactSealedResolver {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    awaken_observability::init();
+    awaken_observability::init(&Default::default());
     let upstream = std::env::var("AWAKEN_UPSTREAM_URL")?;
     let provider_ref = std::env::var("AWAKEN_TEST_PROVIDER_REF")?;
     let endpoint = InferenceEndpoint {
