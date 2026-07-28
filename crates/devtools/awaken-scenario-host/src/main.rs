@@ -187,8 +187,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 }
 
 fn scenario_observability() -> awaken_observability::ObservabilityConfig {
-    let mut config = awaken_observability::ObservabilityConfig::default();
-    config.trace_file = std::env::var_os("AWAKEN_TRACE_FILE").map(Into::into);
+    let mut config = awaken_observability::ObservabilityConfig {
+        trace_file: std::env::var_os("AWAKEN_TRACE_FILE").map(Into::into),
+        ..Default::default()
+    };
     config.otel.endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok();
     config.otel.traces_endpoint = std::env::var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT").ok();
     config.otel.protocol = std::env::var("OTEL_EXPORTER_OTLP_PROTOCOL")

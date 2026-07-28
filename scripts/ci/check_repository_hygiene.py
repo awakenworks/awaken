@@ -47,6 +47,9 @@ GENERATED_PARTS = {
     "target",
 }
 GENERATED_SUFFIXES = {".pyc", ".pyo"}
+VENDORED_GENERATED_ROOTS = {
+    Path("web/vendor/awaken-ui/dist"),
+}
 TEXT_SUFFIXES = {
     ".css",
     ".html",
@@ -137,7 +140,13 @@ def check_path_shape(files: list[str], added_files: list[str]) -> list[str]:
         if FORBIDDEN_ROOT_DIR_RE.search(rel):
             violations.append(f"{rel}: root fixture/profile data belongs under tests/fixtures/ or config examples")
         parts = set(path.parts)
-        if (parts & GENERATED_PARTS) or path.suffix in GENERATED_SUFFIXES:
+        is_vendored_distribution = any(
+            path == root or root in path.parents for root in VENDORED_GENERATED_ROOTS
+        )
+        if (
+            ((parts & GENERATED_PARTS) and not is_vendored_distribution)
+            or path.suffix in GENERATED_SUFFIXES
+        ):
             violations.append(f"{rel}: generated/cache/build output must not be tracked")
 
     for rel in sorted(added_files):
@@ -173,14 +182,35 @@ def check_text_content(files: list[str], staged: bool) -> list[str]:
 
 def self_test() -> int:
     failures: list[str] = []
+    # Cause/effect graph:
+    # - ordinary generated output -> reject;
+    # - the single audited, pinned third-party distribution -> accept;
+    # - a similarly named distribution outside that exact root -> reject.
+    # Decision-table rules are represented by the three paths below so the
+    # portability exception cannot silently become a general `dist` exemption.
     shape_hits = check_path_shape(
-        ["README.md", "NOTES.md", "fixtures/sample.json", "scripts/ci/__pycache__/x.pyc"],
+        [
+            "README.md",
+            "NOTES.md",
+            "fixtures/sample.json",
+            "scripts/ci/__pycache__/x.pyc",
+            "web/vendor/awaken-ui/dist/index.js",
+            "web/vendor/other-ui/dist/index.js",
+        ],
         ["docs/new-progress.md"],
     )
-    expected_fragments = ["NOTES.md", "fixtures/sample.json", "__pycache__", "new-progress.md"]
+    expected_fragments = [
+        "NOTES.md",
+        "fixtures/sample.json",
+        "__pycache__",
+        "new-progress.md",
+        "web/vendor/other-ui/dist/index.js",
+    ]
     for fragment in expected_fragments:
         if not any(fragment in hit for hit in shape_hits):
             failures.append(f"expected shape violation containing {fragment!r}")
+    if any("web/vendor/awaken-ui/dist/index.js" in hit for hit in shape_hits):
+        failures.append("audited vendored distribution must be accepted")
     content = "ok\nbad\u200b\n<<<<<<< HEAD\nPermission is hereby granted, free of charge\n"
     hits: list[str] = []
     for lineno, line in enumerate(content.splitlines(), 1):
