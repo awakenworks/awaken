@@ -23,6 +23,7 @@ pub(crate) enum Command {
     Serve(StartArgs),
     Management(StartArgs),
     ManagementIamProfile,
+    ManagementIamResourceProfile,
     DatabaseMigrate {
         config_path: Option<std::path::PathBuf>,
     },
@@ -67,8 +68,11 @@ fn parse_management_args(args: &[String]) -> Result<Command, String> {
     if args == ["iam", "profile"] {
         return Ok(Command::ManagementIamProfile);
     }
+    if args == ["iam", "profile", "resources"] {
+        return Ok(Command::ManagementIamResourceProfile);
+    }
     if args.first().is_some_and(|arg| arg == "iam") {
-        return Err("management iam requires exactly the `profile` subcommand".to_owned());
+        return Err("management iam requires `profile` or `profile resources` exactly".to_owned());
     }
     if args.iter().any(|arg| is_help(arg)) {
         return Ok(Command::Help);
@@ -278,7 +282,7 @@ fn is_help(value: &str) -> bool {
 
 pub(crate) fn print_help() {
     println!(
-        "Awaken\n\nUSAGE:\n    awaken [COMMAND] [OPTIONS]\n\nRunning `awaken` without a command is the same as `awaken start`.\n\nCOMMANDS:\n    start                   Start locally, print readiness, and open the browser\n    serve                   Start headless for service managers\n    management              Start only the authoring/control surface (server mode)\n    management iam profile  Print the compiled Management IAM profile\n    database migrate        Apply management schema migrations and exit\n    worker --server URL     Join an Awaken server as a worker\n    doctor acp [--json]     Discover and diagnose supported local ACP agents\n    config [--json]         Print effective, redacted configuration\n    version                 Print the installed version\n\nOPTIONS:\n    --config PATH         Read typed configuration from PATH\n    --port PORT           Override the listen port\n    --data-dir PATH       Override the persistent data root (default ~/.awaken)\n    --no-browser          Do not open a browser\n    --identity-mode MODE  no-login, self-managed, or awaken-cloud\n    --cloud-models MODE   disabled or enabled (requires awaken-cloud identity)\n    -h, --help            Print this help\n\nConfiguration sources: --config PATH or ~/.awaken/config.toml, then defaults."
+        "Awaken\n\nUSAGE:\n    awaken [COMMAND] [OPTIONS]\n\nRunning `awaken` without a command is the same as `awaken start`.\n\nCOMMANDS:\n    start                             Start locally, print readiness, and open the browser\n    serve                             Start headless for service managers\n    management                        Start only the authoring/control surface (server mode)\n    management iam profile            Print the compiled Management IAM profile\n    management iam profile resources  Print the compiled Management resource IAM profile\n    database migrate                  Apply management schema migrations and exit\n    worker --server URL               Join an Awaken server as a worker\n    doctor acp [--json]               Discover and diagnose supported local ACP agents\n    config [--json]                   Print effective, redacted configuration\n    version                           Print the installed version\n\nOPTIONS:\n    --config PATH         Read typed configuration from PATH\n    --port PORT           Override the listen port\n    --data-dir PATH       Override the persistent data root (default ~/.awaken)\n    --no-browser          Do not open a browser\n    --identity-mode MODE  no-login, self-managed, or awaken-cloud\n    --cloud-models MODE   disabled or enabled (requires awaken-cloud identity)\n    -h, --help            Print this help\n\nConfiguration sources: --config PATH or ~/.awaken/config.toml, then defaults."
     );
 }
 
@@ -362,6 +366,16 @@ mod tests {
         assert_eq!(
             parse_args(["management".into(), "iam".into(), "profile".into()]).unwrap(),
             Command::ManagementIamProfile
+        );
+        assert_eq!(
+            parse_args([
+                "management".into(),
+                "iam".into(),
+                "profile".into(),
+                "resources".into()
+            ])
+            .unwrap(),
+            Command::ManagementIamResourceProfile
         );
         assert!(
             parse_args([

@@ -270,17 +270,25 @@ maintaining parallel raw DDL.
 ## Amendment (2026-07-28): Management authorization is a release contract
 
 The Management bounded context is the sole owner of the
-`awaken.runtime.management` action, scope and role-grant contract. Its existing
-embedded-IAM construction is exposed as one deterministic, side-effect-free
-`management_authorization_profile()` function. Embedded IAM consumes that
-function directly; the `awaken management iam profile` command only serializes
-the same value for a deployment-owned PAP.
+`awaken.runtime.management` and `awaken.runtime.resources` action, scope and
+role-grant contracts. Their existing embedded-IAM constructions are exposed as
+deterministic, side-effect-free `management_authorization_profile()` and
+`management_resource_authorization_profile()` functions. Embedded IAM consumes
+those functions directly; the `awaken management iam profile` commands only
+serialize the same values for a deployment-owned PAP.
 
 ```text
 Management action/scope/role definitions
   -> management_authorization_profile()
        |-> embedded IAM activation
        \-> awaken management iam profile
+            -> immutable release JSON
+            -> hosted PAP validation/CAS activation
+
+Management resource action/scope/role definitions
+  -> management_resource_authorization_profile()
+       |-> embedded IAM activation
+       \-> awaken management iam profile resources
             -> immutable release JSON
             -> hosted PAP validation/CAS activation
 ```
@@ -293,6 +301,7 @@ read credentials, open storage, contact IAM, or publish policy.
 | Invocation | Configuration/storage/network | Outcome |
 |---|---|---|
 | `management iam profile` | unavailable | deterministic `awaken.runtime.management` JSON |
+| `management iam profile resources` | unavailable | deterministic `awaken.runtime.resources` JSON |
 | same exact image, repeated | unavailable | byte-identical JSON |
 | `management iam profile` with extra input | unavailable | usage failure, no JSON |
 | embedded IAM startup | local durable state | activates the same generated document |

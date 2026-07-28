@@ -287,6 +287,58 @@ pub fn management_authorization_profile() -> CreateAuthorizationProfile {
     }
 }
 
+/// The immutable authorization contract for Management-owned File and Skill
+/// resources. Embedded IAM and hosted deployments consume this same value.
+pub fn management_resource_authorization_profile() -> CreateAuthorizationProfile {
+    let created_at = Timestamp(AUTHORIZATION_PROFILE_EPOCH.to_owned());
+    let patterns = ["workspace.*", "file.*", "skill.*"];
+    let mut grants = Vec::new();
+    for role in named_role_catalog(&created_at) {
+        for (index, pattern) in role.action_patterns.iter().enumerate() {
+            if !patterns
+                .iter()
+                .any(|prefix| pattern.0.starts_with(prefix.trim_end_matches('*')))
+            {
+                continue;
+            }
+            grants.push(GrantSnapshot {
+                id: format!(
+                    "{RESOURCE_POLICY_NAMESPACE}:grant:role:{}:{index}",
+                    role.id.0
+                ),
+                subject: GrantSubjectRef::Role {
+                    role_id: qualify_resource_role(&role.id.0).0,
+                },
+                action_pattern: qualify_resource_action(&pattern.0).0,
+                scope: ScopeRef::Global,
+                effect: GrantEffect::Allow,
+            });
+        }
+    }
+    CreateAuthorizationProfile {
+        namespace: NamespaceId(RESOURCE_POLICY_NAMESPACE.to_owned()),
+        document: AuthorizationProfileDocument {
+            resource_model: ResourceModelRegistration {
+                actions: patterns
+                    .iter()
+                    .map(|pattern| qualify_resource_action(pattern))
+                    .collect(),
+                ..ResourceModelRegistration::default()
+            },
+            action_scope_rules: patterns
+                .iter()
+                .map(|pattern| ActionScopeRule {
+                    action_pattern: qualify_resource_action(pattern).0,
+                    allowed_scope_kinds: vec![ScopeKind::Workspace],
+                })
+                .collect(),
+            grants,
+            ..AuthorizationProfileDocument::default()
+        },
+        created_at,
+    }
+}
+
 /// The embedded management-plane authorizer: authn (bearer token → principal)
 /// and authz (principal × action × workspace scope → decision), with its
 /// durable token/binding rows in `<dir>/iam.sqlite`.
@@ -685,7 +737,8 @@ pub fn embedded_iam_for_tenant(
     // Resource authorization is an independent PAP document/namespace. It reuses
     // the same principals, role bindings, scope graph, and PDP, but can be replaced
     // without changing management actions or any File/Memory/Skill service.
-    let resource_namespace = NamespaceId(RESOURCE_POLICY_NAMESPACE.to_owned());
+    let resource_profile_request = management_resource_authorization_profile();
+    let resource_namespace = resource_profile_request.namespace.clone();
     if profiles
         .active(&resource_namespace)
         .expect("read active resource profile")
@@ -695,53 +748,8 @@ pub fn embedded_iam_for_tenant(
             .hydrate(&mut engine, &PolicySnapshot::default(), &resource_namespace)
             .expect("hydrate active resource profile");
     } else {
-        let patterns = ["workspace.*", "file.*", "skill.*"];
-        let mut resource_grants = Vec::new();
-        for role in named_role_catalog(&now) {
-            for (index, pattern) in role.action_patterns.iter().enumerate() {
-                if !patterns
-                    .iter()
-                    .any(|prefix| pattern.0.starts_with(prefix.trim_end_matches('*')))
-                {
-                    continue;
-                }
-                resource_grants.push(GrantSnapshot {
-                    id: format!(
-                        "{RESOURCE_POLICY_NAMESPACE}:grant:role:{}:{index}",
-                        role.id.0
-                    ),
-                    subject: GrantSubjectRef::Role {
-                        role_id: qualify_resource_role(&role.id.0).0,
-                    },
-                    action_pattern: qualify_resource_action(&pattern.0).0,
-                    scope: ScopeRef::Global,
-                    effect: GrantEffect::Allow,
-                });
-            }
-        }
         let draft = profiles
-            .create_draft(CreateAuthorizationProfile {
-                namespace: resource_namespace.clone(),
-                document: AuthorizationProfileDocument {
-                    resource_model: ResourceModelRegistration {
-                        actions: patterns
-                            .iter()
-                            .map(|pattern| qualify_resource_action(pattern))
-                            .collect(),
-                        ..ResourceModelRegistration::default()
-                    },
-                    action_scope_rules: patterns
-                        .iter()
-                        .map(|pattern| ActionScopeRule {
-                            action_pattern: qualify_resource_action(pattern).0,
-                            allowed_scope_kinds: vec![ScopeKind::Workspace],
-                        })
-                        .collect(),
-                    grants: resource_grants,
-                    ..AuthorizationProfileDocument::default()
-                },
-                created_at: now.clone(),
-            })
+            .create_draft(resource_profile_request)
             .expect("create built-in resource profile");
         let validation = profiles
             .validate(&resource_namespace, draft.revision)
