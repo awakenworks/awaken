@@ -89,6 +89,21 @@ impl AcpWorkerProfile {
         Ok(())
     }
 
+    /// Atomically install the startup acquisition plan produced by the ACP
+    /// application service. Composition roots share this projection instead of
+    /// maintaining separate per-CLI loops.
+    pub fn apply_launch_argv(
+        &mut self,
+        launch_argv: &BTreeMap<String, Vec<String>>,
+    ) -> Result<(), String> {
+        let mut projected = self.clone();
+        for (cli_id, argv) in launch_argv {
+            projected.set_launch_argv(cli_id, argv.clone())?;
+        }
+        self.launch_argv = projected.launch_argv;
+        Ok(())
+    }
+
     #[must_use]
     pub fn launch_argv(&self, cli_id: &str) -> Option<&[String]> {
         self.launch_argv.get(cli_id).map(Vec::as_slice)
@@ -475,6 +490,7 @@ mod tests {
         // A1 advertised + absolute argv -> stored for that route
         // A2 unadvertised route         -> reject
         // A3 empty/blank executable     -> reject
+        // A4 mixed valid/invalid batch  -> reject atomically
         let mut profile =
             AcpWorkerProfile::new(["codex".to_string()], Some("codex".to_string())).unwrap();
         profile
@@ -497,6 +513,17 @@ mod tests {
                 .is_err(),
             "A3"
         );
+        let before = profile.clone();
+        assert!(
+            profile
+                .apply_launch_argv(&BTreeMap::from([
+                    ("codex".into(), vec!["/new/codex-acp".into()]),
+                    ("claude".into(), vec!["/new/claude-agent-acp".into()]),
+                ]))
+                .is_err(),
+            "A4"
+        );
+        assert_eq!(profile, before, "A4");
     }
 
     #[test]

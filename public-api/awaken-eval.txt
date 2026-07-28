@@ -4,6 +4,81 @@ pub struct awaken_eval::acp_runner::ToolFreeAcpRunner
 impl awaken_eval::acp_runner::ToolFreeAcpRunner
 pub fn awaken_eval::acp_runner::ToolFreeAcpRunner::new(alloc::vec::Vec<alloc::string::String>, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>) -> Self
 pub async fn awaken_eval::acp_runner::ToolFreeAcpRunner::run(&self, &str, usize, &str, alloc::string::String, usize) -> core::result::Result<alloc::string::String, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
+pub mod awaken_eval::admin_authoring
+pub enum awaken_eval::admin_authoring::AdminCriterion
+pub awaken_eval::admin_authoring::AdminCriterion::CompactHasInstructions
+pub awaken_eval::admin_authoring::AdminCriterion::CompactInstructionsAreProse
+pub awaken_eval::admin_authoring::AdminCriterion::CompactTriggerRatioSet
+pub awaken_eval::admin_authoring::AdminCriterion::HasPlugin
+pub awaken_eval::admin_authoring::AdminCriterion::HasPlugin::plugin_id: alloc::string::String
+pub awaken_eval::admin_authoring::AdminCriterion::HasTool
+pub awaken_eval::admin_authoring::AdminCriterion::HasTool::tool_id: alloc::string::String
+pub awaken_eval::admin_authoring::AdminCriterion::InstructionsMinLength
+pub awaken_eval::admin_authoring::AdminCriterion::InstructionsMinLength::min: usize
+pub awaken_eval::admin_authoring::AdminCriterion::PermissionDeniesToolTerm
+pub awaken_eval::admin_authoring::AdminCriterion::PermissionDeniesToolTerm::term: alloc::string::String
+pub awaken_eval::admin_authoring::AdminCriterion::PermissionDeniesToolTerm::tool_id: alloc::string::String
+pub awaken_eval::admin_authoring::AdminCriterion::PermissionGated
+pub awaken_eval::admin_authoring::AdminCriterion::PermissionUsesRealLowercaseToolIds
+pub awaken_eval::admin_authoring::AdminCriterion::Persisted
+pub awaken_eval::admin_authoring::AdminCriterion::StateMachineHasReminder
+pub awaken_eval::admin_authoring::AdminCriterion::StateMachineHasTransitions
+pub awaken_eval::admin_authoring::AdminCriterion::ToolOverrideAlias
+pub awaken_eval::admin_authoring::AdminCriterion::ToolOverrideAlias::alias: alloc::string::String
+pub awaken_eval::admin_authoring::AdminCriterion::ToolOverrideAlias::target: alloc::string::String
+pub awaken_eval::admin_authoring::AdminCriterion::ToolOverrideHasDescription
+pub awaken_eval::admin_authoring::AdminCriterion::ToolOverrideHasDescription::target: alloc::string::String
+pub awaken_eval::admin_authoring::AdminCriterion::ToolsEmpty
+impl awaken_eval::admin_authoring::AdminCriterion
+pub fn awaken_eval::admin_authoring::AdminCriterion::evaluate(&self, core::option::Option<&serde_json::value::Value>) -> bool
+pub fn awaken_eval::admin_authoring::AdminCriterion::label(&self) -> alloc::string::String
+pub struct awaken_eval::admin_authoring::AdminAuthoringCase
+pub awaken_eval::admin_authoring::AdminAuthoringCase::criteria: alloc::vec::Vec<awaken_eval::admin_authoring::AdminCriterion>
+pub awaken_eval::admin_authoring::AdminAuthoringCase::id: alloc::string::String
+pub awaken_eval::admin_authoring::AdminAuthoringCase::prompt: alloc::string::String
+pub struct awaken_eval::admin_authoring::AdminAuthoringDataset
+pub awaken_eval::admin_authoring::AdminAuthoringDataset::cases: alloc::vec::Vec<awaken_eval::admin_authoring::AdminAuthoringCase>
+pub awaken_eval::admin_authoring::AdminAuthoringDataset::name: alloc::string::String
+pub awaken_eval::admin_authoring::AdminAuthoringDataset::schema_version: u32
+impl awaken_eval::admin_authoring::AdminAuthoringDataset
+pub fn awaken_eval::admin_authoring::AdminAuthoringDataset::validate(&self) -> core::result::Result<(), alloc::string::String>
+pub struct awaken_eval::admin_authoring::AdminAuthoringFloors
+pub awaken_eval::admin_authoring::AdminAuthoringFloors::criteria: f64
+pub awaken_eval::admin_authoring::AdminAuthoringFloors::fully_correct: f64
+pub awaken_eval::admin_authoring::AdminAuthoringFloors::persisted: f64
+impl awaken_eval::admin_authoring::AdminAuthoringFloors
+pub fn awaken_eval::admin_authoring::AdminAuthoringFloors::validate(self) -> core::result::Result<Self, alloc::string::String>
+impl core::default::Default for awaken_eval::admin_authoring::AdminAuthoringFloors
+pub fn awaken_eval::admin_authoring::AdminAuthoringFloors::default() -> Self
+pub struct awaken_eval::admin_authoring::AdminAuthoringObservation
+pub awaken_eval::admin_authoring::AdminAuthoringObservation::case_id: alloc::string::String
+pub awaken_eval::admin_authoring::AdminAuthoringObservation::config: core::option::Option<serde_json::value::Value>
+pub awaken_eval::admin_authoring::AdminAuthoringObservation::error: core::option::Option<alloc::string::String>
+pub awaken_eval::admin_authoring::AdminAuthoringObservation::repetition: usize
+pub struct awaken_eval::admin_authoring::AdminAuthoringReport
+pub awaken_eval::admin_authoring::AdminAuthoringReport::cases: alloc::vec::Vec<awaken_eval::admin_authoring::AdminCaseScore>
+pub awaken_eval::admin_authoring::AdminAuthoringReport::criteria_passed: usize
+pub awaken_eval::admin_authoring::AdminAuthoringReport::criteria_total: usize
+pub awaken_eval::admin_authoring::AdminAuthoringReport::dataset: alloc::string::String
+pub awaken_eval::admin_authoring::AdminAuthoringReport::floor_failures: alloc::vec::Vec<alloc::string::String>
+pub awaken_eval::admin_authoring::AdminAuthoringReport::fully_correct: usize
+pub awaken_eval::admin_authoring::AdminAuthoringReport::observation_contract_failures: alloc::vec::Vec<alloc::string::String>
+pub awaken_eval::admin_authoring::AdminAuthoringReport::observations: usize
+pub awaken_eval::admin_authoring::AdminAuthoringReport::persisted: usize
+pub awaken_eval::admin_authoring::AdminAuthoringReport::unexpected_observations: alloc::vec::Vec<alloc::string::String>
+impl awaken_eval::admin_authoring::AdminAuthoringReport
+pub fn awaken_eval::admin_authoring::AdminAuthoringReport::passed(&self) -> bool
+pub struct awaken_eval::admin_authoring::AdminCaseScore
+pub awaken_eval::admin_authoring::AdminCaseScore::case_id: alloc::string::String
+pub awaken_eval::admin_authoring::AdminCaseScore::criteria: alloc::vec::Vec<awaken_eval::admin_authoring::AdminCriterionScore>
+pub awaken_eval::admin_authoring::AdminCaseScore::fully_correct: usize
+pub awaken_eval::admin_authoring::AdminCaseScore::observations: usize
+pub struct awaken_eval::admin_authoring::AdminCriterionScore
+pub awaken_eval::admin_authoring::AdminCriterionScore::label: alloc::string::String
+pub awaken_eval::admin_authoring::AdminCriterionScore::passed: usize
+pub awaken_eval::admin_authoring::AdminCriterionScore::total: usize
+pub async fn awaken_eval::admin_authoring::run_live(&awaken_eval::admin_authoring::AdminAuthoringDataset, &str, usize, core::option::Option<&alloc::collections::btree::set::BTreeSet<alloc::string::String>>) -> alloc::vec::Vec<awaken_eval::admin_authoring::AdminAuthoringObservation>
+pub fn awaken_eval::admin_authoring::score(&awaken_eval::admin_authoring::AdminAuthoringDataset, &[awaken_eval::admin_authoring::AdminAuthoringObservation], awaken_eval::admin_authoring::AdminAuthoringFloors) -> awaken_eval::admin_authoring::AdminAuthoringReport
 pub mod awaken_eval::compact_eval
 pub struct awaken_eval::compact_eval::CompactCase
 pub awaken_eval::compact_eval::CompactCase::forbidden_terms: alloc::vec::Vec<alloc::string::String>

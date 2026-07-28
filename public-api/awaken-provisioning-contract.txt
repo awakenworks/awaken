@@ -109,6 +109,7 @@ pub awaken_provisioning_contract::PrepareError::InsufficientIsolation
 pub awaken_provisioning_contract::PrepareError::NetworkAllowlistUnsupported
 pub awaken_provisioning_contract::PrepareError::NetworkIsolationUnsupported
 pub awaken_provisioning_contract::PrepareError::OutputsPathNotAbsolute
+pub awaken_provisioning_contract::PrepareError::PackageProvisioningUnsupported
 pub awaken_provisioning_contract::PrepareError::ReadOnlyUnsupported(alloc::string::String)
 pub awaken_provisioning_contract::PrepareError::ReservedEnvKey(alloc::string::String)
 pub awaken_provisioning_contract::PrepareError::ResourceLimitsUnsupported
@@ -131,6 +132,13 @@ pub enum awaken_provisioning_contract::SandboxAction
 pub awaken_provisioning_contract::SandboxAction::Artifact
 pub awaken_provisioning_contract::SandboxAction::Egress
 pub awaken_provisioning_contract::SandboxAction::Spawn
+pub enum awaken_provisioning_contract::SandboxExecutionPolicyError
+pub awaken_provisioning_contract::SandboxExecutionPolicyError::BindingUnavailable
+pub awaken_provisioning_contract::SandboxExecutionPolicyError::Disabled
+pub awaken_provisioning_contract::SandboxExecutionPolicyError::Invalid(alloc::string::String)
+pub awaken_provisioning_contract::SandboxExecutionPolicyError::NotFound
+pub awaken_provisioning_contract::SandboxExecutionPolicyError::StoreFailed(alloc::string::String)
+pub awaken_provisioning_contract::SandboxExecutionPolicyError::VersionConflict
 pub enum awaken_provisioning_contract::SandboxStatus
 pub awaken_provisioning_contract::SandboxStatus::Provisioning
 pub awaken_provisioning_contract::SandboxStatus::Ready
@@ -183,6 +191,7 @@ pub awaken_provisioning_contract::EnvironmentPlan::limits: awaken_provisioning_c
 pub awaken_provisioning_contract::EnvironmentPlan::mounts: alloc::vec::Vec<awaken_provisioning_contract::MountRequirement>
 pub awaken_provisioning_contract::EnvironmentPlan::network: awaken_provisioning_contract::NetworkPolicy
 pub awaken_provisioning_contract::EnvironmentPlan::outputs_path: alloc::string::String
+pub awaken_provisioning_contract::EnvironmentPlan::packages: awaken_provisioning_contract::PackageRequirements
 pub awaken_provisioning_contract::EnvironmentPlan::scope: alloc::string::String
 pub struct awaken_provisioning_contract::ExitStatus
 pub awaken_provisioning_contract::ExitStatus::code: core::option::Option<i32>
@@ -238,6 +247,10 @@ pub struct awaken_provisioning_contract::NonceWatermark
 impl awaken_provisioning_contract::NonceWatermark
 pub fn awaken_provisioning_contract::NonceWatermark::admit(&mut self, &str, u64) -> bool
 pub fn awaken_provisioning_contract::NonceWatermark::new() -> Self
+pub struct awaken_provisioning_contract::PackageRequirements
+pub awaken_provisioning_contract::PackageRequirements::managers: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::vec::Vec<alloc::string::String>>
+impl awaken_provisioning_contract::PackageRequirements
+pub fn awaken_provisioning_contract::PackageRequirements::is_empty(&self) -> bool
 pub struct awaken_provisioning_contract::PolicySelection<'a>
 pub awaken_provisioning_contract::PolicySelection::degraded_to: core::option::Option<awaken_provisioning_contract::IsolationClass>
 pub awaken_provisioning_contract::PolicySelection::provider: &'a dyn awaken_provisioning_contract::SandboxProvider
@@ -255,6 +268,7 @@ pub awaken_provisioning_contract::ReconcileOutcome::reaped: alloc::vec::Vec<awak
 pub struct awaken_provisioning_contract::RepositoryRealizationPlan
 pub awaken_provisioning_contract::RepositoryRealizationPlan::access: awaken_provisioning_contract::MountAccess
 pub awaken_provisioning_contract::RepositoryRealizationPlan::initial_branch: core::option::Option<alloc::string::String>
+pub awaken_provisioning_contract::RepositoryRealizationPlan::initial_commit: core::option::Option<alloc::string::String>
 pub awaken_provisioning_contract::RepositoryRealizationPlan::mount_path: alloc::string::String
 pub awaken_provisioning_contract::RepositoryRealizationPlan::remote_url: alloc::string::String
 pub awaken_provisioning_contract::RepositoryRealizationPlan::repository_id: alloc::string::String
@@ -271,6 +285,7 @@ pub awaken_provisioning_contract::SandboxCapabilities::enforced_network_allowlis
 pub awaken_provisioning_contract::SandboxCapabilities::enforced_readonly: bool
 pub awaken_provisioning_contract::SandboxCapabilities::isolation: awaken_provisioning_contract::IsolationClass
 pub awaken_provisioning_contract::SandboxCapabilities::network_isolation: bool
+pub awaken_provisioning_contract::SandboxCapabilities::package_provisioning: bool
 pub awaken_provisioning_contract::SandboxCapabilities::path_fidelity: bool
 pub awaken_provisioning_contract::SandboxCapabilities::resource_limits: bool
 pub awaken_provisioning_contract::SandboxCapabilities::secret_egress_substitution: bool
@@ -281,6 +296,18 @@ pub const fn awaken_provisioning_contract::SandboxCapabilities::supports_secret_
 pub struct awaken_provisioning_contract::SandboxError(pub alloc::string::String)
 impl awaken_provisioning_contract::SandboxError
 pub fn awaken_provisioning_contract::SandboxError::new(impl core::convert::Into<alloc::string::String>) -> Self
+pub struct awaken_provisioning_contract::SandboxExecutionPolicy
+pub awaken_provisioning_contract::SandboxExecutionPolicy::config: awaken_provisioning_contract::SandboxOverride
+pub awaken_provisioning_contract::SandboxExecutionPolicy::disabled: bool
+pub awaken_provisioning_contract::SandboxExecutionPolicy::id: awaken_provisioning_contract::SandboxExecutionPolicyId
+pub awaken_provisioning_contract::SandboxExecutionPolicy::version: awaken_provisioning_contract::SandboxExecutionPolicyVersion
+pub struct awaken_provisioning_contract::SandboxExecutionPolicyId(pub alloc::string::String)
+pub struct awaken_provisioning_contract::SandboxExecutionPolicyRef
+pub awaken_provisioning_contract::SandboxExecutionPolicyRef::id: awaken_provisioning_contract::SandboxExecutionPolicyId
+pub awaken_provisioning_contract::SandboxExecutionPolicyRef::version: awaken_provisioning_contract::SandboxExecutionPolicyVersion
+pub struct awaken_provisioning_contract::SandboxExecutionPolicyVersion(pub u64)
+impl awaken_provisioning_contract::SandboxExecutionPolicyVersion
+pub const awaken_provisioning_contract::SandboxExecutionPolicyVersion::INITIAL: Self
 pub struct awaken_provisioning_contract::SandboxHandle
 pub awaken_provisioning_contract::SandboxHandle::extra: core::option::Option<serde_json::value::Value>
 pub awaken_provisioning_contract::SandboxHandle::provider_kind: alloc::string::String
@@ -305,6 +332,7 @@ pub awaken_provisioning_contract::SandboxSpec::limits: awaken_provisioning_contr
 pub awaken_provisioning_contract::SandboxSpec::mounts: alloc::vec::Vec<awaken_provisioning_contract::MountRequirement>
 pub awaken_provisioning_contract::SandboxSpec::network: awaken_provisioning_contract::NetworkPolicy
 pub awaken_provisioning_contract::SandboxSpec::outputs_path: alloc::string::String
+pub awaken_provisioning_contract::SandboxSpec::packages: awaken_provisioning_contract::PackageRequirements
 pub awaken_provisioning_contract::SandboxSpec::scope: alloc::string::String
 pub const awaken_provisioning_contract::RESERVED_ENV_KEYS: &[&str]
 pub trait awaken_provisioning_contract::BlobSource: core::marker::Send + core::marker::Sync
@@ -335,6 +363,12 @@ pub fn awaken_provisioning_contract::Sandbox::realized(&self) -> &[awaken_provis
 pub fn awaken_provisioning_contract::Sandbox::renew_lease<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_provisioning_contract::Sandbox::spawn<'life0, 'async_trait>(&'life0 self, awaken_provisioning_contract::Command) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_provisioning_contract::ProcessHandle>, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_provisioning_contract::Sandbox::status<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_provisioning_contract::SandboxStatus, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait awaken_provisioning_contract::SandboxExecutionPolicyStore: core::marker::Send + core::marker::Sync
+pub fn awaken_provisioning_contract::SandboxExecutionPolicyStore::bind_environment<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_provisioning_contract::SandboxExecutionPolicyRef) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_provisioning_contract::SandboxExecutionPolicyError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_provisioning_contract::SandboxExecutionPolicyStore::create<'life0, 'async_trait>(&'life0 self, awaken_provisioning_contract::SandboxExecutionPolicy) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_provisioning_contract::SandboxExecutionPolicyError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_provisioning_contract::SandboxExecutionPolicyStore::environment_binding<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_provisioning_contract::SandboxExecutionPolicyRef>, awaken_provisioning_contract::SandboxExecutionPolicyError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_provisioning_contract::SandboxExecutionPolicyStore::get_exact<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::SandboxExecutionPolicyRef) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_provisioning_contract::SandboxExecutionPolicy, awaken_provisioning_contract::SandboxExecutionPolicyError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_provisioning_contract::SandboxExecutionPolicyStore::publish<'life0, 'async_trait>(&'life0 self, awaken_provisioning_contract::SandboxExecutionPolicyVersion, awaken_provisioning_contract::SandboxExecutionPolicy) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_provisioning_contract::SandboxExecutionPolicyError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_provisioning_contract::SandboxProvider: core::marker::Send + core::marker::Sync
 pub fn awaken_provisioning_contract::SandboxProvider::adopt<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::SandboxHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_provisioning_contract::Sandbox>, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_provisioning_contract::SandboxProvider::capabilities(&self) -> awaken_provisioning_contract::SandboxCapabilities

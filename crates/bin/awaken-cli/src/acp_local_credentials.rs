@@ -119,9 +119,7 @@ async fn prepare_local_acp_with(
     let Some(profile) = deployment.runtime.acp.as_mut() else {
         return Ok(None);
     };
-    for (cli_id, argv) in prepared.launch_argv {
-        profile.set_launch_argv(&cli_id, argv)?;
-    }
+    profile.apply_launch_argv(&prepared.launch_argv)?;
     // The registered Worker becomes the sole local execution pool. Keeping the
     // anonymous coordinator pool active would create two overlapping claimers
     // for ordinary runs, while only one can publish credential liveness.

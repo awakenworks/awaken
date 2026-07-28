@@ -656,24 +656,9 @@ impl AcpCli {
     }
 }
 
-/// A neutral MCP server a run wants an ACP CLI to reach. Serializable so it rides the
-/// config plane into `ResolvedSpec.plugin_config` (the seam `mcp_servers_of` reads back).
-/// Authentication is deliberately absent: the Runtime Host projects either an
-/// anonymous endpoint or an already-mediated generation route. ACP never receives
-/// a real or virtual credential through this transport DTO.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct McpServerConfig {
-    pub name: String,
-    pub transport: McpTransport,
-}
-
-/// How an MCP server is reached — a stdio child or an HTTP endpoint.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum McpTransport {
-    Stdio { command: String, args: Vec<String> },
-    Http { url: String },
-}
+use awaken_runtime_contract::resolved::{
+    AcpMcpServer as McpServerConfig, AcpMcpTransport as McpTransport,
+};
 
 /// How the projected MCP servers are handed to a launched CLI — the realization of the
 /// row's [`McpInterface`]. A `ConfigFileToml` CLI (codex) gets a file to write into its

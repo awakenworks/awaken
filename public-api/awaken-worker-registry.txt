@@ -9,6 +9,8 @@ pub use awaken_worker_registry::RankedWorker
 pub use awaken_worker_registry::RegisteredWorker
 pub use awaken_worker_registry::RegistryError
 pub use awaken_worker_registry::RegistryMutation
+pub use awaken_worker_registry::WorkerAcpCapabilityObservation
+pub use awaken_worker_registry::WorkerAcpCapabilityRequirement
 pub use awaken_worker_registry::WorkerAssignment
 pub use awaken_worker_registry::WorkerCredentialObservation
 pub use awaken_worker_registry::WorkerCredentialRevision

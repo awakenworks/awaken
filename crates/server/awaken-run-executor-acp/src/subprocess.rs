@@ -349,48 +349,11 @@ pub fn project_launch(
 ) -> std::result::Result<AcpLaunch, OpenError> {
     let model = resolver.model(activation, context)?;
     let extra_env = resolver.extra_env(activation)?;
-    let window = AcpSettings::from_plugin_config(&activation.snapshot.resolved_spec.plugin_config)
-        .compact_window;
+    let window = awaken_runtime_contract::resolved::AcpSpec::from_plugin_config(
+        &activation.snapshot.resolved_spec.plugin_config,
+    )
+    .compact_window;
     cli.try_project(&model, window, &extra_env)
-}
-
-/// The ACP-scoped run settings carried in `plugin_config["acp"]` — the single typed
-/// codec for that section, replacing ad-hoc `.get("acp").get(...)` reads scattered
-/// across the executor. The authoring plane writes the same shape; this crate reads
-/// it. Kept separate from the native compactor's message-count
-/// [`ContextPolicy`](awaken_runtime_contract::resolved::ContextPolicy): a CLI's
-/// window is tokens, not messages.
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct AcpSettings {
-    /// The launched CLI's own auto-compaction window (a token count). Absent → the
-    /// CLI keeps its own default.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compact_window: Option<u64>,
-    /// The MCP servers this run declares for its ACP CLI. The host projects them onto
-    /// the CLI's delivery mechanism (config file or `session/new`).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub mcp_servers: Vec<crate::McpServerConfig>,
-}
-
-impl AcpSettings {
-    /// Decode the `acp` section from a run's `plugin_config`. Fail-soft per field
-    /// (a malformed `mcp_servers` yields an empty list without dropping
-    /// `compact_window`), matching the readers this replaces.
-    #[must_use]
-    pub fn from_plugin_config(plugin_config: &BTreeMap<String, serde_json::Value>) -> Self {
-        let Some(acp) = plugin_config.get("acp") else {
-            return Self::default();
-        };
-        Self {
-            compact_window: acp
-                .get("compact_window")
-                .and_then(serde_json::Value::as_u64),
-            mcp_servers: acp
-                .get("mcp_servers")
-                .and_then(|v| serde_json::from_value::<Vec<crate::McpServerConfig>>(v.clone()).ok())
-                .unwrap_or_default(),
-        }
-    }
 }
 
 /// A run's MCP servers projected into host-neutral, environment-agnostic delivery: the
@@ -412,7 +375,8 @@ pub fn mcp_injection(
     cli: &AcpCli,
     plugin_config: &BTreeMap<String, serde_json::Value>,
 ) -> std::result::Result<McpInjection, OpenError> {
-    let servers = AcpSettings::from_plugin_config(plugin_config).mcp_servers;
+    let servers =
+        awaken_runtime_contract::resolved::AcpSpec::from_plugin_config(plugin_config).mcp_servers;
     mcp_injection_from_servers(cli, &servers)
 }
 
@@ -784,33 +748,43 @@ mod tests {
             })
     }
 
+    // Cause/effect table for the one shared ACP codec:
+    // R1 section absent -> default intent;
+    // R2 window valid + MCP valid -> preserve both fields;
+    // R3 window valid + MCP malformed -> preserve window and reject only MCP.
+    // The constraints are field independence and historical fail-soft decoding;
+    // these three rules cover every structural branch of `from_plugin_config`.
     #[test]
-    fn acp_settings_decode_compact_window_and_mcp_servers() {
-        let s = AcpSettings::from_plugin_config(&pc(serde_json::json!({
-            "compact_window": 120_000,
-            "mcp_servers": [{ "name": "gh", "transport": { "kind": "http", "url": "https://mcp" } }],
-        })));
+    fn acp_spec_decodes_compact_window_and_mcp_servers() {
+        let s = awaken_runtime_contract::resolved::AcpSpec::from_plugin_config(&pc(
+            serde_json::json!({
+                "compact_window": 120_000,
+                "mcp_servers": [{ "name": "gh", "transport": { "kind": "http", "url": "https://mcp" } }],
+            }),
+        ));
         assert_eq!(s.compact_window, Some(120_000));
         assert_eq!(s.mcp_servers.len(), 1);
         assert_eq!(s.mcp_servers[0].name, "gh");
     }
 
     #[test]
-    fn acp_settings_absent_section_is_default() {
+    fn acp_spec_absent_section_is_default() {
         assert_eq!(
-            AcpSettings::from_plugin_config(&BTreeMap::new()),
-            AcpSettings::default()
+            awaken_runtime_contract::resolved::AcpSpec::from_plugin_config(&BTreeMap::new()),
+            awaken_runtime_contract::resolved::AcpSpec::default()
         );
     }
 
     #[test]
-    fn acp_settings_malformed_mcp_servers_does_not_drop_compact_window() {
+    fn acp_spec_malformed_mcp_servers_does_not_drop_compact_window() {
         // Fail-soft per field: a bad mcp_servers shape must not lose the window —
         // the exact semantics of the two readers this codec replaces.
-        let s = AcpSettings::from_plugin_config(&pc(serde_json::json!({
-            "compact_window": 4096,
-            "mcp_servers": "not-an-array",
-        })));
+        let s = awaken_runtime_contract::resolved::AcpSpec::from_plugin_config(&pc(
+            serde_json::json!({
+                "compact_window": 4096,
+                "mcp_servers": "not-an-array",
+            }),
+        ));
         assert_eq!(s.compact_window, Some(4096));
         assert!(s.mcp_servers.is_empty());
     }
@@ -909,11 +883,12 @@ mod tests {
 
     #[test]
     fn acp_settings_round_trips_through_json() {
-        let s = AcpSettings {
+        let s = awaken_runtime_contract::resolved::AcpSpec {
             compact_window: Some(8192),
             mcp_servers: Vec::new(),
         };
-        let round: AcpSettings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        let round: awaken_runtime_contract::resolved::AcpSpec =
+            serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(s, round);
     }
 
