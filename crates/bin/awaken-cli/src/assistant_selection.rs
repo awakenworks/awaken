@@ -14,7 +14,7 @@ pub(crate) fn select(
     catalog: &ProviderCatalog,
     credentials: &[CredentialSource],
     observations: &[AcpHostObservation],
-) -> ModelSelection {
+) -> Option<ModelSelection> {
     let detected = |cli_id: &str| {
         observations
             .iter()
@@ -32,7 +32,11 @@ pub(crate) fn select(
                 && offering.provider_id.as_str() == "anthropic"
         })
     {
-        return ModelSelection::pinned("anthropic", &offering.model_id, "acp:claude");
+        return Some(ModelSelection::pinned(
+            "anthropic",
+            &offering.model_id,
+            "acp:claude",
+        ));
     }
 
     if catalog.offerings.iter().any(|offering| {
@@ -43,28 +47,34 @@ pub(crate) fn select(
                     && awaken_config_resolver::can_consume(offering.provider_id.as_str(), source)
             })
     }) {
-        return ModelSelection::Auto;
+        return Some(ModelSelection::Auto);
     }
 
-    if let Some(cli) = awaken_run_executor_acp::known_acp_clis()
+    let available = awaken_run_executor_acp::known_acp_clis()
         .iter()
-        .find(|cli| {
-            detected(cli.id)
-                && credentials.iter().filter(active).any(|source| {
-                    source.kind == CredentialKind::WorkerLocal
-                        && source
-                            .worker_local_binding
-                            .as_ref()
-                            .is_some_and(|binding| binding.driver_id == format!("acp:{}", cli.id))
-                })
+        .filter(|cli| {
+            observations.iter().any(|observation| {
+                observation.cli_id == cli.id
+                    && observation.credential_state
+                        == Some(awaken_runtime_contract::CredentialObservationState::Available)
+                    && observation.capability_state
+                        == Some(awaken_acp_application::AcpCapabilityState::Verified)
+            }) && credentials.iter().filter(active).any(|source| {
+                source.kind == CredentialKind::WorkerLocal
+                    && source
+                        .worker_local_binding
+                        .as_ref()
+                        .is_some_and(|binding| binding.driver_id == format!("acp:{}", cli.id))
+            })
         })
-    {
-        return ModelSelection::BackendDefault {
+        .collect::<Vec<_>>();
+    if let [cli] = available.as_slice() {
+        return Some(ModelSelection::BackendDefault {
             backend_ref: format!("acp:{}", cli.id),
-        };
+        });
     }
 
-    ModelSelection::Auto
+    None
 }
 
 #[cfg(test)]
@@ -134,7 +144,7 @@ mod tests {
         let api_key = credential("api", CredentialKind::Vault, Some("anthropic"), None, None);
         assert_eq!(
             select(&catalog, &[api_key], &[observation("codex")]),
-            ModelSelection::Auto
+            Some(ModelSelection::Auto)
         );
 
         let setup_token = credential(
@@ -146,7 +156,11 @@ mod tests {
         );
         assert_eq!(
             select(&catalog, &[setup_token], &[observation("claude")]),
-            ModelSelection::pinned("anthropic", "claude-sonnet", "acp:claude")
+            Some(ModelSelection::pinned(
+                "anthropic",
+                "claude-sonnet",
+                "acp:claude"
+            ))
         );
 
         let worker = credential(
@@ -162,9 +176,69 @@ mod tests {
                 &[worker],
                 &[observation("codex")],
             ),
-            ModelSelection::BackendDefault {
+            Some(ModelSelection::BackendDefault {
                 backend_ref: "acp:codex".into()
-            }
+            })
+        );
+    }
+
+    #[test]
+    fn local_auto_selection_requires_exactly_one_available_verified_backend() {
+        // Cause graph:
+        // C1 detected only -> E1 no automatic selection.
+        // C2 login Available + capability Verified + binding -> E2 candidate.
+        // C3 candidate cardinality -> E3 exactly one selects; zero/many do not.
+        //
+        // Decision table:
+        // S1 zero usable candidates -> None
+        // S2 one usable candidate   -> BackendDefault
+        // S3 two usable candidates  -> None (explicit persisted choice required)
+        let codex = credential(
+            "codex-worker",
+            CredentialKind::WorkerLocal,
+            None,
+            None,
+            Some("acp:codex"),
+        );
+        let claude = credential(
+            "claude-worker",
+            CredentialKind::WorkerLocal,
+            None,
+            None,
+            Some("acp:claude"),
+        );
+
+        let mut unavailable = observation("codex");
+        unavailable.credential_state =
+            Some(awaken_runtime_contract::CredentialObservationState::LoginRequired);
+        assert_eq!(
+            select(
+                &ProviderCatalog::default(),
+                &[codex.clone()],
+                &[unavailable]
+            ),
+            None,
+            "S1"
+        );
+        assert_eq!(
+            select(
+                &ProviderCatalog::default(),
+                &[codex.clone()],
+                &[observation("codex")]
+            ),
+            Some(ModelSelection::BackendDefault {
+                backend_ref: "acp:codex".into()
+            }),
+            "S2"
+        );
+        assert_eq!(
+            select(
+                &ProviderCatalog::default(),
+                &[codex, claude],
+                &[observation("codex"), observation("claude")]
+            ),
+            None,
+            "S3"
         );
     }
 }

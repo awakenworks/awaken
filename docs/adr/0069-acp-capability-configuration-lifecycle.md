@@ -645,6 +645,9 @@ Implemented consolidation evidence:
 - Runtime Host selects the Session provider from immutable
   `ModelProvisioning`: BackendOwned uses its trusted Workdir provider while
   Provider/HostExecutor retain the configured managed tier.
+- reserved Assistant startup selects a local backend only when exactly one
+  WorkerLocal binding is both login-Available and capability-Verified; zero or
+  multiple candidates remain unseeded for explicit authoring.
 
 Current implementation status is deliberately distinct from the target:
 
@@ -658,7 +661,7 @@ Current implementation status is deliberately distinct from the target:
 | Agent ACP mode/options | mode and one model option reach executor | add typed multi-option intent and publication validation |
 | environment selection | provisioning selects trusted/isolated provider | retain as the sole Session Environment policy |
 | readiness | startup observation projection | query current Worker observation and reconcile revisions |
-| automatic Assistant | still considers detection/catalog order | require exactly one `Available` backend |
+| automatic Assistant | exactly one Available+Verified local backend is required | persist the explicit UI choice when zero/multiple are available |
 | frontend contract | model type remains handwritten/incomplete | generate the discriminated Rust contract |
 | Flow | old Awaken revision and overlapping ACP config | update revision and consume application service |
 | ambient configuration | Provider proposals/runtime env reads remain | remove duplicate authoring path; use typed deployment config |

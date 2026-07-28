@@ -1425,8 +1425,10 @@ async fn management_router_over(
         &assistant_credentials,
         &assembly.local_acp_observations,
     );
-    if let Err(err) =
-        awaken_control::seed_admin_assistant(&plane, &platform_workspace, assistant_selection).await
+    if let Some(assistant_selection) = assistant_selection
+        && let Err(err) =
+            awaken_control::seed_admin_assistant(&plane, &platform_workspace, assistant_selection)
+                .await
     {
         eprintln!("admin assistant not seeded (configure a model, then republish): {err}");
     }
