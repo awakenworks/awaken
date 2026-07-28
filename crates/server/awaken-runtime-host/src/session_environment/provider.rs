@@ -19,6 +19,10 @@ pub(crate) enum SessionEnvironmentProvider {
 }
 
 impl SessionEnvironmentProvider {
+    pub(crate) fn supports_host_identity(&self) -> bool {
+        matches!(self, Self::Workdir(_))
+    }
+
     pub(crate) fn capabilities(&self) -> pc::SandboxCapabilities {
         match self {
             Self::Workdir(provider) => pc::SandboxProvider::capabilities(provider),

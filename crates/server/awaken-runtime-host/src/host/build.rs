@@ -247,6 +247,7 @@ impl SharedHost {
             session_provider: crate::session_environment::SessionEnvironmentProvider::workdir(
                 sandbox_root.clone(),
             ),
+            backend_owned_session_provider: None,
             session_provider_explicit: false,
             judge_snapshot: None,
             client_tools: HashSet::new(),
@@ -647,8 +648,16 @@ impl SharedHost {
             .expect("open durable Memory extraction repository"),
         ));
         self.session_provider = self.session_provider.at_root(dir.join("sandboxes"));
+        self.backend_owned_session_provider = self
+            .backend_owned_session_provider
+            .as_ref()
+            .map(|provider| provider.at_root(dir.join("trusted-local-sandboxes")));
         if let Some(mounter) = self.memory_mounter() {
-            self.session_provider.install_memory_mounter(mounter);
+            self.session_provider
+                .install_memory_mounter(mounter.clone());
+            if let Some(provider) = &self.backend_owned_session_provider {
+                provider.install_memory_mounter(mounter);
+            }
         }
         self.store_dir = Some(dir);
         self
@@ -683,7 +692,10 @@ impl SharedHost {
         self,
         broker: Arc<dyn awaken_provisioning_contract::SecretBroker>,
     ) -> Self {
-        self.session_provider.install_secret_broker(broker);
+        self.session_provider.install_secret_broker(broker.clone());
+        if let Some(provider) = &self.backend_owned_session_provider {
+            provider.install_secret_broker(broker);
+        }
         self
     }
 

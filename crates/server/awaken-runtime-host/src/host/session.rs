@@ -20,6 +20,25 @@ fn pre_authorized_tool_ids(
 }
 
 impl SharedHost {
+    pub(crate) fn session_environment_provider(
+        &self,
+        provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
+    ) -> Result<&crate::session_environment::SessionEnvironmentProvider, HostError> {
+        match provisioning {
+            awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { .. } => {
+                self.backend_owned_session_provider.as_ref().ok_or_else(|| {
+                    HostError::internal(
+                        "BackendOwned provisioning requires a trusted-host Session provider",
+                    )
+                })
+            }
+            awaken_runtime_contract::resolved::ModelProvisioning::Provider { .. }
+            | awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor => {
+                Ok(&self.session_provider)
+            }
+        }
+    }
+
     /// Evict only the rebuildable runtime context while retaining the
     /// independently-owned Session environment and its live resource projection.
     /// Terminal cleanup remains the single responsibility of [`Self::end_session`].
@@ -266,56 +285,9 @@ impl SharedHost {
                 .await;
             return Ok(ctx);
         }
-        let retained = self
-            .session_slots
-            .read(thread, |slot| slot.environment.clone())
-            .flatten();
-        let (env, needs_provision, needs_registration) = match (retained, adopted) {
-            (Some(existing), Some(adopted)) => {
-                if existing.handle() != adopted.handle() {
-                    return Err(HostError::internal(format!(
-                        "thread {thread} is already bound to a different sandbox"
-                    )));
-                }
-                adopted.stop_bound_processes().await;
-                (existing, false, false)
-            }
-            (Some(existing), None) => (existing, false, false),
-            // The adopted environment already contains its Session workspace and
-            // repositories. Re-cloning would both fail and destroy continuity.
-            (None, Some(adopted)) => (Arc::new(adopted), false, true),
-            (None, None) => (
-                Arc::new(
-                    self.session_provider
-                        .create(&self.sandbox_spec(thread))
-                        .await
-                        .map_err(|e| HostError::internal(e.to_string()))?,
-                ),
-                true,
-                true,
-            ),
-        };
-        if needs_provision {
-            // Clone staged repositories only for a physically new environment.
-            // Rebuilding SessionCtx must not re-clone over a live Session workspace.
-            if let Err(error) = self.realize_thread_repositories(thread, env.as_ref()).await {
-                let _ = env.dispose().await;
-                return Err(error);
-            }
-        }
-        if needs_registration {
-            self.session_slots
-                .update(thread, |slot| slot.environment = Some(env.clone()));
-        }
-        let thread_id = ThreadId(thread.to_string());
-        let commit = Arc::new(self.build_commit(thread).await?);
-        // Durable interrupted-stream checkpoints follow the commit's durability
-        // (Phase 3): a mid-recovery crash resumes from the flushed partial.
-        let stream_checkpoint = self.build_stream_checkpoint(thread)?;
-        // A remote worker consumes the exact snapshot distributed in the claim;
-        // it must not reopen the config registry and reconstruct current state.
-        // Local Session creation has no claimed snapshot yet, so it resolves the
-        // current publication once.
+        // Resolve the immutable publication before selecting an environment.
+        // Environment identity is a consequence of provisioning, not of the ACP
+        // executor or a process-wide sandbox default.
         let workspace = self.thread_workspace(thread);
         let installed = published_snapshot.or_else(|| {
             self.agent_publications.as_ref().and_then(|source| {
@@ -346,6 +318,57 @@ impl SharedHost {
                 "session backend projection has no immutable Agent publication",
             ));
         }
+        let provisioning = installed
+            .as_ref()
+            .map(|snapshot| &snapshot.resolved_spec.model_binding.provisioning)
+            .unwrap_or(&awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor);
+        let environment_provider = self.session_environment_provider(provisioning)?;
+        let retained = self
+            .session_slots
+            .read(thread, |slot| slot.environment.clone())
+            .flatten();
+        let (env, needs_provision, needs_registration) = match (retained, adopted) {
+            (Some(existing), Some(adopted)) => {
+                if existing.handle() != adopted.handle() {
+                    return Err(HostError::internal(format!(
+                        "thread {thread} is already bound to a different sandbox"
+                    )));
+                }
+                adopted.stop_bound_processes().await;
+                (existing, false, false)
+            }
+            (Some(existing), None) => (existing, false, false),
+            // The adopted environment already contains its Session workspace and
+            // repositories. Re-cloning would both fail and destroy continuity.
+            (None, Some(adopted)) => (Arc::new(adopted), false, true),
+            (None, None) => (
+                Arc::new(
+                    environment_provider
+                        .create(&self.sandbox_spec(thread))
+                        .await
+                        .map_err(|e| HostError::internal(e.to_string()))?,
+                ),
+                true,
+                true,
+            ),
+        };
+        if needs_provision {
+            // Clone staged repositories only for a physically new environment.
+            // Rebuilding SessionCtx must not re-clone over a live Session workspace.
+            if let Err(error) = self.realize_thread_repositories(thread, env.as_ref()).await {
+                let _ = env.dispose().await;
+                return Err(error);
+            }
+        }
+        if needs_registration {
+            self.session_slots
+                .update(thread, |slot| slot.environment = Some(env.clone()));
+        }
+        let thread_id = ThreadId(thread.to_string());
+        let commit = Arc::new(self.build_commit(thread).await?);
+        // Durable interrupted-stream checkpoints follow the commit's durability
+        // (Phase 3): a mid-recovery crash resumes from the flushed partial.
+        let stream_checkpoint = self.build_stream_checkpoint(thread)?;
         // Runtime selection is known before MCP realization. Native execution
         // connects staged servers as in-process McpPlugins; ACP hands the same
         // typed server set to the CLI's own MCP client and must not open a second

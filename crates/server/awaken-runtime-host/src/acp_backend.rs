@@ -141,6 +141,15 @@ impl crate::host::SharedHost {
         launch: crate::LaunchSource,
         session_home: Option<Arc<dyn SessionHomeProvider>>,
     ) -> Self {
+        if self.backend_owned_session_provider.is_none() {
+            let provider = crate::session_environment::SessionEnvironmentProvider::workdir(
+                acp_sandbox_base(&self.deployment).join("backend-owned"),
+            );
+            if let Some(mounter) = self.memory_mounter() {
+                provider.install_memory_mounter(mounter);
+            }
+            self.backend_owned_session_provider = Some(provider);
+        }
         let observer = self.acp_launch_observer();
         self.acp = Some(Arc::new(AcpBackend::bound(
             launch,
@@ -209,15 +218,15 @@ impl crate::host::SharedHost {
     /// tier. Product code supplies a projected source backed by published access;
     /// deterministic dev fixtures may supply [`crate::LaunchSource::Fixed`] directly.
     pub async fn with_acp_launch_source(
-        self,
+        mut self,
         hand_factory: Arc<dyn crate::HandExecutorFactory>,
         source: crate::LaunchSource,
     ) -> Self {
+        let dep = self.deployment.clone();
+        let base = acp_sandbox_base(&dep);
         if self.session_provider_explicit {
             return self.with_bound_acp(source, None);
         }
-        let dep = self.deployment.clone();
-        let base = acp_sandbox_base(&dep);
         // Probe the OS-native sandbox once. A bwrap-less host degrades to unsandboxed local
         // ACP when the tier was left at its default (dev/single-machine ergonomics — the
         // environment still runs) and fails closed only when `AWAKEN_SANDBOX_TIER=namespace`
@@ -391,6 +400,68 @@ mod tests {
             None,
             "A2"
         );
+    }
+
+    #[test]
+    fn provisioning_selects_one_session_environment_policy() {
+        // Causes: immutable provisioning is BackendOwned, Provider, or
+        // HostExecutor. Effects: BackendOwned receives the trusted Workdir
+        // provider; all managed/in-process variants retain the configured tier.
+        //
+        // | Rule | Provisioning | Selected provider |
+        // | E1 | BackendOwned | host identity |
+        // | E2 | Provider | configured Namespace |
+        // | E3 | HostExecutor | configured Namespace |
+        let cli = *awaken_run_executor_acp::acp_cli("claude").unwrap();
+        let mut host = SharedHost::new(Arc::new(NoLlm), "test").with_projected_acp(
+            cli,
+            Arc::new(FixedModel),
+            None,
+        );
+        host.session_provider = crate::session_environment::SessionEnvironmentProvider::namespace(
+            std::env::temp_dir().join("awaken-managed-environment"),
+        );
+        let backend_owned = awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned {
+            credential: awaken_runtime_contract::CredentialRef {
+                id: "local".into(),
+                revision: 1,
+            },
+            model_selection: awaken_runtime_contract::resolved::BackendModelSelection::Default,
+        };
+        let provider = awaken_runtime_contract::resolved::ModelProvisioning::Provider {
+            provider_ref: "provider".into(),
+            route_ref: "route".into(),
+            scope_id: "workspace".into(),
+            credential: None,
+            endpoint: Box::new(awaken_runtime_contract::resolved::InferenceEndpoint {
+                adapter_kind: "openai".into(),
+                api_dialect: "responses".into(),
+                base_url: "https://example.invalid".into(),
+                upstream_model: "model".into(),
+            }),
+        };
+
+        assert!(
+            host.session_environment_provider(&backend_owned)
+                .expect("E1")
+                .supports_host_identity(),
+            "E1"
+        );
+        for (rule, provisioning) in [
+            ("E2", &provider),
+            (
+                "E3",
+                &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
+            ),
+        ] {
+            assert!(
+                !host
+                    .session_environment_provider(provisioning)
+                    .unwrap_or_else(|_| panic!("{rule}"))
+                    .supports_host_identity(),
+                "{rule}"
+            );
+        }
     }
 
     #[test]

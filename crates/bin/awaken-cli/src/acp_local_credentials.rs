@@ -24,7 +24,6 @@ pub struct PreparedLocalAcp {
 
 fn uses_trusted_local_identity(deployment: &crate::config::ResolvedDeployment) -> bool {
     deployment.mode == crate::config::OperatingMode::Local
-        && deployment.runtime.sandbox_tier == awaken_runtime_host::SandboxTier::Local
 }
 
 /// Discover local ACP agents once, register their secret-free WorkerLocal
@@ -123,17 +122,13 @@ async fn prepare_local_acp_with(
 
 impl PreparedLocalAcp {
     /// Build the canonical database-less Worker against this process's control
-    /// URL. Backend-owned login requires the Workdir tier; the server Host keeps
-    /// its independently configured tier for managed executions.
+    /// URL. The Runtime Host selects trusted Workdir only for BackendOwned
+    /// Sessions and retains this deployment's isolation tier for Provider runs.
     pub fn build_worker(
         self,
         upstream: impl Into<String>,
         deployment: &crate::config::ResolvedDeployment,
     ) -> Result<awaken_worker::WorkerNode, String> {
-        let mut worker_deployment = deployment.runtime.clone();
-        worker_deployment.sandbox_tier = awaken_runtime_host::SandboxTier::Local;
-        worker_deployment.sandbox_tier_explicit = true;
-
         let worker = &deployment.worker;
         let mut manifest = worker
             .build_digest
@@ -151,7 +146,7 @@ impl PreparedLocalAcp {
         let mut builder = awaken_worker::WorkerNodeBuilder::new(
             awaken_runtime_host::WorkerUpstream::new(upstream),
         )
-        .with_deployment_config(worker_deployment)
+        .with_deployment_config(deployment.runtime.clone())
         .with_standard_manifest_config(manifest)
         .with_credential_stores(self.stores.credentials, self.stores.secrets)
         .with_worker_local_credential_resolver(self.resolver)
@@ -593,8 +588,8 @@ mod tests {
             .unwrap();
         assert!(worker.manifest().capabilities.contains("acp:codex"), "P1");
         assert!(
-            worker.manifest().sandbox_backends.contains("local"),
-            "P1 trusted local identity"
+            worker.manifest().sandbox_backends.contains("namespace"),
+            "P1 managed runs retain the deployment tier; BackendOwned selects Workdir per Session"
         );
         assert!(
             deployment.runtime.disable_local_pool,
@@ -628,15 +623,14 @@ mod tests {
     }
 
     #[test]
-    fn trusted_local_identity_is_composed_only_for_the_workdir_tier() {
-        // Cause graph: local operating mode + Workdir process identity -> the
-        // user's CLI login is reachable. Namespace/container break that identity
-        // edge and therefore retain the existing managed sandbox worker path.
+    fn local_mode_discovers_identity_independently_of_the_managed_tier() {
+        // Cause graph: local operating mode enables Worker host discovery; the
+        // immutable provisioning variant later chooses Workdir vs managed tier.
         //
         // Decision table:
         // I1 Local + Workdir   -> trusted local Worker
-        // I2 Local + Namespace-> no host identity composition
-        // I3 Local + Docker   -> no host identity composition
+        // I2 Local + Namespace-> discovery; BackendOwned selects Workdir
+        // I3 Local + Docker   -> discovery; Provider retains Docker
         // I4 Server + Workdir -> no personal identity composition
         let directory = tempfile::tempdir().unwrap();
         let mut deployment = crate::config::local_test_deployment(directory.path().into());
@@ -644,9 +638,9 @@ mod tests {
         assert!(uses_trusted_local_identity(&deployment), "I1");
 
         deployment.runtime.sandbox_tier = awaken_runtime_host::SandboxTier::Namespace;
-        assert!(!uses_trusted_local_identity(&deployment), "I2");
+        assert!(uses_trusted_local_identity(&deployment), "I2");
         deployment.runtime.sandbox_tier = awaken_runtime_host::SandboxTier::Docker;
-        assert!(!uses_trusted_local_identity(&deployment), "I3");
+        assert!(uses_trusted_local_identity(&deployment), "I3");
 
         deployment.runtime.sandbox_tier = awaken_runtime_host::SandboxTier::Local;
         deployment.mode = crate::config::OperatingMode::Server;

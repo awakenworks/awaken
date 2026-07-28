@@ -460,6 +460,18 @@ Duplication is removed before extending configuration:
 11. update Flow to one accessible, pushed Awaken revision and lockfile;
 12. prove the real Codex and Claude host-login paths.
 
+Implemented consolidation evidence:
+
+- `BoundLocalChannelSource` is the sole ACP channel projection and consumes the
+  Session-owned environment;
+- `awaken-acp-application` owns discovery, acquisition, WorkerLocal registration
+  and liveness composition;
+- `CredentialObservationSource` and `WorkerLocalReferenceRevalidator` are
+  segregated from `CredentialMaterialResolver`;
+- Runtime Host selects the Session provider from immutable
+  `ModelProvisioning`: BackendOwned uses its trusted Workdir provider while
+  Provider/HostExecutor retain the configured managed tier.
+
 Managed `CodexAuthJson` is a separate product decision. BackendOwned never
 enters that Provider-only artifact path. A global prohibition on creating
 `auth.json` requires explicitly retiring managed Codex artifact delivery; it is
