@@ -34,6 +34,7 @@ container-k8s = ["awaken-server/container-k8s"]
 # store that routes the drain over HTTP to the cell server.
 awaken-runtime-host = { workspace = true }
 awaken-runtime-contract = { workspace = true }
+awaken-run-executor-acp = { workspace = true }
 # The data plane: the inert NoModelConfiguredExecutor placeholder + the
 # CredentialInferenceMaterializer that opens a pinned credential for an executor.
 awaken-server = { workspace = true }
@@ -41,6 +42,7 @@ awaken-server = { workspace = true }
 # resolution. The worker does not open catalog/config/admin/session stores.
 awaken-control = { workspace = true }
 awaken-credential-vault = { workspace = true }
+async-trait = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "io-std", "io-util"] }
 # The cloud-native admin surface (readyz / livez / metrics / drain) on a separate
 # port, so an orchestrator can gate routing and drain the worker gracefully.

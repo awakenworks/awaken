@@ -21,6 +21,10 @@
 
 use std::sync::Arc;
 
+mod acp_local_credentials;
+
+pub use acp_local_credentials::AcpLocalCredentialResolver;
+
 mod admin;
 mod application;
 mod credential_liveness;

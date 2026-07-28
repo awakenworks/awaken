@@ -1776,6 +1776,7 @@ dependencies = [
  "awaken-credential-vault",
  "awaken-observability",
  "awaken-provisioning-contract",
+ "awaken-run-executor-acp",
  "awaken-runtime-contract",
  "awaken-runtime-host",
  "awaken-server",

@@ -1588,6 +1588,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # dev-deps back the offline model-resolution test.
     "awaken-worker": {
         "awaken-runtime-host",
+        "awaken-run-executor-acp",
         "awaken-server",
         "awaken-control",
         "awaken-worker-contract",
