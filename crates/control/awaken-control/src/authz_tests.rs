@@ -290,10 +290,18 @@ fn cloud_guard_uses_cached_login_and_explicit_bearer_override() {
 
 #[test]
 fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
-    // ProviderConnection authorization decision table:
-    // | Method | Collection route | Expected action   |
-    // | GET    | yes              | workspace:read    |
-    // | POST   | yes              | workspace:write   |
+    // Cause-effect graph:
+    // A request inside one registered Management route family is classified by
+    // method -> workspace/apikey read or write. A publication reference read is
+    // part of the config authority; an unknown sibling remains fail-closed.
+    //
+    // Decision table:
+    // | Family                         | Method | Expected action |
+    // | provider-connections           | GET    | workspace.read  |
+    // | provider-connections           | POST   | workspace.write |
+    // | publications/{fingerprint}     | GET    | workspace.read  |
+    // | publications/{fingerprint}     | POST   | workspace.write |
+    // | unknown config family          | any    | unmapped/deny   |
     // The aggregate contains no credential material; secret entry remains
     // delegated to the credential boundary inside the write command.
     let get = Method::GET;
@@ -324,6 +332,14 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
     );
     assert_eq!(
         action_for(&post, "/v1/config/provider-connections"),
+        Some(WORKSPACE_WRITE)
+    );
+    assert_eq!(
+        action_for(&get, "/v1/config/publications/fingerprint"),
+        Some(WORKSPACE_READ)
+    );
+    assert_eq!(
+        action_for(&post, "/v1/config/publications/fingerprint"),
         Some(WORKSPACE_WRITE)
     );
     assert_eq!(

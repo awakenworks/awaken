@@ -1149,6 +1149,13 @@ const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
         },
     },
     RoutePolicyDescriptor {
+        prefix: "/v1/config/publications",
+        policy: RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
         prefix: "/v1/config/webhook-subscriptions",
         policy: RouteFamilyPolicy::Scoped {
             read: WORKSPACE_READ,
