@@ -4,7 +4,6 @@
 //! liveness port. It never opens, returns, or materializes CLI credentials.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 pub use awaken_acp_application::AcpLocalCredentialResolver;
@@ -103,7 +102,7 @@ async fn prepare_local_acp_with(
         awaken_runtime_host::SharedHost::provision_local_workspace_at(&deployment.data_dir);
     let prepared = prepare_host_acp_with(
         LocalAcpPreparation {
-            probe_cwd: PathBuf::from(&workspace),
+            probe_cwd: deployment.data_dir.join("acp-host-probe"),
             initial_workspace: Some(workspace),
             wrapper_root,
             selected_cli_ids,
@@ -115,11 +114,12 @@ async fn prepare_local_acp_with(
     )
     .await?;
     let routable_cli_ids = prepared.routable_cli_ids();
+    let routable_launch_argv = prepared.routable_launch_argv();
     deployment.apply_local_acp_observations(prepared.observations, routable_cli_ids)?;
     let Some(profile) = deployment.runtime.acp.as_mut() else {
         return Ok(None);
     };
-    profile.apply_launch_argv(&prepared.launch_argv)?;
+    profile.apply_launch_argv(&routable_launch_argv)?;
     // The registered Worker becomes the sole local execution pool. Keeping the
     // anonymous coordinator pool active would create two overlapping claimers
     // for ordinary runs, while only one can publish credential liveness.
@@ -303,9 +303,13 @@ mod tests {
         async fn negotiate(
             &self,
             _argv: &[String],
-            _cwd: &Path,
+            cwd: &Path,
             _auth_method_id: Option<&str>,
         ) -> Result<NegotiatedAcpCapabilities, String> {
+            // Cause P0: a Workspace id is an ownership coordinate, not an OS
+            // path. Effect: the application service provisions the explicit
+            // probe cwd before invoking any real ACP process.
+            assert!(cwd.is_dir(), "P0 probe cwd must exist");
             if self.fail {
                 return Err("fixture capability failure".into());
             }

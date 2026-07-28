@@ -138,6 +138,12 @@ pub async fn prepare_host_acp_with(
     installer: Arc<dyn AcpWrapperInstaller>,
     negotiator: Arc<dyn AcpCapabilityNegotiator>,
 ) -> Result<PreparedAcpCapabilities, String> {
+    std::fs::create_dir_all(&input.probe_cwd).map_err(|error| {
+        format!(
+            "create ACP host-probe directory {}: {error}",
+            input.probe_cwd.display()
+        )
+    })?;
     let mut observations = discovery.discover_all().await;
     let mut launch_argv = BTreeMap::new();
     for observation in observations.iter_mut().filter(|observation| {
@@ -256,6 +262,19 @@ impl PreparedAcpCapabilities {
     #[must_use]
     pub fn routable_cli_ids(&self) -> Vec<String> {
         routable_cli_ids(&self.observations, &self.selected_cli_ids)
+    }
+
+    /// Startup acquisition evidence restricted to the exact admitted Worker
+    /// routes. Diagnostic-only or failed-capability rows must never leak an argv
+    /// entry into a deployment profile that does not advertise their CLI id.
+    #[must_use]
+    pub fn routable_launch_argv(&self) -> BTreeMap<String, Vec<String>> {
+        let routable: BTreeSet<_> = self.routable_cli_ids().into_iter().collect();
+        self.launch_argv
+            .iter()
+            .filter(|(cli_id, _)| routable.contains(*cli_id))
+            .map(|(cli_id, argv)| (cli_id.clone(), argv.clone()))
+            .collect()
     }
 
     /// Idempotently expose the already-discovered host ACP identities in one
@@ -667,11 +686,12 @@ mod tests {
     #[test]
     fn worker_route_admission_follows_the_capability_decision_table() {
         // Causes: catalog selection, executable detection, current login, and
-        // successful protocol negotiation. Effects:
+        // successful protocol negotiation. Acquisition argv is diagnostic
+        // evidence until the same route decision admits its CLI. Effects:
         // R1 unselected -> no route; R2 missing -> no route;
         // R3 detected + not logged in -> route for live revalidation;
-        // R4 available + negotiation failed -> no misleading route;
-        // R5 available + verified -> route.
+        // R4 available + negotiation failed -> no route and no launch argv;
+        // R5 available + verified -> route and its launch argv.
         let selected = ["codex".to_string()].into_iter().collect();
         assert!(
             routable_cli_ids(
@@ -733,6 +753,36 @@ mod tests {
             ["codex"],
             "R5"
         );
+
+        let discovery: Arc<dyn AcpDiscovery> = Arc::new(AvailableDiscovery);
+        let resolver = Arc::new(
+            AcpLocalCredentialResolver::from_sources(discovery, []).expect("empty resolver"),
+        );
+        for (rule, capability, expected) in [
+            ("R4", AcpCapabilityState::ProbeFailed, BTreeMap::new()),
+            (
+                "R5",
+                AcpCapabilityState::Verified,
+                BTreeMap::from([("codex".to_string(), vec!["/wrapper/codex".to_string()])]),
+            ),
+        ] {
+            let prepared = PreparedAcpCapabilities {
+                observations: vec![observation(
+                    "codex",
+                    AcpDetectionState::Detected,
+                    Some(CredentialObservationState::Available),
+                    Some(capability),
+                )],
+                launch_argv: BTreeMap::from([(
+                    "codex".to_string(),
+                    vec!["/wrapper/codex".to_string()],
+                )]),
+                effective_profiles: BTreeMap::new(),
+                resolver: resolver.clone(),
+                selected_cli_ids: ["codex".to_string()].into_iter().collect(),
+            };
+            assert_eq!(prepared.routable_launch_argv(), expected, "{rule}");
+        }
     }
 
     #[async_trait]

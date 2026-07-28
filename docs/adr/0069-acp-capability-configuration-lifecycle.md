@@ -853,13 +853,13 @@ the remaining external/reconciliation gates:
 | frontend contract | OpenAPI-generated TypeScript consumes the Rust discriminated union and live Worker ACP projection | keep generated-contract freshness gated |
 | Flow | pinned to the pushed Awaken revision; one existing Worker/executor consumes the shared preparation service | keep the revision and lockfile updated atomically |
 | ambient configuration | environment Provider proposals and Flow ACP inventory/default fields are removed; typed deployment configuration owns product choices | continue auditing OS metadata so PATH/HOME never become authoring inputs |
-| real host proof | installed Codex `0.145.0` is detected with host login Available; installed Claude `2.1.220` is correctly login-required when ambient `ANTHROPIC_API_KEY` is cleared | run release-gated real LLM sessions for both persisted host logins |
+| real host proof | installed Codex `0.145.0` completed the zero-configuration host-login release gate through real wrapper negotiation, BackendDefault publication, LLM response and committed running→idle transcript; installed Claude `2.1.220` is correctly login-required when ambient `ANTHROPIC_API_KEY` is cleared | run the same release-gated real LLM session after a persisted Claude host login is available |
 
 Therefore discovery, generic ACP configuration, live Worker projection,
-event-triggered reconciliation and Flow reuse are implemented. Real
-persisted-login LLM sessions for every supported adapter remain the explicit
-release gate; the ADR does not equate hermetic protocol coverage or an ambient
-API key with that proof.
+event-triggered reconciliation, Flow reuse and the real Codex persisted-login
+path are implemented. A real Claude persisted-login LLM session remains the
+explicit external release gate; the ADR does not equate hermetic protocol
+coverage or an ambient API key with that proof.
 
 Managed `CodexAuthJson` is a separate product decision. BackendOwned never
 enters that Provider-only artifact path. A global prohibition on creating
