@@ -8,7 +8,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use awaken_runtime_contract::{
-    CredentialMaterialError, CredentialMaterialResolver, CredentialObservationState,
+    CredentialMaterialError, CredentialObservationState, WorkerLocalCredentialResolver,
 };
 use awaken_worker_contract::{
     WorkerCredentialObservation, WorkerCredentialRevision, WorkerCredentialState,
@@ -29,7 +29,7 @@ impl CredentialObservationCache {
 
     pub(crate) async fn refresh(
         &self,
-        resolver: Option<&dyn CredentialMaterialResolver>,
+        resolver: Option<&dyn WorkerLocalCredentialResolver>,
         now_ms: u64,
         ttl: Duration,
     ) -> Result<(), CredentialMaterialError> {
@@ -44,7 +44,7 @@ impl CredentialObservationCache {
 
 pub(crate) fn spawn_probe(
     cache: Arc<CredentialObservationCache>,
-    resolver: Option<Arc<dyn CredentialMaterialResolver>>,
+    resolver: Option<Arc<dyn WorkerLocalCredentialResolver>>,
     probe_interval: Duration,
     observation_ttl: Duration,
 ) -> tokio::task::JoinHandle<()> {
@@ -66,7 +66,7 @@ pub(crate) fn spawn_probe(
 }
 
 pub(crate) async fn observations(
-    resolver: Option<&dyn CredentialMaterialResolver>,
+    resolver: Option<&dyn WorkerLocalCredentialResolver>,
     now_ms: u64,
     ttl: Duration,
 ) -> Result<BTreeSet<WorkerCredentialObservation>, CredentialMaterialError> {
@@ -111,13 +111,14 @@ pub(crate) async fn observations(
 mod tests {
     use super::*;
     use awaken_runtime_contract::{
-        CredentialMaterialRequest, CredentialObservation, CredentialRef, ResolvedCredentialMaterial,
+        CredentialObservation, CredentialObservationSource, CredentialRef,
+        WorkerLocalReferenceRevalidator,
     };
 
     struct AvailableResolver;
 
     #[async_trait::async_trait]
-    impl CredentialMaterialResolver for AvailableResolver {
+    impl CredentialObservationSource for AvailableResolver {
         async fn credential_observations(
             &self,
         ) -> Result<BTreeSet<CredentialObservation>, CredentialMaterialError> {
@@ -129,30 +130,36 @@ mod tests {
                 1,
             )]))
         }
+    }
 
-        async fn resolve_exact(
+    #[async_trait::async_trait]
+    impl WorkerLocalReferenceRevalidator for AvailableResolver {
+        async fn revalidate_worker_reference(
             &self,
-            _request: CredentialMaterialRequest<'_>,
-        ) -> Result<ResolvedCredentialMaterial, CredentialMaterialError> {
-            Err(CredentialMaterialError::Unavailable)
+            credential: &CredentialRef,
+        ) -> Result<CredentialObservation, CredentialMaterialError> {
+            Ok(CredentialObservation::available(credential.clone(), 1))
         }
     }
 
     struct FailedResolver;
 
     #[async_trait::async_trait]
-    impl CredentialMaterialResolver for FailedResolver {
+    impl CredentialObservationSource for FailedResolver {
         async fn credential_observations(
             &self,
         ) -> Result<BTreeSet<CredentialObservation>, CredentialMaterialError> {
             Err(CredentialMaterialError::ProbeFailed)
         }
+    }
 
-        async fn resolve_exact(
+    #[async_trait::async_trait]
+    impl WorkerLocalReferenceRevalidator for FailedResolver {
+        async fn revalidate_worker_reference(
             &self,
-            _request: CredentialMaterialRequest<'_>,
-        ) -> Result<ResolvedCredentialMaterial, CredentialMaterialError> {
-            Err(CredentialMaterialError::Unavailable)
+            _credential: &CredentialRef,
+        ) -> Result<CredentialObservation, CredentialMaterialError> {
+            Err(CredentialMaterialError::ProbeFailed)
         }
     }
 

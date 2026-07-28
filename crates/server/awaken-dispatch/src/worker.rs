@@ -56,7 +56,7 @@ pub struct DispatchWorker<S> {
     ownership_clock: Arc<dyn Clock>,
     local_credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
     worker_credential_resolver:
-        Option<Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>>,
+        Option<Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>>,
 }
 
 struct ClaimBoundOwnershipVerifier {
@@ -298,7 +298,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     #[must_use]
     pub fn with_worker_credential_resolver(
         mut self,
-        resolver: Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>,
+        resolver: Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>,
     ) -> Self {
         self.worker_credential_resolver = Some(resolver);
         self
