@@ -183,9 +183,8 @@ fn configs_round_trip_through_json_losslessly() {
 
 // ─── 4. ACP plugin_config section (what AcpSpec codec must preserve) ──────────
 
-/// The `plugin_config["acp"]` section round-trips and reads back by the exact
-/// path today's executor uses (`compact_window`, `mcp_servers`). The future
-/// `AcpSpec::{from,into}_plugin_config` codec must preserve this byte-for-byte.
+/// The `plugin_config["acp"]` section round-trips through the sole typed codec.
+/// Historical route shapes that this version cannot interpret remain byte-stable.
 #[test]
 fn acp_plugin_config_section_round_trips_and_reads_by_path() {
     let mut cfg = config("agent-acp", "acp:claude");
@@ -198,11 +197,11 @@ fn acp_plugin_config_section_round_trips_and_reads_by_path() {
     )]);
 
     let round: AgentConfig = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
-    let acp = round
-        .plugin_config
-        .get("acp")
-        .expect("acp section preserved");
-    assert_eq!(acp["compact_window"], 120_000);
-    assert_eq!(acp["mcp_servers"][0]["name"], "gh");
+    let spec = awaken_runtime_contract::resolved::AcpSpec::from_plugin_config(&round.plugin_config);
+    assert_eq!(spec.compact_window, Some(120_000));
+    assert_eq!(
+        spec.into_plugin_config(round.plugin_config.clone()),
+        round.plugin_config
+    );
     assert_eq!(cfg, round);
 }

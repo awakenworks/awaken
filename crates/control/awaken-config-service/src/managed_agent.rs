@@ -158,7 +158,7 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
             .unwrap_or_default(),
         context_policy,
         tool_patterns: Vec::new(),
-        model_candidates: Vec::new(),
+        model_fallbacks: Vec::new(),
         name: string("name"),
         description: string("description"),
         metadata,

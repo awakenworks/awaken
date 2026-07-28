@@ -32,7 +32,7 @@ async fn main() {
         model_binding: ModelSelection::pinned("demo", "stub", "stub"),
         inference: Default::default(),
         tool_ids: Vec::new(),
-        model_candidates: Vec::new(),
+        model_fallbacks: Vec::new(),
         plugin_ids: Vec::new(),
         plugin_config: Default::default(),
         context_policy: awaken_runtime_contract::resolved::ContextPolicy::KeepAll,

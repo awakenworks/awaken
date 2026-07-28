@@ -74,6 +74,51 @@ impl AcpSpec {
                 .unwrap_or_default(),
         }
     }
+
+    /// Encode the ACP-owned fields back into an existing plugin configuration.
+    ///
+    /// Unknown ACP keys and every non-ACP plugin section are preserved exactly;
+    /// only this codec's two owned keys are replaced or removed. This makes the
+    /// typed view usable by authoring without creating a parallel settings wire.
+    #[must_use]
+    pub fn into_plugin_config(
+        self,
+        mut plugin_config: BTreeMap<String, serde_json::Value>,
+    ) -> BTreeMap<String, serde_json::Value> {
+        let mut acp = plugin_config
+            .remove("acp")
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_default();
+        match self.compact_window {
+            Some(window) => {
+                acp.insert("compact_window".into(), serde_json::Value::from(window));
+            }
+            None => {
+                acp.remove("compact_window");
+            }
+        }
+        if self.mcp_servers.is_empty() {
+            // A historical or future route shape that this version cannot decode
+            // remains owned by its original wire, not silently deleted. A valid
+            // current list can be explicitly cleared.
+            let existing_is_unknown = acp.get("mcp_servers").is_some_and(|value| {
+                serde_json::from_value::<Vec<AcpMcpServer>>(value.clone()).is_err()
+            });
+            if !existing_is_unknown {
+                acp.remove("mcp_servers");
+            }
+        } else {
+            acp.insert(
+                "mcp_servers".into(),
+                serde_json::to_value(self.mcp_servers)
+                    .expect("AcpMcpServer is an infallible JSON value"),
+            );
+        }
+        if !acp.is_empty() {
+            plugin_config.insert("acp".into(), serde_json::Value::Object(acp));
+        }
+        plugin_config
+    }
 }
 
 /// A secret-free MCP route delivered to an external ACP adapter.
@@ -784,9 +829,11 @@ pub struct ResolvedRun {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::{
-        Backend, BackendModelSelection, ContextPolicy, ModelBinding, ResolvedModelCandidate,
-        ResolvedSpec, ToolDescriptor, ToolFacet, ToolPresentation,
+        AcpSpec, Backend, BackendModelSelection, ContextPolicy, ModelBinding,
+        ResolvedModelCandidate, ResolvedSpec, ToolDescriptor, ToolFacet, ToolPresentation,
     };
 
     fn td(id: &str) -> ToolDescriptor {
@@ -888,6 +935,70 @@ mod tests {
         // non-alias (e.g. an un-renamed tool) passes through untouched.
         assert_eq!(p.resolve("y"), "mcp__x__y");
         assert_eq!(p.resolve("other"), "other");
+    }
+
+    // Cause/effect decision table for the sole ACP plugin-config codec:
+    // R1 known values + unknown ACP/non-ACP keys -> decode/encode byte value stable;
+    // R2 clearing an owned value -> remove only that key;
+    // R3 no ACP keys remain -> remove the empty ACP section;
+    // R4 unrecognized historical MCP wire -> preserve it byte-for-byte.
+    #[test]
+    fn acp_spec_round_trip_preserves_unowned_plugin_configuration() {
+        let original = BTreeMap::from([
+            ("other".into(), serde_json::json!({"enabled": true})),
+            (
+                "acp".into(),
+                serde_json::json!({
+                    "compact_window": 120_000,
+                    "mcp_servers": [{
+                        "name": "github",
+                        "transport": {"kind": "http", "url": "https://mcp.invalid"}
+                    }],
+                    "adapter_extension": {"native": 7}
+                }),
+            ),
+        ]);
+        let spec = AcpSpec::from_plugin_config(&original);
+        assert_eq!(
+            spec.clone().into_plugin_config(original.clone()),
+            original,
+            "R1"
+        );
+
+        let without_window = AcpSpec {
+            compact_window: None,
+            ..spec
+        }
+        .into_plugin_config(original);
+        assert!(without_window["acp"].get("compact_window").is_none(), "R2");
+        assert_eq!(
+            without_window["acp"]["adapter_extension"],
+            serde_json::json!({"native": 7}),
+            "R2"
+        );
+
+        assert!(
+            !AcpSpec::default()
+                .into_plugin_config(BTreeMap::from([(
+                    "acp".into(),
+                    serde_json::json!({"compact_window": 1})
+                )]))
+                .contains_key("acp"),
+            "R3"
+        );
+
+        let historical = BTreeMap::from([(
+            "acp".into(),
+            serde_json::json!({
+                "compact_window": 7,
+                "mcp_servers": [{"name": "legacy", "url": "https://mcp.invalid"}]
+            }),
+        )]);
+        assert_eq!(
+            AcpSpec::from_plugin_config(&historical).into_plugin_config(historical.clone()),
+            historical,
+            "R4"
+        );
     }
 
     #[test]

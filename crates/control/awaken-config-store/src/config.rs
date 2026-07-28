@@ -428,8 +428,13 @@ pub struct AgentConfig {
     /// candidate fails cleanly, so an agent survives a model outage. Appended last
     /// with `skip_serializing_if` so a single-model config's fingerprint stays
     /// byte-identical; a non-empty pool enters the content address like any field.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub model_candidates: Vec<ModelBinding>,
+    #[serde(
+        default,
+        rename = "model_candidates",
+        alias = "model_fallbacks",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub model_fallbacks: Vec<ModelBinding>,
     /// Managed-Agent identity fields, carried so the config plane's agent object
     /// stays consistent with the SDK `/v1/agents` object. Identity metadata is
     /// excluded from the behavioral fingerprint; the typed MCP/Skill/delegation
@@ -624,6 +629,31 @@ mod model_selection_tests {
                 .kind(),
                 AgentKind::Native
             );
+        }
+    }
+
+    // Cause/effect decision table for the model-fallback terminology migration:
+    // R1 historical `model_candidates` input -> populate model_fallbacks;
+    // R2 preferred `model_fallbacks` input -> populate the same field;
+    // R3 either input -> serialize the historical fingerprint key only.
+    #[test]
+    fn model_fallbacks_accept_both_authoring_names_without_wire_drift() {
+        let fallback = serde_json::json!([{
+            "provider_identity_ref": "provider",
+            "model_ref": "fallback",
+            "backend_ref": "genai"
+        }]);
+        for input_key in ["model_candidates", "model_fallbacks"] {
+            let mut value = serde_json::to_value(AgentConfig::default()).unwrap();
+            value
+                .as_object_mut()
+                .unwrap()
+                .insert(input_key.into(), fallback.clone());
+            let config: AgentConfig = serde_json::from_value(value).unwrap();
+            assert_eq!(config.model_fallbacks.len(), 1, "{input_key}");
+            let encoded = serde_json::to_value(config).unwrap();
+            assert_eq!(encoded["model_candidates"], fallback, "{input_key}");
+            assert!(encoded.get("model_fallbacks").is_none(), "{input_key}");
         }
     }
 

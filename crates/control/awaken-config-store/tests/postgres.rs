@@ -185,7 +185,7 @@ fn agent_config() -> AgentConfig {
         model_binding: awaken_config_store::ModelSelection::pinned("p", "m", "b"),
         inference: Default::default(),
         tool_ids: vec!["echo".to_string()],
-        model_candidates: Vec::new(),
+        model_fallbacks: Vec::new(),
         plugin_ids: Vec::new(),
         plugin_config: Default::default(),
         context_policy: awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
