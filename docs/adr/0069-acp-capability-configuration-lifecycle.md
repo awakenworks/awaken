@@ -504,10 +504,13 @@ mutable status column.
 
 The lifecycle has four consistency boundaries:
 
-1. **Worker observation revision.** Installation, login and capability evidence
-   are gathered for one adapter version and committed as one secret-free
-   observation with expiry and fingerprint. A partial refresh does not replace
-   the previous complete observation.
+1. **Worker observation batch.** Installation identity, login and capability
+   evidence are gathered for one adapter version and published in one heartbeat
+   with one trust deadline. Credential observation runs first; capability
+   negotiation reuses that exact host observation and never invokes the login
+   status command again. Both result sets replace the prior batch only after
+   both sources complete. A hard failure preserves the prior batch's original
+   deadline and therefore cannot partially renew stale evidence.
 2. **Agent aggregate revision.** Authoring persists only backend/model/mode/
    option intent. Optimistic concurrency protects edits; no Worker observation
    is copied into the aggregate.
@@ -529,6 +532,70 @@ The terminal states visible to callers are `Available`, `InstallationRequired`,
 `EnvironmentUnavailable`, `LaunchFailed`, protocol failure, or the ordinary
 committed/cancelled Run outcome. Every non-terminal retry is bounded and
 observable.
+
+### Lifecycle state machine
+
+The product exposes orthogonal state instead of one ambiguous ACP status:
+
+| Axis | States | Authoritative transition owner |
+|---|---|---|
+| installation | `Missing`, `Detected`, `Incompatible`, `ProbeFailed` | Worker ACP application |
+| login | `Available`, `LoginRequired`, `Expired`, `Invalid`, `Disabled`, `ProbeFailed` | CLI status adapter through Worker liveness |
+| capability | `Verified`, `Unavailable`, `ProbeFailed`, expired by TTL | Worker observation lifecycle |
+| draft | `Valid`, `Unavailable`, `InvalidSelection` | Agent application |
+| publication | `Ready`, `LoginRequired`, `CapabilityStale`, `ConfigurationIncompatible`, `EnvironmentUnavailable` | publication/readiness projection |
+| Run | queued, placed, claimed, running, committed or terminal failure | ordinary Run lifecycle |
+
+The principal transitions are:
+
+```text
+Missing --install/refresh--> Detected
+Detected + login unavailable ---------> LoginRequired
+Detected + login available
+  + handshake success ----------------> Verified(fingerprint)
+  + handshake failure ----------------> ProbeFailed
+
+Verified --heartbeat TTL expires------> stale and unselectable
+Verified --CLI/wrapper/version change-> refresh, new fingerprint
+Verified --logout/revocation----------> LoginRequired
+LoginRequired --external CLI login----> Available -> Verified
+
+draft + fresh Verified profile--------> publishable
+publication + exact live match--------> placeable
+claim + launch-time exact match-------> running
+any exact-match failure---------------> typed terminal failure, no fallback
+```
+
+`Unavailable` and `ProbeFailed` are successful negative observations and may
+replace a previous `Verified` observation. Transport, repository or batch
+assembly failure is different: it publishes nothing new, so the old evidence
+expires naturally. This distinction prevents both false availability and
+needless loss of a trustworthy negative diagnosis.
+
+### Configuration discovery and delivery
+
+ACP configuration has three sources with non-overlapping authority:
+
+| Configuration fact | Source | Persisted form | Delivery |
+|---|---|---|---|
+| protocol-external launch/acquisition facts | versioned adapter descriptor | deployment/catalog data | wrapper argv, launch flag, config override |
+| current native mode/options/choices | live ACP handshake | expiring Worker observation only | `session/set_mode`, `session/set_config_option` |
+| user's chosen values | Agent aggregate | native ids and typed native values | frozen into publication, then resolved launch |
+
+This permits discovery of model, mode, approval preference, sandbox preference,
+reasoning effort and future adapter-specific settings when the ACP advertises
+them. When the protocol does not advertise a setting, a versioned adapter
+annotation may describe it, but it remains unverified until a supported delivery
+adapter can prove it. The UI shows generic safe scalar/enumerated settings,
+marks security-sensitive settings as constrained, and never treats an ACP
+preference as Awaken authorization.
+
+Uniform recognition therefore means a common descriptor envelope and state
+machine, not a common list of settings. Codex may expose
+`model_reasoning_effort`; Claude or another ACP may expose a different native
+id, value vocabulary or no equivalent at all. The Agent and publication retain
+those native identities so execution is lossless and adapter addition does not
+modify Runtime or executor branching.
 
 ## Comparison with oversight-next
 
@@ -639,7 +706,11 @@ Implemented consolidation evidence:
   Worker capability probing and the official ACP protocol adapter;
 - `HostAcpCapabilityNegotiator` owns the bounded PATH/HOME-only probe process;
   successful evidence becomes an `EffectiveAcpCapabilityProfile` with a
-  deterministic SHA-256 fingerprint advertised by the Worker;
+  deterministic SHA-256 fingerprint;
+- the Worker publishes credential and ACP capability observations as one
+  atomic, expiring heartbeat batch; it retains the prior deadlines on a hard
+  refresh failure and does not store the changing fingerprint in the immutable
+  Worker manifest;
 - `CredentialObservationSource` and `WorkerLocalReferenceRevalidator` are
   segregated from `CredentialMaterialResolver`;
 - Runtime Host selects the Session provider from immutable
@@ -654,10 +725,10 @@ Current implementation status is deliberately distinct from the target:
 | Lifecycle slice | Current state | Required consolidation |
 |---|---|---|
 | adapter catalog | authoritative `AcpCli` exists; inert probe specs remain attached | move its neutral contract out of executor ownership |
-| installation/login probe | Worker application owns process I/O and classification | add revisioned refresh/publication |
+| installation/login probe | Worker application owns process I/O and classification | add event-triggered refresh in addition to the bounded periodic loop |
 | reusable CLI/Flow preparation | application service exists; CLI partly consumes it | migrate remaining CLI-private callers and Flow; delete the duplicate |
-| capability negotiation | bounded Worker probe invokes the canonical prompt-free protocol operation | add refresh/reconcile trigger and process-group reap |
-| effective profile/fingerprint | startup produces typed profile and SHA-256 Worker evidence | persist revision/expiry and require exact fingerprint in publication/placement |
+| capability negotiation | bounded Worker probe invokes the canonical prompt-free protocol operation and shares the one Worker observation loop | add event-triggered refresh/reconcile and process-group reap |
+| effective profile/fingerprint | typed profile and SHA-256 evidence are published dynamically with TTL | require exact fingerprint in publication/placement and launch fence |
 | Agent ACP mode/options | mode and one model option reach executor | add typed multi-option intent and publication validation |
 | environment selection | provisioning selects trusted/isolated provider | retain as the sole Session Environment policy |
 | readiness | startup observation projection | query current Worker observation and reconcile revisions |
