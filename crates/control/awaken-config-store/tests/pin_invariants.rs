@@ -1,13 +1,9 @@
-//! ADR-0057 phase 0 (`pin-invariants`): characterization tests that FREEZE the
-//! "byte-identical / behavior-identical" promises before any unified-config
-//! refactor touches these paths. A later phase that adds `kind`, renames a field,
-//! or reorders serialization must keep every assertion here green — if it cannot,
-//! the change is a wire/fingerprint break and must be a deliberate, versioned one.
+//! Model-selection and publication content-address invariants.
 //!
 //! What is pinned:
 //!  1. The publication fingerprint of representative configs (golden SHA-256).
-//!  2. The wire shape: `Pinned` serializes as the flat model triple, `Auto` as
-//!     `{"mode":"auto"}`; empty optional axes are omitted (skip_serializing_if).
+//!  2. Every selection serializes with one explicit `mode`; empty optional axes
+//!     are omitted (skip_serializing_if).
 //!  3. Lossless JSON round-trip of every kind expressed via `backend_ref`.
 //!  4. The `plugin_config["acp"]` section round-trips and reads back by path
 //!     (the data `AcpSpec::{from,into}_plugin_config` must preserve).
@@ -26,10 +22,7 @@ fn compile(
     compile_resolved(config, tools, AgentSnapshotMetadata::default())
 }
 
-/// A representative config authored the way today's plane authors one. `backend`
-/// selects the kind through the historic `backend_ref` string (`"genai"` native,
-/// `"acp:<cli>"`, `"a2a:<endpoint>"`) — the exact surface the refactor must keep
-/// byte-stable.
+/// A representative config authored through the canonical selection contract.
 fn config(id: &str, backend: &str) -> AgentConfig {
     AgentConfig {
         id: id.to_string(),
@@ -61,17 +54,17 @@ fn golden_publication_fingerprints_are_frozen() {
     // Native (genai), ACP (acp:claude), A2A (a2a:endpoint) — all via backend_ref.
     assert_eq!(
         fingerprint(&config("agent-native", "genai")),
-        "73a169c220424fbe417b5a615272e1af89c61ac4a8b173444fb509f467643785",
+        "150f6344b5b5055fc1ac417b38a66a0585e845af603bfbc8da423c608a086ea7",
         "native config fingerprint drifted"
     );
     assert_eq!(
         fingerprint(&config("agent-acp", "acp:claude")),
-        "0decc48fdedb4b30f4ad34d37a289053b52c16094473cca8438be45d851fb777",
+        "0bfc760559cf5cc90ea9f8ccf7651ae9d3e53ba777a6e686456e144b4dc905f3",
         "acp config fingerprint drifted"
     );
     assert_eq!(
         fingerprint(&config("agent-a2a", "a2a:https://remote.example/agent")),
-        "ad7c4b7a66c307cb95cd7bd42de6846eaad34bcf8f9ca9aa321f7f49c9456372",
+        "c8b3b88e453888c2765ba933966c73b7ac483dbe303f49b0d97635998933ee36",
         "a2a config fingerprint drifted"
     );
 }
@@ -104,19 +97,16 @@ fn fingerprint_is_deterministic() {
 
 // ─── 2. Wire shape ───────────────────────────────────────────────────────────
 
-/// A `Pinned` model selection serializes as the bare flat triple (the historic
-/// shape), NOT a tagged variant — every pre-existing config depends on this.
+/// A `Pinned` model selection uses the same explicit discriminator as every
+/// policy variant.
 #[test]
-fn pinned_model_serializes_as_the_flat_triple() {
+fn pinned_model_serializes_as_mode_pinned() {
     let v: Value = serde_json::to_value(config("agent-1", "acp:claude")).unwrap();
     let mb = &v["model_binding"];
     assert_eq!(mb["provider_identity_ref"], "p");
     assert_eq!(mb["model_ref"], "claude-opus-4-8");
     assert_eq!(mb["backend_ref"], "acp:claude");
-    assert!(
-        mb.get("mode").is_none(),
-        "a Pinned binding must not carry a mode tag"
-    );
+    assert_eq!(mb["mode"], "pinned");
 }
 
 /// An `Auto` model selection serializes as `{"mode":"auto"}`.

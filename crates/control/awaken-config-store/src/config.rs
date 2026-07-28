@@ -17,10 +17,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// selects an external backend while leaving the model to that backend. The variants *name* the intents at the type
 /// level, so no reader has to know that an absent value carries behavior.
 ///
-/// Wire compatibility is deliberate: a `Pinned` binding serializes as the bare flat
-/// triple it always was (`{provider_identity_ref, model_ref, backend_ref}`), so
-/// every config authored before this type — and its content-address fingerprint —
-/// is byte-identical. The policy variants use explicit tagged objects.
+/// Every variant uses the same explicit `mode` discriminator. In particular,
+/// `Pinned` does not have a second untagged wire shape.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ModelSelection {
     /// Resolve to a first provider-backed offering at publish (the default). The
@@ -105,9 +103,15 @@ impl From<ModelBinding> for ModelSelection {
 impl Serialize for ModelSelection {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
-            // Byte-identical to the historic flat triple, so existing configs and
-            // their fingerprints are unchanged.
-            ModelSelection::Pinned(binding) => binding.serialize(serializer),
+            ModelSelection::Pinned(binding) => {
+                use serde::ser::SerializeMap;
+                let mut map = serializer.serialize_map(Some(4))?;
+                map.serialize_entry("mode", "pinned")?;
+                map.serialize_entry("provider_identity_ref", &binding.provider_identity_ref)?;
+                map.serialize_entry("model_ref", &binding.model_ref)?;
+                map.serialize_entry("backend_ref", &binding.backend_ref)?;
+                map.end()
+            }
             ModelSelection::Auto => {
                 use serde::ser::SerializeMap;
                 let mut map = serializer.serialize_map(Some(1))?;
@@ -134,35 +138,41 @@ impl Serialize for ModelSelection {
 
 impl<'de> Deserialize<'de> for ModelSelection {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        // Peek the shape: `{"mode":"auto"}` is Auto; anything else is the flat
-        // triple (back-compat) or a `mode:"pinned"` triple, both decoding to Pinned.
-        let value = serde_json::Value::deserialize(deserializer)?;
-        if value.get("mode").and_then(serde_json::Value::as_str) == Some("auto") {
-            return Ok(ModelSelection::Auto);
+        match ModelSelectionWire::deserialize(deserializer)? {
+            ModelSelectionWire::Auto => Ok(Self::Auto),
+            ModelSelectionWire::Profile { profile_id } if !profile_id.trim().is_empty() => {
+                Ok(Self::Profile { profile_id })
+            }
+            ModelSelectionWire::Profile { .. } => {
+                Err(serde::de::Error::custom("profile_id must not be empty"))
+            }
+            ModelSelectionWire::BackendDefault { backend_ref } => {
+                Ok(Self::BackendDefault { backend_ref })
+            }
+            ModelSelectionWire::Pinned {
+                provider_identity_ref,
+                model_ref,
+                backend_ref,
+            } => Ok(Self::pinned(provider_identity_ref, model_ref, backend_ref)),
         }
-        if value.get("mode").and_then(serde_json::Value::as_str) == Some("backend_default") {
-            let backend_ref = value
-                .get("backend_ref")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| serde::de::Error::missing_field("backend_ref"))?;
-            return Ok(ModelSelection::BackendDefault {
-                backend_ref: backend_ref.to_string(),
-            });
-        }
-        if value.get("mode").and_then(serde_json::Value::as_str) == Some("profile") {
-            let profile_id = value
-                .get("profile_id")
-                .and_then(serde_json::Value::as_str)
-                .filter(|profile_id| !profile_id.trim().is_empty())
-                .ok_or_else(|| serde::de::Error::missing_field("profile_id"))?;
-            return Ok(ModelSelection::Profile {
-                profile_id: profile_id.to_string(),
-            });
-        }
-        let binding =
-            serde_json::from_value::<ModelBinding>(value).map_err(serde::de::Error::custom)?;
-        Ok(ModelSelection::Pinned(binding))
     }
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+enum ModelSelectionWire {
+    Auto,
+    Profile {
+        profile_id: String,
+    },
+    BackendDefault {
+        backend_ref: String,
+    },
+    Pinned {
+        provider_identity_ref: String,
+        model_ref: String,
+        backend_ref: String,
+    },
 }
 
 /// The delegation roster authored for one Agent.
@@ -219,10 +229,8 @@ pub struct AgentConfig {
     /// existing configs; non-default values enter the publication fingerprint.
     #[serde(default, skip_serializing_if = "delegation_limits_are_default")]
     pub delegation_limits: DelegationLimits,
-    /// The model selection (ADR-0052 D5): `Auto` (resolve at publish) or a
-    /// `Pinned` concrete binding. Serializes wire-identically to the historic flat
-    /// triple when pinned, so the field name and the publication fingerprint of
-    /// every pre-existing config are unchanged.
+    /// The model selection (ADR-0052 D5): automatic discovery, an explicit
+    /// profile, a backend-owned default, or one concrete pinned binding.
     pub model_binding: ModelSelection,
     /// Provider-neutral call controls authored with the model and frozen into
     /// every executable revision. They are not part of model route identity.
