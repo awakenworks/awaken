@@ -112,28 +112,10 @@ await step("resolve dry-run (exact)", "POST", "/v1/config/inference/resolve", {
   binding: { type: "exact", credential_source_id: cred.id },
 }, (s, p) => s === 200 && p.credential_present === true);
 
-// ---- Workspace · MCP (surfaces/mcp-servers.tsx) ----
-await step("author mcp server", "PUT", "/v1/config/mcp-servers/docs-search", {
-  id: "docs-search",
-  display_name: "Docs search",
-  url: "https://mcp.example.com/docs",
-  credential_binding: { type: "exact", credential_source_id: cred.id },
-  version: 1,
-});
-await step("list mcp servers", "GET", "/v1/config/mcp-servers", undefined, (s, p) => s === 200 && p.length >= 1);
-
 // ---- Settings: project authoring (surfaces/settings.tsx) ----
 // Project was removed from the tenancy model (ADR-0051 `remove Project` +
 // ADR-0048): there is no `/v1/config/projects` resource and no `/projects/{id}`
 // ingress; the tenant is the workspace (addressed by key or `/v1/workspaces/{ws}/…`).
-
-// ---- Agent MCP binding on the flat config plane (surfaces/agent-editor.tsx) ----
-await step("bind agent mcp", "PUT", "/v1/config/agents/default/mcp", {
-  agent_id: "default",
-  mcp_server_ids: ["docs-search"],
-  version: 1,
-});
-await step("read agent mcp", "GET", "/v1/config/agents/default/mcp", undefined, (s, p) => s === 200 && p.mcp_server_ids.includes("docs-search"));
 
 // ---- Project · Agents authoring via config plane (surfaces/agent-editor.tsx) ----
 // The console authors the rich AgentConfig against our own management API, then
@@ -146,7 +128,11 @@ const cfgAgent = {
   model: { id: "claude" },
   system: "You are a smoke-test agent.",
   tools: ["read"],
-  mcp_servers: [],
+  mcp_servers: [{
+    type: "url",
+    name: "docs",
+    url: "https://mcp.example.com/docs",
+  }],
   skills: [],
   max_steps: 8,
   plugins: [],
