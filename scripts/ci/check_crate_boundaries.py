@@ -900,6 +900,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-runtime-contract",
         "awaken-agent-contract",
         "awaken-provisioning-contract",
+        "awaken-local-process",
         "awaken-agent-channel",
         "awaken-protocol-acp",
         "async-trait",
@@ -1170,10 +1171,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # dev-only: the end-to-end agent-loop test composes a runtime.
         "awaken-runtime",
     },
-        # Local sandbox: per-environment path isolation. It wraps the built-in tools
-    # (jailing their paths to an IsolatedRoot), so it depends on the extension it
-    # wraps and the neutral tool port. The remote/container provider lives in a
-    # distributed repo and plugs in through the `SandboxProvider` trait.
+    # Sole local descendant-aware ProcessHandle; contains no sandbox/ACP policy.
+    "awaken-local-process": {
+        "awaken-provisioning-contract", "async-trait", "tokio", "nix", "tempfile",
+    },
     # Worker tier (ADR-0041/ADR-0053): the isolated-execution sandbox provider. It
     # links NO durable store (A-G17) — it resolves mount bytes through the injected
     # `BlobSource` port and computes the BLAKE3 content id itself.
@@ -1182,6 +1183,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # Implements the neutral sandbox ports (ADR-0041): a LocalProvider over the
         # provisioning contract, alongside the pre-contract Environment surface.
         "awaken-provisioning-contract",
+        "awaken-local-process",
         # BLAKE3 content id for the mount pin (was awaken_file_store::content_id).
         "blake3",
         # The tool-transparent capability: spawn_agent returns a pipe-backed AgentChannel.

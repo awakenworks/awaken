@@ -8,6 +8,7 @@ license.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-provisioning-contract.workspace = true
+awaken-local-process.workspace = true
 awaken-agent-channel.workspace = true
 awaken-protocol-acp.workspace = true
 async-trait.workspace = true

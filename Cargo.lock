@@ -822,6 +822,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-local-process"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-provisioning-contract",
+ "nix",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-managed-bridge"
 version = "1.0.0-dev"
 dependencies = [
@@ -1159,6 +1170,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-channel",
  "awaken-agent-contract",
+ "awaken-local-process",
  "awaken-protocol-acp",
  "awaken-provisioning-contract",
  "awaken-runtime-contract",
@@ -1395,6 +1407,7 @@ dependencies = [
  "awaken-agent-channel",
  "awaken-ext-builtin-tools",
  "awaken-file-store",
+ "awaken-local-process",
  "awaken-memory-store",
  "awaken-provisioning-contract",
  "awaken-runtime-contract",

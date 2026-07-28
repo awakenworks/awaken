@@ -15,15 +15,14 @@ use std::process::Stdio as ProcStdio;
 
 use async_trait::async_trait;
 use awaken_agent_channel::{AgentChannel, SplitChannel};
+use awaken_local_process::LocalProcess;
 use awaken_provisioning_contract as pc;
 use serde_json::json;
 use tokio::process::Command as TokioCommand;
 
 use std::sync::Arc;
 
-use crate::provider::{
-    LocalProcess, materialize_read_only_tree_at, resolve_source, restrict_to_owner, verify,
-};
+use crate::provider::{materialize_read_only_tree_at, resolve_source, restrict_to_owner, verify};
 use crate::{
     DiscoveredSkillFile, IsolatedRoot, content_fingerprint, jailed_at, list_files_at,
     namespace_raw_tools, provision_repo_at, push_repo_at, scan_skill_dir_at,
@@ -979,6 +978,7 @@ impl NamespaceSandbox {
         let command = self.materialize_command(command).await?;
         let argv = self.render_argv(&command)?;
         let mut cmd = TokioCommand::new(&argv[0]);
+        awaken_local_process::configure_process_group(&mut cmd);
         cmd.args(&argv[1..]);
         self.configure_command(&mut cmd, &command)?;
         let stderr = if std::env::var_os("AWAKEN_SANDBOX_AGENT_STDERR").is_some() {
@@ -1031,6 +1031,7 @@ impl pc::Sandbox for NamespaceSandbox {
         let command = self.materialize_command(command).await?;
         let argv = self.render_argv(&command)?;
         let mut cmd = TokioCommand::new(&argv[0]);
+        awaken_local_process::configure_process_group(&mut cmd);
         cmd.args(&argv[1..]);
         self.configure_command(&mut cmd, &command)?;
         let (out, e) = match stdio {

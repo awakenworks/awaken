@@ -22,10 +22,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use awaken_agent_channel::{AgentChannel, SplitChannel};
+use awaken_local_process::{LocalProcess, configure_process_group};
 use awaken_provisioning_contract as pc;
 use serde_json::json;
-use tokio::process::{Child, Command as TokioCommand};
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::process::Command as TokioCommand;
 
 use std::sync::Arc;
 
@@ -643,6 +643,7 @@ impl LocalSandbox {
         std::fs::create_dir_all(&host_outputs).map_err(err)?;
 
         let mut cmd = TokioCommand::new(program);
+        configure_process_group(&mut cmd);
         cmd.args(&command.argv[1..]);
         cmd.current_dir(&host_cwd);
         cmd.env_clear();
@@ -880,54 +881,6 @@ impl LocalSandbox {
                 let _ = std::fs::write(path, vec![0u8; meta.len() as usize]);
             }
         }
-    }
-}
-
-/// A process launched by a local-machine sandbox tier (shared by `LocalProvider`
-/// and `NamespaceProvider`).
-pub struct LocalProcess {
-    id: String,
-    child: AsyncMutex<Child>,
-}
-
-impl LocalProcess {
-    /// Wrap a freshly spawned child; the id is its OS pid (empty if already reaped).
-    pub(crate) fn spawned(child: Child) -> Self {
-        let id = child.id().map(|p| p.to_string()).unwrap_or_default();
-        Self {
-            id,
-            child: AsyncMutex::new(child),
-        }
-    }
-}
-
-fn to_exit(status: std::process::ExitStatus) -> pc::ExitStatus {
-    pc::ExitStatus {
-        code: status.code(),
-        signaled: status.code().is_none(),
-    }
-}
-
-#[async_trait]
-impl pc::ProcessHandle for LocalProcess {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
-    async fn wait(&self) -> Result<pc::ExitStatus, pc::SandboxError> {
-        let mut child = self.child.lock().await;
-        Ok(to_exit(child.wait().await.map_err(err)?))
-    }
-
-    async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
-        let mut child = self.child.lock().await;
-        Ok(child.try_wait().map_err(err)?.map(to_exit))
-    }
-
-    async fn signal(&self, _signal: pc::Signal) -> Result<(), pc::SandboxError> {
-        // std/tokio only expose SIGKILL portably; all variants terminate.
-        let mut child = self.child.lock().await;
-        child.start_kill().map_err(err)
     }
 }
 
