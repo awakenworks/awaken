@@ -115,6 +115,7 @@ fn configured_worker() -> (WorkerIdentity, Arc<dyn WorkerDirectory>) {
             manifest,
             in_flight: 0,
             credential_observations: Default::default(),
+            acp_capability_observations: Default::default(),
             expires_at_ms: u64::MAX,
         },
         heartbeat_sequence: 1,

@@ -62,3 +62,28 @@ pub trait AcpCapabilityHandshake: Send + Sync {
         config: &AcpCapabilityProbeConfig,
     ) -> Result<NegotiatedAcpCapabilities, String>;
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcpCapabilityObservationState {
+    Verified,
+    Unavailable,
+    ProbeFailed,
+}
+
+/// Point-in-time, secret-free capability evidence from one Worker-local ACP.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcpCapabilityObservation {
+    pub backend_ref: String,
+    pub adapter_version: String,
+    pub state: AcpCapabilityObservationState,
+    pub observed_at_ms: u64,
+    pub fingerprint: Option<String>,
+    pub negotiated: Option<NegotiatedAcpCapabilities>,
+    pub reason_code: Option<String>,
+}
+
+#[async_trait]
+pub trait AcpCapabilityObservationSource: Send + Sync {
+    async fn capability_observations(&self) -> Result<Vec<AcpCapabilityObservation>, String>;
+}

@@ -1,50 +1,74 @@
-//! Worker-local credential observation lifecycle.
+//! Worker-local observation lifecycle.
 //!
 //! Provider adapters own opaque login inspection. This module owns only the
-//! trusted observation window and the cache published by the Worker heartbeat.
+//! trusted observation window and the one atomic cache published by the Worker
+//! heartbeat. Credential evidence is refreshed first so an ACP capability source
+//! can reuse that exact host observation instead of probing login twice.
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use awaken_acp_contract::AcpCapabilityObservationSource;
 use awaken_runtime_contract::{
     CredentialMaterialError, CredentialObservationState, WorkerLocalCredentialResolver,
 };
 use awaken_worker_contract::{
-    WorkerCredentialObservation, WorkerCredentialRevision, WorkerCredentialState,
+    WorkerAcpCapabilityObservation, WorkerCredentialObservation, WorkerCredentialRevision,
+    WorkerCredentialState,
 };
 
 #[derive(Default)]
-pub(crate) struct CredentialObservationCache {
-    observations: RwLock<BTreeSet<WorkerCredentialObservation>>,
+pub(crate) struct WorkerObservationCache {
+    credentials: RwLock<BTreeSet<WorkerCredentialObservation>>,
+    acp_capabilities: RwLock<Vec<WorkerAcpCapabilityObservation>>,
 }
 
-impl CredentialObservationCache {
-    pub(crate) fn snapshot(&self) -> BTreeSet<WorkerCredentialObservation> {
-        self.observations
+impl WorkerObservationCache {
+    pub(crate) fn credential_snapshot(&self) -> BTreeSet<WorkerCredentialObservation> {
+        self.credentials
             .read()
             .expect("credential observation cache poisoned")
+            .clone()
+    }
+
+    pub(crate) fn acp_capability_snapshot(&self) -> Vec<WorkerAcpCapabilityObservation> {
+        self.acp_capabilities
+            .read()
+            .expect("ACP capability observation cache poisoned")
             .clone()
     }
 
     pub(crate) async fn refresh(
         &self,
         resolver: Option<&dyn WorkerLocalCredentialResolver>,
+        capability_source: Option<&dyn AcpCapabilityObservationSource>,
         now_ms: u64,
         ttl: Duration,
-    ) -> Result<(), CredentialMaterialError> {
-        let observations = observations(resolver, now_ms, ttl).await?;
+    ) -> Result<(), String> {
+        let credentials = credential_observations(resolver, now_ms, ttl)
+            .await
+            .map_err(|error| error.to_string())?;
+        let acp_capabilities = capability_observations(capability_source, now_ms, ttl).await?;
+        // Both probes form one causal batch. A hard failure in either source
+        // cannot renew only half of the evidence or create mixed-generation
+        // credential/capability truth.
         *self
-            .observations
+            .credentials
             .write()
-            .expect("credential observation cache poisoned") = observations;
+            .expect("credential observation cache poisoned") = credentials;
+        *self
+            .acp_capabilities
+            .write()
+            .expect("ACP capability observation cache poisoned") = acp_capabilities;
         Ok(())
     }
 }
 
 pub(crate) fn spawn_probe(
-    cache: Arc<CredentialObservationCache>,
+    cache: Arc<WorkerObservationCache>,
     resolver: Option<Arc<dyn WorkerLocalCredentialResolver>>,
+    capability_source: Option<Arc<dyn AcpCapabilityObservationSource>>,
     probe_interval: Duration,
     observation_ttl: Duration,
 ) -> tokio::task::JoinHandle<()> {
@@ -54,18 +78,23 @@ pub(crate) fn spawn_probe(
         loop {
             interval.tick().await;
             if let Err(error) = cache
-                .refresh(resolver.as_deref(), crate::wall_clock_ms(), observation_ttl)
+                .refresh(
+                    resolver.as_deref(),
+                    capability_source.as_deref(),
+                    crate::wall_clock_ms(),
+                    observation_ttl,
+                )
                 .await
             {
                 eprintln!(
-                    "local_credential_probe_failed: {error}; prior observations retain their original deadlines"
+                    "worker_observation_probe_failed: {error}; prior observations retain their original deadlines"
                 );
             }
         }
     })
 }
 
-pub(crate) async fn observations(
+pub(crate) async fn credential_observations(
     resolver: Option<&dyn WorkerLocalCredentialResolver>,
     now_ms: u64,
     ttl: Duration,
@@ -107,9 +136,35 @@ pub(crate) async fn observations(
     }
 }
 
+pub(crate) async fn capability_observations(
+    source: Option<&dyn AcpCapabilityObservationSource>,
+    now_ms: u64,
+    ttl: Duration,
+) -> Result<Vec<WorkerAcpCapabilityObservation>, String> {
+    match source {
+        Some(source) => {
+            let valid_until_ms = now_ms.saturating_add(ttl.as_millis() as u64);
+            source.capability_observations().await.map(|observations| {
+                observations
+                    .into_iter()
+                    .map(|observation| WorkerAcpCapabilityObservation {
+                        observation,
+                        valid_until_ms,
+                    })
+                    .collect()
+            })
+        }
+        None => Ok(Vec::new()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_acp_contract::{
+        AcpCapabilityObservation, AcpCapabilityObservationSource, AcpCapabilityObservationState,
+        NegotiatedAcpCapabilities,
+    };
     use awaken_runtime_contract::{
         CredentialObservation, CredentialObservationSource, CredentialRef,
         WorkerLocalReferenceRevalidator,
@@ -163,10 +218,47 @@ mod tests {
         }
     }
 
+    struct VerifiedCapabilitySource;
+
+    #[async_trait::async_trait]
+    impl AcpCapabilityObservationSource for VerifiedCapabilitySource {
+        async fn capability_observations(&self) -> Result<Vec<AcpCapabilityObservation>, String> {
+            Ok(vec![AcpCapabilityObservation {
+                backend_ref: "acp:codex".into(),
+                adapter_version: "1.2.3".into(),
+                state: AcpCapabilityObservationState::Verified,
+                observed_at_ms: 1,
+                fingerprint: Some("fingerprint".into()),
+                negotiated: Some(NegotiatedAcpCapabilities {
+                    protocol_version: "1".into(),
+                    load_session: true,
+                    prompt_image: false,
+                    prompt_audio: false,
+                    prompt_embedded_context: false,
+                    mcp_http: false,
+                    mcp_sse: false,
+                    session_list: false,
+                    modes: Vec::new(),
+                    config_options: Vec::new(),
+                }),
+                reason_code: None,
+            }])
+        }
+    }
+
+    struct FailedCapabilitySource;
+
+    #[async_trait::async_trait]
+    impl AcpCapabilityObservationSource for FailedCapabilitySource {
+        async fn capability_observations(&self) -> Result<Vec<AcpCapabilityObservation>, String> {
+            Err("handshake transport failed".into())
+        }
+    }
+
     #[tokio::test]
     async fn worker_stamps_the_trusted_observation_window() {
         assert_eq!(
-            observations(Some(&AvailableResolver), 100, Duration::from_millis(30))
+            credential_observations(Some(&AvailableResolver), 100, Duration::from_millis(30))
                 .await
                 .expect("worker-local probe"),
             BTreeSet::from([WorkerCredentialObservation::available(
@@ -182,21 +274,26 @@ mod tests {
 
     #[tokio::test]
     async fn probe_failure_preserves_the_original_deadline() {
-        let cache = CredentialObservationCache::default();
+        let cache = WorkerObservationCache::default();
         cache
-            .refresh(Some(&AvailableResolver), 100, Duration::from_millis(30))
+            .refresh(
+                Some(&AvailableResolver),
+                None,
+                100,
+                Duration::from_millis(30),
+            )
             .await
             .expect("initial probe succeeds");
-        let before = cache.snapshot();
+        let before = cache.credential_snapshot();
 
-        assert_eq!(
+        assert!(
             cache
-                .refresh(Some(&FailedResolver), 120, Duration::from_millis(30))
-                .await,
-            Err(CredentialMaterialError::ProbeFailed)
+                .refresh(Some(&FailedResolver), None, 120, Duration::from_millis(30),)
+                .await
+                .is_err()
         );
         assert_eq!(
-            cache.snapshot(),
+            cache.credential_snapshot(),
             before,
             "failed probe cannot renew evidence"
         );
@@ -208,5 +305,43 @@ mod tests {
                 .valid_until_ms,
             130
         );
+    }
+
+    // Cause/effect decision table for one Worker observation batch:
+    // R1 credential=success, capability=success -> replace both with one deadline.
+    // R2 credential=success, capability=hard-error -> replace neither; the prior
+    // credential and capability deadlines remain unchanged.
+    // Login unavailable and protocol ProbeFailed are successful observations,
+    // not hard errors, and therefore belong to R1.
+    #[tokio::test]
+    async fn capability_failure_cannot_partially_renew_credential_evidence() {
+        let cache = WorkerObservationCache::default();
+        cache
+            .refresh(
+                Some(&AvailableResolver),
+                Some(&VerifiedCapabilitySource),
+                100,
+                Duration::from_millis(30),
+            )
+            .await
+            .expect("R1");
+        let credentials_before = cache.credential_snapshot();
+        let capabilities_before = cache.acp_capability_snapshot();
+        assert_eq!(capabilities_before[0].valid_until_ms, 130, "R1");
+
+        assert!(
+            cache
+                .refresh(
+                    Some(&AvailableResolver),
+                    Some(&FailedCapabilitySource),
+                    120,
+                    Duration::from_millis(30),
+                )
+                .await
+                .is_err(),
+            "R2"
+        );
+        assert_eq!(cache.credential_snapshot(), credentials_before, "R2");
+        assert_eq!(cache.acp_capability_snapshot(), capabilities_before, "R2");
     }
 }

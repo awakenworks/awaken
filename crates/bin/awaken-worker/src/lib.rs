@@ -28,7 +28,7 @@ mod lifecycle;
 mod manifest;
 mod resource_plane;
 
-use credential_liveness::CredentialObservationCache;
+use credential_liveness::WorkerObservationCache;
 use lifecycle::{
     WorkerLifecycle, grace_window, new_incarnation_id, spawn_heartbeat, wait_for_in_flight,
     wall_clock_ms,
@@ -112,6 +112,8 @@ pub struct WorkerNodeBuilder {
         Option<Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>>,
     worker_local_credential_resolver:
         Option<Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>>,
+    acp_capability_observation_source:
+        Option<Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>>,
     credential_inference_derived: bool,
     session_container_provider: Option<InstalledSessionContainerProvider>,
     mcp_attachment_realizer: Option<Arc<dyn awaken_runtime_host::McpAttachmentRealizer>>,
@@ -136,6 +138,7 @@ impl WorkerNodeBuilder {
             credential_materializer: None,
             external_credential_resolver: None,
             worker_local_credential_resolver: None,
+            acp_capability_observation_source: None,
             credential_inference_derived: false,
             session_container_provider: None,
             mcp_attachment_realizer: None,
@@ -307,6 +310,17 @@ impl WorkerNodeBuilder {
         self
     }
 
+    /// Install dynamic, secret-free ACP capability evidence into the same
+    /// Worker observation lifecycle as local credential liveness.
+    #[must_use]
+    pub fn with_acp_capability_observation_source(
+        mut self,
+        source: Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>,
+    ) -> Self {
+        self.acp_capability_observation_source = Some(source);
+        self
+    }
+
     /// Install the provider that realizes every Session-owned container on this
     /// Worker. `backend` is the stable backend identifier published in the
     /// derived Worker manifest (for example `awaken-cloud`).
@@ -447,6 +461,7 @@ impl WorkerNodeBuilder {
             materializer: self.materializer,
             credential_materializer: self.credential_materializer,
             credential_observation_resolver,
+            acp_capability_observation_source: self.acp_capability_observation_source,
             session_container_provider: self.session_container_provider,
             mcp_attachment_realizer: self.mcp_attachment_realizer,
             resources: self.resources,
@@ -491,6 +506,8 @@ pub struct WorkerNode {
     credential_materializer: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
     credential_observation_resolver:
         Option<Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>>,
+    acp_capability_observation_source:
+        Option<Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>>,
     session_container_provider: Option<InstalledSessionContainerProvider>,
     mcp_attachment_realizer: Option<Arc<dyn awaken_runtime_host::McpAttachmentRealizer>>,
     resources: Option<WorkerResourcePlane>,
@@ -848,28 +865,30 @@ impl WorkerNode {
             managed = managed.with_mcp_attachment_realizer(realizer);
         }
         drop(managed);
-        let credential_observations = Arc::new(CredentialObservationCache::default());
+        let observations = Arc::new(WorkerObservationCache::default());
         let lifecycle = Arc::new(WorkerLifecycle {
             host: host.clone(),
             control: control.clone(),
             identity: registration.snapshot.identity,
             credential_observation_resolver: self.credential_observation_resolver,
-            credential_observations,
+            acp_capability_observation_source: self.acp_capability_observation_source,
+            observations,
         });
         // Publish Ready before starting the pull loop. Starting the pool while the
         // directory still says Starting creates a tight claim/reject race; publishing
         // first is safe because any assignment remains queued until this process starts
         // polling immediately below.
         if let Err(error) = lifecycle
-            .credential_observations
+            .observations
             .refresh(
                 lifecycle.credential_observation_resolver.as_deref(),
+                lifecycle.acp_capability_observation_source.as_deref(),
                 wall_clock_ms(),
                 self.credential_observation_ttl,
             )
             .await
         {
-            eprintln!("local_credential_probe_failed: {error}; publishing no credential evidence");
+            eprintln!("worker_observation_probe_failed: {error}; publishing no dynamic evidence");
         }
         let initial = control
             .heartbeat(
@@ -878,7 +897,8 @@ impl WorkerNode {
                     sequence: 1,
                     ready: true,
                     in_flight: 0,
-                    credential_observations: lifecycle.credential_observations.snapshot(),
+                    credential_observations: lifecycle.observations.credential_snapshot(),
+                    acp_capability_observations: lifecycle.observations.acp_capability_snapshot(),
                 },
             )
             .await;
@@ -898,8 +918,9 @@ impl WorkerNode {
         }
         host.ensure_dispatch_pool();
         let credential_probe = credential_liveness::spawn_probe(
-            lifecycle.credential_observations.clone(),
+            lifecycle.observations.clone(),
             lifecycle.credential_observation_resolver.clone(),
+            lifecycle.acp_capability_observation_source.clone(),
             self.credential_probe_interval,
             self.credential_observation_ttl,
         );

@@ -1204,6 +1204,7 @@ pub async fn assert_cancel<S: awaken_run_ingress::Dispatch>(store: &S) {
         state: WorkerState::Ready,
         in_flight: 0,
         credential_observations: Default::default(),
+        acp_capability_observations: Default::default(),
         expires_at_ms: 10_000,
     };
 

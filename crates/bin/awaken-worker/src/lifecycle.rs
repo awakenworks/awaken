@@ -6,7 +6,7 @@ use awaken_runtime_host::WorkerControlClient;
 use awaken_server::SharedHost;
 use awaken_worker_contract::{RegistryMutation, WorkerHeartbeat, WorkerIdentity};
 
-use crate::credential_liveness::CredentialObservationCache;
+use crate::credential_liveness::WorkerObservationCache;
 
 /// Why the Worker lifecycle is stopping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,7 +25,9 @@ pub(crate) struct WorkerLifecycle {
     pub(crate) identity: WorkerIdentity,
     pub(crate) credential_observation_resolver:
         Option<Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>>,
-    pub(crate) credential_observations: Arc<CredentialObservationCache>,
+    pub(crate) acp_capability_observation_source:
+        Option<Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>>,
+    pub(crate) observations: Arc<WorkerObservationCache>,
 }
 
 impl WorkerLifecycle {
@@ -72,7 +74,10 @@ pub(crate) fn spawn_heartbeat(
                         sequence,
                         ready: lifecycle.host.pool_accepting_work(),
                         in_flight: lifecycle.host.pool_in_flight(),
-                        credential_observations: lifecycle.credential_observations.snapshot(),
+                        credential_observations: lifecycle.observations.credential_snapshot(),
+                        acp_capability_observations: lifecycle
+                            .observations
+                            .acp_capability_snapshot(),
                     },
                 )
                 .await;

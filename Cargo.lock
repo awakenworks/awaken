@@ -1798,6 +1798,7 @@ name = "awaken-worker"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
+ "awaken-acp-contract",
  "awaken-agent-contract",
  "awaken-control",
  "awaken-credential-vault",
@@ -1818,6 +1819,7 @@ name = "awaken-worker-contract"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
+ "awaken-acp-contract",
  "awaken-provisioning-contract",
  "proptest",
  "serde",

@@ -359,6 +359,7 @@ mod tests {
                         ready: true,
                         in_flight,
                         credential_observations: Default::default(),
+                        acp_capability_observations: Default::default(),
                     },
                     11,
                     1_000,

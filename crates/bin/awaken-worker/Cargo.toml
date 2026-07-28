@@ -45,6 +45,7 @@ axum = { workspace = true }
 # exporter installed by `awaken_observability::init`).
 awaken-observability = { workspace = true }
 awaken-worker-contract = { workspace = true }
+awaken-acp-contract = { workspace = true }
 awaken-provisioning-contract = { workspace = true }
 getrandom = "0.2"
 

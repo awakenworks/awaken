@@ -66,6 +66,7 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
                     credential_observations: std::collections::BTreeSet::from([
                         observation.clone(),
                     ]),
+                    acp_capability_observations: Default::default(),
                 },
             )
             .await
@@ -109,6 +110,7 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
                 ready: true,
                 in_flight: 0,
                 credential_observations: Default::default(),
+                acp_capability_observations: Default::default(),
             },
         )
         .await
@@ -245,6 +247,7 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
                 ready: true,
                 in_flight: 0,
                 credential_observations: Default::default(),
+                acp_capability_observations: Default::default(),
             },
         )
         .await
@@ -373,6 +376,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
                     )]
                     .into_iter()
                     .collect(),
+                    acp_capability_observations: Default::default(),
                 },
             )
             .await
@@ -431,6 +435,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
                     )]
                     .into_iter()
                     .collect(),
+                    acp_capability_observations: Default::default(),
                 },
             )
             .await

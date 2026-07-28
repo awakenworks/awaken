@@ -423,6 +423,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # provisioning capability vocabulary; persistence and channels stay in server
     # adapters, so the isolated worker contract remains store-free.
     "awaken-worker-contract": {
+        "awaken-acp-contract",
         "awaken-provisioning-contract",
         "async-trait",
         "serde",
@@ -1618,6 +1619,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # so the graph stays acyclic (awaken-cli's bin depends on this crate). The
     # dev-deps back the offline model-resolution test.
     "awaken-worker": {
+        "awaken-acp-contract",
         "awaken-runtime-host",
         "awaken-server",
         "awaken-control",

@@ -3,14 +3,14 @@
 //! It adapts the canonical ACP discovery observations to the existing credential
 //! liveness port. It never opens, returns, or materializes CLI credentials.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 pub use awaken_acp_application::AcpLocalCredentialResolver;
 use awaken_acp_application::{
     AcpCapabilityNegotiator, AcpDiscovery, AcpHostDiscovery, AcpHostObservation,
-    AcpWrapperInstaller, EffectiveAcpCapabilityProfile, HostAcpCapabilityNegotiator,
-    LocalAcpPreparation, NpmWrapperInstaller, prepare_host_acp_with,
+    AcpWrapperInstaller, HostAcpCapabilityNegotiator, LocalAcpPreparation, NpmWrapperInstaller,
+    prepare_host_acp_with,
 };
 use awaken_run_executor_acp::acp_cli;
 use awaken_runtime_contract::CredentialObservationState;
@@ -20,7 +20,6 @@ use awaken_runtime_contract::CredentialObservationState;
 /// already-composed ports needed to build the existing WorkerNode.
 pub struct PreparedLocalAcp {
     resolver: Arc<AcpLocalCredentialResolver>,
-    effective_profiles: BTreeMap<String, EffectiveAcpCapabilityProfile>,
     stores: awaken_control::InferenceMaterializationStores,
     resources: Option<awaken_worker::WorkerResourcePlane>,
 }
@@ -127,7 +126,6 @@ async fn prepare_local_acp_with(
     deployment.run_local_pool = false;
     Ok(Some(PreparedLocalAcp {
         resolver: prepared.resolver,
-        effective_profiles: prepared.effective_profiles,
         stores,
         resources,
     }))
@@ -143,18 +141,12 @@ impl PreparedLocalAcp {
         deployment: &crate::config::ResolvedDeployment,
     ) -> Result<awaken_worker::WorkerNode, String> {
         let worker = &deployment.worker;
-        let mut extra_capabilities = worker.capabilities.clone();
-        extra_capabilities.extend(
-            self.effective_profiles.values().map(|profile| {
-                format!("acp-capability/{}/{}", profile.cli_id, profile.fingerprint)
-            }),
-        );
         let mut manifest = worker
             .build_digest
             .clone()
             .map(awaken_worker::StandardManifestConfig::new)
             .unwrap_or_default()
-            .with_extra_capabilities(extra_capabilities);
+            .with_extra_capabilities(worker.capabilities.clone());
         if let Some(zone) = &worker.zone {
             manifest = manifest.with_zone(zone.clone());
         }
@@ -162,13 +154,15 @@ impl PreparedLocalAcp {
             manifest = manifest.with_max_concurrent(max_concurrent);
         }
 
+        let resolver = self.resolver;
         let mut builder = awaken_worker::WorkerNodeBuilder::new(
             awaken_runtime_host::WorkerUpstream::new(upstream),
         )
         .with_deployment_config(deployment.runtime.clone())
         .with_standard_manifest_config(manifest)
         .with_credential_stores(self.stores.credentials, self.stores.secrets)
-        .with_worker_local_credential_resolver(self.resolver)
+        .with_worker_local_credential_resolver(resolver.clone())
+        .with_acp_capability_observation_source(resolver)
         .with_graceful_drain(std::time::Duration::from_secs(worker.drain_grace_secs))
         .with_credential_observation_window(
             std::time::Duration::from_secs(worker.credential_probe_interval_secs),

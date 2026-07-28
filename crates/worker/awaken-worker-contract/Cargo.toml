@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+awaken-acp-contract.workspace = true
 awaken-provisioning-contract.workspace = true
 async-trait.workspace = true
 serde.workspace = true

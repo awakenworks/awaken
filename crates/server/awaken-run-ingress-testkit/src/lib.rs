@@ -708,6 +708,7 @@ async fn local_claims_skip_remote_only_work(store: &dyn DispatchQueue, ns: &str)
         )]
         .into_iter()
         .collect(),
+        acp_capability_observations: Default::default(),
         expires_at_ms: 10_000,
     };
     let remote = store
@@ -1223,6 +1224,7 @@ async fn completion_is_atomic_and_prevents_resurrection(
         manifest,
         in_flight: 0,
         credential_observations: Default::default(),
+        acp_capability_observations: Default::default(),
         expires_at_ms: 100_000,
     };
     assert!(
@@ -1350,6 +1352,7 @@ fn credential_worker(ns: &str, holder: &PlaintextHolder, capable: bool) -> Worke
         state: WorkerState::Ready,
         in_flight: 0,
         credential_observations: Default::default(),
+        acp_capability_observations: Default::default(),
         expires_at_ms: 100_000,
     }
 }

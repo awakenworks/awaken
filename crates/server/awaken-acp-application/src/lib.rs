@@ -7,9 +7,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use awaken_acp_contract::{
+    AcpCapabilityObservation, AcpCapabilityObservationSource, AcpCapabilityObservationState,
+};
 use awaken_credential_vault::repo::{CredentialRepo, ensure_worker_local};
 use awaken_credential_vault::{
     CredentialKind, CredentialSource, CredentialStatus, WorkerLocalBinding,
@@ -222,9 +225,25 @@ pub async fn prepare_host_acp_with(
         .list(&input.workspace)
         .await
         .map_err(|error| format!("list local ACP bindings: {error}"))?;
-    let resolver = Arc::new(AcpLocalCredentialResolver::from_sources(
-        discovery, sources,
-    )?);
+    let capability_routes = observations
+        .iter()
+        .filter(|observation| observation.detected())
+        .map(|observation| {
+            let cli = acp_cli(&observation.cli_id).expect("discovery returns catalog ids");
+            let argv = launch_argv
+                .get(&observation.cli_id)
+                .cloned()
+                .unwrap_or_else(|| cli.acquisition.local_argv());
+            (observation.cli_id.clone(), argv)
+        })
+        .collect();
+    let resolver = Arc::new(
+        AcpLocalCredentialResolver::from_sources(discovery, sources)?.with_capability_observations(
+            negotiator,
+            capability_routes,
+            PathBuf::from(&input.workspace),
+        ),
+    );
     Ok(PreparedAcpCapabilities {
         observations,
         launch_argv,
@@ -244,6 +263,14 @@ struct LocalBinding {
 pub struct AcpLocalCredentialResolver {
     discovery: Arc<dyn AcpDiscovery>,
     bindings: BTreeMap<String, LocalBinding>,
+    last_host_observations: Mutex<BTreeMap<String, AcpHostObservation>>,
+    capability: Option<CapabilityObservationConfig>,
+}
+
+struct CapabilityObservationConfig {
+    negotiator: Arc<dyn AcpCapabilityNegotiator>,
+    launch_argv: BTreeMap<String, Vec<String>>,
+    cwd: PathBuf,
 }
 
 impl AcpLocalCredentialResolver {
@@ -291,7 +318,24 @@ impl AcpLocalCredentialResolver {
         Ok(Self {
             discovery,
             bindings,
+            last_host_observations: Mutex::new(BTreeMap::new()),
+            capability: None,
         })
+    }
+
+    #[must_use]
+    pub fn with_capability_observations(
+        mut self,
+        negotiator: Arc<dyn AcpCapabilityNegotiator>,
+        launch_argv: BTreeMap<String, Vec<String>>,
+        cwd: PathBuf,
+    ) -> Self {
+        self.capability = Some(CapabilityObservationConfig {
+            negotiator,
+            launch_argv,
+            cwd,
+        });
+        self
     }
 
     async fn observe(&self, binding: &LocalBinding) -> CredentialObservation {
@@ -308,6 +352,10 @@ impl AcpLocalCredentialResolver {
             };
         }
         let observation = self.discovery.discover(binding.cli).await;
+        self.last_host_observations
+            .lock()
+            .expect("ACP host-observation cache poisoned")
+            .insert(binding.cli.id.to_string(), observation.clone());
         let (state, reason_code) = classify_host_observation(&observation);
         CredentialObservation {
             credential: binding.credential.clone(),
@@ -316,6 +364,105 @@ impl AcpLocalCredentialResolver {
             reason_code,
         }
     }
+}
+
+#[async_trait]
+impl AcpCapabilityObservationSource for AcpLocalCredentialResolver {
+    async fn capability_observations(&self) -> Result<Vec<AcpCapabilityObservation>, String> {
+        let Some(capability) = &self.capability else {
+            return Ok(Vec::new());
+        };
+        let mut observations = Vec::new();
+        for binding in self.bindings.values() {
+            let observed_at_ms = wall_clock_ms();
+            if binding.status != CredentialStatus::Active {
+                observations.push(AcpCapabilityObservation {
+                    backend_ref: format!("acp:{}", binding.cli.id),
+                    adapter_version: "unknown".into(),
+                    state: AcpCapabilityObservationState::Unavailable,
+                    observed_at_ms,
+                    fingerprint: None,
+                    negotiated: None,
+                    reason_code: Some("worker_local_source_disabled".into()),
+                });
+                continue;
+            }
+            let cached = self
+                .last_host_observations
+                .lock()
+                .expect("ACP host-observation cache poisoned")
+                .get(binding.cli.id)
+                .cloned();
+            let host = match cached {
+                Some(observation) => observation,
+                None => self.discovery.discover(binding.cli).await,
+            };
+            if host.credential_state != Some(CredentialObservationState::Available) {
+                observations.push(AcpCapabilityObservation {
+                    backend_ref: format!("acp:{}", binding.cli.id),
+                    adapter_version: host.version.unwrap_or_else(|| "unknown".into()),
+                    state: AcpCapabilityObservationState::Unavailable,
+                    observed_at_ms,
+                    fingerprint: None,
+                    negotiated: None,
+                    reason_code: Some("acp_login_not_available".into()),
+                });
+                continue;
+            }
+            let Some(argv) = capability.launch_argv.get(binding.cli.id) else {
+                observations.push(AcpCapabilityObservation {
+                    backend_ref: format!("acp:{}", binding.cli.id),
+                    adapter_version: host.version.unwrap_or_else(|| "unknown".into()),
+                    state: AcpCapabilityObservationState::ProbeFailed,
+                    observed_at_ms,
+                    fingerprint: None,
+                    negotiated: None,
+                    reason_code: Some("acp_launch_route_missing".into()),
+                });
+                continue;
+            };
+            match capability
+                .negotiator
+                .negotiate(argv, &capability.cwd, binding.cli.auth_method_id)
+                .await
+            {
+                Ok(negotiated) => {
+                    let profile = EffectiveAcpCapabilityProfile::verified(
+                        binding.cli.id,
+                        host.version.as_deref().unwrap_or("unknown"),
+                        negotiated,
+                    );
+                    observations.push(AcpCapabilityObservation {
+                        backend_ref: format!("acp:{}", binding.cli.id),
+                        adapter_version: profile.cli_version,
+                        state: AcpCapabilityObservationState::Verified,
+                        observed_at_ms,
+                        fingerprint: Some(profile.fingerprint),
+                        negotiated: Some(profile.negotiated),
+                        reason_code: None,
+                    });
+                }
+                Err(_) => observations.push(AcpCapabilityObservation {
+                    backend_ref: format!("acp:{}", binding.cli.id),
+                    adapter_version: host.version.unwrap_or_else(|| "unknown".into()),
+                    state: AcpCapabilityObservationState::ProbeFailed,
+                    observed_at_ms,
+                    fingerprint: None,
+                    negotiated: None,
+                    reason_code: Some("acp_capability_probe_failed".into()),
+                }),
+            }
+        }
+        observations.sort_by(|left, right| left.backend_ref.cmp(&right.backend_ref));
+        Ok(observations)
+    }
+}
+
+fn wall_clock_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 fn classify_host_observation(

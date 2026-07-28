@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use async_trait::async_trait;
+use awaken_acp_contract::AcpCapabilityObservation;
 use awaken_provisioning_contract::{
     IsolationClass, ResourceLimits, SandboxCapabilities, capability_requirements_satisfied,
 };
@@ -98,6 +99,15 @@ impl WorkerCredentialObservation {
             && self.observed_at_ms <= now_ms
             && now_ms < self.valid_until_ms
     }
+}
+
+/// Worker-leased wrapper around one ACP capability observation. The inner
+/// profile is protocol-neutral and secret-free; expiry is Worker authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerAcpCapabilityObservation {
+    pub observation: AcpCapabilityObservation,
+    #[serde(default)]
+    pub valid_until_ms: u64,
 }
 
 pub const CURRENT_CONTRACT_VERSION: u32 = 1;
@@ -514,6 +524,8 @@ pub struct WorkerSnapshot {
     /// revocation may change while the worker process remains alive.
     #[serde(default)]
     pub credential_observations: BTreeSet<WorkerCredentialObservation>,
+    #[serde(default)]
+    pub acp_capability_observations: Vec<WorkerAcpCapabilityObservation>,
     pub expires_at_ms: u64,
 }
 
@@ -615,6 +627,8 @@ pub struct WorkerHeartbeat {
     /// No secret, local path, environment name, or broker token crosses here.
     #[serde(default)]
     pub credential_observations: BTreeSet<WorkerCredentialObservation>,
+    #[serde(default)]
+    pub acp_capability_observations: Vec<WorkerAcpCapabilityObservation>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -949,6 +963,7 @@ mod tests {
             capability_fingerprint,
             in_flight: load,
             credential_observations: BTreeSet::new(),
+            acp_capability_observations: Vec::new(),
             expires_at_ms: 1_000,
         }
     }
