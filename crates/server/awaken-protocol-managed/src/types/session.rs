@@ -627,6 +627,11 @@ impl InboundEvent {
 #[derive(Debug, Clone, Deserialize)]
 pub struct SendEventsRequest {
     pub events: Vec<InboundEvent>,
+    /// Optional request-grained data owner. It deliberately belongs to this
+    /// event batch, not the durable Session: one Session may serve more than one
+    /// end user over its lifetime.
+    #[serde(default)]
+    pub user_profile_id: Option<String>,
 }
 
 /// One receipt in the `POST .../events` response `data` array.

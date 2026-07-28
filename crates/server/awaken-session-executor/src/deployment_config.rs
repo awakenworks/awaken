@@ -217,6 +217,32 @@ impl Default for SandboxSettings {
     }
 }
 
+/// Redactor selected for captured model/tool content.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ContentRedaction {
+    /// Preserve content bytes when Full capture is explicitly enabled.
+    #[default]
+    None,
+    /// Apply the built-in conservative PII pattern redactor before persistence.
+    Regex,
+}
+
+/// Typed deployment ceiling for optional content capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContentCaptureSettings {
+    pub level: awaken_runtime_contract::ContentCapture,
+    pub redaction: ContentRedaction,
+}
+
+impl Default for ContentCaptureSettings {
+    fn default() -> Self {
+        Self {
+            level: awaken_runtime_contract::ContentCapture::Structured,
+            redaction: ContentRedaction::None,
+        }
+    }
+}
+
 /// The deployment axes a single binary composes from — parsed once, injected into
 /// the runtime rather than re-read from the environment at each call site.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -250,6 +276,8 @@ pub struct DeploymentConfig {
     pub sandbox_dir: Option<PathBuf>,
     /// Sandbox/container operator policy, resolved once by the composition root.
     pub sandbox: SandboxSettings,
+    /// Deployment content-capture ceiling and redaction behavior.
+    pub content_capture: ContentCaptureSettings,
     /// The durable ACP Session blob root.
     pub acp_session_blob_root: Option<PathBuf>,
     /// The exact ACP adapters this Worker advertises and serves.
@@ -356,6 +384,7 @@ impl DeploymentConfig {
             sandbox_tier: SandboxTier::Namespace,
             sandbox_dir: None,
             sandbox: SandboxSettings::default(),
+            content_capture: ContentCaptureSettings::default(),
             acp_session_blob_root: None,
             acp: None,
             container_image: None,

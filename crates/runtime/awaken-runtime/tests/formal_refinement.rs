@@ -446,6 +446,7 @@ fn activation(snapshot: ExecutableAgentSnapshot) -> RunActivation {
         }],
         delegation_origin: None,
         model_ref_override: None,
+        data_subject_id: None,
         tool_capability_narrowing: Default::default(),
     }
 }

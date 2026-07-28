@@ -28,6 +28,7 @@ fn ticket(run: &str, thread: &str) -> ResumeTicket {
         snapshot_id: "snap-1".to_string(),
         catalog_fingerprint: "fp-1".to_string(),
         delegation_origin: None,
+        data_subject_id: None,
         reason: AwaitReason::ToolPermission,
         call_id: Some("call-1".to_string()),
         pending_tool: None,

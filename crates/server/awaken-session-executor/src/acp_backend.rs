@@ -304,14 +304,11 @@ impl crate::host::SharedHost {
         // restore it before the next, keyed by thread+adapter — under the same
         // config home the resolver opens. A `Gateway`/stateless CLI is skipped by the
         // executor's own dispatch; a single-machine host leaves this unset.
-        let session_home = if let Some(blob_root) = self.session_blob_root.clone() {
-            let blobs = Arc::new(awaken_run_executor_acp::FsSessionBlobStore::new(blob_root));
-            Some(Arc::new(awaken_run_executor_acp::DirSessionHome::new(
+        let session_home = self.session_blob_store.clone().map(|blobs| {
+            Arc::new(awaken_run_executor_acp::DirSessionHome::new(
                 store_dir, blobs,
-            )) as Arc<dyn SessionHomeProvider>)
-        } else {
-            None
-        };
+            )) as Arc<dyn SessionHomeProvider>
+        });
         let host = self.with_bound_acp(source, session_home);
         match secret_broker {
             Some(broker) => host.with_session_secret_broker(broker),

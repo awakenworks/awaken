@@ -23,6 +23,7 @@ fn ticket(run_id: &RunId, thread_id: &ThreadId) -> ResumeTicket {
         snapshot_id: "snapshot".to_string(),
         catalog_fingerprint: "catalog".to_string(),
         delegation_origin: None,
+        data_subject_id: None,
         reason: AwaitReason::UserInput,
         call_id: None,
         pending_tool: None,
