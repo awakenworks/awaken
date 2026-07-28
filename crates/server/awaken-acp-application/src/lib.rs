@@ -265,22 +265,42 @@ impl PreparedAcpCapabilities {
         credentials: &dyn CredentialRepo,
         workspace: &str,
     ) -> Result<(), String> {
-        for cli_id in &self.selected_cli_ids {
-            ensure_worker_local(
-                credentials,
-                workspace,
-                WorkerLocalBinding::new(format!("acp:{cli_id}"), "default"),
-                None,
-            )
-            .await
-            .map_err(|error| format!("register local ACP binding for {}: {error}", cli_id))?;
-        }
+        ensure_workspace_bindings(
+            credentials,
+            workspace,
+            self.selected_cli_ids.iter().map(String::as_str),
+        )
+        .await?;
         let sources = credentials
             .list(workspace)
             .await
             .map_err(|error| format!("list local ACP bindings: {error}"))?;
         self.resolver.add_sources(sources)
     }
+}
+
+/// Idempotently create the non-secret WorkerLocal identities requested by one
+/// execution Workspace. Discovery is deliberately not required here: the
+/// control plane records intent, while Worker observations independently prove
+/// whether a matching host identity is currently usable.
+pub async fn ensure_workspace_bindings<'a>(
+    credentials: &dyn CredentialRepo,
+    workspace: &str,
+    cli_ids: impl IntoIterator<Item = &'a str>,
+) -> Result<(), String> {
+    for cli_id in cli_ids {
+        let cli = acp_cli(cli_id)
+            .ok_or_else(|| format!("local ACP binding names unknown CLI `{cli_id}`"))?;
+        ensure_worker_local(
+            credentials,
+            workspace,
+            WorkerLocalBinding::new(format!("acp:{}", cli.id), "default"),
+            None,
+        )
+        .await
+        .map_err(|error| format!("register local ACP binding for {}: {error}", cli.id))?;
+    }
+    Ok(())
 }
 
 fn routable_cli_ids(

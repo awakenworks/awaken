@@ -44,7 +44,9 @@ use axum::Router;
 // The managed-agents service layer (`awaken-runtime-host`): the neutral host,
 // the two port adapters, the per-plane routers, and the authoring/transport
 // re-exports a composition root (and the integration tests) drive directly.
-pub use awaken_acp_application::{LocalAcpPreparation, PreparedAcpCapabilities};
+pub use awaken_acp_application::{
+    LocalAcpPreparation, PreparedAcpCapabilities, ensure_workspace_bindings,
+};
 pub use awaken_managed_routers::{default_models, files_router, models_router};
 pub use awaken_runtime_host::{
     ConfigService, ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost,
