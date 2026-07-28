@@ -9,7 +9,6 @@ import type {
   CatalogSyncResult,
   ConfigCapabilitiesView,
   CredentialSource,
-  EnvironmentProviderProposal,
   ProviderCatalog,
   ProviderConnectionSummary,
   ProviderDriverDescriptor,
@@ -96,10 +95,6 @@ export default function ModelsSurface() {
     queryKey: ["config-capabilities"],
     queryFn: () => api.get<ConfigCapabilitiesView>(ws("/v1/config/capabilities")),
     staleTime: Infinity,
-  });
-  const proposals = useQuery({
-    queryKey: ["provider-proposals"],
-    queryFn: () => api.get<EnvironmentProviderProposal[]>(ws("/v1/config/provider-proposals")),
   });
   const descriptors = useQuery({
     queryKey: ["provider-descriptors"],
@@ -245,7 +240,6 @@ export default function ModelsSurface() {
         credentials={credentials.data ?? []}
         descriptors={descriptors.data ?? []}
         connections={connections.data ?? []}
-        proposals={proposals.data ?? []}
       />
 
       {testModel && (
