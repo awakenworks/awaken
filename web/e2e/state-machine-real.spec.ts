@@ -10,17 +10,28 @@ import { PRESETS } from "../src/components/agent/state-machine-presets";
 
 const KIMI = process.env.KIMI_KEY ?? "";
 const KIMI_UPSTREAM_MODEL = process.env.KIMI_MODEL ?? "kimi-for-coding";
-const KIMI_MODEL = "e2e-real-kimi-for-coding";
+const KIMI_MODEL = KIMI_UPSTREAM_MODEL;
 const USE_EXISTING_KIMI = process.env.KIMI_EXISTING_CREDENTIAL === "1";
 test.skip(!KIMI && !USE_EXISTING_KIMI, "needs KIMI_KEY or KIMI_EXISTING_CREDENTIAL=1");
 
 async function configureKimi(request: APIRequestContext) {
-  await request.put("/v1/config/providers/kimi", { data: { id: "kimi", slug: "kimi", display_name: "Kimi", version: 1 } });
-  await request.put("/v1/config/endpoints/kimi-ep", { data: { id: "kimi-ep", provider_id: "kimi", dialect: "anthropic_messages", base_url: "https://api.kimi.com/coding/v1/", timeout_secs: 60, display_name: "Kimi", version: 1 } });
-  await request.post("/v1/config/offerings", { data: { model_id: KIMI_MODEL, provider_id: "kimi", protocol_endpoint_id: "kimi-ep", dialect: "anthropic_messages", upstream_model: KIMI_UPSTREAM_MODEL } });
-  if (KIMI) {
-    await request.post("/v1/config/credentials", { data: { workspace_id: "wrkspc_default", kind: "vault", provider_id: "kimi", secret: KIMI } });
-  }
+  const credentials = await request.get("/v1/config/credentials?workspace_id=wrkspc_default");
+  const existing = (await credentials.json()).find(
+    (credential: { provider_id?: string; status: string }) =>
+      credential.provider_id === "kimi" && credential.status === "active",
+  );
+  const response = await request.post("/v1/config/provider-connections", {
+    data: {
+      workspace_id: "wrkspc_default",
+      provider_id: "kimi",
+      display_name: "Kimi",
+      endpoint_id: "kimi-ep",
+      dialect: "anthropic_messages",
+      base_url: "https://api.kimi.com/coding/v1/",
+      ...(KIMI ? { secret: KIMI } : { credential_source_id: existing?.id }),
+    },
+  });
+  expect(response.status()).toBe(201);
 }
 
 test("read-before-write state machine blocks an unread write at runtime (real model)", async ({ request }) => {

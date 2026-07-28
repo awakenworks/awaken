@@ -6,6 +6,7 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -146,47 +147,45 @@ async function request(base, method, route, body) {
   return value;
 }
 
-async function publishAgent(base) {
-  await request(base, 'PUT', '/v1/config/providers/google', {
-    id: 'google',
-    slug: 'google',
-    display_name: 'Google',
-    version: 1,
-  });
-  await request(base, 'PUT', '/v1/config/endpoints/container-gemini-endpoint', {
-    id: 'container-gemini-endpoint',
-    provider_id: 'google',
-    dialect: 'open_ai_chat',
-    base_url: 'http://container-db.invalid/v1',
-    timeout_secs: 30,
-    display_name: 'Container Gemini',
-    version: 1,
-  });
-  await request(base, 'POST', '/v1/config/offerings', {
-    model_id: 'container-published',
-    provider_id: 'google',
-    protocol_endpoint_id: 'container-gemini-endpoint',
-    dialect: 'open_ai_chat',
-    upstream_model: 'container-upstream',
-  });
-  await request(base, 'POST', '/v1/config/credentials', {
+async function publishAgent(base, directoryUrl) {
+  await request(base, 'POST', '/v1/config/provider-connections', {
     workspace_id: WORKSPACE,
-    kind: 'vault',
-    provider_id: 'google',
-    env_key: 'GEMINI_API_KEY',
+    provider_id: 'gemini',
+    display_name: 'Gemini',
+    endpoint_id: 'container-gemini-endpoint',
+    dialect: 'gemini',
+    base_url: `${directoryUrl}/v1beta/`,
+    timeout_secs: 30,
     secret: 'persisted-container-key', // awaken-allow: secret (fixture)
   });
   await request(base, 'PUT', `/v1/config/agents/${AGENT}`, {
     name: AGENT,
     model: {
-      id: 'container-published',
-      provider_identity_ref: 'google',
+      id: 'container-upstream',
+      provider_identity_ref: 'gemini',
       backend_ref: 'acp:gemini',
     },
     system: 'Exercise publication-pinned container ACP provisioning.',
     tools: [],
   });
   await request(base, 'POST', `/v1/config/agents/${AGENT}/publish`);
+}
+
+async function startModelDirectory() {
+  const server = http.createServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ models: [{ name: 'models/container-upstream' }] }));
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    close: () => new Promise((resolve) => server.close(resolve)),
+  };
 }
 
 async function main() {
@@ -201,6 +200,7 @@ async function main() {
   const anonymousFixture = await startCalcFixture('unused-container-anonymous-token', {
     allowAnonymous: true,
   });
+  const directory = await startModelDirectory();
   const environment = { ...process.env };
   for (const key of [
     'AWAKEN_ACP_ARGV',
@@ -235,7 +235,7 @@ async function main() {
     await ready(server);
     WORKSPACE = fs.readFileSync(path.join(STORAGE, 'platform-workspace-id'), 'utf8').trim();
     const base = `http://127.0.0.1:${PORT}`;
-    await publishAgent(base);
+    await publishAgent(base, directory.url);
     client = new Anthropic({
       apiKey: 'e2e-dummy',
       baseURL: base,
@@ -325,6 +325,7 @@ async function main() {
       'E2E PASS: production awaken projected publication-pinned model access, MCP, and File input into one Docker ACP run.',
     );
   } finally {
+    await directory.close();
     // The production sandbox is Session-owned and deliberately survives server
     // shutdown for crash recovery. Dispose the Session while the server is live
     // so this E2E does not strand a container (and its writable layer) on either

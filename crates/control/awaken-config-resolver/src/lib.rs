@@ -508,6 +508,9 @@ pub async fn resolve_profile_candidates(
 /// the ADR calls out.
 #[must_use]
 pub fn can_consume(offering_provider_id: &str, source: &CredentialSource) -> bool {
+    if source.env_key.as_deref() == Some(awaken_credential_vault::CLAUDE_CODE_SETUP_TOKEN_ENV) {
+        return false;
+    }
     match (source.kind, source.provider_id.as_deref()) {
         (awaken_credential_vault::CredentialKind::WorkerLocal, None) => false,
         (_, None) => true,

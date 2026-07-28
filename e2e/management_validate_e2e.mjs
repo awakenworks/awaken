@@ -44,25 +44,19 @@ async function main() {
 
   try {
     await withScenarioServer('management', 'mcp', 38160, async (base) => {
-      // Author a provider + endpoint (the live base URL) + offering for `model`.
-      await req(base, 'PUT', '/v1/config/providers/anthropic', {
-        id: 'anthropic', slug: 'anthropic', display_name: 'Anthropic', version: 1,
-      });
-      await req(base, 'PUT', '/v1/config/endpoints/ep1', {
-        id: 'ep1', provider_id: 'anthropic', dialect: 'anthropic_messages',
-        base_url: baseUrl, timeout_secs: 300, display_name: 'live', version: 1,
-      });
-      await req(base, 'POST', '/v1/config/offerings', {
-        model_id: model, provider_id: 'anthropic',
-        protocol_endpoint_id: 'ep1', dialect: 'anthropic_messages', upstream_model: null,
-      });
-
-      // A real key validates as `valid`.
-      let r = await req(base, 'POST', '/v1/config/credentials', {
-        workspace_id: 'ws', kind: 'vault', provider_id: 'anthropic', env_key: 'ANTHROPIC_API_KEY', secret: key,
+      // A tested connection discovers the live model and stores the key once.
+      let r = await req(base, 'POST', '/v1/config/provider-connections', {
+        workspace_id: 'ws',
+        provider_id: 'anthropic',
+        display_name: 'Anthropic',
+        endpoint_id: 'ep1',
+        dialect: 'anthropic_messages',
+        base_url: baseUrl,
+        timeout_secs: 300,
+        secret: key,
       });
       assert.equal(r.status, 201);
-      const goodId = r.json.id;
+      const goodId = r.json.credential.id;
       r = await req(base, 'POST', `/v1/config/credentials/${goodId}/validate`, { workspace_id: 'ws', model_id: model });
       assert.equal(r.status, 200, JSON.stringify(r.json));
       assert.ok(validateContract(r.json), `CredentialValidation contract: ${ajv.errorsText(validateContract.errors)}`);

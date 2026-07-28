@@ -140,7 +140,10 @@ fn live_launch(cli: &awaken_run_executor_acp::AcpCli, config_home: &Path) -> Acp
         config_home_env.to_string(),
         config_home.display().to_string(),
     )];
-    for key in [delivery.base_url, delivery.model, delivery.key] {
+    for key in std::iter::once(delivery.base_url)
+        .chain(std::iter::once(delivery.model))
+        .chain(delivery.credential_env.iter().copied())
+    {
         if let Ok(val) = std::env::var(key) {
             env.push((key.to_string(), val));
         }

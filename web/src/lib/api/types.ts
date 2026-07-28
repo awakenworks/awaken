@@ -4,7 +4,7 @@
 
 // ---- admin config plane ----
 
-import type { ModelTarget } from "./model-types";
+import type * as Contract from "../../../../contracts/model-config";
 
 export type {
   ApiDialect,
@@ -22,63 +22,20 @@ export type {
   ProviderDriverDescriptor,
 } from "./model-types";
 
-export type CredentialBinding =
-  | { type: "none" }
-  | { type: "brokered" }
-  | { type: "exact"; credential_source_id: string }
-  | { type: "one_of_credential_pool"; credential_pool_id: string };
-
-export interface CredentialSource {
-  id: string;
-  workspace_id: string;
-  kind: string;
-  provider_id?: string | null;
-  env_key?: string | null;
-  oauth_helper?: "gcloud" | null;
-  status: string;
-  version: number;
-}
-export interface CredentialPoolMember {
-  credential_source_id: string;
-  ordinal: number;
-  enabled: boolean;
-  selection_weight: number;
-}
-export interface CredentialPool {
-  id: string;
-  workspace_id: string;
-  members: CredentialPoolMember[];
-}
-export interface CredentialValidation {
-  status: "valid" | "invalid" | "unknown";
-  adapter_kind: string;
-}
-export interface ResolvedInferenceView {
-  model_id: string;
-  provider_id: string;
-  protocol_endpoint_id: string;
-  adapter_kind: string;
-  base_url?: string;
-  credential_present: boolean;
-}
+export type CredentialBinding = Contract.CredentialBinding;
+export type CredentialSource = Contract.CredentialSourceView;
+export type CredentialPoolMember = Contract.CredentialPoolMember;
+export type CredentialPool = Contract.CredentialPool;
+export type CredentialValidation = Contract.CredentialValidation;
+export type ResolvedInferenceView = Contract.ResolvedInferenceView;
 export interface ResolvedMcpServerView {
   name: string;
   url: string;
   credential_present: boolean;
 }
-export interface InferenceProfile {
-  workspace_id: string;
-  primary: ProfileCandidate;
-  fallbacks: ProfileCandidate[];
-  disabled_endpoint_ids: string[];
-}
-export interface ProfileCandidate {
-  target: ModelTarget;
-  credential_binding: CredentialBinding;
-}
-export interface ResolvedCandidatesView {
-  candidates: ResolvedInferenceView[];
-}
+export type InferenceProfile = Contract.InferenceProfile;
+export type ProfileCandidate = Contract.PrimaryElement;
+export type ResolvedCandidatesView = Contract.ResolvedCandidatesView;
 export interface McpServerDef {
   id: string;
   display_name: string;

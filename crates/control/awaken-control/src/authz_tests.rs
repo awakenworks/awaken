@@ -211,6 +211,12 @@ fn cloud_guard_uses_cached_login_and_explicit_bearer_override() {
 
 #[test]
 fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
+    // ProviderConnection authorization decision table:
+    // | Method | Collection route | Expected action   |
+    // | GET    | yes              | workspace:read    |
+    // | POST   | yes              | workspace:write   |
+    // The aggregate contains no credential material; secret entry remains
+    // delegated to the credential boundary inside the write command.
     let get = Method::GET;
     let post = Method::POST;
     let put = Method::PUT;
@@ -234,15 +240,11 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
         Some(WORKSPACE_WRITE)
     );
     assert_eq!(
-        action_for(&put, "/v1/config/providers/anthropic"),
-        Some(WORKSPACE_WRITE)
-    );
-    assert_eq!(
-        action_for(&get, "/v1/config/providers/anthropic"),
+        action_for(&get, "/v1/config/provider-connections"),
         Some(WORKSPACE_READ)
     );
     assert_eq!(
-        action_for(&post, "/v1/config/offerings"),
+        action_for(&post, "/v1/config/provider-connections"),
         Some(WORKSPACE_WRITE)
     );
     assert_eq!(
@@ -869,15 +871,11 @@ fn af_covers_the_deployment_environment_and_agent_families() {
     let post = Method::POST;
     let put = Method::PUT;
 
-    // -- config: endpoints / inference-profiles / authoring agents --
-    assert_eq!(
-        scoped(get.clone(), "/v1/config/endpoints/ep1"),
-        Some(WORKSPACE_READ)
-    );
-    assert_eq!(
-        scoped(put.clone(), "/v1/config/endpoints/ep1"),
-        Some(WORKSPACE_WRITE)
-    );
+    // Retired catalog CRUD routes have no authorization mapping, so accidentally
+    // remounting a handler cannot revive the parallel authoring path.
+    assert_eq!(scoped(get.clone(), "/v1/config/endpoints/ep1"), None);
+    assert_eq!(scoped(put.clone(), "/v1/config/endpoints/ep1"), None);
+    // -- config: inference-profiles / authoring agents --
     assert_eq!(
         scoped(get.clone(), "/v1/config/inference-profiles/p1"),
         Some(WORKSPACE_READ)

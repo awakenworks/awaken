@@ -1,6 +1,8 @@
 // The fast series opener. Every caption points at the exact UI evidence it names;
 // seeded, real control-plane objects keep the sweep deterministic and testable.
 
+import { configureSyntheticModel } from "../support/models.mjs";
+
 const AGENT = "platform-overview-agent";
 const MODEL = "overview-model";
 
@@ -17,18 +19,7 @@ export async function run({ page, goto, intro, beat, clearCaption, checkpoint, a
   const store = await (await page.request.post("http://127.0.0.1:38080/v1/memory_stores", {
     data: { name: `Overview memory ${Date.now()}` },
   })).json();
-  await page.request.put("http://127.0.0.1:38080/v1/config/providers/overview", {
-    data: { id: "overview", slug: "overview", display_name: "Overview provider", version: 1 },
-  });
-  await page.request.put("http://127.0.0.1:38080/v1/config/endpoints/overview-anthropic", {
-    data: { id: "overview-anthropic", provider_id: "overview", dialect: "anthropic_messages", base_url: "https://api.example.test/v1", timeout_secs: 60, display_name: "Overview endpoint", version: 1 },
-  });
-  await page.request.post("http://127.0.0.1:38080/v1/config/offerings", {
-    data: { model_id: MODEL, provider_id: "overview", protocol_endpoint_id: "overview-anthropic", dialect: "anthropic_messages", upstream_model: "demo-upstream" },
-  });
-  await page.request.post("http://127.0.0.1:38080/v1/config/credentials", {
-    data: { workspace_id: "wrkspc_default", kind: "vault", provider_id: "overview", secret: "overview-video-only" }, // awaken-allow: secret (synthetic fixture)
-  });
+  await configureSyntheticModel(page, MODEL);
   await page.request.put(`http://127.0.0.1:38080/v1/config/agents/${AGENT}`, {
     data: {
       id: AGENT,

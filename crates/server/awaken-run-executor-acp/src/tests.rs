@@ -2449,7 +2449,9 @@ fn every_backend_row_projects_a_launchable_process_through_the_source() {
             cli.id
         );
         assert_eq!(
-            env(d.key),
+            env(d
+                .default_credential_env()
+                .expect("catalog process-secret delivery has a default"),),
             Some("lease://matrix"),
             "{}: secret delivered by the host",
             cli.id

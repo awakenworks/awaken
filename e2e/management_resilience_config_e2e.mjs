@@ -11,13 +11,42 @@
 //   • GET  /v1/config/credential-pools/:id/eligible  -> eligible_order (cooled dropped)
 
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import { withServer, pass } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38472);
 const WS = 'ws';
+const DIRECTORY_KEY = 'sk-resilience-directory'; // awaken-allow: secret
+
+async function modelDirectory() {
+  const server = http.createServer((request, response) => {
+    if (request.headers['x-api-key'] !== DIRECTORY_KEY) {
+      response.writeHead(401, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ error: { message: 'unauthorized' } }));
+      return;
+    }
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({
+      data: [{ id: 'model-a' }, { id: 'model-b' }],
+      has_more: false,
+    }));
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    close: () => new Promise((resolve) => server.close(resolve)),
+  };
+}
 
 async function main() {
-  await withServer('management', PORT, async (baseUrl) => {
+  const directory = await modelDirectory();
+  try {
+    await withServer('management', PORT, async (baseUrl) => {
     const cfg = async (method, path, body) => {
       const res = await fetch(`${baseUrl}${path}`, {
         method,
@@ -28,19 +57,21 @@ async function main() {
     };
     const ok = (r, s, m) => assert.equal(r.status, s, `${m} (got ${r.status}: ${JSON.stringify(r.body)})`);
 
-    // ── Catalog: one provider, one endpoint, TWO offerings (a model pool) ────
-    ok(await cfg('PUT', '/v1/config/providers/anthropic', { id: 'anthropic', slug: 'anthropic', display_name: 'A', version: 1 }), 200, 'provider');
-    ok(await cfg('PUT', '/v1/config/endpoints/ep1', { id: 'ep1', provider_id: 'anthropic', dialect: 'anthropic_messages', base_url: 'https://example.invalid/v1/', timeout_secs: 300, display_name: 'd', version: 1 }), 200, 'endpoint');
-    for (const m of ['model-a', 'model-b']) {
-      ok(await cfg('POST', '/v1/config/offerings', { model_id: m, provider_id: 'anthropic', protocol_endpoint_id: 'ep1', dialect: 'anthropic_messages', upstream_model: null }), 200, `offering ${m}`);
-    }
-
-    // ── Two anthropic-scoped credentials + a pool over them ─────────────────
-    const c1 = await cfg('POST', '/v1/config/credentials', { workspace_id: WS, kind: 'vault', provider_id: 'anthropic', env_key: 'K1', secret: 'sk-a' });
-    ok(c1, 201, 'cred1');
+    // ── One tested connection discovers two models and stores credential 1 ───
+    const c1 = await cfg('POST', '/v1/config/provider-connections', {
+      workspace_id: WS,
+      provider_id: 'anthropic',
+      display_name: 'Anthropic',
+      endpoint_id: 'ep1',
+      dialect: 'anthropic_messages',
+      base_url: `${directory.url}/v1/`,
+      timeout_secs: 300,
+      secret: DIRECTORY_KEY,
+    });
+    ok(c1, 201, 'provider connection');
     const c2 = await cfg('POST', '/v1/config/credentials', { workspace_id: WS, kind: 'vault', provider_id: 'anthropic', env_key: 'K2', secret: 'sk-b' });
     ok(c2, 201, 'cred2');
-    const id1 = c1.body.id, id2 = c2.body.id;
+    const id1 = c1.body.credential.id, id2 = c2.body.id;
     ok(await cfg('PUT', '/v1/config/credential-pools/pool1', {
       id: 'pool1',
       workspace_id: WS,
@@ -172,7 +203,10 @@ async function main() {
     pass('resolve(pool: [openai, anthropic]) for an anthropic model -> skips openai (can_consume), uses anthropic');
 
     console.log('E2E PASS: provider-resilience config plane — axis candidates + credential availability cooldown/rotation.');
-  });
+    });
+  } finally {
+    await directory.close();
+  }
   process.exitCode = 0;
 }
 

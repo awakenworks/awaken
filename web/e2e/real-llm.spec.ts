@@ -16,14 +16,19 @@ const REPLY_TIMEOUT = 45_000;
 
 test.skip(!KEY, "needs a Gemini/Google key to submit via the credential API");
 
-// Register Gemini through the config plane exactly as an operator would — no server env.
-// Idempotent (PUT provider/endpoint; POST offering/credential tolerate re-runs), so
-// multiple tests in this file can each call it against the shared backend.
+// Register Gemini through the single ProviderConnection command.
 async function configureGemini(request: APIRequestContext) {
-  await request.put("/v1/config/providers/google", { data: { id: "google", slug: "google", display_name: "Google", version: 1 } });
-  await request.put("/v1/config/endpoints/gemini-ep", { data: { id: "gemini-ep", provider_id: "google", dialect: "gemini", base_url: null, timeout_secs: 60, display_name: "Gemini", version: 1 } });
-  await request.post("/v1/config/offerings", { data: { model_id: "gemini-2.5-flash", provider_id: "google", protocol_endpoint_id: "gemini-ep", dialect: "gemini", upstream_model: null } });
-  await request.post("/v1/config/credentials", { data: { workspace_id: "wrkspc_default", kind: "vault", provider_id: "google", secret: KEY } });
+  const response = await request.post("/v1/config/provider-connections", {
+    data: {
+      workspace_id: "wrkspc_default",
+      provider_id: "gemini",
+      display_name: "Google AI Studio",
+      endpoint_id: "gemini-ep",
+      dialect: "gemini",
+      secret: KEY,
+    },
+  });
+  expect(response.status()).toBe(201);
 }
 
 // Send one user turn and poll the session's event log until the assistant turn settles

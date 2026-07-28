@@ -41,6 +41,8 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
+mod support;
+
 /// Records every probe call and answers with a fixed status (same double the
 /// `router_cases` suite uses), so a test can prove the probe ran with the resolved
 /// endpoint + materialized secret and still returned its configured verdict.
@@ -75,11 +77,13 @@ impl CredentialProbe for RecordingProbe {
 
 struct Harness {
     app: Router,
+    catalog: Arc<awaken_model_catalog::repo::InMemoryCatalogRepo>,
 }
 
 fn harness_with(probe: Option<Arc<dyn CredentialProbe>>) -> Harness {
+    let catalog = Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new());
     let app = admin_router(AdminState {
-        catalog: Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new()),
+        catalog: catalog.clone(),
         credentials: Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
         secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
         profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
@@ -89,7 +93,7 @@ fn harness_with(probe: Option<Arc<dyn CredentialProbe>>) -> Harness {
         brokered_catalog: None,
         availability: Arc::new(AvailabilityLedger::new()),
     });
-    Harness { app }
+    Harness { app, catalog }
 }
 
 fn harness() -> Harness {
@@ -121,42 +125,18 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
 }
 
 /// Author a resolvable model: provider + endpoint (`dialect`) + offering.
-async fn author_model(app: &Router, provider: &str, dialect: &str, model: &str) {
-    author_model_at(app, provider, dialect, model, "ep1").await;
+async fn author_model(harness: &Harness, provider: &str, dialect: &str, model: &str) {
+    author_model_at(harness, provider, dialect, model, "ep1").await;
 }
 
-async fn author_model_at(app: &Router, provider: &str, dialect: &str, model: &str, endpoint: &str) {
-    let (s, _) = call(
-        app,
-        "PUT",
-        &format!("/v1/config/providers/{provider}"),
-        Some(json!({ "id": provider, "slug": provider, "display_name": provider, "version": 1 })),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
-    let (s, _) = call(
-        app,
-        "PUT",
-        &format!("/v1/config/endpoints/{endpoint}"),
-        Some(json!({
-            "id": endpoint, "provider_id": provider, "dialect": dialect,
-            "base_url": "https://api.example.com/v1/", "timeout_secs": 300,
-            "display_name": "prod", "version": 1
-        })),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
-    let (s, _) = call(
-        app,
-        "POST",
-        "/v1/config/offerings",
-        Some(json!({
-            "model_id": model, "provider_id": provider,
-            "protocol_endpoint_id": endpoint, "dialect": dialect, "upstream_model": null
-        })),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+async fn author_model_at(
+    harness: &Harness,
+    provider: &str,
+    dialect: &str,
+    model: &str,
+    endpoint: &str,
+) {
+    support::seed_model(&harness.catalog, provider, dialect, model, endpoint).await;
 }
 
 /// Enter a vault credential scoped to `provider` and return its id.
@@ -185,7 +165,7 @@ async fn enter_vault_cred(app: &Router, provider: Option<&str>, secret: &str) ->
 #[tokio::test]
 async fn resolve_route_none_binding_is_secret_free_view() {
     let h = harness();
-    author_model(&h.app, "anthropic", "anthropic_messages", "claude-opus-4-8").await;
+    author_model(&h, "anthropic", "anthropic_messages", "claude-opus-4-8").await;
 
     let (s, view) = call(
         &h.app,
@@ -213,7 +193,7 @@ async fn resolve_route_none_binding_is_secret_free_view() {
 #[tokio::test]
 async fn resolve_route_exact_binding_present_and_secret_free() {
     let h = harness();
-    author_model(&h.app, "anthropic", "anthropic_messages", "claude-opus-4-8").await;
+    author_model(&h, "anthropic", "anthropic_messages", "claude-opus-4-8").await;
     let cred = enter_vault_cred(&h.app, Some("anthropic"), "sk-resolve-route").await;
 
     let (s, view) = call(
@@ -368,7 +348,7 @@ async fn legacy_profile_input_is_returned_as_structured_targets() {
 #[tokio::test]
 async fn resolve_profile_route_resolves_primary_model() {
     let h = harness();
-    author_model(&h.app, "anthropic", "anthropic_messages", "claude-opus-4-8").await;
+    author_model(&h, "anthropic", "anthropic_messages", "claude-opus-4-8").await;
     let (s, _) = call(
         &h.app,
         "PUT",
@@ -424,19 +404,15 @@ async fn resolve_profile_route_missing_profile_is_404() {
 #[tokio::test]
 async fn resolve_candidates_route_returns_ordered_axis() {
     let h = harness();
-    author_model(&h.app, "anthropic", "anthropic_messages", "claude-opus-4-8").await;
-    // A second offering under the same endpoint gives the fallback model a resolution.
-    let (s, _) = call(
-        &h.app,
-        "POST",
-        "/v1/config/offerings",
-        Some(json!({
-            "model_id": "claude-haiku-4-8", "provider_id": "anthropic",
-            "protocol_endpoint_id": "ep1", "dialect": "anthropic_messages", "upstream_model": null
-        })),
+    author_model(&h, "anthropic", "anthropic_messages", "claude-opus-4-8").await;
+    support::seed_model(
+        &h.catalog,
+        "anthropic",
+        "anthropic_messages",
+        "claude-haiku-4-8",
+        "ep1",
     )
     .await;
-    assert_eq!(s, StatusCode::OK);
 
     let (s, _) = call(
         &h.app,
@@ -472,7 +448,7 @@ async fn resolve_candidates_route_returns_ordered_axis() {
 async fn resolve_candidates_use_each_steps_own_credential_binding() {
     let h = harness();
     author_model_at(
-        &h.app,
+        &h,
         "anthropic",
         "anthropic_messages",
         "primary-model",
@@ -480,7 +456,7 @@ async fn resolve_candidates_use_each_steps_own_credential_binding() {
     )
     .await;
     author_model_at(
-        &h.app,
+        &h,
         "openai",
         "open_ai_responses",
         "managed-fallback",
@@ -528,7 +504,7 @@ async fn resolve_candidates_use_each_steps_own_credential_binding() {
 #[tokio::test]
 async fn resolve_candidates_route_skips_unresolvable_fallback() {
     let h = harness();
-    author_model(&h.app, "anthropic", "anthropic_messages", "claude-opus-4-8").await;
+    author_model(&h, "anthropic", "anthropic_messages", "claude-opus-4-8").await;
 
     let (s, _) = call(
         &h.app,
@@ -617,7 +593,7 @@ async fn resolve_candidates_route_missing_profile_is_404() {
 async fn vc4_probe_invalid_is_returned_end_to_end() {
     let probe = RecordingProbe::new(ProbeStatus::Invalid);
     let h = harness_with(Some(probe.clone()));
-    author_model(&h.app, "anthropic", "anthropic_messages", "claude-opus-4-8").await;
+    author_model(&h, "anthropic", "anthropic_messages", "claude-opus-4-8").await;
     let cred = enter_vault_cred(&h.app, Some("anthropic"), "sk-live-invalid").await;
 
     let (s, body) = call(
