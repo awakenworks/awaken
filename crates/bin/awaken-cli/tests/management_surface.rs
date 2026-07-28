@@ -41,21 +41,20 @@ async fn call(
 async fn admin_and_vault_surfaces_are_served_together() {
     let app = build_management_router().await;
 
-    // Admin config CRUD: author a provider, read the catalog back.
+    // Admin config CRUD: author model metadata, read the catalog back.
     let (s, _) = call(
         &app,
         "PUT",
-        "/v1/config/providers/anthropic",
-        Some(json!({ "id": "anthropic", "slug": "anthropic", "display_name": "Anthropic", "version": 1 })),
+        "/v1/config/model-attributes/test-model",
+        Some(json!({ "context_window": 4096 })),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
     let (s, catalog) = call(&app, "GET", "/v1/config/catalog", None).await;
     assert_eq!(s, StatusCode::OK);
-    assert!(
-        catalog["providers"]
-            .as_object()
-            .is_some_and(|p| p.contains_key("anthropic"))
+    assert_eq!(
+        catalog["model_attributes"]["test-model"]["context_window"],
+        4096
     );
 
     // Managed vault front door on the same server: create a vault + credential.

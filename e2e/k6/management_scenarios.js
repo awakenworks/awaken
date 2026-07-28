@@ -51,9 +51,6 @@ export const options =
 function post(path, body, metricName = path) {
   return http.post(`${BASE}${path}`, JSON.stringify(body), { headers: BETA, tags: { name: metricName } });
 }
-function put(path, body, metricName = path) {
-  return http.put(`${BASE}${path}`, JSON.stringify(body), { headers: BETA, tags: { name: metricName } });
-}
 function get(path, metricName = path) {
   return http.get(`${BASE}${path}`, { headers: BETA, tags: { name: metricName } });
 }
@@ -63,23 +60,13 @@ export default function () {
   const uid = `${__VU}-${__ITER}`;
 
   group('admin config plane', () => {
-    check(put('/v1/config/providers/anthropic', {
-      id: 'anthropic', slug: 'anthropic', display_name: 'Anthropic', version: 1,
-    }), { 'provider 200': (r) => r.status === 200 });
-
-    check(put('/v1/config/endpoints/ep1', {
-      id: 'ep1', provider_id: 'anthropic', dialect: 'anthropic_messages',
-      base_url: 'https://api.anthropic.com/v1/', timeout_secs: 300, display_name: 'prod', version: 1,
-    }), { 'endpoint 200': (r) => r.status === 200 });
-
-    check(post('/v1/config/offerings', {
-      model_id: 'claude-opus-4-8', provider_id: 'anthropic',
-      protocol_endpoint_id: 'ep1', dialect: 'anthropic_messages', upstream_model: null,
-    }), { 'offering 200': (r) => r.status === 200 });
+    check(get('/v1/config/provider-descriptors'), {
+      'provider descriptors 200': (r) => r.status === 200,
+      'provider descriptors installed': (r) => r.json().length > 0,
+    });
 
     check(get('/v1/config/catalog'), {
       'catalog 200': (r) => r.status === 200,
-      'catalog has provider': (r) => r.json('providers.anthropic') !== undefined,
     });
 
     const cred = post('/v1/config/credentials', {

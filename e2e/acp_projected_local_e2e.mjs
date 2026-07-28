@@ -15,6 +15,7 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -159,35 +160,16 @@ async function request(base, method, route, body) {
 
 async function publishProviderAgent(base, definition) {
   const {
-    agent, backend, provider, endpoint, model, upstreamModel, baseUrl, secret, envKey,
+    agent, backend, provider, endpoint, model, baseUrl, secret, dialect,
   } = definition;
-  await request(base, 'PUT', `/v1/config/providers/${provider}`, {
-    id: provider,
-    slug: provider,
-    display_name: provider,
-    version: 1,
-  });
-  await request(base, 'PUT', `/v1/config/endpoints/${endpoint}`, {
-    id: endpoint,
+  await request(base, 'POST', '/v1/config/provider-connections', {
+    workspace_id: WORKSPACE,
     provider_id: provider,
-    dialect: 'open_ai_chat',
+    display_name: provider,
+    endpoint_id: endpoint,
+    dialect,
     base_url: baseUrl,
     timeout_secs: 30,
-    display_name: endpoint,
-    version: 1,
-  });
-  await request(base, 'POST', '/v1/config/offerings', {
-    model_id: model,
-    provider_id: provider,
-    protocol_endpoint_id: endpoint,
-    dialect: 'open_ai_chat',
-    upstream_model: upstreamModel,
-  });
-  await request(base, 'POST', '/v1/config/credentials', {
-    workspace_id: WORKSPACE,
-    kind: 'vault',
-    provider_id: provider,
-    env_key: envKey,
     secret,
   });
   await request(base, 'PUT', `/v1/config/agents/${agent}`, {
@@ -199,6 +181,27 @@ async function publishProviderAgent(base, definition) {
   await request(base, 'POST', `/v1/config/agents/${agent}/publish`);
 }
 
+async function startModelDirectory() {
+  const server = http.createServer((request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    if (request.url?.startsWith('/gemini/')) {
+      response.end(JSON.stringify({ models: [{ name: 'models/gemini-upstream' }] }));
+    } else {
+      response.end(JSON.stringify({ data: [{ id: 'codex-upstream' }] }));
+    }
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    close: () => new Promise((resolve) => server.close(resolve)),
+  };
+}
+
 async function main() {
   installGeminiFixture();
   fs.mkdirSync(STORAGE, { recursive: true });
@@ -206,6 +209,7 @@ async function main() {
   let server = start(binary, 'gemini');
   const mcpToken = 'projected-codex-mcp-token'; // awaken-allow: secret (fixture)
   const fixture = await startCalcFixture(mcpToken);
+  const directory = await startModelDirectory();
   const anonymousFixture = await startCalcFixture('unused-anonymous-token', {
     allowAnonymous: true,
   });
@@ -216,24 +220,22 @@ async function main() {
     await publishProviderAgent(base, {
       agent: GEMINI_AGENT,
       backend: 'acp:gemini',
-      provider: 'google',
+      provider: 'gemini',
       endpoint: 'gemini-endpoint',
-      model: 'gemini-published',
-      upstreamModel: 'gemini-upstream',
-      baseUrl: 'http://gemini-db.invalid/v1',
+      model: 'gemini-upstream',
+      dialect: 'gemini',
+      baseUrl: `${directory.url}/gemini/v1beta/`,
       secret: 'persisted-gemini-key', // awaken-allow: secret (fixture)
-      envKey: 'GEMINI_API_KEY',
     });
     await publishProviderAgent(base, {
       agent: CODEX_AGENT,
       backend: 'acp:codex',
       provider: 'openai',
       endpoint: 'codex-endpoint',
-      model: 'codex-published',
-      upstreamModel: 'codex-upstream',
-      baseUrl: 'http://codex-db.invalid/v1',
+      model: 'codex-upstream',
+      dialect: 'open_ai_chat',
+      baseUrl: `${directory.url}/openai/v1/`,
       secret: 'persisted-codex-key', // awaken-allow: secret (fixture)
-      envKey: 'OPENAI_API_KEY',
     });
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
     const session = await client.beta.sessions.create({
@@ -308,6 +310,7 @@ async function main() {
 
     console.log('E2E PASS: aggregated awaken projects publication-pinned Gemini access and rejects bearer-only Codex access before launch; authenticated MCP remains fail closed on Workdir.');
   } finally {
+    await directory.close();
     await stop(server).catch(() => {});
     await fixture.close();
     await anonymousFixture.close();

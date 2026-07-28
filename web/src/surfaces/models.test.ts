@@ -51,7 +51,6 @@ describe("providerDraftDefaults", () => {
       endpoint: "openai-responses",
       baseUrl: "https://api.openai.com/v1",
       dialect: "open_ai_responses",
-      model: "",
     });
   });
 

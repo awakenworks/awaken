@@ -245,80 +245,6 @@
       "title": "ApiError",
       "type": "object"
     },
-    "AuthorOfferingRequest": {
-      "$defs": {
-        "ApiDialect": {
-          "description": "The wire/model-API dialect a surface speaks. Replaces oversight's `WireFormat`;\nthe credential/model bindings are resolved against this dialect (ADR-0043).",
-          "oneOf": [
-            {
-              "const": "anthropic_messages",
-              "description": "The `claude` adapter's wire.",
-              "type": "string"
-            },
-            {
-              "const": "open_ai_chat",
-              "description": "The `codex`/OpenAI chat wire.",
-              "type": "string"
-            },
-            {
-              "const": "open_ai_responses",
-              "description": "The OpenAI Responses API wire. This remains distinct from Chat\nCompletions even though both are served by the OpenAI adapter family.",
-              "type": "string"
-            },
-            {
-              "const": "gemini",
-              "description": "The Gemini wire.",
-              "type": "string"
-            },
-            {
-              "const": "vertex_gemini",
-              "description": "Gemini on Vertex AI: native Gemini payloads with OAuth Bearer auth and\na project/location endpoint.",
-              "type": "string"
-            }
-          ]
-        },
-        "ProtocolEndpointId": {
-          "description": "Stable id of a [`ProtocolEndpoint`].",
-          "type": "string"
-        },
-        "ProviderId": {
-          "description": "Stable id of a [`Provider`] (vendor namespace).",
-          "type": "string"
-        }
-      },
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "description": "Wire command for explicit authoring. Discovery provenance and availability\nare server-owned and therefore cannot be forged by an HTTP client.",
-      "properties": {
-        "dialect": {
-          "$ref": "#/$defs/ApiDialect"
-        },
-        "model_id": {
-          "type": "string"
-        },
-        "protocol_endpoint_id": {
-          "$ref": "#/$defs/ProtocolEndpointId"
-        },
-        "provider_id": {
-          "$ref": "#/$defs/ProviderId"
-        },
-        "upstream_model": {
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "model_id",
-        "provider_id",
-        "protocol_endpoint_id",
-        "dialect"
-      ],
-      "title": "AuthorOfferingRequest",
-      "type": "object"
-    },
     "AvailabilityState": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "description": "The availability of one credential source at a point in time.",
@@ -862,33 +788,6 @@
         "adapter_kind"
       ],
       "title": "CredentialValidation",
-      "type": "object"
-    },
-    "DiscoverModelsRequest": {
-      "$defs": {
-        "CredentialSourceId": {
-          "description": "Stable id of a [`CredentialSource`].",
-          "type": "string"
-        }
-      },
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "credential_source_id": {
-          "$ref": "#/$defs/CredentialSourceId"
-        },
-        "workspace_id": {
-          "default": null,
-          "description": "Used only by an unwrapped/test router. The authenticated management edge\nsupplies `WorkspaceScope`, which is authoritative when present.",
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "credential_source_id"
-      ],
-      "title": "DiscoverModelsRequest",
       "type": "object"
     },
     "EnterCredentialRequest": {
@@ -2693,7 +2592,7 @@
         },
         "secret": {
           "default": null,
-          "description": "Write-only API key. Exactly one of `secret`, `oauth_helper`, or\n`credential_source_id` must be supplied. The legacy `secret` field stays\nwire-compatible while the connection command becomes the one authoring\npath for every supported credential source.",
+          "description": "Write-only API key. Exactly one of `secret`, `oauth_helper`, or\n`credential_source_id` must be supplied; the connection command is the\none authoring path for every supported credential source.",
           "type": [
             "string",
             "null"

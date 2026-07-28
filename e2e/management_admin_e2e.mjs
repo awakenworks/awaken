@@ -183,6 +183,7 @@ async function main() {
       checkContract('ProviderConnectionView', r.json);
       assert.equal(r.json.sync.discovered, 2);
       assert.ok(!JSON.stringify(r.json).includes(connection.secret), 'connection response is secret-free');
+      const credId = r.json.credential.id;
       r = await req(base, 'GET', '/v1/config/provider-connections?workspace_id=ws');
       const readyConnection = r.json.find((item) => item.provider_id === 'anthropic');
       checkContract('ProviderConnectionSummary', readyConnection);
@@ -203,82 +204,9 @@ async function main() {
       // | S3   | -  | Y  | N  | -  | -  | connected |
       // | S4   | -  | Y  | Y  | N  | -  | unavailable |
       // | S5   | -  | Y  | Y  | Y  | Y  | ready |
-      r = await req(base, 'PUT', '/v1/config/providers/gemini', {
-        id: 'gemini', slug: 'gemini', display_name: 'Google Gemini', version: 1,
-      });
-      assert.equal(r.status, 200, JSON.stringify(r.json));
-      const openAiCredential = await req(base, 'POST', '/v1/config/credentials', {
-        workspace_id: 'ws', kind: 'vault', provider_id: 'openai', secret: 'sk-admin-e2e', // awaken-allow: secret
-      });
-      assert.equal(openAiCredential.status, 201, JSON.stringify(openAiCredential.json));
-      r = await req(base, 'GET', '/v1/config/provider-connections?workspace_id=ws');
-      assert.equal(r.json.find((item) => item.provider_id === 'gemini').status, 'needs_attention');
-      assert.equal(r.json.find((item) => item.provider_id === 'openai').status, 'connected');
-
-      await req(base, 'PUT', '/v1/config/providers/openai', {
-        id: 'openai', slug: 'openai', display_name: 'OpenAI', version: 1,
-      });
-      await req(base, 'PUT', '/v1/config/endpoints/openai-unavailable-ep', {
-        id: 'ignored', provider_id: 'openai', dialect: 'open_ai_chat',
-        base_url: `${directory.url}/v1/`, timeout_secs: 30,
-        display_name: 'OpenAI unavailable fixture', version: 1,
-      });
-      directory.state.models = ['openai-unavailable'];
-      r = await req(base, 'POST', '/v1/config/endpoints/openai-unavailable-ep/discover-models', {
-        workspace_id: 'ws', credential_source_id: openAiCredential.json.id,
-      });
-      assert.equal(r.status, 200, JSON.stringify(r.json));
-      assert.equal(r.json.discovered, 1);
-      directory.state.models = [];
-      r = await req(base, 'POST', '/v1/config/endpoints/openai-unavailable-ep/discover-models', {
-        workspace_id: 'ws', credential_source_id: openAiCredential.json.id,
-      });
-      assert.equal(r.status, 200, JSON.stringify(r.json));
-      assert.equal(r.json.marked_unavailable, 1);
-      r = await req(base, 'GET', '/v1/config/provider-connections?workspace_id=ws');
-      assert.equal(r.json.find((item) => item.provider_id === 'openai').status, 'unavailable');
-      directory.state.models = ['openai-unavailable'];
-      r = await req(base, 'POST', '/v1/config/endpoints/openai-unavailable-ep/discover-models', {
-        workspace_id: 'ws', credential_source_id: openAiCredential.json.id,
-      });
-      assert.equal(r.status, 200, JSON.stringify(r.json));
-      assert.equal(r.json.activated, 1);
       directory.state.models = ['provider-model-a', 'provider-model-b'];
       directory.state.requests.length = 0;
-      pass('Provider Connections cover validation, default timeout, and five live catalog states');
-
-      // --- author provider / endpoint / offering (path id is authoritative) ---
-      r = await req(base, 'PUT', '/v1/config/providers/anthropic', {
-        id: 'anthropic',
-        slug: 'anthropic',
-        display_name: 'Anthropic',
-        version: 1,
-      });
-      assert.equal(r.status, 200);
-      checkContract('Provider', r.json);
-
-      r = await req(base, 'PUT', '/v1/config/endpoints/ep1', {
-        id: 'ep1',
-        provider_id: 'anthropic',
-        dialect: 'anthropic_messages',
-        base_url: 'https://api.anthropic.com/v1/',
-        timeout_secs: 300,
-        display_name: 'prod',
-        version: 1,
-      });
-      assert.equal(r.status, 200);
-      checkContract('ProtocolEndpoint', r.json);
-
-      r = await req(base, 'POST', '/v1/config/offerings', {
-        model_id: 'claude-opus-4-8',
-        provider_id: 'anthropic',
-        protocol_endpoint_id: 'ep1',
-        dialect: 'anthropic_messages',
-        upstream_model: null,
-      });
-      assert.equal(r.status, 200);
-      checkContract('Offering', r.json);
-      pass('authored provider/endpoint/offering — each response matches the generated schema');
+      pass('Provider Connection validates and atomically persists a ready catalog');
 
       // --- catalog read validates against the generated ProviderCatalog schema ---
       r = await req(base, 'GET', '/v1/config/catalog');
@@ -296,7 +224,7 @@ async function main() {
       // | A2   | N  | -  | -  | 422 context_window |
       // | A3   | -  | N  | -  | 422 max_output_tokens |
       // | A4   | Y  | Y  | N  | 422 output exceeds context |
-      r = await req(base, 'PUT', '/v1/config/model-attributes/claude-opus-4-8', {
+      r = await req(base, 'PUT', '/v1/config/model-attributes/connection-model-a', {
         context_window: 200_000,
         max_output_tokens: 8_192,
       });
@@ -316,80 +244,22 @@ async function main() {
       }
       pass('manual model attributes persist provenance and reject all numeric invariant violations');
 
-      // --- credential entry: secret-in, secret-free-out (validated) ---
-      r = await req(base, 'POST', '/v1/config/credentials', {
-        workspace_id: 'ws',
-        kind: 'vault',
-        provider_id: 'anthropic',
-        env_key: 'ANTHROPIC_API_KEY',
-        secret: 'sk-admin-e2e', // awaken-allow: secret
-      });
-      assert.equal(r.status, 201);
+      r = await req(base, 'GET', `/v1/config/credentials/${credId}`);
+      assert.equal(r.status, 200);
       checkContract('CredentialSource', r.json);
-      assert.ok(!JSON.stringify(r.json).includes('sk-admin-e2e'), 'secret must not be echoed');
-      const credId = r.json.id;
-      pass('POST /v1/config/credentials — secret-free CredentialSource matches contract');
-
-      // Provider model discovery is provisioning, not execution: the application
-      // service selects this persisted endpoint + exact Workspace credential, the
-      // adapter calls /models, and the existing Catalog aggregate reconciles the
-      // complete observation atomically.
-      r = await req(base, 'PUT', '/v1/config/endpoints/discovery-ep', {
-        id: 'ignored',
-        provider_id: 'anthropic',
-        dialect: 'anthropic_messages',
-        base_url: `${directory.url}/v1/`,
-        timeout_secs: 30,
-        display_name: 'local directory',
-        version: 1,
-      });
-      assert.equal(r.status, 200, JSON.stringify(r.json));
-      r = await req(base, 'POST', '/v1/config/endpoints/discovery-ep/discover-models', {
-        workspace_id: 'ws',
-        credential_source_id: credId,
-      });
-      assert.equal(r.status, 200, JSON.stringify(r.json));
-      checkContract('CatalogSyncResult', r.json);
-      assert.deepEqual(
-        {
-          discovered: r.json.discovered,
-          activated: r.json.activated,
-          marked_unavailable: r.json.marked_unavailable,
-        },
-        { discovered: 2, activated: 2, marked_unavailable: 0 },
-      );
-      assert.equal(directory.state.requests.length, 1);
-      assert.equal(directory.state.requests[0].apiKey, 'sk-admin-e2e'); // awaken-allow: secret
-
-      directory.state.models = ['provider-model-b'];
-      r = await req(base, 'POST', '/v1/config/endpoints/discovery-ep/discover-models', {
-        workspace_id: 'ws',
-        credential_source_id: credId,
-      });
-      assert.equal(r.status, 200, JSON.stringify(r.json));
-      checkContract('CatalogSyncResult', r.json);
-      assert.equal(r.json.marked_unavailable, 1);
-      const reconciled = await req(base, 'GET', '/v1/config/catalog');
-      checkContract('ProviderCatalog', reconciled.json);
-      const offering = (model) => reconciled.json.offerings.find((item) => item.model_id === model);
-      assert.equal(offering('provider-model-a').source, 'provider_api');
-      assert.equal(offering('provider-model-a').status, 'unavailable');
-      assert.equal(offering('provider-model-b').status ?? 'active', 'active');
-      assert.equal(offering('claude-opus-4-8').source ?? 'manual', 'manual');
-      assert.equal(offering('claude-opus-4-8').status ?? 'active', 'active');
-      pass('provider /models discovery reconciles only its endpoint-owned offerings');
+      assert.ok(!JSON.stringify(r.json).includes(connection.secret), 'stored credential stays secret-free');
 
       // --- resolve dry-run through the resolver, validated against the contract ---
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
         workspace_id: 'ws',
-        model_id: 'claude-opus-4-8',
+        model_id: 'connection-model-a',
         binding: { type: 'exact', credential_source_id: credId },
       });
       assert.equal(r.status, 200, JSON.stringify(r.json));
       checkContract('ResolvedInferenceView', r.json);
       assert.equal(r.json.provider_id, 'anthropic');
       assert.equal(r.json.adapter_kind, 'anthropic');
-      assert.equal(r.json.base_url, 'https://api.anthropic.com/v1/');
+      assert.equal(r.json.base_url, `${directory.url}/v1/`);
       assert.equal(r.json.credential_present, true);
       pass('POST /v1/config/inference/resolve — resolver output matches ResolvedInferenceView contract');
 
@@ -402,8 +272,8 @@ async function main() {
       // | T4   | N  | N  | 400 model_target_invalid |
       for (const request of [
         {
-          workspace_id: 'ws', model_id: 'claude-opus-4-8',
-          target: { model_id: 'claude-opus-4-8' }, binding: { type: 'none' },
+          workspace_id: 'ws', model_id: 'connection-model-a',
+          target: { model_id: 'connection-model-a' }, binding: { type: 'none' },
         },
         { workspace_id: 'ws', binding: { type: 'none' } },
       ]) {
@@ -413,17 +283,7 @@ async function main() {
       }
       pass('resolve request enforces target/model_id XOR at the HTTP boundary');
 
-      // --- read-back: GET provider / endpoint / credential + list (validated) ---
-      r = await req(base, 'GET', '/v1/config/providers/anthropic');
-      assert.equal(r.status, 200);
-      checkContract('Provider', r.json);
-      assert.equal(r.json.slug, 'anthropic');
-
-      r = await req(base, 'GET', '/v1/config/endpoints/ep1');
-      assert.equal(r.status, 200);
-      checkContract('ProtocolEndpoint', r.json);
-      assert.equal(r.json.provider_id, 'anthropic');
-
+      // --- credential read-back + list (validated) ---
       r = await req(base, 'GET', `/v1/config/credentials/${credId}`);
       assert.equal(r.status, 200);
       checkContract('CredentialSource', r.json);
@@ -433,32 +293,18 @@ async function main() {
       assert.equal(r.status, 200);
       assert.ok(Array.isArray(r.json) && r.json.some((c) => c.id === credId), 'list contains the credential');
       r.json.forEach((c) => checkContract('CredentialSource', c));
-      pass('GET provider/endpoint/credential + list — all read-backs match the contract');
+      pass('GET credential + list — all read-backs match the contract');
 
-      // --- error arms: 404s + a dangling-reference offering ---
-      r = await req(base, 'GET', '/v1/config/providers/no-such-provider');
-      assert.equal(r.status, 404);
-      assert.equal(r.json.code, 'not_found');
-
-      r = await req(base, 'GET', '/v1/config/endpoints/no-such-endpoint');
-      assert.equal(r.status, 404);
-
+      // --- credential error arm ---
       r = await req(base, 'GET', '/v1/config/credentials/cred_missing');
       assert.equal(r.status, 404);
       assert.equal(r.json.code, 'not_found');
-
-      // An offering that references an endpoint that doesn't exist fails closed.
-      r = await req(base, 'POST', '/v1/config/offerings', {
-        model_id: 'ghost', provider_id: 'anthropic',
-        protocol_endpoint_id: 'no-such-endpoint', dialect: 'anthropic_messages', upstream_model: null,
-      });
-      assert.ok(r.status === 404 || r.status === 422, `dangling offering rejected, got ${r.status}`);
-      pass('error arms: unknown provider/endpoint/credential -> 404; dangling offering -> 4xx');
+      pass('unknown credential -> 404');
 
       // --- resolve with an Exact binding to a missing credential fails closed ---
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
         workspace_id: 'ws',
-        model_id: 'claude-opus-4-8',
+        model_id: 'connection-model-a',
         binding: { type: 'exact', credential_source_id: 'cred_missing' },
       });
       assert.equal(r.status, 404, JSON.stringify(r.json));
@@ -501,7 +347,7 @@ async function main() {
 
       // Resolve the pool binding: A (ordinal 0) fails to materialize -> fail over to B.
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
-        workspace_id: 'ws', model_id: 'claude-opus-4-8',
+        workspace_id: 'ws', model_id: 'connection-model-a',
         binding: { type: 'one_of_credential_pool', credential_pool_id: 'pool1' },
       });
       assert.equal(r.status, 200, JSON.stringify(r.json));
@@ -516,7 +362,7 @@ async function main() {
       });
       assert.equal(r.status, 200);
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
-        workspace_id: 'ws', model_id: 'claude-opus-4-8',
+        workspace_id: 'ws', model_id: 'connection-model-a',
         binding: { type: 'one_of_credential_pool', credential_pool_id: 'pool_bad' },
       });
       assert.equal(r.status, 409);
@@ -525,7 +371,7 @@ async function main() {
 
       // A binding to a pool that does not exist -> missing (404).
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
-        workspace_id: 'ws', model_id: 'claude-opus-4-8',
+        workspace_id: 'ws', model_id: 'connection-model-a',
         binding: { type: 'one_of_credential_pool', credential_pool_id: 'pool_missing' },
       });
       assert.equal(r.status, 404);
@@ -537,27 +383,7 @@ async function main() {
       assert.equal(r.status, 404);
       pass('GET unknown credential-pool -> 404');
 
-      // --- catalog invariant: an offering whose flavor mismatches its endpoint ---
-      r = await req(base, 'POST', '/v1/config/offerings', {
-        model_id: 'mismatch', provider_id: 'anthropic',
-        protocol_endpoint_id: 'ep1', dialect: 'open_ai_chat', upstream_model: null,
-      });
-      assert.equal(r.status, 422, JSON.stringify(r.json));
-      assert.equal(r.json.code, 'catalog_invariant');
-      pass('offering flavor mismatch -> 422 catalog_invariant');
-
-      // --- InferenceProfile CRUD + resolve (incl. disabled-endpoint toggle) --------
-      // A second endpoint + offering for the same model, so a profile can steer away
-      // from ep1 by disabling it.
-      await req(base, 'PUT', '/v1/config/endpoints/ep2', {
-        id: 'ep2', provider_id: 'anthropic', dialect: 'anthropic_messages',
-        base_url: 'https://ep2.example/v1/', timeout_secs: 300, display_name: 'backup', version: 1,
-      });
-      await req(base, 'POST', '/v1/config/offerings', {
-        model_id: 'claude-opus-4-8', provider_id: 'anthropic',
-        protocol_endpoint_id: 'ep2', dialect: 'anthropic_messages', upstream_model: null,
-      });
-
+      // --- InferenceProfile CRUD + resolve ----------------------------------------
       // Profile-validation cause graph:
       // C1 primary model non-empty; C2 fallback count <= 8; C3 every fallback
       // model non-empty; C4 every structured target unique. Only C1..C4 persists.
@@ -586,22 +412,10 @@ async function main() {
       }
       pass('inference-profile authoring rejects every invalid cause partition atomically');
 
-      // Cause graph / decision table:
-      // C1 one model has ep1+ep2 and no qualifier -> E1 fail model_ambiguous.
-      // C2 exact ep1 target -> E2 resolve ep1; C3 ep1 disabled + explicit ep2
-      // fallback -> E3 resolve ep2. No implicit first-match/fallback is allowed.
-      r = await req(base, 'POST', '/v1/config/inference/resolve', {
-        workspace_id: 'ws', model_id: 'claude-opus-4-8',
-        binding: { type: 'exact', credential_source_id: credId },
-      });
-      assert.equal(r.status, 409, JSON.stringify(r.json));
-      assert.equal(r.json.code, 'model_ambiguous');
-      pass('unqualified duplicate model -> 409 model_ambiguous');
-
       r = await req(base, 'PUT', '/v1/config/inference-profiles/prof1', {
         primary: {
           target: {
-            model_id: 'claude-opus-4-8', provider_id: 'anthropic', protocol_endpoint_id: 'ep1',
+            model_id: 'connection-model-a', provider_id: 'anthropic', protocol_endpoint_id: 'connection-ep',
           },
           credential_binding: { type: 'exact', credential_source_id: credId },
         },
@@ -619,37 +433,9 @@ async function main() {
       r = await req(base, 'POST', '/v1/config/inference-profiles/prof1/resolve', { workspace_id: 'ws' });
       assert.equal(r.status, 200, JSON.stringify(r.json));
       checkContract('ResolvedInferenceView', r.json);
-      assert.equal(r.json.base_url, 'https://api.anthropic.com/v1/');
+      assert.equal(r.json.base_url, `${directory.url}/v1/`);
       assert.equal(r.json.credential_present, true);
-      pass('resolve-by-profile selects the explicitly authored ep1 target');
-
-      // A profile that disables ep1 steers resolution to ep2.
-      await req(base, 'PUT', '/v1/config/inference-profiles/prof2', {
-        primary: {
-          target: {
-            model_id: 'claude-opus-4-8', provider_id: 'anthropic', protocol_endpoint_id: 'ep1',
-          },
-          credential_binding: { type: 'none' },
-        },
-        fallbacks: [{
-          target: {
-            model_id: 'claude-opus-4-8', provider_id: 'anthropic', protocol_endpoint_id: 'ep2',
-          },
-          credential_binding: { type: 'none' },
-        }],
-        disabled_endpoint_ids: ['ep1'],
-      });
-      r = await req(base, 'POST', '/v1/config/inference-profiles/prof2/resolve-candidates', {
-        workspace_id: 'ws',
-      });
-      assert.equal(r.status, 200, JSON.stringify(r.json));
-      assert.equal(r.json.candidates.length, 1);
-      assert.equal(
-        r.json.candidates[0].base_url,
-        'https://ep2.example/v1/',
-        'disabled ep1 -> resolves to explicit ep2 fallback',
-      );
-      pass('resolve-by-profile honors disabled_endpoint_ids (fails over to ep2)');
+      pass('resolve-by-profile selects the explicit primary connection');
 
       r = await req(base, 'POST', '/v1/config/inference-profiles/nope/resolve', { workspace_id: 'ws' });
       assert.equal(r.status, 404);
@@ -663,7 +449,7 @@ async function main() {
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
         workspace_id: 'ws',
         target: {
-          model_id: 'claude-opus-4-8', provider_id: 'anthropic', protocol_endpoint_id: 'ep1',
+          model_id: 'connection-model-a', provider_id: 'anthropic', protocol_endpoint_id: 'connection-ep',
         },
         binding: { type: 'exact', credential_source_id: credId },
       });
@@ -675,7 +461,7 @@ async function main() {
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
         workspace_id: 'ws',
         target: {
-          model_id: 'claude-opus-4-8', provider_id: 'anthropic', protocol_endpoint_id: 'ep2',
+          model_id: 'connection-model-a', provider_id: 'anthropic', protocol_endpoint_id: 'connection-ep',
         },
         binding: { type: 'none' },
       });

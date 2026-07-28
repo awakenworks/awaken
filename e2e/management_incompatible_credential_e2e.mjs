@@ -2,18 +2,39 @@
 // config plane. A credential scoped to one provider must not authenticate another
 // provider's model: resolving such a binding is fail-closed (422
 // incompatible_credential), while a compatible or unscoped credential resolves.
-// CI-safe: no live model — the offering points at a dummy base_url and we only
-// exercise resolution (never a real inference call).
+// CI-safe: discovery uses a deterministic local provider fixture; inference is
+// never invoked.
 
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import { withServer, pass } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38471);
 const WS = 'ws';
-const MODEL = 'validity-model';
+const MODEL = 'fake-haiku';
+const PROVIDER_KEY = 'sk-validity-fixture'; // awaken-allow: secret
+
+async function modelDirectory() {
+  const server = http.createServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ data: [{ id: MODEL }], has_more: false }));
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    close: () => new Promise((resolve) => server.close(resolve)),
+  };
+}
 
 async function main() {
-  await withServer('management', PORT, async (baseUrl) => {
+  const upstream = await modelDirectory();
+  try {
+    await withServer('management', PORT, async (baseUrl) => {
     const cfg = async (method, path, body) => {
       const res = await fetch(`${baseUrl}${path}`, {
         method,
@@ -23,42 +44,18 @@ async function main() {
       return { status: res.status, body: await res.json().catch(() => ({})) };
     };
 
-    // ── Author provider `anthropic` → endpoint → offering for MODEL ──────────
-    assert.equal(
-      (await cfg('PUT', '/v1/config/providers/anthropic', {
-        id: 'anthropic',
-        slug: 'anthropic',
-        display_name: 'Anthropic',
-        version: 1,
-      })).status,
-      200,
-      'provider stored',
-    );
-    assert.equal(
-      (await cfg('PUT', '/v1/config/endpoints/ep1', {
-        id: 'ep1',
-        provider_id: 'anthropic',
-        dialect: 'anthropic_messages',
-        base_url: 'https://example.invalid/v1/',
-        timeout_secs: 300,
-        display_name: 'dummy',
-        version: 1,
-      })).status,
-      200,
-      'endpoint stored',
-    );
-    assert.equal(
-      (await cfg('POST', '/v1/config/offerings', {
-        model_id: MODEL,
-        provider_id: 'anthropic',
-        protocol_endpoint_id: 'ep1',
-        dialect: 'anthropic_messages',
-        upstream_model: null,
-      })).status,
-      200,
-      'offering stored',
-    );
-    pass(`authored an anthropic offering for ${MODEL}`);
+    const connection = await cfg('POST', '/v1/config/provider-connections', {
+      workspace_id: WS,
+      provider_id: 'anthropic',
+      display_name: 'Anthropic',
+      endpoint_id: 'ep1',
+      dialect: 'anthropic_messages',
+      base_url: `${upstream.url}/v1/`,
+      timeout_secs: 300,
+      secret: PROVIDER_KEY,
+    });
+    assert.equal(connection.status, 201, `provider connection: ${JSON.stringify(connection.body)}`);
+    pass(`connected anthropic and discovered ${MODEL}`);
 
     // ── A credential scoped to a DIFFERENT provider (openai) ────────────────
     const foreign = await cfg('POST', '/v1/config/credentials', {
@@ -133,7 +130,10 @@ async function main() {
     pass('resolve(anthropic model, unscoped env key) -> 200 (unscoped consumes any provider)');
 
     console.log('E2E PASS: can_consume validity join fail-closes provider mismatch and permits compatible/unscoped keys.');
-  });
+    });
+  } finally {
+    await upstream.close();
+  }
   process.exitCode = 0;
 }
 

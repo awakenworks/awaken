@@ -45,8 +45,6 @@ pub fn contract_schemas() -> Map<String, Value> {
     );
     add!("ProtocolEndpoint", awaken_model_catalog::ProtocolEndpoint);
     add!("Offering", awaken_model_catalog::Offering);
-    add!("AuthorOfferingRequest", crate::AuthorOfferingRequest);
-    add!("DiscoverModelsRequest", crate::DiscoverModelsRequest);
     add!("CatalogSyncResult", awaken_model_catalog::CatalogSyncResult);
     add!(
         "PutModelAttributesRequest",
@@ -255,26 +253,6 @@ fn paths() -> Value {
                     "schema": { "type": "string" },
                     "description": "Workspace whose model-source readiness to derive"
                 })], None, 200, array_of("ProviderConnectionSummary"))
-        },
-        "/v1/config/providers/{id}": {
-            "put": op("put_provider", "catalog", "Author (upsert) a provider; the path id is authoritative",
-                &id("Provider id"), Some(schema_ref("Provider")), 200, schema_ref("Provider")),
-            "get": op("get_provider", "catalog", "Fetch an authored provider",
-                &id("Provider id"), None, 200, schema_ref("Provider"))
-        },
-        "/v1/config/endpoints/{id}": {
-            "put": op("put_endpoint", "catalog", "Author (upsert) a protocol endpoint; the path id is authoritative",
-                &id("Protocol endpoint id"), Some(schema_ref("ProtocolEndpoint")), 200, schema_ref("ProtocolEndpoint")),
-            "get": op("get_endpoint", "catalog", "Fetch an authored protocol endpoint",
-                &id("Protocol endpoint id"), None, 200, schema_ref("ProtocolEndpoint"))
-        },
-        "/v1/config/endpoints/{id}/discover-models": {
-            "post": op("discover_endpoint_models", "catalog", "Discover the provider's complete model list and atomically reconcile provider-owned offerings",
-                &id("Protocol endpoint id"), Some(schema_ref("DiscoverModelsRequest")), 200, schema_ref("CatalogSyncResult"))
-        },
-        "/v1/config/offerings": {
-            "post": op("post_offering", "catalog", "Author an offering (fail-closed reference integrity to provider/endpoint)",
-                &[], Some(schema_ref("AuthorOfferingRequest")), 200, schema_ref("Offering"))
         },
         "/v1/config/catalog": {
             "get": op("get_catalog", "catalog", "Snapshot the full authored catalog (what the resolver binds against)",

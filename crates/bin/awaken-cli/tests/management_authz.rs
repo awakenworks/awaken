@@ -57,8 +57,8 @@ fn admin_token(dir: &std::path::Path) -> String {
     std::fs::read_to_string(dir.join(ADMIN_TOKEN_FILE)).expect("bootstrap admin-token file")
 }
 
-fn provider_body() -> Value {
-    json!({ "id": "anthropic", "slug": "anthropic", "display_name": "Anthropic", "version": 1 })
+fn model_attribute_body() -> Value {
+    json!({ "context_window": 4096 })
 }
 
 fn credential_body() -> Value {
@@ -240,9 +240,9 @@ async fn the_bootstrap_admin_token_authorizes_full_crud_over_http() {
     let (s, _) = call(
         &app,
         "PUT",
-        "/v1/config/providers/anthropic",
+        "/v1/config/model-attributes/authz-probe",
         t,
-        Some(provider_body()),
+        Some(model_attribute_body()),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -365,9 +365,9 @@ async fn a_restricted_developer_token_reads_everything_but_writes_nothing() {
     let (s, _) = call(
         &app,
         "PUT",
-        "/v1/config/providers/anthropic",
+        "/v1/config/model-attributes/authz-probe",
         t,
-        Some(provider_body()),
+        Some(model_attribute_body()),
     )
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
@@ -583,9 +583,9 @@ async fn minted_tokens_survive_a_restart_over_the_same_directory() {
         let (s, _) = call(
             &app,
             "PUT",
-            "/v1/config/providers/anthropic",
+            "/v1/config/model-attributes/authz-probe",
             Some(&bootstrap),
-            Some(provider_body()),
+            Some(model_attribute_body()),
         )
         .await;
         assert_eq!(s, StatusCode::OK);
@@ -601,18 +601,16 @@ async fn minted_tokens_survive_a_restart_over_the_same_directory() {
     // domain state they authored is still there.
     let (s, catalog) = call(&app, "GET", "/v1/config/catalog", Some(&bootstrap), None).await;
     assert_eq!(s, StatusCode::OK);
-    assert!(
-        catalog["providers"]
-            .as_object()
-            .is_some_and(|p| p.contains_key("anthropic")),
+    assert_eq!(
+        catalog["model_attributes"]["authz-probe"]["context_window"], 4096,
         "{catalog}"
     );
     let (s, _) = call(
         &app,
         "PUT",
-        "/v1/config/providers/anthropic",
+        "/v1/config/model-attributes/authz-probe",
         Some(&developer),
-        Some(provider_body()),
+        Some(model_attribute_body()),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -636,9 +634,9 @@ async fn without_the_guard_the_management_plane_stays_open() {
     let (s, _) = call(
         &app,
         "PUT",
-        "/v1/config/providers/anthropic",
+        "/v1/config/model-attributes/authz-probe",
         None,
-        Some(provider_body()),
+        Some(model_attribute_body()),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -712,9 +710,9 @@ async fn a_legacy_hand_rolled_iam_layout_is_imported_once_on_boot() {
     let (s, _) = call(
         &app,
         "PUT",
-        "/v1/config/providers/anthropic",
+        "/v1/config/model-attributes/authz-probe",
         Some(&cleartext),
-        Some(provider_body()),
+        Some(model_attribute_body()),
     )
     .await;
     assert_eq!(s, StatusCode::OK);

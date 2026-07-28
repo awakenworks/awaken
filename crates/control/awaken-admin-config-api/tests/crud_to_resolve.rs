@@ -1,8 +1,7 @@
-//! The admin config plane end-to-end over HTTP: author provider + endpoint +
-//! offering and enter a credential through the routes, then resolve a run against
-//! the *same* stores the router wrote to. Proves the L1 admin surface and the
-//! resolver share one catalog/credential state (ADR-0043), and that a credential's
-//! secret is write-only (never echoed on any response).
+//! The admin config plane and resolver share one catalog/credential state. Model
+//! setup is covered by the ProviderConnection suite; these tests seed that domain
+//! prerequisite below HTTP and focus on credential write-only behavior plus the
+//! resolver boundary.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -20,6 +19,8 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
+
+mod support;
 
 struct Harness {
     app: Router,
@@ -78,53 +79,14 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
 #[tokio::test]
 async fn author_catalog_and_credential_then_resolve_a_run() {
     let h = harness();
-
-    // Author provider → endpoint → offering through the HTTP surface.
-    let (s, _) = call(
-        &h.app,
-        "PUT",
-        "/v1/config/providers/anthropic",
-        Some(json!({
-            "id": "ignored-by-path",
-            "slug": "anthropic",
-            "display_name": "Anthropic",
-            "version": 1
-        })),
+    support::seed_model(
+        &h.catalog,
+        "anthropic",
+        "anthropic_messages",
+        "claude-opus-4-8",
+        "ep1",
     )
     .await;
-    assert_eq!(s, StatusCode::OK);
-
-    let (s, _) = call(
-        &h.app,
-        "PUT",
-        "/v1/config/endpoints/ep1",
-        Some(json!({
-            "id": "ep1",
-            "provider_id": "anthropic",
-            "dialect": "anthropic_messages",
-            "base_url": "https://api.anthropic.com/v1/",
-            "timeout_secs": 300,
-            "display_name": "prod",
-            "version": 1
-        })),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
-
-    let (s, _) = call(
-        &h.app,
-        "POST",
-        "/v1/config/offerings",
-        Some(json!({
-            "model_id": "claude-opus-4-8",
-            "provider_id": "anthropic",
-            "protocol_endpoint_id": "ep1",
-            "dialect": "anthropic_messages",
-            "upstream_model": null
-        })),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
 
     // Enter a credential; the response is secret-free (secret never echoed).
     let (s, cred) = call(
@@ -147,24 +109,6 @@ async fn author_catalog_and_credential_then_resolve_a_run() {
         "secret leaked: {body_text}"
     );
     let cred_id = cred["id"].as_str().expect("credential id").to_string();
-
-    // The dangling-reference guard is live: an offering for an unknown endpoint is
-    // a 404 (the referenced endpoint is not found).
-    let (s, err) = call(
-        &h.app,
-        "POST",
-        "/v1/config/offerings",
-        Some(json!({
-            "model_id": "ghost",
-            "provider_id": "anthropic",
-            "protocol_endpoint_id": "does-not-exist",
-            "dialect": "anthropic_messages",
-            "upstream_model": null
-        })),
-    )
-    .await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
-    assert_eq!(err["code"], "not_found");
 
     // Resolve against the SAME stores the router wrote to — the admin plane and the
     // resolver share one catalog/credential state.
@@ -192,65 +136,11 @@ async fn author_catalog_and_credential_then_resolve_a_run() {
     assert_eq!(resolved.adapter_kind, "anthropic");
     assert_eq!(
         resolved.base_url.as_deref(),
-        Some("https://api.anthropic.com/v1/")
+        Some("https://api.example.com/v1/")
     );
     // The secret materializes only here, at the resolver seam.
     assert_eq!(
         resolved.credential.as_ref().unwrap().expose_secret(),
         "sk-admin-secret"
     );
-}
-
-/// put_endpoint fail-closed ref integrity: an endpoint referencing an unknown
-/// provider is a 404 (ProviderNotFound → repo_problem), and the dangling endpoint is
-/// never stored — the mirror of the offering→endpoint guard, whose endpoint→provider
-/// leg the existing suite never drives (it always authors the provider first).
-#[tokio::test]
-async fn put_endpoint_with_unknown_provider_is_404_and_not_stored() {
-    let h = harness();
-    let (s, err) = call(
-        &h.app,
-        "PUT",
-        "/v1/config/endpoints/ep-dangling",
-        Some(json!({
-            "id": "ep-dangling", "provider_id": "ghost-provider",
-            "dialect": "anthropic_messages", "base_url": "https://x/",
-            "timeout_secs": 30, "display_name": "e", "version": 1
-        })),
-    )
-    .await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
-    assert_eq!(err["code"], "not_found");
-    // The endpoint was never persisted (a dangling reference is not stored).
-    let (s, _) = call(&h.app, "GET", "/v1/config/endpoints/ep-dangling", None).await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn get_missing_provider_is_problem_json_404() {
-    let h = harness();
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/v1/config/providers/nope")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-    let ct = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default()
-        .to_string();
-    assert!(ct.contains("problem+json"), "content-type was {ct}");
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let err: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(err["code"], "not_found");
-    assert_eq!(err["status"], 404);
 }

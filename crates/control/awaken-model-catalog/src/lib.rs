@@ -289,6 +289,20 @@ pub fn provider_driver_descriptors() -> Vec<ProviderDriverDescriptor> {
             documentation_url: Some("https://api-docs.deepseek.com/".into()),
         },
         ProviderDriverDescriptor {
+            provider_kind: "kimi".into(),
+            display_name: "Kimi".into(),
+            supported_dialects: vec![ApiDialect::AnthropicMessages],
+            auth_methods: vec![ProviderAuthMethod::ApiKey],
+            configuration_fields: vec![api_key(), custom_url()],
+            default_endpoints: vec![DefaultProtocolEndpoint {
+                id_suffix: "coding".into(),
+                dialect: ApiDialect::AnthropicMessages,
+                base_url: "https://api.kimi.com/coding/v1".into(),
+            }],
+            supports_model_discovery: true,
+            documentation_url: Some("https://platform.moonshot.ai/docs/guide/agent-support".into()),
+        },
+        ProviderDriverDescriptor {
             provider_kind: "gemini".into(),
             display_name: "Google AI Studio".into(),
             supported_dialects: vec![ApiDialect::Gemini],

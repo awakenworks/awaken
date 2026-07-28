@@ -19,8 +19,6 @@ async function main() {
   await withScenarioServer('management', 'mcp', 38251, async (base) => {
     // Missing rows across namespaces → 404.
     for (const uri of [
-      '/v1/config/providers/ghost',
-      '/v1/config/endpoints/ghost',
       '/v1/config/agents/ghost',
     ]) {
       const r = await req(base, 'GET', uri);
@@ -29,8 +27,8 @@ async function main() {
     pass('missing config rows across namespaces -> 404');
 
     // Malformed JSON body → 400 (decode failure).
-    const r = await req(base, 'PUT', '/v1/config/providers/p', '{ not valid json');
-    assert.equal(r.status, 400, `malformed provider body -> 400 (got ${r.status})`);
+    const r = await req(base, 'PUT', '/v1/config/model-attributes/p', '{ not valid json');
+    assert.equal(r.status, 400, `malformed model-attribute body -> 400 (got ${r.status})`);
     pass('malformed JSON bodies -> 400');
 
     console.log('E2E PASS: /v1/config error + edge paths (404 / 400).');

@@ -50,7 +50,7 @@ use awaken_credential_vault::{AvailabilityLedger, CredentialSource};
 use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo};
 use awaken_model_catalog::{
     ApiDialect, BrokeredCatalogProjection, BrokeredModelProjection, DiscoveredModel,
-    OfferingSource, OfferingStatus, ProtocolEndpoint,
+    OfferingSource, OfferingStatus, ProtocolEndpoint, Provider, ProviderId,
 };
 use axum::Router;
 use axum::body::Body;
@@ -193,32 +193,6 @@ async fn call(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode
 }
 
 async fn author_prerequisites(app: &Router) -> String {
-    assert_eq!(
-        call(
-            app,
-            "PUT",
-            "/v1/config/providers/anthropic",
-            json!({"id":"ignored", "slug":"anthropic", "display_name":"Anthropic", "version":1}),
-        )
-        .await
-        .0,
-        StatusCode::OK
-    );
-    assert_eq!(
-        call(
-            app,
-            "PUT",
-            "/v1/config/endpoints/ep1",
-            json!({
-                "id":"ignored", "provider_id":"anthropic", "dialect":"anthropic_messages",
-                "base_url":"https://provider.invalid/v1", "timeout_secs":30,
-                "display_name":"Anthropic", "version":1
-            }),
-        )
-        .await
-        .0,
-        StatusCode::OK
-    );
     let (status, credential) = call(
         app,
         "POST",
@@ -231,6 +205,19 @@ async fn author_prerequisites(app: &Router) -> String {
     .await;
     assert_eq!(status, StatusCode::CREATED);
     credential["id"].as_str().unwrap().to_string()
+}
+
+fn connection_request(workspace_id: &str, credential_source_id: &str) -> Value {
+    json!({
+        "workspace_id": workspace_id,
+        "provider_id": "anthropic",
+        "display_name": "Anthropic",
+        "endpoint_id": "ep1",
+        "dialect": "anthropic_messages",
+        "base_url": "https://provider.invalid/v1",
+        "timeout_secs": 30,
+        "credential_source_id": credential_source_id
+    })
 }
 
 #[tokio::test]
@@ -380,21 +367,18 @@ async fn b3_enabled_cloud_supply_without_login_is_typed_and_non_mutating() {
 async fn discovery_reconciles_through_the_existing_catalog_truth() {
     let harness = harness();
     let credential_id = author_prerequisites(&harness.app).await;
-    let request = json!({
-        "workspace_id":"workspace-a",
-        "credential_source_id": credential_id
-    });
+    let request = connection_request("workspace-a", &credential_id);
     let (status, result) = call(
         &harness.app,
         "POST",
-        "/v1/config/endpoints/ep1/discover-models",
+        "/v1/config/provider-connections",
         request.clone(),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{result}");
-    assert_eq!(result["discovered"], 2);
-    assert_eq!(result["activated"], 2);
-    let first_observed_at = result["observed_at_unix_ms"].as_u64().unwrap();
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    assert_eq!(result["sync"]["discovered"], 2);
+    assert_eq!(result["sync"]["activated"], 2);
+    let first_observed_at = result["sync"]["observed_at_unix_ms"].as_u64().unwrap();
     assert!(first_observed_at > 0);
     assert_eq!(harness.discovery.calls.lock().unwrap().len(), 1);
 
@@ -405,13 +389,13 @@ async fn discovery_reconciles_through_the_existing_catalog_truth() {
     let (status, result) = call(
         &harness.app,
         "POST",
-        "/v1/config/endpoints/ep1/discover-models",
+        "/v1/config/provider-connections",
         request,
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{result}");
-    assert_eq!(result["marked_unavailable"], 1);
-    let second_observed_at = result["observed_at_unix_ms"].as_u64().unwrap();
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    assert_eq!(result["sync"]["marked_unavailable"], 1);
+    let second_observed_at = result["sync"]["observed_at_unix_ms"].as_u64().unwrap();
     assert!(second_observed_at >= first_observed_at);
 
     let catalog = harness.catalog.snapshot().await.unwrap();
@@ -830,17 +814,16 @@ async fn connection_summaries_separate_connected_from_needs_attention() {
     .await;
     assert_eq!(summary(&connected, "openai")["status"], "connected");
 
-    assert_eq!(
-        call(
-            &harness.app,
-            "PUT",
-            "/v1/config/providers/gemini",
-            json!({"id":"ignored", "slug":"gemini", "display_name":"Gemini", "version":1}),
-        )
+    harness
+        .catalog
+        .put_provider(Provider {
+            id: ProviderId::new("gemini"),
+            slug: "gemini".into(),
+            display_name: "Gemini".into(),
+            version: 1,
+        })
         .await
-        .0,
-        StatusCode::OK
-    );
+        .unwrap();
     let (_, attention) = call(
         &harness.app,
         "GET",
@@ -855,18 +838,15 @@ async fn connection_summaries_separate_connected_from_needs_attention() {
 async fn failed_refresh_does_not_advance_last_seen_or_change_availability() {
     let harness = harness();
     let credential_id = author_prerequisites(&harness.app).await;
-    let request = json!({
-        "workspace_id":"workspace-a",
-        "credential_source_id": credential_id
-    });
+    let request = connection_request("workspace-a", &credential_id);
     let (status, first) = call(
         &harness.app,
         "POST",
-        "/v1/config/endpoints/ep1/discover-models",
+        "/v1/config/provider-connections",
         request.clone(),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{first}");
+    assert_eq!(status, StatusCode::CREATED, "{first}");
     let before = harness.catalog.snapshot().await.unwrap();
 
     *harness.discovery.fail.lock().unwrap() = true;
@@ -874,7 +854,7 @@ async fn failed_refresh_does_not_advance_last_seen_or_change_availability() {
     let (status, problem) = call(
         &harness.app,
         "POST",
-        "/v1/config/endpoints/ep1/discover-models",
+        "/v1/config/provider-connections",
         request,
     )
     .await;
@@ -890,8 +870,8 @@ async fn discovery_fails_closed_across_workspace() {
     let (status, _) = call(
         &harness.app,
         "POST",
-        "/v1/config/endpoints/ep1/discover-models",
-        json!({"workspace_id":"workspace-b", "credential_source_id":credential_id}),
+        "/v1/config/provider-connections",
+        connection_request("workspace-b", &credential_id),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);

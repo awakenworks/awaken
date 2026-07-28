@@ -27,8 +27,8 @@ use awaken_credential_vault::{
 };
 use awaken_model_catalog::repo::{CatalogRepo, RepoError};
 use awaken_model_catalog::{
-    CatalogSyncResult, DiscoveredModel, ModelAttributeSource, ModelAttributes, Offering,
-    OfferingSource, OfferingStatus, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
+    CatalogSyncResult, DiscoveredModel, ModelAttributeSource, ModelAttributes, OfferingSource,
+    OfferingStatus, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
 };
 use awaken_runtime_contract::resilience::Disposition;
 use awaken_tenancy::WorkspaceScope as ResourceWorkspace;
@@ -219,19 +219,6 @@ pub fn admin_router_with_capabilities(
             post(test_and_save_provider_connection).get(list_provider_connections),
         )
         .route("/v1/config/provider-proposals", get(get_provider_proposals))
-        .route(
-            "/v1/config/providers/{id}",
-            put(put_provider).get(get_provider),
-        )
-        .route(
-            "/v1/config/endpoints/{id}",
-            put(put_endpoint).get(get_endpoint),
-        )
-        .route(
-            "/v1/config/endpoints/{id}/discover-models",
-            post(discover_endpoint_models),
-        )
-        .route("/v1/config/offerings", post(post_offering))
         .route(
             "/v1/config/model-attributes/{model_id}",
             put(put_model_attributes),
@@ -436,184 +423,6 @@ fn cred_problem(error: &CredentialError, rid: &str) -> Problem {
     ))
 }
 
-async fn put_provider(
-    State(state): State<AdminState>,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-    Json(mut provider): Json<Provider>,
-) -> Result<Json<Provider>, Problem> {
-    // The path id is authoritative, so a client cannot upsert under a mismatched id.
-    provider.id = ProviderId::new(id);
-    state
-        .catalog
-        .put_provider(provider.clone())
-        .await
-        .map_err(|e| repo_problem(&e, &req_id(&headers)))?;
-    Ok(Json(provider))
-}
-
-async fn get_provider(
-    State(state): State<AdminState>,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-) -> Result<Json<Provider>, Problem> {
-    state
-        .catalog
-        .get_provider(&ProviderId::new(id))
-        .await
-        .map(Json)
-        .map_err(|e| repo_problem(&e, &req_id(&headers)))
-}
-
-async fn put_endpoint(
-    State(state): State<AdminState>,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-    Json(mut endpoint): Json<ProtocolEndpoint>,
-) -> Result<Json<ProtocolEndpoint>, Problem> {
-    endpoint.id = ProtocolEndpointId::new(id);
-    state
-        .catalog
-        .put_endpoint(endpoint.clone())
-        .await
-        .map_err(|e| repo_problem(&e, &req_id(&headers)))?;
-    Ok(Json(endpoint))
-}
-
-async fn get_endpoint(
-    State(state): State<AdminState>,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-) -> Result<Json<ProtocolEndpoint>, Problem> {
-    state
-        .catalog
-        .get_endpoint(&ProtocolEndpointId::new(id))
-        .await
-        .map(Json)
-        .map_err(|e| repo_problem(&e, &req_id(&headers)))
-}
-
-/// Wire command for explicit authoring. Discovery provenance and availability
-/// are server-owned and therefore cannot be forged by an HTTP client.
-#[derive(serde::Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(deny_unknown_fields)]
-pub struct AuthorOfferingRequest {
-    model_id: String,
-    provider_id: ProviderId,
-    protocol_endpoint_id: ProtocolEndpointId,
-    dialect: awaken_model_catalog::ApiDialect,
-    #[serde(default)]
-    upstream_model: Option<String>,
-}
-
-async fn post_offering(
-    State(state): State<AdminState>,
-    headers: HeaderMap,
-    Json(request): Json<AuthorOfferingRequest>,
-) -> Result<Json<Offering>, Problem> {
-    let offering = Offering {
-        model_id: request.model_id,
-        provider_id: request.provider_id,
-        protocol_endpoint_id: request.protocol_endpoint_id,
-        dialect: request.dialect,
-        upstream_model: request.upstream_model,
-        source: OfferingSource::Manual,
-        status: OfferingStatus::Active,
-        last_seen_at_unix_ms: None,
-    };
-    // Fail-closed reference integrity (offering → provider/endpoint) lives in the
-    // repo's put_offering: a dangling endpoint ref is a 404 (referenced resource
-    // not found); a dialect mismatch that breaks the whole catalog is a 422 invariant.
-    state
-        .catalog
-        .put_offering(offering.clone())
-        .await
-        .map_err(|e| repo_problem(&e, &req_id(&headers)))?;
-    Ok(Json(offering))
-}
-
-#[derive(serde::Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct DiscoverModelsRequest {
-    credential_source_id: CredentialSourceId,
-    /// Used only by an unwrapped/test router. The authenticated management edge
-    /// supplies `WorkspaceScope`, which is authoritative when present.
-    #[serde(default)]
-    workspace_id: Option<String>,
-}
-
-async fn discover_endpoint_models(
-    State(state): State<AdminState>,
-    scope: Option<Extension<ResourceWorkspace>>,
-    Path(endpoint_id): Path<String>,
-    headers: HeaderMap,
-    Json(request): Json<DiscoverModelsRequest>,
-) -> Result<Json<CatalogSyncResult>, Problem> {
-    let rid = req_id(&headers);
-    let workspace_id = scope
-        .map(|Extension(scope)| scope.0)
-        .or(request.workspace_id)
-        .ok_or_else(|| {
-            Problem(ApiError::new(
-                400,
-                "workspace_required",
-                "Workspace required",
-                "model discovery requires an authenticated Workspace scope",
-                &rid,
-            ))
-        })?;
-    let endpoint_id = ProtocolEndpointId::new(endpoint_id);
-    let endpoint = state
-        .catalog
-        .get_endpoint(&endpoint_id)
-        .await
-        .map_err(|error| repo_problem(&error, &rid))?;
-    let credential = state
-        .credentials
-        .get(&request.credential_source_id)
-        .await
-        .map_err(|error| cred_problem(&error, &rid))?;
-    if credential.workspace_id != workspace_id {
-        return Err(cred_problem(
-            &CredentialError::SourceNotFound(request.credential_source_id.0),
-            &rid,
-        ));
-    }
-    if credential.status != CredentialStatus::Active {
-        return Err(cred_problem(
-            &CredentialError::NotActive(credential.id.0.clone()),
-            &rid,
-        ));
-    }
-    if credential
-        .provider_id
-        .as_deref()
-        .is_some_and(|provider| provider != endpoint.provider_id.as_str())
-    {
-        return Err(cred_problem(&CredentialError::NoCredential, &rid));
-    }
-    let discovery = state.model_discovery.as_ref().ok_or_else(|| {
-        Problem(ApiError::new(
-            501,
-            "model_discovery_unavailable",
-            "Model discovery unavailable",
-            "this deployment has no provisioning-side model discovery adapter",
-            &rid,
-        ))
-    })?;
-    let models = discovery
-        .discover(&endpoint, &credential)
-        .await
-        .map_err(|error| model_discovery_problem(&error, &rid))?;
-    state
-        .catalog
-        .reconcile_discovered_models(&endpoint_id, models, unix_time_ms())
-        .await
-        .map(Json)
-        .map_err(|error| repo_problem(&error, &rid))
-}
-
 async fn get_provider_descriptors() -> Json<Vec<awaken_model_catalog::ProviderDriverDescriptor>> {
     Json(awaken_model_catalog::provider_driver_descriptors())
 }
@@ -631,9 +440,8 @@ pub struct SaveProviderConnectionRequest {
     #[serde(default = "default_connection_timeout")]
     pub timeout_secs: u64,
     /// Write-only API key. Exactly one of `secret`, `oauth_helper`, or
-    /// `credential_source_id` must be supplied. The legacy `secret` field stays
-    /// wire-compatible while the connection command becomes the one authoring
-    /// path for every supported credential source.
+    /// `credential_source_id` must be supplied; the connection command is the
+    /// one authoring path for every supported credential source.
     #[serde(default)]
     pub secret: Option<String>,
     /// Server-owned OAuth helper used to mint a short-lived token for both the

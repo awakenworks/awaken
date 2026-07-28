@@ -50,54 +50,28 @@ async function main() {
         return { status: res.status, body: await res.json().catch(() => ({})) };
       };
 
-      // ── 1. Author provider → endpoint → offering into the system config ──────
-      const prov = await cfg('PUT', '/v1/config/providers/anthropic', {
-        id: 'anthropic',
-        slug: 'anthropic',
-        display_name: 'Anthropic',
-        version: 1,
-      });
-      assert.equal(prov.status, 200, 'provider stored');
-
-      const ep = await cfg('PUT', '/v1/config/endpoints/ep-kimi', {
-        id: 'ep-kimi',
+      // ── 1. Test and save the provider, catalog, and credential atomically ────
+      const connection = await cfg('POST', '/v1/config/provider-connections', {
+        workspace_id: WS,
         provider_id: 'anthropic',
+        display_name: 'Anthropic',
+        endpoint_id: 'ep-kimi',
         dialect: 'anthropic_messages',
         base_url: BASE,
         timeout_secs: 300,
-        display_name: 'kimi',
-        version: 1,
+        secret: KEY,
       });
-      assert.equal(ep.status, 200, 'endpoint stored');
-
-      const off = await cfg('POST', '/v1/config/offerings', {
-        model_id: MODEL,
-        provider_id: 'anthropic',
-        protocol_endpoint_id: 'ep-kimi',
-        dialect: 'anthropic_messages',
-        upstream_model: null,
-      });
-      assert.equal(off.status, 200, 'offering stored');
-      pass(`authored provider + endpoint + offering for ${MODEL} @ ${BASE}`);
+      assert.equal(connection.status, 201, `provider connection: ${JSON.stringify(connection.body)}`);
+      const credId = connection.body.credential.id;
+      pass(`connected provider and discovered ${MODEL} @ ${BASE}`);
 
       const catalog = await cfg('GET', '/v1/config/catalog');
       assert.equal(catalog.status, 200);
       assert.ok(JSON.stringify(catalog.body).includes(MODEL), 'catalog carries the offering');
       pass('GET /v1/config/catalog reflects the authored offering');
 
-      // ── 2. Enter the credential (secret crosses the wire once, write-only) ───
-      const created = await cfg('POST', '/v1/config/credentials', {
-        workspace_id: WS,
-        kind: 'vault',
-        provider_id: 'anthropic',
-        env_key: 'ANTHROPIC_API_KEY',
-        secret: KEY,
-      });
-      assert.equal(created.status, 201, 'credential created');
-      const credId = created.body.id;
       assert.ok(credId, 'credential id returned');
-      assert.ok(!JSON.stringify(created.body).includes(KEY), 'the secret is never echoed on create');
-      pass(`credential entered into the system config: ${credId} (secret-free response)`);
+      assert.ok(!JSON.stringify(connection.body).includes(KEY), 'the secret is never echoed');
 
       const gotCred = await cfg('GET', `/v1/config/credentials/${credId}`);
       assert.equal(gotCred.status, 200);

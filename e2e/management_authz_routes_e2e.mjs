@@ -40,8 +40,7 @@ async function apiKeyReq(base, method, uri, token, body) {
 function routes(workspace) {
   return [
   ['GET', '/v1/config/catalog'],
-  ['GET', '/v1/config/providers/ghost'],
-  ['GET', '/v1/config/endpoints/ghost'],
+  ['GET', `/v1/config/provider-connections?workspace_id=${encodeURIComponent(workspace)}`],
   ['GET', `/v1/config/credentials?workspace_id=${encodeURIComponent(workspace)}`],
   ['GET', '/v1/config/credential-pools/ghost'],
   ['GET', '/v1/config/inference-profiles/ghost'],

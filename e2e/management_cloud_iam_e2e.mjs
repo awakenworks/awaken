@@ -117,6 +117,11 @@ async function startIamFixture() {
       response.end(JSON.stringify({ data: cloudModels }));
       return;
     }
+    if (request.method === 'GET' && request.url === '/v1/models') {
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({ data: [{ id: 'direct-publication-e2e' }] }));
+      return;
+    }
     if (request.method === 'POST' && request.url === '/v1/inference/grants') {
       const chunks = [];
       for await (const chunk of request) chunks.push(chunk);
@@ -420,39 +425,23 @@ async function main() {
     // | B7   | N  | N  | -  | -  | N  | 409 qualified endpoint required       |
     const directTarget = {
       model_id: 'direct-publication-e2e',
-      provider_id: 'direct-e2e',
+      provider_id: 'openai',
       protocol_endpoint_id: 'direct-e2e-primary',
     };
-    for (const [uri, body] of [
-      ['/v1/config/providers/direct-e2e', {
-        id: 'ignored', slug: 'direct-e2e', display_name: 'Direct E2E', version: 1,
-      }],
-      ['/v1/config/endpoints/direct-e2e-primary', {
-        id: 'ignored', provider_id: 'direct-e2e', dialect: 'open_ai_chat',
-        base_url: `${iam.url}/v1/`, timeout_secs: 30, display_name: 'Direct primary', version: 1,
-      }],
-    ]) {
-      result = await req(base, 'PUT', uri, cachedToken, { body });
-      assert.equal(result.status, 200, JSON.stringify(result.body));
-    }
-    result = await req(base, 'POST', '/v1/config/offerings', cachedToken, {
-      body: {
-        ...directTarget,
-        dialect: 'open_ai_chat',
-        upstream_model: null,
-      },
-    });
-    assert.equal(result.status, 200, JSON.stringify(result.body));
-    result = await req(base, 'POST', '/v1/config/credentials', cachedToken, {
+    result = await req(base, 'POST', '/v1/config/provider-connections', cachedToken, {
       body: {
         workspace_id: localWorkspace,
-        kind: 'vault',
-        provider_id: 'direct-e2e',
+        provider_id: 'openai',
+        display_name: 'Direct E2E',
+        endpoint_id: 'direct-e2e-primary',
+        dialect: 'open_ai_chat',
+        base_url: `${iam.url}/v1/`,
+        timeout_secs: 30,
         secret: 'sk-cloud-byok-publication-e2e', // awaken-allow: secret
       },
     });
     assert.equal(result.status, 201, JSON.stringify(result.body));
-    const directCredentialId = result.body.id;
+    const directCredentialId = result.body.credential.id;
     for (const [poolId, members] of [
       ['publication-empty-pool', []],
       ['publication-ready-pool', [{
@@ -544,23 +533,19 @@ async function main() {
     result = await publishMatrixAgent();
     assert.equal(result.status, 200, JSON.stringify(result.body));
 
-    result = await req(base, 'PUT', '/v1/config/endpoints/direct-e2e-secondary', cachedToken, {
+    result = await req(base, 'POST', '/v1/config/provider-connections', cachedToken, {
       body: {
-        id: 'ignored', provider_id: 'direct-e2e', dialect: 'open_ai_chat',
-        base_url: `${iam.url}/v1/`, timeout_secs: 30, display_name: 'Direct secondary', version: 1,
-      },
-    });
-    assert.equal(result.status, 200, JSON.stringify(result.body));
-    result = await req(base, 'POST', '/v1/config/offerings', cachedToken, {
-      body: {
-        model_id: directTarget.model_id,
-        provider_id: directTarget.provider_id,
-        protocol_endpoint_id: 'direct-e2e-secondary',
+        workspace_id: localWorkspace,
+        provider_id: 'openai',
+        display_name: 'Direct E2E',
+        endpoint_id: 'direct-e2e-secondary',
         dialect: 'open_ai_chat',
-        upstream_model: null,
+        base_url: `${iam.url}/v1/`,
+        timeout_secs: 30,
+        credential_source_id: directCredentialId,
       },
     });
-    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.equal(result.status, 201, JSON.stringify(result.body));
     await rejectedPublication(
       { model_id: directTarget.model_id, provider_id: directTarget.provider_id },
       { type: 'none' },

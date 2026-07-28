@@ -19,6 +19,8 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
+mod support;
+
 /// A probe stub that always returns a fixed verdict (records nothing).
 struct FixedProbe(ProbeStatus);
 #[async_trait::async_trait]
@@ -28,9 +30,23 @@ impl CredentialProbe for FixedProbe {
     }
 }
 
-fn router(probe: Option<Arc<dyn CredentialProbe>>) -> Router {
-    admin_router(AdminState {
-        catalog: Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new()),
+struct TestRouter {
+    app: Router,
+    catalog: Arc<awaken_model_catalog::repo::InMemoryCatalogRepo>,
+}
+
+impl std::ops::Deref for TestRouter {
+    type Target = Router;
+
+    fn deref(&self) -> &Self::Target {
+        &self.app
+    }
+}
+
+fn router(probe: Option<Arc<dyn CredentialProbe>>) -> TestRouter {
+    let catalog = Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new());
+    let app = admin_router(AdminState {
+        catalog: catalog.clone(),
         credentials: Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
         secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
         profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
@@ -39,7 +55,8 @@ fn router(probe: Option<Arc<dyn CredentialProbe>>) -> Router {
         model_discovery: None,
         brokered_catalog: None,
         availability: Arc::new(AvailabilityLedger::new()),
-    })
+    });
+    TestRouter { app, catalog }
 }
 
 /// Issue a request; return `(status, content_type, json_body)`.
@@ -79,38 +96,8 @@ async fn call(
 }
 
 /// Author a resolvable model on `provider` (idempotent per provider/endpoint).
-async fn author_model(app: &Router, provider: &str, dialect: &str, model: &str) {
-    let (s, _, _) = call(
-        app,
-        "PUT",
-        &format!("/v1/config/providers/{provider}"),
-        Some(json!({ "id": provider, "slug": provider, "display_name": provider, "version": 1 })),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
-    let (s, _, _) = call(
-        app,
-        "PUT",
-        "/v1/config/endpoints/ep1",
-        Some(json!({
-            "id": "ep1", "provider_id": provider, "dialect": dialect,
-            "base_url": "https://api.example.com/v1/", "timeout_secs": 300,
-            "display_name": "prod", "version": 1
-        })),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
-    let (s, _, _) = call(
-        app,
-        "POST",
-        "/v1/config/offerings",
-        Some(json!({
-            "model_id": model, "provider_id": provider,
-            "protocol_endpoint_id": "ep1", "dialect": dialect, "upstream_model": null
-        })),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+async fn author_model(app: &TestRouter, provider: &str, dialect: &str, model: &str) {
+    support::seed_model(&app.catalog, provider, dialect, model, "ep1").await;
 }
 
 /// Enter a vault credential scoped to `provider`; return its id.
@@ -314,29 +301,14 @@ async fn resolve_over_http_reports_the_binding_and_credential_presence() {
 async fn resolve_target_rejects_ambiguous_legacy_identity_and_conflicting_shapes() {
     let app = router(None);
     author_model(&app, "anthropic", "anthropic_messages", "same-model").await;
-    let (status, _, _) = call(
-        &app,
-        "PUT",
-        "/v1/config/endpoints/ep2",
-        Some(json!({
-            "id":"ep2", "provider_id":"anthropic", "dialect":"anthropic_messages",
-            "base_url":"https://backup.example/v1", "timeout_secs":300,
-            "display_name":"backup", "version":1
-        })),
+    support::seed_model(
+        &app.catalog,
+        "anthropic",
+        "anthropic_messages",
+        "same-model",
+        "ep2",
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
-    let (status, _, _) = call(
-        &app,
-        "POST",
-        "/v1/config/offerings",
-        Some(json!({
-            "model_id":"same-model", "provider_id":"anthropic",
-            "protocol_endpoint_id":"ep2", "dialect":"anthropic_messages"
-        })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
 
     let (status, _, problem) = call(
         &app,

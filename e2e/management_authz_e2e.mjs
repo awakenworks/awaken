@@ -106,12 +106,12 @@ async function main() {
     pass('missing/garbage tokens -> 401 authentication_error on config + vault surfaces');
 
     // With the admin token: the full authoring flow.
-    r = await req(base, 'PUT', '/v1/config/providers/anthropic',
-      { id: 'anthropic', slug: 'anthropic', display_name: 'Anthropic', version: 1 }, token);
-    assert.equal(r.status, 200, `provider put: ${JSON.stringify(r.json)}`);
+    r = await req(base, 'PUT', '/v1/config/model-attributes/authz-model',
+      { context_window: 4096 }, token);
+    assert.equal(r.status, 200, `model attributes put: ${JSON.stringify(r.json)}`);
     r = await req(base, 'GET', '/v1/config/catalog', undefined, token);
     assert.equal(r.status, 200);
-    assert.ok(r.json.providers && r.json.providers.anthropic, 'authored provider is in the catalog');
+    assert.equal(r.json.model_attributes['authz-model'].context_window, 4096);
     r = await req(base, 'POST', '/v1/config/credentials', {
       workspace_id: workspace, kind: 'vault', provider_id: 'anthropic',
       env_key: 'ANTHROPIC_API_KEY',
@@ -168,9 +168,9 @@ async function main() {
     assert.ok(!JSON.stringify(r.json.api_token).includes('$argon2'), 'view is hash-free');
 
     // The NEW token authors config within its role's reach.
-    r = await req(base, 'PUT', '/v1/config/providers/openai',
-      { id: 'openai', slug: 'openai', display_name: 'OpenAI', version: 1 }, opToken);
-    assert.equal(r.status, 200, `new-token provider put: ${JSON.stringify(r.json)}`);
+    r = await req(base, 'PUT', '/v1/config/model-attributes/operator-model',
+      { context_window: 8192 }, opToken);
+    assert.equal(r.status, 200, `new-token model attributes put: ${JSON.stringify(r.json)}`);
     pass('HTTP-minted workspace admin token authors config (cleartext returned once)');
 
     // The token list is secret-free: views only — never a hash or cleartext.

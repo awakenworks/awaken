@@ -1,8 +1,8 @@
 //! Causal-graph coverage for the admin config router (CEG 09) that needs the live
 //! HTTP surface: live credential validation (`validate_credential` VC1–VC5),
 //! credential cooldown + pool eligibility (`cooldown_credential` / `get_pool_eligible`
-//! CD1–CD5), the authoritative-path-id override on `put_provider`/`put_endpoint`/
-//! `put_pool`, `archive_credential`, and `post_credential`'s secret-free-out
+//! CD1–CD5), the authoritative-path-id override on `put_pool`,
+//! `archive_credential`, and `post_credential`'s secret-free-out
 //! contract. The pure error-mapper cases live inline in `router.rs`.
 //!
 //! Every route is driven end-to-end through `axum` `oneshot`, reusing the same
@@ -21,6 +21,8 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
+
+mod support;
 
 /// A test double for the live-probe port. Records every call (base_url, secret,
 /// model) and answers with a configured status, so a test can prove the probe both
@@ -56,12 +58,14 @@ impl CredentialProbe for RecordingProbe {
 
 struct Harness {
     app: Router,
+    catalog: Arc<awaken_model_catalog::repo::InMemoryCatalogRepo>,
 }
 
 /// Build a router with the in-memory stores; `probe` is the optional live validator.
 fn harness_with(probe: Option<Arc<dyn CredentialProbe>>) -> Harness {
+    let catalog = Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new());
     let app = admin_router(AdminState {
-        catalog: Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new()),
+        catalog: catalog.clone(),
         credentials: Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
         secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
         profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
@@ -71,7 +75,7 @@ fn harness_with(probe: Option<Arc<dyn CredentialProbe>>) -> Harness {
         brokered_catalog: None,
         availability: Arc::new(AvailabilityLedger::new()),
     });
-    Harness { app }
+    Harness { app, catalog }
 }
 
 fn harness() -> Harness {
@@ -123,38 +127,8 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
 /// Author a resolvable model: provider + endpoint (`dialect`) + offering. `dialect`
 /// picks the adapter kind the resolver reports (`anthropic_messages`→"anthropic",
 /// `open_ai_chat`→"openai").
-async fn author_model(app: &Router, provider: &str, dialect: &str, model: &str) {
-    let (s, _) = call(
-        app,
-        "PUT",
-        &format!("/v1/config/providers/{provider}"),
-        Some(json!({ "id": provider, "slug": provider, "display_name": provider, "version": 1 })),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
-    let (s, _) = call(
-        app,
-        "PUT",
-        "/v1/config/endpoints/ep1",
-        Some(json!({
-            "id": "ep1", "provider_id": provider, "dialect": dialect,
-            "base_url": "https://api.example.com/v1/", "timeout_secs": 300,
-            "display_name": "prod", "version": 1
-        })),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
-    let (s, _) = call(
-        app,
-        "POST",
-        "/v1/config/offerings",
-        Some(json!({
-            "model_id": model, "provider_id": provider,
-            "protocol_endpoint_id": "ep1", "dialect": dialect, "upstream_model": null
-        })),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+async fn author_model(harness: &Harness, provider: &str, dialect: &str, model: &str) {
+    support::seed_model(&harness.catalog, provider, dialect, model, "ep1").await;
 }
 
 /// Enter a vault credential scoped to `provider` and return its id.
@@ -184,7 +158,7 @@ async fn enter_vault_cred(app: &Router, provider: Option<&str>, secret: &str) ->
 async fn vc1_probe_runs_for_anthropic_with_secret() {
     let probe = RecordingProbe::new(ProbeStatus::Valid);
     let h = harness_with(Some(probe.clone()));
-    author_model(&h.app, "anthropic", "anthropic_messages", "claude-opus-4-8").await;
+    author_model(&h, "anthropic", "anthropic_messages", "claude-opus-4-8").await;
     let cred = enter_vault_cred(&h.app, Some("anthropic"), "sk-live-probe").await;
 
     let (s, body) = call(
@@ -216,7 +190,7 @@ async fn vc1_probe_runs_for_anthropic_with_secret() {
 #[tokio::test]
 async fn vc2_no_probe_is_unknown() {
     let h = harness(); // probe: None
-    author_model(&h.app, "anthropic", "anthropic_messages", "claude-opus-4-8").await;
+    author_model(&h, "anthropic", "anthropic_messages", "claude-opus-4-8").await;
     let cred = enter_vault_cred(&h.app, Some("anthropic"), "sk-x").await;
 
     let (s, body) = call(
@@ -237,7 +211,7 @@ async fn vc2_no_probe_is_unknown() {
 async fn vc3_non_anthropic_adapter_is_unknown_and_skips_probe() {
     let probe = RecordingProbe::new(ProbeStatus::Valid);
     let h = harness_with(Some(probe.clone()));
-    author_model(&h.app, "openai", "open_ai_chat", "gpt-x").await;
+    author_model(&h, "openai", "open_ai_chat", "gpt-x").await;
     let cred = enter_vault_cred(&h.app, Some("openai"), "sk-openai").await;
 
     let (s, body) = call(
@@ -263,7 +237,7 @@ async fn vc3_non_anthropic_adapter_is_unknown_and_skips_probe() {
 async fn vc5_resolve_failure_is_problem_json_without_secret() {
     let probe = RecordingProbe::new(ProbeStatus::Valid);
     let h = harness_with(Some(probe.clone()));
-    author_model(&h.app, "anthropic", "anthropic_messages", "claude-opus-4-8").await;
+    author_model(&h, "anthropic", "anthropic_messages", "claude-opus-4-8").await;
     let cred = enter_vault_cred(&h.app, Some("anthropic"), "sk-secret-vc5").await;
 
     // A model with no offering → ModelUnresolved → 404 model_unresolved.
@@ -408,45 +382,14 @@ async fn cd5_pool_eligible_partitions_cooled_members() {
 }
 
 // ---------------------------------------------------------------------------
-// Authoritative path id override (put_provider / put_endpoint / put_pool)
+// Authoritative path id override (put_pool)
 // ---------------------------------------------------------------------------
 
-/// The path id is authoritative on all three upsert routes: a client cannot smuggle
+/// The path id is authoritative on the pool upsert route: a client cannot smuggle
 /// a different id in the body to write under a scope it did not address.
 #[tokio::test]
-async fn path_id_overrides_body_id_on_provider_endpoint_and_pool() {
+async fn path_id_overrides_body_id_on_pool() {
     let h = harness();
-
-    let (s, provider) = call(
-        &h.app,
-        "PUT",
-        "/v1/config/providers/real-provider",
-        Some(json!({ "id": "evil-body-id", "slug": "p", "display_name": "P", "version": 1 })),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
-    assert_eq!(provider["id"], "real-provider");
-    // And it is stored under the path id, not the body id.
-    let (s, got) = call(&h.app, "GET", "/v1/config/providers/real-provider", None).await;
-    assert_eq!(s, StatusCode::OK);
-    assert_eq!(got["id"], "real-provider");
-    let (s, _) = call(&h.app, "GET", "/v1/config/providers/evil-body-id", None).await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
-
-    // Endpoint needs its provider to exist (ref integrity).
-    let (s, endpoint) = call(
-        &h.app,
-        "PUT",
-        "/v1/config/endpoints/real-endpoint",
-        Some(json!({
-            "id": "evil-body-id", "provider_id": "real-provider",
-            "dialect": "anthropic_messages", "base_url": "https://x/", "timeout_secs": 30,
-            "display_name": "e", "version": 1
-        })),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
-    assert_eq!(endpoint["id"], "real-endpoint");
 
     let (s, pool) = call(
         &h.app,
@@ -480,7 +423,7 @@ async fn archive_missing_credential_is_404() {
 #[tokio::test]
 async fn archive_disables_credential_and_bumps_version() {
     let h = harness();
-    author_model(&h.app, "anthropic", "anthropic_messages", "claude-opus-4-8").await;
+    author_model(&h, "anthropic", "anthropic_messages", "claude-opus-4-8").await;
     let cred = enter_vault_cred(&h.app, Some("anthropic"), "sk-to-archive").await;
 
     // Freshly entered → active, version 1.

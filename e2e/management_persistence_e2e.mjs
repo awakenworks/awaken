@@ -33,7 +33,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
-import { deploymentEnv, spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import { deploymentEnv, spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv, FAKE_KEY } from './harness.mjs';
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
@@ -80,22 +80,19 @@ async function main() {
     await waitForPort(PORT);
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
 
-    // Catalog: provider / endpoint / offering.
-    let r = await req(base, 'PUT', '/v1/config/providers/anthropic', {
-      id: 'anthropic', slug: 'anthropic', display_name: 'Anthropic', version: 1,
+    // The canonical connection command persists catalog and credential facts.
+    let r = await req(base, 'POST', '/v1/config/provider-connections', {
+      workspace_id: 'wrkspc_default',
+      provider_id: 'anthropic',
+      display_name: 'Anthropic',
+      endpoint_id: 'ep1',
+      dialect: 'anthropic_messages',
+      base_url: `${upstream.url}/v1/`,
+      timeout_secs: 300,
+      secret: FAKE_KEY,
     });
-    assert.equal(r.status, 200);
-    r = await req(base, 'PUT', '/v1/config/endpoints/ep1', {
-      id: 'ep1', provider_id: 'anthropic', dialect: 'anthropic_messages',
-      base_url: 'https://api.anthropic.com/v1/', timeout_secs: 300, display_name: 'prod', version: 1,
-    });
-    assert.equal(r.status, 200);
-    r = await req(base, 'POST', '/v1/config/offerings', {
-      model_id: 'claude-opus-4-8', provider_id: 'anthropic',
-      protocol_endpoint_id: 'ep1', dialect: 'anthropic_messages', upstream_model: null,
-    });
-    assert.equal(r.status, 200);
-    pass('authored provider/endpoint/offering under the typed data_dir');
+    assert.equal(r.status, 201);
+    pass('connected provider under the typed data_dir');
 
     // A vault `mcp_oauth` credential through the OFFICIAL SDK: the wire vault
     // bookkeeping is host-ephemeral, but the domain row + sealed access token

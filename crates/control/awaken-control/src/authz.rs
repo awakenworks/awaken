@@ -1034,27 +1034,6 @@ const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
         },
     },
     RoutePolicyDescriptor {
-        prefix: "/v1/config/providers",
-        policy: RouteFamilyPolicy::Scoped {
-            read: WORKSPACE_READ,
-            write: WORKSPACE_WRITE,
-        },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/config/endpoints",
-        policy: RouteFamilyPolicy::Scoped {
-            read: WORKSPACE_READ,
-            write: WORKSPACE_WRITE,
-        },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/config/offerings",
-        policy: RouteFamilyPolicy::Scoped {
-            read: WORKSPACE_READ,
-            write: WORKSPACE_WRITE,
-        },
-    },
-    RoutePolicyDescriptor {
         prefix: "/v1/config/model-attributes",
         policy: RouteFamilyPolicy::Scoped {
             read: WORKSPACE_READ,

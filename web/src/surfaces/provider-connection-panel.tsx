@@ -9,7 +9,6 @@ import {
 } from "../components/ui";
 import { api, ws } from "../lib/api/client";
 import type {
-  CatalogSyncResult,
   CredentialSource,
   EnvironmentProviderProposal,
   ProviderConnectionView,
@@ -36,19 +35,7 @@ interface ProviderDraft {
   provider: string;
   endpoint: string;
   baseUrl: string;
-  model: string;
   dialect: string;
-  contextWindow: string;
-  maxOutputTokens: string;
-}
-
-function parseOptionalTokenLimit(label: string, value: string): number | undefined {
-  if (!value.trim()) return undefined;
-  const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
-    throw new Error(`${label} must be a positive integer`);
-  }
-  return parsed;
 }
 
 export function providerDraftDefaults(descriptor: ProviderDriverDescriptor) {
@@ -58,7 +45,6 @@ export function providerDraftDefaults(descriptor: ProviderDriverDescriptor) {
     endpoint: `${descriptor.provider_kind}-${endpoint?.id_suffix ?? "endpoint"}`,
     baseUrl: endpoint?.base_url ?? "",
     dialect: endpoint?.dialect ?? descriptor.supported_dialects[0],
-    model: "",
   };
 }
 
@@ -106,10 +92,7 @@ export default function ProviderConnectionPanel({
     provider: "anthropic",
     endpoint: "anthropic-messages",
     baseUrl: "",
-    model: "claude-sonnet-4-5",
     dialect: "anthropic_messages",
-    contextWindow: "",
-    maxOutputTokens: "",
   });
   const [apiKey, setApiKey] = useState("");
   const [authMode, setAuthMode] = useState<"api_key" | "oauth" | "existing">(
@@ -130,53 +113,12 @@ export default function ProviderConnectionPanel({
     setDraft({
       ...draft,
       ...providerDraftDefaults(descriptor),
-      contextWindow: "",
-      maxOutputTokens: "",
     });
     setConfiguration(providerConfigurationDefaults(descriptor));
     setApiKey("");
     setAuthMode(existing ? "existing" : descriptor.auth_methods[0] ?? "api_key");
     setSyncCredential(existing?.id ?? "");
   };
-
-  const upsert = useMutation({
-    mutationFn: async () => {
-      // Manual authoring extends one existing connection. Provider and endpoint
-      // ownership stays exclusively with the Provider Connection command.
-      await api.post(ws("/v1/config/offerings"), {
-        model_id: draft.model,
-        provider_id: draft.provider,
-        protocol_endpoint_id: draft.endpoint,
-        dialect: draft.dialect,
-        upstream_model: null,
-      });
-      const contextWindow = parseOptionalTokenLimit(
-        "Context window",
-        draft.contextWindow,
-      );
-      const maxOutputTokens = parseOptionalTokenLimit(
-        "Max output tokens",
-        draft.maxOutputTokens,
-      );
-      if (
-        contextWindow != null &&
-        maxOutputTokens != null &&
-        maxOutputTokens > contextWindow
-      ) {
-        throw new Error("Max output tokens cannot exceed the context window");
-      }
-      if (contextWindow != null || maxOutputTokens != null) {
-        await api.put(ws(`/v1/config/model-attributes/${draft.model}`), {
-          ...(contextWindow != null ? { context_window: contextWindow } : {}),
-          ...(maxOutputTokens != null ? { max_output_tokens: maxOutputTokens } : {}),
-        });
-      }
-    },
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["catalog"] });
-      void qc.invalidateQueries({ queryKey: ["provider-connections", workspace] });
-    },
-  });
 
   const connect = useMutation({
     mutationFn: () => {
@@ -209,21 +151,6 @@ export default function ProviderConnectionPanel({
       setAuthMode("existing");
       void qc.invalidateQueries({ queryKey: ["catalog"] });
       void qc.invalidateQueries({ queryKey: ["credentials", workspace] });
-      void qc.invalidateQueries({ queryKey: ["provider-connections", workspace] });
-    },
-  });
-
-  const syncModels = useMutation({
-    mutationFn: () =>
-      api.post<CatalogSyncResult>(
-        ws(`/v1/config/endpoints/${draft.endpoint}/discover-models`),
-        {
-          workspace_id: workspace,
-          credential_source_id: syncCredential,
-        },
-      ),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["catalog"] });
       void qc.invalidateQueries({ queryKey: ["provider-connections", workspace] });
     },
   });
@@ -304,7 +231,6 @@ export default function ProviderConnectionPanel({
                         provider: proposal.provider_id,
                         endpoint: proposal.endpoint_id,
                         baseUrl: proposal.base_url ?? "",
-                        model: proposal.model_id ?? "",
                         dialect: proposal.dialect,
                       })
                     }
@@ -494,80 +420,6 @@ export default function ProviderConnectionPanel({
         )}
       </Card>
 
-      <Card>
-        <details>
-          <summary>
-            {app.t("Advanced catalog maintenance", "高级目录维护")}
-          </summary>
-          <p className="hint">
-            {app.t(
-              "Add a manual model only to the selected existing endpoint, or explicitly refresh that endpoint with an existing credential. Provider and endpoint facts remain owned by Provider Connections.",
-              "仅向当前已有端点添加手工模型，或使用已有凭证显式刷新该端点。Provider 与 Endpoint 事实仍由供应商连接统一维护。",
-            )}
-          </p>
-          <div className="row" style={{ alignItems: "flex-end" }}>
-            <TextField
-              label="Model id"
-              mono
-              placeholder="model-id"
-              value={draft.model}
-              onChange={(event) =>
-                setDraft({ ...draft, model: event.target.value })
-              }
-            />
-            <TextField
-              label={app.t("Context window", "上下文窗口")}
-              mono
-              placeholder="200000"
-              value={draft.contextWindow}
-              onChange={(event) =>
-                setDraft({ ...draft, contextWindow: event.target.value })
-              }
-            />
-            <TextField
-              label={app.t("Max output tokens", "最大输出 token")}
-              mono
-              placeholder={app.t("unknown", "未知")}
-              value={draft.maxOutputTokens}
-              onChange={(event) =>
-                setDraft({ ...draft, maxOutputTokens: event.target.value })
-              }
-            />
-            <Button
-              disabled={!draft.model || upsert.isPending}
-              onClick={() => upsert.mutate()}
-            >
-              {app.t("Add model to endpoint", "添加模型到端点")}
-            </Button>
-            <SelectField
-              label={app.t("Refresh with credential", "使用凭证刷新")}
-              value={syncCredential}
-              onChange={(event) => setSyncCredential(event.target.value)}
-            >
-              <option value="">{app.t("Choose credential", "选择凭证")}</option>
-              {reusableCredentials.map((credential) => (
-                <option key={credential.id} value={credential.id}>
-                  {credential.id} · {credential.kind}
-                </option>
-              ))}
-            </SelectField>
-            <Button
-              disabled={
-                !syncCredential || !draft.endpoint || syncModels.isPending
-              }
-              onClick={() => syncModels.mutate()}
-            >
-              {app.t("Refresh models", "刷新模型")}
-            </Button>
-          </div>
-          {upsert.error instanceof Error && (
-            <div className="err">{upsert.error.message}</div>
-          )}
-          {syncModels.error instanceof Error && (
-            <div className="err">{syncModels.error.message}</div>
-          )}
-        </details>
-      </Card>
     </>
   );
 }
