@@ -98,7 +98,7 @@ spec:
             - { name: AWAKEN_DISPATCH_WAKE, value: pg-notify }
             # Three processes each host dispatch + commit pools. Cap each pool so
             # their aggregate stays below the fixture Postgres max_connections=100.
-            - { name: AWAKEN_PG_MAX_CONNECTIONS, value: "8" }
+            - { name: SESSION_DEPLOYMENT_POSTGRES_MAX_CONNECTIONS, value: "8" }
             - { name: AWAKEN_HTTP_ADDR, value: "0.0.0.0:3000" }
             - { name: AWAKEN_STORAGE_DIR, value: "/tmp/awaken" }
           ports:

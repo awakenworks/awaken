@@ -19,12 +19,12 @@ static SHARED_POSTGRES_COMMIT: std::sync::OnceLock<Arc<PostgresCommitCoordinator
 /// `DeploymentConfig::store=Postgres`. Call this ONCE at startup (the server does so before it
 /// serves) — it must run here, not in the per-thread run path. Idempotent: a second
 /// call keeps the first coordinator.
-pub async fn init_shared_postgres_commit(url: &str) -> Result<(), String> {
+pub async fn init_shared_postgres_commit(url: &str, max_connections: u32) -> Result<(), String> {
     if SHARED_POSTGRES_COMMIT.get().is_some() {
         return Ok(());
     }
     let coord = Arc::new(
-        PostgresCommitCoordinator::connect(url)
+        PostgresCommitCoordinator::connect(url, max_connections)
             .await
             .map_err(|e| e.to_string())?,
     );
@@ -54,9 +54,11 @@ mod tests {
             eprintln!("skip: AWAKEN_TEST_PG_URL unset");
             return;
         };
-        init_shared_postgres_commit(&url).await.expect("first init");
+        init_shared_postgres_commit(&url, 10)
+            .await
+            .expect("first init");
         // A second init keeps the first coordinator (idempotent, no reconnect).
-        init_shared_postgres_commit(&url)
+        init_shared_postgres_commit(&url, 10)
             .await
             .expect("second init is a no-op");
         assert!(shared_postgres_commit().is_some());

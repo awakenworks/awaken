@@ -118,7 +118,7 @@ async fn postgres_one_running_per_thread_under_concurrent_claimers() {
         return;
     }
     let store = Arc::new(
-        PostgresDispatchStore::connect(&harness::database_url_in_schema(schema))
+        PostgresDispatchStore::connect(&harness::database_url_in_schema(schema), 10)
             .await
             .expect("connect"),
     );
@@ -318,7 +318,7 @@ async fn postgres_connect_applies_migrations_and_claim_recovers_a_lease() {
     }
 
     // connect() (not with_pool) applies the dispatch migrations on a fresh pool.
-    let store = PostgresDispatchStore::connect(&harness::database_url_in_schema(schema))
+    let store = PostgresDispatchStore::connect(&harness::database_url_in_schema(schema), 10)
         .await
         .expect("connect");
     store

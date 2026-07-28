@@ -611,7 +611,7 @@ async fn any_postgres_connect_and_claim() {
     let Some(_pool) = harness::schema_pool(schema).await else {
         return;
     };
-    let store = AnyDispatchStore::connect_postgres(&harness::database_url_in_schema(schema))
+    let store = AnyDispatchStore::connect_postgres(&harness::database_url_in_schema(schema), 10)
         .await
         .expect("connect postgres backend");
     store

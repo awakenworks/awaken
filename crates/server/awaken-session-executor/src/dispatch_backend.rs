@@ -67,13 +67,20 @@ pub async fn init_shared_postgres_dispatch_with_config(
     // in-process `LocalWakeSignal` + poll, so SQLite/single-node Postgres are unaffected.
     let store = match dispatch_wake_kind(deployment) {
         DispatchWake::PgNotify => {
-            let (store, wake) =
-                AnyDispatchStore::connect_postgres_with_wake(url, &deployment.wake_channel).await?;
+            let (store, wake) = AnyDispatchStore::connect_postgres_with_wake(
+                url,
+                &deployment.wake_channel,
+                deployment.postgres_max_connections.get(),
+            )
+            .await?;
             let _ = SHARED_PG_WAKE.set(wake);
             Arc::new(store)
         }
         DispatchWake::Nats => connect_postgres_with_nats_wake(url, deployment).await?,
-        DispatchWake::None => Arc::new(AnyDispatchStore::connect_postgres(url).await?),
+        DispatchWake::None => Arc::new(
+            AnyDispatchStore::connect_postgres(url, deployment.postgres_max_connections.get())
+                .await?,
+        ),
     };
     let _ = SHARED_POSTGRES_DISPATCH.set(store);
     Ok(())
@@ -91,9 +98,13 @@ async fn connect_postgres_with_nats_wake(
         .nats_url
         .as_deref()
         .ok_or_else(|| "AWAKEN_DISPATCH_WAKE=nats requires AWAKEN_NATS_URL".to_string())?;
-    let (store, wake) =
-        AnyDispatchStore::connect_postgres_with_nats_wake(url, nats_url, &deployment.wake_channel)
-            .await?;
+    let (store, wake) = AnyDispatchStore::connect_postgres_with_nats_wake(
+        url,
+        nats_url,
+        &deployment.wake_channel,
+        deployment.postgres_max_connections.get(),
+    )
+    .await?;
     let _ = SHARED_NATS_WAKE.set(wake);
     Ok(Arc::new(store))
 }
