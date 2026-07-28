@@ -477,10 +477,11 @@ proxy, Kubernetes namespace, container Hand location and reaper settings have
 been consolidated into `DeploymentConfig::sandbox`. Content capture level and
 redaction are authored once in typed deployment configuration; enrollment
 signing is an internally generated process capability rather than an ambient
-operator secret. Remaining production readers such as OAuth lifetime,
-database-pool and observability settings still require migration before D12 is
-complete. PATH, HOME, DISPLAY and test gate variables are not part of that
-migration.
+operator secret. OAuth cache lifetime is fixed credential-domain behavior until
+a per-source persisted lifetime contract exists; it is no longer process
+configuration. Remaining production readers such as database-pool and
+observability settings still require migration before D12 is complete. PATH,
+HOME, DISPLAY and test gate variables are not part of that migration.
 
 ### D13 — Request attribution and retained ACP content have one lifecycle
 
@@ -899,7 +900,7 @@ the remaining external/reconciliation gates:
 | automatic Assistant | exactly one Available+Verified local backend is required; zero remains unconfigured and multiple are resolved through the ordinary persisted Agent model editor | no separate default-backend preference exists |
 | frontend contract | OpenAPI-generated TypeScript consumes the Rust discriminated union and live Worker ACP projection | keep generated-contract freshness gated |
 | Flow | pinned to the pushed Awaken revision; one existing Worker/executor consumes the shared preparation service | keep the revision and lockfile updated atomically |
-| ambient configuration | environment Provider proposals and Flow ACP inventory/default fields are removed; sandbox/container and content-capture policy consume typed `DeploymentConfig`; enrollment signing is internal | migrate remaining OAuth lifetime, database-pool and observability readers; keep PATH/HOME/DISPLAY as execution metadata only |
+| ambient configuration | environment Provider proposals and Flow ACP inventory/default fields are removed; sandbox/container and content-capture policy consume typed `DeploymentConfig`; enrollment signing is internal; OAuth cache lifetime is fixed credential-domain behavior | migrate remaining database-pool and observability readers; keep PATH/HOME/DISPLAY as execution metadata only |
 | content attribution/erasure | Managed request attribution is durable across dispatch and resume; Host-owned capture sink and subject-scoped ACP blob store share the erasure resolver; HTTP E2E proves capture + real session harvest fan-out, cross-subject isolation and idempotency | add automatic retention-expiry policy for ACP session homes |
 | real host proof | installed Codex `0.145.0` completed the zero-configuration host-login release gate through real wrapper negotiation, BackendDefault publication, LLM response and committed running→idle transcript; installed Claude `2.1.220` is correctly login-required when ambient `ANTHROPIC_API_KEY` is cleared | run the same release-gated real LLM session after a persisted Claude host login is available |
 
