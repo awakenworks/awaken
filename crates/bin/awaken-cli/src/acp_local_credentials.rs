@@ -226,7 +226,7 @@ fn render_diagnostics(observations: &[AcpHostObservation], json: bool) -> String
     output
 }
 
-fn credential_state_name(state: CredentialObservationState) -> &'static str {
+pub(crate) fn credential_state_name(state: CredentialObservationState) -> &'static str {
     match state {
         CredentialObservationState::Available => "available",
         CredentialObservationState::LoginRequired => "login_required",
