@@ -85,6 +85,7 @@ pub fn awaken_config_service::ConfigServiceReconciler::reconcile<'life0, 'async_
 pub struct awaken_config_service::LocalRuntimeCapability
 pub awaken_config_service::LocalRuntimeCapability::detected: bool
 pub awaken_config_service::LocalRuntimeCapability::login_state: core::option::Option<alloc::string::String>
+pub awaken_config_service::LocalRuntimeCapability::negotiated: core::option::Option<serde_json::value::Value>
 pub awaken_config_service::LocalRuntimeCapability::reason_code: core::option::Option<alloc::string::String>
 pub awaken_config_service::LocalRuntimeCapability::remediation: core::option::Option<alloc::string::String>
 pub awaken_config_service::LocalRuntimeCapability::version: core::option::Option<alloc::string::String>
@@ -126,6 +127,8 @@ pub trait awaken_config_service::CredentialReferenceValidator: core::marker::Sen
 pub fn awaken_config_service::CredentialReferenceValidator::validate<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 awaken_credential_contract::CredentialRef) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub trait awaken_config_service::ModelPublicationResolver: core::marker::Send + core::marker::Sync
 pub fn awaken_config_service::ModelPublicationResolver::resolve_models<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 awaken_config_store::config::ModelSelection, &'life3 [awaken_runtime_contract::resolved::ModelBinding]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_config_service::ResolvedPublicationModels, awaken_config_service::PublicationResolutionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub trait awaken_config_service::RuntimeCapabilitySource: core::marker::Send + core::marker::Sync
+pub fn awaken_config_service::RuntimeCapabilitySource::current<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<awaken_config_service::RuntimeCapability>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_config_service::ToolCatalogSource: core::marker::Send + core::marker::Sync
 pub fn awaken_config_service::ToolCatalogSource::catalog_for(&self, &awaken_tenancy::ScopeId) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 impl awaken_config_service::ToolCatalogSource for awaken_config_service::ScopedToolCatalog
@@ -134,6 +137,8 @@ impl awaken_config_service::ToolCatalogSource for awaken_config_service::StaticT
 pub fn awaken_config_service::StaticToolCatalog::catalog_for(&self, &awaken_tenancy::ScopeId) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub fn awaken_config_service::agent_config_from_managed(alloc::string::String, &serde_json::value::Value) -> core::result::Result<awaken_config_store::config::AgentConfig, alloc::string::String>
 pub fn awaken_config_service::capabilities_router(alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>, alloc::vec::Vec<awaken_config_service::RuntimeCapability>) -> axum::routing::Router
+pub fn awaken_config_service::capabilities_router_with_source(alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>, alloc::sync::Arc<dyn awaken_config_service::RuntimeCapabilitySource>) -> axum::routing::Router
 pub fn awaken_config_service::config_router(awaken_config_service::ConfigPlane) -> axum::routing::Router
 pub fn awaken_config_service::managed_from_agent_config(&awaken_config_store::config::AgentConfig, bool) -> serde_json::value::Value
 pub fn awaken_config_service::sandbox_execution_policy_capability() -> serde_json::value::Value
+pub fn awaken_config_service::static_runtime_capabilities(alloc::vec::Vec<awaken_config_service::RuntimeCapability>) -> alloc::sync::Arc<dyn awaken_config_service::RuntimeCapabilitySource>

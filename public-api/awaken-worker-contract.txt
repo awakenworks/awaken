@@ -84,6 +84,7 @@ pub awaken_worker_contract::PlacementRequirements::recovery: awaken_worker_contr
 pub awaken_worker_contract::PlacementRequirements::require_network_isolation: bool
 pub awaken_worker_contract::PlacementRequirements::require_resource_limits: bool
 pub awaken_worker_contract::PlacementRequirements::require_tool_transparent: bool
+pub awaken_worker_contract::PlacementRequirements::required_acp_capabilities: alloc::collections::btree::set::BTreeSet<awaken_worker_contract::WorkerAcpCapabilityRequirement>
 pub awaken_worker_contract::PlacementRequirements::required_capabilities: alloc::collections::btree::set::BTreeSet<alloc::string::String>
 pub awaken_worker_contract::PlacementRequirements::required_credentials: alloc::collections::btree::set::BTreeSet<awaken_worker_contract::WorkerCredentialRevision>
 pub awaken_worker_contract::PlacementRequirements::required_zone: core::option::Option<alloc::string::String>
@@ -114,6 +115,14 @@ pub const fn awaken_worker_contract::VersionRange::exact(u32) -> Self
 pub const fn awaken_worker_contract::VersionRange::is_valid(self) -> bool
 impl core::default::Default for awaken_worker_contract::VersionRange
 pub fn awaken_worker_contract::VersionRange::default() -> Self
+pub struct awaken_worker_contract::WorkerAcpCapabilityObservation
+pub awaken_worker_contract::WorkerAcpCapabilityObservation::observation: awaken_acp_contract::AcpCapabilityObservation
+pub awaken_worker_contract::WorkerAcpCapabilityObservation::valid_until_ms: u64
+impl awaken_worker_contract::WorkerAcpCapabilityObservation
+pub fn awaken_worker_contract::WorkerAcpCapabilityObservation::is_selectable_at(&self, &awaken_worker_contract::WorkerAcpCapabilityRequirement, u64) -> bool
+pub struct awaken_worker_contract::WorkerAcpCapabilityRequirement
+pub awaken_worker_contract::WorkerAcpCapabilityRequirement::backend_ref: alloc::string::String
+pub awaken_worker_contract::WorkerAcpCapabilityRequirement::fingerprint: alloc::string::String
 pub struct awaken_worker_contract::WorkerAssignment
 pub awaken_worker_contract::WorkerAssignment::capability_fingerprint: alloc::string::String
 pub awaken_worker_contract::WorkerAssignment::identity: awaken_worker_contract::WorkerIdentity
@@ -137,6 +146,7 @@ pub struct awaken_worker_contract::WorkerCredentialRevision
 pub awaken_worker_contract::WorkerCredentialRevision::id: alloc::string::String
 pub awaken_worker_contract::WorkerCredentialRevision::revision: u64
 pub struct awaken_worker_contract::WorkerHeartbeat
+pub awaken_worker_contract::WorkerHeartbeat::acp_capability_observations: alloc::vec::Vec<awaken_worker_contract::WorkerAcpCapabilityObservation>
 pub awaken_worker_contract::WorkerHeartbeat::credential_observations: alloc::collections::btree::set::BTreeSet<awaken_worker_contract::WorkerCredentialObservation>
 pub awaken_worker_contract::WorkerHeartbeat::in_flight: u32
 pub awaken_worker_contract::WorkerHeartbeat::ready: bool
@@ -169,6 +179,7 @@ pub awaken_worker_contract::WorkerRegistration::incarnation_id: alloc::string::S
 pub awaken_worker_contract::WorkerRegistration::manifest: awaken_worker_contract::WorkerManifest
 pub awaken_worker_contract::WorkerRegistration::worker_id: alloc::string::String
 pub struct awaken_worker_contract::WorkerSnapshot
+pub awaken_worker_contract::WorkerSnapshot::acp_capability_observations: alloc::vec::Vec<awaken_worker_contract::WorkerAcpCapabilityObservation>
 pub awaken_worker_contract::WorkerSnapshot::capability_fingerprint: alloc::string::String
 pub awaken_worker_contract::WorkerSnapshot::credential_observations: alloc::collections::btree::set::BTreeSet<awaken_worker_contract::WorkerCredentialObservation>
 pub awaken_worker_contract::WorkerSnapshot::expires_at_ms: u64

@@ -720,26 +720,29 @@ Implemented consolidation evidence:
   WorkerLocal binding is both login-Available and capability-Verified; zero or
   multiple candidates remain unseeded for explicit authoring.
 
-Current implementation status is deliberately distinct from the target:
+Current implementation status distinguishes completed lifecycle ownership from
+the remaining external/reconciliation gates:
 
-| Lifecycle slice | Current state | Required consolidation |
+| Lifecycle slice | Current state | Remaining work |
 |---|---|---|
-| adapter catalog | authoritative `AcpCli` exists; inert probe specs remain attached | move its neutral contract out of executor ownership |
-| installation/login probe | Worker application owns process I/O and classification | add event-triggered refresh in addition to the bounded periodic loop |
-| reusable CLI/Flow preparation | application service exists; CLI partly consumes it | migrate remaining CLI-private callers and Flow; delete the duplicate |
+| adapter catalog | authoritative `AcpCli` plus neutral ACP capability contract | keep protocol-external descriptors versioned with adapter changes |
+| installation/login probe | `awaken-acp-application` owns PATH/HOME-only process I/O and classification | add event-triggered refresh in addition to the bounded periodic loop |
+| reusable CLI/Flow preparation | CLI and Flow call the same application service, binding use case, resolver and atomic launch-plan projection | no parallel inventory or composition path remains |
 | capability negotiation | bounded Worker probe invokes the canonical prompt-free protocol operation and shares the one Worker observation loop | add event-triggered refresh/reconcile and process-group reap |
-| effective profile/fingerprint | typed profile and SHA-256 evidence are published dynamically with TTL | require exact fingerprint in publication/placement and launch fence |
-| Agent ACP mode/options | mode and one model option reach executor | add typed multi-option intent and publication validation |
+| effective profile/fingerprint | typed profile and SHA-256 evidence are published dynamically with TTL and pinned by publication/placement/launch fences | retain exact-version compatibility tests |
+| Agent ACP mode/options | generated discriminated selection carries default/exact model, native mode and arbitrary native option values; publication validates them | add richer widgets only as presentation concerns |
 | environment selection | provisioning selects trusted/isolated provider | retain as the sole Session Environment policy |
-| readiness | startup observation projection | query current Worker observation and reconcile revisions |
+| readiness | Flow and Console project current expiring Worker observations; automatic selection requires Available + Verified | add event-triggered Agent reconcile after login/version changes |
 | automatic Assistant | exactly one Available+Verified local backend is required | persist the explicit UI choice when zero/multiple are available |
-| frontend contract | model type remains handwritten/incomplete | generate the discriminated Rust contract |
-| Flow | old Awaken revision and overlapping ACP config | update revision and consume application service |
-| ambient configuration | Provider proposals/runtime env reads remain | remove duplicate authoring path; use typed deployment config |
+| frontend contract | OpenAPI-generated TypeScript consumes the Rust discriminated union and live Worker ACP projection | keep generated-contract freshness gated |
+| Flow | pinned to the pushed Awaken revision; one existing Worker/executor consumes the shared preparation service | keep the revision and lockfile updated atomically |
+| ambient configuration | environment Provider proposals and Flow ACP inventory/default fields are removed; typed deployment configuration owns product choices | continue auditing OS metadata so PATH/HOME never become authoring inputs |
+| real host proof | installed Codex `0.145.0` is detected with host login Available; installed Claude `2.1.220` is correctly login-required when ambient `ANTHROPIC_API_KEY` is cleared | run release-gated real LLM sessions for both persisted host logins |
 
-Therefore this ADR documents the accepted direction and partial implementation;
-it does not claim that capability discovery, generic ACP configuration, live
-readiness, Flow reuse or real-host E2E are complete.
+Therefore discovery, generic ACP configuration, live Worker projection and Flow
+reuse are implemented. Event-triggered reconciliation and real persisted-login
+LLM sessions for every supported adapter remain explicit release gates; the ADR
+does not equate hermetic protocol coverage or an ambient API key with that proof.
 
 Managed `CodexAuthJson` is a separate product decision. BackendOwned never
 enters that Provider-only artifact path. A global prohibition on creating

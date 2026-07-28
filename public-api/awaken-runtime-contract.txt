@@ -29,8 +29,6 @@ pub use awaken_runtime_contract::CredentialRealizationProfile
 pub use awaken_runtime_contract::CredentialRef
 pub use awaken_runtime_contract::CredentialRefreshAccess
 pub use awaken_runtime_contract::CredentialUsage
-pub use awaken_runtime_contract::WorkerLocalCredentialResolver
-pub use awaken_runtime_contract::WorkerLocalReferenceRevalidator
 pub use awaken_runtime_contract::DelegationLimits
 pub use awaken_runtime_contract::EndCause
 pub use awaken_runtime_contract::MergePolicy
@@ -60,6 +58,8 @@ pub use awaken_runtime_contract::TranscriptSliceSpec
 pub use awaken_runtime_contract::TranscriptSnapshotRef
 pub use awaken_runtime_contract::TranscriptView
 pub use awaken_runtime_contract::TrustDomainRef
+pub use awaken_runtime_contract::WorkerLocalCredentialResolver
+pub use awaken_runtime_contract::WorkerLocalReferenceRevalidator
 pub mod awaken_runtime_contract::activation
 pub struct awaken_runtime_contract::activation::RunActivation
 pub awaken_runtime_contract::activation::RunActivation::delegation_origin: core::option::Option<awaken_agent_contract::agent::delegation::DelegationOrigin>
@@ -803,6 +803,12 @@ pub awaken_runtime_contract::resolution::ResolvedInputRef::kind: alloc::string::
 pub awaken_runtime_contract::resolution::ResolvedInputRef::version: awaken_runtime_contract::resolution::ResolvedInputVersion
 pub fn awaken_runtime_contract::resolution::content_fingerprint<T: serde_core::ser::Serialize + ?core::marker::Sized>(&T) -> core::result::Result<alloc::string::String, serde_json::error::Error>
 pub mod awaken_runtime_contract::resolved
+pub enum awaken_runtime_contract::resolved::AcpMcpTransport
+pub awaken_runtime_contract::resolved::AcpMcpTransport::Http
+pub awaken_runtime_contract::resolved::AcpMcpTransport::Http::url: alloc::string::String
+pub awaken_runtime_contract::resolved::AcpMcpTransport::Stdio
+pub awaken_runtime_contract::resolved::AcpMcpTransport::Stdio::args: alloc::vec::Vec<alloc::string::String>
+pub awaken_runtime_contract::resolved::AcpMcpTransport::Stdio::command: alloc::string::String
 pub enum awaken_runtime_contract::resolved::Backend
 pub awaken_runtime_contract::resolved::Backend::Acp
 pub awaken_runtime_contract::resolved::Backend::Acp::cli: alloc::string::String
@@ -822,8 +828,11 @@ pub awaken_runtime_contract::resolved::ContextPolicy::KeepLast
 pub awaken_runtime_contract::resolved::ContextPolicy::KeepLast::keep_last: usize
 pub enum awaken_runtime_contract::resolved::ModelProvisioning
 pub awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned
+pub awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned::capability_adapter_version: alloc::string::String
+pub awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned::capability_fingerprint: alloc::string::String
 pub awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned::credential: awaken_credential_contract::CredentialRef
 pub awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned::model_selection: awaken_runtime_contract::resolved::BackendModelSelection
+pub awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned::session_configuration: awaken_runtime_contract::resolved::AcpSessionConfiguration
 pub awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor
 pub awaken_runtime_contract::resolved::ModelProvisioning::Provider
 pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::credential: core::option::Option<alloc::boxed::Box<awaken_credential_contract::CredentialAccess>>
@@ -835,6 +844,19 @@ pub enum awaken_runtime_contract::resolved::ToolKind
 pub awaken_runtime_contract::resolved::ToolKind::AgentDelegation
 pub awaken_runtime_contract::resolved::ToolKind::ClientExecuted
 pub awaken_runtime_contract::resolved::ToolKind::Regular
+pub struct awaken_runtime_contract::resolved::AcpMcpServer
+pub awaken_runtime_contract::resolved::AcpMcpServer::name: alloc::string::String
+pub awaken_runtime_contract::resolved::AcpMcpServer::transport: awaken_runtime_contract::resolved::AcpMcpTransport
+pub struct awaken_runtime_contract::resolved::AcpSessionConfiguration
+pub awaken_runtime_contract::resolved::AcpSessionConfiguration::mode: core::option::Option<alloc::string::String>
+pub awaken_runtime_contract::resolved::AcpSessionConfiguration::options: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+impl awaken_runtime_contract::resolved::AcpSessionConfiguration
+pub fn awaken_runtime_contract::resolved::AcpSessionConfiguration::is_empty(&self) -> bool
+pub struct awaken_runtime_contract::resolved::AcpSpec
+pub awaken_runtime_contract::resolved::AcpSpec::compact_window: core::option::Option<u64>
+pub awaken_runtime_contract::resolved::AcpSpec::mcp_servers: alloc::vec::Vec<awaken_runtime_contract::resolved::AcpMcpServer>
+impl awaken_runtime_contract::resolved::AcpSpec
+pub fn awaken_runtime_contract::resolved::AcpSpec::from_plugin_config(&alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>) -> Self
 pub struct awaken_runtime_contract::resolved::CatalogFingerprint(pub alloc::string::String)
 pub struct awaken_runtime_contract::resolved::InferenceEndpoint
 pub awaken_runtime_contract::resolved::InferenceEndpoint::adapter_kind: alloc::string::String
@@ -856,7 +878,7 @@ pub struct awaken_runtime_contract::resolved::ResolvedModelCandidate
 pub awaken_runtime_contract::resolved::ResolvedModelCandidate::binding: awaken_runtime_contract::resolved::ModelBinding
 pub awaken_runtime_contract::resolved::ResolvedModelCandidate::provisioning: awaken_runtime_contract::resolved::ModelProvisioning
 impl awaken_runtime_contract::resolved::ResolvedModelCandidate
-pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::backend_owned(awaken_runtime_contract::resolved::ModelBinding, awaken_credential_contract::CredentialRef, awaken_runtime_contract::resolved::BackendModelSelection) -> Self
+pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::backend_owned(awaken_runtime_contract::resolved::ModelBinding, awaken_credential_contract::CredentialRef, awaken_runtime_contract::resolved::BackendModelSelection, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, awaken_runtime_contract::resolved::AcpSessionConfiguration) -> Self
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::host(awaken_runtime_contract::resolved::ModelBinding) -> Self
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(awaken_runtime_contract::resolved::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, core::option::Option<awaken_credential_contract::CredentialAccess>, awaken_runtime_contract::resolved::InferenceEndpoint) -> Self
 impl core::convert::AsRef<awaken_runtime_contract::resolved::ModelBinding> for awaken_runtime_contract::resolved::ResolvedModelCandidate

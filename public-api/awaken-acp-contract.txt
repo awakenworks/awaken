@@ -1,0 +1,50 @@
+pub mod awaken_acp_contract
+pub enum awaken_acp_contract::AcpCapabilityObservationState
+pub awaken_acp_contract::AcpCapabilityObservationState::ProbeFailed
+pub awaken_acp_contract::AcpCapabilityObservationState::Unavailable
+pub awaken_acp_contract::AcpCapabilityObservationState::Verified
+pub struct awaken_acp_contract::AcpCapabilityObservation
+pub awaken_acp_contract::AcpCapabilityObservation::adapter_version: alloc::string::String
+pub awaken_acp_contract::AcpCapabilityObservation::backend_ref: alloc::string::String
+pub awaken_acp_contract::AcpCapabilityObservation::fingerprint: core::option::Option<alloc::string::String>
+pub awaken_acp_contract::AcpCapabilityObservation::negotiated: core::option::Option<awaken_acp_contract::NegotiatedAcpCapabilities>
+pub awaken_acp_contract::AcpCapabilityObservation::observed_at_ms: u64
+pub awaken_acp_contract::AcpCapabilityObservation::reason_code: core::option::Option<alloc::string::String>
+pub awaken_acp_contract::AcpCapabilityObservation::state: awaken_acp_contract::AcpCapabilityObservationState
+pub struct awaken_acp_contract::AcpCapabilityProbeConfig
+pub awaken_acp_contract::AcpCapabilityProbeConfig::auth_method_id: core::option::Option<alloc::string::String>
+pub awaken_acp_contract::AcpCapabilityProbeConfig::session_cwd: core::option::Option<alloc::string::String>
+pub struct awaken_acp_contract::AcpSessionConfigChoice
+pub awaken_acp_contract::AcpSessionConfigChoice::description: core::option::Option<alloc::string::String>
+pub awaken_acp_contract::AcpSessionConfigChoice::group_id: core::option::Option<alloc::string::String>
+pub awaken_acp_contract::AcpSessionConfigChoice::group_name: core::option::Option<alloc::string::String>
+pub awaken_acp_contract::AcpSessionConfigChoice::name: alloc::string::String
+pub awaken_acp_contract::AcpSessionConfigChoice::native_value: alloc::string::String
+pub struct awaken_acp_contract::AcpSessionConfigOptionDescriptor
+pub awaken_acp_contract::AcpSessionConfigOptionDescriptor::category: core::option::Option<alloc::string::String>
+pub awaken_acp_contract::AcpSessionConfigOptionDescriptor::choices: alloc::vec::Vec<awaken_acp_contract::AcpSessionConfigChoice>
+pub awaken_acp_contract::AcpSessionConfigOptionDescriptor::current_value: alloc::string::String
+pub awaken_acp_contract::AcpSessionConfigOptionDescriptor::description: core::option::Option<alloc::string::String>
+pub awaken_acp_contract::AcpSessionConfigOptionDescriptor::name: alloc::string::String
+pub awaken_acp_contract::AcpSessionConfigOptionDescriptor::native_id: alloc::string::String
+pub struct awaken_acp_contract::AcpSessionModeDescriptor
+pub awaken_acp_contract::AcpSessionModeDescriptor::current: bool
+pub awaken_acp_contract::AcpSessionModeDescriptor::description: core::option::Option<alloc::string::String>
+pub awaken_acp_contract::AcpSessionModeDescriptor::name: alloc::string::String
+pub awaken_acp_contract::AcpSessionModeDescriptor::native_id: alloc::string::String
+pub struct awaken_acp_contract::NegotiatedAcpCapabilities
+pub awaken_acp_contract::NegotiatedAcpCapabilities::config_options: alloc::vec::Vec<awaken_acp_contract::AcpSessionConfigOptionDescriptor>
+pub awaken_acp_contract::NegotiatedAcpCapabilities::load_session: bool
+pub awaken_acp_contract::NegotiatedAcpCapabilities::mcp_http: bool
+pub awaken_acp_contract::NegotiatedAcpCapabilities::mcp_sse: bool
+pub awaken_acp_contract::NegotiatedAcpCapabilities::modes: alloc::vec::Vec<awaken_acp_contract::AcpSessionModeDescriptor>
+pub awaken_acp_contract::NegotiatedAcpCapabilities::prompt_audio: bool
+pub awaken_acp_contract::NegotiatedAcpCapabilities::prompt_embedded_context: bool
+pub awaken_acp_contract::NegotiatedAcpCapabilities::prompt_image: bool
+pub awaken_acp_contract::NegotiatedAcpCapabilities::protocol_version: alloc::string::String
+pub awaken_acp_contract::NegotiatedAcpCapabilities::session_list: bool
+pub trait awaken_acp_contract::AcpCapabilityHandshake: core::marker::Send + core::marker::Sync
+pub fn awaken_acp_contract::AcpCapabilityHandshake::negotiate<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 mut dyn awaken_agent_channel::AgentChannel, &'life2 awaken_acp_contract::AcpCapabilityProbeConfig) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_acp_contract::NegotiatedAcpCapabilities, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub trait awaken_acp_contract::AcpCapabilityObservationSource: core::marker::Send + core::marker::Sync
+pub fn awaken_acp_contract::AcpCapabilityObservationSource::capability_observations<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_acp_contract::AcpCapabilityObservation>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_acp_contract::capability_fingerprint(&str, &str, &awaken_acp_contract::NegotiatedAcpCapabilities) -> alloc::string::String
