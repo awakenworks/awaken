@@ -472,6 +472,96 @@ here instead of maintaining a second discovery/configuration/execution sequence.
 Implementation status later in this ADR records which transitions are already
 enforced and which remain release gates.
 
+### Static ownership view
+
+The lifecycle crosses bounded contexts through immutable values and narrow
+ports. No downstream context reaches back into an upstream repository:
+
+```text
+ACP catalog/contract                         external ACP installation/login
+  AcpCli + annotations                                  |
+          \                                             |
+           +----> Worker ACP application <--------------+
+                    discovery/acquisition/liveness
+                    + protocol negotiation port
+                              |
+                              v
+                    EffectiveAcpCapabilityProfile
+                    CredentialObservation
+                              |
+             +----------------+----------------+
+             |                                 |
+             v                                 v
+      Agent application                 Worker advertisement
+      AcpSessionConfiguration            capability + revision + TTL
+             |                                 |
+             +----------> publication <--------+
+                          immutable demand
+                          provisioning
+                          capability fingerprint
+                          exact credential revision
+                          environment requirement
+                                  |
+                                  v
+                         placement / claim
+                                  |
+                                  v
+                         Runtime Host
+                         revalidate + realize
+                         ResolvedAcpLaunch
+                                  |
+                                  v
+                         ACP executor/protocol
+                         configure + prompt + commit
+```
+
+Ownership is deliberately split:
+
+| Concern | Owner | Consumed by | Forbidden responsibility |
+|---|---|---|---|
+| protocol-external adapter facts | ACP catalog/contract | Worker ACP application | observing one host's current state |
+| installation, login and negotiated capability | Worker ACP application | authoring/readiness/publication/placement | persisting Agent choices |
+| backend/model/mode/native option intent | Agent aggregate | publication | copying discovered defaults or schemas |
+| executable scheduling demand | immutable publication | placement, claim and Runtime Host | materializing secrets or launching a process |
+| environment and resolved launch | Runtime Host/provisioning | ACP executor | scanning PATH/HOME, probing login, installing wrappers or choosing an Agent option |
+| ACP wire sequencing | ACP executor/protocol | Run lifecycle | discovery inventory, repositories, placement or fallback |
+| authorization | Awaken policy and realized environment | Runtime/ACP permission handling | delegation to an ACP preference |
+
+`awaken-run-executor-acp` and `awaken-runtime-host` therefore **use** discovery
+evidence but do not own discovery. Runtime Host is allowed to revalidate the
+exact evidence frozen by publication and claim because that is an execution
+fence, not a new selection operation. The executor receives only
+`ResolvedAcpLaunch` plus the channel and validates the live handshake against
+that demand. Neither layer may enumerate adapters, infer defaults, persist
+capability observations or replace an unavailable selection.
+
+### Stage contracts
+
+The following table is the normative from-discovery-to-use contract. “Durable”
+identifies the consistency boundary, not permission for another mutable source
+of truth.
+
+| Stage | Trigger | Input | Output / durable boundary | Failure and retry |
+|---|---|---|---|---|
+| 1. declare adapter | product release or typed deployment update | protocol-external adapter facts | one versioned catalog descriptor | invalid descriptor prevents composition; no runtime fallback |
+| 2. discover installation | startup, explicit refresh, descriptor/version change | descriptor + host process probe port | exact executable/version/wrapper evidence in one Worker observation batch | typed missing/incompatible/probe failure; bounded retry |
+| 3. observe login | same refresh batch, periodic liveness, pre-launch fence | descriptor status command + PATH/HOME allowlist | secret-free `CredentialObservation` with revision and TTL | login remediation or expiry; never read the login file |
+| 4. negotiate capability | login available and launchable adapter | neutral channel + canonical handshake port | modes/options/protocol facts; no prompt or user Session | timeout/protocol failure; reap probe process tree |
+| 5. derive effective profile | successful batch assembly | live negotiation + compatible catalog annotations | `EffectiveAcpCapabilityProfile` and deterministic fingerprint | conflict is `Incompatible`; partial batch is not published |
+| 6. advertise/readiness | atomic observation publish or expiry | profile + login observation | Worker capability projection and live readiness | stale evidence becomes unselectable; prior deadline is never extended by failure |
+| 7. author intent | user/API selection | current projection + generated typed contract | one Agent revision containing backend/model/native mode/options only | draft may remain unavailable; invalid type/value is rejected |
+| 8. publish | explicit publish/reconcile | Agent revision + fresh verified Worker evidence | immutable provisioning, selections, fingerprint, exact credential revision and environment demand | stale/missing/incompatible evidence fails closed |
+| 9. place and claim | Run enqueue/claim | immutable demand + Worker advertisement | exact Worker/incarnation/epoch binding | no exact intersection means unavailable; no substitution |
+| 10. revalidate/resolve | immediately before spawn | claim + frozen demand + current host evidence | one `ResolvedAcpLaunch` in one realized Session Environment | any revision/login/wrapper/capability drift terminates the attempt |
+| 11. configure and execute | resolved launch opened | channel + resolved native selections | explicit mode/options, prompt/events, committed/cancelled/failed Run | rejected setting is incompatible; never omit it and continue |
+| 12. reconcile change | observation revision/expiry/login remediation/version change | latest Worker batch + affected publications | refreshed readiness and compatibility projection | preserve Agent intent; bounded retry; never auto-switch backend/model/options |
+
+Only stages 7 and 8 persist user intent and executable publication
+respectively. Stages 2–6 are expiring Worker evidence; stages 9–11 are ordinary
+Run/claim state. This separation prevents a discovered default from becoming
+configuration, a draft from becoming executable without publication, or a live
+probe from mutating an in-flight Run.
+
 ```text
 startup / refresh
   -> installation discovery
