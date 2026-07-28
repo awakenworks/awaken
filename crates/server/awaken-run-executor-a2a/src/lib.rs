@@ -33,14 +33,8 @@ use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult, validate_resu
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::terminal::{CommittedTerminalRun, deliver_committed_terminal};
 
-// The A2A adapter of the neutral `RemoteAgent` interface: the host holds a
-// remote delegate behind the port and names no A2A type. The transport constructors
-// are re-exported so a composition root can build a delegate without depending on the
-// A2A protocol crate directly.
-mod delegate;
 mod task_driver;
 pub use awaken_protocol_a2a::{HttpTransport, Transport};
-pub use delegate::A2aRemoteAgent;
 
 /// Resolves one publication-pinned remote candidate into a live transport.
 ///

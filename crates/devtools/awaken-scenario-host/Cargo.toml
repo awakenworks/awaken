@@ -26,8 +26,7 @@ awaken-sandbox-policy-store = { workspace = true }
 awaken-protocol-ai-sdk = { workspace = true }
 awaken-protocol-ag-ui = { workspace = true }
 awaken-protocol-a2a = { workspace = true }
-# The A2A RemoteAgent adapter used by the remote delegation scenario.
-# scenario injects into the host; re-exports HttpTransport to build it.
+# The ordinary A2A Run-attempt adapter used by the remote delegation scenario.
 awaken-run-executor-a2a = { workspace = true }
 awaken-protocol-transport = { workspace = true }
 awaken-config-store = { workspace = true }
