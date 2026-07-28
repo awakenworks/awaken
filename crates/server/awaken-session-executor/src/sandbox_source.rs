@@ -197,7 +197,9 @@ impl AgentChannelSource for BoundLocalChannelSource {
             // that owns the staged File/Repository/MemoryStore projections.
             workspace_cwd: Some(self.sandbox.workspace_cwd()),
             mcp_session_servers: injection.session_servers,
-            session_config_option: launch.session_config_option,
+            session_mode: launch.session_mode,
+            session_config_options: launch.session_config_options,
+            expected_capability: launch.expected_capability,
         })
     }
 }
@@ -445,6 +447,10 @@ mod tests {
             Ok(awaken_run_executor_acp::ResolvedModel::backend_owned(
                 self.selection,
                 self.model,
+                "codex",
+                "test",
+                "sha256:test",
+                Default::default(),
             ))
         }
     }
@@ -752,7 +758,7 @@ mod tests {
             )
             .await
             .expect("H1");
-        assert!(session.session_config_option.is_none(), "H1");
+        assert!(session.session_config_options.is_empty(), "H1");
         assert!(sandbox.materialized.lock().unwrap().is_empty(), "H1");
         {
             let command = sandbox.command.lock().unwrap();
@@ -794,7 +800,7 @@ mod tests {
             )
             .await
             .expect("H2");
-        let selection = session.session_config_option.as_ref().expect("H2");
+        let selection = session.session_config_options.first().expect("H2");
         assert_eq!(selection.config_id, "model", "H2");
         assert_eq!(selection.value, "gpt-exact", "H2");
         assert!(sandbox.materialized.lock().unwrap().is_empty(), "H2");

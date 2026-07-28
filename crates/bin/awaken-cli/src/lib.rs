@@ -40,12 +40,14 @@ pub use awaken_control::{
     ADMIN_TOKEN_FILE, BOOTSTRAP_PRINCIPAL, BOOTSTRAP_WORKSPACE, ManagementAuthz,
     ManagementIdentityMode, RemoteManagementAuthz, TokenSpec, embedded_iam,
 };
+mod live_runtime_capabilities;
+use live_runtime_capabilities::LiveRuntimeCapabilities;
 
 /// Project the one executable ACP catalog into the management read model. This
 /// composition edge is intentionally the only place that knows both contexts;
 /// neither Control nor the executor keeps a synchronized adapter list.
 fn runtime_capabilities(
-    observations: &[awaken_run_executor_acp::AcpHostObservation],
+    observations: &[awaken_acp_application::AcpHostObservation],
 ) -> Vec<awaken_control::RuntimeCapability> {
     std::iter::once(awaken_control::RuntimeCapability::native())
         .chain(awaken_run_executor_acp::known_acp_clis().iter().map(|cli| {
@@ -62,6 +64,7 @@ fn runtime_capabilities(
                 remediation: cli
                     .remediation(observation.reason_code.as_deref())
                     .map(str::to_string),
+                negotiated: None,
             })
         }))
         .collect()
@@ -129,15 +132,18 @@ mod runtime_capability_tests {
         // Decision table:
         // L1 same id + detected/login-required -> detected status + remediation
         // L2 no observation                    -> local status absent
-        let projected = runtime_capabilities(&[awaken_run_executor_acp::AcpHostObservation {
+        let projected = runtime_capabilities(&[awaken_acp_application::AcpHostObservation {
             cli_id: "codex".into(),
             display_name: "Codex".into(),
-            detection: awaken_run_executor_acp::AcpDetectionState::Detected,
+            detection: awaken_acp_application::AcpDetectionState::Detected,
             version: Some("codex 1".into()),
             credential_state: Some(
                 awaken_runtime_contract::CredentialObservationState::LoginRequired,
             ),
             reason_code: Some("acp_login_required".into()),
+            capability_state: None,
+            capability_fingerprint: None,
+            capability_reason_code: None,
         }]);
         let codex = projected.iter().find(|row| row.id == "acp:codex").unwrap();
         let local = codex.local.as_ref().expect("L1");
@@ -306,7 +312,7 @@ struct AssemblyOverrides {
     management_only: bool,
     cloud_api_base_url: Option<String>,
     cloud_models_enabled: bool,
-    local_acp_observations: Vec<awaken_run_executor_acp::AcpHostObservation>,
+    local_acp_observations: Vec<awaken_acp_application::AcpHostObservation>,
 }
 
 type IdentityWiring = (
@@ -1359,6 +1365,7 @@ async fn management_router_over(
                     credentials.clone(),
                 )
                 .with_profiles(profiles.clone())
+                .with_worker_directory(awaken_server::worker_directory())
                 .with_brokered_access(cloud_models_enabled),
             ),
             materializer: Some(Arc::new({
@@ -1422,8 +1429,10 @@ async fn management_router_over(
         &assistant_credentials,
         &assembly.local_acp_observations,
     );
-    if let Err(err) =
-        awaken_control::seed_admin_assistant(&plane, &platform_workspace, assistant_selection).await
+    if let Some(assistant_selection) = assistant_selection
+        && let Err(err) =
+            awaken_control::seed_admin_assistant(&plane, &platform_workspace, assistant_selection)
+                .await
     {
         eprintln!("admin assistant not seeded (configure a model, then republish): {err}");
     }
@@ -1529,7 +1538,12 @@ async fn management_router_over(
         deployment_state: deployment_state.clone(),
         plane,
         global_tools: global,
-        runtimes: runtime_capabilities(&assembly.local_acp_observations),
+        runtimes: Arc::new(LiveRuntimeCapabilities {
+            initial: assembly.local_acp_observations.clone(),
+            workers: awaken_server::worker_directory(),
+            credentials: credentials.clone(),
+            workspace: platform_workspace.clone(),
+        }),
         org_id: Some(org_id),
         iam,
         remote_iam,

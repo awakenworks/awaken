@@ -205,6 +205,7 @@ impl WorkerDirectory for TestWorkerDirectory {
                 manifest: registration.manifest,
                 in_flight: 0,
                 credential_observations: Default::default(),
+                acp_capability_observations: Default::default(),
                 expires_at_ms: now_ms.saturating_add(ttl_ms),
             },
             heartbeat_sequence: 0,
@@ -370,6 +371,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
                     ready: true,
                     in_flight: 0,
                     credential_observations: Default::default(),
+                    acp_capability_observations: Default::default(),
                 },
             )
             .await
@@ -386,6 +388,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
                 ready: true,
                 in_flight: 0,
                 credential_observations: Default::default(),
+                acp_capability_observations: Default::default(),
             },
         )
         .await
@@ -599,6 +602,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
                 ready: true,
                 in_flight: 1,
                 credential_observations: Default::default(),
+                acp_capability_observations: Default::default(),
             },
         )
         .await

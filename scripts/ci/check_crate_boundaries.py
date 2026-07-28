@@ -423,6 +423,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # provisioning capability vocabulary; persistence and channels stay in server
     # adapters, so the isolated worker contract remains store-free.
     "awaken-worker-contract": {
+        "awaken-acp-contract",
         "awaken-provisioning-contract",
         "async-trait",
         "serde",
@@ -533,6 +534,15 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "async-trait",
         "thiserror",
         "tokio",
+    },
+    # Neutral ACP capability descriptors and the channel-in/descriptor-out
+    # handshake port. Worker applications depend on this leaf; protocol
+    # adapters implement it.
+    "awaken-acp-contract": {
+        "awaken-agent-channel",
+        "async-trait",
+        "serde",
+        "sha2",
     },
     # Connection plan (ADR-0045): the topology value object (ConnectionPlan /
     # DialAddr / Wiring / DialPolicy / CredentialRef) + ChannelFactory over the
@@ -864,6 +874,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # an `AgentChannel` (the transport seam) + `ProcessHandle` and projects events
     # through the `RunEventSink` binding port; it constructs no store. Agents plane.
     "awaken-protocol-acp": {
+        "awaken-acp-contract",
         "awaken-agent-channel",
         "awaken-provisioning-contract",
         "async-trait",
@@ -899,9 +910,16 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # credential ports but owns neither execution nor durable storage.
     "awaken-acp-application": {
         "awaken-run-executor-acp",
+        # The Worker application starts the bounded probe, but depends only on
+        # the neutral handshake port; a composition root injects a protocol
+        # adapter implementation.
+        "awaken-acp-contract",
+        "awaken-agent-channel",
         "awaken-runtime-contract",
         "awaken-credential-vault",
         "async-trait",
+        # Capability fingerprints fence mutable, non-secret Worker evidence.
+        "sha2",
         "tokio",
     },
     # A2A executor: a remote A2A agent (Coze / A2A HTTP) as a peer RunExecutor.
@@ -1386,6 +1404,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tower",
     },
     "awaken-server": {
+        "awaken-acp-contract",
         "awaken-scenario-host",
         # dev-only: transport conformance assembles the real dispatch service over
         # the in-memory queue while exercising the server's worker registry.
@@ -1537,6 +1556,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-run-executor-acp",
         # Trusted-host ACP discovery/binding application service shared with Flow.
         "awaken-acp-application",
+        "awaken-acp-contract",
+        "awaken-protocol-acp",
         "awaken-observability",
         # The composition root registers the brain's active-streams connection-load
         # gauge on the global OTel meter after init (#4), so it names opentelemetry.
@@ -1600,6 +1621,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # so the graph stays acyclic (awaken-cli's bin depends on this crate). The
     # dev-deps back the offline model-resolution test.
     "awaken-worker": {
+        "awaken-acp-contract",
         "awaken-session-executor",
         "awaken-server",
         "awaken-control",
