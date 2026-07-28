@@ -263,7 +263,7 @@ async fn serve_resolved(
         None => awaken_cli::with_brain_admin(app, ctrl.clone()),
     };
     let app = app.layer(axum::middleware::from_fn(awaken_observability::trace_http));
-    let app = console::mount(app);
+    let app = awaken_cli::mount_console(app);
 
     if let Some(admin_addr) = &deployment.admin_listen {
         let listener = tokio::net::TcpListener::bind(admin_addr)

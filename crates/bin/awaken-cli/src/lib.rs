@@ -15,6 +15,7 @@ mod acp_local_credentials;
 mod assistant_selection;
 mod brain_admin;
 pub mod config;
+mod console_assets;
 mod identity;
 mod hosted_control;
 mod management_surface;
@@ -39,7 +40,7 @@ pub use crate::brain_admin::{
 pub use acp_local_credentials::{
     AcpLocalCredentialResolver, PreparedLocalAcp, local_acp_diagnostics, prepare_local_acp,
 };
-use identity::identity_wiring;
+pub use console_assets::mount as mount_console;
 pub use hosted_control::{
     build_control_router_with_deployment, build_control_router_with_publication_resolver,
 };
