@@ -173,7 +173,7 @@ async fn resolve_route_none_binding_is_secret_free_view() {
         "/v1/config/inference/resolve",
         Some(json!({
             "workspace_id": "ws",
-            "model_id": "claude-opus-4-8",
+            "target": { "model_id": "claude-opus-4-8" },
             "binding": { "type": "none" }
         })),
     )
@@ -202,7 +202,7 @@ async fn resolve_route_exact_binding_present_and_secret_free() {
         "/v1/config/inference/resolve",
         Some(json!({
             "workspace_id": "ws",
-            "model_id": "claude-opus-4-8",
+            "target": { "model_id": "claude-opus-4-8" },
             "binding": { "type": "exact", "credential_source_id": cred }
         })),
     )
@@ -228,7 +228,7 @@ async fn resolve_route_unknown_model_is_404_model_unresolved() {
         "/v1/config/inference/resolve",
         Some(json!({
             "workspace_id": "ws",
-            "model_id": "ghost-model",
+            "target": { "model_id": "ghost-model" },
             "binding": { "type": "none" }
         })),
     )
@@ -320,12 +320,12 @@ async fn put_profile_rejects_invalid_fallback_chains() {
     }
 }
 
-/// T6: old persisted/API input is accepted once, then projected using only the
-/// canonical structured contract so clients converge without a bulk migration.
+/// T6: the retired flat profile contract is rejected instead of creating a
+/// second authoring path beside the canonical candidate contract.
 #[tokio::test]
-async fn legacy_profile_input_is_returned_as_structured_targets() {
+async fn retired_flat_profile_contract_is_rejected() {
     let h = harness();
-    let (status, profile) = call(
+    let (status, _) = call(
         &h.app,
         "PUT",
         "/v1/config/inference-profiles/legacy",
@@ -336,11 +336,9 @@ async fn legacy_profile_input_is_returned_as_structured_targets() {
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(profile["primary"]["target"]["model_id"], "primary");
-    assert_eq!(profile["fallbacks"][0]["target"]["model_id"], "fallback");
-    assert!(profile.get("model_id").is_none());
-    assert!(profile.get("model_fallbacks").is_none());
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let (status, _) = call(&h.app, "GET", "/v1/config/inference-profiles/legacy", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 /// resolve_profile_route (success): a stored profile resolves its *primary* model

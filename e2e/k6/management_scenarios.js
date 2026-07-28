@@ -80,7 +80,7 @@ export default function () {
     const credId = cred.json('id');
 
     check(post('/v1/config/inference/resolve', {
-      workspace_id: `ws-${uid}`, model_id: 'claude-opus-4-8',
+      workspace_id: `ws-${uid}`, target: { model_id: 'claude-opus-4-8' },
       binding: { type: 'exact', credential_source_id: credId },
     }), {
       'resolve 200': (r) => r.status === 200,

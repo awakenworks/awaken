@@ -81,7 +81,7 @@ async function main() {
       // ── 3. Resolve the binding (secret-free triple) ─────────────────────────
       const resolved = await cfg('POST', '/v1/config/inference/resolve', {
         workspace_id: WS,
-        model_id: MODEL,
+        target: { model_id: MODEL },
         binding: { type: 'exact', credential_source_id: credId },
       });
       assert.equal(resolved.status, 200, `resolve ok (got ${resolved.status}: ${JSON.stringify(resolved.body)})`);
