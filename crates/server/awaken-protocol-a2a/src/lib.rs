@@ -16,6 +16,7 @@
 mod card;
 pub mod client;
 pub mod encoder;
+mod extract;
 pub mod request;
 pub mod router;
 mod state;
@@ -27,7 +28,7 @@ pub use awaken_credential::{AuthChallenge, Credential, CredentialRefresher};
 pub use awaken_protocol_transport::{DriverError, Pending, ProtocolRuntime, Resume, StepOutcome};
 pub use card::agent_card;
 pub use client::{ClientError, HttpTransport, Response, Transport};
-pub use router::router;
+pub use router::{router, router_with_storage_root};
 pub use types::{
     AgentCard, AgentInterface, ApiKeyLocation, Artifact, AuthenticationInfo, AuthorizationCodeFlow,
     ClientCredentialsFlow, ImplicitFlow, ListPushNotificationConfigsResponse, OAuthFlows,

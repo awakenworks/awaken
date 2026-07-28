@@ -13,8 +13,7 @@ use awaken_agent_contract::event::{AgentEvent, Delta};
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use axum::Router;
 use axum::body::Body;
-use axum::extract::rejection::JsonRejection;
-use axum::extract::{FromRequest, Json, OriginalUri, Path, Query, Request, State};
+use axum::extract::{Json, OriginalUri, Path, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -30,6 +29,7 @@ use awaken_protocol_transport::{
 
 use crate::card::agent_card;
 use crate::encoder::{encode_task, working_task};
+use crate::extract::A2aJson;
 use crate::request::process;
 use crate::state::{A2aState, PushProtocolVersion};
 use crate::types::{
@@ -74,33 +74,25 @@ pub(crate) fn negotiate_version(headers: &HeaderMap) -> Result<ProtocolVersion, 
     }
 }
 
-/// A JSON body extractor for the A2A routes. On a decode failure it returns the
-/// A2A error envelope (`{ "error": { code, message } }`) with a 400, not axum's
-/// plain-text rejection — so an A2A client parses the failure like any other.
-struct A2aJson<T>(T);
-
-impl<S, T> FromRequest<S> for A2aJson<T>
-where
-    Json<T>: FromRequest<S, Rejection = JsonRejection>,
-    S: Send + Sync,
-{
-    type Rejection = (StatusCode, Json<ErrorResponse>);
-
-    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
-        match Json::<T>::from_request(req, state).await {
-            Ok(Json(value)) => Ok(Self(value)),
-            Err(rejection) => Err((
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse::new(-32600, rejection.body_text())),
-            )),
-        }
-    }
-}
-
 /// Build the A2A router. Mount it alongside other protocol routers; the paths are
 /// the `/v1/a2a...` surface an A2A `HTTP+JSON` client posts to.
 pub fn router(runtime: Arc<dyn ProtocolRuntime>) -> Router {
-    let state = A2aState::new(runtime);
+    router_with_storage_root(runtime, None)
+}
+
+/// Build the A2A router with adapter projections persisted below an explicitly
+/// injected deployment storage root.
+///
+/// Runtime/composition owns whether storage exists; this protocol adapter owns
+/// only its filename and serialization format.
+pub fn router_with_storage_root(
+    runtime: Arc<dyn ProtocolRuntime>,
+    storage_root: Option<&std::path::Path>,
+) -> Router {
+    let state = A2aState::new(
+        runtime,
+        storage_root.map(|root| root.join("a2a-state.json")),
+    );
     Router::new()
         // The JSON-RPC binding (the canonical A2A transport the official SDKs
         // default to): a single endpoint dispatching by `method`.

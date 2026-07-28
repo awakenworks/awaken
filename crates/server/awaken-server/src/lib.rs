@@ -544,7 +544,7 @@ fn mount_with_managed_over(
             awaken_authz_enforce::application_guard,
         ));
     }
-    let a2a = awaken_protocol_a2a::router(port.clone());
+    let a2a = awaken_protocol_a2a::router_with_storage_root(port.clone(), host.storage_dir());
     // The durable-ingress operations surface (slice E): ADR-0009 follow-on verbs
     // (supersede / reconcile / reap / dead-letter GC) over the same shared host.
     let durable_ops = durable_ops_router(host.clone());
