@@ -338,6 +338,14 @@ existing Worker builders. Flow owns no adapter inventory, default ACP,
 PATH/HOME inspection, wrapper acquisition or liveness rule. A Flow allowlist may
 narrow catalog entries but cannot redefine them.
 
+The authoritative application service is
+`awaken-acp-application::prepare_host_acp`. Its input is limited to the Worker workspace,
+wrapper root, optional catalog allowlist and credential repository. Its
+secret-free result contains observations, resolved launch argv and the composite
+Worker-local liveness resolver. `awaken-cli` owns only deployment/resource
+composition around this service; additional composition roots call the same
+service rather than importing CLI modules.
+
 ### D12 — Product configuration is typed, not ambient
 
 Adapter identity, wrapper version, launch policy, option selection, databases,

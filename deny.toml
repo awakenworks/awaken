@@ -148,6 +148,9 @@ wrappers = [
     "awaken-cli",
     "awaken-config-resolver",
     "awaken-data-subject",
+    # Worker-side ACP discovery/binding application service consumes credential
+    # liveness values from the runtime contract without implementing execution.
+    "awaken-acp-application",
     "awaken-run-executor-acp",
     "awaken-run-executor-a2a",
     # #2: implements the neutral MetricsRecorder port defined in the contract, so

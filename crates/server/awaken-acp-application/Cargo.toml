@@ -1,0 +1,15 @@
+[package]
+name = "awaken-acp-application"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+awaken-run-executor-acp.workspace = true
+awaken-runtime-contract.workspace = true
+awaken-credential-vault.workspace = true
+async-trait.workspace = true
+tokio = { workspace = true, features = ["process", "time"] }
+
+[lints]
+workspace = true

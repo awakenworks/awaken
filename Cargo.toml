@@ -68,6 +68,7 @@ awaken-protocol-ai-sdk = { path = "crates/server/awaken-protocol-ai-sdk" }
 awaken-protocol-managed = { path = "crates/server/awaken-protocol-managed" }
 awaken-resource-reclaimer = { path = "crates/server/awaken-resource-reclaimer" }
 awaken-protocol-acp = { path = "crates/server/awaken-protocol-acp" }
+awaken-acp-application = { path = "crates/server/awaken-acp-application" }
 awaken-run-executor-acp = { path = "crates/server/awaken-run-executor-acp" }
 awaken-run-executor-a2a = { path = "crates/server/awaken-run-executor-a2a" }
 # Management plane (ADR-0043 decomposition) — agents bucket, orthogonal to execution.

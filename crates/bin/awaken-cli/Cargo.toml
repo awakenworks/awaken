@@ -35,6 +35,7 @@ awaken-memory-store = { workspace = true, features = ["sqlite", "postgres"] }
 # The ACP executor (AcpLaunch/AcpRunExecutor) for `acp:*` threads — wired by config
 # (AWAKEN_ACP_ARGV) into the worker's configured sandbox tier.
 awaken-run-executor-acp = { workspace = true }
+awaken-acp-application = { workspace = true }
 awaken-observability = { workspace = true }
 # The admin `/metrics` gauges are OTel observable instruments (rendered via the
 # Prometheus exporter in awaken-observability).

@@ -3,39 +3,15 @@
 //! It adapts the canonical ACP discovery observations to the existing credential
 //! liveness port. It never opens, returns, or materializes CLI credentials.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use awaken_credential_vault::repo::ensure_worker_local;
-use awaken_credential_vault::{
-    CredentialKind, CredentialSource, CredentialStatus, WorkerLocalBinding,
+pub use awaken_acp_application::AcpLocalCredentialResolver;
+use awaken_acp_application::{
+    AcpWrapperInstaller, LocalAcpPreparation, NpmWrapperInstaller, prepare_host_acp_with,
 };
-use awaken_run_executor_acp::{
-    AcpCli, AcpDetectionState, AcpDiscovery, AcpHostDiscovery, AcpHostObservation, acp_cli,
-};
-use awaken_runtime_contract::resolved::Backend;
-use awaken_runtime_contract::{
-    CredentialMaterialError, CredentialMaterialRequest, CredentialMaterialResolver,
-    CredentialObservation, CredentialObservationState, CredentialRef, ResolvedCredentialMaterial,
-};
-
-mod acquisition;
-
-use acquisition::{AcpWrapperInstaller, NpmWrapperInstaller};
-
-#[derive(Clone)]
-struct LocalBinding {
-    credential: CredentialRef,
-    cli: &'static AcpCli,
-    status: CredentialStatus,
-}
-
-/// One resolver for all `acp:*` WorkerLocal sources installed on this Worker.
-pub struct AcpLocalCredentialResolver {
-    discovery: Arc<dyn AcpDiscovery>,
-    bindings: BTreeMap<String, LocalBinding>,
-}
+use awaken_run_executor_acp::{AcpDiscovery, AcpHostDiscovery, AcpHostObservation, acp_cli};
+use awaken_runtime_contract::CredentialObservationState;
 
 /// One startup composition result for a trusted local ACP Worker. The durable
 /// sources remain in the credential repository; this value carries only the
@@ -106,7 +82,6 @@ async fn prepare_local_acp_with(
     stores: awaken_control::InferenceMaterializationStores,
     resources: Option<awaken_worker::WorkerResourcePlane>,
 ) -> Result<Option<PreparedLocalAcp>, String> {
-    let mut observations = discovery.discover_all().await;
     let wrapper_root = deployment.data_dir.join("acp-wrappers");
     let selected_cli_ids = deployment.runtime.acp.as_ref().map(|profile| {
         profile
@@ -114,60 +89,33 @@ async fn prepare_local_acp_with(
             .map(str::to_string)
             .collect::<BTreeSet<_>>()
     });
-    let mut launch_argv = BTreeMap::new();
-    for observation in observations.iter_mut().filter(|observation| {
-        observation.detected()
-            && selected_cli_ids
-                .as_ref()
-                .is_none_or(|selected| selected.contains(&observation.cli_id))
-    }) {
-        let cli = acp_cli(&observation.cli_id).expect("discovery returns catalog ids");
-        match installer.resolved_argv(cli, &wrapper_root).await {
-            Ok(Some(argv)) => {
-                launch_argv.insert(observation.cli_id.clone(), argv);
-            }
-            Ok(None) => {}
-            Err(_) => {
-                observation.detection = AcpDetectionState::ProbeFailed;
-                observation.credential_state = Some(CredentialObservationState::ProbeFailed);
-                observation.reason_code = Some("acp_wrapper_install_failed".to_string());
-            }
-        }
-    }
-    deployment.apply_local_acp_observations(observations)?;
+    let workspace =
+        awaken_runtime_host::SharedHost::provision_local_workspace_at(&deployment.data_dir);
+    let prepared = prepare_host_acp_with(
+        LocalAcpPreparation {
+            workspace,
+            wrapper_root,
+            selected_cli_ids,
+            credentials: stores.credentials.clone(),
+        },
+        discovery,
+        installer,
+    )
+    .await?;
+    deployment.apply_local_acp_observations(prepared.observations)?;
     let Some(profile) = deployment.runtime.acp.as_mut() else {
         return Ok(None);
     };
-    for (cli_id, argv) in launch_argv {
+    for (cli_id, argv) in prepared.launch_argv {
         profile.set_launch_argv(&cli_id, argv)?;
     }
-    let workspace =
-        awaken_runtime_host::SharedHost::provision_local_workspace_at(&deployment.data_dir);
-    for cli_id in profile.cli_ids() {
-        ensure_worker_local(
-            stores.credentials.as_ref(),
-            &workspace,
-            WorkerLocalBinding::new(format!("acp:{cli_id}"), "default"),
-            None,
-        )
-        .await
-        .map_err(|error| format!("register local ACP binding for {cli_id}: {error}"))?;
-    }
-    let sources = stores
-        .credentials
-        .list(&workspace)
-        .await
-        .map_err(|error| format!("list local ACP bindings: {error}"))?;
-    let resolver = Arc::new(AcpLocalCredentialResolver::from_sources(
-        discovery, sources,
-    )?);
     // The registered Worker becomes the sole local execution pool. Keeping the
     // anonymous coordinator pool active would create two overlapping claimers
     // for ordinary runs, while only one can publish credential liveness.
     deployment.runtime.disable_local_pool = true;
     deployment.run_local_pool = false;
     Ok(Some(PreparedLocalAcp {
-        resolver,
+        resolver: prepared.resolver,
         stores,
         resources,
     }))
@@ -280,162 +228,23 @@ fn credential_state_name(state: CredentialObservationState) -> &'static str {
     }
 }
 
-impl AcpLocalCredentialResolver {
-    /// Adapt already-persisted secret-free sources. Non-WorkerLocal sources and
-    /// WorkerLocal drivers outside the `acp:*` bounded context are ignored.
-    pub fn from_sources(
-        discovery: Arc<dyn AcpDiscovery>,
-        sources: impl IntoIterator<Item = CredentialSource>,
-    ) -> Result<Self, String> {
-        let mut bindings = BTreeMap::new();
-        for source in sources {
-            if source.kind != CredentialKind::WorkerLocal {
-                continue;
-            }
-            let binding = source.worker_local_binding.as_ref().ok_or_else(|| {
-                format!("worker-local source {} has no stable binding", source.id.0)
-            })?;
-            let Backend::Acp { cli } = Backend::from_ref(&binding.driver_id) else {
-                continue;
-            };
-            let cli = acp_cli(&cli)
-                .ok_or_else(|| format!("worker-local source names unknown ACP CLI `{cli}`"))?;
-            let revision = u64::try_from(source.version)
-                .ok()
-                .filter(|revision| *revision > 0)
-                .ok_or_else(|| {
-                    format!("worker-local source {} has invalid revision", source.id.0)
-                })?;
-            let credential = CredentialRef {
-                id: source.id.0,
-                revision,
-            };
-            if bindings
-                .insert(
-                    credential.id.clone(),
-                    LocalBinding {
-                        credential,
-                        cli,
-                        status: source.status,
-                    },
-                )
-                .is_some()
-            {
-                return Err("duplicate WorkerLocal credential id".to_string());
-            }
-        }
-        Ok(Self {
-            discovery,
-            bindings,
-        })
-    }
-
-    async fn observe(&self, binding: &LocalBinding) -> CredentialObservation {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_millis() as u64)
-            .unwrap_or_default();
-        if binding.status != CredentialStatus::Active {
-            return CredentialObservation {
-                credential: binding.credential.clone(),
-                state: CredentialObservationState::Disabled,
-                observed_at_ms: now,
-                reason_code: Some("worker_local_source_disabled".to_string()),
-            };
-        }
-        let host = self.discovery.discover(binding.cli).await;
-        let (state, reason_code) = classify_host_observation(&host);
-        CredentialObservation {
-            credential: binding.credential.clone(),
-            state,
-            observed_at_ms: now,
-            reason_code,
-        }
-    }
-}
-
-fn classify_host_observation(
-    observation: &AcpHostObservation,
-) -> (CredentialObservationState, Option<String>) {
-    match observation.detection {
-        AcpDetectionState::Detected => (
-            observation
-                .credential_state
-                .unwrap_or(CredentialObservationState::ProbeFailed),
-            observation.reason_code.clone(),
-        ),
-        AcpDetectionState::Missing => (
-            CredentialObservationState::Invalid,
-            observation
-                .reason_code
-                .clone()
-                .or_else(|| Some("acp_agent_missing".to_string())),
-        ),
-        AcpDetectionState::ProbeFailed => (
-            CredentialObservationState::ProbeFailed,
-            observation
-                .reason_code
-                .clone()
-                .or_else(|| Some("acp_discovery_probe_failed".to_string())),
-        ),
-    }
-}
-
-fn require_available(
-    observation: CredentialObservation,
-) -> Result<CredentialObservation, CredentialMaterialError> {
-    match observation.state {
-        CredentialObservationState::Available => Ok(observation),
-        CredentialObservationState::LoginRequired => Err(CredentialMaterialError::LoginRequired),
-        CredentialObservationState::Expired => Err(CredentialMaterialError::Expired),
-        CredentialObservationState::Invalid => Err(CredentialMaterialError::Invalid),
-        CredentialObservationState::Disabled => Err(CredentialMaterialError::Disabled),
-        CredentialObservationState::ProbeFailed => Err(CredentialMaterialError::ProbeFailed),
-    }
-}
-
-#[async_trait]
-impl CredentialMaterialResolver for AcpLocalCredentialResolver {
-    async fn credential_observations(
-        &self,
-    ) -> Result<BTreeSet<CredentialObservation>, CredentialMaterialError> {
-        let mut observations = BTreeSet::new();
-        for binding in self.bindings.values() {
-            observations.insert(self.observe(binding).await);
-        }
-        Ok(observations)
-    }
-
-    async fn revalidate_worker_reference(
-        &self,
-        credential: &CredentialRef,
-    ) -> Result<CredentialObservation, CredentialMaterialError> {
-        let binding = self
-            .bindings
-            .get(&credential.id)
-            .filter(|binding| binding.credential.revision == credential.revision)
-            .ok_or(CredentialMaterialError::Unavailable)?;
-        require_available(self.observe(binding).await)
-    }
-
-    async fn resolve_exact(
-        &self,
-        _request: CredentialMaterialRequest<'_>,
-    ) -> Result<ResolvedCredentialMaterial, CredentialMaterialError> {
-        Err(CredentialMaterialError::MaterialKindMismatch)
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::path::Path;
     use std::sync::Mutex;
 
-    use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo};
+    use async_trait::async_trait;
+    use awaken_credential_vault::repo::{
+        CredentialRepo, InMemoryCredentialRepo, ensure_worker_local,
+    };
+    use awaken_credential_vault::{CredentialSource, CredentialStatus, WorkerLocalBinding};
+    use awaken_run_executor_acp::{AcpCli, AcpDetectionState};
     use awaken_runtime_contract::{
         CredentialAccess, CredentialExecutionPolicy, CredentialMaterialBinding,
-        CredentialMaterialSource, CredentialUsage, ModelExposurePolicy, PlaintextBoundary,
-        PlaintextHolder,
+        CredentialMaterialError, CredentialMaterialRequest, CredentialMaterialResolver,
+        CredentialMaterialSource, CredentialRef, CredentialUsage, ModelExposurePolicy,
+        PlaintextBoundary, PlaintextHolder,
     };
 
     use super::*;
