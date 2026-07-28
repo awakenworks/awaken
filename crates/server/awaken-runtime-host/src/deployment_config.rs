@@ -66,24 +66,6 @@ impl AcpWorkerProfile {
         })
     }
 
-    /// Build the launch profile from the canonical host-discovery projection.
-    /// LoginRequired agents remain advertised so placement can explain the exact
-    /// credential state; missing or broken agents are never advertised.
-    pub fn from_discovery(
-        observations: &[awaken_run_executor_acp::AcpHostObservation],
-        default_cli: Option<String>,
-    ) -> Result<Option<Self>, String> {
-        let detected: Vec<String> = observations
-            .iter()
-            .filter(|observation| observation.detected())
-            .map(|observation| observation.cli_id.clone())
-            .collect();
-        if detected.is_empty() {
-            return Ok(None);
-        }
-        Self::new(detected, default_cli).map(Some)
-    }
-
     pub fn cli_ids(&self) -> impl Iterator<Item = &str> {
         self.cli_ids.iter().map(String::as_str)
     }
@@ -514,57 +496,6 @@ mod tests {
                 .set_launch_argv("codex", vec!["   ".into()])
                 .is_err(),
             "A3"
-        );
-    }
-
-    #[test]
-    fn discovery_projects_one_launch_profile_without_persisting_an_inventory() {
-        use awaken_run_executor_acp::{AcpDetectionState, AcpHostObservation};
-
-        // Cause graph: supported catalog rows + host detection -> exact launch
-        // routes; login state remains separate Worker credential evidence.
-        //
-        // Decision table:
-        // D1 none detected       -> no profile
-        // D2 one detected        -> profile + inferred default
-        // D3 several detected    -> profile + no random default
-        // D4 requested undetected default -> reject
-        let observation = |id: &str, detection| AcpHostObservation {
-            cli_id: id.to_string(),
-            display_name: id.to_string(),
-            detection,
-            version: Some("1".to_string()),
-            credential_state: Some(
-                awaken_runtime_contract::CredentialObservationState::LoginRequired,
-            ),
-            reason_code: Some("fixture".to_string()),
-        };
-        let missing = observation("codex", AcpDetectionState::Missing);
-        assert_eq!(
-            AcpWorkerProfile::from_discovery(std::slice::from_ref(&missing), None).unwrap(),
-            None,
-            "D1"
-        );
-
-        let codex = observation("codex", AcpDetectionState::Detected);
-        let one = AcpWorkerProfile::from_discovery(std::slice::from_ref(&codex), None)
-            .unwrap()
-            .unwrap();
-        assert_eq!(one.cli_ids().collect::<Vec<_>>(), ["codex"], "D2");
-        assert_eq!(one.default_cli(), Some("codex"), "D2");
-
-        let claude = observation("claude", AcpDetectionState::Detected);
-        let several = AcpWorkerProfile::from_discovery(&[codex, claude], None)
-            .unwrap()
-            .unwrap();
-        assert_eq!(several.default_cli(), None, "D3");
-        assert!(
-            AcpWorkerProfile::from_discovery(
-                &[observation("claude", AcpDetectionState::Detected), missing],
-                Some("codex".to_string())
-            )
-            .is_err(),
-            "D4"
         );
     }
 

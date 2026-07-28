@@ -1298,7 +1298,7 @@ fn ensure_pending_tool_use(messages: &mut Vec<Message>, ask: &PermissionAsk) {
 
 mod acp_cli;
 mod config_home;
-mod host_discovery;
+mod discovery_spec;
 mod session_home;
 mod subprocess;
 pub use acp_cli::{
@@ -1310,9 +1310,8 @@ pub use acp_cli::{
 // The ACP config-home path convention (shared kernel) and the reference cross-machine
 // session-home provider over it — the host consumes these instead of owning them.
 pub use config_home::{ConfigHome, RetentionPolicy, SessionReuse};
-pub use host_discovery::{
-    AcpDetectionState, AcpDiscovery, AcpDiscoverySpec, AcpHostDiscovery, AcpHostObservation,
-    AcpLoginProbe, AcpLoginRule, AcpProbeCommand, AcpProbePredicate,
+pub use discovery_spec::{
+    AcpDiscoverySpec, AcpLoginProbe, AcpLoginRule, AcpProbeCommand, AcpProbePredicate,
 };
 pub use session_home::{DirSessionHome, FsSessionBlobStore, SessionBlobStore};
 pub use subprocess::{

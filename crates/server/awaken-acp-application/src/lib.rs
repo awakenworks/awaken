@@ -14,14 +14,15 @@ use awaken_credential_vault::repo::{CredentialRepo, ensure_worker_local};
 use awaken_credential_vault::{
     CredentialKind, CredentialSource, CredentialStatus, WorkerLocalBinding,
 };
-use awaken_run_executor_acp::{
-    AcpCli, AcpDetectionState, AcpDiscovery, AcpHostDiscovery, AcpHostObservation, acp_cli,
-};
+use awaken_run_executor_acp::{AcpCli, acp_cli};
 use awaken_runtime_contract::resolved::Backend;
 use awaken_runtime_contract::{
     CredentialMaterialError, CredentialObservation, CredentialObservationSource,
     CredentialObservationState, CredentialRef, WorkerLocalReferenceRevalidator,
 };
+
+mod host_discovery;
+pub use host_discovery::{AcpDetectionState, AcpDiscovery, AcpHostDiscovery, AcpHostObservation};
 
 /// Acquisition port for an ACP protocol wrapper declared by the canonical catalog.
 #[async_trait]

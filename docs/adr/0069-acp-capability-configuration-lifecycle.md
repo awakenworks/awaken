@@ -623,6 +623,9 @@ Implemented consolidation evidence:
   Session-owned environment;
 - `awaken-acp-application` owns discovery, acquisition, WorkerLocal registration
   and liveness composition;
+- host process probing and observation classification live only in
+  `awaken-acp-application`; Runtime Host no longer converts or imports discovery
+  observations;
 - `CredentialObservationSource` and `WorkerLocalReferenceRevalidator` are
   segregated from `CredentialMaterialResolver`;
 - Runtime Host selects the Session provider from immutable
@@ -633,8 +636,8 @@ Current implementation status is deliberately distinct from the target:
 
 | Lifecycle slice | Current state | Required consolidation |
 |---|---|---|
-| adapter catalog | authoritative `AcpCli` exists | move its neutral contract out of executor ownership |
-| installation/login probe | functional | move process probe from executor crate into Worker application |
+| adapter catalog | authoritative `AcpCli` exists; inert probe specs remain attached | move its neutral contract out of executor ownership |
+| installation/login probe | Worker application owns process I/O and classification | add revisioned refresh/publication |
 | reusable CLI/Flow preparation | application service exists; CLI partly consumes it | migrate remaining CLI-private callers and Flow; delete the duplicate |
 | capability negotiation | Run handshake observes ids only | expose canonical capability probe and retain full typed descriptors |
 | effective profile/fingerprint | not implemented | add Worker-owned expiring observation |

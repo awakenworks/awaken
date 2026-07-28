@@ -218,7 +218,7 @@ pub struct ResolvedDeployment {
     pub runtime: DeploymentConfig,
     /// Secret-free local ACP observations captured once during product startup.
     /// Empty means discovery was not run (for example in Server mode).
-    pub local_acp_observations: Vec<awaken_run_executor_acp::AcpHostObservation>,
+    pub local_acp_observations: Vec<awaken_acp_application::AcpHostObservation>,
     pub control: awaken_control::ControlStoreConfig,
     pub resources: ResourcePlaneStoreBackend,
     pub seal_key: SealKeySource,
@@ -610,7 +610,7 @@ impl ResolvedDeployment {
     /// retained only in the diagnostic read model and never in Worker routes.
     pub fn apply_local_acp_observations(
         &mut self,
-        observations: Vec<awaken_run_executor_acp::AcpHostObservation>,
+        observations: Vec<awaken_acp_application::AcpHostObservation>,
     ) -> Result<(), String> {
         let explicit = self.runtime.acp.clone();
         let selected: Vec<_> = observations
@@ -625,7 +625,16 @@ impl ResolvedDeployment {
         let default_cli = explicit
             .as_ref()
             .and_then(|profile| profile.default_cli().map(str::to_string));
-        self.runtime.acp = AcpWorkerProfile::from_discovery(&selected, default_cli)?;
+        let detected = selected
+            .iter()
+            .filter(|observation| observation.detected())
+            .map(|observation| observation.cli_id.clone())
+            .collect::<Vec<_>>();
+        self.runtime.acp = if detected.is_empty() {
+            None
+        } else {
+            Some(AcpWorkerProfile::new(detected, default_cli)?)
+        };
         self.local_acp_observations = observations;
         Ok(())
     }
@@ -872,15 +881,15 @@ mod tests {
 
     fn acp_observation(
         id: &str,
-        detection: awaken_run_executor_acp::AcpDetectionState,
-    ) -> awaken_run_executor_acp::AcpHostObservation {
-        awaken_run_executor_acp::AcpHostObservation {
+        detection: awaken_acp_application::AcpDetectionState,
+    ) -> awaken_acp_application::AcpHostObservation {
+        awaken_acp_application::AcpHostObservation {
             cli_id: id.to_string(),
             display_name: id.to_string(),
             detection,
-            version: (detection == awaken_run_executor_acp::AcpDetectionState::Detected)
+            version: (detection == awaken_acp_application::AcpDetectionState::Detected)
                 .then(|| "1.0".to_string()),
-            credential_state: (detection == awaken_run_executor_acp::AcpDetectionState::Detected)
+            credential_state: (detection == awaken_acp_application::AcpDetectionState::Detected)
                 .then_some(awaken_runtime_contract::CredentialObservationState::Available),
             reason_code: Some("fixture".to_string()),
         }
@@ -898,17 +907,11 @@ mod tests {
         // A2 unconfigured + one detected  -> that CLI + automatic default
         // A3 unconfigured + many detected -> all CLIs + no random default
         // A4 explicit subset              -> only detected configured CLIs
-        let missing = acp_observation(
-            "claude",
-            awaken_run_executor_acp::AcpDetectionState::Missing,
-        );
-        let codex = acp_observation(
-            "codex",
-            awaken_run_executor_acp::AcpDetectionState::Detected,
-        );
+        let missing = acp_observation("claude", awaken_acp_application::AcpDetectionState::Missing);
+        let codex = acp_observation("codex", awaken_acp_application::AcpDetectionState::Detected);
         let claude = acp_observation(
             "claude",
-            awaken_run_executor_acp::AcpDetectionState::Detected,
+            awaken_acp_application::AcpDetectionState::Detected,
         );
 
         let mut none = resolve(FileConfig::default(), ConfigOverrides::default());

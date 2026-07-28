@@ -45,7 +45,7 @@ pub use awaken_control::{
 /// composition edge is intentionally the only place that knows both contexts;
 /// neither Control nor the executor keeps a synchronized adapter list.
 fn runtime_capabilities(
-    observations: &[awaken_run_executor_acp::AcpHostObservation],
+    observations: &[awaken_acp_application::AcpHostObservation],
 ) -> Vec<awaken_control::RuntimeCapability> {
     std::iter::once(awaken_control::RuntimeCapability::native())
         .chain(awaken_run_executor_acp::known_acp_clis().iter().map(|cli| {
@@ -129,10 +129,10 @@ mod runtime_capability_tests {
         // Decision table:
         // L1 same id + detected/login-required -> detected status + remediation
         // L2 no observation                    -> local status absent
-        let projected = runtime_capabilities(&[awaken_run_executor_acp::AcpHostObservation {
+        let projected = runtime_capabilities(&[awaken_acp_application::AcpHostObservation {
             cli_id: "codex".into(),
             display_name: "Codex".into(),
-            detection: awaken_run_executor_acp::AcpDetectionState::Detected,
+            detection: awaken_acp_application::AcpDetectionState::Detected,
             version: Some("codex 1".into()),
             credential_state: Some(
                 awaken_runtime_contract::CredentialObservationState::LoginRequired,
@@ -306,7 +306,7 @@ struct AssemblyOverrides {
     management_only: bool,
     cloud_api_base_url: Option<String>,
     cloud_models_enabled: bool,
-    local_acp_observations: Vec<awaken_run_executor_acp::AcpHostObservation>,
+    local_acp_observations: Vec<awaken_acp_application::AcpHostObservation>,
 }
 
 type IdentityWiring = (

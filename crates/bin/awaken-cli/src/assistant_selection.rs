@@ -3,12 +3,12 @@
 //! This policy consumes existing catalog, credential, and local ACP observations.
 //! It never authors another default, credential, or provider record.
 
+use awaken_acp_application::AcpHostObservation;
 use awaken_config_store::ModelSelection;
 use awaken_credential_vault::{
     CLAUDE_CODE_SETUP_TOKEN_ENV, CredentialKind, CredentialSource, CredentialStatus,
 };
 use awaken_model_catalog::{OfferingStatus, ProviderCatalog};
-use awaken_run_executor_acp::AcpHostObservation;
 
 pub(crate) fn select(
     catalog: &ProviderCatalog,
@@ -99,7 +99,7 @@ mod tests {
         AcpHostObservation {
             cli_id: cli_id.into(),
             display_name: cli_id.into(),
-            detection: awaken_run_executor_acp::AcpDetectionState::Detected,
+            detection: awaken_acp_application::AcpDetectionState::Detected,
             version: Some("1".into()),
             credential_state: Some(awaken_runtime_contract::CredentialObservationState::Available),
             reason_code: None,

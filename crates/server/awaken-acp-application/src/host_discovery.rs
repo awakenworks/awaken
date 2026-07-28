@@ -1,6 +1,6 @@
 //! Data-driven discovery of ACP agents installed on the trusted local host.
 //!
-//! The [`AcpCli`](crate::AcpCli) catalog owns every command and classification
+//! The [`AcpCli`] catalog owns every command and classification
 //! rule. This module owns the generic process mechanism and produces secret-free
 //! observations; it never opens a provider's authentication files.
 
@@ -9,51 +9,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use awaken_run_executor_acp::{AcpCli, AcpProbeCommand, AcpProbePredicate, known_acp_clis};
 use awaken_runtime_contract::CredentialObservationState;
 use tokio::process::Command;
-
-use crate::{AcpCli, known_acp_clis};
-
-/// One non-interactive command used to inspect an installed ACP agent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AcpProbeCommand {
-    pub executable: &'static str,
-    pub args: &'static [&'static str],
-}
-
-/// A declarative predicate over one completed probe command.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AcpProbePredicate {
-    ExitSuccess,
-    ExitCode(i32),
-    CombinedOutputContains(&'static str),
-    StdoutJsonBoolean { field: &'static str, value: bool },
-}
-
-/// An ordered login-classification rule. The first matching rule wins.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AcpLoginRule {
-    pub predicate: AcpProbePredicate,
-    pub state: CredentialObservationState,
-    pub reason_code: &'static str,
-}
-
-/// Login liveness owned by the CLI: Awaken runs the command but never decodes
-/// or copies the backing credential.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AcpLoginProbe {
-    pub command: AcpProbeCommand,
-    pub rules: &'static [AcpLoginRule],
-    pub remediation: &'static str,
-}
-
-/// Static host-discovery facts for one catalog row.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AcpDiscoverySpec {
-    pub version: AcpProbeCommand,
-    pub login: AcpLoginProbe,
-    pub install_remediation: &'static str,
-}
 
 /// Raw, bounded output from the process-probe port.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,10 +36,7 @@ impl AcpProbeOutput {
                     || self.stderr.to_ascii_lowercase().contains(&needle)
             }
             AcpProbePredicate::StdoutJsonBoolean { field, value } => {
-                serde_json::from_str::<serde_json::Value>(&self.stdout)
-                    .ok()
-                    .and_then(|json| json.get(field).and_then(serde_json::Value::as_bool))
-                    == Some(value)
+                json_boolean_field(&self.stdout, field) == Some(value)
             }
         }
     }
@@ -96,16 +51,93 @@ impl AcpProbeOutput {
     }
 }
 
+/// Read one top-level boolean from a probe's JSON object without introducing a
+/// general JSON/value dependency into the Worker application boundary.
+///
+/// Probe descriptors name the exact field and accept only a literal boolean.
+/// Strings and nested objects cannot accidentally satisfy the predicate.
+fn json_boolean_field(input: &str, field: &str) -> Option<bool> {
+    let bytes = input.as_bytes();
+    let mut depth = 0_u32;
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'{' => {
+                depth = depth.checked_add(1)?;
+                index += 1;
+            }
+            b'}' => {
+                depth = depth.checked_sub(1)?;
+                index += 1;
+            }
+            b'"' => {
+                let (value, next) = json_string(input, index)?;
+                index = next;
+                if depth != 1 || value != field {
+                    continue;
+                }
+                index = skip_ascii_whitespace(bytes, index);
+                if bytes.get(index) != Some(&b':') {
+                    continue;
+                }
+                index = skip_ascii_whitespace(bytes, index + 1);
+                if bytes.get(index..index + 4) == Some(b"true") {
+                    return Some(true);
+                }
+                if bytes.get(index..index + 5) == Some(b"false") {
+                    return Some(false);
+                }
+            }
+            _ => index += 1,
+        }
+    }
+    None
+}
+
+fn json_string(input: &str, quote: usize) -> Option<(&str, usize)> {
+    let bytes = input.as_bytes();
+    let start = quote + 1;
+    let mut index = start;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' => index = index.checked_add(2)?,
+            b'"' => return Some((&input[start..index], index + 1)),
+            _ => index += 1,
+        }
+    }
+    None
+}
+
+fn skip_ascii_whitespace(bytes: &[u8], mut index: usize) -> usize {
+    while bytes
+        .get(index)
+        .is_some_and(|byte| byte.is_ascii_whitespace())
+    {
+        index += 1;
+    }
+    index
+}
+
 /// Failure of the host process mechanism, before profile classification.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum AcpProcessProbeError {
-    #[error("executable not found: {executable}")]
     ExecutableNotFound { executable: String },
-    #[error("probe timed out: {executable}")]
     TimedOut { executable: String },
-    #[error("probe spawn failed: {executable}")]
     SpawnFailed { executable: String },
 }
+
+impl std::fmt::Display for AcpProcessProbeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (kind, executable) = match self {
+            Self::ExecutableNotFound { executable } => ("executable not found", executable),
+            Self::TimedOut { executable } => ("probe timed out", executable),
+            Self::SpawnFailed { executable } => ("probe spawn failed", executable),
+        };
+        write!(formatter, "{kind}: {executable}")
+    }
+}
+
+impl std::error::Error for AcpProcessProbeError {}
 
 /// Process I/O port for host discovery. Tests and alternative local runtimes
 /// implement this port without changing classification behavior.
@@ -312,7 +344,7 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
-    use crate::acp_cli;
+    use awaken_run_executor_acp::acp_cli;
 
     #[derive(Default)]
     struct ScriptedProbe {
@@ -357,6 +389,49 @@ mod tests {
             exit_code: Some(code),
             stdout: stdout.to_string(),
             stderr: stderr.to_string(),
+        }
+    }
+
+    #[test]
+    fn json_boolean_probe_matches_only_the_named_top_level_literal() {
+        // Cause graph:
+        // C1 named top-level key + boolean literal -> E1 exact boolean.
+        // C2 whitespace/order -> E2 same result.
+        // C3 string/nested/other key/malformed input -> E3 no result.
+        //
+        // Decision table:
+        // J1 top-level true          -> Some(true)
+        // J2 top-level false/spaces  -> Some(false)
+        // J3 value inside a string   -> None
+        // J4 value in nested object  -> None
+        // J5 malformed/non-boolean   -> None
+        assert_eq!(
+            json_boolean_field(r#"{"loggedIn":true,"other":false}"#, "loggedIn"),
+            Some(true),
+            "J1"
+        );
+        assert_eq!(
+            json_boolean_field("{ \"other\": true, \"loggedIn\" : false }", "loggedIn"),
+            Some(false),
+            "J2"
+        );
+        assert_eq!(
+            json_boolean_field(r#"{"message":"\"loggedIn\":true"}"#, "loggedIn"),
+            None,
+            "J3"
+        );
+        assert_eq!(
+            json_boolean_field(r#"{"nested":{"loggedIn":true}}"#, "loggedIn"),
+            None,
+            "J4"
+        );
+        for input in [
+            r#"{"loggedIn":"true"}"#,
+            r#"{"loggedIn":null}"#,
+            r#"{"loggedIn":tru}"#,
+            "not-json",
+        ] {
+            assert_eq!(json_boolean_field(input, "loggedIn"), None, "J5 {input}");
         }
     }
 

@@ -5,7 +5,7 @@
 //! references by id (`Backend::Acp { cli }`), the same category as a model provider
 //! — never agent config itself.
 
-use crate::host_discovery::{
+use crate::discovery_spec::{
     AcpDiscoverySpec, AcpLoginProbe, AcpLoginRule, AcpProbeCommand, AcpProbePredicate,
 };
 use crate::{AcpLaunch, AcpLaunchIdentity, OpenError};

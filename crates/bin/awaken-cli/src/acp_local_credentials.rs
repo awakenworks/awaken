@@ -8,9 +8,10 @@ use std::sync::Arc;
 
 pub use awaken_acp_application::AcpLocalCredentialResolver;
 use awaken_acp_application::{
-    AcpWrapperInstaller, LocalAcpPreparation, NpmWrapperInstaller, prepare_host_acp_with,
+    AcpDiscovery, AcpHostDiscovery, AcpHostObservation, AcpWrapperInstaller, LocalAcpPreparation,
+    NpmWrapperInstaller, prepare_host_acp_with,
 };
-use awaken_run_executor_acp::{AcpDiscovery, AcpHostDiscovery, AcpHostObservation, acp_cli};
+use awaken_run_executor_acp::acp_cli;
 use awaken_runtime_contract::CredentialObservationState;
 
 /// One startup composition result for a trusted local ACP Worker. The durable
@@ -230,11 +231,12 @@ mod tests {
     use std::sync::Mutex;
 
     use async_trait::async_trait;
+    use awaken_acp_application::AcpDetectionState;
     use awaken_credential_vault::repo::{
         CredentialRepo, InMemoryCredentialRepo, ensure_worker_local,
     };
     use awaken_credential_vault::{CredentialSource, CredentialStatus, WorkerLocalBinding};
-    use awaken_run_executor_acp::{AcpCli, AcpDetectionState};
+    use awaken_run_executor_acp::AcpCli;
     use awaken_runtime_contract::{
         CredentialMaterialError, CredentialMaterialSource, CredentialObservationSource,
         CredentialRef, WorkerLocalReferenceRevalidator,
