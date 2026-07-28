@@ -16,6 +16,7 @@ mod assistant_selection;
 mod brain_admin;
 pub mod config;
 mod identity;
+mod hosted_control;
 mod management_surface;
 mod observation_reconcile;
 
@@ -37,6 +38,10 @@ pub use crate::brain_admin::{
 };
 pub use acp_local_credentials::{
     AcpLocalCredentialResolver, PreparedLocalAcp, local_acp_diagnostics, prepare_local_acp,
+};
+use identity::identity_wiring;
+pub use hosted_control::{
+    build_control_router_with_deployment, build_control_router_with_publication_resolver,
 };
 use identity::identity_wiring;
 // Embedded management-plane IAM (ADR-0042/0043 P1) + the mint spec and bootstrap
@@ -293,6 +298,13 @@ impl awaken_admin_config_api::ModelCatalogDiscovery for GenaiModelDiscovery {
 /// not install a provider materializer.
 enum ManagementModelComposition {
     PublishedProviders,
+    /// A hosted composition owns provider custody and injects its resolver into
+    /// the same Awaken publication pipeline. This variant is legal only for the
+    /// control-only surface: the separate hosted Worker owns runtime
+    /// materialization.
+    HostedPublication {
+        resolver: Arc<dyn awaken_runtime_host::ModelPublicationResolver>,
+    },
     Host {
         executor: Arc<dyn LlmExecutor>,
         binding: awaken_runtime_contract::resolved::ModelBinding,
@@ -958,65 +970,6 @@ pub async fn build_management_assembly_with_deployment(
     })
 }
 
-/// Canonical hosted authoring/control assembly. It reuses the same stores,
-/// resolver, IAM PEP and routes as the full local product, but deliberately
-/// omits every Session/Run/protocol/Worker data-plane route.
-pub async fn build_control_router_with_deployment(
-    deployment: &config::ResolvedDeployment,
-    key: &[u8; 32],
-) -> Result<Router, String> {
-    build_control_assembly_with_deployment(deployment, key)
-        .await
-        .map(|assembly| assembly.router)
-}
-
-pub async fn build_control_assembly_with_deployment(
-    deployment: &config::ResolvedDeployment,
-    key: &[u8; 32],
-) -> Result<ManagementAssembly, String> {
-    let identity = identity_wiring(
-        deployment.identity_mode,
-        Some(&deployment.data_dir),
-        &deployment.org_id,
-        &deployment.iam_workspaces,
-        &deployment.cloud_iam,
-    )?;
-    let stores = open_management_stores(
-        deployment.control.clone(),
-        // Hosted Management exposes no File/Memory/Skill routes. These ports
-        // satisfy shared control-plane collaborators without acquiring a second
-        // durable resource-plane authority.
-        ResourcePlaneStores::ephemeral(),
-        deployment.data_dir.clone(),
-        key,
-        PostgresSchemaMode::Verify,
-    )
-    .await?;
-    let router = management_router_over(
-        stores,
-        identity.iam,
-        identity.remote_iam,
-        identity.local_browser_auth,
-        ManagementModelComposition::PublishedProviders,
-        AssemblyOverrides {
-            deployment: None,
-            org_id: Some(deployment.org_id.clone()),
-            mcp_bearer_token: deployment.mcp_bearer_token.clone(),
-            management_only: true,
-            cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url.clone()),
-            cloud_models_enabled: deployment.cloud_models.is_enabled(),
-            local_acp_observations: Vec::new(),
-            hand_executors: BTreeMap::new(),
-        },
-        None,
-    )
-    .await;
-    Ok(ManagementAssembly {
-        router,
-        local_setup: identity.local_setup,
-    })
-}
-
 /// Explicit deployment migration phase for every management-owned store.
 /// Local SQLite startup retains its existing auto-migration behavior; managed
 /// PostgreSQL deployments invoke this command before starting application Pods.
@@ -1386,6 +1339,12 @@ async fn management_router_over(
                     None => materializer,
                 }
             })),
+        },
+        ManagementModelComposition::HostedPublication { resolver } => ManagementModelWiring {
+            executor: Arc::new(awaken_server::no_model::NoModelConfiguredExecutor),
+            model_ref: awaken_server::no_model::UNCONFIGURED_MODEL_REF.to_string(),
+            publication_resolver: resolver,
+            materializer: None,
         },
         ManagementModelComposition::Host { executor, binding } => ManagementModelWiring {
             executor,
@@ -1896,6 +1855,8 @@ mod runtime_session_store_tests {
 
 #[cfg(test)]
 mod management_only_surface_tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt as _;
@@ -1940,5 +1901,91 @@ mod management_only_surface_tests {
             .await
             .unwrap();
         assert_eq!(session.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[derive(Debug)]
+    struct RecordingHostedResolver {
+        called: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_runtime_host::ModelPublicationResolver for RecordingHostedResolver {
+        async fn resolve_models(
+            &self,
+            _workspace: &awaken_tenancy::ScopeId,
+            _selection: &awaken_config_store::ModelSelection,
+            _candidates: &[awaken_runtime_contract::resolved::ModelBinding],
+        ) -> Result<
+            awaken_runtime_host::ResolvedPublicationModels,
+            awaken_runtime_host::PublicationResolutionError,
+        > {
+            self.called.store(true, Ordering::SeqCst);
+            Err(awaken_runtime_host::PublicationResolutionError::MissingPrimary)
+        }
+    }
+
+    /// Causal graph:
+    /// hosted resolver injection -> canonical ConfigService publication
+    /// -> the injected resolver is the only model-selection authority
+    /// -> its fail-closed result is returned without consulting the local catalog.
+    ///
+    /// Decision table:
+    /// | control composition | resolver result | local catalog | outcome |
+    /// | --- | --- | --- | --- |
+    /// | default open | any | authoritative | catalog resolver decides |
+    /// | hosted injection | success | irrelevant | injected candidate publishes |
+    /// | hosted injection | failure | populated/empty | publication fails closed |
+    #[tokio::test]
+    async fn hosted_control_uses_the_injected_publication_resolver() {
+        let called = Arc::new(AtomicBool::new(false));
+        let app = management_router_over(
+            in_memory_management_stores(),
+            None,
+            None,
+            ManagementModelComposition::HostedPublication {
+                resolver: Arc::new(RecordingHostedResolver {
+                    called: called.clone(),
+                }),
+            },
+            AssemblyOverrides {
+                management_only: true,
+                ..Default::default()
+            },
+            None,
+        )
+        .await;
+
+        let authored = app
+            .clone()
+            .oneshot(
+                Request::put("/v1/config/agents/hosted-agent")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "name": "Hosted",
+                            "model": {
+                                "provider_identity_ref": "provider-account-a",
+                                "model_ref": "model-a",
+                                "backend_ref": "hosted"
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(authored.status(), StatusCode::OK);
+
+        let published = app
+            .oneshot(
+                Request::post("/v1/config/agents/hosted-agent/publish")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(published.status(), StatusCode::CONFLICT);
+        assert!(called.load(Ordering::SeqCst));
     }
 }
