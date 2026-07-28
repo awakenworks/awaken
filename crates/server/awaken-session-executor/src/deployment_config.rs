@@ -145,46 +145,75 @@ pub enum Wake {
 /// The sandbox tier a worker realizes an ACP agent on (ADR-0041/0056). The default is
 /// the namespace (bubblewrap) tier; a container tier runs the agent inside a
 /// user-supplied image via the matching `ContainerRuntime`. Different workers can be
-/// configured differently (`AWAKEN_SANDBOX_TIER`), so one fleet mixes backends.
+/// configured differently through typed deployment config, so one fleet mixes
+/// backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SandboxTier {
     /// No OS isolation — the ACP CLI runs as a plain child of the runtime process
-    /// (`AWAKEN_SANDBOX_TIER=local`). The environment-agnostic executor drives it
+    /// (`sandbox_tier = "local"`). The environment-agnostic executor drives it
     /// over the same [`AgentChannelSource`] as any sandboxed tier; only the host's
     /// choice of source differs (ADR-0057: the executor never learns the tier). For
     /// a trusted CLI or single-tenant dev where isolation is provided elsewhere.
     Local,
-    /// Bubblewrap namespace isolation on the worker host (`AWAKEN_SANDBOX_TIER=namespace`,
+    /// Bubblewrap namespace isolation on the worker host (`sandbox_tier = "namespace"`,
     /// the default) — no user image, the agent runs under `bwrap`.
     #[default]
     Namespace,
-    /// A Docker container from the configured image (`AWAKEN_SANDBOX_TIER=docker`).
+    /// A Docker container from the configured image (`sandbox_tier = "docker"`).
     Docker,
-    /// A rootless Podman container (`AWAKEN_SANDBOX_TIER=podman`).
+    /// A rootless Podman container (`sandbox_tier = "podman"`).
     Podman,
-    /// A Kubernetes Pod (`AWAKEN_SANDBOX_TIER=k8s`), for a multi-node cloud fleet.
+    /// A Kubernetes Pod (`sandbox_tier = "k8s"`), for a multi-node cloud fleet.
     K8s,
 }
 
 impl SandboxTier {
-    /// Parse the `AWAKEN_SANDBOX_TIER` value; unknown/absent → the namespace default.
-    #[cfg(test)]
-    fn from_env_str(value: Option<&str>) -> Self {
-        match value {
-            Some("local") | Some("none") => Self::Local,
-            Some("docker") => Self::Docker,
-            Some("podman") => Self::Podman,
-            Some("k8s") | Some("kubernetes") => Self::K8s,
-            _ => Self::Namespace,
-        }
-    }
-
     /// Whether this tier runs the agent inside a container image (vs. the local or
     /// namespace tiers on the worker host) — the composition root builds a container
     /// ACP source.
     #[must_use]
     pub fn is_container(self) -> bool {
         matches!(self, Self::Docker | Self::Podman | Self::K8s)
+    }
+}
+
+/// Typed operator policy for sandbox realization.
+///
+/// This is part of the one [`DeploymentConfig`] aggregate. Runtime adapters
+/// consume it explicitly and never rediscover these choices from process
+/// environment variables.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SandboxSettings {
+    /// Permit an unavailable Namespace provider to degrade to unsandboxed Workdir.
+    pub allow_local_fallback: bool,
+    /// Number of ready container environments retained by the warm pool.
+    pub warm_pool_size: usize,
+    /// Optional HTTP(S) proxy used by the container provider.
+    pub container_forward_proxy: Option<String>,
+    /// Kubernetes namespace used by the K8s container adapter.
+    pub k8s_namespace: String,
+    /// Executable path for the Awaken Hand inside a container image.
+    pub container_hand_bin: String,
+    /// Whether Docker/Podman orphan reconciliation is active.
+    pub reaper_enabled: bool,
+    /// Interval between orphan-reconciliation sweeps.
+    pub reaper_interval_secs: u64,
+    /// Maximum age of a still-running managed container before it is reaped.
+    pub reaper_max_age_secs: u64,
+}
+
+impl Default for SandboxSettings {
+    fn default() -> Self {
+        Self {
+            allow_local_fallback: false,
+            warm_pool_size: 0,
+            container_forward_proxy: None,
+            k8s_namespace: "default".to_owned(),
+            container_hand_bin: "/usr/local/bin/awaken-sandbox".to_owned(),
+            reaper_enabled: true,
+            reaper_interval_secs: awaken_sandbox_container::DEFAULT_REAPER_INTERVAL_SECS,
+            reaper_max_age_secs: awaken_sandbox_container::DEFAULT_REAPER_MAX_AGE_SECS,
+        }
     }
 }
 
@@ -214,20 +243,19 @@ pub struct DeploymentConfig {
     /// When set, this process is a database-less **worker** of the cell server at
     /// this url (`AWAKEN_UPSTREAM_URL`): commits and dispatch go to the server.
     pub upstream: Option<String>,
-    /// The sandbox tier this worker realizes ACP agents on (`AWAKEN_SANDBOX_TIER`).
+    /// The sandbox tier this worker realizes ACP agents on.
     pub sandbox_tier: SandboxTier,
-    /// Whether the sandbox tier was explicitly selected. An unavailable default
-    /// namespace sandbox may degrade to local; an explicit request fails closed.
-    pub sandbox_tier_explicit: bool,
-    /// The ACP sandbox and per-Session configuration root (`AWAKEN_SANDBOX_DIR`).
+    /// The ACP sandbox and per-Session configuration root.
     /// `None` selects a process-scoped temporary root.
     pub sandbox_dir: Option<PathBuf>,
-    /// The durable ACP Session blob root (`AWAKEN_ACP_SESSION_BLOBS`).
+    /// Sandbox/container operator policy, resolved once by the composition root.
+    pub sandbox: SandboxSettings,
+    /// The durable ACP Session blob root.
     pub acp_session_blob_root: Option<PathBuf>,
     /// The exact ACP adapters this Worker advertises and serves.
     pub acp: Option<AcpWorkerProfile>,
     /// The container image an ACP agent runs in on a container tier
-    /// (`AWAKEN_CONTAINER_IMAGE`); `None` on the namespace tier / when unset.
+    /// (`container_image`); `None` on the namespace tier / when unset.
     pub container_image: Option<String>,
     /// A coordinator-only server (`DeploymentConfig::disable_local_pool=1`): own the store + HTTP
     /// but run no local pool, so remote workers are the sole drainers.
@@ -326,8 +354,8 @@ impl DeploymentConfig {
             dispatch_owner: "embedded-worker".to_string(),
             upstream: None,
             sandbox_tier: SandboxTier::Namespace,
-            sandbox_tier_explicit: false,
             sandbox_dir: None,
+            sandbox: SandboxSettings::default(),
             acp_session_blob_root: None,
             acp: None,
             container_image: None,
@@ -386,27 +414,13 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_tier_parses_the_worker_backend_and_defaults_to_namespace() {
-        assert_eq!(
-            SandboxTier::from_env_str(Some("docker")),
-            SandboxTier::Docker
-        );
-        assert_eq!(
-            SandboxTier::from_env_str(Some("podman")),
-            SandboxTier::Podman
-        );
-        assert_eq!(SandboxTier::from_env_str(Some("k8s")), SandboxTier::K8s);
-        assert_eq!(
-            SandboxTier::from_env_str(Some("kubernetes")),
-            SandboxTier::K8s
-        );
-        // Unknown / absent → the namespace (bwrap) default; the host tier stays local.
-        assert_eq!(SandboxTier::from_env_str(Some("?")), SandboxTier::Namespace);
-        assert_eq!(SandboxTier::from_env_str(None), SandboxTier::Namespace);
+    fn sandbox_tier_default_and_container_classification_are_total() {
+        // Cause/effect inventory: omission selects Namespace; only the three
+        // image-backed variants are containers. The CLI owns string parsing, so
+        // this domain test does not maintain a second vocabulary parser.
         assert_eq!(SandboxTier::default(), SandboxTier::Namespace);
-
-        // Only the container tiers run the agent inside an image.
         assert!(!SandboxTier::Namespace.is_container());
+        assert!(!SandboxTier::Local.is_container());
         for t in [SandboxTier::Docker, SandboxTier::Podman, SandboxTier::K8s] {
             assert!(t.is_container());
         }
