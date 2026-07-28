@@ -65,6 +65,7 @@ struct WorkerProcessConfig {
 /// Product-command presentation and manifest values resolved at its one config
 /// boundary.
 pub struct WorkerRunOptions {
+    pub worker_id: String,
     pub admin_listen: Option<String>,
     pub drain_grace: std::time::Duration,
     pub credential_probe_interval: std::time::Duration,
@@ -553,10 +554,11 @@ pub async fn run_with_config(
         Some(&control.admin),
     )
     .await?;
-    let mut builder = WorkerNodeBuilder::new(WorkerUpstream::new(upstream))
-        .with_process_config(process)
-        .with_credential_stores(stores.credentials, stores.secrets)
-        .with_standard_manifest(Default::default());
+    let mut builder =
+        WorkerNodeBuilder::new(WorkerUpstream::new(upstream).with_worker_id(options.worker_id))
+            .with_process_config(process)
+            .with_credential_stores(stores.credentials, stores.secrets)
+            .with_standard_manifest(Default::default());
     if let Some(resources) = resources {
         builder = builder.with_resource_plane(resources);
     }

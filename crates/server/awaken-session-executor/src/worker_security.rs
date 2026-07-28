@@ -503,10 +503,6 @@ impl WorkerUpstream {
     /// [`Self::with_client`].
     #[must_use]
     pub fn new(base_url: impl Into<String>) -> Self {
-        let worker_id = std::env::var("AWAKEN_WORKER_ID")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| "awaken-worker".to_string());
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             client: reqwest::Client::builder()
@@ -514,7 +510,7 @@ impl WorkerUpstream {
                 .build()
                 .expect("the default Worker upstream HTTP client should build"),
             request_authorizer: Arc::new(HeaderWorkerRequestAuthorizer),
-            worker_id,
+            worker_id: "awaken-worker".to_string(),
             worker_identity: None,
         }
     }
