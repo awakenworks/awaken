@@ -82,10 +82,18 @@ impl ModelSelection {
         matches!(self, ModelSelection::Auto)
     }
 
-    /// Whether catalog/profile changes can alter the next publication.
+    /// Whether an authoritative catalog, profile, or Worker observation change
+    /// can alter publication readiness. Backend-owned reconciliation preserves
+    /// the authored backend/configuration; it only refreshes its live pins.
     #[must_use]
     pub fn requires_reconciliation(&self) -> bool {
-        matches!(self, Self::Auto | Self::Profile { .. })
+        matches!(
+            self,
+            Self::Auto
+                | Self::Profile { .. }
+                | Self::BackendDefault { .. }
+                | Self::BackendExact { .. }
+        )
     }
 
     /// The exact backend requested with backend-owned default-model policy.
@@ -443,7 +451,8 @@ mod model_selection_tests {
         // | Choice | profile_ref | requires reconciliation |
         // | Auto | none | yes |
         // | Profile | exact id | yes |
-        // | Backend/Pinned | none | no |
+        // | BackendDefault/Exact | none | yes (live Worker observation) |
+        // | Pinned | none | no |
         let selection = ModelSelection::Profile {
             profile_id: "latency-route".into(),
         };
@@ -461,6 +470,21 @@ mod model_selection_tests {
             selection
         );
         assert!(ModelSelection::Auto.requires_reconciliation());
+        assert!(
+            ModelSelection::BackendDefault {
+                backend_ref: "acp:codex".into(),
+                configuration: Default::default(),
+            }
+            .requires_reconciliation()
+        );
+        assert!(
+            ModelSelection::BackendExact {
+                backend_ref: "acp:codex".into(),
+                model_ref: "gpt-exact".into(),
+                configuration: Default::default(),
+            }
+            .requires_reconciliation()
+        );
         assert!(!ModelSelection::pinned("provider", "model", "genai").requires_reconciliation());
     }
 
