@@ -174,7 +174,7 @@ impl LaunchSource {
                 let model = selected.resolver.model(activation, context)?;
                 let credential_artifact = model.credential_artifact().cloned();
                 let extra_env = selected.resolver.extra_env(activation)?;
-                let window = awaken_run_executor_acp::AcpSettings::from_plugin_config(
+                let window = awaken_runtime_contract::resolved::AcpSpec::from_plugin_config(
                     &activation.snapshot.resolved_spec.plugin_config,
                 )
                 .compact_window;

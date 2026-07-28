@@ -1294,8 +1294,11 @@ mod subprocess;
 pub use acp_cli::{
     AcpAcquisition, AcpCli, BackendModelInterface, CredentialArtifactCodec,
     CredentialArtifactRequirement, CredentialArtifactSpec, ManagedCredentialDelivery, McpDelivery,
-    McpInterface, McpServerConfig, McpTransport, ModelDelivery, ProcessSecretRequirement,
-    ResolvedModel, SessionKey, SessionPersistence, acp_cli, known_acp_clis,
+    McpInterface, ModelDelivery, ProcessSecretRequirement, ResolvedModel, SessionKey,
+    SessionPersistence, acp_cli, known_acp_clis,
+};
+pub use awaken_runtime_contract::resolved::{
+    AcpMcpServer as McpServerConfig, AcpMcpTransport as McpTransport,
 };
 // The ACP config-home path convention (shared kernel) and the reference cross-machine
 // session-home provider over it — the host consumes these instead of owning them.
@@ -1305,10 +1308,9 @@ pub use discovery_spec::{
 };
 pub use session_home::{DirSessionHome, FsSessionBlobStore, SessionBlobStore};
 pub use subprocess::{
-    AcpLaunch, AcpLaunchIdentity, AcpSettings, LaunchResolver, McpInjection,
-    ProjectingChannelSource, SubprocessChannelSource, admit_mcp_injection, mcp_injection,
-    mcp_injection_from_servers, project_launch, with_backend_owned_host_environment,
-    with_local_host_launch_environment,
+    AcpLaunch, AcpLaunchIdentity, LaunchResolver, McpInjection, ProjectingChannelSource,
+    SubprocessChannelSource, admit_mcp_injection, mcp_injection, mcp_injection_from_servers,
+    project_launch, with_backend_owned_host_environment, with_local_host_launch_environment,
 };
 
 #[cfg(test)]

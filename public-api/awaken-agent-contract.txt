@@ -481,6 +481,7 @@ pub struct awaken_agent_contract::page::UnknownCursor
 pub const awaken_agent_contract::page::DEFAULT_PAGE_LIMIT: usize
 pub const awaken_agent_contract::page::MAX_PAGE_LIMIT: usize
 pub fn awaken_agent_contract::page::paginate_by_id<'a, T>(&'a [T], core::option::Option<&str>, core::option::Option<usize>, impl core::ops::function::Fn(&T) -> &str) -> core::result::Result<awaken_agent_contract::page::HistoryPage<'a, T>, awaken_agent_contract::page::UnknownCursor>
+pub fn awaken_agent_contract::page::paginate_by_key<'a, T>(&'a [T], core::option::Option<&str>, core::option::Option<usize>, impl core::ops::function::Fn(&T) -> alloc::string::String) -> core::result::Result<awaken_agent_contract::page::HistoryPage<'a, T>, awaken_agent_contract::page::UnknownCursor>
 pub mod awaken_agent_contract::secret
 pub struct awaken_agent_contract::secret::RedactedString(_)
 impl awaken_agent_contract::secret::RedactedString
@@ -732,6 +733,28 @@ pub awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef::end_
 pub awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef::thread_id: awaken_agent_contract::agent::thread::Id
 pub awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef::version: u64
 pub awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef::view: awaken_agent_contract::thread::read::transcript::TranscriptView
+pub mod awaken_agent_contract::toolset
+pub enum awaken_agent_contract::toolset::ToolPermissionRequirement
+pub awaken_agent_contract::toolset::ToolPermissionRequirement::AlwaysAllow
+pub awaken_agent_contract::toolset::ToolPermissionRequirement::AlwaysAsk
+pub enum awaken_agent_contract::toolset::ToolsetSource
+pub awaken_agent_contract::toolset::ToolsetSource::Agent
+pub awaken_agent_contract::toolset::ToolsetSource::Mcp
+pub awaken_agent_contract::toolset::ToolsetSource::Mcp::server_name: alloc::string::String
+pub struct awaken_agent_contract::toolset::ToolExecutionPolicy
+pub awaken_agent_contract::toolset::ToolExecutionPolicy::enabled: bool
+pub awaken_agent_contract::toolset::ToolExecutionPolicy::permission: awaken_agent_contract::toolset::ToolPermissionRequirement
+impl core::default::Default for awaken_agent_contract::toolset::ToolExecutionPolicy
+pub fn awaken_agent_contract::toolset::ToolExecutionPolicy::default() -> Self
+pub struct awaken_agent_contract::toolset::ToolPolicyOverride
+pub awaken_agent_contract::toolset::ToolPolicyOverride::name: alloc::string::String
+pub awaken_agent_contract::toolset::ToolPolicyOverride::policy: awaken_agent_contract::toolset::ToolExecutionPolicy
+pub struct awaken_agent_contract::toolset::ToolsetPolicy
+pub awaken_agent_contract::toolset::ToolsetPolicy::default: awaken_agent_contract::toolset::ToolExecutionPolicy
+pub awaken_agent_contract::toolset::ToolsetPolicy::overrides: alloc::vec::Vec<awaken_agent_contract::toolset::ToolPolicyOverride>
+pub awaken_agent_contract::toolset::ToolsetPolicy::source: awaken_agent_contract::toolset::ToolsetSource
+impl awaken_agent_contract::toolset::ToolsetPolicy
+pub fn awaken_agent_contract::toolset::ToolsetPolicy::policy_for(&self, &str) -> awaken_agent_contract::toolset::ToolExecutionPolicy
 pub enum awaken_agent_contract::AgentEvent
 pub awaken_agent_contract::AgentEvent::Delta(awaken_agent_contract::event::agent::Delta)
 pub awaken_agent_contract::AgentEvent::Fact(awaken_agent_contract::event::agent::Fact)
@@ -755,6 +778,13 @@ pub awaken_agent_contract::RunLifecycleKind::Completed
 pub awaken_agent_contract::RunLifecycleKind::Failed
 pub awaken_agent_contract::RunLifecycleKind::Resumed
 pub awaken_agent_contract::RunLifecycleKind::Running
+pub enum awaken_agent_contract::ToolPermissionRequirement
+pub awaken_agent_contract::ToolPermissionRequirement::AlwaysAllow
+pub awaken_agent_contract::ToolPermissionRequirement::AlwaysAsk
+pub enum awaken_agent_contract::ToolsetSource
+pub awaken_agent_contract::ToolsetSource::Agent
+pub awaken_agent_contract::ToolsetSource::Mcp
+pub awaken_agent_contract::ToolsetSource::Mcp::server_name: alloc::string::String
 pub enum awaken_agent_contract::TranscriptError
 pub awaken_agent_contract::TranscriptError::InvalidRange
 pub awaken_agent_contract::TranscriptError::InvalidRange::end: u64
@@ -867,6 +897,20 @@ pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::serialize<S:
 impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::thread::commit::staged::ThreadCommit
 pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 pub struct awaken_agent_contract::ThreadId(pub alloc::string::String)
+pub struct awaken_agent_contract::ToolExecutionPolicy
+pub awaken_agent_contract::ToolExecutionPolicy::enabled: bool
+pub awaken_agent_contract::ToolExecutionPolicy::permission: awaken_agent_contract::toolset::ToolPermissionRequirement
+impl core::default::Default for awaken_agent_contract::toolset::ToolExecutionPolicy
+pub fn awaken_agent_contract::toolset::ToolExecutionPolicy::default() -> Self
+pub struct awaken_agent_contract::ToolPolicyOverride
+pub awaken_agent_contract::ToolPolicyOverride::name: alloc::string::String
+pub awaken_agent_contract::ToolPolicyOverride::policy: awaken_agent_contract::toolset::ToolExecutionPolicy
+pub struct awaken_agent_contract::ToolsetPolicy
+pub awaken_agent_contract::ToolsetPolicy::default: awaken_agent_contract::toolset::ToolExecutionPolicy
+pub awaken_agent_contract::ToolsetPolicy::overrides: alloc::vec::Vec<awaken_agent_contract::toolset::ToolPolicyOverride>
+pub awaken_agent_contract::ToolsetPolicy::source: awaken_agent_contract::toolset::ToolsetSource
+impl awaken_agent_contract::toolset::ToolsetPolicy
+pub fn awaken_agent_contract::toolset::ToolsetPolicy::policy_for(&self, &str) -> awaken_agent_contract::toolset::ToolExecutionPolicy
 pub struct awaken_agent_contract::TranscriptRange
 pub awaken_agent_contract::TranscriptRange::end: u64
 pub awaken_agent_contract::TranscriptRange::start: u64

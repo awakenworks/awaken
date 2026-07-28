@@ -934,7 +934,7 @@ mod tests {
                 }] }),
             )]),
         );
-        source.mcp_servers = awaken_run_executor_acp::AcpSettings::from_plugin_config(
+        source.mcp_servers = awaken_runtime_contract::resolved::AcpSpec::from_plugin_config(
             activation.snapshot.resolved_spec.plugin_config.plugins(),
         )
         .mcp_servers;

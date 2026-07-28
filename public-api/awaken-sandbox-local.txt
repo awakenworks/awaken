@@ -89,7 +89,7 @@ pub fn awaken_sandbox_local::NamespaceSandbox::clear_resource_projection(&self) 
 pub fn awaken_sandbox_local::NamespaceSandbox::list_files(&self, &str) -> alloc::vec::Vec<(alloc::string::String, alloc::vec::Vec<u8>)>
 pub fn awaken_sandbox_local::NamespaceSandbox::materialize_inline(&self, &str, &[u8]) -> core::result::Result<(), awaken_provisioning_contract::sandbox::SandboxError>
 pub fn awaken_sandbox_local::NamespaceSandbox::materialize_read_only_tree(&self, &str, &[(alloc::string::String, alloc::vec::Vec<u8>)]) -> core::result::Result<(), awaken_provisioning_contract::sandbox::SandboxError>
-pub fn awaken_sandbox_local::NamespaceSandbox::provision_repo(&self, &str, &str, core::option::Option<&str>, core::option::Option<&str>) -> core::result::Result<(), awaken_provisioning_contract::sandbox::SandboxError>
+pub fn awaken_sandbox_local::NamespaceSandbox::provision_repo(&self, &str, &str, core::option::Option<&str>, core::option::Option<&str>, core::option::Option<&str>) -> core::result::Result<(), awaken_provisioning_contract::sandbox::SandboxError>
 pub fn awaken_sandbox_local::NamespaceSandbox::push_repo(&self, &str, core::option::Option<&str>) -> core::result::Result<bool, awaken_provisioning_contract::sandbox::SandboxError>
 pub async fn awaken_sandbox_local::NamespaceSandbox::release_memory_mounts(&self)
 pub fn awaken_sandbox_local::NamespaceSandbox::remove_inline(&self, &str) -> core::result::Result<(), awaken_provisioning_contract::sandbox::SandboxError>
@@ -119,7 +119,7 @@ pub trait awaken_sandbox_local::HandTool: core::marker::Send + core::marker::Syn
 pub fn awaken_sandbox_local::HandTool::id(&self) -> &str
 pub fn awaken_sandbox_local::HandTool::run<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_sandbox_local::HandOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_sandbox_local::bubblewrap_argv(&awaken_sandbox_local::namespace::RenderInput<'_>) -> alloc::vec::Vec<alloc::string::String>
-pub fn awaken_sandbox_local::clone_repo_bundle(&str, core::option::Option<&str>, core::option::Option<&str>) -> core::result::Result<alloc::vec::Vec<u8>, awaken_provisioning_contract::sandbox::SandboxError>
+pub fn awaken_sandbox_local::clone_repo_bundle(&str, core::option::Option<&str>, core::option::Option<&str>, core::option::Option<&str>) -> core::result::Result<alloc::vec::Vec<u8>, awaken_provisioning_contract::sandbox::SandboxError>
 pub fn awaken_sandbox_local::content_fingerprint(&[u8]) -> alloc::string::String
 pub fn awaken_sandbox_local::push_repo_bundle(&[u8], &str, core::option::Option<&str>) -> core::result::Result<bool, awaken_provisioning_contract::sandbox::SandboxError>
 pub fn awaken_sandbox_local::sandbox_exec_argv(&awaken_sandbox_local::namespace::RenderInput<'_>) -> alloc::vec::Vec<alloc::string::String>

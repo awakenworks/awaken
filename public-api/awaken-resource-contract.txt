@@ -212,6 +212,7 @@ pub struct awaken_resource_contract::RepositoryConfigVersion
 pub awaken_resource_contract::RepositoryConfigVersion::clone_policy: awaken_resource_contract::ClonePolicy
 pub awaken_resource_contract::RepositoryConfigVersion::credential_binding: core::option::Option<alloc::string::String>
 pub awaken_resource_contract::RepositoryConfigVersion::initial_branch: core::option::Option<alloc::string::String>
+pub awaken_resource_contract::RepositoryConfigVersion::initial_commit: core::option::Option<alloc::string::String>
 pub awaken_resource_contract::RepositoryConfigVersion::remote_url: alloc::string::String
 pub awaken_resource_contract::RepositoryConfigVersion::repository_id: awaken_resource_contract::RepositoryId
 pub awaken_resource_contract::RepositoryConfigVersion::version: awaken_resource_contract::ConfigVersion

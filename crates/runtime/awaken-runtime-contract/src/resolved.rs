@@ -35,6 +35,62 @@ impl AcpSessionConfiguration {
     }
 }
 
+/// The one typed codec for the ACP-owned section of an Agent publication.
+///
+/// This is authoring intent carried across the config/runtime boundary, not
+/// discovered capability and not launch policy. Keeping the codec in the
+/// neutral runtime contract prevents the ACP executor and Runtime Host from
+/// maintaining parallel JSON readers.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcpSpec {
+    /// The external CLI's own compaction window in tokens. Omission preserves
+    /// the adapter default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_window: Option<u64>,
+    /// Legacy publication projection of MCP routes. New authoring owns MCP in
+    /// `AgentBindings`; this field remains the single compatibility codec until
+    /// every persisted publication has crossed that typed boundary.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_servers: Vec<AcpMcpServer>,
+}
+
+impl AcpSpec {
+    /// Decode `plugin_config["acp"]` once for every consuming bounded context.
+    ///
+    /// Historical publications were fail-soft per field, so one malformed MCP
+    /// list must not hide an independently valid compaction window.
+    #[must_use]
+    pub fn from_plugin_config(plugin_config: &BTreeMap<String, serde_json::Value>) -> Self {
+        let Some(acp) = plugin_config.get("acp") else {
+            return Self::default();
+        };
+        Self {
+            compact_window: acp
+                .get("compact_window")
+                .and_then(serde_json::Value::as_u64),
+            mcp_servers: acp
+                .get("mcp_servers")
+                .and_then(|value| serde_json::from_value::<Vec<AcpMcpServer>>(value.clone()).ok())
+                .unwrap_or_default(),
+        }
+    }
+}
+
+/// A secret-free MCP route delivered to an external ACP adapter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcpMcpServer {
+    pub name: String,
+    pub transport: AcpMcpTransport,
+}
+
+/// The transport coordinates for one ACP-visible MCP route.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AcpMcpTransport {
+    Stdio { command: String, args: Vec<String> },
+    Http { url: String },
+}
+
 /// Provider-facing endpoint facts frozen into a complete model candidate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InferenceEndpoint {

@@ -2,6 +2,7 @@ pub mod awaken_session_store
 pub struct awaken_session_store::PostgresManagedSessionRepository
 impl awaken_session_store::PostgresManagedSessionRepository
 pub async fn awaken_session_store::PostgresManagedSessionRepository::connect(&str) -> core::result::Result<Self, alloc::string::String>
+pub async fn awaken_session_store::PostgresManagedSessionRepository::connect_existing(&str) -> core::result::Result<Self, alloc::string::String>
 pub async fn awaken_session_store::PostgresManagedSessionRepository::with_pool(sqlx_postgres::PgPool) -> core::result::Result<Self, alloc::string::String>
 impl awaken_ext_memory::extraction::MemoryExtractionRepository for awaken_session_store::PostgresManagedSessionRepository
 pub fn awaken_session_store::PostgresManagedSessionRepository::compare_and_swap_extraction<'life0, 'async_trait>(&'life0 self, u64, awaken_ext_memory::extraction::MemoryExtractionIntent) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_ext_memory::extraction::MemoryExtractionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
