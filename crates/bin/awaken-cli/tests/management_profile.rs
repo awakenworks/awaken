@@ -6,6 +6,7 @@
 //! | --- | --- | --- |
 //! | `management iam profile` | unavailable | deterministic profile JSON |
 //! | `management iam profile resources` | unavailable | deterministic resource profile JSON |
+//! | `management iam profile runtime` | unavailable | deterministic Hosted lifecycle profile JSON |
 //! | same invocation twice | unavailable | byte-identical JSON |
 //! | extra argument | unavailable | usage failure, no profile |
 
@@ -97,6 +98,32 @@ fn management_resource_profile_is_a_side_effect_free_release_projection() {
 }
 
 #[test]
+fn hosted_runtime_profile_is_a_side_effect_free_release_projection() {
+    let binary = env!("CARGO_BIN_EXE_awaken");
+    let project = || {
+        Command::new(binary)
+            .args(["management", "iam", "profile", "runtime"])
+            .env("AWAKEN_CONFIG", "/does/not/exist")
+            .output()
+            .expect("run Hosted Runtime profile projection")
+    };
+    let first = project();
+    let second = project();
+    assert!(first.status.success(), "{:?}", first.stderr);
+    assert_eq!(first.stdout, second.stdout);
+    let profile: serde_json::Value =
+        serde_json::from_slice(&first.stdout).expect("Runtime profile is JSON");
+    assert_eq!(profile["namespace"], serde_json::json!("awaken.runtime"));
+    let grants = profile["document"]["grants"]
+        .as_array()
+        .expect("Runtime grants");
+    assert!(grants.iter().any(|grant| {
+        grant["subject"]["role_id"] == "awaken.runtime:agent_executor"
+            && grant["action_pattern"] == "awaken.runtime::run.*"
+    }));
+}
+
+#[test]
 fn management_profile_rejects_an_ambiguous_invocation() {
     let output = Command::new(env!("CARGO_BIN_EXE_awaken"))
         .args(["management", "iam", "profile", "extra"])
@@ -108,8 +135,7 @@ fn management_profile_rejects_an_ambiguous_invocation() {
         !String::from_utf8_lossy(&output.stdout).contains("awaken.runtime.management"),
         "usage output must not contain a profile"
     );
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("management iam requires `profile` or `profile resources` exactly")
-    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains(
+        "management iam requires `profile`, `profile resources`, or `profile runtime` exactly"
+    ));
 }

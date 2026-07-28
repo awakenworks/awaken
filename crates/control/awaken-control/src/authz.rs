@@ -107,12 +107,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use awaken_iam_contract::{
-    ActionKey, ActionScopeRule, ActivateAuthorizationProfile, ApiToken, ApiTokenId,
-    AuthorizationDecision, AuthorizationProfileDocument, AuthorizationRequest,
-    CreateAuthorizationProfile, GrantEffect, GrantSnapshot, GrantSubjectRef, NamespaceId, OrgId,
-    PolicySnapshot, PrincipalRef, ResourceModelRegistration, ScopeKind, ScopeRef, Timestamp,
-    WorkspaceId,
+    ActivateAuthorizationProfile, ApiToken, ApiTokenId, AuthorizationDecision,
+    AuthorizationRequest, OrgId, PolicySnapshot, PrincipalRef, ScopeRef, Timestamp, WorkspaceId,
 };
+#[cfg(test)]
+use awaken_iam_contract::{GrantEffect, GrantSubjectRef, ScopeKind};
 use awaken_iam_core::{
     ApiTokenDirectory, ApiTokenMinter, EntropySource, IamError, IssuedApiToken, OsEntropy,
     RoleBinding, RoleId,
@@ -136,9 +135,19 @@ use axum::routing::delete;
 use axum::{Json, Router};
 
 mod bootstrap;
+mod profiles;
 mod remote;
 
 use bootstrap::bootstrap_admin_token;
+#[cfg(test)]
+use profiles::AUTHORIZATION_PROFILE_EPOCH;
+pub use profiles::{
+    HOSTED_RUNTIME_AGENT_EXECUTOR_ROLE, HOSTED_RUNTIME_POLICY_NAMESPACE,
+    HOSTED_RUNTIME_WORKSPACE_ADMIN_ROLE, MANAGEMENT_AGENT_PUBLISHER_ROLE,
+    MANAGEMENT_POLICY_NAMESPACE, hosted_runtime_authorization_profile,
+    management_authorization_profile, management_resource_authorization_profile,
+};
+use profiles::{qualify_action, qualify_resource_action, qualify_resource_role, qualify_role};
 pub use remote::RemoteManagementAuthz;
 
 /// Name of the bootstrap admin-token file under the management directory.
@@ -179,38 +188,6 @@ const FILE_READ: &str = "file.read";
 const FILE_WRITE: &str = "file.write";
 const SKILL_READ: &str = "skill.read";
 const SKILL_WRITE: &str = "skill.write";
-pub const MANAGEMENT_POLICY_NAMESPACE: &str = "awaken.runtime.management";
-/// Qualified role intended for an external product that publishes Agent
-/// configuration but must never administer API credentials.
-pub const MANAGEMENT_AGENT_PUBLISHER_ROLE: &str = "awaken.runtime.management:agent_publisher";
-const RESOURCE_POLICY_NAMESPACE: &str = "awaken.runtime.resources";
-const AUTHORIZATION_PROFILE_EPOCH: &str = "2020-01-01T00:00:00Z";
-
-fn qualify_action(action: &str) -> ActionKey {
-    ActionKey::in_namespace(&NamespaceId(MANAGEMENT_POLICY_NAMESPACE.to_owned()), action)
-}
-
-fn qualify_resource_action(action: &str) -> ActionKey {
-    ActionKey::in_namespace(&NamespaceId(RESOURCE_POLICY_NAMESPACE.to_owned()), action)
-}
-
-fn qualify_role(role: &str) -> RoleId {
-    let prefix = format!("{MANAGEMENT_POLICY_NAMESPACE}:");
-    if role.starts_with(&prefix) {
-        RoleId(role.to_owned())
-    } else {
-        RoleId(format!("{prefix}{role}"))
-    }
-}
-
-fn qualify_resource_role(role: &str) -> RoleId {
-    let prefix = format!("{RESOURCE_POLICY_NAMESPACE}:");
-    if role.starts_with(&prefix) {
-        RoleId(role.to_owned())
-    } else {
-        RoleId(format!("{prefix}{role}"))
-    }
-}
 
 fn persisted_role(role: &str) -> RoleId {
     if role.contains(':') {
@@ -223,120 +200,6 @@ fn persisted_role(role: &str) -> RoleId {
 fn local_role(role: &str) -> &str {
     role.strip_prefix(&format!("{MANAGEMENT_POLICY_NAMESPACE}:"))
         .unwrap_or(role)
-}
-
-/// The immutable authorization contract owned by the Awaken Management
-/// bounded context.
-///
-/// Embedded IAM and hosted deployment tooling consume this same value. The
-/// fixed timestamp makes the release projection byte-stable; it is contract
-/// metadata, not an activation time.
-pub fn management_authorization_profile() -> CreateAuthorizationProfile {
-    let created_at = Timestamp(AUTHORIZATION_PROFILE_EPOCH.to_owned());
-    let mut grants = Vec::new();
-    for role in named_role_catalog(&created_at) {
-        for (index, pattern) in role.action_patterns.iter().enumerate() {
-            if !(pattern.0.starts_with("workspace.") || pattern.0.starts_with("apikey.")) {
-                continue;
-            }
-            grants.push(GrantSnapshot {
-                id: format!(
-                    "{MANAGEMENT_POLICY_NAMESPACE}:grant:role:{}:{index}",
-                    role.id.0
-                ),
-                subject: GrantSubjectRef::Role {
-                    role_id: qualify_role(&role.id.0).0,
-                },
-                action_pattern: qualify_action(&pattern.0).0,
-                scope: ScopeRef::Global,
-                effect: GrantEffect::Allow,
-            });
-        }
-    }
-    grants.push(GrantSnapshot {
-        id: format!("{MANAGEMENT_POLICY_NAMESPACE}:grant:role:agent_publisher"),
-        subject: GrantSubjectRef::Role {
-            role_id: MANAGEMENT_AGENT_PUBLISHER_ROLE.to_owned(),
-        },
-        action_pattern: qualify_action("workspace.*").0,
-        scope: ScopeRef::Global,
-        effect: GrantEffect::Allow,
-    });
-
-    CreateAuthorizationProfile {
-        namespace: NamespaceId(MANAGEMENT_POLICY_NAMESPACE.to_owned()),
-        document: AuthorizationProfileDocument {
-            resource_model: ResourceModelRegistration {
-                actions: ["workspace.*", "apikey.*"]
-                    .into_iter()
-                    .map(qualify_action)
-                    .collect(),
-                ..ResourceModelRegistration::default()
-            },
-            action_scope_rules: ["workspace.*", "apikey.*"]
-                .into_iter()
-                .map(|pattern| ActionScopeRule {
-                    action_pattern: qualify_action(pattern).0,
-                    allowed_scope_kinds: vec![ScopeKind::Workspace],
-                })
-                .collect(),
-            grants,
-            ..AuthorizationProfileDocument::default()
-        },
-        created_at,
-    }
-}
-
-/// The immutable authorization contract for Management-owned File and Skill
-/// resources. Embedded IAM and hosted deployments consume this same value.
-pub fn management_resource_authorization_profile() -> CreateAuthorizationProfile {
-    let created_at = Timestamp(AUTHORIZATION_PROFILE_EPOCH.to_owned());
-    let patterns = ["workspace.*", "file.*", "skill.*"];
-    let mut grants = Vec::new();
-    for role in named_role_catalog(&created_at) {
-        for (index, pattern) in role.action_patterns.iter().enumerate() {
-            if !patterns
-                .iter()
-                .any(|prefix| pattern.0.starts_with(prefix.trim_end_matches('*')))
-            {
-                continue;
-            }
-            grants.push(GrantSnapshot {
-                id: format!(
-                    "{RESOURCE_POLICY_NAMESPACE}:grant:role:{}:{index}",
-                    role.id.0
-                ),
-                subject: GrantSubjectRef::Role {
-                    role_id: qualify_resource_role(&role.id.0).0,
-                },
-                action_pattern: qualify_resource_action(&pattern.0).0,
-                scope: ScopeRef::Global,
-                effect: GrantEffect::Allow,
-            });
-        }
-    }
-    CreateAuthorizationProfile {
-        namespace: NamespaceId(RESOURCE_POLICY_NAMESPACE.to_owned()),
-        document: AuthorizationProfileDocument {
-            resource_model: ResourceModelRegistration {
-                actions: patterns
-                    .iter()
-                    .map(|pattern| qualify_resource_action(pattern))
-                    .collect(),
-                ..ResourceModelRegistration::default()
-            },
-            action_scope_rules: patterns
-                .iter()
-                .map(|pattern| ActionScopeRule {
-                    action_pattern: qualify_resource_action(pattern).0,
-                    allowed_scope_kinds: vec![ScopeKind::Workspace],
-                })
-                .collect(),
-            grants,
-            ..AuthorizationProfileDocument::default()
-        },
-        created_at,
-    }
 }
 
 /// The embedded management-plane authorizer: authn (bearer token → principal)

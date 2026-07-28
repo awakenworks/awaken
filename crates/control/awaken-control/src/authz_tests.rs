@@ -68,6 +68,67 @@ fn management_profile_is_one_deterministic_workspace_scoped_contract() {
 }
 
 #[test]
+fn hosted_runtime_profile_is_one_workspace_scoped_lifecycle_contract() {
+    // Cause graph: canonical Hosted lifecycle vocabulary -> one immutable
+    // profile -> two role grants. Cloud may bind roles at an exact Workspace,
+    // but cannot add actions or reinterpret their scope.
+    //
+    // Decision table:
+    // | role | action | allowed scope | profile effect |
+    // | workspace_admin | run.create/read/resume/cancel | Workspace | allow |
+    // | agent_executor | run.create/read/resume/cancel | Workspace | allow |
+    // | either | credential/management action | any | absent/default deny |
+    let first = hosted_runtime_authorization_profile();
+    let second = hosted_runtime_authorization_profile();
+    assert_eq!(
+        serde_json::to_value(&first).unwrap(),
+        serde_json::to_value(&second).unwrap()
+    );
+    assert_eq!(first.namespace.0, HOSTED_RUNTIME_POLICY_NAMESPACE);
+    assert_eq!(
+        first
+            .document
+            .resource_model
+            .actions
+            .iter()
+            .map(|action| action.0.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "awaken.runtime::run.create",
+            "awaken.runtime::run.read",
+            "awaken.runtime::run.resume",
+            "awaken.runtime::run.cancel",
+        ]
+    );
+    assert_eq!(first.document.action_scope_rules.len(), 1);
+    assert_eq!(
+        first.document.action_scope_rules[0].allowed_scope_kinds,
+        [ScopeKind::Workspace]
+    );
+    let role_ids = first
+        .document
+        .grants
+        .iter()
+        .map(|grant| match &grant.subject {
+            GrantSubjectRef::Role { role_id } => role_id.as_str(),
+            _ => panic!("Hosted lifecycle grants must be role-owned"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        role_ids,
+        [
+            HOSTED_RUNTIME_WORKSPACE_ADMIN_ROLE,
+            HOSTED_RUNTIME_AGENT_EXECUTOR_ROLE,
+        ]
+    );
+    assert!(first.document.grants.iter().all(|grant| {
+        grant.action_pattern == "awaken.runtime::run.*"
+            && grant.scope == ScopeRef::Global
+            && grant.effect == GrantEffect::Allow
+    }));
+}
+
+#[test]
 fn identity_modes_accept_product_names_and_legacy_aliases() {
     assert_eq!(
         ManagementIdentityMode::parse("no-login"),
