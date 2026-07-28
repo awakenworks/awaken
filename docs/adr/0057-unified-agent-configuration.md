@@ -779,18 +779,17 @@ Completion evidence is maintained in ADR-0069: the existing pool owns policy
 ordering, resolver owns default/Exact/Pool selection, publication freezes the
 chosen revision, and all three former Server selectors are absent.
 
-**E `authed-remote`** — *A remote agent authenticates exactly like a native one;
-only the inject exit differs.*
-Adds: counterparty generalization of `provider_id` (docs + origin tags, zero
-schema); activation-aware transport seam; `connection_plan::CredentialResolver`
-as adapter over `resolve_credential`.
-Retires: hand-built transports at `with_remote_a2a` call sites; the URL-only
-`TransportFactory` as production wiring (`over_http()` stays test-only);
-`NoAuth` as the silent default where a card demands auth.
-Guard: card-demands-auth-with-no-credential fails closed; anonymous endpoints
-byte-identical to today.
-Done when: one origin-tagged credential authenticates both A2A paths (peer +
-delegation) in tests with zero per-path wiring.
+**E `authed-remote`** — *A remote agent authenticates exactly like a native one; only the inject exit differs.*
+Adds: counterparty generalization of `provider_id` (docs + origin tags, zero schema); activation-aware transport seam; `connection_plan::CredentialResolver` as adapter over `resolve_credential`.
+Retires: hand-built transports at `with_remote_a2a` call sites; the URL-only `TransportFactory` as production wiring (`over_http()` stays test-only); `NoAuth` as the silent default where a card demands auth.
+Guard: card-demands-auth-with-no-credential fails closed; anonymous endpoints byte-identical to today.
+Done when: one origin-tagged credential authenticates both A2A paths (peer + delegation) in tests with zero per-path wiring.
+
+Implementation progress (2026-07-28): peer execution now publishes a closed `ModelProvisioning::Remote` containing the exact optional `CredentialAccess` and Agent Card security fingerprint.
+One canonical Agent Card projection accepts anonymous or supported single-header requirements, derives the endpoint-origin credential pool through the existing resolver, and fails closed for unsupported or unsatisfied authentication.
+The shared attempt compiler admits Remote only as `HttpHeader` + `WorkerRelay`; the existing pinned materializer verifies claim, revision, holder and receipt before the host builds the transport.
+Launch rediscovers the card and rejects fingerprint drift. `A2aRunExecutor` consumes an async `TransportResolver`; its former production `over_http()` path is test-only.
+The older `RemoteAgentDirectory` delegation adapter still holds a preconstructed transport and therefore remains the final E retirement gate: Phase E is not complete until delegation consumes the same publication/claim-frozen resolver or is consolidated into the ordinary child-Run route.
 
 **F `declared-hand`** — *Hand becomes declared intent; placement stays
 host-side; the snapshot stays placement-free.*
@@ -843,7 +842,7 @@ Dependencies: A → D (codec); B independent; C independent; E after D
 (derivation); F after B (kind); G1/G2/H independent after C; I after B (the
 lifecycle gate reuses the publish/admission boundary).
 
-Commitment and order: **0, C, A, B, D, E are committed now, in that order** — C
+Commitment and order: **0, C, A, B and D are committed; E is in progress** — C
 first because it is pure wiring with immediate production value (the two
 already-merged per-agent-CLI capabilities go live). **F/G1/G2/H/I are
 trigger-gated**, designed now, built when their trigger fires: F on the first

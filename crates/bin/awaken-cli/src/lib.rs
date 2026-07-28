@@ -1581,7 +1581,9 @@ async fn management_router_over(
     };
     host_builder = host_builder
         .with_local_workspace(platform_workspace.clone())
-        .with_remote_attempt_executor(awaken_server::a2a_attempt_executor())
+        .with_remote_attempt_executor(awaken_server::a2a_attempt_executor(Some(
+            credential_materializer.clone(),
+        )))
         .with_config_service(config_service.clone())
         .with_admin_tools(admin_execs);
     if let Some(materializer) = model_wiring.materializer {

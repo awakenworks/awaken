@@ -285,7 +285,7 @@ impl SharedHost {
                     .ok_or_else(|| HostError::bad_request("ACP backend is not installed"))?
                     .credential_realization_capabilities(&backend)
                     .map_err(HostError::bad_request)?,
-                Backend::Remote { .. } => Default::default(),
+                Backend::Remote { .. } => self.remote_credential_realization.clone(),
             };
             let compiled = awaken_runtime_contract::compile_candidate_credential_bindings(
                 &[*candidate],

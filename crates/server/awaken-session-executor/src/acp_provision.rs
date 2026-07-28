@@ -177,6 +177,9 @@ impl LaunchResolver for PublishedAcpLaunchResolver {
         match &self.candidate(activation)?.provisioning {
             ModelProvisioning::BackendOwned { .. } => Ok(Vec::new()),
             ModelProvisioning::Provider { .. } => self.config_home_env(&activation.thread_id.0),
+            ModelProvisioning::Remote { .. } => Err(OpenError(
+                "remote model provisioning cannot be projected as ACP".into(),
+            )),
             ModelProvisioning::HostExecutor => Err(OpenError(
                 "host-executor model cannot be projected as ACP".into(),
             )),
