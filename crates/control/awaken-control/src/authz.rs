@@ -179,8 +179,9 @@ const FILE_READ: &str = "file.read";
 const FILE_WRITE: &str = "file.write";
 const SKILL_READ: &str = "skill.read";
 const SKILL_WRITE: &str = "skill.write";
-const MANAGEMENT_POLICY_NAMESPACE: &str = "awaken.runtime.management";
+pub const MANAGEMENT_POLICY_NAMESPACE: &str = "awaken.runtime.management";
 const RESOURCE_POLICY_NAMESPACE: &str = "awaken.runtime.resources";
+const AUTHORIZATION_PROFILE_EPOCH: &str = "2020-01-01T00:00:00Z";
 
 fn qualify_action(action: &str) -> ActionKey {
     ActionKey::in_namespace(&NamespaceId(MANAGEMENT_POLICY_NAMESPACE.to_owned()), action)
@@ -219,6 +220,59 @@ fn persisted_role(role: &str) -> RoleId {
 fn local_role(role: &str) -> &str {
     role.strip_prefix(&format!("{MANAGEMENT_POLICY_NAMESPACE}:"))
         .unwrap_or(role)
+}
+
+/// The immutable authorization contract owned by the Awaken Management
+/// bounded context.
+///
+/// Embedded IAM and hosted deployment tooling consume this same value. The
+/// fixed timestamp makes the release projection byte-stable; it is contract
+/// metadata, not an activation time.
+pub fn management_authorization_profile() -> CreateAuthorizationProfile {
+    let created_at = Timestamp(AUTHORIZATION_PROFILE_EPOCH.to_owned());
+    let mut grants = Vec::new();
+    for role in named_role_catalog(&created_at) {
+        for (index, pattern) in role.action_patterns.iter().enumerate() {
+            if !(pattern.0.starts_with("workspace.") || pattern.0.starts_with("apikey.")) {
+                continue;
+            }
+            grants.push(GrantSnapshot {
+                id: format!(
+                    "{MANAGEMENT_POLICY_NAMESPACE}:grant:role:{}:{index}",
+                    role.id.0
+                ),
+                subject: GrantSubjectRef::Role {
+                    role_id: qualify_role(&role.id.0).0,
+                },
+                action_pattern: qualify_action(&pattern.0).0,
+                scope: ScopeRef::Global,
+                effect: GrantEffect::Allow,
+            });
+        }
+    }
+
+    CreateAuthorizationProfile {
+        namespace: NamespaceId(MANAGEMENT_POLICY_NAMESPACE.to_owned()),
+        document: AuthorizationProfileDocument {
+            resource_model: ResourceModelRegistration {
+                actions: ["workspace.*", "apikey.*"]
+                    .into_iter()
+                    .map(qualify_action)
+                    .collect(),
+                ..ResourceModelRegistration::default()
+            },
+            action_scope_rules: ["workspace.*", "apikey.*"]
+                .into_iter()
+                .map(|pattern| ActionScopeRule {
+                    action_pattern: qualify_action(pattern).0,
+                    allowed_scope_kinds: vec![ScopeKind::Workspace],
+                })
+                .collect(),
+            grants,
+            ..AuthorizationProfileDocument::default()
+        },
+        created_at,
+    }
 }
 
 /// The embedded management-plane authorizer: authn (bearer token → principal)
@@ -575,39 +629,14 @@ pub fn embedded_iam_for_tenant(
     let mut directory = ApiTokenDirectory::new();
     let mut engine = AuthzApi::new();
 
-    // The preset Anthropic role catalog, as data: every role's action patterns
-    // become `GrantSubject::Role` grants at Global scope. Global here is NOT a
-    // wildcard of authority — a principal only *holds* a role where its
-    // workspace-scoped RoleBinding covers, so the binding confines the reach.
-    // Re-derived every boot (roles are seed data; custom roles are post-P1).
-    let mut profile_grants = Vec::new();
-    for role in named_role_catalog(&now) {
-        for (index, pattern) in role.action_patterns.iter().enumerate() {
-            if !(pattern.0.starts_with("workspace.") || pattern.0.starts_with("apikey.")) {
-                continue;
-            }
-            profile_grants.push(GrantSnapshot {
-                id: format!(
-                    "{MANAGEMENT_POLICY_NAMESPACE}:grant:role:{}:{index}",
-                    role.id.0
-                ),
-                subject: GrantSubjectRef::Role {
-                    role_id: qualify_role(&role.id.0).0,
-                },
-                action_pattern: qualify_action(&pattern.0).0,
-                scope: ScopeRef::Global,
-                effect: GrantEffect::Allow,
-            });
-        }
-    }
-
     let profile_store = sqlite_migrated_store(
         SqliteBackend::open_path(&db_path).expect("reopen iam.sqlite for profile PAP"),
         "iam",
     )
     .expect("migrate authorization profile store");
     let profiles = AuthorizationProfileAdmin::new(Arc::new(profile_store));
-    let namespace = NamespaceId(MANAGEMENT_POLICY_NAMESPACE.to_owned());
+    let profile_request = management_authorization_profile();
+    let namespace = profile_request.namespace.clone();
     if profiles
         .active(&namespace)
         .expect("read active management profile")
@@ -617,33 +646,8 @@ pub fn embedded_iam_for_tenant(
             .hydrate(&mut engine, &PolicySnapshot::default(), &namespace)
             .expect("hydrate active management profile");
     } else {
-        let patterns = ["workspace.*", "apikey.*"];
         let draft = profiles
-            .create_draft(CreateAuthorizationProfile {
-                namespace: namespace.clone(),
-                document: AuthorizationProfileDocument {
-                    resource_model: ResourceModelRegistration {
-                        actions: patterns
-                            .iter()
-                            .map(|pattern| qualify_action(pattern))
-                            .collect(),
-                        ..ResourceModelRegistration::default()
-                    },
-                    action_scope_rules: vec![
-                        ActionScopeRule {
-                            action_pattern: qualify_action("workspace.*").0,
-                            allowed_scope_kinds: vec![ScopeKind::Workspace],
-                        },
-                        ActionScopeRule {
-                            action_pattern: qualify_action("apikey.*").0,
-                            allowed_scope_kinds: vec![ScopeKind::Workspace],
-                        },
-                    ],
-                    grants: profile_grants,
-                    ..AuthorizationProfileDocument::default()
-                },
-                created_at: now.clone(),
-            })
+            .create_draft(profile_request)
             .expect("create built-in management profile");
         let validation = profiles
             .validate(&namespace, draft.revision)

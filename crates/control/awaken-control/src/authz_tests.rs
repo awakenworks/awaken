@@ -1,6 +1,55 @@
 use super::*;
 
 #[test]
+fn management_profile_is_one_deterministic_workspace_scoped_contract() {
+    // Cause graph:
+    // product-owned vocabulary -> one qualified profile -> deployment release
+    // projection. No deployment input may alter the namespace, grants, or
+    // allowed scope.
+    let first = management_authorization_profile();
+    let second = management_authorization_profile();
+    assert_eq!(
+        serde_json::to_value(&first).unwrap(),
+        serde_json::to_value(&second).unwrap()
+    );
+    assert_eq!(first.namespace.0, MANAGEMENT_POLICY_NAMESPACE);
+    assert_eq!(first.created_at.0, AUTHORIZATION_PROFILE_EPOCH);
+
+    let actions = first
+        .document
+        .resource_model
+        .actions
+        .iter()
+        .map(|action| action.0.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actions,
+        [
+            "awaken.runtime.management::workspace.*",
+            "awaken.runtime.management::apikey.*",
+        ]
+    );
+    assert!(
+        first
+            .document
+            .action_scope_rules
+            .iter()
+            .all(|rule| rule.allowed_scope_kinds == [ScopeKind::Workspace])
+    );
+    assert!(!first.document.grants.is_empty());
+    assert!(first.document.grants.iter().all(|grant| {
+        grant
+            .action_pattern
+            .starts_with("awaken.runtime.management::")
+            && matches!(
+                &grant.subject,
+                GrantSubjectRef::Role { role_id }
+                    if role_id.starts_with("awaken.runtime.management:")
+            )
+    }));
+}
+
+#[test]
 fn identity_modes_accept_product_names_and_legacy_aliases() {
     assert_eq!(
         ManagementIdentityMode::parse("no-login"),

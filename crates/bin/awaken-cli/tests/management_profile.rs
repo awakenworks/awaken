@@ -1,0 +1,55 @@
+//! Release-contract projection for the product-owned Management authorization
+//! profile.
+//!
+//! Causal decision table:
+//! | invocation | config/storage/network | outcome |
+//! | --- | --- | --- |
+//! | `management iam profile` | unavailable | deterministic profile JSON |
+//! | same invocation twice | unavailable | byte-identical JSON |
+//! | extra argument | unavailable | usage failure, no profile |
+
+use std::process::Command;
+
+#[test]
+fn management_profile_is_a_side_effect_free_release_projection() {
+    let binary = env!("CARGO_BIN_EXE_awaken");
+    let first = Command::new(binary)
+        .args(["management", "iam", "profile"])
+        .env("AWAKEN_CONFIG", "/does/not/exist")
+        .output()
+        .expect("run profile projection");
+    let second = Command::new(binary)
+        .args(["management", "iam", "profile"])
+        .env("AWAKEN_CONFIG", "/also/does/not/exist")
+        .output()
+        .expect("run profile projection again");
+
+    assert!(first.status.success(), "{:?}", first.stderr);
+    assert!(second.status.success(), "{:?}", second.stderr);
+    assert_eq!(first.stdout, second.stdout);
+
+    let profile: serde_json::Value =
+        serde_json::from_slice(&first.stdout).expect("profile is JSON");
+    assert_eq!(
+        profile["namespace"],
+        serde_json::json!("awaken.runtime.management")
+    );
+}
+
+#[test]
+fn management_profile_rejects_an_ambiguous_invocation() {
+    let output = Command::new(env!("CARGO_BIN_EXE_awaken"))
+        .args(["management", "iam", "profile", "extra"])
+        .output()
+        .expect("run invalid profile projection");
+
+    assert!(!output.status.success());
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains("awaken.runtime.management"),
+        "usage output must not contain a profile"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("management iam requires exactly the `profile` subcommand")
+    );
+}

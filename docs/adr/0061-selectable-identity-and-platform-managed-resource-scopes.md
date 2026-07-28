@@ -266,3 +266,38 @@ the absent-ledger failure, prove the ledger is still absent afterward, then pass
 after the same bounded context's canonical bundle is migrated. SQLite and
 Postgres Sandbox Policy adapters use that same portable bundle rather than
 maintaining parallel raw DDL.
+
+## Amendment (2026-07-28): Management authorization is a release contract
+
+The Management bounded context is the sole owner of the
+`awaken.runtime.management` action, scope and role-grant contract. Its existing
+embedded-IAM construction is exposed as one deterministic, side-effect-free
+`management_authorization_profile()` function. Embedded IAM consumes that
+function directly; the `awaken management iam profile` command only serializes
+the same value for a deployment-owned PAP.
+
+```text
+Management action/scope/role definitions
+  -> management_authorization_profile()
+       |-> embedded IAM activation
+       \-> awaken management iam profile
+            -> immutable release JSON
+            -> hosted PAP validation/CAS activation
+```
+
+Cloud or another host must consume the contract emitted by the exact Management
+image it deploys. It must not compile a second action matrix from a separately
+pinned library revision. The command does not load deployment configuration,
+read credentials, open storage, contact IAM, or publish policy.
+
+| Invocation | Configuration/storage/network | Outcome |
+|---|---|---|
+| `management iam profile` | unavailable | deterministic `awaken.runtime.management` JSON |
+| same exact image, repeated | unavailable | byte-identical JSON |
+| `management iam profile` with extra input | unavailable | usage failure, no JSON |
+| embedded IAM startup | local durable state | activates the same generated document |
+| hosted Management startup | remote IAM configured | does not publish or mutate a profile |
+
+This release projection does not merge hosted closed code into Awaken. The open
+Management image remains independently deployable; a hosted release composes
+its immutable image and contract with external IAM lifecycle management.

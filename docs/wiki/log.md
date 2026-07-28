@@ -1,5 +1,11 @@
 # Wiki Update Log
 
+## 2026-07-28
+
+- **Update**: Amended ADR-0061 so embedded IAM and the side-effect-free
+  `awaken management iam profile` release projection share one deterministic,
+  Management-owned authorization contract.
+
 ## 2026-07-26
 
 - **Update**: Amended ADR-0067 with the neutral Native
