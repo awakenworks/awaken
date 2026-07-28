@@ -370,8 +370,8 @@ pub enum BackendModelSelection {
 /// The provisioning facts for one published model candidate. This is snapshot
 /// data, not secret material and not an IAM decision. Local endpoints, gateways,
 /// and provider SaaS use `Provider`; a trusted local ACP agent uses
-/// `BackendOwned`; only an explicitly installed in-process executor uses
-/// `HostExecutor`.
+/// `BackendOwned`; a remote A2A agent uses `Remote`; only an explicitly
+/// installed in-process executor uses `HostExecutor`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ModelProvisioning {
@@ -405,6 +405,21 @@ pub enum ModelProvisioning {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         credential: Option<Box<crate::CredentialAccess>>,
         endpoint: Box<crate::InferenceEndpoint>,
+    },
+    /// Exact remote-counterparty credential delivery frozen by publication.
+    ///
+    /// The endpoint remains the executor-axis identity in `binding.backend_ref`;
+    /// this variant owns only the transport-auth realization facts. An absent
+    /// credential is valid only when publication proved that the discovered
+    /// Agent Card permits anonymous access.
+    Remote {
+        /// Opaque ownership coordinate for the pinned credential.
+        scope_id: awaken_tenancy::ScopeId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credential: Option<Box<crate::CredentialAccess>>,
+        /// Fingerprint of the Agent Card security declaration accepted at
+        /// publication. Launch-time discovery must match it before dialing.
+        security_fingerprint: String,
     },
 }
 
@@ -474,6 +489,24 @@ impl ResolvedModelCandidate {
                 capability_adapter_version: capability_adapter_version.into(),
                 capability_fingerprint: capability_fingerprint.into(),
                 session_configuration,
+            },
+        }
+    }
+
+    /// Build one publication-pinned A2A transport demand.
+    #[must_use]
+    pub fn remote(
+        binding: ModelBinding,
+        scope_id: impl Into<awaken_tenancy::ScopeId>,
+        credential: Option<crate::CredentialAccess>,
+        security_fingerprint: impl Into<String>,
+    ) -> Self {
+        Self {
+            binding,
+            provisioning: ModelProvisioning::Remote {
+                scope_id: scope_id.into(),
+                credential: credential.map(Box::new),
+                security_fingerprint: security_fingerprint.into(),
             },
         }
     }

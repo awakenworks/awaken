@@ -27,9 +27,12 @@ use awaken_runtime_host::{
 };
 use awaken_tenancy::ScopeId;
 
+mod a2a_remote;
 mod acp_configuration;
 mod composition;
 mod credential_publication;
+pub use a2a_remote::A2aCardDiscovery;
+use a2a_remote::HttpA2aCardDiscovery;
 use acp_configuration::validate_acp_session_configuration;
 use composition::CatalogSource;
 use credential_publication::PublicationCredentialLookup;
@@ -44,6 +47,7 @@ pub struct CatalogModelPublicationResolver {
     profiles: Option<Arc<dyn InferenceProfileStore>>,
     brokered_access_enabled: bool,
     workers: Option<Arc<dyn awaken_worker_registry::WorkerDirectory>>,
+    a2a_cards: Arc<dyn A2aCardDiscovery>,
     credential_selection_sequences: Arc<Mutex<HashMap<String, u64>>>,
 }
 
@@ -121,6 +125,15 @@ impl CatalogModelPublicationResolver {
         }
         if matches!(Backend::from_ref(&binding.backend_ref), Backend::Acp { .. }) {
             Self::validate_acp_binding(binding, BackendModelSelection::Exact)?;
+            return Ok(binding.clone());
+        }
+        if let Backend::Remote { endpoint } = Backend::from_ref(&binding.backend_ref) {
+            Self::remote_origin(&endpoint).map_err(|reason| {
+                PublicationResolutionError::CandidateUnavailable {
+                    binding: binding.clone(),
+                    reason,
+                }
+            })?;
             return Ok(binding.clone());
         }
         let candidates = catalog
@@ -299,6 +312,12 @@ impl CatalogModelPublicationResolver {
                     &configuration,
                 )
                 .await;
+        }
+        if matches!(
+            Backend::from_ref(&binding.backend_ref),
+            Backend::Remote { .. }
+        ) {
+            return self.remote_candidate(workspace, binding, sources).await;
         }
         Err(PublicationResolutionError::CandidateUnavailable {
             reason: format!("model offering {} is not published", binding.model_ref),
@@ -601,7 +620,10 @@ impl ModelPublicationResolver for CatalogModelPublicationResolver {
             .collect::<Vec<_>>();
         let needs_credentials = all_bindings.iter().any(|binding| {
             Self::offering_for(&catalog, binding).is_some()
-                || matches!(Backend::from_ref(&binding.backend_ref), Backend::Acp { .. })
+                || matches!(
+                    Backend::from_ref(&binding.backend_ref),
+                    Backend::Acp { .. } | Backend::Remote { .. }
+                )
         });
         let sources = if needs_credentials {
             self.credentials

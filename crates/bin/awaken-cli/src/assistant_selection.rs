@@ -216,7 +216,7 @@ mod tests {
         assert_eq!(
             select(
                 &ProviderCatalog::default(),
-                &[codex.clone()],
+                std::slice::from_ref(&codex),
                 &[unavailable]
             ),
             None,
@@ -225,7 +225,7 @@ mod tests {
         assert_eq!(
             select(
                 &ProviderCatalog::default(),
-                &[codex.clone()],
+                std::slice::from_ref(&codex),
                 &[observation("codex")]
             ),
             Some(ModelSelection::BackendDefault {

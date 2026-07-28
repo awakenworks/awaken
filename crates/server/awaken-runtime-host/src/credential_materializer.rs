@@ -92,6 +92,45 @@ impl PinnedCredentialMaterializer {
         (sources, envelopes)
     }
 
+    fn realization_capabilities(
+        &self,
+        holder: PlaintextHolder,
+        realization: CredentialRealizationKind,
+    ) -> CredentialRealizationCapabilities {
+        let (material_sources, recipient_bound_envelopes) = self.material_source_capabilities();
+        CredentialRealizationCapabilities {
+            holders: [holder].into_iter().collect(),
+            material_sources,
+            realization_kinds: [realization].into_iter().collect(),
+            recipient_bound_envelopes,
+            alternatives: Vec::new(),
+        }
+    }
+
+    /// Exact evidence for a Worker-held mediated transport/material adapter.
+    #[must_use]
+    pub fn worker_relay_capabilities(&self) -> CredentialRealizationCapabilities {
+        self.realization_capabilities(
+            PlaintextHolder::new(
+                awaken_runtime_contract::PlaintextBoundary::Worker,
+                awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+            ),
+            CredentialRealizationKind::WorkerRelay,
+        )
+    }
+
+    /// Exact evidence for a Workload process-secret adapter.
+    #[must_use]
+    pub fn process_secret_capabilities(&self) -> CredentialRealizationCapabilities {
+        self.realization_capabilities(
+            PlaintextHolder::new(
+                awaken_runtime_contract::PlaintextBoundary::Workload,
+                awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
+            ),
+            CredentialRealizationKind::ProcessSecretEnvironment,
+        )
+    }
+
     fn claimed_provider_binding<'a>(
         candidate: &'a ResolvedModelCandidate,
         context: &'a awaken_runtime_contract::RuntimeRunContext,
@@ -99,19 +138,40 @@ impl PinnedCredentialMaterializer {
         let ModelProvisioning::Provider { credential, .. } = &candidate.provisioning else {
             return Err("model candidate has no provider provisioning".into());
         };
+        Self::claimed_binding(candidate, context, credential.as_deref(), "provider")
+    }
+
+    fn claimed_remote_binding<'a>(
+        candidate: &'a ResolvedModelCandidate,
+        context: &'a awaken_runtime_contract::RuntimeRunContext,
+    ) -> Result<Option<(&'a CredentialAccess, &'a AttemptCredentialBinding)>, String> {
+        let ModelProvisioning::Remote { credential, .. } = &candidate.provisioning else {
+            return Err("model candidate has no remote provisioning".into());
+        };
+        Self::claimed_binding(candidate, context, credential.as_deref(), "remote")
+    }
+
+    fn claimed_binding<'a>(
+        candidate: &'a ResolvedModelCandidate,
+        context: &'a awaken_runtime_contract::RuntimeRunContext,
+        credential: Option<&'a CredentialAccess>,
+        kind: &str,
+    ) -> Result<Option<(&'a CredentialAccess, &'a AttemptCredentialBinding)>, String> {
         let Some(access) = credential else {
             return Ok(None);
         };
         let realization = context
             .credential_realization
             .as_ref()
-            .ok_or_else(|| "credential-bearing provider has no claim binding".to_string())?;
+            .ok_or_else(|| format!("credential-bearing {kind} has no claim binding"))?;
         let binding = realization
             .binding_for(candidate)
             .map_err(|error| error.to_string())?
-            .ok_or_else(|| "provider candidate has no exact claim binding".to_string())?;
+            .ok_or_else(|| format!("{kind} candidate has no exact claim binding"))?;
         if binding.credential != access.credential {
-            return Err("provider claim binding selects a different credential".into());
+            return Err(format!(
+                "{kind} claim binding selects a different credential"
+            ));
         }
         Ok(Some((access, binding)))
     }
@@ -210,6 +270,52 @@ impl PinnedCredentialMaterializer {
             .await?
             .map(|material| material.into_bearer().map_err(|error| error.to_string()))
             .transpose()
+    }
+
+    /// Materialize the exact A2A HTTP-header credential frozen in the current
+    /// claim. Anonymous remote publications return `None`; selection and Agent
+    /// Card interpretation remain publication concerns.
+    pub async fn materialize_claimed_remote(
+        &self,
+        candidate: &ResolvedModelCandidate,
+        context: &awaken_runtime_contract::RuntimeRunContext,
+    ) -> Result<Option<RedactedString>, String> {
+        let Some((_access, binding)) = Self::claimed_remote_binding(candidate, context)? else {
+            return Ok(None);
+        };
+        if binding.selected_realization_kind != CredentialRealizationKind::WorkerRelay {
+            return Err(format!(
+                "remote claim binding selects {:?}, expected {:?}",
+                binding.selected_realization_kind,
+                CredentialRealizationKind::WorkerRelay
+            ));
+        }
+        let realization = context
+            .credential_realization
+            .as_ref()
+            .expect("claimed_remote_binding requires realization");
+        context
+            .ownership
+            .as_ref()
+            .ok_or_else(|| "credential-bearing remote has no claim fence".to_string())?
+            .verify_current()
+            .await
+            .map_err(|error| error.to_string())?;
+        let secret = self
+            .materialize_remote_for(
+                candidate,
+                &binding.selected_plaintext_holder,
+                binding.selected_realization_kind,
+            )
+            .await?;
+        realization
+            .record(binding)
+            .await
+            .map_err(|error| error.to_string())?;
+        secret
+            .into_bearer()
+            .map(Some)
+            .map_err(|error| error.to_string())
     }
 
     async fn materialize_claimed_provider_material(
@@ -324,6 +430,51 @@ impl PinnedCredentialMaterializer {
                     &credential.usage,
                 ),
                 Some(provider),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(resolved.material)
+    }
+
+    async fn materialize_remote_for(
+        &self,
+        candidate: &ResolvedModelCandidate,
+        selected_holder: &PlaintextHolder,
+        realization: CredentialRealizationKind,
+    ) -> Result<awaken_runtime_contract::CredentialMaterial, String> {
+        let ModelProvisioning::Remote {
+            scope_id,
+            credential,
+            security_fingerprint,
+        } = &candidate.provisioning
+        else {
+            return Err("model candidate does not require remote transport authentication".into());
+        };
+        let credential = credential
+            .as_ref()
+            .ok_or_else(|| "remote candidate has no credential pin".to_string())?;
+        if !matches!(credential.usage, CredentialUsage::HttpHeader { .. }) {
+            return Err("remote credential injection contract is not an HTTP header".into());
+        }
+        let (material_sources, recipient_bound_envelopes) = self.material_source_capabilities();
+        admit_exact_adapter(
+            credential,
+            selected_holder,
+            realization,
+            material_sources,
+            recipient_bound_envelopes,
+        )
+        .map_err(|error| error.to_string())?;
+        let resolved = self
+            .resolve_validated(
+                credential,
+                selected_holder,
+                CredentialMaterialBinding::for_target(
+                    scope_id.as_str(),
+                    &(&candidate.binding.backend_ref, security_fingerprint),
+                    &credential.usage,
+                ),
+                None,
             )
             .await
             .map_err(|error| error.to_string())?;
@@ -1333,5 +1484,106 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(broker.materialize(&source.id.0).await.unwrap(), b"after");
+    }
+
+    struct CurrentAttempt;
+
+    #[async_trait::async_trait]
+    impl awaken_runtime_contract::AttemptOwnershipVerifier for CurrentAttempt {
+        async fn verify_current(
+            &self,
+        ) -> Result<(), awaken_runtime_contract::AttemptOwnershipError> {
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_runtime_contract::CredentialRealizationRecorder for CurrentAttempt {
+        async fn record(
+            &self,
+            _receipt: awaken_runtime_contract::CredentialRealizationReceipt,
+        ) -> Result<(), awaken_runtime_contract::CredentialRealizationRecordError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn claimed_remote_materialization_uses_the_exact_worker_relay_binding() {
+        // Cause graph: C1 Remote publication pins an active revision; C2 the
+        // claim compiler selects WorkerRelay; C3 attempt ownership is current.
+        // Effects: E1 materialize that exact bearer and record its realization;
+        // changing the revision/mechanism/ownership fails in the shared gates.
+        //
+        // Decision table rule R1 (C1+C2+C3) is exercised here. The negative
+        // revision, mechanism and ownership rules are already exhaustive in the
+        // shared admission/receipt suites this method delegates to.
+        let credentials = Arc::new(InMemoryCredentialRepo::new());
+        let secrets = Arc::new(InMemorySecretStore::new());
+        let source = enter_credential(
+            CredentialCreateParams {
+                workspace_id: "workspace-a".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("https://agent.example".into()),
+                env_key: None,
+                secret: Some(RedactedString::new("remote-token")),
+                oauth_command: None,
+            },
+            secrets.as_ref(),
+            credentials.as_ref(),
+        )
+        .await
+        .unwrap();
+        let holder = selected_holder();
+        let candidate = ResolvedModelCandidate::remote(
+            ModelBinding::new("", "", "a2a:https://agent.example"),
+            "workspace-a",
+            Some(CredentialAccess::new(
+                CredentialRef {
+                    id: source.id.0,
+                    revision: 1,
+                },
+                CredentialMaterialSource::ControlPlaneReference,
+                CredentialUsage::HttpHeader {
+                    name: "authorization".into(),
+                    scheme: Some("Bearer".into()),
+                },
+                CredentialExecutionPolicy::self_hosted_provider(),
+            )),
+            "sha256:card",
+        );
+        let capabilities = CredentialRealizationCapabilities {
+            holders: [holder.clone()].into_iter().collect(),
+            material_sources: [CredentialMaterialSource::ControlPlaneReference]
+                .into_iter()
+                .collect(),
+            realization_kinds: [CredentialRealizationKind::WorkerRelay]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let bindings = awaken_runtime_contract::compile_candidate_credential_bindings(
+            &[&candidate],
+            Some(&holder),
+            &capabilities,
+            3,
+            0,
+        )
+        .unwrap();
+        let authority = Arc::new(CurrentAttempt);
+        let context = awaken_runtime_contract::RuntimeRunContext::new()
+            .with_ownership(authority.clone())
+            .with_credential_realization(
+                awaken_runtime_contract::AttemptCredentialRealization::new(bindings, authority),
+            );
+        let materializer = PinnedCredentialMaterializer::new(credentials, secrets);
+        assert_eq!(
+            materializer
+                .materialize_claimed_remote(&candidate, &context)
+                .await
+                .unwrap()
+                .unwrap()
+                .expose_secret(),
+            "remote-token"
+        );
     }
 }

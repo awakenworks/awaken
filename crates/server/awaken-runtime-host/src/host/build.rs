@@ -240,6 +240,7 @@ impl SharedHost {
             ),
             acp: None,
             remote_attempt_executor: None,
+            remote_credential_realization: Default::default(),
             application_attempt_decorator: None,
             application_session_provisioner: None,
             application_session_control: None,
@@ -304,9 +305,10 @@ impl SharedHost {
     /// composition-root responsibility.
     pub fn with_remote_attempt_executor(
         mut self,
-        executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
+        installation: super::RemoteAttemptInstallation,
     ) -> Self {
-        self.remote_attempt_executor = Some(executor);
+        self.remote_attempt_executor = Some(installation.executor);
+        self.remote_credential_realization = installation.credential_realization;
         self
     }
 

@@ -10,23 +10,32 @@ use std::collections::{BTreeSet, HashMap};
 
 pub(crate) fn model_realization_capability(
     candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
-) -> &'static str {
+) -> Option<&'static str> {
     match &candidate.provisioning {
         awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor => {
-            HOST_EXECUTOR_CAPABILITY
+            Some(HOST_EXECUTOR_CAPABILITY)
         }
         awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { .. } => {
-            awaken_run_ingress::WORKER_LOCAL_CREDENTIALS_CAPABILITY
+            Some(awaken_run_ingress::WORKER_LOCAL_CREDENTIALS_CAPABILITY)
         }
         awaken_runtime_contract::resolved::ModelProvisioning::Provider {
             credential: Some(credential),
             ..
+        }
+        | awaken_runtime_contract::resolved::ModelProvisioning::Remote {
+            credential: Some(credential),
+            ..
         } if credential.material_source == CredentialMaterialSource::WorkerReference => {
-            awaken_run_ingress::WORKER_LOCAL_CREDENTIALS_CAPABILITY
+            Some(awaken_run_ingress::WORKER_LOCAL_CREDENTIALS_CAPABILITY)
         }
-        awaken_runtime_contract::resolved::ModelProvisioning::Provider { .. } => {
-            PROVIDER_CREDENTIAL_SOURCE_CAPABILITY
-        }
+        awaken_runtime_contract::resolved::ModelProvisioning::Provider { .. }
+        | awaken_runtime_contract::resolved::ModelProvisioning::Remote {
+            credential: Some(_),
+            ..
+        } => Some(PROVIDER_CREDENTIAL_SOURCE_CAPABILITY),
+        awaken_runtime_contract::resolved::ModelProvisioning::Remote {
+            credential: None, ..
+        } => None,
     }
 }
 
@@ -44,6 +53,10 @@ fn worker_local_credentials(
                 revision: credential.revision,
             }),
             awaken_runtime_contract::resolved::ModelProvisioning::Provider {
+                credential: Some(credential),
+                ..
+            }
+            | awaken_runtime_contract::resolved::ModelProvisioning::Remote {
                 credential: Some(credential),
                 ..
             } if credential.material_source == CredentialMaterialSource::WorkerReference => {
@@ -151,9 +164,11 @@ pub fn remote_worker_placement(
                 &candidate.binding.backend_ref,
             ),
         );
-        placement
-            .required_capabilities
-            .insert(model_realization_capability(candidate).to_string());
+        if let Some(capability) = model_realization_capability(candidate) {
+            placement
+                .required_capabilities
+                .insert(capability.to_string());
+        }
     }
     if let Some(resources) = resources {
         placement

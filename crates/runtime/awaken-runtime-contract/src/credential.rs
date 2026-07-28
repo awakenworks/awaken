@@ -52,12 +52,16 @@ pub fn compile_candidate_credential_bindings(
     let mut seen = std::collections::BTreeSet::new();
     let mut bindings = Vec::new();
     for candidate in candidates {
-        let ModelProvisioning::Provider {
-            credential: Some(access),
-            ..
-        } = &candidate.provisioning
-        else {
-            continue;
+        let access = match &candidate.provisioning {
+            ModelProvisioning::Provider {
+                credential: Some(access),
+                ..
+            }
+            | ModelProvisioning::Remote {
+                credential: Some(access),
+                ..
+            } => access,
+            _ => continue,
         };
         let holder = holder.ok_or(AttemptCredentialBindingError::MissingPlaintextHolder)?;
         let backend = Backend::from_ref(&candidate.binding.backend_ref);
@@ -73,6 +77,11 @@ pub fn compile_candidate_credential_bindings(
             {
                 return Err(AttemptCredentialBindingError::InvalidCredentialUsage);
             }
+            Backend::Remote { .. }
+                if !matches!(access.usage, CredentialUsage::HttpHeader { .. }) =>
+            {
+                return Err(AttemptCredentialBindingError::InvalidCredentialUsage);
+            }
             _ => {}
         }
         let realization = match (&backend, holder.boundary) {
@@ -83,6 +92,9 @@ pub fn compile_candidate_credential_bindings(
                 CredentialRealizationKind::ProcessSecretEnvironment
             }
             (Backend::Acp { .. }, PlaintextBoundary::Worker) => {
+                CredentialRealizationKind::WorkerRelay
+            }
+            (Backend::Remote { .. }, PlaintextBoundary::Worker) => {
                 CredentialRealizationKind::WorkerRelay
             }
             (Backend::Native, PlaintextBoundary::Platform) => {
@@ -382,6 +394,89 @@ mod tests {
         native.binding.backend_ref = "genai".into();
         assert_eq!(
             compile_candidate_credential_bindings(&[&native], Some(&holder), &capabilities, 1, 0,),
+            Err(AttemptCredentialBindingError::InvalidCredentialUsage)
+        );
+    }
+
+    #[test]
+    fn remote_candidates_compile_only_claim_fenced_http_header_authority() {
+        // Cause graph:
+        // C1 Remote publication has an exact credential; C2 usage is an HTTP
+        // header; C3 the selected holder is the Worker; C4 WorkerRelay is
+        // installed. Effects: E1 compile one exact attempt binding; E2 an
+        // anonymous Remote compiles no authority; E3 a non-header usage fails
+        // before materialization.
+        //
+        // Decision table:
+        // | Rule | C1 | C2 | C3+C4 | Effect |
+        // | R1   | Y  | Y  | Y     | E1     |
+        // | R2   | N  | -  | -     | E2     |
+        // | R3   | Y  | N  | Y     | E3     |
+        let holder =
+            PlaintextHolder::new(PlaintextBoundary::Worker, SELF_HOSTED_WORKER_TRUST_DOMAIN);
+        let capabilities = CredentialRealizationCapabilities {
+            holders: [holder.clone()].into_iter().collect(),
+            material_sources: [CredentialMaterialSource::ControlPlaneReference]
+                .into_iter()
+                .collect(),
+            realization_kinds: [CredentialRealizationKind::WorkerRelay]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let remote = |credential| {
+            ResolvedModelCandidate::remote(
+                ModelBinding::new("", "", "a2a:https://agent.example"),
+                "workspace-a",
+                credential,
+                "sha256:card-security",
+            )
+        };
+        let access = |usage| {
+            CredentialAccess::new(
+                CredentialRef {
+                    id: "remote-key".into(),
+                    revision: 4,
+                },
+                CredentialMaterialSource::ControlPlaneReference,
+                usage,
+                CredentialExecutionPolicy::self_hosted_provider(),
+            )
+        };
+
+        let authenticated = remote(Some(access(CredentialUsage::HttpHeader {
+            name: "authorization".into(),
+            scheme: Some("Bearer".into()),
+        })));
+        let bindings = compile_candidate_credential_bindings(
+            &[&authenticated],
+            Some(&holder),
+            &capabilities,
+            7,
+            0,
+        )
+        .expect("remote HTTP-header authority");
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(
+            bindings[0].selected_realization_kind,
+            CredentialRealizationKind::WorkerRelay
+        );
+
+        assert!(
+            compile_candidate_credential_bindings(
+                &[&remote(None)],
+                None,
+                &CredentialRealizationCapabilities::default(),
+                7,
+                0,
+            )
+            .expect("anonymous remote")
+            .is_empty()
+        );
+
+        let invalid = remote(Some(access(CredentialUsage::ProviderAdapter)));
+        assert_eq!(
+            compile_candidate_credential_bindings(&[&invalid], Some(&holder), &capabilities, 7, 0,),
             Err(AttemptCredentialBindingError::InvalidCredentialUsage)
         );
     }

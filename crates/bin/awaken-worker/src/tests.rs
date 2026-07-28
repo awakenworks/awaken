@@ -118,11 +118,38 @@ fn deployment() -> awaken_runtime_host::DeploymentConfig {
 }
 
 fn credential_support() -> CredentialMaterializerSupport {
+    let material_sources = std::collections::BTreeSet::from([
+        awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+    ]);
     CredentialMaterializerSupport {
-        material_sources: std::collections::BTreeSet::from([
-            awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
-        ]),
-        recipient_bound_envelopes: false,
+        process_secret: awaken_runtime_contract::CredentialRealizationCapabilities {
+            holders: [awaken_runtime_contract::PlaintextHolder::new(
+                awaken_runtime_contract::PlaintextBoundary::Workload,
+                awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
+            )]
+            .into_iter()
+            .collect(),
+            material_sources: material_sources.clone(),
+            realization_kinds: [
+                awaken_runtime_contract::CredentialRealizationKind::ProcessSecretEnvironment,
+            ]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        },
+        worker_relay: awaken_runtime_contract::CredentialRealizationCapabilities {
+            holders: [awaken_runtime_contract::PlaintextHolder::new(
+                awaken_runtime_contract::PlaintextBoundary::Worker,
+                awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+            )]
+            .into_iter()
+            .collect(),
+            material_sources,
+            realization_kinds: [awaken_runtime_contract::CredentialRealizationKind::WorkerRelay]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        },
     }
 }
 

@@ -157,17 +157,15 @@ pub(crate) struct StandardManifestInputs<'a> {
 
 #[derive(Clone)]
 pub(crate) struct CredentialMaterializerSupport {
-    pub(crate) material_sources: BTreeSet<awaken_runtime_contract::CredentialMaterialSource>,
-    pub(crate) recipient_bound_envelopes: bool,
+    pub(crate) process_secret: awaken_runtime_contract::CredentialRealizationCapabilities,
+    pub(crate) worker_relay: awaken_runtime_contract::CredentialRealizationCapabilities,
 }
 
 impl From<&awaken_runtime_host::PinnedCredentialMaterializer> for CredentialMaterializerSupport {
     fn from(materializer: &awaken_runtime_host::PinnedCredentialMaterializer) -> Self {
-        let (material_sources, recipient_bound_envelopes) =
-            materializer.material_source_capabilities();
         Self {
-            material_sources,
-            recipient_bound_envelopes,
+            process_secret: materializer.process_secret_capabilities(),
+            worker_relay: materializer.worker_relay_capabilities(),
         }
     }
 }
@@ -214,38 +212,14 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
         .as_ref()
         .filter(|_| inputs.deployment.acp.is_some())
     {
-        credential_realization
-            .holders
-            .insert(awaken_runtime_contract::PlaintextHolder::new(
-                awaken_runtime_contract::PlaintextBoundary::Workload,
-                awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
-            ));
-        credential_realization
-            .material_sources
-            .extend(materializer.material_sources.iter().copied());
-        credential_realization
-            .realization_kinds
-            .insert(awaken_runtime_contract::CredentialRealizationKind::ProcessSecretEnvironment);
-        credential_realization.recipient_bound_envelopes |= materializer.recipient_bound_envelopes;
+        credential_realization.merge(&materializer.process_secret);
     }
     if let Some(materializer) = inputs
         .credential_materializer
         .as_ref()
         .filter(|_| sandbox.supports_secret_egress_without_bypass())
     {
-        credential_realization
-            .holders
-            .insert(awaken_runtime_contract::PlaintextHolder::new(
-                awaken_runtime_contract::PlaintextBoundary::Worker,
-                awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
-            ));
-        credential_realization
-            .material_sources
-            .extend(materializer.material_sources.iter().copied());
-        credential_realization
-            .realization_kinds
-            .insert(awaken_runtime_contract::CredentialRealizationKind::WorkerRelay);
-        credential_realization.recipient_bound_envelopes |= materializer.recipient_bound_envelopes;
+        credential_realization.merge(&materializer.worker_relay);
     }
     if let Some(capability) = credential_realization
         .manifest_capability()

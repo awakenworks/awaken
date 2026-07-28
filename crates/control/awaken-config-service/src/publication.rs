@@ -71,6 +71,17 @@ pub(crate) async fn prepare_agent_publication(
                 "backend-owned publication requires a fresh exact ACP capability pin".into(),
             ));
         }
+        if matches!(
+            &candidate.provisioning,
+            awaken_runtime_contract::resolved::ModelProvisioning::Remote {
+                security_fingerprint,
+                ..
+            } if security_fingerprint.trim().is_empty()
+        ) {
+            return Err(PublishError::Unresolvable(
+                "remote publication requires an exact Agent Card security fingerprint".into(),
+            ));
+        }
         if !bindings.insert(candidate.binding.clone()) {
             return Err(PublishError::Unresolvable(
                 PublicationResolutionError::DuplicateBinding(candidate.binding.clone()).to_string(),
@@ -446,5 +457,55 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.to_string().contains("capability pin"), "D4");
+    }
+
+    #[tokio::test]
+    async fn remote_publication_requires_discovery_fingerprint_evidence() {
+        // Cause/effect: C1 a resolver returns Remote provisioning; C2 its card
+        // security fingerprint is non-empty. C1+C2 accepts the exact candidate;
+        // C1+!C2 rejects before snapshot installation. A HostExecutor bearing an
+        // a2a backend is legacy test composition and is not accepted as proof.
+        let binding = ModelBinding::new("", "", "a2a:https://agent.example");
+        let revision = || revision(ModelSelection::Pinned(binding.clone()), vec![]);
+        let output = |primary| ResolvedPublicationModels {
+            primary,
+            candidates: vec![],
+            context_window: None,
+            max_output_tokens: None,
+        };
+        let valid = FixedResolver {
+            expected_workspace: "workspace-a",
+            output: output(ResolvedModelCandidate::remote(
+                binding.clone(),
+                "workspace-a",
+                None,
+                "sha256:card",
+            )),
+        };
+        prepare_agent_publication(
+            &valid,
+            &awaken_tenancy::ScopeId::from("workspace-a"),
+            revision(),
+        )
+        .await
+        .expect("fresh Agent Card evidence");
+
+        let stale = FixedResolver {
+            expected_workspace: "workspace-a",
+            output: output(ResolvedModelCandidate::remote(
+                binding.clone(),
+                "workspace-a",
+                None,
+                "",
+            )),
+        };
+        let error = prepare_agent_publication(
+            &stale,
+            &awaken_tenancy::ScopeId::from("workspace-a"),
+            revision(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("security fingerprint"));
     }
 }

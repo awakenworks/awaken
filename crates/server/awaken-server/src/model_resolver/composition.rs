@@ -31,6 +31,7 @@ impl CatalogModelPublicationResolver {
             profiles: None,
             brokered_access_enabled: true,
             workers: None,
+            a2a_cards: Arc::new(super::HttpA2aCardDiscovery),
             credential_selection_sequences: Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
@@ -46,6 +47,7 @@ impl CatalogModelPublicationResolver {
             profiles: None,
             brokered_access_enabled: true,
             workers: None,
+            a2a_cards: Arc::new(super::HttpA2aCardDiscovery),
             credential_selection_sequences: Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
@@ -67,6 +69,14 @@ impl CatalogModelPublicationResolver {
         workers: Arc<dyn awaken_worker_registry::WorkerDirectory>,
     ) -> Self {
         self.workers = Some(workers);
+        self
+    }
+
+    /// Replace HTTP Agent Card discovery with one bounded adapter (tests or a
+    /// gateway-mediated deployment). Publication remains the sole interpreter.
+    #[must_use]
+    pub fn with_a2a_card_discovery(mut self, discovery: Arc<dyn super::A2aCardDiscovery>) -> Self {
+        self.a2a_cards = discovery;
         self
     }
 

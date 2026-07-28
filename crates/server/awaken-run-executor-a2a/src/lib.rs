@@ -7,8 +7,9 @@
 //!
 //! Boundaries: runtime plane; depends only on the foundation contracts + the A2A
 //! protocol crate. The dial endpoint comes from the resolved backend, so this
-//! executor stays config-free; a [`TransportFactory`] is the one injected seam
-//! (an `HttpTransport` in production, a mock in tests).
+//! executor stays config-free; a [`TransportResolver`] is the one injected seam.
+//! The host resolves publication-pinned transport authentication behind that
+//! port; tests may substitute an anonymous or scripted transport.
 
 use std::sync::Arc;
 
@@ -27,7 +28,7 @@ use awaken_runtime_contract::execution::{
     Cancellation, Error, ExecutorCapabilities, Result, RunAttemptExecutor, RunExecutor, Wait,
 };
 use awaken_runtime_contract::permission::ToolCapabilityNarrowing;
-use awaken_runtime_contract::resolved::Backend;
+use awaken_runtime_contract::resolved::{Backend, ResolvedModelCandidate};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult, validate_resume};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::terminal::{CommittedTerminalRun, deliver_committed_terminal};
@@ -41,13 +42,23 @@ mod task_driver;
 pub use awaken_protocol_a2a::{HttpTransport, Transport};
 pub use delegate::A2aRemoteAgent;
 
-/// Builds a [`Transport`] for a dial endpoint. Injectable so a test can substitute a
-/// mock for the `HttpTransport`.
-pub type TransportFactory = Arc<dyn Fn(&str) -> Arc<dyn Transport> + Send + Sync>;
+/// Resolves one publication-pinned remote candidate into a live transport.
+///
+/// Implementations may materialize only the exact claim binding carried by
+/// `context`; selecting credentials, endpoints or fallback candidates is outside
+/// this port. The executor never sees plaintext material.
+#[async_trait]
+pub trait TransportResolver: Send + Sync {
+    async fn resolve(
+        &self,
+        candidate: &ResolvedModelCandidate,
+        context: &RuntimeRunContext,
+    ) -> std::result::Result<Arc<dyn Transport>, String>;
+}
 
 /// Drives a remote A2A agent as a [`RunAttemptExecutor`].
 pub struct A2aRunExecutor {
-    transport_for: TransportFactory,
+    transport_resolver: Arc<dyn TransportResolver>,
 }
 
 const A2A_TASK_STATE_KEY: &str = "__a2a_task";
@@ -73,16 +84,37 @@ impl TaskReference {
 
 impl A2aRunExecutor {
     #[must_use]
-    pub fn new(transport_for: TransportFactory) -> Self {
-        Self { transport_for }
+    pub fn new(transport_resolver: Arc<dyn TransportResolver>) -> Self {
+        Self { transport_resolver }
     }
 
-    /// The production executor: dials each `Backend::Remote { endpoint }` over HTTP.
+    /// Anonymous HTTP is a test compatibility fixture. Production composition
+    /// must inject a resolver that verifies the publication's Agent Card
+    /// security fingerprint and claim-frozen credential authority.
+    #[cfg(test)]
     #[must_use]
     pub fn over_http() -> Self {
-        Self {
-            transport_for: Arc::new(|url| Arc::new(HttpTransport::new(url)) as Arc<dyn Transport>),
-        }
+        Self::new(Arc::new(AnonymousHttpTransportResolver))
+    }
+}
+
+#[cfg(test)]
+struct AnonymousHttpTransportResolver;
+
+#[cfg(test)]
+#[async_trait]
+impl TransportResolver for AnonymousHttpTransportResolver {
+    async fn resolve(
+        &self,
+        candidate: &ResolvedModelCandidate,
+        _context: &RuntimeRunContext,
+    ) -> std::result::Result<Arc<dyn Transport>, String> {
+        let endpoint = candidate
+            .binding
+            .backend_ref
+            .strip_prefix("a2a:")
+            .ok_or_else(|| "anonymous A2A fixture received a non-remote candidate".to_string())?;
+        Ok(Arc::new(HttpTransport::new(endpoint)))
     }
 }
 
@@ -215,9 +247,18 @@ fn restored_task_reference(
     Ok(None)
 }
 
-fn endpoint_of(activation: &RunActivation) -> Result<String> {
+fn remote_candidate_of(activation: &RunActivation) -> Result<&ResolvedModelCandidate> {
     let backend = Backend::from_ref(&activation.snapshot.resolved_spec.model_binding.backend_ref);
-    backend
+    if !matches!(backend, Backend::Remote { .. }) {
+        return Err(Error::Execution(
+            "A2A executor received a non-remote backend".to_string(),
+        ));
+    }
+    Ok(&activation.snapshot.resolved_spec.model_binding)
+}
+
+fn endpoint_of(candidate: &ResolvedModelCandidate) -> Result<String> {
+    Backend::from_ref(&candidate.binding.backend_ref)
         .remote_endpoint()
         .map(str::to_string)
         .ok_or_else(|| Error::Execution("A2A executor received a non-remote backend".to_string()))
@@ -283,7 +324,7 @@ impl RunExecutor for A2aRunExecutor {
         context: RuntimeRunContext,
     ) -> Result<RunState> {
         ensure_supported_narrowing(&activation, &context)?;
-        let Ok(endpoint) = endpoint_of(&activation) else {
+        let Ok(candidate) = remote_candidate_of(&activation) else {
             // Reached without a remote backend — a wiring fault; fail closed.
             let mut messages = activation.input.clone();
             messages.push(Message::text(
@@ -302,8 +343,13 @@ impl RunExecutor for A2aRunExecutor {
             )
             .await;
         };
+        let endpoint = endpoint_of(candidate)?;
 
-        let transport = (self.transport_for)(&endpoint);
+        let transport = self
+            .transport_resolver
+            .resolve(candidate, &context)
+            .await
+            .map_err(Error::Execution)?;
         let task = match restored_task_reference(&context, &activation)? {
             Some(reference) => {
                 ensure_endpoint(&reference, &endpoint)?;
@@ -378,12 +424,17 @@ impl RunAttemptExecutor for A2aRunExecutor {
             .ok_or_else(|| Error::Execution("A2A run is not awaiting a resume".to_string()))?;
         validate_resume(&ticket, &command)
             .map_err(|error| Error::Execution(format!("invalid A2A resume: {error}")))?;
-        let endpoint = endpoint_of(&activation)?;
+        let candidate = remote_candidate_of(&activation)?;
+        let endpoint = endpoint_of(candidate)?;
         let reference = restored_task_reference(&context, &activation)?.ok_or_else(|| {
             Error::Execution("A2A resume is missing its durable remote task".to_string())
         })?;
         ensure_endpoint(&reference, &endpoint)?;
-        let transport = (self.transport_for)(&endpoint);
+        let transport = self
+            .transport_resolver
+            .resolve(candidate, &context)
+            .await
+            .map_err(Error::Execution)?;
         let message_id = format!(
             "a2a-resume-{}-{}",
             activation.run_id.0, ticket.correlation_id
@@ -411,12 +462,17 @@ impl RunAttemptExecutor for A2aRunExecutor {
     }
 
     async fn cancel(&self, activation: RunActivation, context: RuntimeRunContext) -> Result<()> {
-        let endpoint = endpoint_of(&activation)?;
+        let candidate = remote_candidate_of(&activation)?;
+        let endpoint = endpoint_of(candidate)?;
         let Some(reference) = restored_task_reference(&context, &activation)? else {
             return Ok(());
         };
         ensure_endpoint(&reference, &endpoint)?;
-        let transport = (self.transport_for)(&endpoint);
+        let transport = self
+            .transport_resolver
+            .resolve(candidate, &context)
+            .await
+            .map_err(Error::Execution)?;
         let task = get_task(transport.as_ref(), &reference.task_id)
             .await
             .map_err(|error| Error::Execution(error.to_string()))?;
@@ -607,8 +663,21 @@ mod tests {
         Ok(Response::new(200, body.as_bytes().to_vec()))
     }
 
+    struct FixedTransportResolver(Arc<dyn Transport>);
+
+    #[async_trait]
+    impl TransportResolver for FixedTransportResolver {
+        async fn resolve(
+            &self,
+            _candidate: &ResolvedModelCandidate,
+            _context: &RuntimeRunContext,
+        ) -> std::result::Result<Arc<dyn Transport>, String> {
+            Ok(self.0.clone())
+        }
+    }
+
     fn scripted_executor(transport: Arc<ScriptedTransport>) -> A2aRunExecutor {
-        A2aRunExecutor::new(Arc::new(move |_| transport.clone()))
+        A2aRunExecutor::new(Arc::new(FixedTransportResolver(transport)))
     }
 
     #[derive(Default)]
@@ -729,6 +798,42 @@ mod tests {
         assert!(
             ensure_supported_narrowing(&activation("a2a:https://agent.example"), &context).is_err(),
             "process-local narrowing must not be silently ignored either"
+        );
+    }
+
+    struct RejectingTransportResolver;
+
+    #[async_trait]
+    impl TransportResolver for RejectingTransportResolver {
+        async fn resolve(
+            &self,
+            _candidate: &ResolvedModelCandidate,
+            _context: &RuntimeRunContext,
+        ) -> std::result::Result<Arc<dyn Transport>, String> {
+            Err("claim-frozen remote credential is unavailable".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn transport_resolution_failure_never_falls_back_to_anonymous_http() {
+        // Cause/effect: C1 snapshot selects Remote; C2 the injected host resolver
+        // rejects its claim-frozen transport authority. Effect E1 return the
+        // resolver error before any A2A request; forbidden effect E2 is building
+        // an anonymous HttpTransport inside the executor.
+        //
+        // Decision table: C1+!C2 -> E1 and zero wire side effects. The successful
+        // C1+C2 path is covered by every scripted transport execution test.
+        let error = A2aRunExecutor::new(Arc::new(RejectingTransportResolver))
+            .execute(
+                activation("a2a:https://agent.example"),
+                RuntimeRunContext::new(),
+            )
+            .await
+            .expect_err("transport authority is mandatory");
+        assert!(
+            error
+                .to_string()
+                .contains("claim-frozen remote credential is unavailable")
         );
     }
 
