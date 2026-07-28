@@ -33,7 +33,7 @@ pub fn workspace_profile_key(workspace_id: &str, profile_id: &str) -> String {
 }
 
 /// Read a Workspace-owned profile without allowing a common id such as
-/// `workspace-default` to collide across tenants. A matching legacy unscoped row
+/// a shared profile id to collide across tenants. A matching unscoped row
 /// remains readable for in-place upgrades; a row owned by another Workspace is
 /// treated as absent.
 pub fn get_workspace_profile(

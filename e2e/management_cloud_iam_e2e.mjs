@@ -380,7 +380,7 @@ async function main() {
       'brokered',
     );
 
-    result = await req(base, 'PUT', '/v1/config/inference-profiles/workspace-default', cachedToken, {
+    result = await req(base, 'PUT', '/v1/config/inference-profiles/publication-route', cachedToken, {
       body: {
         workspace_id: localWorkspace,
         primary: {
@@ -399,7 +399,7 @@ async function main() {
     result = await req(
       base,
       'POST',
-      '/v1/config/inference-profiles/workspace-default/resolve-candidates',
+      '/v1/config/inference-profiles/publication-route/resolve-candidates',
       cachedToken,
       { body: { workspace_id: localWorkspace } },
     );
@@ -473,7 +473,7 @@ async function main() {
       const saved = await req(
         base,
         'PUT',
-        '/v1/config/inference-profiles/workspace-default',
+        '/v1/config/inference-profiles/publication-route',
         cachedToken,
         {
           body: {

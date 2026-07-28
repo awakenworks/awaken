@@ -93,7 +93,7 @@ const checks = [
     for (const claim of [
       "Provider connections",
       "Verify & import models",
-      "Configure as workspace default",
+      "immediately available to Auto agents",
       "/v1/config/provider-connections",
     ]) {
       assert.ok(source.includes(claim), `01-connect-model.mjs: missing ${claim}`);

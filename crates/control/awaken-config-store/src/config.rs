@@ -27,6 +27,9 @@ pub enum ModelSelection {
     /// reconciler re-resolves these on a model-catalog change (ADR-0052 D5).
     #[default]
     Auto,
+    /// Resolve the explicitly named Workspace inference profile. Profiles are
+    /// reusable policies, never an implicit Workspace-wide default.
+    Profile { profile_id: String },
     /// Use this exact external backend and let it retain its own configured
     /// default model. Publication must resolve an exact Worker-local binding;
     /// this is never a fallback to [`Auto`](Self::Auto).
@@ -56,7 +59,9 @@ impl ModelSelection {
     pub fn resolved(&self) -> Option<&ModelBinding> {
         match self {
             ModelSelection::Pinned(binding) => Some(binding),
-            ModelSelection::Auto | ModelSelection::BackendDefault { .. } => None,
+            ModelSelection::Auto
+            | ModelSelection::Profile { .. }
+            | ModelSelection::BackendDefault { .. } => None,
         }
     }
 
@@ -66,12 +71,27 @@ impl ModelSelection {
         matches!(self, ModelSelection::Auto)
     }
 
+    /// Whether catalog/profile changes can alter the next publication.
+    #[must_use]
+    pub fn requires_reconciliation(&self) -> bool {
+        matches!(self, Self::Auto | Self::Profile { .. })
+    }
+
     /// The exact backend requested with backend-owned default-model policy.
     #[must_use]
     pub fn backend_default_ref(&self) -> Option<&str> {
         match self {
             Self::BackendDefault { backend_ref } => Some(backend_ref),
-            Self::Auto | Self::Pinned(_) => None,
+            Self::Auto | Self::Profile { .. } | Self::Pinned(_) => None,
+        }
+    }
+
+    /// The explicitly selected reusable inference profile.
+    #[must_use]
+    pub fn profile_ref(&self) -> Option<&str> {
+        match self {
+            Self::Profile { profile_id } => Some(profile_id),
+            Self::Auto | Self::BackendDefault { .. } | Self::Pinned(_) => None,
         }
     }
 }
@@ -92,6 +112,13 @@ impl Serialize for ModelSelection {
                 use serde::ser::SerializeMap;
                 let mut map = serializer.serialize_map(Some(1))?;
                 map.serialize_entry("mode", "auto")?;
+                map.end()
+            }
+            ModelSelection::Profile { profile_id } => {
+                use serde::ser::SerializeMap;
+                let mut map = serializer.serialize_map(Some(2))?;
+                map.serialize_entry("mode", "profile")?;
+                map.serialize_entry("profile_id", profile_id)?;
                 map.end()
             }
             ModelSelection::BackendDefault { backend_ref } => {
@@ -120,6 +147,16 @@ impl<'de> Deserialize<'de> for ModelSelection {
                 .ok_or_else(|| serde::de::Error::missing_field("backend_ref"))?;
             return Ok(ModelSelection::BackendDefault {
                 backend_ref: backend_ref.to_string(),
+            });
+        }
+        if value.get("mode").and_then(serde_json::Value::as_str) == Some("profile") {
+            let profile_id = value
+                .get("profile_id")
+                .and_then(serde_json::Value::as_str)
+                .filter(|profile_id| !profile_id.trim().is_empty())
+                .ok_or_else(|| serde::de::Error::missing_field("profile_id"))?;
+            return Ok(ModelSelection::Profile {
+                profile_id: profile_id.to_string(),
             });
         }
         let binding =
@@ -308,6 +345,46 @@ where
 
 fn delegation_limits_are_default(limits: &DelegationLimits) -> bool {
     limits == &DelegationLimits::default()
+}
+
+#[cfg(test)]
+mod model_selection_tests {
+    use super::ModelSelection;
+
+    #[test]
+    fn profile_is_explicit_and_catalog_reconciled() {
+        // | Choice | profile_ref | requires reconciliation |
+        // | Auto | none | yes |
+        // | Profile | exact id | yes |
+        // | Backend/Pinned | none | no |
+        let selection = ModelSelection::Profile {
+            profile_id: "latency-route".into(),
+        };
+        assert_eq!(selection.profile_ref(), Some("latency-route"));
+        assert!(selection.requires_reconciliation());
+        assert_eq!(
+            serde_json::to_value(&selection).unwrap(),
+            serde_json::json!({"mode":"profile","profile_id":"latency-route"})
+        );
+        assert_eq!(
+            serde_json::from_value::<ModelSelection>(
+                serde_json::json!({"mode":"profile","profile_id":"latency-route"})
+            )
+            .unwrap(),
+            selection
+        );
+        assert!(ModelSelection::Auto.requires_reconciliation());
+        assert!(!ModelSelection::pinned("provider", "model", "genai").requires_reconciliation());
+    }
+
+    #[test]
+    fn empty_profile_id_is_rejected() {
+        let error = serde_json::from_value::<ModelSelection>(
+            serde_json::json!({"mode":"profile","profile_id":" "}),
+        )
+        .expect_err("blank profile id");
+        assert!(error.to_string().contains("profile_id"));
+    }
 }
 
 /// An agent's compaction **strategy** — WHEN to compact its context. This is authored agent

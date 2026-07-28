@@ -17,18 +17,11 @@ import type {
 } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 
-export interface ProviderProfileSuggestion {
-  providerId: string;
-  credentialId: string;
-  revision: number;
-}
-
 interface ProviderConnectionPanelProps {
   credentials: CredentialSource[];
   descriptors: ProviderDriverDescriptor[];
   connections: ProviderConnectionSummary[];
   proposals: EnvironmentProviderProposal[];
-  onProfileSuggestion(suggestion: ProviderProfileSuggestion): void;
 }
 
 interface ProviderDraft {
@@ -83,7 +76,6 @@ export default function ProviderConnectionPanel({
   descriptors,
   connections,
   proposals,
-  onProfileSuggestion,
 }: ProviderConnectionPanelProps) {
   const app = useApp();
   const workspace = app.workspaceId;
@@ -396,22 +388,6 @@ export default function ProviderConnectionPanel({
                 "凭证已验证，模型已导入",
               )}{" "}
               · {connect.data.sync.discovered} {app.t("models", "个模型")}
-              <Button
-                variant="ghost"
-                style={{ marginLeft: 10 }}
-                onClick={() =>
-                  onProfileSuggestion({
-                    providerId: connect.data.provider.id,
-                    credentialId: connect.data.credential.id,
-                    revision: Date.now(),
-                  })
-                }
-              >
-                {app.t(
-                  "Configure as workspace default",
-                  "配置为工作区默认",
-                )}
-              </Button>
             </span>
           </div>
         )}

@@ -22,10 +22,7 @@ import {
   CloudModelNotice,
   CloudModelRefresh,
 } from "./model-cloud-capability";
-import ModelProfileEditor from "./model-profile-editor";
-import ProviderConnectionPanel, {
-  type ProviderProfileSuggestion,
-} from "./provider-connection-panel";
+import ProviderConnectionPanel from "./provider-connection-panel";
 
 /** Compact a token count for the catalog list: 200000 → "200k", 1_000_000 → "1M". */
 function fmtTokens(n: number): string {
@@ -120,8 +117,6 @@ export default function ModelsSurface() {
     queryKey: ["credentials", workspace],
     queryFn: () => api.get<CredentialSource[]>(ws(`/v1/config/credentials?workspace_id=${workspace}`)),
   });
-  const [profileSuggestion, setProfileSuggestion] =
-    useState<ProviderProfileSuggestion | null>(null);
   const [testModel, setTestModel] = useState<string | null>(null);
   const refreshCloudModels = useMutation({
     mutationFn: () =>
@@ -251,15 +246,6 @@ export default function ModelsSurface() {
         descriptors={descriptors.data ?? []}
         connections={connections.data ?? []}
         proposals={proposals.data ?? []}
-        onProfileSuggestion={setProfileSuggestion}
-      />
-
-      <ModelProfileEditor
-        offerings={c?.offerings ?? []}
-        credentials={(credentials.data ?? []).filter(
-          (credential) => credential.env_key !== "CLAUDE_CODE_OAUTH_TOKEN",
-        )}
-        suggestion={profileSuggestion}
       />
 
       {testModel && (

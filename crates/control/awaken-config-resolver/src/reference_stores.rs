@@ -228,20 +228,20 @@ mod profile_tenancy_tests {
         put_workspace_profile(
             &store,
             "workspace-a",
-            "workspace-default",
+            "shared-profile",
             profile("workspace-a", "a"),
         )
         .unwrap();
         put_workspace_profile(
             &store,
             "workspace-b",
-            "workspace-default",
+            "shared-profile",
             profile("workspace-b", "b"),
         )
         .unwrap();
 
         assert_eq!(
-            get_workspace_profile(&store, "workspace-a", "workspace-default")
+            get_workspace_profile(&store, "workspace-a", "shared-profile")
                 .unwrap()
                 .unwrap()
                 .primary
@@ -250,7 +250,7 @@ mod profile_tenancy_tests {
             "a"
         );
         assert_eq!(
-            get_workspace_profile(&store, "workspace-b", "workspace-default")
+            get_workspace_profile(&store, "workspace-b", "shared-profile")
                 .unwrap()
                 .unwrap()
                 .primary

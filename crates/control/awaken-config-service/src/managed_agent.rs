@@ -188,6 +188,17 @@ fn managed_model_selection(model: Option<&Value>) -> Result<ModelSelection, Stri
     if model.get("mode").and_then(Value::as_str) == Some("auto") {
         return Ok(ModelSelection::Auto);
     }
+    if model.get("mode").and_then(Value::as_str) == Some("profile") {
+        let profile_id = model
+            .get("profile_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|profile_id| !profile_id.is_empty())
+            .ok_or_else(|| "profile model requires a non-empty profile_id".to_string())?;
+        return Ok(ModelSelection::Profile {
+            profile_id: profile_id.to_string(),
+        });
+    }
     if let Some(object) = model.as_object()
         && object.get("mode").and_then(Value::as_str) == Some("backend_default")
     {
@@ -252,6 +263,10 @@ pub fn managed_from_agent_config(config: &AgentConfig, published: bool) -> Value
             "backend_ref": backend_ref,
         }),
         ModelSelection::Auto => json!({ "mode": "auto" }),
+        ModelSelection::Profile { profile_id } => json!({
+            "mode": "profile",
+            "profile_id": profile_id,
+        }),
         ModelSelection::Pinned(_) => json!({
             "id": binding.map(|binding| binding.model_ref.clone()).unwrap_or_default(),
             "model_ref": binding.map(|binding| binding.model_ref.clone()).unwrap_or_default(),

@@ -80,7 +80,7 @@ test("model setup records the single Provider Connection workflow", () => {
   const model = readFileSync(resolve(flowsDir, "01-connect-model.mjs"), "utf8");
   assert.match(model, /Provider connections/);
   assert.match(model, /Verify & import models/);
-  assert.match(model, /Configure as workspace default/);
+  assert.match(model, /immediately available to Auto agents/);
   assert.match(model, /\/v1\/config\/provider-connections/);
   assert.doesNotMatch(model, /\/v1\/config\/providers/);
   assert.doesNotMatch(model, /\/v1\/config\/endpoints/);

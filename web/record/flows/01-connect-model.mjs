@@ -9,7 +9,7 @@ const LOCATION = process.env.GEMINI_LOCATION ?? "global";
 
 export const story = {
   promise: "Connect Vertex Gemini once, without copying credentials between model and vault screens, and prove the saved route can answer.",
-  effect: "One Provider Connection command verifies gcloud OAuth, imports models, and feeds an explicit Workspace default profile.",
+  effect: "One Provider Connection command verifies gcloud OAuth and makes imported models immediately available to Agents.",
   aha: "One guided connection replaces duplicate provider, credential, and model setup—and the live model answers through short-lived OAuth.",
   loyalty: "One authoritative connection status and explicit routing policy make repeated model operations predictable.",
   satisfaction: "The story ends with a real answer after one continuous setup, removing uncertainty and duplicate entry.",
@@ -44,16 +44,10 @@ export async function run({ page, goto, say, clearCaption, intro, checkpoint, ru
   });
   await wait(500);
 
-  await say("Carry the verified connection into the explicit Workspace route—no credential id is copied or re-entered.", 3800);
-  await click(connectionCard.getByRole("button", { name: /Configure as workspace default|配置为工作区默认/ }));
-  const profileCard = page.locator(".card").filter({ hasText: /Workspace inference profile|工作区推理配置/ });
-  await profileCard.getByLabel(/Primary model|主模型/).selectOption({ label: new RegExp(MODEL) });
-  await click(profileCard.getByRole("button", { name: /Save profile|保存配置/ }));
-  await checkpoint("the Workspace profile pins the exact Vertex model and OAuth credential", async () => {
-    await expect(profileCard.getByText(/Saved|已保存/)).toBeVisible();
-    const profile = await (await page.request.get("http://127.0.0.1:38080/v1/config/inference-profiles/workspace-default")).json();
-    expect(profile.primary.target).toMatchObject({ model_id: MODEL, provider_id: "vertex" });
-    expect(profile.primary.credential_binding.type).toBe("exact");
+  await say("The verified connection is immediately available to Auto agents—there is no second Workspace-default step.", 3800);
+  await checkpoint("the connected model is immediately discoverable for Agent authoring", async () => {
+    const catalog = await (await page.request.get("http://127.0.0.1:38080/v1/config/catalog")).json();
+    expect(catalog.offerings.some((offering) => offering.model_id === MODEL && offering.provider_id === "vertex")).toBe(true);
   });
   await wait(500);
 

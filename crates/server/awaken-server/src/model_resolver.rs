@@ -52,9 +52,6 @@ pub struct CatalogModelPublicationResolver {
     brokered_access_enabled: bool,
 }
 
-/// The conventional Workspace-level profile consumed by `ModelSelection::Auto`.
-pub const DEFAULT_INFERENCE_PROFILE_ID: &str = "workspace-default";
-
 impl CatalogModelPublicationResolver {
     /// Resolve against a frozen catalog snapshot. This is useful for deterministic
     /// tests; production composition should use [`Self::from_repo`].
@@ -79,9 +76,8 @@ impl CatalogModelPublicationResolver {
         }
     }
 
-    /// Install the authored Profile read port. An `Auto` Agent then consumes the
-    /// Workspace's `workspace-default` profile when present; pinned Agents remain
-    /// exact overrides and never consult it.
+    /// Install the authored Profile read port for explicit
+    /// [`ModelSelection::Profile`] choices.
     #[must_use]
     pub fn with_profiles(mut self, profiles: Arc<dyn InferenceProfileStore>) -> Self {
         self.profiles = Some(profiles);
@@ -726,25 +722,27 @@ impl ModelPublicationResolver for CatalogModelPublicationResolver {
         fallbacks: &[ModelBinding],
     ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
         let catalog = self.snapshot().await?;
-        if selection.is_auto()
-            && let Some(profiles) = &self.profiles
-        {
-            let profile = get_workspace_profile(
-                profiles.as_ref(),
-                workspace.as_str(),
-                DEFAULT_INFERENCE_PROFILE_ID,
-            )
-            .map_err(|error| PublicationResolutionError::Invalid(error.to_string()))?;
-            if let Some(profile) = profile {
-                if !fallbacks.is_empty() {
-                    return Err(PublicationResolutionError::Invalid(
-                        "Auto profile selection cannot be combined with authored fallbacks".into(),
-                    ));
-                }
-                return self
-                    .resolve_profile_models(&catalog, workspace, &profile)
-                    .await;
+        if let Some(profile_id) = selection.profile_ref() {
+            let profiles = self.profiles.as_ref().ok_or_else(|| {
+                PublicationResolutionError::Invalid(
+                    "profile model selection is unavailable in this composition".into(),
+                )
+            })?;
+            let profile = get_workspace_profile(profiles.as_ref(), workspace.as_str(), profile_id)
+                .map_err(|error| PublicationResolutionError::Invalid(error.to_string()))?;
+            let profile = profile.ok_or_else(|| {
+                PublicationResolutionError::Invalid(format!(
+                    "inference profile `{profile_id}` does not exist in Workspace `{workspace}`"
+                ))
+            })?;
+            if !fallbacks.is_empty() {
+                return Err(PublicationResolutionError::Invalid(
+                    "profile selection cannot be combined with authored fallbacks".into(),
+                ));
             }
+            return self
+                .resolve_profile_models(&catalog, workspace, &profile)
+                .await;
         }
         let (primary_binding, fallback_bindings) =
             Self::selected_bindings(&catalog, selection, fallbacks)?;
@@ -789,19 +787,19 @@ impl ModelPublicationResolver for CatalogModelPublicationResolver {
 
 #[cfg(test)]
 mod tests {
-    //! Cause graph for Workspace default-profile publication:
-    //! C1 selection is Auto; C2 `workspace-default` exists; C3 profile belongs to
+    //! Cause graph for explicit Workspace-profile publication:
+    //! C1 selection names a profile; C2 that profile exists; C3 profile belongs to
     //! the execution Workspace; C4 every target identifies one active Offering;
     //! C5 each local credential binding resolves to an active compatible source;
     //! C6 `brokered` binding and Offering source agree.
-    //! E1 use the authored ordered chain; E2 retain legacy catalog Auto; E3 freeze
+    //! E1 use the authored ordered chain; E2 fail closed; E3 freeze
     //! the exact per-step credential/route; E4 reject the whole publication.
     //!
     //! Decision table:
     //! | Rule | C1 | C2 | C3 | C4 | C5 | C6 | Effect |
     //! | T1   | Y  | Y  | Y  | Y  | Y  | -  | E1+E3 |
     //! | T2   | Y  | N  | -  | -  | -  | -  | E2    |
-    //! | T3   | Y  | Y  | N  | -  | -  | -  | E2 (foreign row is absent) |
+    //! | T3   | Y  | Y  | N  | -  | -  | -  | E2    |
     //! | T4   | Y  | Y  | Y  | N  | -  | -  | E4    |
     //! | T5   | Y  | Y  | Y  | Y  | N  | -  | E4    |
     //! | T6   | N  | -  | -  | Y  | Y  | -  | pinned override |
@@ -884,6 +882,12 @@ mod tests {
         CatalogModelPublicationResolver::new(catalog(models), credentials)
     }
 
+    fn explicit_profile() -> ModelSelection {
+        ModelSelection::Profile {
+            profile_id: "profile-a".into(),
+        }
+    }
+
     #[tokio::test]
     async fn t1_auto_uses_default_profile_with_exact_order_route_and_credential() {
         let credentials = Arc::new(InMemoryCredentialRepo::new());
@@ -935,7 +939,7 @@ mod tests {
         let profiles = Arc::new(InMemoryProfileStore::new());
         profiles
             .put(
-                DEFAULT_INFERENCE_PROFILE_ID.into(),
+                "profile-a".into(),
                 InferenceProfile {
                     workspace_id: "workspace-a".into(),
                     primary: ProfileCandidate {
@@ -966,7 +970,7 @@ mod tests {
             CatalogModelPublicationResolver::new(catalog, credentials).with_profiles(profiles);
 
         let resolved = resolver
-            .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
+            .resolve_models(&ScopeId::from("workspace-a"), &explicit_profile(), &[])
             .await
             .unwrap();
         let pins = std::iter::once(&resolved.primary)
@@ -994,12 +998,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn t3_default_profile_from_another_workspace_is_not_observable() {
+    async fn t3_explicit_profile_from_another_workspace_fails_closed() {
         let resolver = resolver(&["primary"]).await;
         let profiles = Arc::new(InMemoryProfileStore::new());
         profiles
             .put(
-                DEFAULT_INFERENCE_PROFILE_ID.into(),
+                "profile-a".into(),
                 InferenceProfile {
                     workspace_id: "workspace-b".into(),
                     primary: ProfileCandidate {
@@ -1017,18 +1021,11 @@ mod tests {
             .unwrap();
         let resolver = resolver.with_profiles(profiles);
 
-        let resolved = resolver
-            .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
+        let error = resolver
+            .resolve_models(&ScopeId::from("workspace-a"), &explicit_profile(), &[])
             .await
-            .unwrap();
-        assert_eq!(resolved.primary.binding.model_ref, "primary");
-        let ModelProvisioning::Provider {
-            credential: Some(_),
-            ..
-        } = resolved.primary.provisioning
-        else {
-            panic!("foreign profile must be ignored in favor of local catalog Auto")
-        };
+            .expect_err("foreign profile is absent in the execution Workspace");
+        assert!(error.to_string().contains("does not exist"));
     }
 
     #[tokio::test]
@@ -1037,7 +1034,7 @@ mod tests {
         let profiles = Arc::new(InMemoryProfileStore::new());
         profiles
             .put(
-                DEFAULT_INFERENCE_PROFILE_ID.into(),
+                "profile-a".into(),
                 InferenceProfile {
                     workspace_id: "workspace-a".into(),
                     primary: ProfileCandidate {
@@ -1056,7 +1053,7 @@ mod tests {
 
         let error = resolver
             .with_profiles(profiles)
-            .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
+            .resolve_models(&ScopeId::from("workspace-a"), &explicit_profile(), &[])
             .await
             .unwrap_err();
         assert!(error.to_string().contains("not active or published"));
@@ -1082,7 +1079,7 @@ mod tests {
         let profiles = Arc::new(InMemoryProfileStore::new());
         profiles
             .put(
-                DEFAULT_INFERENCE_PROFILE_ID.into(),
+                "profile-a".into(),
                 InferenceProfile {
                     workspace_id: "workspace-a".into(),
                     primary: ProfileCandidate {
@@ -1103,7 +1100,7 @@ mod tests {
 
         let error = CatalogModelPublicationResolver::new(catalog(&["primary"]), credentials)
             .with_profiles(profiles)
-            .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
+            .resolve_models(&ScopeId::from("workspace-a"), &explicit_profile(), &[])
             .await
             .unwrap_err();
         assert!(
@@ -1119,7 +1116,7 @@ mod tests {
         let profiles = Arc::new(InMemoryProfileStore::new());
         profiles
             .put(
-                DEFAULT_INFERENCE_PROFILE_ID.into(),
+                "profile-a".into(),
                 InferenceProfile {
                     workspace_id: "workspace-a".into(),
                     primary: ProfileCandidate {
@@ -1154,7 +1151,7 @@ mod tests {
         let profiles = Arc::new(InMemoryProfileStore::new());
         profiles
             .put(
-                DEFAULT_INFERENCE_PROFILE_ID.into(),
+                "profile-a".into(),
                 InferenceProfile {
                     workspace_id: "workspace-a".into(),
                     primary: ProfileCandidate {
@@ -1173,7 +1170,7 @@ mod tests {
 
         let resolved = CatalogModelPublicationResolver::new(catalog, credentials)
             .with_profiles(profiles)
-            .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
+            .resolve_models(&ScopeId::from("workspace-a"), &explicit_profile(), &[])
             .await
             .unwrap();
         let ModelProvisioning::Provider {
@@ -1205,7 +1202,7 @@ mod tests {
         let profiles = Arc::new(InMemoryProfileStore::new());
         profiles
             .put(
-                DEFAULT_INFERENCE_PROFILE_ID.into(),
+                "profile-a".into(),
                 InferenceProfile {
                     workspace_id: "workspace-a".into(),
                     primary: ProfileCandidate {
@@ -1225,7 +1222,7 @@ mod tests {
         let error = CatalogModelPublicationResolver::new(catalog, credentials)
             .with_profiles(profiles)
             .with_brokered_access(false)
-            .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
+            .resolve_models(&ScopeId::from("workspace-a"), &explicit_profile(), &[])
             .await
             .unwrap_err();
         assert!(error.to_string().contains("cloud_models_disabled"));
@@ -1237,7 +1234,7 @@ mod tests {
         let profiles = Arc::new(InMemoryProfileStore::new());
         profiles
             .put(
-                DEFAULT_INFERENCE_PROFILE_ID.into(),
+                "profile-a".into(),
                 InferenceProfile {
                     workspace_id: "workspace-a".into(),
                     primary: ProfileCandidate {
@@ -1256,7 +1253,7 @@ mod tests {
 
         let error = CatalogModelPublicationResolver::new(catalog(&["primary"]), credentials)
             .with_profiles(profiles)
-            .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
+            .resolve_models(&ScopeId::from("workspace-a"), &explicit_profile(), &[])
             .await
             .unwrap_err();
         assert!(
