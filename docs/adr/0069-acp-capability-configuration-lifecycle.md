@@ -156,6 +156,12 @@ machine. It may not implement a second JSON-RPC parser or duplicate
 channel-in/channel-out negotiation operation; process creation, timeout,
 observation revision and persistence remain outside it.
 
+The dependency is inverted through `awaken-acp-contract`: the contract owns the
+neutral descriptors and `AcpCapabilityHandshake` port,
+`awaken-protocol-acp` implements the port, and a composition root injects that
+implementation into `awaken-acp-application`. The Worker application never
+depends on a `protocol-*` adapter.
+
 ### D3 — Structurally uniform, semantically native options
 
 Live options normalize to:
@@ -629,6 +635,11 @@ Implemented consolidation evidence:
 - `awaken-protocol-acp::negotiate_capabilities` reuses the production
   initialize/session-new state machine, sends no prompt and returns full neutral
   mode/config-option descriptors;
+- `awaken-acp-contract` is the neutral channel-in/descriptor-out port between
+  Worker capability probing and the official ACP protocol adapter;
+- `HostAcpCapabilityNegotiator` owns the bounded PATH/HOME-only probe process;
+  successful evidence becomes an `EffectiveAcpCapabilityProfile` with a
+  deterministic SHA-256 fingerprint advertised by the Worker;
 - `CredentialObservationSource` and `WorkerLocalReferenceRevalidator` are
   segregated from `CredentialMaterialResolver`;
 - Runtime Host selects the Session provider from immutable
@@ -642,8 +653,8 @@ Current implementation status is deliberately distinct from the target:
 | adapter catalog | authoritative `AcpCli` exists; inert probe specs remain attached | move its neutral contract out of executor ownership |
 | installation/login probe | Worker application owns process I/O and classification | add revisioned refresh/publication |
 | reusable CLI/Flow preparation | application service exists; CLI partly consumes it | migrate remaining CLI-private callers and Flow; delete the duplicate |
-| capability negotiation | canonical prompt-free protocol operation returns full typed descriptors | invoke it from bounded Worker probe and publish evidence |
-| effective profile/fingerprint | not implemented | add Worker-owned expiring observation |
+| capability negotiation | bounded Worker probe invokes the canonical prompt-free protocol operation | add refresh/reconcile trigger and process-group reap |
+| effective profile/fingerprint | startup produces typed profile and SHA-256 Worker evidence | persist revision/expiry and require exact fingerprint in publication/placement |
 | Agent ACP mode/options | mode and one model option reach executor | add typed multi-option intent and publication validation |
 | environment selection | provisioning selects trusted/isolated provider | retain as the sole Session Environment policy |
 | readiness | startup observation projection | query current Worker observation and reconcile revisions |

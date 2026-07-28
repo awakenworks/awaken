@@ -21,7 +21,12 @@ use awaken_runtime_contract::{
     CredentialObservationState, CredentialRef, WorkerLocalReferenceRevalidator,
 };
 
+mod capability_probe;
 mod host_discovery;
+pub use capability_probe::{
+    AcpCapabilityNegotiator, AcpCapabilityState, EffectiveAcpCapabilityProfile,
+    HostAcpCapabilityNegotiator,
+};
 pub use host_discovery::{AcpDetectionState, AcpDiscovery, AcpHostDiscovery, AcpHostObservation};
 
 /// Acquisition port for an ACP protocol wrapper declared by the canonical catalog.
@@ -116,26 +121,17 @@ pub struct LocalAcpPreparation {
 pub struct PreparedAcpCapabilities {
     pub observations: Vec<AcpHostObservation>,
     pub launch_argv: BTreeMap<String, Vec<String>>,
+    pub effective_profiles: BTreeMap<String, EffectiveAcpCapabilityProfile>,
     pub resolver: Arc<AcpLocalCredentialResolver>,
 }
 
 /// Production host preparation using the canonical discovery and acquisition adapters.
-pub async fn prepare_host_acp(
-    input: LocalAcpPreparation,
-) -> Result<PreparedAcpCapabilities, String> {
-    prepare_host_acp_with(
-        input,
-        Arc::new(AcpHostDiscovery::local(std::time::Duration::from_secs(3))),
-        Arc::new(NpmWrapperInstaller),
-    )
-    .await
-}
-
 /// Port-driven application service used by alternative composition roots and tests.
 pub async fn prepare_host_acp_with(
     input: LocalAcpPreparation,
     discovery: Arc<dyn AcpDiscovery>,
     installer: Arc<dyn AcpWrapperInstaller>,
+    negotiator: Arc<dyn AcpCapabilityNegotiator>,
 ) -> Result<PreparedAcpCapabilities, String> {
     let mut observations = discovery.discover_all().await;
     let mut launch_argv = BTreeMap::new();
@@ -156,6 +152,47 @@ pub async fn prepare_host_acp_with(
                 observation.detection = AcpDetectionState::ProbeFailed;
                 observation.credential_state = Some(CredentialObservationState::ProbeFailed);
                 observation.reason_code = Some("acp_wrapper_install_failed".to_string());
+            }
+        }
+    }
+    let mut effective_profiles = BTreeMap::new();
+    for observation in observations.iter_mut().filter(|observation| {
+        observation.detected()
+            && input
+                .selected_cli_ids
+                .as_ref()
+                .is_none_or(|selected| selected.contains(&observation.cli_id))
+    }) {
+        if observation.credential_state != Some(CredentialObservationState::Available) {
+            observation.capability_state = Some(AcpCapabilityState::Unavailable);
+            observation.capability_reason_code = Some("acp_login_not_available".to_string());
+            continue;
+        }
+        let cli = acp_cli(&observation.cli_id).expect("discovery returns catalog ids");
+        let argv = launch_argv
+            .get(&observation.cli_id)
+            .cloned()
+            .unwrap_or_else(|| cli.acquisition.local_argv());
+        match negotiator
+            .negotiate(&argv, Path::new(&input.workspace), cli.auth_method_id)
+            .await
+        {
+            Ok(negotiated) => {
+                let profile = EffectiveAcpCapabilityProfile::verified(
+                    &observation.cli_id,
+                    observation.version.as_deref().unwrap_or("unknown"),
+                    negotiated,
+                );
+                observation.capability_state = Some(AcpCapabilityState::Verified);
+                observation.capability_fingerprint = Some(profile.fingerprint.clone());
+                observation.capability_reason_code = None;
+                effective_profiles.insert(observation.cli_id.clone(), profile);
+            }
+            Err(_) => {
+                observation.capability_state = Some(AcpCapabilityState::ProbeFailed);
+                observation.capability_fingerprint = None;
+                observation.capability_reason_code =
+                    Some("acp_capability_probe_failed".to_string());
             }
         }
     }
@@ -191,6 +228,7 @@ pub async fn prepare_host_acp_with(
     Ok(PreparedAcpCapabilities {
         observations,
         launch_argv,
+        effective_profiles,
         resolver,
     })
 }

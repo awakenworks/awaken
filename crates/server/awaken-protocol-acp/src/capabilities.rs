@@ -5,8 +5,7 @@ use agent_client_protocol::{
     InitializeResponse, NewSessionResponse, SessionConfigKind, SessionConfigOption,
     SessionConfigOptionCategory, SessionConfigSelectOptions, SessionModeState,
 };
-
-use crate::{
+use awaken_acp_contract::{
     AcpSessionConfigChoice, AcpSessionConfigOptionDescriptor, AcpSessionModeDescriptor,
     NegotiatedAcpCapabilities,
 };

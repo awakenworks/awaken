@@ -13,6 +13,8 @@ use awaken_run_executor_acp::{AcpCli, AcpProbeCommand, AcpProbePredicate, known_
 use awaken_runtime_contract::CredentialObservationState;
 use tokio::process::Command;
 
+use crate::AcpCapabilityState;
+
 /// Raw, bounded output from the process-probe port.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AcpProbeOutput {
@@ -217,6 +219,9 @@ pub struct AcpHostObservation {
     pub version: Option<String>,
     pub credential_state: Option<CredentialObservationState>,
     pub reason_code: Option<String>,
+    pub capability_state: Option<AcpCapabilityState>,
+    pub capability_fingerprint: Option<String>,
+    pub capability_reason_code: Option<String>,
 }
 
 impl AcpHostObservation {
@@ -294,6 +299,9 @@ impl AcpDiscovery for AcpHostDiscovery {
                     version,
                     credential_state: Some(CredentialObservationState::ProbeFailed),
                     reason_code: Some("acp_login_probe_failed".to_string()),
+                    capability_state: None,
+                    capability_fingerprint: None,
+                    capability_reason_code: None,
                 };
             }
         };
@@ -319,6 +327,9 @@ impl AcpDiscovery for AcpHostDiscovery {
                     .unwrap_or("acp_login_probe_unrecognized")
                     .to_string(),
             ),
+            capability_state: None,
+            capability_fingerprint: None,
+            capability_reason_code: None,
         }
     }
 }
@@ -335,6 +346,9 @@ fn observation(
         version: None,
         credential_state: None,
         reason_code: Some(reason_code.to_string()),
+        capability_state: None,
+        capability_fingerprint: None,
+        capability_reason_code: None,
     }
 }
 

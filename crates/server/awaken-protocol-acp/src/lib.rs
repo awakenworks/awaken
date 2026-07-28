@@ -14,6 +14,10 @@
 //! are OS-jailed, not routed through our tool layer.
 
 use async_trait::async_trait;
+#[cfg(feature = "real-acp")]
+use awaken_acp_contract::{
+    AcpCapabilityHandshake, AcpCapabilityProbeConfig, NegotiatedAcpCapabilities,
+};
 use awaken_agent_channel::AgentChannel;
 use awaken_provisioning_contract as pc;
 use serde::{Deserialize, Serialize};
@@ -31,6 +35,25 @@ mod capabilities;
 pub mod jsonrpc;
 #[cfg(feature = "real-acp")]
 pub use jsonrpc::negotiate_capabilities;
+
+/// Official ACP JSON-RPC implementation of the neutral capability handshake
+/// port. Composition roots inject this leaf adapter into the Worker application.
+#[cfg(feature = "real-acp")]
+pub struct ProtocolAcpCapabilityHandshake;
+
+#[cfg(feature = "real-acp")]
+#[async_trait]
+impl AcpCapabilityHandshake for ProtocolAcpCapabilityHandshake {
+    async fn negotiate(
+        &self,
+        channel: &mut dyn AgentChannel,
+        config: &AcpCapabilityProbeConfig,
+    ) -> Result<NegotiatedAcpCapabilities, String> {
+        negotiate_capabilities(channel, config)
+            .await
+            .map_err(|error| error.to_string())
+    }
+}
 
 /// Which wire the bridge speaks to the agent. A per-session datum (each ACP CLI
 /// row declares its own), not a build-time global: a test/fixture agent speaks the
@@ -243,57 +266,6 @@ pub struct SessionMcpServer {
 pub struct SessionConfigOptionSelection {
     pub config_id: String,
     pub value: String,
-}
-
-/// Secret-free capabilities negotiated from one concrete ACP process before
-/// any user prompt is sent.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NegotiatedAcpCapabilities {
-    pub protocol_version: String,
-    pub load_session: bool,
-    pub prompt_image: bool,
-    pub prompt_audio: bool,
-    pub prompt_embedded_context: bool,
-    pub mcp_http: bool,
-    pub mcp_sse: bool,
-    pub session_list: bool,
-    pub modes: Vec<AcpSessionModeDescriptor>,
-    pub config_options: Vec<AcpSessionConfigOptionDescriptor>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AcpSessionModeDescriptor {
-    pub native_id: String,
-    pub name: String,
-    pub description: Option<String>,
-    pub current: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AcpSessionConfigOptionDescriptor {
-    pub native_id: String,
-    pub name: String,
-    pub description: Option<String>,
-    pub category: Option<String>,
-    pub current_value: String,
-    pub choices: Vec<AcpSessionConfigChoice>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AcpSessionConfigChoice {
-    pub native_value: String,
-    pub name: String,
-    pub description: Option<String>,
-    pub group_id: Option<String>,
-    pub group_name: Option<String>,
-}
-
-/// Inputs for a bounded, prompt-free capability negotiation. Process lifetime,
-/// timeout and reaping remain the caller's responsibility.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct AcpCapabilityProbeConfig {
-    pub session_cwd: Option<String>,
-    pub auth_method_id: Option<String>,
 }
 
 /// The per-turn cross-cutting inputs the driver needs beyond the prompt, bundled

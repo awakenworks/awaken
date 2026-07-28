@@ -103,6 +103,9 @@ mod tests {
             version: Some("1".into()),
             credential_state: Some(awaken_runtime_contract::CredentialObservationState::Available),
             reason_code: None,
+            capability_state: Some(awaken_acp_application::AcpCapabilityState::Verified),
+            capability_fingerprint: Some("fixture".into()),
+            capability_reason_code: None,
         }
     }
 

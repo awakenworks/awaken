@@ -3,13 +3,14 @@
 //! It adapts the canonical ACP discovery observations to the existing credential
 //! liveness port. It never opens, returns, or materializes CLI credentials.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 pub use awaken_acp_application::AcpLocalCredentialResolver;
 use awaken_acp_application::{
-    AcpDiscovery, AcpHostDiscovery, AcpHostObservation, AcpWrapperInstaller, LocalAcpPreparation,
-    NpmWrapperInstaller, prepare_host_acp_with,
+    AcpCapabilityNegotiator, AcpDiscovery, AcpHostDiscovery, AcpHostObservation,
+    AcpWrapperInstaller, EffectiveAcpCapabilityProfile, HostAcpCapabilityNegotiator,
+    LocalAcpPreparation, NpmWrapperInstaller, prepare_host_acp_with,
 };
 use awaken_run_executor_acp::acp_cli;
 use awaken_runtime_contract::CredentialObservationState;
@@ -19,6 +20,7 @@ use awaken_runtime_contract::CredentialObservationState;
 /// already-composed ports needed to build the existing WorkerNode.
 pub struct PreparedLocalAcp {
     resolver: Arc<AcpLocalCredentialResolver>,
+    effective_profiles: BTreeMap<String, EffectiveAcpCapabilityProfile>,
     stores: awaken_control::InferenceMaterializationStores,
     resources: Option<awaken_worker::WorkerResourcePlane>,
 }
@@ -40,10 +42,17 @@ pub async fn prepare_local_acp(
     let discovery: Arc<dyn AcpDiscovery> =
         Arc::new(AcpHostDiscovery::local(std::time::Duration::from_secs(3)));
     let installer: Arc<dyn AcpWrapperInstaller> = Arc::new(NpmWrapperInstaller);
+    let negotiator: Arc<dyn AcpCapabilityNegotiator> = Arc::new(HostAcpCapabilityNegotiator::new(
+        std::time::Duration::from_secs(10),
+        Arc::new(awaken_protocol_acp::ProtocolAcpCapabilityHandshake),
+    ));
     let stores =
         awaken_control::open_inference_materialization_stores(&deployment.control, seal_key).await;
     let resources = Some(local_worker_resources(deployment, stores.clone()).await?);
-    prepare_local_acp_with(deployment, discovery, installer, stores, resources).await
+    prepare_local_acp_with(
+        deployment, discovery, installer, negotiator, stores, resources,
+    )
+    .await
 }
 
 async fn local_worker_resources(
@@ -79,6 +88,7 @@ async fn prepare_local_acp_with(
     deployment: &mut crate::config::ResolvedDeployment,
     discovery: Arc<dyn AcpDiscovery>,
     installer: Arc<dyn AcpWrapperInstaller>,
+    negotiator: Arc<dyn AcpCapabilityNegotiator>,
     stores: awaken_control::InferenceMaterializationStores,
     resources: Option<awaken_worker::WorkerResourcePlane>,
 ) -> Result<Option<PreparedLocalAcp>, String> {
@@ -100,6 +110,7 @@ async fn prepare_local_acp_with(
         },
         discovery,
         installer,
+        negotiator,
     )
     .await?;
     deployment.apply_local_acp_observations(prepared.observations)?;
@@ -116,6 +127,7 @@ async fn prepare_local_acp_with(
     deployment.run_local_pool = false;
     Ok(Some(PreparedLocalAcp {
         resolver: prepared.resolver,
+        effective_profiles: prepared.effective_profiles,
         stores,
         resources,
     }))
@@ -131,12 +143,18 @@ impl PreparedLocalAcp {
         deployment: &crate::config::ResolvedDeployment,
     ) -> Result<awaken_worker::WorkerNode, String> {
         let worker = &deployment.worker;
+        let mut extra_capabilities = worker.capabilities.clone();
+        extra_capabilities.extend(
+            self.effective_profiles.values().map(|profile| {
+                format!("acp-capability/{}/{}", profile.cli_id, profile.fingerprint)
+            }),
+        );
         let mut manifest = worker
             .build_digest
             .clone()
             .map(awaken_worker::StandardManifestConfig::new)
             .unwrap_or_default()
-            .with_extra_capabilities(worker.capabilities.clone());
+            .with_extra_capabilities(extra_capabilities);
         if let Some(zone) = &worker.zone {
             manifest = manifest.with_zone(zone.clone());
         }
@@ -232,6 +250,7 @@ mod tests {
 
     use async_trait::async_trait;
     use awaken_acp_application::AcpDetectionState;
+    use awaken_acp_contract::NegotiatedAcpCapabilities;
     use awaken_credential_vault::repo::{
         CredentialRepo, InMemoryCredentialRepo, ensure_worker_local,
     };
@@ -280,6 +299,40 @@ mod tests {
         }
     }
 
+    struct FixedNegotiator {
+        fail: bool,
+    }
+
+    #[async_trait]
+    impl AcpCapabilityNegotiator for FixedNegotiator {
+        async fn negotiate(
+            &self,
+            _argv: &[String],
+            _cwd: &Path,
+            _auth_method_id: Option<&str>,
+        ) -> Result<NegotiatedAcpCapabilities, String> {
+            if self.fail {
+                return Err("fixture capability failure".into());
+            }
+            Ok(NegotiatedAcpCapabilities {
+                protocol_version: "1".into(),
+                load_session: true,
+                prompt_image: false,
+                prompt_audio: false,
+                prompt_embedded_context: false,
+                mcp_http: true,
+                mcp_sse: false,
+                session_list: false,
+                modes: Vec::new(),
+                config_options: Vec::new(),
+            })
+        }
+    }
+
+    fn fixed_negotiator() -> Arc<dyn AcpCapabilityNegotiator> {
+        Arc::new(FixedNegotiator { fail: false })
+    }
+
     fn host(
         id: &str,
         detection: AcpDetectionState,
@@ -292,6 +345,9 @@ mod tests {
             version: Some("1".into()),
             credential_state,
             reason_code: Some(format!("fixture_{id}")),
+            capability_state: None,
+            capability_fingerprint: None,
+            capability_reason_code: None,
         }
     }
 
@@ -567,6 +623,7 @@ mod tests {
             &mut deployment,
             discovery.clone(),
             installer.clone(),
+            fixed_negotiator(),
             stores.clone(),
             None,
         )
@@ -590,6 +647,14 @@ mod tests {
             .unwrap();
         assert!(worker.manifest().capabilities.contains("acp:codex"), "P1");
         assert!(
+            worker
+                .manifest()
+                .capabilities
+                .iter()
+                .any(|capability| capability.starts_with("acp-capability/codex/")),
+            "P1 verified capability fingerprint is Worker evidence"
+        );
+        assert!(
             worker.manifest().sandbox_backends.contains("namespace"),
             "P1 managed runs retain the deployment tier; BackendOwned selects Workdir per Session"
         );
@@ -607,10 +672,17 @@ mod tests {
             "P1 startup acquisition is the launch route"
         );
 
-        prepare_local_acp_with(&mut deployment, discovery, installer.clone(), stores, None)
-            .await
-            .unwrap()
-            .expect("P2");
+        prepare_local_acp_with(
+            &mut deployment,
+            discovery,
+            installer.clone(),
+            fixed_negotiator(),
+            stores,
+            None,
+        )
+        .await
+        .unwrap()
+        .expect("P2");
         let repeated = credentials.list(&workspace).await.unwrap();
         assert_eq!(repeated.len(), 1, "P2");
         assert_eq!(repeated[0].id, first[0].id, "P2");
@@ -621,6 +693,16 @@ mod tests {
                 .iter()
                 .any(|row| row.cli_id == "claude" && row.detected()),
             "P4 diagnostics retain the unselected detected row"
+        );
+        let codex_observation = deployment
+            .local_acp_observations
+            .iter()
+            .find(|row| row.cli_id == "codex")
+            .expect("P1 codex observation");
+        assert_eq!(
+            codex_observation.capability_state,
+            Some(awaken_acp_application::AcpCapabilityState::Verified),
+            "P1"
         );
     }
 
@@ -724,9 +806,16 @@ mod tests {
             secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
         };
 
-        let prepared = prepare_local_acp_with(&mut deployment, discovery, installer, stores, None)
-            .await
-            .expect("F2 startup remains diagnosable");
+        let prepared = prepare_local_acp_with(
+            &mut deployment,
+            discovery,
+            installer,
+            fixed_negotiator(),
+            stores,
+            None,
+        )
+        .await
+        .expect("F2 startup remains diagnosable");
         assert!(prepared.is_none(), "F2");
         assert!(deployment.runtime.acp.is_none(), "F2");
         let codex = deployment

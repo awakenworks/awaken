@@ -138,6 +138,9 @@ mod runtime_capability_tests {
                 awaken_runtime_contract::CredentialObservationState::LoginRequired,
             ),
             reason_code: Some("acp_login_required".into()),
+            capability_state: None,
+            capability_fingerprint: None,
+            capability_reason_code: None,
         }]);
         let codex = projected.iter().find(|row| row.id == "acp:codex").unwrap();
         let local = codex.local.as_ref().expect("L1");

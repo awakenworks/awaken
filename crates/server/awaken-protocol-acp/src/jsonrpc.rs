@@ -26,6 +26,7 @@ use agent_client_protocol::{
     SessionModeId, SessionNotification, SetSessionConfigOptionRequest,
     SetSessionConfigOptionResponse, SetSessionModeRequest,
 };
+use awaken_acp_contract::{AcpCapabilityProbeConfig, NegotiatedAcpCapabilities};
 use awaken_agent_channel::AgentChannel;
 use serde::Serialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -68,10 +69,9 @@ fn to_acp_mcp_servers(
 
 use crate::real_acp::{project_update, termination_from_stop_reason};
 use crate::{
-    AcpCapabilityProbeConfig, AcpError, AcpLaunchEvent, AcpLaunchStage, AcpProjectedEvent,
-    AllowAll, AppendError, LaunchSink, NegotiatedAcpCapabilities, PermissionAsk,
-    PermissionResolver, PermissionVerdict, RunFactAppender, TerminationReason, TurnConfig,
-    notify_launch,
+    AcpError, AcpLaunchEvent, AcpLaunchStage, AcpProjectedEvent, AllowAll, AppendError, LaunchSink,
+    PermissionAsk, PermissionResolver, PermissionVerdict, RunFactAppender, TerminationReason,
+    TurnConfig, notify_launch,
 };
 
 const JSONRPC: &str = "2.0";

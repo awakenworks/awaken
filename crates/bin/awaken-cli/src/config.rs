@@ -627,7 +627,13 @@ impl ResolvedDeployment {
             .and_then(|profile| profile.default_cli().map(str::to_string));
         let detected = selected
             .iter()
-            .filter(|observation| observation.detected())
+            .filter(|observation| {
+                observation.detected()
+                    && (observation.credential_state
+                        != Some(awaken_runtime_contract::CredentialObservationState::Available)
+                        || observation.capability_state
+                            == Some(awaken_acp_application::AcpCapabilityState::Verified))
+            })
             .map(|observation| observation.cli_id.clone())
             .collect::<Vec<_>>();
         self.runtime.acp = if detected.is_empty() {
@@ -892,6 +898,12 @@ mod tests {
             credential_state: (detection == awaken_acp_application::AcpDetectionState::Detected)
                 .then_some(awaken_runtime_contract::CredentialObservationState::Available),
             reason_code: Some("fixture".to_string()),
+            capability_state: (detection == awaken_acp_application::AcpDetectionState::Detected)
+                .then_some(awaken_acp_application::AcpCapabilityState::Verified),
+            capability_fingerprint: (detection
+                == awaken_acp_application::AcpDetectionState::Detected)
+                .then(|| "fixture".to_string()),
+            capability_reason_code: None,
         }
     }
 
@@ -907,6 +919,7 @@ mod tests {
         // A2 unconfigured + one detected  -> that CLI + automatic default
         // A3 unconfigured + many detected -> all CLIs + no random default
         // A4 explicit subset              -> only detected configured CLIs
+        // A5 available + capability failure -> diagnostic only, no route
         let missing = acp_observation("claude", awaken_acp_application::AcpDetectionState::Missing);
         let codex = acp_observation("codex", awaken_acp_application::AcpDetectionState::Detected);
         let claude = acp_observation(
@@ -936,6 +949,16 @@ mod tests {
             "A3"
         );
         assert_eq!(many.default_cli(), None, "A3");
+
+        let mut incompatible = codex.clone();
+        incompatible.capability_state =
+            Some(awaken_acp_application::AcpCapabilityState::ProbeFailed);
+        incompatible.capability_fingerprint = None;
+        let mut failed = resolve(FileConfig::default(), ConfigOverrides::default());
+        failed
+            .apply_local_acp_observations(vec![incompatible])
+            .unwrap();
+        assert!(failed.runtime.acp.is_none(), "A5");
 
         let mut explicit = resolve(
             FileConfig {

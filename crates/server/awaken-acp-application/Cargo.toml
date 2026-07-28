@@ -6,10 +6,13 @@ license.workspace = true
 
 [dependencies]
 awaken-run-executor-acp.workspace = true
+awaken-acp-contract.workspace = true
+awaken-agent-channel.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-credential-vault.workspace = true
 async-trait.workspace = true
-tokio = { workspace = true, features = ["process", "time"] }
+sha2 = "0.10"
+tokio = { workspace = true, features = ["io-util", "process", "time"] }
 
 [lints]
 workspace = true

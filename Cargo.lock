@@ -234,10 +234,22 @@ name = "awaken-acp-application"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
+ "awaken-acp-contract",
+ "awaken-agent-channel",
  "awaken-credential-vault",
  "awaken-run-executor-acp",
  "awaken-runtime-contract",
+ "sha2 0.10.9",
  "tokio",
+]
+
+[[package]]
+name = "awaken-acp-contract"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-agent-channel",
+ "serde",
 ]
 
 [[package]]
@@ -334,6 +346,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-acp-application",
+ "awaken-acp-contract",
  "awaken-admin-assistant",
  "awaken-admin-config-api",
  "awaken-agent-contract",
@@ -350,6 +363,7 @@ dependencies = [
  "awaken-memory-store",
  "awaken-model-catalog",
  "awaken-observability",
+ "awaken-protocol-acp",
  "awaken-protocol-managed",
  "awaken-provider-genai",
  "awaken-resource-reclaimer",
@@ -944,6 +958,7 @@ version = "1.0.0-dev"
 dependencies = [
  "agent-client-protocol",
  "async-trait",
+ "awaken-acp-contract",
  "awaken-agent-channel",
  "awaken-provisioning-contract",
  "serde",

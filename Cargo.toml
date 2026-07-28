@@ -121,6 +121,7 @@ awaken-sandbox-policy-store = { path = "crates/server/awaken-sandbox-policy-stor
 awaken-worker-contract = { path = "crates/worker/awaken-worker-contract" }
 awaken-worker-registry = { path = "crates/server/awaken-worker-registry" }
 awaken-agent-channel = { path = "crates/worker/awaken-agent-channel" }
+awaken-acp-contract = { path = "crates/worker/awaken-acp-contract" }
 awaken-connection-plan = { path = "crates/worker/awaken-connection-plan" }
 awaken-tool-relay = { path = "crates/worker/awaken-tool-relay" }
 awaken-file-store = { path = "crates/resources/awaken-file-store" }
