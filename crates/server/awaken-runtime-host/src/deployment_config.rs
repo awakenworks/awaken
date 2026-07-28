@@ -11,6 +11,7 @@
 //! library reads it rather than process-global deployment configuration.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 
 /// The ACP adapters one Worker can actually launch.
@@ -264,6 +265,9 @@ pub struct DeploymentConfig {
     pub nats_url: Option<String>,
     /// The shared database url for Postgres backends (`DeploymentConfig::database_url`).
     pub database_url: Option<String>,
+    /// Exact maximum size of each runtime Postgres pool. Resolved once by the
+    /// composition root and injected into commit/dispatch stores.
+    pub postgres_max_connections: NonZeroU32,
     /// The dispatch lease owner (`AWAKEN_DISPATCH_OWNER`), distinct per process/node.
     pub dispatch_owner: String,
     /// When set, this process is a database-less **worker** of the cell server at
@@ -379,6 +383,7 @@ impl DeploymentConfig {
             wake_channel: DEFAULT_WAKE_CHANNEL.to_string(),
             nats_url: None,
             database_url: None,
+            postgres_max_connections: default_postgres_max_connections(),
             dispatch_owner: "embedded-worker".to_string(),
             upstream: None,
             sandbox_tier: SandboxTier::Namespace,
@@ -414,6 +419,17 @@ impl DeploymentConfig {
         }
         None
     }
+}
+
+/// Runtime-aware default used only at the typed deployment authoring boundary.
+/// Lower Postgres adapters receive the resolved number and own no sizing policy.
+#[must_use]
+pub fn default_postgres_max_connections() -> NonZeroU32 {
+    let value = std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get() as u32)
+        .unwrap_or(4)
+        .saturating_add(8);
+    NonZeroU32::new(value).expect("parallelism plus eight is non-zero")
 }
 
 /// One parser for the positive deployment axis and its legacy negated alias.

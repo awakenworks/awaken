@@ -533,7 +533,7 @@ mod tests {
             eprintln!("skip: AWAKEN_TEST_PG_URL unset");
             return;
         };
-        crate::commit_backend::init_shared_postgres_commit(&url)
+        crate::commit_backend::init_shared_postgres_commit(&url, 10)
             .await
             .expect("init");
         // Selecting the postgres backend now yields a HostCommit::Postgres.

@@ -440,6 +440,14 @@ impl ResolvedDeployment {
                 Some(other) => return Err(format!("invalid content_redaction={other:?}")),
             },
         };
+        let postgres_max_connections = file
+            .postgres_max_connections
+            .map(|value| {
+                std::num::NonZeroU32::new(value)
+                    .ok_or_else(|| "postgres_max_connections must be greater than zero".to_owned())
+            })
+            .transpose()?
+            .unwrap_or_else(awaken_runtime_host::default_postgres_max_connections);
         let runtime = DeploymentConfig {
             durable: true,
             storage_dir: Some(data_dir.clone()),
@@ -456,6 +464,7 @@ impl ResolvedDeployment {
                 .unwrap_or_else(|| DEFAULT_WAKE_CHANNEL.to_owned()),
             nats_url: file.nats_url.clone(),
             database_url: dispatch_url,
+            postgres_max_connections,
             dispatch_owner: file
                 .dispatch_owner
                 .clone()
@@ -788,6 +797,7 @@ struct FileConfig {
     run_local_pool: Option<bool>,
     no_browser: Option<bool>,
     runtime_database_url: Option<String>,
+    postgres_max_connections: Option<u32>,
     management_database_url_file: Option<PathBuf>,
     resource_database_url: Option<String>,
     catalog_db: Option<String>,
@@ -1025,6 +1035,43 @@ mod tests {
         assert!(config.runtime.durable);
         assert!(matches!(config.seal_key, SealKeySource::LocalFile(_)));
         assert_eq!(config.role, Role::Serve);
+    }
+
+    #[test]
+    fn postgres_pool_size_is_resolved_once_as_a_non_zero_deployment_value() {
+        // Cause/effect graph:
+        // C1 the author omits postgres_max_connections -> E1 the composition
+        // root derives one host-aware non-zero default; C2 the author supplies
+        // a positive value -> E2 that exact value is retained; C3 the author
+        // supplies zero -> E3 configuration fails before any store is built.
+        //
+        // Decision table:
+        // R1 !configured       => E1
+        // R2 configured && > 0 => E2
+        // R3 configured && = 0 => E3
+        let defaulted = resolve(FileConfig::default(), ConfigOverrides::default());
+        assert!(defaulted.runtime.postgres_max_connections.get() > 0, "R1");
+
+        let explicit = resolve(
+            FileConfig {
+                postgres_max_connections: Some(23),
+                ..Default::default()
+            },
+            ConfigOverrides::default(),
+        );
+        assert_eq!(explicit.runtime.postgres_max_connections.get(), 23, "R2");
+
+        let error = ResolvedDeployment::resolve_file(
+            ConfigOverrides::default(),
+            Some(PathBuf::from("/home/dev")),
+            PathBuf::from("/home/dev/.awaken/config.toml"),
+            FileConfig {
+                postgres_max_connections: Some(0),
+                ..Default::default()
+            },
+        )
+        .expect_err("R3");
+        assert!(error.contains("postgres_max_connections"), "R3: {error}");
     }
 
     #[test]

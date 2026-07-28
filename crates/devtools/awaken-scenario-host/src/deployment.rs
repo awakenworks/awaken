@@ -13,6 +13,13 @@ pub fn scenario_deployment() -> awaken_runtime_host::DeploymentConfig {
     deployment.database_url = std::env::var("SESSION_DEPLOYMENT_DATABASE_URL")
         .ok()
         .filter(|value| !value.trim().is_empty());
+    if let Ok(value) = std::env::var("SESSION_DEPLOYMENT_POSTGRES_MAX_CONNECTIONS") {
+        deployment.postgres_max_connections = value
+            .parse()
+            .ok()
+            .and_then(std::num::NonZeroU32::new)
+            .expect("SESSION_DEPLOYMENT_POSTGRES_MAX_CONNECTIONS must be a positive u32");
+    }
     if std::env::var("SESSION_DEPLOYMENT_DISPATCH_BACKEND").as_deref() == Ok("postgres") {
         deployment.dispatch_backend = awaken_runtime_host::DispatchBackend::Postgres;
     }

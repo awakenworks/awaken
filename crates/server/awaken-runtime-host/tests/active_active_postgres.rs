@@ -186,12 +186,12 @@ async fn active_active_control_child() {
     let database_url =
         std::env::var(CHILD_DATABASE_URL_ENV).expect("child database URL is configured");
     let coordinator = Arc::new(
-        PostgresCommitCoordinator::connect(&database_url)
+        PostgresCommitCoordinator::connect(&database_url, 10)
             .await
             .expect("child commit coordinator"),
     );
     let dispatch = Arc::new(
-        PostgresDispatchStore::connect(&database_url)
+        PostgresDispatchStore::connect(&database_url, 10)
             .await
             .expect("child dispatch store"),
     );

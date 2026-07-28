@@ -77,7 +77,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .database_url
             .as_deref()
             .ok_or("scenario Postgres commit store requires a database URL")?;
-        awaken_runtime_host::init_shared_postgres_commit(url).await?;
+        awaken_runtime_host::init_shared_postgres_commit(
+            url,
+            deployment.postgres_max_connections.get(),
+        )
+        .await?;
     }
     let app = match std::env::var("AWAKEN_MODEL_MODE").as_deref() {
         Ok("probe") => {

@@ -216,9 +216,12 @@ async fn serve_resolved(
             .database_url
             .as_deref()
             .expect("validated Postgres commit URL");
-        awaken_runtime_host::init_shared_postgres_commit(url)
-            .await
-            .map_err(|error| format!("initialize Postgres commit store: {error}"))?;
+        awaken_runtime_host::init_shared_postgres_commit(
+            url,
+            deployment.runtime.postgres_max_connections.get(),
+        )
+        .await
+        .map_err(|error| format!("initialize Postgres commit store: {error}"))?;
     }
 
     let app = if management_only {

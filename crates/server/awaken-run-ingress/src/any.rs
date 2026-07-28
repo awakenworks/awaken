@@ -57,8 +57,8 @@ impl AnyDispatchStore {
 
     /// Connect the shared Postgres backend at `url`: one queue for a multi-node
     /// fleet, `FOR UPDATE SKIP LOCKED` gives distinct-claim across processes.
-    pub async fn connect_postgres(url: &str) -> Result<Self, String> {
-        PostgresDispatchStore::connect(url)
+    pub async fn connect_postgres(url: &str, max_connections: u32) -> Result<Self, String> {
+        PostgresDispatchStore::connect(url, max_connections)
             .await
             .map(Self::from_store)
             .map_err(|e| e.to_string())
@@ -73,8 +73,9 @@ impl AnyDispatchStore {
     pub async fn connect_postgres_with_wake(
         url: &str,
         channel: &str,
+        max_connections: u32,
     ) -> Result<(Self, Arc<dyn crate::wake::WakeSignal>), String> {
-        let store = PostgresDispatchStore::connect(url)
+        let store = PostgresDispatchStore::connect(url, max_connections)
             .await
             .map_err(|e| e.to_string())?;
         let wake: Arc<dyn crate::wake::WakeSignal> =
@@ -94,8 +95,9 @@ impl AnyDispatchStore {
         db_url: &str,
         nats_url: &str,
         subject: &str,
+        max_connections: u32,
     ) -> Result<(Self, Arc<dyn crate::wake::WakeSignal>), String> {
-        let store = PostgresDispatchStore::connect(db_url)
+        let store = PostgresDispatchStore::connect(db_url, max_connections)
             .await
             .map_err(|e| e.to_string())?;
         let wake: Arc<dyn crate::wake::WakeSignal> = Arc::new(

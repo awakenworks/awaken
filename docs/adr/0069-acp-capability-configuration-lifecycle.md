@@ -10,9 +10,11 @@
   composition, descendant process-group reaping, event-triggered all-scope
   publication reconciliation, typed capture authoring, request-grained subject
   attribution, subject-scoped erasable ACP session homes, and the product-level
-  Art.17 fan-out E2E. A real persisted-login Claude session remains an external
-  release gate. Typed migration of the remaining runtime environment settings
-  is still an explicit implementation gap. “Proposed” therefore means the
+  Art.17 fan-out E2E. PostgreSQL pool sizing is also resolved once as a non-zero
+  typed deployment value and injected into both runtime stores. A real
+  persisted-login Claude session remains an external release gate. Typed
+  migration of the remaining runtime environment settings is still an explicit
+  implementation gap. “Proposed” therefore means the
   complete decision is not yet accepted; it does not mean the listed foundation
   is hypothetical.
 - Amends:
@@ -479,9 +481,12 @@ redaction are authored once in typed deployment configuration; enrollment
 signing is an internally generated process capability rather than an ambient
 operator secret. OAuth cache lifetime is fixed credential-domain behavior until
 a per-source persisted lifetime contract exists; it is no longer process
-configuration. Remaining production readers such as database-pool and
-observability settings still require migration before D12 is complete. PATH,
-HOME, DISPLAY and test gate variables are not part of that migration.
+configuration. The database-pool reader has now been removed: the CLI authors
+`postgres_max_connections`, `DeploymentConfig` makes zero unrepresentable, and
+the commit/dispatch adapters receive the exact resolved number. Observability
+settings and other remaining production readers still require migration before
+D12 is complete. PATH, HOME, DISPLAY and test gate variables are not part of
+that migration.
 
 ### D13 — Request attribution and retained ACP content have one lifecycle
 

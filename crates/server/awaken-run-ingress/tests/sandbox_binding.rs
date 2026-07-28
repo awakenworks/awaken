@@ -148,7 +148,7 @@ async fn postgres_backend_binds_and_recovers() {
         eprintln!("skip: AWAKEN_TEST_DATABASE_URL unset");
         return;
     };
-    let store = awaken_run_ingress::PostgresDispatchStore::connect(&url)
+    let store = awaken_run_ingress::PostgresDispatchStore::connect(&url, 10)
         .await
         .expect("connect + migrate (incl. V0011 sandbox column)");
     binding_survives_a_recovery_claim(&store).await;
