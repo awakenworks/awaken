@@ -33,6 +33,7 @@ impl SharedHost {
                 })
             }
             awaken_runtime_contract::resolved::ModelProvisioning::Provider { .. }
+            | awaken_runtime_contract::resolved::ModelProvisioning::Remote { .. }
             | awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor => {
                 Ok(&self.session_provider)
             }

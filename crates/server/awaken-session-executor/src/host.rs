@@ -78,6 +78,14 @@ pub type AttemptExecutorDecorator = Arc<
         + Sync,
 >;
 
+/// One remote-attempt adapter plus the exact credential realization evidence
+/// installed beside it. Bundling both prevents Worker/direct admission from
+/// drifting away from the transport resolver that performs the effect.
+pub struct RemoteAttemptInstallation {
+    pub executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
+    pub credential_realization: awaken_runtime_contract::CredentialRealizationCapabilities,
+}
+
 /// A unique temp-dir base for a sub-agent sandbox provider. `kind` tags the use
 /// (e.g. `judge`, `deleg`); empty for the host's own provider.
 fn sub_base(kind: &str) -> PathBuf {
@@ -145,6 +153,8 @@ pub struct SharedHost {
     /// owns only the `RunAttemptExecutor` port and never names the A2A protocol.
     pub(crate) remote_attempt_executor:
         Option<Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>>,
+    pub(crate) remote_credential_realization:
+        awaken_runtime_contract::CredentialRealizationCapabilities,
     /// Optional application wrapper around the complete per-Session attempt
     /// router. It cannot replace or bypass the built-in backend registry.
     pub(crate) application_attempt_decorator: Option<AttemptExecutorDecorator>,

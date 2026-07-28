@@ -810,7 +810,9 @@ impl WorkerNode {
         let mut host = host
             .with_worker_upstream(upstream)
             .with_dispatch_store(dispatch_store)
-            .with_remote_attempt_executor(awaken_server::a2a_attempt_executor());
+            .with_remote_attempt_executor(awaken_server::a2a_attempt_executor(
+                managed_credential_materializer.clone(),
+            ));
         if let Some(materializer) = &self.materializer {
             host = host.with_inference_materializer(materializer.clone());
         }

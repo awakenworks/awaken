@@ -103,8 +103,8 @@ pub use crate::commit_backend::init_shared_postgres_commit;
 pub use crate::credential_materializer::PinnedCredentialMaterializer;
 pub use crate::dispatch_backend::init_shared_postgres_dispatch_with_config;
 pub use crate::host::{
-    AttemptExecutorDecorator, HostResume, ResourcePlanePorts, SharedHost, remote_worker_placement,
-    self_hosted_inference_holder,
+    AttemptExecutorDecorator, HostResume, RemoteAttemptInstallation, ResourcePlanePorts,
+    SharedHost, remote_worker_placement, self_hosted_inference_holder,
 };
 pub use crate::postgres_migration_lock::PostgresMigrationLock;
 pub use crate::worker_control_client::WorkerControlClient;
