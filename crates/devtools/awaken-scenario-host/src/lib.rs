@@ -1830,9 +1830,13 @@ pub async fn build_config_router() -> Router {
     // The reserved value owns only configuration/tool visibility. Install the
     // executable in the Host's real platform Workspace so Sessions, resources,
     // credentials, and runtime lookup share one coordinate.
-    awaken_control::seed_admin_assistant(&plane, &platform_workspace)
-        .await
-        .expect("seed admin assistant");
+    awaken_control::seed_admin_assistant(
+        &plane,
+        &platform_workspace,
+        awaken_config_store::ModelSelection::Auto,
+    )
+    .await
+    .expect("seed admin assistant");
     // `/v1/agents` authors and reads through the same durable ConfigPlane.
     let agents = awaken_protocol_managed::agents_router(std::sync::Arc::new(
         awaken_protocol_managed::AgentRegistryState::from_repository(std::sync::Arc::new(

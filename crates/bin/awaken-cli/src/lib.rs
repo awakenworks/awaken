@@ -12,6 +12,7 @@
 //! The `awaken` binary ([`main`](../main.rs)) is a thin shell over this library.
 
 mod acp_local_credentials;
+mod assistant_selection;
 mod brain_admin;
 pub mod config;
 
@@ -1411,7 +1412,19 @@ async fn management_router_over(
     // Seed the in-console Admin Assistant as an ordinary published agent in the
     // reserved scope (ADR-0052 D1/D2). Best-effort: a server booted without a
     // resolvable model still starts (the assistant stays a draft until one is set).
-    if let Err(err) = awaken_control::seed_admin_assistant(&plane, &platform_workspace).await {
+    let assistant_catalog = catalog.snapshot().await.unwrap_or_default();
+    let assistant_credentials = credentials
+        .list(&platform_workspace)
+        .await
+        .unwrap_or_default();
+    let assistant_selection = assistant_selection::select(
+        &assistant_catalog,
+        &assistant_credentials,
+        &assembly.local_acp_observations,
+    );
+    if let Err(err) =
+        awaken_control::seed_admin_assistant(&plane, &platform_workspace, assistant_selection).await
+    {
         eprintln!("admin assistant not seeded (configure a model, then republish): {err}");
     }
     // When an operator adds a model AFTER startup, re-publish the reserved-scope
