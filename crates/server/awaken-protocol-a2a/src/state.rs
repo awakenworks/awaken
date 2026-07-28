@@ -73,14 +73,7 @@ struct PersistentState {
 }
 
 impl A2aState {
-    pub fn new(runtime: Arc<dyn ProtocolRuntime>) -> Self {
-        let persistence_path = std::env::var_os("AWAKEN_A2A_STATE_PATH")
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("DeploymentConfig::storage_dir")
-                    .map(PathBuf::from)
-                    .map(|directory| directory.join("a2a-state.json"))
-            });
+    pub fn new(runtime: Arc<dyn ProtocolRuntime>, persistence_path: Option<PathBuf>) -> Self {
         Self::with_persistence_path(runtime, persistence_path)
     }
 
@@ -513,6 +506,15 @@ mod tests {
 
     #[tokio::test]
     async fn tasks_configs_and_wire_versions_survive_restart() {
+        // Cause/effect graph:
+        // C1 an explicit persistence path is injected -> E1 task/config state
+        // survives construction of a new adapter; C2 protocol version and owner
+        // are persisted with the config -> E2 both remain available to the same
+        // tenant after restart.
+        //
+        // Decision rule R1: C1 && C2 => E1 && E2. The complementary no-path
+        // rule is represented structurally by `router`, which injects `None`
+        // and therefore creates no persistence side effect.
         let path = std::env::temp_dir().join(format!(
             "awaken-a2a-state-{}-{}.json",
             std::process::id(),
