@@ -8,10 +8,6 @@ license.workspace = true
 name = "awaken_worker"
 path = "src/lib.rs"
 
-[[bin]]
-name = "awaken-worker"
-path = "src/main.rs"
-
 # The PRODUCTION database-less worker (Stage C): a peer of the control / data planes.
 # It drains runs over the dispatch transport and resolves EACH run's model_ref (from
 # its activation snapshot) to the real DB-configured provider via
