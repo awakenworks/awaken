@@ -232,10 +232,7 @@ impl SharedHost {
         let resource_lifecycle =
             resource_lifecycle.or_else(|| Some(super::tests::test_resource_lifecycle()));
         let session_slots = crate::session_slot::SessionRuntimeSlots::default();
-        let capture_decision = crate::redact::capture_decision(
-            deployment.content_capture,
-            std::env::var_os("AWAKEN_TRACE_FILE").is_some(),
-        );
+        let capture_decision = crate::redact::capture_decision(deployment.content_capture, false);
         Self {
             llm,
             model_ref,

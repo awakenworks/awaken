@@ -1,11 +1,10 @@
-//! Exporter wiring: build the `tracing_opentelemetry` layer from the environment
-//! and flush it on shutdown.
+//! Exporter wiring from typed deployment configuration, with shutdown flushing.
 //!
 //! Two collector sinks are supported, in priority order:
-//!   1. `AWAKEN_TRACE_FILE` — every finished span appended as one JSON line. This
+//!   1. `trace_file` — every finished span appended as one JSON line. This
 //!      is the collector-free sink the e2e trace validator reads back, so span
 //!      trees can be asserted without a running OTLP collector.
-//!   2. `OTEL_EXPORTER_OTLP_ENDPOINT` (or `…_TRACES_ENDPOINT`) — standard OTLP/HTTP
+//!   2. configured OTLP endpoint — standard OTLP/HTTP
 //!      export over a Tokio batch span processor (Phoenix / Jaeger / collector).
 //!
 //! When neither is configured the layer is `None` and the process keeps the
@@ -19,18 +18,18 @@ use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_sdk::trace::{SdkTracer, SdkTracerProvider};
 use tracing_subscriber::registry::LookupSpan;
 
-use crate::config::{OtelConfig, OtelProtocol};
+use crate::config::{ObservabilityConfig, OtelConfig, OtelProtocol};
 
 /// Kept for the process lifetime so the batch span processor keeps exporting;
 /// also the handle [`shutdown`] uses to flush buffered spans on exit.
 static PROVIDER: OnceLock<SdkTracerProvider> = OnceLock::new();
 
-const TRACE_FILE_ENV: &str = "AWAKEN_TRACE_FILE";
-
 /// Build the OpenTelemetry layer when a trace sink is configured. Generic over the
 /// subscriber `S` so the concrete layered type is inferred at the call site.
 /// Returns `None` when no sink is configured (fmt-only path).
-pub(crate) fn build_layer<S>() -> Option<tracing_opentelemetry::OpenTelemetryLayer<S, SdkTracer>>
+pub(crate) fn build_layer<S>(
+    observability: &ObservabilityConfig,
+) -> Option<tracing_opentelemetry::OpenTelemetryLayer<S, SdkTracer>>
 where
     S: tracing::Subscriber + for<'a> LookupSpan<'a>,
 {
@@ -40,8 +39,8 @@ where
         opentelemetry_sdk::propagation::TraceContextPropagator::new(),
     );
 
-    if let Some(path) = std::env::var_os(TRACE_FILE_ENV) {
-        let exporter = file_exporter::JsonFileSpanExporter::new(path);
+    if let Some(path) = &observability.trace_file {
+        let exporter = file_exporter::JsonFileSpanExporter::new(path.as_os_str().to_owned());
         let provider = SdkTracerProvider::builder()
             .with_simple_exporter(exporter)
             .build();
@@ -51,11 +50,11 @@ where
         return Some(tracing_opentelemetry::layer().with_tracer(tracer));
     }
 
-    let config = OtelConfig::from_env();
+    let config = &observability.otel;
     if !config.is_configured() {
         return None;
     }
-    let (provider, tracer) = match init_otlp_tracer(&config) {
+    let (provider, tracer) = match init_otlp_tracer(config) {
         Ok(pair) => pair,
         Err(error) => {
             tracing::warn!(%error, "OTLP tracer init failed; continuing without trace export");
@@ -218,7 +217,7 @@ mod file_sink_tests {
     use tracing_subscriber::Registry;
     use tracing_subscriber::layer::SubscriberExt;
 
-    /// The `AWAKEN_TRACE_FILE` sink is the collector-free contract the e2e trace
+    /// The configured trace-file sink is the collector-free contract the e2e trace
     /// validator reads back: each finished span appended as ONE JSON line with a
     /// fixed shape. This drives a real span through the exporter (exactly as
     /// `build_layer` wires it, minus the env/global install) and asserts the emitted

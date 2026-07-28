@@ -176,7 +176,7 @@ impl awaken_runtime_contract::WorkerLocalReferenceRevalidator for ReferenceMater
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    awaken_observability::init();
+    awaken_observability::init(&Default::default());
     let upstream = std::env::var("AWAKEN_UPSTREAM_URL")?;
     let credential_id = std::env::var("AWAKEN_TEST_CREDENTIAL_ID")?;
     let credential_revision = std::env::var("AWAKEN_TEST_CREDENTIAL_REVISION")?.parse()?;

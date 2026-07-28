@@ -1,13 +1,37 @@
-//! OTel environment-variable configuration.
-//!
-//! Parses the standard `OTEL_EXPORTER_OTLP_*` variables into a typed struct, per the
-//! [OpenTelemetry exporter spec](https://opentelemetry.io/docs/specs/otel/protocol/exporter/).
-//! Parsing is pure (`from_env` / builder) so it stays testable under the workspace's
-//! `unsafe_code = "forbid"` lint, which forbids mutating the environment in tests.
+//! Typed process observability configuration.
 
 use std::convert::Infallible;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
+
+/// Log rendering selected by deployment configuration.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LogFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+/// Complete process-global observability policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservabilityConfig {
+    pub filter: String,
+    pub log_format: LogFormat,
+    pub trace_file: Option<PathBuf>,
+    pub otel: OtelConfig,
+}
+
+impl Default for ObservabilityConfig {
+    fn default() -> Self {
+        Self {
+            filter: "info".to_owned(),
+            log_format: LogFormat::Text,
+            trace_file: None,
+            otel: OtelConfig::default(),
+        }
+    }
+}
 
 /// Protocol used by the OTLP exporter.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -33,8 +57,8 @@ impl FromStr for OtelProtocol {
     }
 }
 
-/// Configuration parsed from `OTEL_EXPORTER_OTLP_*` environment variables.
-#[derive(Debug, Clone)]
+/// Typed OTLP exporter configuration supplied by the process composition root.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OtelConfig {
     /// Base OTLP endpoint (`OTEL_EXPORTER_OTLP_ENDPOINT`).
     pub endpoint: Option<String>,
@@ -52,6 +76,8 @@ pub struct OtelConfig {
     pub service_name: Option<String>,
     /// Service version (`OTEL_SERVICE_VERSION`).
     pub service_version: Option<String>,
+    /// Periodic metric push interval.
+    pub metric_export_interval: Duration,
 }
 
 impl Default for OtelConfig {
@@ -65,36 +91,12 @@ impl Default for OtelConfig {
             timeout: Duration::from_secs(10),
             service_name: None,
             service_version: None,
+            metric_export_interval: Duration::from_secs(60),
         }
     }
 }
 
 impl OtelConfig {
-    /// Parse configuration from environment variables.
-    pub fn from_env() -> Self {
-        Self {
-            endpoint: std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok(),
-            traces_endpoint: std::env::var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT").ok(),
-            protocol: std::env::var("OTEL_EXPORTER_OTLP_PROTOCOL")
-                .ok()
-                .map(|s| s.parse::<OtelProtocol>().unwrap_or_default())
-                .unwrap_or_default(),
-            traces_protocol: std::env::var("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL")
-                .ok()
-                .map(|s| s.parse::<OtelProtocol>().unwrap_or_default()),
-            headers: parse_headers(
-                &std::env::var("OTEL_EXPORTER_OTLP_HEADERS").unwrap_or_default(),
-            ),
-            timeout: std::env::var("OTEL_EXPORTER_OTLP_TIMEOUT")
-                .ok()
-                .and_then(|s| s.parse::<u64>().ok())
-                .map(Duration::from_millis)
-                .unwrap_or(Duration::from_secs(10)),
-            service_name: std::env::var("OTEL_SERVICE_NAME").ok(),
-            service_version: std::env::var("OTEL_SERVICE_VERSION").ok(),
-        }
-    }
-
     /// Create a builder for programmatic construction.
     pub fn builder() -> OtelConfigBuilder {
         OtelConfigBuilder::default()
@@ -114,25 +116,6 @@ impl OtelConfig {
     pub fn effective_traces_protocol(&self) -> &OtelProtocol {
         self.traces_protocol.as_ref().unwrap_or(&self.protocol)
     }
-}
-
-/// Parse the `key=value,key2=value2` header format used by
-/// `OTEL_EXPORTER_OTLP_HEADERS`.
-pub(crate) fn parse_headers(s: &str) -> Vec<(String, String)> {
-    if s.is_empty() {
-        return Vec::new();
-    }
-    s.split(',')
-        .filter_map(|pair| {
-            let mut parts = pair.splitn(2, '=');
-            let key = parts.next()?.trim();
-            let value = parts.next()?.trim();
-            if key.is_empty() {
-                return None;
-            }
-            Some((key.to_string(), value.to_string()))
-        })
-        .collect()
 }
 
 /// Builder for [`OtelConfig`] (used by tests and programmatic callers, since the
@@ -185,6 +168,7 @@ impl OtelConfigBuilder {
             timeout: self.timeout.unwrap_or(Duration::from_secs(10)),
             service_name: self.service_name,
             service_version: self.service_version,
+            metric_export_interval: Duration::from_secs(60),
         }
     }
 }
@@ -231,24 +215,6 @@ mod tests {
     }
 
     #[test]
-    fn headers_parse_edge_cases() {
-        // Empty value is kept (a header with no value is still a header).
-        assert_eq!(parse_headers("a="), vec![("a".to_string(), String::new())]);
-        // A pair with no `=` separator is dropped, not treated as a keyless value.
-        assert_eq!(parse_headers("nokey"), Vec::<(String, String)>::new());
-        // Only the FIRST `=` splits; the value may itself contain `=` (e.g. base64).
-        assert_eq!(
-            parse_headers("auth=Bearer=abc=="),
-            vec![("auth".to_string(), "Bearer=abc==".to_string())]
-        );
-        // Mixed: keyless value dropped, empty-key dropped, valid ones kept.
-        assert_eq!(
-            parse_headers("nokey, =v, k=val"),
-            vec![("k".to_string(), "val".to_string())]
-        );
-    }
-
-    #[test]
     fn effective_traces_protocol_prefers_signal_specific_over_base() {
         // The builder has no `traces_protocol` setter, so construct directly (all
         // fields are pub); the signal-specific protocol must win over the base one.
@@ -265,19 +231,6 @@ mod tests {
         let cfg = OtelConfig::default();
         assert_eq!(cfg.effective_traces_endpoint(), None);
         assert!(!cfg.is_configured());
-    }
-
-    #[test]
-    fn headers_parse_key_value_pairs() {
-        assert_eq!(parse_headers(""), Vec::<(String, String)>::new());
-        assert_eq!(
-            parse_headers("a=1, b = 2 ,=skip,c=3"),
-            vec![
-                ("a".to_string(), "1".to_string()),
-                ("b".to_string(), "2".to_string()),
-                ("c".to_string(), "3".to_string()),
-            ]
-        );
     }
 
     #[test]

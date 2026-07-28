@@ -10,10 +10,11 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Install the tracing subscriber + optional OTLP / AWAKEN_TRACE_FILE span export
-    // and the W3C traceparent propagator before any request is served, so every
-    // `#[instrument]` span in the request path is captured on one trace.
-    awaken_observability::init();
+    // Scenario environment is test-harness input, translated here into the same
+    // typed policy production receives from config.toml. The observability adapter
+    // itself has no ambient compatibility path.
+    let observability = scenario_observability();
+    awaken_observability::init(&observability);
     // The single role axis (`AWAKEN_ROLE`, with backward-compatible inference from
     // the historic `AWAKEN_UPSTREAM_URL`). Worker is an execution endpoint that never
     // starts the HTTP surface; Serve is the default — single-machine all-in-one, or a
@@ -183,6 +184,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Flush any buffered spans (OTLP batch / trace-file) before exit.
     awaken_observability::shutdown();
     Ok(())
+}
+
+fn scenario_observability() -> awaken_observability::ObservabilityConfig {
+    let mut config = awaken_observability::ObservabilityConfig::default();
+    config.trace_file = std::env::var_os("AWAKEN_TRACE_FILE").map(Into::into);
+    config.otel.endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok();
+    config.otel.traces_endpoint = std::env::var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT").ok();
+    config.otel.protocol = std::env::var("OTEL_EXPORTER_OTLP_PROTOCOL")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_default();
+    config.otel.traces_protocol = std::env::var("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL")
+        .ok()
+        .and_then(|value| value.parse().ok());
+    config.otel.service_name = std::env::var("OTEL_SERVICE_NAME").ok();
+    config.otel.service_version = std::env::var("OTEL_SERVICE_VERSION").ok();
+    config.otel.metric_export_interval = std::env::var("OTEL_METRIC_EXPORT_INTERVAL")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .map(std::time::Duration::from_millis)
+        .unwrap_or(config.otel.metric_export_interval);
+    config
 }
 
 /// Resolve when the process is asked to stop, so `axum::serve` stops accepting new
