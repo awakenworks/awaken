@@ -10,7 +10,9 @@
   composition, descendant process-group reaping, event-triggered all-scope
   publication reconciliation, typed capture authoring, request-grained subject
   attribution, subject-scoped erasable ACP session homes, and the product-level
-  Art.17 fan-out E2E. PostgreSQL pool sizing is also resolved once as a non-zero
+  Art.17 fan-out E2E. The Agent lifecycle now has explicit
+  Published/Disabled/Archived admission and fingerprint-retention behavior.
+  PostgreSQL pool sizing is also resolved once as a non-zero
   typed deployment value and injected into both runtime stores. A real
   persisted-login Claude session remains an external release gate. Typed
   migration of the remaining runtime environment settings is still an explicit

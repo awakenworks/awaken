@@ -165,7 +165,11 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
         mcp_servers,
         skill_ids,
         multiagent,
-        archived_at: string("archived_at"),
+        // Lifecycle commands are owned by ManagedAgentRepository. Generic
+        // config authoring cannot forge a transition while leaving the live
+        // installed-catalog pointer unreconciled.
+        disabled_at: None,
+        archived_at: None,
         tool_overrides,
         recovery_policies: body
             .get("recovery_policies")
@@ -340,6 +344,7 @@ pub fn managed_from_agent_config(config: &AgentConfig, published: bool) -> Value
         "mcp_servers": config.mcp_servers,
         "skills": config.skill_ids,
         "multiagent": config.multiagent,
+        "disabled_at": config.disabled_at,
         "archived_at": config.archived_at,
         "max_steps": config.max_steps,
         "plugins": config.plugin_ids,
@@ -391,6 +396,30 @@ mod tests {
 
         let missing = agent_config_from_managed("a".into(), &json!({})).expect("absent model");
         assert_eq!(missing.model_binding.resolved().unwrap().model_ref, "");
+    }
+
+    #[test]
+    fn generic_config_authoring_cannot_forge_agent_lifecycle() {
+        // Cause graph: lifecycle timestamps arrive through the generic config
+        // object -> the representation adapter discards them -> only the
+        // ManagedAgentRepository transition can update lifecycle and reconcile
+        // the installed executable pointer.
+        //
+        // Decision rule L1: disabled_at and/or archived_at in authoring JSON
+        // always project to Published.
+        let config = agent_config_from_managed(
+            "a".into(),
+            &json!({
+                "disabled_at": "2026-07-29T00:00:00Z",
+                "archived_at": "2026-07-29T00:00:01Z"
+            }),
+        )
+        .expect("ordinary authoring remains valid");
+        assert_eq!(
+            config.lifecycle(),
+            awaken_config_store::AgentLifecycle::Published,
+            "L1"
+        );
     }
 
     #[test]

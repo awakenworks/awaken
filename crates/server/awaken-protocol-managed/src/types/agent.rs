@@ -225,6 +225,8 @@ pub struct Agent {
     #[serde(rename = "type")]
     pub object_type: &'static str,
     pub archived_at: Option<String>,
+    pub disabled_at: Option<String>,
+    pub status: AgentStatus,
     pub created_at: String,
     pub updated_at: String,
     pub name: String,
@@ -237,6 +239,14 @@ pub struct Agent {
     pub tools: Vec<AgentTool>,
     pub multiagent: Option<MultiagentConfig>,
     pub version: u64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentStatus {
+    Published,
+    Disabled,
+    Archived,
 }
 
 #[cfg(test)]

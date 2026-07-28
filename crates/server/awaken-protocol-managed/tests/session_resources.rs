@@ -7,6 +7,7 @@ mod support;
 
 use awaken_admin_config_api::SqliteAdminStore;
 use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::run::EndCause;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_protocol_managed::{
     AgentClientToolView, AgentConfigSource, AgentConfigView, ManagedState, OutcomeReport, RunError,
@@ -83,9 +84,27 @@ struct AcceptingFake {
         std::sync::Arc<std::sync::Mutex<Vec<awaken_session_contract::ResolvedSessionResources>>>,
     fail_next_apply: std::sync::Arc<std::sync::atomic::AtomicBool>,
     fail_apply_remaining: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    settle_run: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    run_started: std::sync::Arc<tokio::sync::Notify>,
+    run_release: std::sync::Arc<tokio::sync::Notify>,
 }
 
 struct AgentWithResources;
+
+struct LifecycleAgent {
+    unavailable: std::sync::atomic::AtomicBool,
+}
+
+impl AgentConfigSource for LifecycleAgent {
+    fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
+        (agent_id == "lifecycle" && !self.unavailable.load(std::sync::atomic::Ordering::SeqCst))
+            .then(|| empty_agent_view("genai"))
+    }
+
+    fn agent_unavailable_in(&self, _workspace_id: &str, agent_id: &str) -> bool {
+        agent_id == "lifecycle" && self.unavailable.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
 
 fn empty_agent_view(backend_ref: &str) -> AgentConfigView {
     AgentConfigView {
@@ -372,6 +391,16 @@ impl SessionRuntime for AcceptingFake {
         _t: &str,
         _c: Vec<ContentBlock>,
     ) -> Result<StepOutcome, RunError> {
+        if self.settle_run.load(std::sync::atomic::Ordering::SeqCst) {
+            self.run_started.notify_one();
+            self.run_release.notified().await;
+            return Ok(StepOutcome::ended(
+                Vec::new(),
+                EndCause::NaturalEnd,
+                false,
+                false,
+            ));
+        }
         Err(RunError::internal("unused"))
     }
     async fn resume(
@@ -751,6 +780,88 @@ async fn published_agent_resources_are_visible_as_effective_session_inputs() {
     assert_eq!(session["resources"][0]["type"], "file");
     assert_eq!(session["resources"][0]["file_id"], "file-release");
     assert_eq!(session["resources"][0]["mount_path"], "/mnt/release.txt");
+}
+
+#[tokio::test]
+async fn disabling_an_agent_fences_new_sessions_and_new_runs() {
+    // Cause/effect graph:
+    // C1 Published -> E1 a Session may be admitted; C2 lifecycle changes to
+    // Disabled after that Session exists -> E2 a new Session and a new event
+    // on the existing Session both fail before Runtime::run. A run that already
+    // crossed this admission fence has no later lifecycle check and can settle.
+    //
+    // Decision table:
+    // | rule | lifecycle at admission | target           | outcome |
+    // | L1   | Published              | new Session      | admit   |
+    // | L2   | Published then Disabled| admitted Run     | settle  |
+    // | L3   | Disabled               | new Session      | 400     |
+    // | L4   | Disabled               | existing Session | 400     |
+    let source = std::sync::Arc::new(LifecycleAgent {
+        unavailable: std::sync::atomic::AtomicBool::new(false),
+    });
+    let runtime = AcceptingFake::default();
+    runtime
+        .settle_run
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let state = ManagedState::new(runtime.clone()).with_config_source(source.clone());
+    let app = router(std::sync::Arc::new(state));
+
+    let (status, session) = call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({ "agent": "lifecycle" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "L1");
+    let session_id = session["id"].as_str().unwrap();
+
+    let first_app = app.clone();
+    let first_session_id = session_id.to_owned();
+    let in_flight = tokio::spawn(async move {
+        call(
+            &first_app,
+            "POST",
+            &format!("/v1/sessions/{first_session_id}/events"),
+            Some(json!({
+                "events": [{
+                    "type": "user.message",
+                    "content": [{"type": "text", "text": "already admitted"}]
+                }]
+            })),
+        )
+        .await
+    });
+    runtime.run_started.notified().await;
+    source
+        .unavailable
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    runtime.run_release.notify_one();
+    let (status, body) = in_flight.await.unwrap();
+    assert_eq!(status, StatusCode::OK, "L2: {body}");
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({ "agent": "lifecycle" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "L3");
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{session_id}/events"),
+        Some(json!({
+            "events": [{
+                "type": "user.message",
+                "content": [{"type": "text", "text": "must not run"}]
+            }]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "L4: {body}");
 }
 
 #[tokio::test]

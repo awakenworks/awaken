@@ -9,12 +9,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_config_service::{ConfigPlane, RESERVED_ADMIN_SCOPE};
 use awaken_config_store::{
-    AgentConfig, AgentConfigRevision, ConfigWrite, ModelSelection, MultiagentConfig,
+    AgentConfig, AgentConfigRevision, AgentLifecycle, ConfigWrite, ModelSelection, MultiagentConfig,
 };
 use awaken_protocol_managed::types::agent::{
-    Agent, AgentCreateParams, AgentListParams, AgentSkill, AgentTool, AgentUpdateParams,
-    CustomToolInputSchema, MultiagentConfig as WireMultiagent, MultiagentRosterEntry, UrlMcpServer,
-    UrlMcpServerKind,
+    Agent, AgentCreateParams, AgentListParams, AgentSkill, AgentStatus, AgentTool,
+    AgentUpdateParams, CustomToolInputSchema, MultiagentConfig as WireMultiagent,
+    MultiagentRosterEntry, UrlMcpServer, UrlMcpServerKind,
 };
 use awaken_protocol_managed::types::{ModelConfig, ModelEffort, ModelSpeed};
 use awaken_protocol_managed::{ManagedAgentError, ManagedAgentRepository};
@@ -41,6 +41,14 @@ fn new_agent_id(workspace_id: &str) -> String {
     let digest = Sha256::digest(entropy.as_bytes());
     let encoded = format!("{digest:x}");
     format!("agent_{}", &encoded[..32])
+}
+
+fn lifecycle_timestamp() -> String {
+    let milliseconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default();
+    awaken_protocol_managed::cron::to_rfc3339(milliseconds)
 }
 
 pub struct ConfigPlaneManagedAgentRepository {
@@ -202,6 +210,7 @@ fn config_from_create(
         mcp_servers: typed_mcp_servers(params.mcp_servers),
         skill_ids: typed_skill_ids(params.skills),
         multiagent,
+        disabled_at: None,
         archived_at: None,
         tool_overrides: Vec::new(),
         recovery_policies: BTreeMap::new(),
@@ -358,10 +367,17 @@ fn project(revision: AgentConfigRevision) -> Agent {
         .map(|binding| binding.model_ref.clone())
         .unwrap_or_default();
     let tools = wire_tools(&config.toolsets, &config.client_tools);
+    let status = match config.lifecycle() {
+        AgentLifecycle::Published => AgentStatus::Published,
+        AgentLifecycle::Disabled => AgentStatus::Disabled,
+        AgentLifecycle::Archived => AgentStatus::Archived,
+    };
     Agent {
         id: id.clone(),
         object_type: "agent",
         archived_at: config.archived_at,
+        disabled_at: config.disabled_at,
+        status,
         created_at: OBJECT_AT.to_string(),
         updated_at: OBJECT_AT.to_string(),
         name: config.name.unwrap_or(id),
@@ -517,9 +533,9 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
                 params.version.unwrap_or_default()
             )));
         }
-        if current.config.archived_at.is_some() {
+        if current.config.lifecycle() != AgentLifecycle::Published {
             return Err(ManagedAgentError::Invalid(
-                "archived Agent cannot be updated".into(),
+                "disabled or archived Agent cannot be updated".into(),
             ));
         }
         let mut config = current.config;
@@ -587,6 +603,44 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         }
     }
 
+    async fn disable(&self, workspace_id: &str, id: &str) -> Result<Agent, ManagedAgentError> {
+        if workspace_id == RESERVED_ADMIN_SCOPE {
+            return Err(ManagedAgentError::NotFound);
+        }
+        let scope = Self::scope(workspace_id);
+        let current = self
+            .plane
+            .get_versioned(&scope, id)
+            .await
+            .map_err(ManagedAgentError::Storage)?
+            .ok_or(ManagedAgentError::NotFound)?;
+        match current.config.lifecycle() {
+            AgentLifecycle::Disabled => return Ok(project(current)),
+            AgentLifecycle::Archived => {
+                return Err(ManagedAgentError::Invalid(
+                    "archived Agent cannot be disabled".into(),
+                ));
+            }
+            AgentLifecycle::Published => {}
+        }
+        let mut config = current.config;
+        config.disabled_at = Some(lifecycle_timestamp());
+        match self
+            .plane
+            .put_if_revision(&scope, &config, current.revision)
+            .await
+            .map_err(ManagedAgentError::Storage)?
+        {
+            ConfigWrite::Applied { revision } => {
+                self.plane.uninstall(workspace_id, id);
+                Ok(project(AgentConfigRevision { config, revision }))
+            }
+            ConfigWrite::Conflict { current_revision } => Err(ManagedAgentError::Conflict(
+                format!("Agent changed concurrently (current version: {current_revision:?})"),
+            )),
+        }
+    }
+
     async fn archive(&self, workspace_id: &str, id: &str) -> Result<Agent, ManagedAgentError> {
         if workspace_id == RESERVED_ADMIN_SCOPE {
             return Err(ManagedAgentError::NotFound);
@@ -598,15 +652,12 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             .await
             .map_err(ManagedAgentError::Storage)?
             .ok_or(ManagedAgentError::NotFound)?;
-        if current.config.archived_at.is_some() {
+        if current.config.lifecycle() == AgentLifecycle::Archived {
             return Ok(project(current));
         }
         let mut config = current.config;
-        let milliseconds = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_millis() as u64)
-            .unwrap_or_default();
-        config.archived_at = Some(awaken_protocol_managed::cron::to_rfc3339(milliseconds));
+        config.disabled_at = None;
+        config.archived_at = Some(lifecycle_timestamp());
         match self
             .plane
             .put_if_revision(&scope, &config, current.revision)
@@ -774,7 +825,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn managed_agent_is_executable_and_archive_uninstalls_it() {
+    async fn managed_agent_lifecycle_follows_disable_archive_retention_rules() {
+        // Cause/effect graph:
+        // C1 Published + disable -> E1 current execution is unavailable while
+        // the immutable publication remains addressable; C2 Disabled + disable
+        // -> E2 idempotent; C3 Disabled + update/publish -> E3 fail closed;
+        // C4 Disabled + archive -> E4 Archived terminal state with the same
+        // historical publication retained; C5 Archived + archive -> E5
+        // idempotent.
+        //
+        // Decision table:
+        // | rule | current   | command | current executable | exact snapshot | result |
+        // | L1   | Published | disable | no                 | yes            | Disabled |
+        // | L2   | Disabled  | disable | no                 | yes            | no new revision |
+        // | L3   | Disabled  | update  | no                 | yes            | reject |
+        // | L4   | Disabled  | archive | no                 | yes            | Archived |
+        // | L5   | Archived  | archive | no                 | yes            | no new revision |
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.sqlite");
         let plane = plane(path.to_str().unwrap());
@@ -796,19 +862,80 @@ mod tests {
                 .installed_in("workspace-a", &created.id)
                 .is_some()
         );
+        assert_eq!(created.status, AgentStatus::Published);
+        let fingerprint = plane
+            .service()
+            .installed_in("workspace-a", &created.id)
+            .expect("published")
+            .fingerprint
+            .0;
+
+        let disabled = repository
+            .disable("workspace-a", &created.id)
+            .await
+            .unwrap();
+        assert_eq!(disabled.version, 2, "L1");
+        assert_eq!(disabled.status, AgentStatus::Disabled, "L1");
+        assert!(disabled.disabled_at.is_some(), "L1");
+        assert!(
+            plane
+                .service()
+                .installed_in("workspace-a", &created.id)
+                .is_none(),
+            "L1"
+        );
+        assert!(
+            plane
+                .publication(&ScopeId::from("workspace-a"), &fingerprint)
+                .await
+                .unwrap()
+                .is_some(),
+            "L1"
+        );
+
+        let disabled_again = repository
+            .disable("workspace-a", &created.id)
+            .await
+            .unwrap();
+        assert_eq!(disabled_again.version, 2, "L2");
+        assert!(
+            matches!(
+                repository
+                    .update("workspace-a", &created.id, update_params(2))
+                    .await,
+                Err(ManagedAgentError::Invalid(_))
+            ),
+            "L3"
+        );
+        assert!(
+            plane
+                .publish(&ScopeId::from("workspace-a"), &created.id)
+                .await
+                .is_err(),
+            "L3"
+        );
 
         let archived = repository
             .archive("workspace-a", &created.id)
             .await
             .unwrap();
-        assert_eq!(archived.version, 2);
-        assert!(archived.archived_at.is_some());
+        assert_eq!(archived.version, 3, "L4");
+        assert_eq!(archived.status, AgentStatus::Archived, "L4");
+        assert!(archived.disabled_at.is_none(), "L4");
+        assert!(archived.archived_at.is_some(), "L4");
         assert!(
             plane
-                .service()
-                .installed_in("workspace-a", &created.id)
-                .is_none()
+                .publication(&ScopeId::from("workspace-a"), &fingerprint)
+                .await
+                .unwrap()
+                .is_some(),
+            "L4"
         );
+        let archived_again = repository
+            .archive("workspace-a", &created.id)
+            .await
+            .unwrap();
+        assert_eq!(archived_again.version, 3, "L5");
     }
 
     #[tokio::test]

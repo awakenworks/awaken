@@ -15,8 +15,8 @@ pub enum PublishError {
     ExecutionWorkspaceRequired,
     #[error("no config stored for agent `{0}`")]
     NotStored(String),
-    #[error("agent `{0}` is archived")]
-    Archived(String),
+    #[error("agent `{0}` is disabled or archived")]
+    Unavailable(String),
     #[error("cannot resolve model publication: {0}")]
     Unresolvable(String),
     #[error("config changed while it was being published (current revision: {0:?})")]

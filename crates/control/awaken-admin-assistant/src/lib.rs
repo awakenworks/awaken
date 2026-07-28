@@ -970,6 +970,7 @@ impl RawTool for DraftAgent {
             mcp_servers,
             skill_ids,
             multiagent: args.multiagent,
+            disabled_at: None,
             archived_at: None,
             metadata: args.metadata,
             // Compaction is derived from the model at publish; the admin assistant does not

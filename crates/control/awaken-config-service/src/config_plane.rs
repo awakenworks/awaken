@@ -154,11 +154,15 @@ impl ConfigService {
             .get_config(&config.id)
             .await
             .map_err(|error| error.to_string())?;
-        if current
-            .as_ref()
-            .is_some_and(|stored| stored.archived_at.is_some() && stored != config)
-        {
-            return Err(format!("agent `{}` is archived", config.id));
+        let invalid = current.as_ref().is_some_and(|stored| {
+            use awaken_config_store::AgentLifecycle::{Archived, Disabled, Published};
+            match (stored.lifecycle(), config.lifecycle()) {
+                (Published, _) | (Disabled, Archived) => false,
+                (Disabled | Archived, _) => stored != config,
+            }
+        });
+        if invalid {
+            return Err(format!("agent `{}` is not published", config.id));
         }
         Ok(())
     }
@@ -216,8 +220,8 @@ impl ConfigService {
             .await
             .map_err(|e| PublishError::Store(e.to_string()))?
             .ok_or_else(|| PublishError::NotStored(id.to_string()))?;
-        if versioned.config.archived_at.is_some() {
-            return Err(PublishError::Archived(id.to_string()));
+        if versioned.config.lifecycle() != awaken_config_store::AgentLifecycle::Published {
+            return Err(PublishError::Unavailable(id.to_string()));
         }
         let source_revision = versioned.revision;
         let resolved = prepare_agent_publication(

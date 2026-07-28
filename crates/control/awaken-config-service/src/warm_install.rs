@@ -30,7 +30,7 @@ impl ConfigService {
     ) -> usize {
         if let Ok(configs) = registry.list_configs_scoped(configuration_scope).await {
             for config in configs {
-                if config.archived_at.is_some() {
+                if config.lifecycle() != awaken_config_store::AgentLifecycle::Published {
                     self.installed.uninstall(execution_workspace, &config.id);
                 }
             }
@@ -46,7 +46,9 @@ impl ConfigService {
                 .await
                 .ok()
                 .flatten()
-                .is_some_and(|config| config.archived_at.is_none());
+                .is_some_and(|config| {
+                    config.lifecycle() == awaken_config_store::AgentLifecycle::Published
+                });
             if !active {
                 continue;
             }

@@ -64,6 +64,7 @@ pub trait ManagedAgentRepository: Send + Sync {
         id: &str,
         params: AgentUpdateParams,
     ) -> Result<Agent, ManagedAgentError>;
+    async fn disable(&self, workspace_id: &str, id: &str) -> Result<Agent, ManagedAgentError>;
     async fn archive(&self, workspace_id: &str, id: &str) -> Result<Agent, ManagedAgentError>;
     async fn versions(&self, workspace_id: &str, id: &str)
     -> Result<Vec<Agent>, ManagedAgentError>;
@@ -92,6 +93,7 @@ pub fn agents_router(state: Arc<AgentRegistryState>) -> Router {
     Router::new()
         .route("/v1/agents", post(create_agent).get(list_agents))
         .route("/v1/agents/{id}", get(retrieve_agent).post(update_agent))
+        .route("/v1/agents/{id}/disable", post(disable_agent))
         .route("/v1/agents/{id}/archive", post(archive_agent))
         .route("/v1/agents/{id}/versions", get(list_versions))
         .with_state(state)
@@ -173,6 +175,19 @@ async fn update_agent(
     state
         .repository
         .update(&request_scope(&scope), &id, params)
+        .await
+        .map(Json)
+        .map_err(wire_error)
+}
+
+async fn disable_agent(
+    State(state): State<Arc<AgentRegistryState>>,
+    Path(id): Path<String>,
+    scope: Option<Extension<WorkspaceScope>>,
+) -> Result<Json<Agent>, WireError> {
+    state
+        .repository
+        .disable(&request_scope(&scope), &id)
         .await
         .map(Json)
         .map_err(wire_error)

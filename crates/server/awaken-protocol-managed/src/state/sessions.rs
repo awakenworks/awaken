@@ -471,7 +471,7 @@ impl ManagedState {
                 .is_some_and(|source| source.agent_unavailable_in(&owner_scope, &agent_id))
         {
             return Err(StateError::Run(RunError::bad_request(format!(
-                "agent_archived: agent `{agent_id}` cannot start a new session"
+                "agent_unavailable: agent `{agent_id}` cannot start a new session"
             ))));
         }
         // Resolve the session's effective model. Precedence: the official
