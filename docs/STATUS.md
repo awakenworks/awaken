@@ -193,6 +193,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0066-session-service-binding-and-realization.md` | Accepted target landing in verified slices; whole guardrail remains target until implementation/E2E evidence is complete | Delegated | [remote Worker component catalog](design/remote-worker-protocol.md#10-remote-worker-component-catalog) |
 | `adr/0067-credential-custody-model-exposure-and-secret-delivery.md` | Accepted target landing in verified slices; whole guardrail remains target until implementation/E2E evidence is complete | Delegated | [remote Worker component catalog](design/remote-worker-protocol.md#10-remote-worker-component-catalog) |
 | `adr/0068-unified-prompt-and-skill-optimization.md` | Proposed decision record | Not required | n/a |
+| `adr/0069-acp-capability-configuration-lifecycle.md` | Proposed decision record | Not required | n/a |
 
 ## Implementation Context
 

@@ -1183,3 +1183,8 @@ backend-owned launch preserves host HOME without Awaken reading auth files,
 managed launch still uses an isolated HOME, non-Local placement rejects
 backend-owned credentials, observation expiry and pre-launch revalidation fence
 the race, and no failure switches adapter or provisioning variant.
+
+The complete discovery → configuration → publication → execution lifecycle,
+including adapter-specific modes and config options, is specified by
+[ADR-0069](0069-acp-capability-configuration-lifecycle.md), which amends this
+decision without introducing another Agent configuration or ACP execution path.
