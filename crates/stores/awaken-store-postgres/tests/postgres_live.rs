@@ -507,7 +507,7 @@ async fn connect_applies_migrations_and_serves_a_commit() {
         return;
     }
 
-    let coordinator = PostgresCommitCoordinator::connect(&database_url_in_schema(schema))
+    let coordinator = PostgresCommitCoordinator::connect(&database_url_in_schema(schema), 10)
         .await
         .expect("connect");
     coordinator

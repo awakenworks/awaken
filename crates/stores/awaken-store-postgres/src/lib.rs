@@ -123,23 +123,6 @@ struct Projection {
 /// Built in, not configured.
 const NS: &str = "runtime";
 
-/// Max Postgres connections for a runtime pool: `AWAKEN_PG_MAX_CONNECTIONS` if set,
-/// else `available_parallelism() + 8` so the pool covers the served dispatch pool's
-/// `available_parallelism()` concurrent drives plus foreground/heartbeat headroom.
-/// (sqlx's default of 10 is below the drain concurrency on most hosts and starves.)
-pub(crate) fn pg_max_connections() -> u32 {
-    std::env::var("AWAKEN_PG_MAX_CONNECTIONS")
-        .ok()
-        .and_then(|v| v.parse::<u32>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or_else(|| {
-            let cores = std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(4) as u32;
-            cores + 8
-        })
-}
-
 /// A Postgres-backed [`Coordinator`] plus the read ports it serves.
 pub struct PostgresCommitCoordinator {
     pool: PgPool,
@@ -149,15 +132,11 @@ pub struct PostgresCommitCoordinator {
 impl PostgresCommitCoordinator {
     /// Connect, apply the commit-schema migrations, and hydrate the projection.
     ///
-    /// The pool is sized to the process's drain concurrency, not sqlx's default of
-    /// 10: the served dispatch pool spawns `available_parallelism()` drain tasks, and
-    /// each concurrent drive holds a connection to commit — with only 10, a burst of
-    /// concurrent runs starves for connections and strands the queue. Overridable via
-    /// `AWAKEN_PG_MAX_CONNECTIONS` (a shared Postgres fleet may cap it to fit the
-    /// server's own `max_connections`).
-    pub async fn connect(url: &str) -> Result<Self, StoreError> {
+    /// Pool sizing is an explicit composition input, not store-owned process
+    /// configuration.
+    pub async fn connect(url: &str, max_connections: u32) -> Result<Self, StoreError> {
         let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(pg_max_connections())
+            .max_connections(max_connections)
             .connect(url)
             .await
             .map_err(|err| StoreError::Connect(err.to_string()))?;
