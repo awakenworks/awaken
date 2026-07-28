@@ -69,6 +69,8 @@ fn management_profile_is_one_deterministic_workspace_scoped_contract() {
 
 #[test]
 fn hosted_runtime_profile_is_one_workspace_scoped_lifecycle_contract() {
+    use awaken_iam_server::{AuthorizationProfileAdmin, InMemoryStore};
+
     // Cause graph: canonical Hosted lifecycle vocabulary -> one immutable
     // profile -> two role grants. Cloud may bind roles at an exact Workspace,
     // but cannot add actions or reinterpret their scope.
@@ -78,6 +80,7 @@ fn hosted_runtime_profile_is_one_workspace_scoped_lifecycle_contract() {
     // | workspace_admin | run.create/read/resume/cancel | Workspace | allow |
     // | agent_executor | run.create/read/resume/cancel | Workspace | allow |
     // | either | credential/management action | any | absent/default deny |
+    // | release profile | IAM PAP validation | any | valid before deployment |
     let first = hosted_runtime_authorization_profile();
     let second = hosted_runtime_authorization_profile();
     assert_eq!(
@@ -100,10 +103,26 @@ fn hosted_runtime_profile_is_one_workspace_scoped_lifecycle_contract() {
             "awaken.runtime::run.cancel",
         ]
     );
-    assert_eq!(first.document.action_scope_rules.len(), 1);
     assert_eq!(
-        first.document.action_scope_rules[0].allowed_scope_kinds,
-        [ScopeKind::Workspace]
+        first
+            .document
+            .action_scope_rules
+            .iter()
+            .map(|rule| rule.action_pattern.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "awaken.runtime::run.create",
+            "awaken.runtime::run.read",
+            "awaken.runtime::run.resume",
+            "awaken.runtime::run.cancel",
+        ]
+    );
+    assert!(
+        first
+            .document
+            .action_scope_rules
+            .iter()
+            .all(|rule| rule.allowed_scope_kinds == [ScopeKind::Workspace])
     );
     let role_ids = first
         .document
@@ -126,6 +145,10 @@ fn hosted_runtime_profile_is_one_workspace_scoped_lifecycle_contract() {
             && grant.scope == ScopeRef::Global
             && grant.effect == GrantEffect::Allow
     }));
+    let pap = AuthorizationProfileAdmin::new(Arc::new(InMemoryStore::new()));
+    let draft = pap.create_draft(first).unwrap();
+    let validation = pap.validate(&draft.namespace, draft.revision).unwrap();
+    assert!(validation.valid, "{:?}", validation.errors);
 }
 
 #[test]
