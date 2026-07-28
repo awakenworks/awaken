@@ -211,6 +211,12 @@ fn cloud_guard_uses_cached_login_and_explicit_bearer_override() {
 
 #[test]
 fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
+    // ProviderConnection authorization decision table:
+    // | Method | Collection route | Expected action   |
+    // | GET    | yes              | workspace:read    |
+    // | POST   | yes              | workspace:write   |
+    // The aggregate contains no credential material; secret entry remains
+    // delegated to the credential boundary inside the write command.
     let get = Method::GET;
     let post = Method::POST;
     let put = Method::PUT;
@@ -231,6 +237,14 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
     );
     assert_eq!(
         action_for(&post, "/v1/config/brokered-models/refresh"),
+        Some(WORKSPACE_WRITE)
+    );
+    assert_eq!(
+        action_for(&get, "/v1/config/provider-connections"),
+        Some(WORKSPACE_READ)
+    );
+    assert_eq!(
+        action_for(&post, "/v1/config/provider-connections"),
         Some(WORKSPACE_WRITE)
     );
     assert_eq!(
