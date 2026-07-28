@@ -28,38 +28,9 @@ export type CredentialPoolMember = Contract.CredentialPoolMember;
 export type CredentialPool = Contract.CredentialPool;
 export type CredentialValidation = Contract.CredentialValidation;
 export type ResolvedInferenceView = Contract.ResolvedInferenceView;
-export interface ResolvedMcpServerView {
-  name: string;
-  url: string;
-  credential_present: boolean;
-}
 export type InferenceProfile = Contract.InferenceProfile;
 export type ProfileCandidate = Contract.PrimaryElement;
 export type ResolvedCandidatesView = Contract.ResolvedCandidatesView;
-export interface McpServerDef {
-  id: string;
-  display_name: string;
-  url: string;
-  credential_binding: CredentialBinding;
-  version: number;
-}
-export interface AgentMcpConfig {
-  agent_id: string;
-  mcp_server_ids: string[];
-  version: number;
-}
-export interface Project {
-  id: string;
-  workspace_id: string;
-  display_name: string;
-  version: number;
-}
-export interface ProjectAgentConfig {
-  project_id: string;
-  agent_id: string;
-  mcp_server_ids: string[];
-  version: number;
-}
 
 // ---- IAM (embedded) ----
 

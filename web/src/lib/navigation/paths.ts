@@ -32,7 +32,6 @@ export const NAV: NavItem[] = [
   { key: "environments", label: "Environments", labelZh: "运行环境", group: "blocks", path: "/w/:ws/environments" },
   { key: "skills", label: "Skills", labelZh: "技能", group: "blocks", path: "/w/:ws/skills" },
   { key: "memory", label: "Memory stores", labelZh: "记忆库", group: "blocks", path: "/w/:ws/memory" },
-  { key: "mcp", label: "MCP servers", labelZh: "MCP 服务", group: "blocks", path: "/w/:ws/mcp-servers" },
   { key: "a2a", label: "A2A servers", labelZh: "A2A 服务", group: "blocks", path: "/w/:ws/a2a-servers" },
 
   // Operate: agents put into operation. A Deployment is a standing rule (agent ×

@@ -43,7 +43,6 @@ export default function SettingsSurface() {
           <h2>{app.t("Supply & governance", "供给与治理")}</h2>
           {link("AI providers & models", `${base}/models`, app.t("Catalog, offerings, inference profiles, resolve dry-run", "目录、offering、profile 与 resolve 试算"))}
           {link("Credentials", `${base}/credentials`, app.t("Supply-side sources & pools — secret-in, secret-free-out", "供给侧凭证与池——只进不出"))}
-          {link("MCP servers", `${base}/mcp-servers`, app.t("Authored definitions with fail-closed bindings", "作者化定义,fail-closed 绑定"))}
           {link("A2A servers", `${base}/a2a-servers`, app.t("Remote delegate directory", "远程委托目录"))}
           {link("Protocols & API", `${base}/protocols`, app.t("Built-in endpoints, authentication, ACP and sandbox guide", "内置端点、鉴权、ACP 与沙箱指南"))}
           {link("Access", `${base}/access`, app.t("IAM tokens & roles", "IAM 令牌与角色"))}
