@@ -4,6 +4,7 @@
 //! liveness port. It never opens, returns, or materializes CLI credentials.
 
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 pub use awaken_acp_application::AcpLocalCredentialResolver;
@@ -102,7 +103,8 @@ async fn prepare_local_acp_with(
         awaken_runtime_host::SharedHost::provision_local_workspace_at(&deployment.data_dir);
     let prepared = prepare_host_acp_with(
         LocalAcpPreparation {
-            workspace,
+            probe_cwd: PathBuf::from(&workspace),
+            initial_workspace: Some(workspace),
             wrapper_root,
             selected_cli_ids,
             credentials: stores.credentials.clone(),
@@ -645,8 +647,8 @@ mod tests {
                 .manifest()
                 .capabilities
                 .iter()
-                .any(|capability| capability.starts_with("acp-capability/codex/")),
-            "P1 verified capability fingerprint is Worker evidence"
+                .all(|capability| !capability.starts_with("acp-capability/")),
+            "P1 mutable negotiated fingerprints belong only to heartbeat observations"
         );
         assert!(
             worker.manifest().sandbox_backends.contains("namespace"),

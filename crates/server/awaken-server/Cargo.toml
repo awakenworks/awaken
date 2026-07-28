@@ -39,6 +39,8 @@ awaken-sandbox-memoryd = { workspace = true }
 # ACP runtime (R3/R4): drive an external ACP CLI as a peer RunExecutor when a
 # session selects `runtime: "acp:*"`.
 awaken-run-executor-acp = { workspace = true }
+awaken-acp-application.workspace = true
+awaken-protocol-acp.workspace = true
 # A2A attempt adapter is assembled here, at the data-plane composition root,
 # and injected into the neutral runtime host through `RunAttemptExecutor`.
 awaken-run-executor-a2a = { workspace = true }

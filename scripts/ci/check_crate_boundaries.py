@@ -1429,7 +1429,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-tenancy",
         # ADR-0050: the data-subject consent/erasure store backing the erasure endpoint.
         "awaken-data-subject", "awaken-observability", "awaken-authz-enforce",
-        "awaken-run-executor-acp", "awaken-protocol-managed",
+        "awaken-run-executor-acp", "awaken-acp-application", "awaken-protocol-acp",
+        "awaken-protocol-managed",
         "awaken-protocol-ai-sdk", "awaken-protocol-ag-ui", "awaken-protocol-a2a",
         # Explicit MCP egress adapter, mounted by the data plane only when a
         # dedicated bearer is configured. Same protocol-adapter direction as

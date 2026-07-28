@@ -1525,6 +1525,7 @@ name = "awaken-server"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
+ "awaken-acp-application",
  "awaken-acp-contract",
  "awaken-admin-assistant",
  "awaken-admin-config-api",
@@ -1546,6 +1547,7 @@ dependencies = [
  "awaken-model-catalog",
  "awaken-observability",
  "awaken-protocol-a2a",
+ "awaken-protocol-acp",
  "awaken-protocol-ag-ui",
  "awaken-protocol-ai-sdk",
  "awaken-protocol-managed",
