@@ -19,34 +19,16 @@ pub(crate) fn encode(
     match (codec, material) {
         (CredentialArtifactCodec::CodexAuthJson, CredentialMaterial::Bearer(api_key)) => {
             Ok(EncodedCredentialArtifact {
-            bytes: serde_json::to_vec(&serde_json::json!({
-                "auth_mode": "apikey",
-                "OPENAI_API_KEY": api_key.expose_secret(),
-            }))
-            .map_err(|_| "credential_artifact_invalid".to_string())?,
-        })
-        }
-        (CredentialArtifactCodec::CodexAuthJson, CredentialMaterial::OAuth(bundle)) => {
-            encode_codex_oauth(bundle)
-        }
-        (CredentialArtifactCodec::ClaudeCredentialsJson, CredentialMaterial::OAuth(bundle)) => {
-            Ok(EncodedCredentialArtifact {
                 bytes: serde_json::to_vec(&serde_json::json!({
-                    "claudeAiOauth": {
-                        "accessToken": bundle.access_token.expose_secret(),
-                        "refreshToken": bundle.refresh_token.expose_secret(),
-                        "expiresAt": bundle.expires_at_unix_ms,
-                        "scopes": ["user:inference"],
-                        "subscriptionType": bundle.account_plan,
-                    }
+                    "auth_mode": "apikey",
+                    "OPENAI_API_KEY": api_key.expose_secret(),
                 }))
                 .map_err(|_| "credential_artifact_invalid".to_string())?,
             })
         }
-        (CredentialArtifactCodec::ClaudeCredentialsJson, CredentialMaterial::Bearer(_)) => Err(
-            "credential_material_kind_mismatch: Claude API keys use the existing process-secret delivery"
-                .to_string(),
-        ),
+        (CredentialArtifactCodec::CodexAuthJson, CredentialMaterial::OAuth(bundle)) => {
+            encode_codex_oauth(bundle)
+        }
     }
 }
 
@@ -107,8 +89,8 @@ mod tests {
         // | Rule | Codec | Material | Result |
         // | E1 | Codex | OAuth | ChatGPT auth.json |
         // | E2 | Codex | Bearer | API-key auth.json |
-        // | E3 | Claude | OAuth | .credentials.json |
-        // | E4 | Claude | Bearer | reject; profile uses process secret |
+        // Claude managed credentials never use a file artifact: both API keys
+        // and setup tokens are exact process-secret environment requirements.
         let codex =
             encode(CredentialArtifactCodec::CodexAuthJson, oauth()).expect("Codex artifact");
         let codex: serde_json::Value = serde_json::from_slice(&codex.bytes).unwrap();
@@ -124,20 +106,5 @@ mod tests {
         let codex: serde_json::Value = serde_json::from_slice(&codex.bytes).unwrap();
         assert_eq!(codex["auth_mode"], "apikey", "E2");
         assert_eq!(codex["OPENAI_API_KEY"], "api-key", "E2");
-
-        let claude = encode(CredentialArtifactCodec::ClaudeCredentialsJson, oauth())
-            .expect("Claude artifact");
-        let claude: serde_json::Value = serde_json::from_slice(&claude.bytes).unwrap();
-        assert_eq!(claude["claudeAiOauth"]["accessToken"], "access", "E3");
-        assert_eq!(claude["claudeAiOauth"]["refreshToken"], "refresh");
-
-        let error = match encode(
-            CredentialArtifactCodec::ClaudeCredentialsJson,
-            CredentialMaterial::bearer(RedactedString::new("api-key")),
-        ) {
-            Ok(_) => panic!("E4 accepted a Claude bearer artifact"),
-            Err(error) => error,
-        };
-        assert!(error.contains("process-secret delivery"), "E4");
     }
 }

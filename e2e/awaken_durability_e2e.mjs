@@ -73,29 +73,20 @@ async function req(base, method, uri, body) {
   return { status: res.status, json };
 }
 
-// Author provider/endpoint/offering + credential and publish the agent bound to the
-// model. Persists into the durable stores under typed data_dir, so it survives the
-// restart and the model still resolves on boot 2.
+// Connect the provider atomically and publish the agent bound to the discovered
+// model. Both catalog and credential state survive the restart.
 async function authorModel(base, upstream) {
-  let r = await req(base, 'PUT', '/v1/config/providers/anthropic', {
-    id: 'anthropic', slug: 'anthropic', display_name: 'Anthropic', version: 1,
+  let r = await req(base, 'POST', '/v1/config/provider-connections', {
+    workspace_id: WORKSPACE,
+    provider_id: 'anthropic',
+    display_name: 'Anthropic',
+    endpoint_id: 'ep1',
+    dialect: 'anthropic_messages',
+    base_url: `${upstream.url}/v1/`,
+    timeout_secs: 300,
+    secret: FAKE_KEY,
   });
-  assert.equal(r.status, 200, `provider: ${JSON.stringify(r.json)}`);
-  r = await req(base, 'PUT', '/v1/config/endpoints/ep1', {
-    id: 'ep1', provider_id: 'anthropic', dialect: 'anthropic_messages',
-    base_url: `${upstream.url}/v1/`, timeout_secs: 300, display_name: 'fake', version: 1,
-  });
-  assert.equal(r.status, 200, `endpoint: ${JSON.stringify(r.json)}`);
-  r = await req(base, 'POST', '/v1/config/offerings', {
-    model_id: MODEL, provider_id: 'anthropic',
-    protocol_endpoint_id: 'ep1', dialect: 'anthropic_messages', upstream_model: null,
-  });
-  assert.equal(r.status, 200, `offering: ${JSON.stringify(r.json)}`);
-  r = await req(base, 'POST', '/v1/config/credentials', {
-    workspace_id: WORKSPACE, kind: 'vault', provider_id: 'anthropic',
-    env_key: 'ANTHROPIC_API_KEY', secret: FAKE_KEY,
-  });
-  assert.equal(r.status, 201, `credential: ${JSON.stringify(r.json)}`);
+  assert.equal(r.status, 201, `provider connection: ${JSON.stringify(r.json)}`);
   r = await req(base, 'PUT', `/v1/config/agents/${AGENT}`, {
     name: AGENT, model: { id: MODEL }, system: 'test', max_steps: 2,
   });

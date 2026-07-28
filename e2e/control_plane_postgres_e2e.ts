@@ -20,8 +20,8 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 39413);
 const WORKSPACE = `workspace_control_pg_${process.pid}`;
 const AGENT = `control-pg-agent-${process.pid}`;
-const MODEL = `control-pg-model-${process.pid}`;
-const PROVIDER = `control-pg-provider-${process.pid}`;
+const MODEL = 'fake-haiku';
+const PROVIDER = 'anthropic';
 const ENDPOINT = `control-pg-endpoint-${process.pid}`;
 const FAKE_KEY = `sk-control-pg-${process.pid}`; // awaken-allow: secret
 const SEAL_KEY = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
@@ -177,37 +177,18 @@ async function main(): Promise<void> {
   try {
     await waitUntilReady();
 
-    let response = await request('GET', `/v1/config/providers/missing-${process.pid}`);
-    assert.equal(response.status, 404);
-
-    response = await request('PUT', `/v1/config/providers/${PROVIDER}`, {
-      id: 'forged',
-      slug: PROVIDER,
-      display_name: 'Postgres provider',
-      version: 1,
-    });
-    assert.equal(response.status, 200, JSON.stringify(response.body));
-    assert.equal(response.body.id, PROVIDER);
-
-    response = await request('PUT', `/v1/config/endpoints/${ENDPOINT}`, {
-      id: 'forged',
+    let response = await request('POST', '/v1/config/provider-connections', {
+      workspace_id: WORKSPACE,
       provider_id: PROVIDER,
+      display_name: 'Postgres provider',
+      endpoint_id: ENDPOINT,
       dialect: 'anthropic_messages',
       base_url: `${upstream.url}/v1/`,
       timeout_secs: 30,
-      display_name: 'Postgres endpoint',
-      version: 1,
+      secret: FAKE_KEY,
     });
-    assert.equal(response.status, 200, JSON.stringify(response.body));
-
-    response = await request('POST', '/v1/config/offerings', {
-      model_id: MODEL,
-      provider_id: PROVIDER,
-      protocol_endpoint_id: ENDPOINT,
-      dialect: 'anthropic_messages',
-      upstream_model: `${MODEL}-upstream`,
-    });
-    assert.equal(response.status, 200, JSON.stringify(response.body));
+    assert.equal(response.status, 201, JSON.stringify(response.body));
+    const credentialId = response.body.credential.id;
 
     response = await request('PUT', `/v1/config/model-attributes/${MODEL}`, {
       context_window: 8192,
@@ -250,15 +231,6 @@ async function main(): Promise<void> {
       assert.equal(response.status, 422, JSON.stringify(response.body));
       assert.equal(response.body.code, 'credential_invalid');
     }
-
-    response = await request('POST', '/v1/config/credentials', {
-      workspace_id: WORKSPACE,
-      kind: 'vault',
-      provider_id: PROVIDER,
-      secret: FAKE_KEY,
-    });
-    assert.equal(response.status, 201, JSON.stringify(response.body));
-    const credentialId = response.body.id;
 
     response = await request('PUT', `/v1/config/inference-profiles/profile-${process.pid}`, {
       model_id: MODEL,

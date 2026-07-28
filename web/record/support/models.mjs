@@ -1,51 +1,104 @@
+import http from "node:http";
+
 const BACKEND = "http://127.0.0.1:38080";
+const SYNTHETIC_KEY = "recording-fixture-only"; // awaken-allow: secret (synthetic fixture)
+let syntheticDirectory;
+let syntheticModel = "recording-model";
+
+async function ensureSyntheticDirectory() {
+  if (syntheticDirectory) return syntheticDirectory;
+  const server = http.createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      data: [{ id: syntheticModel }],
+      has_more: false,
+    }));
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  server.unref();
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("synthetic model directory did not bind");
+  syntheticDirectory = `http://127.0.0.1:${address.port}`;
+  return syntheticDirectory;
+}
 
 export const LIVE_MODEL_ID = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
 export const LIVE_MODEL_LABEL = "Vertex Gemini";
 
-/** Configure the real model through the same catalog and credential APIs the UI
- * uses. The long-lived Google grant stays in gcloud; Awaken stores only the
- * allowlisted helper id and materializes a short-lived OAuth token per run. */
+/** Configure the real model through the same single Provider Connection command
+ * the UI uses. Repeated stories reuse the exact active credential instead of
+ * creating parallel gcloud sources. */
 export async function configureLiveModel(page) {
   const project = process.env.GEMINI_PROJECT ?? "";
   const location = process.env.GEMINI_LOCATION ?? "global";
   if (!project) throw new Error("this runtime-effect story requires GEMINI_PROJECT");
-  const provider = "google-vertex";
-  const endpoint = "vertex-gemini";
+  const provider = "vertex";
+  const endpoint = "vertex-endpoint";
   const host = location === "global" ? "aiplatform.googleapis.com" : `${location}-aiplatform.googleapis.com`;
   const baseUrl = `https://${host}/v1/projects/${project}/locations/${location}/`;
 
-  await page.request.put(`${BACKEND}/v1/config/providers/${provider}`, {
-    data: { id: provider, slug: provider, display_name: "Google Vertex AI", version: 1 },
-  });
-  await page.request.put(`${BACKEND}/v1/config/endpoints/${endpoint}`, {
-    data: { id: endpoint, provider_id: provider, dialect: "vertex_gemini", base_url: baseUrl, timeout_secs: 60, display_name: "Vertex Gemini", version: 1 },
-  });
-  await page.request.post(`${BACKEND}/v1/config/offerings`, {
-    data: { model_id: LIVE_MODEL_ID, provider_id: provider, protocol_endpoint_id: endpoint, dialect: "vertex_gemini", upstream_model: null },
-  });
   const credentials = await (await page.request.get(`${BACKEND}/v1/config/credentials?workspace_id=wrkspc_default`)).json();
-  if (!credentials.some((source) => source.provider_id === provider && source.kind === "oauth" && source.status === "active")) {
-    const entered = await page.request.post(`${BACKEND}/v1/config/credentials`, {
-      data: { workspace_id: "wrkspc_default", kind: "oauth", provider_id: provider, oauth_helper: "gcloud" },
-    });
-    if (!entered.ok()) throw new Error(`could not register gcloud OAuth credential: ${entered.status()} ${await entered.text()}`);
+  const existing = credentials.find(
+    (source) =>
+      source.provider_id === provider &&
+      source.kind === "oauth" &&
+      source.oauth_helper === "gcloud" &&
+      source.status === "active",
+  );
+  const connected = await page.request.post(`${BACKEND}/v1/config/provider-connections`, {
+    data: {
+      workspace_id: "wrkspc_default",
+      provider_id: provider,
+      display_name: "Vertex AI",
+      endpoint_id: endpoint,
+      dialect: "vertex_gemini",
+      base_url: baseUrl,
+      timeout_secs: 60,
+      ...(existing
+        ? { credential_source_id: existing.id }
+        : { oauth_helper: "gcloud" }),
+    },
+  });
+  if (!connected.ok()) {
+    throw new Error(
+      `could not connect Vertex through Provider Connections: ${connected.status()} ${await connected.text()}`,
+    );
+  }
+  const connection = await connected.json();
+  if (!connection.sync || connection.sync.discovered < 1) {
+    throw new Error("Vertex Provider Connection returned no discoverable models");
   }
 }
 
+/** Deterministic provider directory for stories that do not claim live model
+ * connectivity. It still enters through the exact Provider Connection command. */
 export async function configureSyntheticModel(page, id) {
-  const provider = `${id}-provider`;
+  syntheticModel = id;
+  const provider = "anthropic";
   const endpoint = `${id}-endpoint`;
-  await page.request.put(`${BACKEND}/v1/config/providers/${provider}`, {
-    data: { id: provider, slug: provider, display_name: "Recording fixture", version: 1 },
+  const directory = await ensureSyntheticDirectory();
+  const credentials = await (await page.request.get(
+    `${BACKEND}/v1/config/credentials?workspace_id=wrkspc_default`,
+  )).json();
+  const existing = credentials.find(
+    (source) => source.provider_id === provider && source.status === "active",
+  );
+  const response = await page.request.post(`${BACKEND}/v1/config/provider-connections`, {
+    data: {
+      workspace_id: "wrkspc_default",
+      provider_id: provider,
+      display_name: "Recording fixture",
+      endpoint_id: endpoint,
+      dialect: "anthropic_messages",
+      base_url: `${directory}/v1/`,
+      timeout_secs: 60,
+      ...(existing ? { credential_source_id: existing.id } : { secret: SYNTHETIC_KEY }),
+    },
   });
-  await page.request.put(`${BACKEND}/v1/config/endpoints/${endpoint}`, {
-    data: { id: endpoint, provider_id: provider, dialect: "anthropic_messages", base_url: "https://recording.invalid/v1", timeout_secs: 60, display_name: "Recording fixture", version: 1 },
-  });
-  await page.request.post(`${BACKEND}/v1/config/offerings`, {
-    data: { model_id: id, provider_id: provider, protocol_endpoint_id: endpoint, dialect: "anthropic_messages", upstream_model: id },
-  });
-  await page.request.post(`${BACKEND}/v1/config/credentials`, {
-    data: { workspace_id: "wrkspc_default", kind: "vault", provider_id: provider, secret: "recording-fixture-only" }, // awaken-allow: secret (synthetic fixture)
-  });
+  if (!response.ok()) {
+    throw new Error(`synthetic Provider Connection failed: ${response.status()} ${await response.text()}`);
+  }
 }

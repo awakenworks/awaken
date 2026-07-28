@@ -52,9 +52,6 @@ pub struct CatalogModelPublicationResolver {
     brokered_access_enabled: bool,
 }
 
-/// The conventional Workspace-level profile consumed by `ModelSelection::Auto`.
-pub const DEFAULT_INFERENCE_PROFILE_ID: &str = "workspace-default";
-
 impl CatalogModelPublicationResolver {
     /// Resolve against a frozen catalog snapshot. This is useful for deterministic
     /// tests; production composition should use [`Self::from_repo`].
@@ -79,9 +76,8 @@ impl CatalogModelPublicationResolver {
         }
     }
 
-    /// Install the authored Profile read port. An `Auto` Agent then consumes the
-    /// Workspace's `workspace-default` profile when present; pinned Agents remain
-    /// exact overrides and never consult it.
+    /// Install the authored Profile read port for explicit
+    /// [`ModelSelection::Profile`] choices.
     #[must_use]
     pub fn with_profiles(mut self, profiles: Arc<dyn InferenceProfileStore>) -> Self {
         self.profiles = Some(profiles);
@@ -294,15 +290,66 @@ impl CatalogModelPublicationResolver {
     fn credential_for<'a>(
         sources: &'a [CredentialSource],
         offering: &Offering,
+        binding: &ModelBinding,
     ) -> Option<&'a CredentialSource> {
         sources
             .iter()
             .filter(|source| {
                 source.status == CredentialStatus::Active
                     && source.kind != CredentialKind::Env
-                    && can_consume(offering.provider_id.as_str(), source)
+                    && Self::credential_can_supply(offering, binding, source)
             })
-            .min_by(|left, right| left.id.0.cmp(&right.id.0))
+            .min_by_key(|source| {
+                (
+                    source.env_key.as_deref()
+                        != Some(awaken_credential_vault::CLAUDE_CODE_SETUP_TOKEN_ENV),
+                    source.id.0.as_str(),
+                )
+            })
+    }
+
+    fn credential_can_supply(
+        offering: &Offering,
+        binding: &ModelBinding,
+        source: &CredentialSource,
+    ) -> bool {
+        if source.env_key.as_deref() == Some(awaken_credential_vault::CLAUDE_CODE_SETUP_TOKEN_ENV) {
+            return offering.provider_id.as_str() == "anthropic"
+                && binding.backend_ref == "acp:claude"
+                && source.provider_id.as_deref() == Some("anthropic");
+        }
+        can_consume(offering.provider_id.as_str(), source)
+            && Self::credential_usage(binding, source).is_ok()
+    }
+
+    fn credential_usage(
+        binding: &ModelBinding,
+        source: &CredentialSource,
+    ) -> Result<CredentialUsage, String> {
+        let Backend::Acp { cli } = Backend::from_ref(&binding.backend_ref) else {
+            if source.env_key.as_deref()
+                == Some(awaken_credential_vault::CLAUDE_CODE_SETUP_TOKEN_ENV)
+            {
+                return Err("Claude Code setup tokens require backend acp:claude".into());
+            }
+            return Ok(CredentialUsage::ProviderAdapter);
+        };
+        let profile = awaken_run_executor_acp::acp_cli(&cli)
+            .ok_or_else(|| format!("ACP backend {cli} is not in the executable catalog"))?;
+        let Some(delivery) = profile.model_delivery else {
+            return Ok(CredentialUsage::ProviderAdapter);
+        };
+        let Some(name) = source.env_key.as_deref() else {
+            return Ok(CredentialUsage::ProviderAdapter);
+        };
+        if !delivery.supports_credential_env(name) {
+            return Err(format!(
+                "ACP backend {cli} does not accept credential environment {name}"
+            ));
+        }
+        Ok(CredentialUsage::EnvironmentVariable {
+            name: name.to_string(),
+        })
     }
 
     fn provider_candidate(
@@ -338,6 +385,8 @@ impl CatalogModelPublicationResolver {
                             credential.id.0
                         ))
                     })?;
+                    let usage =
+                        Self::credential_usage(&binding, credential).map_err(unavailable)?;
                     Ok(CredentialAccess::new(
                         CredentialRef {
                             id: credential.id.0.clone(),
@@ -357,7 +406,7 @@ impl CatalogModelPublicationResolver {
                                 ));
                             }
                         },
-                        CredentialUsage::ProviderAdapter,
+                        usage,
                         CredentialExecutionPolicy::self_hosted_provider(),
                     ))
                 })
@@ -402,7 +451,7 @@ impl CatalogModelPublicationResolver {
         binding: ModelBinding,
     ) -> Result<ResolvedModelCandidate, PublicationResolutionError> {
         if let Some(offering) = Self::offering_for(catalog, &binding) {
-            let credential = Self::credential_for(sources, offering).ok_or_else(|| {
+            let credential = Self::credential_for(sources, offering, &binding).ok_or_else(|| {
                 PublicationResolutionError::CandidateUnavailable {
                     binding: binding.clone(),
                     reason: format!(
@@ -673,25 +722,27 @@ impl ModelPublicationResolver for CatalogModelPublicationResolver {
         fallbacks: &[ModelBinding],
     ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
         let catalog = self.snapshot().await?;
-        if selection.is_auto()
-            && let Some(profiles) = &self.profiles
-        {
-            let profile = get_workspace_profile(
-                profiles.as_ref(),
-                workspace.as_str(),
-                DEFAULT_INFERENCE_PROFILE_ID,
-            )
-            .map_err(|error| PublicationResolutionError::Invalid(error.to_string()))?;
-            if let Some(profile) = profile {
-                if !fallbacks.is_empty() {
-                    return Err(PublicationResolutionError::Invalid(
-                        "Auto profile selection cannot be combined with authored fallbacks".into(),
-                    ));
-                }
-                return self
-                    .resolve_profile_models(&catalog, workspace, &profile)
-                    .await;
+        if let Some(profile_id) = selection.profile_ref() {
+            let profiles = self.profiles.as_ref().ok_or_else(|| {
+                PublicationResolutionError::Invalid(
+                    "profile model selection is unavailable in this composition".into(),
+                )
+            })?;
+            let profile = get_workspace_profile(profiles.as_ref(), workspace.as_str(), profile_id)
+                .map_err(|error| PublicationResolutionError::Invalid(error.to_string()))?;
+            let profile = profile.ok_or_else(|| {
+                PublicationResolutionError::Invalid(format!(
+                    "inference profile `{profile_id}` does not exist in Workspace `{workspace}`"
+                ))
+            })?;
+            if !fallbacks.is_empty() {
+                return Err(PublicationResolutionError::Invalid(
+                    "profile selection cannot be combined with authored fallbacks".into(),
+                ));
             }
+            return self
+                .resolve_profile_models(&catalog, workspace, &profile)
+                .await;
         }
         let (primary_binding, fallback_bindings) =
             Self::selected_bindings(&catalog, selection, fallbacks)?;
@@ -736,19 +787,19 @@ impl ModelPublicationResolver for CatalogModelPublicationResolver {
 
 #[cfg(test)]
 mod tests {
-    //! Cause graph for Workspace default-profile publication:
-    //! C1 selection is Auto; C2 `workspace-default` exists; C3 profile belongs to
+    //! Cause graph for explicit Workspace-profile publication:
+    //! C1 selection names a profile; C2 that profile exists; C3 profile belongs to
     //! the execution Workspace; C4 every target identifies one active Offering;
     //! C5 each local credential binding resolves to an active compatible source;
     //! C6 `brokered` binding and Offering source agree.
-    //! E1 use the authored ordered chain; E2 retain legacy catalog Auto; E3 freeze
+    //! E1 use the authored ordered chain; E2 fail closed; E3 freeze
     //! the exact per-step credential/route; E4 reject the whole publication.
     //!
     //! Decision table:
     //! | Rule | C1 | C2 | C3 | C4 | C5 | C6 | Effect |
     //! | T1   | Y  | Y  | Y  | Y  | Y  | -  | E1+E3 |
     //! | T2   | Y  | N  | -  | -  | -  | -  | E2    |
-    //! | T3   | Y  | Y  | N  | -  | -  | -  | E2 (foreign row is absent) |
+    //! | T3   | Y  | Y  | N  | -  | -  | -  | E2    |
     //! | T4   | Y  | Y  | Y  | N  | -  | -  | E4    |
     //! | T5   | Y  | Y  | Y  | Y  | N  | -  | E4    |
     //! | T6   | N  | -  | -  | Y  | Y  | -  | pinned override |
@@ -831,6 +882,12 @@ mod tests {
         CatalogModelPublicationResolver::new(catalog(models), credentials)
     }
 
+    fn explicit_profile() -> ModelSelection {
+        ModelSelection::Profile {
+            profile_id: "profile-a".into(),
+        }
+    }
+
     #[tokio::test]
     async fn t1_auto_uses_default_profile_with_exact_order_route_and_credential() {
         let credentials = Arc::new(InMemoryCredentialRepo::new());
@@ -882,7 +939,7 @@ mod tests {
         let profiles = Arc::new(InMemoryProfileStore::new());
         profiles
             .put(
-                DEFAULT_INFERENCE_PROFILE_ID.into(),
+                "profile-a".into(),
                 InferenceProfile {
                     workspace_id: "workspace-a".into(),
                     primary: ProfileCandidate {
@@ -913,7 +970,7 @@ mod tests {
             CatalogModelPublicationResolver::new(catalog, credentials).with_profiles(profiles);
 
         let resolved = resolver
-            .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
+            .resolve_models(&ScopeId::from("workspace-a"), &explicit_profile(), &[])
             .await
             .unwrap();
         let pins = std::iter::once(&resolved.primary)
@@ -941,12 +998,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn t3_default_profile_from_another_workspace_is_not_observable() {
+    async fn t3_explicit_profile_from_another_workspace_fails_closed() {
         let resolver = resolver(&["primary"]).await;
         let profiles = Arc::new(InMemoryProfileStore::new());
         profiles
             .put(
-                DEFAULT_INFERENCE_PROFILE_ID.into(),
+                "profile-a".into(),
                 InferenceProfile {
                     workspace_id: "workspace-b".into(),
                     primary: ProfileCandidate {
@@ -964,18 +1021,11 @@ mod tests {
             .unwrap();
         let resolver = resolver.with_profiles(profiles);
 
-        let resolved = resolver
-            .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
+        let error = resolver
+            .resolve_models(&ScopeId::from("workspace-a"), &explicit_profile(), &[])
             .await
-            .unwrap();
-        assert_eq!(resolved.primary.binding.model_ref, "primary");
-        let ModelProvisioning::Provider {
-            credential: Some(_),
-            ..
-        } = resolved.primary.provisioning
-        else {
-            panic!("foreign profile must be ignored in favor of local catalog Auto")
-        };
+            .expect_err("foreign profile is absent in the execution Workspace");
+        assert!(error.to_string().contains("does not exist"));
     }
 
     #[tokio::test]
@@ -984,7 +1034,7 @@ mod tests {
         let profiles = Arc::new(InMemoryProfileStore::new());
         profiles
             .put(
-                DEFAULT_INFERENCE_PROFILE_ID.into(),
+                "profile-a".into(),
                 InferenceProfile {
                     workspace_id: "workspace-a".into(),
                     primary: ProfileCandidate {
@@ -1003,7 +1053,7 @@ mod tests {
 
         let error = resolver
             .with_profiles(profiles)
-            .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
+            .resolve_models(&ScopeId::from("workspace-a"), &explicit_profile(), &[])
             .await
             .unwrap_err();
         assert!(error.to_string().contains("not active or published"));
@@ -1029,7 +1079,7 @@ mod tests {
         let profiles = Arc::new(InMemoryProfileStore::new());
         profiles
             .put(
-                DEFAULT_INFERENCE_PROFILE_ID.into(),
+                "profile-a".into(),
                 InferenceProfile {
                     workspace_id: "workspace-a".into(),
                     primary: ProfileCandidate {
@@ -1050,7 +1100,7 @@ mod tests {
 
         let error = CatalogModelPublicationResolver::new(catalog(&["primary"]), credentials)
             .with_profiles(profiles)
-            .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
+            .resolve_models(&ScopeId::from("workspace-a"), &explicit_profile(), &[])
             .await
             .unwrap_err();
         assert!(
@@ -1066,7 +1116,7 @@ mod tests {
         let profiles = Arc::new(InMemoryProfileStore::new());
         profiles
             .put(
-                DEFAULT_INFERENCE_PROFILE_ID.into(),
+                "profile-a".into(),
                 InferenceProfile {
                     workspace_id: "workspace-a".into(),
                     primary: ProfileCandidate {
@@ -1101,7 +1151,7 @@ mod tests {
         let profiles = Arc::new(InMemoryProfileStore::new());
         profiles
             .put(
-                DEFAULT_INFERENCE_PROFILE_ID.into(),
+                "profile-a".into(),
                 InferenceProfile {
                     workspace_id: "workspace-a".into(),
                     primary: ProfileCandidate {
@@ -1120,7 +1170,7 @@ mod tests {
 
         let resolved = CatalogModelPublicationResolver::new(catalog, credentials)
             .with_profiles(profiles)
-            .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
+            .resolve_models(&ScopeId::from("workspace-a"), &explicit_profile(), &[])
             .await
             .unwrap();
         let ModelProvisioning::Provider {
@@ -1152,7 +1202,7 @@ mod tests {
         let profiles = Arc::new(InMemoryProfileStore::new());
         profiles
             .put(
-                DEFAULT_INFERENCE_PROFILE_ID.into(),
+                "profile-a".into(),
                 InferenceProfile {
                     workspace_id: "workspace-a".into(),
                     primary: ProfileCandidate {
@@ -1172,7 +1222,7 @@ mod tests {
         let error = CatalogModelPublicationResolver::new(catalog, credentials)
             .with_profiles(profiles)
             .with_brokered_access(false)
-            .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
+            .resolve_models(&ScopeId::from("workspace-a"), &explicit_profile(), &[])
             .await
             .unwrap_err();
         assert!(error.to_string().contains("cloud_models_disabled"));
@@ -1184,7 +1234,7 @@ mod tests {
         let profiles = Arc::new(InMemoryProfileStore::new());
         profiles
             .put(
-                DEFAULT_INFERENCE_PROFILE_ID.into(),
+                "profile-a".into(),
                 InferenceProfile {
                     workspace_id: "workspace-a".into(),
                     primary: ProfileCandidate {
@@ -1203,7 +1253,7 @@ mod tests {
 
         let error = CatalogModelPublicationResolver::new(catalog(&["primary"]), credentials)
             .with_profiles(profiles)
-            .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
+            .resolve_models(&ScopeId::from("workspace-a"), &explicit_profile(), &[])
             .await
             .unwrap_err();
         assert!(
@@ -1336,6 +1386,142 @@ mod tests {
             .await
             .expect("P3");
         assert_eq!(native.primary.binding.backend_ref, "genai", "P3");
+    }
+
+    #[tokio::test]
+    async fn claude_setup_token_is_selected_only_for_the_managed_claude_backend() {
+        // Cause graph: exact provider offering + selected backend + credential
+        // env semantics -> one published CredentialAccess usage.
+        //
+        // | Rule | Backend | API key | setup token | Selected usage |
+        // | S1 | genai | yes | yes | API key / ProviderAdapter |
+        // | S2 | acp:claude | yes | yes | setup token / exact env |
+        // | S3 | acp:gemini | yes | yes | no compatible credential |
+        let mut catalog = ProviderCatalog::default();
+        catalog.providers.insert(
+            "anthropic".into(),
+            Provider {
+                id: ProviderId::new("anthropic"),
+                slug: "anthropic".into(),
+                display_name: "Anthropic".into(),
+                version: 1,
+            },
+        );
+        catalog.endpoints.insert(
+            "anthropic-messages".into(),
+            ProtocolEndpoint {
+                id: ProtocolEndpointId::new("anthropic-messages"),
+                provider_id: ProviderId::new("anthropic"),
+                dialect: ApiDialect::AnthropicMessages,
+                base_url: Some("https://api.anthropic.com/v1".into()),
+                timeout_secs: 30,
+                display_name: "Anthropic".into(),
+                version: 1,
+            },
+        );
+        catalog.offerings = vec![Offering {
+            model_id: "claude-test".into(),
+            provider_id: ProviderId::new("anthropic"),
+            protocol_endpoint_id: ProtocolEndpointId::new("anthropic-messages"),
+            dialect: ApiDialect::AnthropicMessages,
+            upstream_model: None,
+            source: Default::default(),
+            status: Default::default(),
+            last_seen_at_unix_ms: None,
+        }];
+        let credentials = Arc::new(InMemoryCredentialRepo::new());
+        let secrets = InMemorySecretStore::new();
+        let api_key = enter_credential(
+            CredentialCreateParams {
+                workspace_id: "workspace-a".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("anthropic".into()),
+                env_key: Some("ANTHROPIC_API_KEY".into()),
+                secret: Some(RedactedString::new("api-key")),
+                oauth_command: None,
+            },
+            &secrets,
+            credentials.as_ref(),
+        )
+        .await
+        .unwrap();
+        let setup_token = enter_credential(
+            CredentialCreateParams {
+                workspace_id: "workspace-a".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("anthropic".into()),
+                env_key: Some(awaken_credential_vault::CLAUDE_CODE_SETUP_TOKEN_ENV.into()),
+                secret: Some(RedactedString::new("setup-token")),
+                oauth_command: None,
+            },
+            &secrets,
+            credentials.as_ref(),
+        )
+        .await
+        .unwrap();
+        let resolver = CatalogModelPublicationResolver::new(catalog, credentials);
+
+        let native = resolver
+            .resolve_models(
+                &ScopeId::from("workspace-a"),
+                &ModelSelection::Pinned(ModelBinding::new("anthropic", "claude-test", "genai")),
+                &[],
+            )
+            .await
+            .expect("S1");
+        let ModelProvisioning::Provider {
+            credential: Some(native_access),
+            ..
+        } = native.primary.provisioning
+        else {
+            panic!("S1 provider credential")
+        };
+        assert_eq!(native_access.credential.id, api_key.id.0, "S1");
+        assert_eq!(native_access.usage, CredentialUsage::ProviderAdapter, "S1");
+
+        let claude = resolver
+            .resolve_models(
+                &ScopeId::from("workspace-a"),
+                &ModelSelection::Pinned(ModelBinding::new(
+                    "anthropic",
+                    "claude-test",
+                    "acp:claude",
+                )),
+                &[],
+            )
+            .await
+            .expect("S2");
+        let ModelProvisioning::Provider {
+            credential: Some(claude_access),
+            ..
+        } = claude.primary.provisioning
+        else {
+            panic!("S2 provider credential")
+        };
+        assert_eq!(claude_access.credential.id, setup_token.id.0, "S2");
+        assert_eq!(
+            claude_access.usage,
+            CredentialUsage::EnvironmentVariable {
+                name: awaken_credential_vault::CLAUDE_CODE_SETUP_TOKEN_ENV.into(),
+            },
+            "S2"
+        );
+
+        assert!(
+            resolver
+                .resolve_models(
+                    &ScopeId::from("workspace-a"),
+                    &ModelSelection::Pinned(ModelBinding::new(
+                        "anthropic",
+                        "claude-test",
+                        "acp:gemini",
+                    )),
+                    &[],
+                )
+                .await
+                .is_err(),
+            "S3"
+        );
     }
 
     #[tokio::test]

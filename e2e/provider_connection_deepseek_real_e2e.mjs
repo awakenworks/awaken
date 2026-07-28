@@ -62,7 +62,7 @@ async function main() {
     const offering = offerings.find((item) => item.model_id === 'deepseek-v4-flash') ?? offerings[0];
     assert.ok(offering, JSON.stringify(result.body));
 
-    result = await request(base, 'PUT', '/v1/config/inference-profiles/workspace-default', {
+    result = await request(base, 'PUT', '/v1/config/inference-profiles/deepseek-route', {
       workspace_id: workspace,
       primary: {
         target: {
@@ -91,7 +91,7 @@ async function main() {
     assert.equal(result.status, 200, JSON.stringify(result.body));
     assert.equal(result.body.installed, true);
 
-    const client = new Anthropic({ apiKey: 'local-e2e', baseURL: base });
+    const client = new Anthropic({ apiKey: 'local-e2e', baseURL: base }); // awaken-allow: secret (local protocol fixture)
     const session = await client.beta.sessions.create({ agent, environment_id: 'env_local', betas: BETAS });
     await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'Reply with exactly AWAKEN-DEEPSEEK-LIVE-OK' }] }],

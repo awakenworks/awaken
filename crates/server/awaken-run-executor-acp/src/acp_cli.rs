@@ -62,11 +62,25 @@ pub struct ModelDelivery {
     pub base_url: &'static str,
     /// Env key for the model name (e.g. `ANTHROPIC_MODEL`).
     pub model: &'static str,
-    /// Env key for the API key (a process-secret broker reference; never plaintext).
-    pub key: &'static str,
+    /// Allowlisted process-secret environment variables, ordered with the default
+    /// API-key delivery first. A published `CredentialAccess.usage` may select an
+    /// alternate only from this exact list.
+    pub credential_env: &'static [&'static str],
     /// Extra model-name env keys the CLI reads as tier aliases, all set to the same
     /// resolved model (e.g. `ANTHROPIC_SONNET_MODEL`/`OPUS`/`HAIKU`).
     pub aliases: &'static [&'static str],
+}
+
+impl ModelDelivery {
+    #[must_use]
+    pub fn default_credential_env(self) -> Option<&'static str> {
+        self.credential_env.first().copied()
+    }
+
+    #[must_use]
+    pub fn supports_credential_env(self, name: &str) -> bool {
+        self.credential_env.contains(&name)
+    }
 }
 
 /// How a backend-owned CLI accepts an exact model selection. This is distinct
@@ -137,7 +151,6 @@ pub enum McpInterface {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CredentialArtifactCodec {
     CodexAuthJson,
-    ClaudeCredentialsJson,
 }
 
 /// One managed artifact selected from a CLI profile.
@@ -154,27 +167,22 @@ pub struct CredentialArtifactSpec {
 pub enum ManagedCredentialDelivery {
     ProcessSecret,
     Artifact(CredentialArtifactSpec),
-    RefreshArtifactOrProcessSecret(CredentialArtifactSpec),
 }
 
 impl ManagedCredentialDelivery {
     /// Select an artifact only when this profile and the pinned credential shape
     /// require one.
     #[must_use]
-    pub fn credential_artifact(self, has_refresh: bool) -> Option<CredentialArtifactSpec> {
+    pub fn credential_artifact(self, _has_refresh: bool) -> Option<CredentialArtifactSpec> {
         match self {
             Self::Artifact(spec) => Some(spec),
-            Self::RefreshArtifactOrProcessSecret(spec) if has_refresh => Some(spec),
-            Self::ProcessSecret | Self::RefreshArtifactOrProcessSecret(_) => None,
+            Self::ProcessSecret => None,
         }
     }
 
     #[must_use]
     pub fn allows_process_secret(self) -> bool {
-        matches!(
-            self,
-            Self::ProcessSecret | Self::RefreshArtifactOrProcessSecret(_)
-        )
+        matches!(self, Self::ProcessSecret)
     }
 }
 
@@ -256,6 +264,7 @@ impl AcpCli {
 #[derive(Clone, PartialEq, Eq)]
 pub struct ProcessSecretRequirement {
     reference: String,
+    environment_variable: Option<String>,
 }
 
 /// One claim-fenced provider credential artifact. The executor carries only the
@@ -298,12 +307,29 @@ impl ProcessSecretRequirement {
     pub fn new(reference: impl Into<String>) -> Self {
         Self {
             reference: reference.into(),
+            environment_variable: None,
+        }
+    }
+
+    #[must_use]
+    pub fn for_environment(
+        reference: impl Into<String>,
+        environment_variable: impl Into<String>,
+    ) -> Self {
+        Self {
+            reference: reference.into(),
+            environment_variable: Some(environment_variable.into()),
         }
     }
 
     #[must_use]
     pub fn reference(&self) -> &str {
         &self.reference
+    }
+
+    #[must_use]
+    pub fn environment_variable(&self) -> Option<&str> {
+        self.environment_variable.as_deref()
     }
 }
 
@@ -447,7 +473,7 @@ impl AcpCli {
             if let Some(delivery) = self.model_delivery {
                 for key in std::iter::once(delivery.base_url)
                     .chain(std::iter::once(delivery.model))
-                    .chain(std::iter::once(delivery.key))
+                    .chain(delivery.credential_env.iter().copied())
                     .chain(delivery.aliases.iter().copied())
                 {
                     env.remove(key);
@@ -541,10 +567,25 @@ impl AcpCli {
         }
         // The typed secret goes last so no passthrough key can shadow it.
         if let Some(secret) = process_secret {
+            let key = match secret.environment_variable() {
+                Some(key) if d.supports_credential_env(key) => key,
+                Some(key) => {
+                    return Err(OpenError(format!(
+                        "credential_environment_unsupported: {} does not accept {key}",
+                        self.id
+                    )));
+                }
+                None => d.default_credential_env().ok_or_else(|| {
+                    OpenError(format!(
+                        "credential_environment_missing: {} has no process-secret environment",
+                        self.id
+                    ))
+                })?,
+            };
             env.insert(
-                d.key.to_string(),
+                key.to_string(),
                 pc::EnvVar {
-                    name: d.key.to_string(),
+                    name: key.to_string(),
                     value: pc::EnvValue::Secret {
                         reference: secret.reference().to_string(),
                     },
@@ -696,7 +737,7 @@ const CLAUDE: AcpCli = AcpCli {
     model_delivery: Some(ModelDelivery {
         base_url: "ANTHROPIC_BASE_URL",
         model: "ANTHROPIC_MODEL",
-        key: "ANTHROPIC_API_KEY",
+        credential_env: &["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
         aliases: &[
             "ANTHROPIC_SONNET_MODEL",
             "ANTHROPIC_OPUS_MODEL",
@@ -707,12 +748,7 @@ const CLAUDE: AcpCli = AcpCli {
         flag: "-c",
         key: "model",
     },
-    managed_credential_delivery: ManagedCredentialDelivery::RefreshArtifactOrProcessSecret(
-        CredentialArtifactSpec {
-            codec: CredentialArtifactCodec::ClaudeCredentialsJson,
-            relative_path: ".credentials.json",
-        },
-    ),
+    managed_credential_delivery: ManagedCredentialDelivery::ProcessSecret,
     auth_method_id: None,
     mcp_interface: McpInterface::AcpSession,
     config_home_env: Some("CLAUDE_CONFIG_DIR"),
@@ -830,7 +866,7 @@ const GEMINI: AcpCli = AcpCli {
     model_delivery: Some(ModelDelivery {
         base_url: "GOOGLE_GEMINI_BASE_URL",
         model: "GEMINI_MODEL",
-        key: "GEMINI_API_KEY",
+        credential_env: &["GEMINI_API_KEY"],
         aliases: &[],
     }),
     backend_model_interface: BackendModelInterface::Flag { flag: "--model" },
@@ -894,7 +930,7 @@ const OPENCODE: AcpCli = AcpCli {
     model_delivery: Some(ModelDelivery {
         base_url: "OPENAI_BASE_URL",
         model: "OPENAI_MODEL",
-        key: "OPENAI_API_KEY",
+        credential_env: &["OPENAI_API_KEY"],
         aliases: &[],
     }),
     backend_model_interface: BackendModelInterface::Unsupported,
@@ -996,30 +1032,31 @@ mod tests {
         // Cause graph: catalog profile + pinned credential shape -> exactly one
         // managed delivery mechanism. Host code never reclassifies by CLI id.
         //
-        // | Rule | Profile | Refresh metadata | Artifact | Process secret |
-        // | C1 | Codex | no/yes | auth.json | no |
-        // | C2 | Claude | yes | .credentials.json | no |
-        // | C3 | Claude | no | no | yes |
-        // | C4 | Gemini/OpenCode | no/yes | no | yes |
+        // | Rule | Profile | Artifact | Process secret |
+        // | C1 | Codex | auth.json | no |
+        // | C2 | Claude | no | API key or setup-token env |
+        // | C3 | Gemini/OpenCode | no | provider API-key env |
         let codex = acp_cli("codex").unwrap().managed_credential_delivery;
         let codex_artifact = codex.credential_artifact(false).expect("C1");
         assert_eq!(codex_artifact.relative_path, ".codex/auth.json", "C1");
         assert!(!codex.allows_process_secret(), "C1");
 
         let claude = acp_cli("claude").unwrap().managed_credential_delivery;
+        assert_eq!(claude.credential_artifact(false), None, "C2");
+        assert_eq!(claude.credential_artifact(true), None, "C2");
+        assert!(claude.allows_process_secret(), "C2");
+        let claude_model = acp_cli("claude").unwrap().model_delivery.unwrap();
         assert_eq!(
-            claude.credential_artifact(true).expect("C2").relative_path,
-            ".credentials.json",
+            claude_model.credential_env,
+            &["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
             "C2"
         );
-        assert_eq!(claude.credential_artifact(false), None, "C3");
-        assert!(claude.allows_process_secret(), "C3");
 
         for rule in ["gemini", "opencode"] {
             let delivery = acp_cli(rule).unwrap().managed_credential_delivery;
-            assert_eq!(delivery.credential_artifact(false), None, "C4 {rule}");
-            assert_eq!(delivery.credential_artifact(true), None, "C4 {rule}");
-            assert!(delivery.allows_process_secret(), "C4 {rule}");
+            assert_eq!(delivery.credential_artifact(false), None, "C3 {rule}");
+            assert_eq!(delivery.credential_artifact(true), None, "C3 {rule}");
+            assert!(delivery.allows_process_secret(), "C3 {rule}");
         }
     }
 
@@ -1037,10 +1074,13 @@ mod tests {
         for cli in known_acp_clis() {
             let mut stale_managed_env = vec![("HOME".into(), "/wrong-home".into())];
             if let Some(delivery) = cli.model_delivery {
+                let credential_env = delivery
+                    .default_credential_env()
+                    .expect("catalog process-secret delivery has a default");
                 stale_managed_env.extend([
                     (delivery.base_url.into(), "https://wrong.invalid".into()),
                     (delivery.model.into(), "wrong-model".into()),
-                    (delivery.key.into(), "wrong-secret".into()),
+                    (credential_env.into(), "wrong-secret".into()),
                 ]);
             }
             if let Some(config_home) = cli.config_home_env {
@@ -1057,7 +1097,7 @@ mod tests {
             if let Some(delivery) = cli.model_delivery {
                 for key in std::iter::once(delivery.base_url)
                     .chain(std::iter::once(delivery.model))
-                    .chain(std::iter::once(delivery.key))
+                    .chain(delivery.credential_env.iter().copied())
                     .chain(delivery.aliases.iter().copied())
                 {
                     assert!(env_of(&launch, key).is_none(), "B1 {} leaked {key}", cli.id);
@@ -1180,7 +1220,11 @@ mod tests {
                 cli.id
             );
             assert_eq!(
-                secret_ref_of(&launch, d.key),
+                secret_ref_of(
+                    &launch,
+                    d.default_credential_env()
+                        .expect("catalog process-secret delivery has a default"),
+                ),
                 Some("lease://test-model"),
                 "{}: key",
                 cli.id
@@ -1207,10 +1251,13 @@ mod tests {
                 assert!(cli.try_project(&m, None, &[]).is_err(), "{}", cli.id);
                 continue;
             };
+            let credential_env = d
+                .default_credential_env()
+                .expect("catalog process-secret delivery has a default");
             // A hostile passthrough tries to override the modeled model + the secret.
             let extra = vec![
                 (d.model.to_string(), "attacker-model".to_string()),
-                (d.key.to_string(), "attacker-key".to_string()),
+                (credential_env.to_string(), "attacker-key".to_string()),
             ];
             let launch = cli.project(&m, None, &extra);
             assert_eq!(
@@ -1220,12 +1267,40 @@ mod tests {
                 cli.id
             );
             assert_eq!(
-                secret_ref_of(&launch, d.key),
+                secret_ref_of(&launch, credential_env),
                 Some("lease://test-model"),
                 "{}: secret unshadowable",
                 cli.id
             );
         }
+    }
+
+    #[test]
+    fn claude_setup_token_uses_only_its_allowlisted_process_environment() {
+        let model = ResolvedModel::Managed {
+            base_url: "https://api.anthropic.com/v1".into(),
+            model: "claude-test".into(),
+            process_secret: Some(ProcessSecretRequirement::for_environment(
+                "lease://setup-token",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+            )),
+            credential_artifact: None,
+        };
+        let claude = acp_cli("claude").unwrap();
+        let launch = claude
+            .try_project(&model, None, &[])
+            .expect("Claude setup token");
+        assert_eq!(
+            secret_ref_of(&launch, "CLAUDE_CODE_OAUTH_TOKEN"),
+            Some("lease://setup-token")
+        );
+        assert_eq!(secret_ref_of(&launch, "ANTHROPIC_API_KEY"), None);
+
+        let gemini = acp_cli("gemini").unwrap();
+        let error = gemini
+            .try_project(&model, None, &[])
+            .expect_err("another CLI must reject Claude's setup token");
+        assert!(error.0.contains("credential_environment_unsupported"));
     }
 
     #[test]
@@ -1254,7 +1329,12 @@ mod tests {
                 cli.id
             );
             assert_eq!(
-                secret_ref_of(&launch, delivery.key),
+                secret_ref_of(
+                    &launch,
+                    delivery
+                        .default_credential_env()
+                        .expect("catalog process-secret delivery has a default"),
+                ),
                 Some("lease://gateway-123"),
                 "{}: key env holds only the broker reference",
                 cli.id

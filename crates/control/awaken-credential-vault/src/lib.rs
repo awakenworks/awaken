@@ -96,6 +96,11 @@ pub enum CredentialKind {
     WorkerLocal,
 }
 
+/// Claude Code's documented long-lived `setup-token` process-secret channel.
+/// It is a CLI credential, not an Anthropic Messages API key, so generic
+/// provider resolution must never treat it as native provider material.
+pub const CLAUDE_CODE_SETUP_TOKEN_ENV: &str = "CLAUDE_CODE_OAUTH_TOKEN";
+
 /// Server-owned OAuth token helper. The API carries this allowlisted id, never
 /// an operator-supplied command line; the credential bounded context owns how
 /// it becomes a token source for model, MCP, and A2A consumers alike.
@@ -567,6 +572,12 @@ pub(crate) fn validate_create_params(
                 Err(CredentialError::InvalidSource(
                     "vault credentials cannot configure an OAuth helper".into(),
                 ))
+            } else if params.env_key.as_deref() == Some(CLAUDE_CODE_SETUP_TOKEN_ENV)
+                && params.provider_id.as_deref() != Some("anthropic")
+            {
+                Err(CredentialError::InvalidSource(
+                    "Claude Code setup tokens must be scoped to provider anthropic".into(),
+                ))
             } else {
                 Ok(())
             }
@@ -712,6 +723,40 @@ mod tests {
         // But it materializes back to the plaintext at the seam.
         let secret = materialize(&source, &store).await.unwrap();
         assert_eq!(secret.expose_secret(), "sk-super-secret-value");
+    }
+
+    #[tokio::test]
+    async fn claude_setup_token_is_an_anthropic_scoped_vault_source() {
+        let store = InMemorySecretStore::new();
+        let source = create_source(
+            CredentialCreateParams {
+                workspace_id: "ws1".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("anthropic".into()),
+                env_key: Some(CLAUDE_CODE_SETUP_TOKEN_ENV.into()),
+                secret: Some(RedactedString::new("setup-token")),
+                oauth_command: None,
+            },
+            &store,
+        )
+        .await
+        .expect("Claude setup token");
+        assert_eq!(source.env_key.as_deref(), Some(CLAUDE_CODE_SETUP_TOKEN_ENV));
+
+        let error = create_source(
+            CredentialCreateParams {
+                workspace_id: "ws1".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("openai".into()),
+                env_key: Some(CLAUDE_CODE_SETUP_TOKEN_ENV.into()),
+                secret: Some(RedactedString::new("setup-token")),
+                oauth_command: None,
+            },
+            &store,
+        )
+        .await
+        .expect_err("setup token cannot be scoped to another provider");
+        assert!(matches!(error, CredentialError::InvalidSource(_)));
     }
 
     #[tokio::test]

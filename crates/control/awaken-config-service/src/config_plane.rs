@@ -287,7 +287,7 @@ impl ConfigService {
         let stored = registry.get_config(id).await.map_err(|e| e.to_string())?;
         match stored {
             // Only auto bindings are re-resolved; an operator pin is authoritative.
-            Some(config) if config.model_binding.is_auto() => {
+            Some(config) if config.model_binding.requires_reconciliation() => {
                 self.publish(workspace, registry, id, catalog)
                     .await
                     .map_err(|e| e.to_string())?;

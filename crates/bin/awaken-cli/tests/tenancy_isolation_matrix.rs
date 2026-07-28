@@ -162,30 +162,27 @@ async fn angle_d3_path_routes_to_the_flat_handler() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn angle_catalog_is_shared_across_workspaces() {
     let app = build_management_router().await;
-    // A provider authored under one workspace's path is visible under another's —
+    // Model metadata authored under one workspace's path is visible under another's —
     // the model catalog is org/deployment-level shared config, NOT a per-workspace
     // resource (org isolation is by deployment boundary; org is cloud-only per
     // ADR-0048 D4). This asserts the shared decision is correctly implemented.
-    let provider = json!({ "id": "anthropic", "slug": "anthropic", "display_name": "Anthropic", "version": 1 });
     let (status, _) = call(
         &app,
         "PUT",
-        "/v1/workspaces/ws_a/config/providers/anthropic",
-        Some(provider),
+        "/v1/workspaces/ws_a/config/model-attributes/shared-model",
+        Some(json!({ "context_window": 4096 })),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "author a provider");
-    // ws_b reads the same provider — shared, not fenced.
-    let (status, got) = call(
-        &app,
-        "GET",
-        "/v1/workspaces/ws_b/config/providers/anthropic",
-        None,
-    )
-    .await;
+    assert_eq!(status, StatusCode::OK, "author model metadata");
+    // ws_b reads the same catalog projection — shared, not fenced.
+    let (status, got) = call(&app, "GET", "/v1/workspaces/ws_b/config/catalog", None).await;
     assert_eq!(
         status,
         StatusCode::OK,
         "catalog is shared across workspaces: {got:?}"
+    );
+    assert_eq!(
+        got["model_attributes"]["shared-model"]["context_window"],
+        4096
     );
 }

@@ -152,32 +152,25 @@ async function main() {
     WORKSPACE = fs.readFileSync(path.join(mgmtDir, 'platform-workspace-id'), 'utf8').trim();
     console.log('ok: aggregated `awaken` command booted in the default Serve role (management plane)');
 
-    // ---- author the model in the database-backed console ---------------------
+    // ---- connect the provider through the canonical atomic command -----------
     let base = h.baseUrl;
-    let r = await req(base, 'PUT', '/v1/config/providers/anthropic', {
-      id: 'anthropic', slug: 'anthropic', display_name: 'Anthropic', version: 1,
+    let r = await req(base, 'POST', '/v1/config/provider-connections', {
+      workspace_id: WORKSPACE,
+      provider_id: 'anthropic',
+      display_name: 'Anthropic',
+      endpoint_id: 'ep1',
+      dialect: 'anthropic_messages',
+      base_url: `${upstream.url}/v1/`,
+      timeout_secs: 300,
+      secret: FAKE_KEY,
     });
-    assert.equal(r.status, 200, `provider: ${JSON.stringify(r.json)}`);
-    r = await req(base, 'PUT', '/v1/config/endpoints/ep1', {
-      id: 'ep1', provider_id: 'anthropic', dialect: 'anthropic_messages',
-      base_url: `${upstream.url}/v1/`, timeout_secs: 300, display_name: 'fake', version: 1,
-    });
-    assert.equal(r.status, 200, `endpoint: ${JSON.stringify(r.json)}`);
-    r = await req(base, 'POST', '/v1/config/offerings', {
-      model_id: MODEL, provider_id: 'anthropic',
-      protocol_endpoint_id: 'ep1', dialect: 'anthropic_messages', upstream_model: null,
-    });
-    assert.equal(r.status, 200, `offering: ${JSON.stringify(r.json)}`);
+    assert.equal(r.status, 201, `provider connection: ${JSON.stringify(r.json)}`);
+    const providerCredentialId = r.json.credential.id;
     r = await req(base, 'PUT', `/v1/config/model-attributes/${MODEL}`, {
       context_window: 4096,
       max_output_tokens: 1024,
     });
     assert.equal(r.status, 200, `model attributes: ${JSON.stringify(r.json)}`);
-    r = await req(base, 'POST', '/v1/config/credentials', {
-      workspace_id: WORKSPACE, kind: 'vault', provider_id: 'anthropic',
-      env_key: 'ANTHROPIC_API_KEY', secret: FAKE_KEY,
-    });
-    assert.equal(r.status, 201, `credential: ${JSON.stringify(r.json)}`);
     const credentialId = r.json.id;
     console.log('ok: authored provider/endpoint/offering + credential in the console DB');
 
@@ -318,13 +311,19 @@ async function main() {
     r = await req(base, 'POST', '/v1/config/agents/unpublished-model-agent/publish', undefined);
     assert.equal(r.status, 409, `unpublished model must not install: ${JSON.stringify(r.json)}`);
 
-    // Mutating the catalog after publication cannot redirect the installed
-    // snapshot: execution must still call the endpoint pinned above.
-    r = await req(base, 'PUT', '/v1/config/endpoints/ep1', {
-      id: 'ep1', provider_id: 'anthropic', dialect: 'anthropic_messages',
-      base_url: 'http://127.0.0.1:1/v1/', timeout_secs: 300, display_name: 'mutated', version: 2,
+    // A replacement connection is tested before commit. A failed probe cannot
+    // redirect either the live catalog or the already-installed snapshot.
+    r = await req(base, 'POST', '/v1/config/provider-connections', {
+      workspace_id: WORKSPACE,
+      provider_id: 'anthropic',
+      display_name: 'Anthropic',
+      endpoint_id: 'ep1',
+      dialect: 'anthropic_messages',
+      base_url: 'http://127.0.0.1:1/v1/',
+      timeout_secs: 300,
+      credential_source_id: providerCredentialId,
     });
-    assert.equal(r.status, 200, `post-publication endpoint mutation: ${JSON.stringify(r.json)}`);
+    assert.equal(r.status, 502, `connection test rejects an unreachable replacement: ${JSON.stringify(r.json)}`);
 
     // ---- run a session on the DB-configured model ----------------------------
     // Cause-effect graph for direct-attempt credential authority:
@@ -416,15 +415,10 @@ async function main() {
     assert.ok(warmEvents.some((event) => event.type === 'agent.message'), 'warm-installed snapshot executes');
     console.log('ok: durable publication warm-installed after restart without re-resolution');
 
-    // Restore the live catalog endpoint after proving the ordinary Agent retained
-    // its older pin. The catalog-write reconciler republishes the reserved Admin
-    // Assistant against this current endpoint; then drive its six real management
+    // The rejected replacement left the connected endpoint unchanged. The
+    // connection-write reconciler republishes the reserved Admin Assistant
+    // against that endpoint; then drive its six real management
     // adapters through the ordinary Sessions API in the production composition.
-    r = await req(base, 'PUT', '/v1/config/endpoints/ep1', {
-      id: 'ep1', provider_id: 'anthropic', dialect: 'anthropic_messages',
-      base_url: `${upstream.url}/v1/`, timeout_secs: 300, display_name: 'restored', version: 3,
-    });
-    assert.equal(r.status, 200, `restore endpoint: ${JSON.stringify(r.json)}`);
     const adminDeadline = Date.now() + 10_000;
     let projectedAdmin;
     do {

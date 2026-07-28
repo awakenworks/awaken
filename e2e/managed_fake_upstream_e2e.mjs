@@ -90,24 +90,18 @@ async function main() {
     delete process.env.ANTHROPIC_BASE_URL;
     delete process.env.ANTHROPIC_MODEL;
     await withServer('management', 38195, async (base) => {
-      await req(base, 'PUT', '/v1/config/providers/anthropic', {
-        id: 'anthropic', slug: 'anthropic', display_name: 'Anthropic', version: 1,
-      });
-      await req(base, 'PUT', '/v1/config/endpoints/ep1', {
-        id: 'ep1', provider_id: 'anthropic', dialect: 'anthropic_messages',
-        base_url: `${upstream.url}/v1/`, timeout_secs: 300, display_name: 'fake', version: 1,
-      });
-      await req(base, 'POST', '/v1/config/offerings', {
-        model_id: 'fake-haiku', provider_id: 'anthropic',
-        protocol_endpoint_id: 'ep1', dialect: 'anthropic_messages', upstream_model: null,
-      });
-
-      let r = await req(base, 'POST', '/v1/config/credentials', {
-        workspace_id: 'ws', kind: 'vault', provider_id: 'anthropic',
-        env_key: 'ANTHROPIC_API_KEY', secret: FAKE_KEY,
+      let r = await req(base, 'POST', '/v1/config/provider-connections', {
+        workspace_id: 'ws',
+        provider_id: 'anthropic',
+        display_name: 'Anthropic',
+        endpoint_id: 'ep1',
+        dialect: 'anthropic_messages',
+        base_url: `${upstream.url}/v1/`,
+        timeout_secs: 300,
+        secret: FAKE_KEY,
       });
       assert.equal(r.status, 201);
-      r = await req(base, 'POST', `/v1/config/credentials/${r.json.id}/validate`, {
+      r = await req(base, 'POST', `/v1/config/credentials/${r.json.credential.id}/validate`, {
         workspace_id: 'ws', model_id: 'fake-haiku',
       });
       assert.equal(r.status, 200, JSON.stringify(r.json));

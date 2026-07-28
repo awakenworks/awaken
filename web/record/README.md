@@ -22,9 +22,11 @@ Run the fast structural contract before recording:
 pnpm record:test
 ```
 
-Record against the real console/backend. Live-model flows use the active gcloud
-account and require `GEMINI_PROJECT` (optionally `GEMINI_LOCATION` and
-`GEMINI_MODEL`):
+Record against the real console/backend. The live model story must use the
+descriptor-driven Provider Connection UI—provider, endpoint, credential, and
+model catalog are no longer authored as separate recording steps. It uses the
+active gcloud account and requires `GEMINI_PROJECT` (optionally
+`GEMINI_LOCATION` and `GEMINI_MODEL`):
 
 ```sh
 mkdir -p .recording-awaken

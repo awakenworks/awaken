@@ -570,7 +570,7 @@ const FAKE_ACP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_acp::A
     model_delivery: Some(awaken_run_executor_acp::ModelDelivery {
         base_url: "ANTHROPIC_BASE_URL",
         model: "ANTHROPIC_MODEL",
-        key: "ANTHROPIC_API_KEY",
+        credential_env: &["ANTHROPIC_API_KEY"],
         aliases: &[],
     }),
     backend_model_interface: awaken_run_executor_acp::BackendModelInterface::Unsupported,
@@ -626,7 +626,7 @@ const FAKE_ACP_MCP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_ac
     model_delivery: Some(awaken_run_executor_acp::ModelDelivery {
         base_url: "ANTHROPIC_BASE_URL",
         model: "ANTHROPIC_MODEL",
-        key: "ANTHROPIC_API_KEY",
+        credential_env: &["ANTHROPIC_API_KEY"],
         aliases: &[],
     }),
     backend_model_interface: awaken_run_executor_acp::BackendModelInterface::Unsupported,

@@ -1697,8 +1697,8 @@ fn finish_management_surface(
     // dedicated bearer. This avoids turning the management toolset into an open
     // mutation surface while still making the `awaken` binary the complete adapter.
     flat = flat.merge(mcp_export);
-    // After a successful model-resolution input write, re-publish the reserved-scope
-    // assistant so its `Auto` binding picks up the catalog or Workspace default Profile.
+    // After a successful model-supply write, re-publish the reserved-scope
+    // assistant so its `Auto` binding picks up the current catalog.
     // The layer
     // sits on the flat surface INSIDE the workspace path rewrite (which rewrites a
     // `/v1/workspaces/{ws}/config/...` request to its flat `/v1/config/...` form BEFORE
@@ -1712,9 +1712,7 @@ fn finish_management_surface(
                 let path = req.uri().path().to_string();
                 let is_write =
                     method == axum::http::Method::POST || method == axum::http::Method::PUT;
-                let is_model_resolution_input = path.contains("/config/offerings")
-                    || path.contains("/config/providers")
-                    || path.contains("/config/endpoints")
+                let is_model_resolution_input = path.contains("/config/provider-connections")
                     || path.contains("/config/model-attributes")
                     || path.contains("/config/inference-profiles/")
                     || path.contains("/config/brokered-models/refresh");

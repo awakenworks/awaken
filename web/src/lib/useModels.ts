@@ -33,11 +33,16 @@ export function useModels(): Models {
     (offering) => (offering.status ?? "active") === "active",
   );
   const creds = credentials.data ?? [];
-  // can_consume (ADR-0118): an unscoped credential (provider_id null) serves any
-  // provider; a scoped one serves only its provider. Only active credentials count.
+  // Native/provider model pickers mirror config-resolver `can_consume`: an
+  // unscoped credential serves any provider and a scoped one only its provider.
+  // Claude Code setup tokens belong exclusively to `acp:claude`; they are not
+  // Anthropic Messages API keys and therefore never make a catalog offering ready.
   const credentialed = (providerId: string) =>
     creds.some(
-      (c) => c.status === "active" && (c.provider_id == null || c.provider_id === providerId),
+      (c) =>
+        c.status === "active" &&
+        c.env_key !== "CLAUDE_CODE_OAUTH_TOKEN" &&
+        (c.provider_id == null || c.provider_id === providerId),
     );
 
   return {

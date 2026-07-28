@@ -299,7 +299,10 @@ impl PinnedCredentialMaterializer {
         let credential = credential
             .as_ref()
             .ok_or_else(|| "published model candidate has no credential pin".to_string())?;
-        if credential.usage != CredentialUsage::ProviderAdapter {
+        if !matches!(
+            credential.usage,
+            CredentialUsage::ProviderAdapter | CredentialUsage::EnvironmentVariable { .. }
+        ) {
             return Err("published credential injection contract is invalid".to_string());
         }
         let (material_sources, recipient_bound_envelopes) = self.material_source_capabilities();

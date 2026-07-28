@@ -1,6 +1,6 @@
 //! Restart persistence for the durable management plane (ADR-0043): a router
 //! built over typed `data_dir` SQLite stores is dropped and rebuilt over
-//! the same directory + key, and everything authored through HTTP — catalog,
+//! the same directory + key. Catalog storage is seeded through its domain port;
 //! credential (sealed secret), pool, inference profile, MCP server def, agent
 //! MCP binding — reads back and still *resolves* (the credential materializes
 //! from the sealed blob store). A rebuild under the WRONG key fails closed at
@@ -10,6 +10,11 @@
 
 use awaken_cli::build_durable_management_router;
 use awaken_config_store::{ScopeId, ScopedConfigRegistry, SqliteConfigStore};
+use awaken_model_catalog::repo::CatalogRepo;
+use awaken_model_catalog::{
+    ApiDialect, Offering, OfferingSource, OfferingStatus, ProtocolEndpoint, ProtocolEndpointId,
+    Provider, ProviderId, SqliteCatalogRepo,
+};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
@@ -47,6 +52,41 @@ const WRONG_KEY: [u8; 32] = [8u8; 32];
 #[tokio::test(flavor = "multi_thread")]
 async fn authored_config_and_sealed_credentials_survive_a_restart() {
     let dir = tempfile::tempdir().unwrap();
+    let catalog = SqliteCatalogRepo::open(dir.path().join("catalog.db").to_str().unwrap()).unwrap();
+    catalog
+        .put_provider(Provider {
+            id: ProviderId::new("anthropic"),
+            slug: "anthropic".into(),
+            display_name: "Anthropic".into(),
+            version: 1,
+        })
+        .await
+        .unwrap();
+    catalog
+        .put_endpoint(ProtocolEndpoint {
+            id: ProtocolEndpointId::new("ep1"),
+            provider_id: ProviderId::new("anthropic"),
+            dialect: ApiDialect::AnthropicMessages,
+            base_url: Some("https://api.anthropic.com/v1/".into()),
+            timeout_secs: 300,
+            display_name: "prod".into(),
+            version: 1,
+        })
+        .await
+        .unwrap();
+    catalog
+        .put_offering(Offering {
+            model_id: "claude-opus-4-8".into(),
+            provider_id: ProviderId::new("anthropic"),
+            protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
+            dialect: ApiDialect::AnthropicMessages,
+            upstream_model: None,
+            source: OfferingSource::Manual,
+            status: OfferingStatus::Active,
+            last_seen_at_unix_ms: None,
+        })
+        .await
+        .unwrap();
 
     // ---- lifetime A: author everything over HTTP --------------------------
     let cred_id;
@@ -54,13 +94,12 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
         let app = build_durable_management_router(dir.path(), &KEY).await;
 
         let audit_probe_body = serde_json::to_vec(&json!({
-            "id": "audit-probe", "slug": "audit-probe",
-            "display_name": "Audit Probe", "version": 1
+            "context_window": 4096
         }))
         .unwrap();
         let audit_probe = Request::builder()
             .method("PUT")
-            .uri("/v1/config/providers/audit-probe")
+            .uri("/v1/config/model-attributes/audit-probe")
             .header("content-type", "application/json")
             .header("x-request-id", "audit-request-1")
             .body(Body::from(audit_probe_body.clone()))
@@ -69,7 +108,7 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
         assert_eq!(response.status(), StatusCode::OK);
         let replay = Request::builder()
             .method("PUT")
-            .uri("/v1/config/providers/audit-probe")
+            .uri("/v1/config/model-attributes/audit-probe")
             .header("content-type", "application/json")
             .header("x-request-id", "audit-request-1")
             .body(Body::from(audit_probe_body))
@@ -86,22 +125,13 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
         let audit_entry = audit_store
             .get_management_audit_scoped(
                 &ScopeId::from(platform_workspace.trim()),
-                "http:PUT:/v1/config/providers/audit-probe",
+                "http:PUT:/v1/config/model-attributes/audit-probe",
                 "audit-request-1",
             )
             .await
             .unwrap()
             .expect("management mutation audit");
         assert!(audit_entry.business_committed);
-
-        let (s, _) = call(
-            &app,
-            "PUT",
-            "/v1/config/providers/anthropic",
-            Some(json!({ "id": "anthropic", "slug": "anthropic", "display_name": "Anthropic", "version": 1 })),
-        )
-        .await;
-        assert_eq!(s, StatusCode::OK);
 
         let (s, _) = call(
             &app,
@@ -120,31 +150,6 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
         )
         .await;
         assert_eq!(s, StatusCode::OK);
-        let (s, _) = call(
-            &app,
-            "PUT",
-            "/v1/config/endpoints/ep1",
-            Some(json!({
-                "id": "ep1", "provider_id": "anthropic", "dialect": "anthropic_messages",
-                "base_url": "https://api.anthropic.com/v1/", "timeout_secs": 300,
-                "display_name": "prod", "version": 1
-            })),
-        )
-        .await;
-        assert_eq!(s, StatusCode::OK);
-        let (s, _) = call(
-            &app,
-            "POST",
-            "/v1/config/offerings",
-            Some(json!({
-                "model_id": "claude-opus-4-8", "provider_id": "anthropic",
-                "protocol_endpoint_id": "ep1", "dialect": "anthropic_messages",
-                "upstream_model": null
-            })),
-        )
-        .await;
-        assert_eq!(s, StatusCode::OK);
-
         // Enter a vault credential: the secret is sealed into credential.db.
         let (s, cred) = call(
             &app,
