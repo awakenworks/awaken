@@ -929,6 +929,37 @@ pub enum CredentialMaterialError {
     ProbeFailed,
 }
 
+/// Publishes current, non-secret liveness for Worker-local identities.
+#[async_trait]
+pub trait CredentialObservationSource: Send + Sync {
+    async fn credential_observations(
+        &self,
+    ) -> Result<BTreeSet<CredentialObservation>, CredentialMaterialError> {
+        Ok(BTreeSet::new())
+    }
+}
+
+/// Revalidates one placement-pinned Worker-local identity immediately before use.
+#[async_trait]
+pub trait WorkerLocalReferenceRevalidator: Send + Sync {
+    async fn revalidate_worker_reference(
+        &self,
+        credential: &CredentialRef,
+    ) -> Result<CredentialObservation, CredentialMaterialError>;
+}
+
+/// Installation role for one Worker-local adapter. It combines two explicitly
+/// segregated liveness ports and has no material-resolution operation.
+pub trait WorkerLocalCredentialResolver:
+    CredentialObservationSource + WorkerLocalReferenceRevalidator
+{
+}
+
+impl<T> WorkerLocalCredentialResolver for T where
+    T: CredentialObservationSource + WorkerLocalReferenceRevalidator
+{
+}
+
 /// Sole neutral source port for an already-selected exact credential access.
 #[async_trait]
 pub trait CredentialMaterialResolver: Send + Sync {
@@ -940,39 +971,6 @@ pub trait CredentialMaterialResolver: Send + Sync {
     /// Whether this adapter validates and opens recipient-bound envelope claims.
     fn supports_recipient_bound_envelopes(&self) -> bool {
         false
-    }
-
-    /// Current non-secret observations for exact Worker-local revisions owned by
-    /// this resolver. Control-plane resolvers return an empty set.
-    async fn credential_observations(
-        &self,
-    ) -> Result<BTreeSet<CredentialObservation>, CredentialMaterialError> {
-        Ok(BTreeSet::new())
-    }
-
-    /// Re-probe one already-selected exact Worker-local reference immediately
-    /// before launch. This is a liveness check, not credential selection. An
-    /// adapter may override it with a cheaper exact provider operation.
-    async fn revalidate_worker_reference(
-        &self,
-        credential: &CredentialRef,
-    ) -> Result<CredentialObservation, CredentialMaterialError> {
-        let observation = self
-            .credential_observations()
-            .await?
-            .into_iter()
-            .find(|observation| &observation.credential == credential)
-            .ok_or(CredentialMaterialError::Unavailable)?;
-        match observation.state {
-            CredentialObservationState::Available => Ok(observation),
-            CredentialObservationState::LoginRequired => {
-                Err(CredentialMaterialError::LoginRequired)
-            }
-            CredentialObservationState::Expired => Err(CredentialMaterialError::Expired),
-            CredentialObservationState::Invalid => Err(CredentialMaterialError::Invalid),
-            CredentialObservationState::Disabled => Err(CredentialMaterialError::Disabled),
-            CredentialObservationState::ProbeFailed => Err(CredentialMaterialError::ProbeFailed),
-        }
     }
 
     async fn resolve_exact(

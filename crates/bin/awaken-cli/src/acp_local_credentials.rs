@@ -154,7 +154,7 @@ impl PreparedLocalAcp {
         .with_deployment_config(worker_deployment)
         .with_standard_manifest_config(manifest)
         .with_credential_stores(self.stores.credentials, self.stores.secrets)
-        .with_external_credential_resolver(self.resolver)
+        .with_worker_local_credential_resolver(self.resolver)
         .with_graceful_drain(std::time::Duration::from_secs(worker.drain_grace_secs))
         .with_credential_observation_window(
             std::time::Duration::from_secs(worker.credential_probe_interval_secs),
@@ -241,10 +241,8 @@ mod tests {
     use awaken_credential_vault::{CredentialSource, CredentialStatus, WorkerLocalBinding};
     use awaken_run_executor_acp::{AcpCli, AcpDetectionState};
     use awaken_runtime_contract::{
-        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialBinding,
-        CredentialMaterialError, CredentialMaterialRequest, CredentialMaterialResolver,
-        CredentialMaterialSource, CredentialRef, CredentialUsage, ModelExposurePolicy,
-        PlaintextBoundary, PlaintextHolder,
+        CredentialMaterialError, CredentialMaterialSource, CredentialObservationSource,
+        CredentialRef, WorkerLocalReferenceRevalidator,
     };
 
     use super::*;
@@ -385,12 +383,12 @@ mod tests {
     #[tokio::test]
     async fn exact_revalidation_probes_only_the_pinned_cli_and_never_resolves_material() {
         // Cause graph: exact id+revision -> exact CLI liveness probe; stale pin
-        // stops before I/O; a material request has no outgoing plaintext edge.
+        // stops before I/O; the type has no material-resolution operation.
         //
         // Decision table:
         // R1 exact + available -> Available, one profile probe
         // R2 stale revision    -> Unavailable, no additional probe
-        // R3 material request  -> MaterialKindMismatch
+        // R3 material API      -> absent from the resolver type
         let repo = InMemoryCredentialRepo::new();
         let codex = source(&repo, "codex", "default").await;
         let credential = CredentialRef {
@@ -426,30 +424,8 @@ mod tests {
         );
         assert_eq!(&*discovery.calls.lock().unwrap(), &["codex"]);
 
-        let holder = PlaintextHolder::new(PlaintextBoundary::Workload, "self-hosted-acp");
-        let access = CredentialAccess::new(
-            credential,
-            CredentialMaterialSource::WorkerReference,
-            CredentialUsage::EnvironmentVariable {
-                name: "NEVER_INJECTED".into(),
-            },
-            CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
-        );
-        let binding = CredentialMaterialBinding::for_target("ws", &"acp:codex", &access.usage);
-        assert!(
-            matches!(
-                resolver
-                    .resolve_exact(CredentialMaterialRequest {
-                        access: &access,
-                        selected_holder: &holder,
-                        binding: &binding,
-                    })
-                    .await,
-                Err(CredentialMaterialError::MaterialKindMismatch)
-            ),
-            "R3"
-        );
-        assert!(resolver.supported_material_sources().is_empty(), "R3");
+        // R3 is a compile-time property: `AcpLocalCredentialResolver` implements
+        // only CredentialObservationSource + WorkerLocalReferenceRevalidator.
     }
 
     #[tokio::test]
@@ -516,7 +492,7 @@ mod tests {
             credentials,
             Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
         )
-        .with_external_credential_resolver(resolver.clone())
+        .with_worker_local_credential_resolver(resolver.clone())
         .with_standard_manifest(Default::default())
         .build()
         .expect("B1");

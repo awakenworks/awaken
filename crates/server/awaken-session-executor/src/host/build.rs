@@ -292,7 +292,7 @@ impl SharedHost {
     #[must_use]
     pub fn with_worker_credential_resolver(
         mut self,
-        resolver: Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>,
+        resolver: Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>,
     ) -> Self {
         self.worker_credential_resolver = Some(resolver);
         self

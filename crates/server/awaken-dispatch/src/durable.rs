@@ -164,7 +164,7 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
     #[must_use]
     pub fn with_worker_credential_resolver(
         mut self,
-        resolver: Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>,
+        resolver: Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>,
     ) -> Self {
         let worker = Arc::into_inner(self.worker)
             .expect("credential resolver must be configured before sharing the worker")
