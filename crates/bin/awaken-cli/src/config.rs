@@ -421,6 +421,11 @@ impl ResolvedDeployment {
                 .container_hand_bin
                 .clone()
                 .unwrap_or_else(|| sandbox_defaults.container_hand_bin.clone()),
+            podman_bin: file
+                .podman_bin
+                .clone()
+                .unwrap_or_else(|| sandbox_defaults.podman_bin.clone()),
+            inherit_agent_stderr: file.sandbox_inherit_agent_stderr.unwrap_or(false),
             reaper_enabled: file.sandbox_reaper_enabled.unwrap_or(true),
             reaper_interval_secs: file
                 .sandbox_reaper_interval_secs
@@ -429,8 +434,13 @@ impl ResolvedDeployment {
                 .sandbox_reaper_max_age_secs
                 .unwrap_or(sandbox_defaults.reaper_max_age_secs),
         };
-        if sandbox.k8s_namespace.trim().is_empty() || sandbox.container_hand_bin.trim().is_empty() {
-            return Err("k8s_namespace and container_hand_bin must not be empty".to_owned());
+        if sandbox.k8s_namespace.trim().is_empty()
+            || sandbox.container_hand_bin.trim().is_empty()
+            || sandbox.podman_bin.trim().is_empty()
+        {
+            return Err(
+                "k8s_namespace, container_hand_bin and podman_bin must not be empty".to_owned(),
+            );
         }
         if sandbox.reaper_enabled
             && (sandbox.reaper_interval_secs == 0 || sandbox.reaper_max_age_secs == 0)
@@ -942,6 +952,8 @@ struct FileConfig {
     container_forward_proxy: Option<String>,
     k8s_namespace: Option<String>,
     container_hand_bin: Option<String>,
+    podman_bin: Option<String>,
+    sandbox_inherit_agent_stderr: Option<bool>,
     sandbox_reaper_enabled: Option<bool>,
     sandbox_reaper_interval_secs: Option<u64>,
     sandbox_reaper_max_age_secs: Option<u64>,
@@ -1381,6 +1393,8 @@ mod tests {
             defaults.container_hand_bin, "/usr/local/bin/awaken-sandbox",
             "S1"
         );
+        assert_eq!(defaults.podman_bin, "podman", "S1");
+        assert!(!defaults.inherit_agent_stderr, "S1");
         assert!(defaults.reaper_enabled, "S1");
 
         let selected = resolve(
@@ -1390,6 +1404,8 @@ mod tests {
                 container_forward_proxy: Some("http://proxy.internal:8080".into()),
                 k8s_namespace: Some("agents".into()),
                 container_hand_bin: Some("/opt/awaken/bin/hand".into()),
+                podman_bin: Some("/opt/podman/bin/podman".into()),
+                sandbox_inherit_agent_stderr: Some(true),
                 sandbox_reaper_enabled: Some(true),
                 sandbox_reaper_interval_secs: Some(17),
                 sandbox_reaper_max_age_secs: Some(91),
@@ -1408,6 +1424,8 @@ mod tests {
         );
         assert_eq!(selected.k8s_namespace, "agents", "S2");
         assert_eq!(selected.container_hand_bin, "/opt/awaken/bin/hand", "S2");
+        assert_eq!(selected.podman_bin, "/opt/podman/bin/podman", "S2");
+        assert!(selected.inherit_agent_stderr, "S2");
         assert_eq!(selected.reaper_interval_secs, 17, "S2");
         assert_eq!(selected.reaper_max_age_secs, 91, "S2");
     }
@@ -1446,6 +1464,14 @@ mod tests {
                 ..FileConfig::default()
             })
             .contains("container_hand_bin"),
+            "V1"
+        );
+        assert!(
+            resolve_error(FileConfig {
+                podman_bin: Some(String::new()),
+                ..FileConfig::default()
+            })
+            .contains("podman_bin"),
             "V1"
         );
         assert!(

@@ -176,12 +176,17 @@ pub struct PodmanRuntime {
 }
 
 impl PodmanRuntime {
-    /// Use `podman` from `PATH` (override with `PODMAN_BIN`).
+    /// Use `podman` from `PATH`.
     #[must_use]
     pub fn new(agent_port: u16) -> Self {
-        let bin = std::env::var("PODMAN_BIN").unwrap_or_else(|_| "podman".to_string());
+        Self::with_bin(agent_port, "podman")
+    }
+
+    /// Use the deployment-selected Podman executable.
+    #[must_use]
+    pub fn with_bin(agent_port: u16, bin: impl Into<String>) -> Self {
         Self {
-            bin,
+            bin: bin.into(),
             agent_port,
             exec: Arc::new(OsCommandExec),
             owner_id: crate::runtime_owner_id(),
@@ -757,10 +762,18 @@ mod tests {
     }
 
     #[test]
-    fn new_defaults_to_podman_on_path() {
+    fn executable_is_constructor_owned_without_ambient_precedence() {
+        // Cause/effect table:
+        // | constructor input | executable |
+        // | default | `podman` on PATH |
+        // | explicit typed deployment value | exact supplied path |
         let rt = PodmanRuntime::new(9000);
         assert_eq!(rt.agent_port, 9000);
-        assert!(rt.bin == "podman" || std::env::var("PODMAN_BIN").is_ok());
+        assert_eq!(rt.bin, "podman");
+        assert_eq!(
+            PodmanRuntime::with_bin(9000, "/opt/podman").bin,
+            "/opt/podman"
+        );
     }
 
     #[tokio::test]

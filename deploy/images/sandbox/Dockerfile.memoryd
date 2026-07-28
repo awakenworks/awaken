@@ -1,10 +1,9 @@
 # awaken-memoryd — the memory-store SIDECAR image (ADR-0053). It runs alongside the
 # agent container in a Pod and projects a durable, path-addressed memory store into a
 # shared volume the agent reads as plain files. The ENTRYPOINT is `awaken-sandbox
-# memoryd`; it is env-driven by the k8s `pod_plan` (AWAKEN_MEMORY_STORE_ID /
-# AWAKEN_MOUNT_PATH / AWAKEN_MEMORY_MODE / AWAKEN_MEMORY_STORE_DIR).
+# memoryd`; the k8s `pod_plan` supplies explicit flag/value arguments.
 #
-# Two runtime modes, selected by AWAKEN_MEMORY_MODE:
+# Two runtime modes, selected by `--mode`:
 #   - fuse — a live write-through FUSE mount (needs /dev/fuse + SYS_ADMIN, which the pod
 #     grants ONLY to this minimal sidecar, never the agent). Needs fusermount3 on PATH.
 #   - copy (default) — materialize the store to files, harvest edits back on teardown.
@@ -31,7 +30,7 @@ RUN apt-get update \
 ARG BIN=target/release/awaken-sandbox
 COPY ${BIN} /usr/local/bin/awaken-sandbox
 
-# The default durable backing dir (AWAKEN_MEMORY_STORE_DIR). Mount a PVC here for
+# The default durable backing dir (`--store-dir`). Mount a PVC here for
 # cross-restart durability, or leave it pod-local (emptyDir) for an ephemeral store.
 RUN mkdir -p /var/lib/awaken/memory
 VOLUME ["/var/lib/awaken/memory"]

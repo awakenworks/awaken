@@ -93,7 +93,10 @@ pub(crate) async fn build(
         }
         #[cfg(feature = "container-podman")]
         SandboxTier::Podman => {
-            let runtime = Arc::new(awaken_sandbox_container::podman::PodmanRuntime::new(8080));
+            let runtime = Arc::new(awaken_sandbox_container::podman::PodmanRuntime::with_bin(
+                8080,
+                settings.podman_bin.clone(),
+            ));
             spawn_container_reaper(runtime.clone(), settings);
             finish(runtime, image, settings)?
         }
