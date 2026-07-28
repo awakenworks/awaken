@@ -1,501 +1,25 @@
-//! [`SandboxChannelSource`] — the sandboxed [`AgentChannelSource`]: each turn
-//! realizes a bubblewrap (namespace-tier) sandbox scoped to the run's thread and
-//! launches the ACP CLI *inside* it, so an opaque agent is OS-confined regardless
-//! of what it does. The isolated production counterpart of the trusted-CLI
-//! [`awaken_run_executor_acp::SubprocessChannelSource`], behind the same trait —
-//! the executor is unchanged either way (ADR-0043 D6/D9: the adapter lives in the
-//! host plane, which sees both the executor port and the sandbox provider).
+//! ACP launch projection for the Session environment owned by the Runtime Host.
 //!
-//! Network egress follows the one frozen Environment projection: a no-network
-//! Session launches under `bwrap --unshare-net` (no route out, not even to the
-//! host loopback), and Native and ACP consume the same projection handle.
+//! Environment discovery and realization happen before this adapter is constructed.
+//! This module only resolves a published launch, projects per-run configuration,
+//! and starts the ACP process inside that already-bound environment.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
-use awaken_run_executor_acp::{
-    AcpCli, AcpLaunch, AgentChannelSource, AgentSession, LaunchResolver, OpenError,
-};
+use awaken_run_executor_acp::{AcpCli, AgentChannelSource, AgentSession, OpenError};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_sandbox_local::NamespaceProvider;
 
 mod launch;
 pub use launch::{AcpLaunchRegistry, LaunchSource};
 
-/// The fixed interior path the namespace sandbox binds the workspace to and chdirs
-/// into (see `awaken-sandbox-local`), so a cwd-keyed CLI's session slug is stable
-/// across relaunches and machines regardless of the host workspace path.
-const SANDBOX_WORKSPACE: &str = "/workspace";
-
-/// The fixed interior config-home a legacy config-file ACP adapter reads its MCP
-/// config from. Its projected configuration is mounted here and its isolated
-/// config-home setting points at this directory.
-pub(crate) const SANDBOX_CONFIG_HOME: &str = "/acp-config";
-
-/// The workdir-relative config-home for the unsandboxed Workdir tier: the CLI runs on
-/// the host in its workdir, so its config mount + config-home env are relative to that
-/// workdir (an absolute interior path like `/acp-config` would not exist there).
-const WORKDIR_CONFIG_HOME: &str = ".acp-config";
-
-/// A shared clone of the host's per-thread staged-resource registry (ADR-0038), so a
-/// sandboxed source carries the same frozen Environment and file/resource projection
-/// the native `sandbox_spec` consumes. The internal Session slot never crosses this
-/// public composition boundary.
-#[derive(Clone, Default)]
-pub struct SessionRuntimeProjectionSource(crate::session_slot::SessionRuntimeSlots);
-
-impl SessionRuntimeProjectionSource {
-    /// Wrap the host's registry handle (the same `Arc` `sandbox_spec` reads).
-    pub(crate) fn new(inner: crate::session_slot::SessionRuntimeSlots) -> Self {
-        Self(inner)
-    }
-
-    /// The staged file/resource mounts for `thread`, mapped to the neutral
-    /// [`pc::MountRequirement`] the provider realizes. Empty when none are staged.
-    fn mounts_for(&self, thread: &str) -> Vec<pc::MountRequirement> {
-        self.0
-            .read(thread, |slot| {
-                let mut mounts = slot.resources.mounts.clone();
-                if let Some(baseline) = &slot.baseline {
-                    mounts.extend(baseline.mounts.clone());
-                }
-                mounts
-            })
-            .unwrap_or_default()
-    }
-
-    fn env_for(&self, thread: &str) -> Vec<pc::EnvVar> {
-        self.0
-            .read(thread, |slot| {
-                slot.baseline
-                    .as_ref()
-                    .map(|baseline| baseline.env.clone())
-                    .unwrap_or_default()
-            })
-            .unwrap_or_default()
-    }
-
-    fn network_for(&self, thread: &str) -> pc::NetworkPolicy {
-        self.0
-            .read(thread, |slot| {
-                slot.environment_projection
-                    .as_ref()
-                    .map(|environment| environment.network.clone())
-            })
-            .flatten()
-            .unwrap_or(pc::NetworkPolicy::Unrestricted)
-    }
-
-    fn packages_for(&self, thread: &str) -> pc::PackageRequirements {
-        self.0
-            .read(thread, |slot| {
-                slot.environment_projection
-                    .as_ref()
-                    .map(|environment| environment.packages.clone())
-            })
-            .flatten()
-            .unwrap_or_default()
-    }
-
-    fn apply_sandbox(&self, thread: &str, spec: pc::SandboxSpec) -> pc::SandboxSpec {
-        self.0
-            .read(thread, |slot| {
-                slot.environment_projection
-                    .as_ref()
-                    .and_then(|environment| environment.sandbox.clone())
-            })
-            .flatten()
-            .map_or(spec.clone(), |sandbox| sandbox.apply(spec))
-    }
-}
-
-/// The host-plane provider a [`SandboxChannelSource`] realizes into: OS-isolated bwrap
-/// (`Namespace`) or the unsandboxed but resource-materializing `Workdir`
-/// ([`LocalProvider`]) — the no-bwrap path. BOTH realize File/Resource/`Inline` mounts,
-/// so injection is identical; only OS isolation differs. `spawn_agent` returns the same
-/// `(process, channel)` on either, so the source is otherwise backend-agnostic.
-enum SandboxBackend {
-    Namespace(NamespaceProvider),
-    Workdir(awaken_sandbox_local::LocalProvider),
-}
-
-impl SandboxBackend {
-    fn install_secret_broker(&self, broker: Arc<dyn pc::SecretBroker>) {
-        match self {
-            Self::Namespace(provider) => provider.install_secret_broker(broker),
-            Self::Workdir(provider) => provider.install_secret_broker(broker),
-        }
-    }
-    /// The isolation class the spec must declare for this backend.
-    fn isolation(&self) -> pc::IsolationClass {
-        match self {
-            SandboxBackend::Namespace(_) => pc::IsolationClass::Namespace,
-            SandboxBackend::Workdir(_) => pc::IsolationClass::Workdir,
-        }
-    }
-
-    /// Whether this backend can OS-enforce a read-only mount (bwrap yes, Workdir no —
-    /// a read-only mount is rejected at prepare on the Workdir tier).
-    fn enforces_read_only(&self) -> bool {
-        matches!(self, SandboxBackend::Namespace(_))
-    }
-
-    fn supports_host_identity(&self) -> bool {
-        matches!(self, SandboxBackend::Workdir(_))
-    }
-
-    /// The config-home a `ConfigFileToml` CLI reads: a fixed **interior absolute** path
-    /// for the bwrap namespace (bound there), or a **workdir-relative** path for the
-    /// unsandboxed Workdir tier (the CLI runs on the host in its workdir, so an absolute
-    /// interior path would not exist — the mount and isolated home are relative instead).
-    fn config_home(&self) -> &'static str {
-        match self {
-            SandboxBackend::Namespace(_) => SANDBOX_CONFIG_HOME,
-            SandboxBackend::Workdir(_) => WORKDIR_CONFIG_HOME,
-        }
-    }
-
-    /// Realize `spec` and launch `command`, returning the duplex channel + process.
-    /// Each failure is tagged with the phase it happened in ([`OpenPhase`]) so the
-    /// caller can surface a create failure distinctly from a launch failure — the
-    /// two are separate diagnostics (a bad base vs a bad argv), not one blur.
-    async fn open(
-        &self,
-        spec: &pc::SandboxSpec,
-        command: pc::Command,
-    ) -> Result<
-        (
-            Box<dyn awaken_provisioning_contract::ProcessHandle>,
-            Box<dyn awaken_run_executor_acp::AgentChannelType>,
-        ),
-        (OpenPhase, pc::SandboxError),
-    > {
-        match self {
-            SandboxBackend::Namespace(p) => {
-                let sandbox = p
-                    .create_sandbox(spec)
-                    .await
-                    .map_err(|e| (OpenPhase::Create, e))?;
-                sandbox
-                    .spawn_agent(command)
-                    .await
-                    .map_err(|e| (OpenPhase::Launch, e))
-            }
-            SandboxBackend::Workdir(p) => {
-                let sandbox = p
-                    .create_sandbox(spec)
-                    .await
-                    .map_err(|e| (OpenPhase::Create, e))?;
-                sandbox
-                    .spawn_agent(command)
-                    .await
-                    .map_err(|e| (OpenPhase::Launch, e))
-            }
-        }
-    }
-}
-
-/// Which phase of [`SandboxBackend::open`] failed, so the caller labels the
-/// `OpenError` distinctly: realizing the sandbox tree vs launching the agent.
-enum OpenPhase {
-    Create,
-    Launch,
-}
-
-/// Opens each run's [`AgentSession`] inside a fresh sandbox: build the spec from the
-/// activation's thread (scope + egress + staged mounts), realize it, and `spawn_agent`
-/// the launch's argv with piped stdio. The `Namespace` backend confines under bwrap;
-/// the `Workdir` backend runs unsandboxed but still materializes all injected mounts
-/// (the no-bwrap path).
-pub struct SandboxChannelSource {
-    provider: SandboxBackend,
-    launch: LaunchSource,
-    codec: awaken_run_executor_acp::Codec,
-    /// The host's staged-resource registry (files/resources → sandbox mounts). `None`
-    /// carries no resources (the trusted/test path); the production host wires it.
-    resources: Option<SessionRuntimeProjectionSource>,
-}
-
-impl SandboxChannelSource {
-    #[must_use]
-    pub fn with_memory_mounter(mut self, mounter: Arc<dyn pc::MemoryMounter>) -> Self {
-        match &mut self.provider {
-            SandboxBackend::Namespace(provider) => provider.install_memory_mounter(mounter),
-            SandboxBackend::Workdir(provider) => provider.install_memory_mounter(mounter),
-        }
-        self
-    }
-
-    /// A source realizing its sandboxes under `base` (one root per thread scope).
-    /// The provider is constructed here so a composition root names only this
-    /// crate, not the sandbox tier. Defaults to the newline stand-in wire (the
-    /// in-tree fixture agent); a real CLI sets [`Self::with_codec`] to `Codec::Acp`.
-    pub fn new(base: impl Into<std::path::PathBuf>, launch: AcpLaunch) -> Self {
-        Self {
-            provider: SandboxBackend::Namespace(NamespaceProvider::new(base)),
-            launch: LaunchSource::Fixed(launch),
-            codec: awaken_run_executor_acp::Codec::Newline,
-            resources: None,
-        }
-    }
-
-    /// A source that launches the run's **config-plane-selected** CLI: each run's
-    /// `acp:<cli>` backend_ref projects through `cli`'s [`AcpCli`] row + `resolver`
-    /// (model/env) into the argv run under bwrap. Sets `Codec::Acp` — a real CLI.
-    pub fn projecting(
-        base: impl Into<std::path::PathBuf>,
-        cli: AcpCli,
-        resolver: Arc<dyn LaunchResolver>,
-    ) -> Self {
-        Self {
-            provider: SandboxBackend::Namespace(NamespaceProvider::new(base)),
-            launch: LaunchSource::Projected(AcpLaunchRegistry::single(cli, resolver)),
-            codec: awaken_run_executor_acp::Codec::Acp,
-            resources: None,
-        }
-    }
-
-    /// Build from a [`LaunchSource`] chosen by the composition root: `Projected` →
-    /// the projecting path (real-ACP codec), `Fixed` → the trusted/test argv (newline
-    /// codec). The single seam [`build_acp_channel_source`] threads through.
-    pub fn from_source(base: impl Into<std::path::PathBuf>, source: LaunchSource) -> Self {
-        match source {
-            LaunchSource::Fixed(launch) => Self::new(base, launch),
-            LaunchSource::Projected(registry) => Self {
-                provider: SandboxBackend::Namespace(NamespaceProvider::new(base)),
-                launch: LaunchSource::Projected(registry),
-                codec: awaken_run_executor_acp::Codec::Acp,
-                resources: None,
-            },
-        }
-    }
-
-    /// The **unsandboxed Workdir** variant (no bwrap): the run's CLI runs as a plain
-    /// child, but its staged file/resource mounts + codex config are still materialized
-    /// into a per-thread workdir by [`LocalProvider`]. The no-bwrap fallback path — full
-    /// injection, no OS isolation. `Projected` → real-ACP codec, `Fixed` → newline.
-    pub fn workdir(base: impl Into<std::path::PathBuf>, source: LaunchSource) -> Self {
-        Self {
-            provider: SandboxBackend::Workdir(awaken_sandbox_local::LocalProvider::new(base)),
-            launch: source,
-            // The Local tier serves a real CLI from the Worker profile, so it speaks official
-            // ACP — matching the source it replaces (`local_source`), never the fixture wire.
-            codec: awaken_run_executor_acp::Codec::Acp,
-            resources: None,
-        }
-    }
-
-    /// The wire the sandboxed agent speaks (a real `claude --acp` → `Codec::Acp`).
-    #[must_use]
-    pub fn with_codec(mut self, codec: awaken_run_executor_acp::Codec) -> Self {
-        self.codec = codec;
-        self
-    }
-
-    /// Carry the host's staged resource mounts (ADR-0038 files/resources) into the
-    /// bwrap sandbox — the SAME registry the native `sandbox_spec` reads, so a resource
-    /// bound to a session reaches the isolated ACP CLI, not only the in-process Workdir.
-    #[must_use]
-    pub fn with_session_projection(mut self, resources: SessionRuntimeProjectionSource) -> Self {
-        self.resources = Some(resources);
-        self
-    }
-
-    /// The staged file/resource mounts for `thread`. Empty when no registry is wired.
-    fn resource_mounts(&self, thread: &str) -> Vec<pc::MountRequirement> {
-        self.resources
-            .as_ref()
-            .map(|r| r.mounts_for(thread))
-            .unwrap_or_default()
-    }
-
-    fn resource_env(&self, thread: &str) -> Vec<pc::EnvVar> {
-        self.resources
-            .as_ref()
-            .map(|resources| resources.env_for(thread))
-            .unwrap_or_default()
-    }
-
-    /// The provisioning request for one run: sandbox scoped to the thread (so a
-    /// multi-turn session reuses one workspace), network from its registration, and the
-    /// session's staged file/resource mounts (ADR-0038) bound into the bwrap interior.
-    /// The frozen exact SandboxExecutionPolicy projection (if any) then supersedes
-    /// isolation and limits for the ACP CLI's confinement.
-    fn spec(&self, thread: &str) -> pc::SandboxSpec {
-        let network = self
-            .resources
-            .as_ref()
-            .map(|resources| resources.network_for(thread))
-            .unwrap_or(pc::NetworkPolicy::Unrestricted);
-        let base = pc::SandboxSpec {
-            scope: thread.to_string(),
-            isolation: self.provider.isolation(),
-            mounts: self.resource_mounts(thread),
-            env: self.resource_env(thread),
-            packages: self
-                .resources
-                .as_ref()
-                .map(|resources| resources.packages_for(thread))
-                .unwrap_or_default(),
-            network,
-            outputs_path: "/mnt/session/outputs".to_string(),
-            limits: pc::ResourceLimits::default(),
-            lease_ttl_secs: None,
-            extra: None,
-        };
-        self.resources.as_ref().map_or(base.clone(), |resources| {
-            resources.apply_sandbox(thread, base)
-        })
-    }
-
-    /// A resolved `launch` projected into the neutral process vocabulary: argv + env as
-    /// per-process inline vars (the CLI sees the real values; a secret-splitting broker
-    /// is a container-tier capability).
-    fn command(launch: &AcpLaunch) -> pc::Command {
-        pc::Command {
-            argv: launch.argv.clone(),
-            cwd: String::new(),
-            env: launch.env.clone(),
-            stdio: pc::Stdio::Piped,
-        }
-    }
-}
-
-#[async_trait]
-impl AgentChannelSource for SandboxChannelSource {
-    async fn open(
-        &self,
-        activation: &RunActivation,
-        context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
-    ) -> Result<AgentSession, OpenError> {
-        let thread = activation.thread_id.0.as_str();
-        // The launch is fixed, or projected from this run's config-plane-selected CLI.
-        let backend = awaken_runtime_contract::resolved::Backend::from_ref(
-            &activation.snapshot.resolved_spec.model_binding.backend_ref,
-        );
-        let resolved = self.launch.resolve(activation, &backend, context)?;
-        let mut launch = resolved.launch;
-        let backend_owned =
-            launch.identity == awaken_run_executor_acp::AcpLaunchIdentity::BackendOwned;
-        if backend_owned {
-            if !self.provider.supports_host_identity() {
-                return Err(OpenError(
-                    "backend-owned local ACP identity requires the Workdir isolation tier".into(),
-                ));
-            }
-            launch.env = awaken_run_executor_acp::with_backend_owned_host_environment(launch.env);
-        }
-        // Project the run's declared MCP servers once. `session/new` servers ride in-band
-        // over the ACP wire the executor drives (claude/gemini/opencode); a config-file
-        // legacy config-file CLI gets its TOML projection. The typed ACP contract has no credential
-        // channel; authenticated routes were already mediated by the Runtime Host.
-        let cli = self.launch.cli(&backend)?;
-        let injection = match cli {
-            Some(cli) => awaken_run_executor_acp::mcp_injection(
-                cli,
-                &activation.snapshot.resolved_spec.plugin_config,
-            )?,
-            None => awaken_run_executor_acp::McpInjection::default(),
-        };
-        awaken_run_executor_acp::admit_mcp_injection(launch.identity, &injection)?;
-        // The session's staged resource mounts, plus — for a config-file CLI — the
-        // projected config as an inline, read-only, never-harvested mount at the fixed
-        // interior config home, with the CLI's config-home env pointed there.
-        let mut spec = self.spec(thread);
-        if let Some(artifact) = resolved.credential_artifact {
-            let broker = resolved.secret_broker.ok_or_else(|| {
-                OpenError("credential_provision_failed: secret broker unavailable".into())
-            })?;
-            self.provider.install_secret_broker(broker);
-            let home = self.provider.config_home();
-            spec.mounts.push(pc::MountRequirement {
-                mount_id: "provider-credential".into(),
-                source: pc::MountSource::Secret {
-                    reference: artifact.reference().to_string(),
-                    content_hash: None,
-                },
-                mount_path: format!(
-                    "{}/{}",
-                    home.trim_end_matches('/'),
-                    artifact.relative_path()
-                ),
-                access: if self.provider.enforces_read_only() {
-                    pc::MountAccess::ReadOnly
-                } else {
-                    pc::MountAccess::ReadWrite
-                },
-                lifetime: pc::MountLifetime::PerRun,
-                required: true,
-            });
-            launch.env.retain(|var| var.name != "HOME");
-            launch.env.push(pc::EnvVar {
-                name: "HOME".into(),
-                value: pc::EnvValue::Inline {
-                    value: home.to_string(),
-                },
-                visibility: pc::EnvVisibility::Process,
-            });
-            if let Some(cli) = cli
-                && let Some(config_home_env) = cli.config_home_env
-            {
-                launch.env.retain(|var| var.name != config_home_env);
-                launch.env.push(pc::EnvVar {
-                    name: config_home_env.into(),
-                    value: pc::EnvValue::Inline {
-                        value: home.to_string(),
-                    },
-                    visibility: pc::EnvVisibility::Process,
-                });
-            }
-        }
-        if let Some(cli) = cli
-            && let Some((mount, (env_key, env_val))) = acp_config_mount(
-                cli,
-                injection.config_file.clone(),
-                self.provider.config_home(),
-                self.provider.config_home(),
-                self.provider.enforces_read_only(),
-            )
-        {
-            spec.mounts.push(mount);
-            launch.env.retain(|var| var.name != env_key);
-            launch.env.push(pc::EnvVar {
-                name: env_key,
-                value: pc::EnvValue::Inline { value: env_val },
-                visibility: pc::EnvVisibility::Process,
-            });
-        }
-        let (process, channel) = self
-            .provider
-            .open(&spec, Self::command(&launch))
-            .await
-            .map_err(|(phase, e)| match phase {
-                OpenPhase::Create => OpenError(format!("sandbox create: {e}")),
-                OpenPhase::Launch => OpenError(format!("sandboxed agent launch: {e}")),
-            })?;
-        Ok(AgentSession {
-            channel,
-            process: Arc::from(process),
-            codec: self.codec,
-            // The namespace sandbox binds the (host-varying) workspace to the fixed
-            // interior path `/workspace` and chdirs there, so a cwd-keyed CLI keys its
-            // session under the same slug every relaunch/machine. The unsandboxed Workdir
-            // backend runs in the provider's own workdir (no fixed interior path).
-            workspace_cwd: match self.provider {
-                SandboxBackend::Namespace(_) => Some(SANDBOX_WORKSPACE.to_string()),
-                SandboxBackend::Workdir(_) => None,
-            },
-            mcp_session_servers: injection.session_servers,
-            session_config_option: launch.session_config_option,
-        })
-    }
-}
-
-/// Launches ACP inside the `LocalSandbox` already owned by a Native session.
-/// Unlike [`SandboxChannelSource`], this source never realizes an environment;
-/// it only projects per-run launch data and starts a process in the bound one.
-pub struct BoundLocalChannelSource {
+/// Launches ACP inside the environment already owned by the Session.
+///
+/// Discovery, capability publication, placement, and environment realization are
+/// upstream responsibilities. This adapter only consumes their immutable result.
+pub(crate) struct BoundLocalChannelSource {
     sandbox: Arc<dyn crate::session_environment::AgentSandbox>,
     launch: LaunchSource,
     codec: awaken_run_executor_acp::Codec,
@@ -661,7 +185,7 @@ impl AgentChannelSource for BoundLocalChannelSource {
         }
         let (process, channel) = self
             .sandbox
-            .spawn_agent(SandboxChannelSource::command(&launch))
+            .spawn_agent(launch_command(&launch))
             .await
             .map_err(|error| OpenError(format!("bound agent launch: {error}")))?;
         Ok(AgentSession {
@@ -675,6 +199,15 @@ impl AgentChannelSource for BoundLocalChannelSource {
             mcp_session_servers: injection.session_servers,
             session_config_option: launch.session_config_option,
         })
+    }
+}
+
+fn launch_command(launch: &awaken_run_executor_acp::AcpLaunch) -> pc::Command {
+    pc::Command {
+        argv: launch.argv.clone(),
+        cwd: String::new(),
+        env: launch.env.clone(),
+        stdio: pc::Stdio::Piped,
     }
 }
 
@@ -708,74 +241,6 @@ fn acp_config_mount(
         },
         (cli.config_home_env?.to_string(), exposed_home.to_string()),
     ))
-}
-
-/// Build the ACP [`AgentChannelSource`] a worker serves, from its configured
-/// [`SandboxTier`](crate::deployment_config::SandboxTier): the namespace (bwrap) tier
-/// by default, or a container tier running the agent in `image` via the matching
-/// runtime (podman / docker / k8s). This is the composition seam behind
-/// `AWAKEN_SANDBOX_TIER` — different workers pick different backends. A container tier
-/// whose backend feature is not compiled in, or with no image configured, fails closed.
-pub struct AcpSandboxBindings {
-    resources: SessionRuntimeProjectionSource,
-    memory_mounter: Option<Arc<dyn pc::MemoryMounter>>,
-}
-
-impl AcpSandboxBindings {
-    pub fn new(resources: SessionRuntimeProjectionSource) -> Self {
-        Self {
-            resources,
-            memory_mounter: None,
-        }
-    }
-
-    #[must_use]
-    pub fn with_memory_mounter(
-        mut self,
-        memory_mounter: Option<Arc<dyn pc::MemoryMounter>>,
-    ) -> Self {
-        self.memory_mounter = memory_mounter;
-        self
-    }
-}
-
-pub async fn build_acp_channel_source(
-    tier: crate::deployment_config::SandboxTier,
-    _image: Option<&str>,
-    source: LaunchSource,
-    bindings: AcpSandboxBindings,
-    namespace_base: std::path::PathBuf,
-) -> Result<Arc<dyn AgentChannelSource>, String> {
-    use crate::deployment_config::SandboxTier;
-    let AcpSandboxBindings {
-        resources,
-        memory_mounter,
-    } = bindings;
-    match tier {
-        // No OS isolation, but full injection: the Workdir backend runs the CLI as a
-        // plain child yet still materializes the session's staged resource mounts + the
-        // codex config into a per-thread workdir (ADR-0057). The no-bwrap path.
-        SandboxTier::Local => {
-            let mut channel = SandboxChannelSource::workdir(namespace_base, source)
-                .with_session_projection(resources);
-            if let Some(mounter) = memory_mounter {
-                channel = channel.with_memory_mounter(mounter);
-            }
-            Ok(Arc::new(channel))
-        }
-        SandboxTier::Namespace => {
-            let mut channel = SandboxChannelSource::from_source(namespace_base, source)
-                .with_session_projection(resources);
-            if let Some(mounter) = memory_mounter {
-                channel = channel.with_memory_mounter(mounter);
-            }
-            Ok(Arc::new(channel))
-        }
-        SandboxTier::Docker | SandboxTier::Podman | SandboxTier::K8s => Err(
-            "container ACP is bound through the SessionEnvironment; a per-attempt channel source is forbidden"
-                .into(),
-        ),
-    }
 }
 
 /// Resolve the effective sandbox tier at composition, probing the OS-native launcher
@@ -898,33 +363,16 @@ pub(crate) fn spawn_container_reaper<R: awaken_sandbox_container::ContainerRunti
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_run_executor_acp::{AcpLaunch, LaunchResolver};
     use std::sync::Mutex;
 
     fn base() -> std::path::PathBuf {
         std::env::temp_dir().join(format!("awaken-sbxsrc-ut-{}", std::process::id()))
     }
 
-    fn frozen_resources(
-        thread: &str,
-        network: pc::NetworkPolicy,
-        sandbox: Option<pc::SandboxOverride>,
-    ) -> SessionRuntimeProjectionSource {
-        let slots = crate::session_slot::SessionRuntimeSlots::default();
-        slots.update(thread, |slot| {
-            slot.environment_projection =
-                Some(crate::session_slot::FrozenEnvironmentRuntimeProjection {
-                    fingerprint: awaken_protocol_managed::EnvironmentFingerprint(format!(
-                        "environment-{thread}"
-                    )),
-                    network,
-                    packages: Default::default(),
-                    sandbox,
-                    credential_realization:
-                        awaken_runtime_contract::CredentialRealizationProfile::self_hosted_acp(),
-                });
-        });
-        SessionRuntimeProjectionSource::new(slots)
-    }
+    const SANDBOX_CONFIG_HOME: &str = "/acp-config";
+    const WORKDIR_CONFIG_HOME: &str = ".acp-config";
+    const SANDBOX_WORKSPACE: &str = "/workspace";
 
     fn acp_activation(backend_ref: &str) -> RunActivation {
         acp_activation_with_plugin_config(backend_ref, Default::default())
@@ -1051,21 +499,6 @@ mod tests {
         ) -> Result<(), pc::SandboxError> {
             Err(pc::SandboxError::new("per-run artifact is not durable"))
         }
-    }
-
-    #[test]
-    fn one_shot_source_exposes_host_identity_only_in_workdir() {
-        // Cause graph/decision table: Workdir -> trusted host process -> true;
-        // Namespace -> different filesystem identity -> false. `open` consumes this
-        // same predicate before any backend-owned launch can create a sandbox.
-        let base =
-            std::env::temp_dir().join(format!("awaken-acp-identity-tier-{}", std::process::id()));
-        let workdir = SandboxBackend::Workdir(awaken_sandbox_local::LocalProvider::new(
-            base.join("workdir"),
-        ));
-        let namespace = SandboxBackend::Namespace(NamespaceProvider::new(base.join("namespace")));
-        assert!(workdir.supports_host_identity());
-        assert!(!namespace.supports_host_identity());
     }
 
     struct FakeProcess;
@@ -1563,258 +996,45 @@ mod tests {
         );
     }
 
-    #[cfg(windows)]
-    fn successful_command() -> Vec<String> {
-        vec![
-            "cmd.exe".into(),
-            "/D".into(),
-            "/C".into(),
-            "exit /b 0".into(),
-        ]
-    }
-
-    #[cfg(not(windows))]
-    fn successful_command() -> Vec<String> {
-        vec!["true".into()]
-    }
-
     #[test]
-    fn spec_carries_the_thread_staged_resource_mounts_into_the_sandbox() {
-        // ADR-0038 resources bound to a session must reach the isolated ACP sandbox,
-        // not only the in-process Workdir — the same registry the native sandbox_spec
-        // reads, mapped to bwrap-realizable mounts.
-        let registry = SessionRuntimeProjectionSource::default();
-        registry.0.update("t1", |slot| {
-            slot.resources = crate::provisioning::StagedResources {
-                mounts: vec![pc::MountRequirement {
-                    mount_id: "id-data".into(),
-                    source: pc::MountSource::InlineBytes {
-                        contents: b"a,b\n".to_vec(),
-                        content_hash: None,
-                    },
-                    mount_path: ".mnt/data.csv".into(),
-                    access: awaken_provisioning_contract::MountAccess::ReadWrite,
-                    lifetime: pc::MountLifetime::PerRun,
-                    required: true,
-                }],
-                ..Default::default()
-            }
-        });
-        let src = SandboxChannelSource::new(base(), AcpLaunch::custom(vec!["a".into()], vec![]))
-            .with_session_projection(registry);
-        let spec = src.spec("t1");
-        assert_eq!(
-            spec.mounts.len(),
-            1,
-            "the staged resource reaches the sandbox spec"
-        );
-        assert_eq!(spec.mounts[0].mount_path, ".mnt/data.csv");
-        // A thread with nothing staged mounts nothing.
-        assert!(src.spec("other").mounts.is_empty());
-    }
-
-    #[test]
-    fn legacy_config_file_becomes_an_inline_readonly_mount_and_points_the_config_home() {
-        // A synthetic config-file CLI: the projected config.toml is mounted inline
-        // (ephemeral, read-only, never-harvested) at the interior config home, and the
-        // Its isolated config-home env points there so it reads the MCP config.
+    fn config_file_projection_uses_the_bound_environment_paths() {
+        // Causes: config-file delivery present/absent; environment can/cannot
+        // enforce read-only. Effects: one inline per-run mount plus the exposed
+        // config-home override, or no projection.
+        //
+        // Decision table:
+        // C1 present + read-only capable -> ReadOnly at materialization path
+        // C2 present + not capable       -> ReadWrite copy at materialization path
+        // C3 absent + either             -> no mount and no environment override
         let mut cli = *awaken_run_executor_acp::acp_cli("claude").unwrap();
-        cli.mcp_interface = awaken_run_executor_acp::McpInterface::ConfigFileToml {
-            path: "config.toml",
-        };
         cli.config_home_env = Some("TEST_CONFIG_HOME");
-        // bwrap: interior absolute config home, read-only (enforceable).
-        let (mount, (env_key, env_val)) = acp_config_mount(
-            &cli,
-            Some(("config.toml".into(), "[mcp_servers.gh]\n".into())),
-            SANDBOX_CONFIG_HOME,
-            SANDBOX_CONFIG_HOME,
-            true,
-        )
-        .expect("config-file CLI gets a config mount");
-        assert_eq!(mount.mount_path, "/acp-config/config.toml");
-        assert!(matches!(mount.source, pc::MountSource::Inline { .. }));
-        assert_eq!(mount.access, pc::MountAccess::ReadOnly);
-        assert_eq!(mount.lifetime, pc::MountLifetime::PerRun);
-        assert_eq!(env_key, "TEST_CONFIG_HOME");
-        assert_eq!(env_val, "/acp-config");
-        // Workdir: workdir-relative config home, read-write (RO not enforceable).
-        let (rw, (_, rw_home)) = acp_config_mount(
-            &cli,
-            Some(("config.toml".into(), "x".into())),
-            WORKDIR_CONFIG_HOME,
-            WORKDIR_CONFIG_HOME,
-            false,
-        )
-        .unwrap();
-        assert_eq!(rw.mount_path, ".acp-config/config.toml");
-        assert_eq!(rw.access, pc::MountAccess::ReadWrite);
-        assert_eq!(rw_home, ".acp-config");
 
-        // A session-server CLI (claude, no config file) → no config mount.
-        let claude = awaken_run_executor_acp::acp_cli("claude").unwrap();
+        for (rule, read_only, expected_access) in [
+            ("C1", true, pc::MountAccess::ReadOnly),
+            ("C2", false, pc::MountAccess::ReadWrite),
+        ] {
+            let (mount, (key, exposed)) = acp_config_mount(
+                &cli,
+                Some(("config.toml".into(), "[mcp_servers.gh]\n".into())),
+                WORKDIR_CONFIG_HOME,
+                SANDBOX_CONFIG_HOME,
+                read_only,
+            )
+            .unwrap_or_else(|| panic!("{rule}"));
+            assert_eq!(mount.mount_path, ".acp-config/config.toml", "{rule}");
+            assert_eq!(mount.access, expected_access, "{rule}");
+            assert_eq!(mount.lifetime, pc::MountLifetime::PerRun, "{rule}");
+            assert!(
+                matches!(mount.source, pc::MountSource::Inline { .. }),
+                "{rule}"
+            );
+            assert_eq!(key, "TEST_CONFIG_HOME", "{rule}");
+            assert_eq!(exposed, SANDBOX_CONFIG_HOME, "{rule}");
+        }
         assert!(
-            acp_config_mount(claude, None, SANDBOX_CONFIG_HOME, SANDBOX_CONFIG_HOME, true,)
-                .is_none()
+            acp_config_mount(&cli, None, WORKDIR_CONFIG_HOME, SANDBOX_CONFIG_HOME, true,).is_none(),
+            "C3"
         );
-    }
-
-    #[tokio::test]
-    async fn the_workdir_backend_opens_without_bwrap_and_materializes_resources() {
-        // The no-bwrap path (A): the Workdir backend (LocalProvider) needs no OS-native
-        // sandbox, yet still materializes the session's staged resource mounts — so a
-        // bwrap-less worker delivers resources, not only MCP.
-        let registry = SessionRuntimeProjectionSource::default();
-        registry.0.update("t", |slot| {
-            slot.resources = crate::provisioning::StagedResources {
-                mounts: vec![pc::MountRequirement {
-                    mount_id: "id-x".into(),
-                    source: pc::MountSource::InlineBytes {
-                        contents: b"a,b\n".to_vec(),
-                        content_hash: None,
-                    },
-                    mount_path: ".mnt/data.csv".into(),
-                    access: awaken_provisioning_contract::MountAccess::ReadWrite,
-                    lifetime: pc::MountLifetime::PerRun,
-                    required: true,
-                }],
-                ..Default::default()
-            }
-        });
-        let source = SandboxChannelSource::workdir(
-            base(),
-            LaunchSource::Fixed(AcpLaunch::custom(successful_command(), vec![])),
-        )
-        .with_session_projection(registry);
-        // The Workdir spec declares the unsandboxed isolation class and carries the mount.
-        let spec = source.spec("t");
-        assert_eq!(spec.isolation, pc::IsolationClass::Workdir);
-        assert_eq!(spec.mounts.len(), 1);
-        // open() realizes the mount via LocalProvider and spawns — no bwrap required.
-        let act = acp_activation("genai");
-        assert!(
-            source
-                .open(&act, &awaken_runtime_contract::RuntimeRunContext::new())
-                .await
-                .is_ok(),
-            "the Workdir backend opens without an OS-native sandbox"
-        );
-    }
-
-    #[tokio::test]
-    async fn workdir_tier_launches_without_bwrap_and_fails_closed_on_unenforceable_isolation() {
-        // The "usable without bwrap" guarantee, in two halves:
-        // (1) An environment with no isolation demand launches a REAL ACP CLI subprocess on
-        //     the Local/Workdir tier — no OS sandbox needed.
-        let plain = SandboxChannelSource::workdir(
-            base(),
-            LaunchSource::Fixed(AcpLaunch::custom(successful_command(), vec![])),
-        );
-        assert!(
-            plain
-                .open(
-                    &acp_activation("genai"),
-                    &awaken_runtime_contract::RuntimeRunContext::new(),
-                )
-                .await
-                .is_ok(),
-            "the ACP CLI launches on the Local tier without bwrap"
-        );
-
-        // (2) The frozen Environment network still shapes the Local spec ...
-        let resources = frozen_resources("t", pc::NetworkPolicy::None, None);
-        let strict = SandboxChannelSource::workdir(
-            base(),
-            LaunchSource::Fixed(AcpLaunch::custom(vec!["true".into()], vec![])),
-        )
-        .with_session_projection(resources);
-        assert_eq!(
-            strict.spec("t").network,
-            pc::NetworkPolicy::None,
-            "the env egress policy reaches the Local-tier spec"
-        );
-        // ... but a no-egress guarantee the UNSANDBOXED Local tier cannot enforce fails
-        // CLOSED — it never silently runs with the egress it promised to deny. So bwrap-less
-        // is fully usable for what it CAN enforce, and honest about what it can't.
-        assert!(
-            strict
-                .open(
-                    &acp_activation("genai"),
-                    &awaken_runtime_contract::RuntimeRunContext::new(),
-                )
-                .await
-                .is_err(),
-            "unenforceable no-egress fails closed on the Local tier"
-        );
-    }
-
-    #[test]
-    fn spec_shares_the_host_network_without_a_registration() {
-        let src = SandboxChannelSource::new(base(), AcpLaunch::custom(vec!["a".into()], vec![]));
-        let spec = src.spec("t");
-        assert!(matches!(spec.network, pc::NetworkPolicy::Unrestricted));
-        assert_eq!(spec.isolation, pc::IsolationClass::Namespace);
-        assert_eq!(spec.scope, "t");
-        assert_eq!(spec.outputs_path, "/mnt/session/outputs");
-    }
-
-    #[test]
-    fn spec_maps_a_deny_egress_thread_to_no_network() {
-        let resources = frozen_resources("iso", pc::NetworkPolicy::None, None);
-        let src = SandboxChannelSource::new(base(), AcpLaunch::custom(vec!["a".into()], vec![]))
-            .with_session_projection(resources);
-        assert!(matches!(src.spec("iso").network, pc::NetworkPolicy::None));
-        // A sibling thread with no registration still shares the host network.
-        assert!(matches!(
-            src.spec("open").network,
-            pc::NetworkPolicy::Unrestricted
-        ));
-    }
-
-    #[test]
-    fn command_projects_launch_env_as_inline_process_vars_with_piped_stdio() {
-        let launch = AcpLaunch::custom(
-            vec!["prog".into(), "--flag".into()],
-            vec![("K".into(), "V".into())],
-        );
-        let cmd = SandboxChannelSource::command(&launch);
-        assert_eq!(cmd.argv, vec!["prog".to_string(), "--flag".to_string()]);
-        assert!(matches!(cmd.stdio, pc::Stdio::Piped));
-        assert_eq!(cmd.env.len(), 1);
-        assert_eq!(cmd.env[0].name, "K");
-        assert!(matches!(cmd.env[0].value, pc::EnvValue::Inline { .. }));
-        assert!(matches!(cmd.env[0].visibility, pc::EnvVisibility::Process));
-    }
-
-    #[tokio::test]
-    async fn the_factory_builds_the_namespace_source_by_default() {
-        use crate::deployment_config::SandboxTier;
-        // The namespace tier always builds (no image, no container feature needed).
-        let src = build_acp_channel_source(
-            SandboxTier::Namespace,
-            None,
-            LaunchSource::Fixed(AcpLaunch::custom(vec!["claude".into()], vec![])),
-            AcpSandboxBindings::new(SessionRuntimeProjectionSource::default()),
-            base(),
-        )
-        .await;
-        assert!(src.is_ok(), "namespace tier must always build");
-    }
-
-    #[tokio::test]
-    async fn the_local_tier_builds_an_unsandboxed_source() {
-        use crate::deployment_config::SandboxTier;
-        // The `local` tier needs no bwrap and no container feature — the same executor
-        // drives it over a plain subprocess source (ADR-0057: executor is tier-unaware).
-        let src = build_acp_channel_source(
-            SandboxTier::Local,
-            None,
-            LaunchSource::Fixed(AcpLaunch::custom(vec!["claude".into()], vec![])),
-            AcpSandboxBindings::new(SessionRuntimeProjectionSource::default()),
-            base(),
-        )
-        .await;
-        assert!(src.is_ok(), "local tier must always build");
     }
 
     #[tokio::test]
@@ -1866,32 +1086,5 @@ mod tests {
             namespace_degrades_to_local(true),
             "the explicit unsafe opt-in permits local fallback"
         );
-    }
-
-    #[tokio::test]
-    async fn a_container_tier_without_its_backend_feature_fails_closed() {
-        use crate::deployment_config::SandboxTier;
-        // With no container-* feature compiled in, a container tier is a clear error —
-        // never a silent fallback that would ignore the worker's configured backend.
-        for tier in [SandboxTier::Docker, SandboxTier::Podman, SandboxTier::K8s] {
-            let out = build_acp_channel_source(
-                tier,
-                Some("ghcr.io/x/agent:1"),
-                LaunchSource::Fixed(AcpLaunch::custom(vec!["claude".into()], vec![])),
-                AcpSandboxBindings::new(SessionRuntimeProjectionSource::default()),
-                base(),
-            )
-            .await;
-            #[cfg(not(any(
-                feature = "container-docker",
-                feature = "container-podman",
-                feature = "container-k8s"
-            )))]
-            assert!(
-                out.is_err(),
-                "{tier:?} without its feature must fail closed"
-            );
-            let _ = out;
-        }
     }
 }

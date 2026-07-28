@@ -139,8 +139,8 @@ per-cut state (2026-07-18):
   `SharedHost` references each; moving down to the ingress family would cycle. Requires a
   `DispatchBackend` port at the host boundary first.
 - **Sandbox realization (`sandbox_source`, `provisioning`)** — `sandbox_source` has zero
-  host references but provides the projection handle that ADR-0066 later consolidated
-  as `SessionRuntimeProjectionSource`, and uses host-internal modules;
+  host references and consumes the Session-owned environment that ADR-0066
+  consolidated; it still uses host-internal modules;
   `provisioning` reads the run's resolved spec
   (host-plane knowledge). Requires a narrow `SandboxSource` port; provisioning stays.
 - **ACP (`acp_backend`, `acp_serve`)** — add `impl SharedHost` methods and are held as the

@@ -397,13 +397,12 @@ duplex-byte-channel abstraction is **one trait today** —
 `awaken-agent-channel::AgentChannel` (`AsyncRead+AsyncWrite+Unpin+Send`) — produced
 and consumed by BOTH the ACP path (`AgentSession.channel: Box<dyn AgentChannel>`)
 and the Hand/connection-plan path (`ChannelFactory::connect -> Box<dyn
-AgentChannel>`). What is NOT yet shared is the *isolation-spawn* layer: ACP's
-`SandboxChannelSource` spawns under a bwrap/container tier, while Hand's
-`ChannelFactory` does a raw dial with no isolation. The family-7 reuse is to route
-a *sandboxed* Hand spawn through the same tier factory that backs
-`AgentChannelSource` (the later ADR-0066 consolidation exposes the frozen
-Environment through one `SessionRuntimeProjectionSource` shared by Native and
-ACP, and that projection extends to it). But the **protocol
+AgentChannel>`). Environment realization is now shared by Native and ACP through
+the Session-owned `SessionEnvironment`; ACP's `BoundLocalChannelSource` only
+projects a launch into that already-realized environment. Hand's
+`ChannelFactory` still does a raw dial with no isolation. The family-7 reuse is
+to route a *sandboxed* Hand spawn through the same Session-environment port. But
+the **protocol
 ports** stay three: `AgentChannelSource` (ACP session) / `ChannelFactory`
 (hand-wire channel) / `Transport` (A2A HTTP) return three different things for
 three call sites; one unifying trait would erase the type distinction that makes
@@ -747,15 +746,16 @@ Principle (user-affirmed): the ACP executor runs both **directly in the runtime
 whatever `AgentChannelSource` it is handed. Selecting the environment is a
 worker + provisioning concern at the composition root, never the executor's. So
 `SandboxTier` gains a `Local` (unsandboxed subprocess) member beside
-`Namespace`/`Docker`/`Podman`/`K8s`, and `build_acp_channel_source` yields the
-matching source for each — the executor construction is identical across all.
+`Namespace`/`Docker`/`Podman`/`K8s`; the Runtime Host realizes the selected
+`SessionEnvironment` once and binds ACP to it. The executor construction is
+identical across all tiers.
 Adds: one typed `AcpWorkerProfile` shared by Worker capability advertisement and
 Host launch routing (`AWAKEN_ACP_CLIS`, with singular `AWAKEN_ACP_CLI` as the
 compatibility input); `SandboxTier::Local`; `LaunchSource{Fixed,Projected}`
 publicized as the factory input for all tiers.
-Retires: the dead-code status of `with_projected_acp`/`projecting` (scenario-only
-today) — they become the production path; production `AWAKEN_ACP_ARGV` is removed
-and fixed argv remains an explicit dev/test `LaunchSource` only.
+Retires: the per-attempt `SandboxChannelSource`,
+`SessionRuntimeProjectionSource`, and `build_acp_channel_source` parallel path;
+fixed argv remains an explicit dev/test `LaunchSource` only.
 Guard: `LaunchSource::resolve` cli-match fail-closed (exists); tier-matrix unit
 tests.
 Done when: one Worker can exact-route `acp:codex` and `acp:claude`; an
