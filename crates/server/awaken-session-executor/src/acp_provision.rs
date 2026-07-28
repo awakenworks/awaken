@@ -411,6 +411,7 @@ mod tests {
             input: Vec::new(),
             delegation_origin: None,
             model_ref_override: None,
+            data_subject_id: None,
             tool_capability_narrowing: Default::default(),
         }
     }

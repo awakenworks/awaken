@@ -1205,6 +1205,7 @@ async fn generic_tool_result_resumes_an_awaiting_run() {
 struct RecordingFake {
     systems: Arc<Mutex<Vec<String>>>,
     interrupts: Arc<Mutex<Vec<String>>>,
+    subjects: Arc<Mutex<Vec<Option<String>>>>,
 }
 
 #[async_trait::async_trait]
@@ -1216,6 +1217,17 @@ impl SessionRuntime for RecordingFake {
         _c: Vec<ContentBlock>,
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
+    }
+    async fn run_streaming_attributed(
+        &self,
+        _agent: &str,
+        _thread: &str,
+        _content: Vec<ContentBlock>,
+        data_subject_id: Option<String>,
+        _sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
+    ) -> Result<StepOutcome, RunError> {
+        self.subjects.lock().unwrap().push(data_subject_id);
+        Ok(ended(Vec::new()))
     }
     async fn resume(
         &self,
@@ -1265,9 +1277,11 @@ impl SessionRuntime for RecordingFake {
 async fn system_message_and_interrupt_reach_the_runtime() {
     let systems = Arc::new(Mutex::new(Vec::new()));
     let interrupts = Arc::new(Mutex::new(Vec::new()));
+    let subjects = Arc::new(Mutex::new(Vec::new()));
     let app = router(Arc::new(ManagedState::new(RecordingFake {
         systems: systems.clone(),
         interrupts: interrupts.clone(),
+        subjects,
     })));
     let id = create(&app).await;
 
@@ -1291,6 +1305,37 @@ async fn system_message_and_interrupt_reach_the_runtime() {
         *interrupts.lock().unwrap(),
         vec![id.clone()],
         "user.interrupt reached runtime.interrupt with the session thread"
+    );
+}
+
+/// Cause/effect decision table for Managed attribution projection:
+/// R1 user_profile_id=present + user.message -> the exact opaque id reaches the
+/// attributed runtime port; R2 absent -> `None`; non-message events never invoke
+/// the run port (covered by `system_message_and_interrupt_reach_the_runtime`).
+#[tokio::test]
+async fn user_profile_is_projected_at_request_grain() {
+    let subjects = Arc::new(Mutex::new(Vec::new()));
+    let app = router(Arc::new(ManagedState::new(RecordingFake {
+        systems: Arc::new(Mutex::new(Vec::new())),
+        interrupts: Arc::new(Mutex::new(Vec::new())),
+        subjects: subjects.clone(),
+    })));
+    let id = create(&app).await;
+    for (profile, text) in [(Some("user_alice"), "attributed"), (None, "unattributed")] {
+        let mut body = serde_json::json!({
+            "events": [{
+                "type": "user.message",
+                "content": [{ "type": "text", "text": text }]
+            }]
+        });
+        if let Some(profile) = profile {
+            body["user_profile_id"] = serde_json::json!(profile);
+        }
+        json_call(&app, "POST", &format!("/v1/sessions/{id}/events"), body).await;
+    }
+    assert_eq!(
+        *subjects.lock().unwrap(),
+        vec![Some("user_alice".into()), None]
     );
 }
 

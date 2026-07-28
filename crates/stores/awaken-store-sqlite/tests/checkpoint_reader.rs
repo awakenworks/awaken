@@ -233,6 +233,7 @@ async fn lifecycle_feed_observes_peer_commits_and_backfills_exclusively() {
             snapshot_id: "snapshot".into(),
             catalog_fingerprint: "catalog".into(),
             delegation_origin: None,
+            data_subject_id: None,
             reason: AwaitReason::UserInput,
             call_id: None,
             pending_tool: None,

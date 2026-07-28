@@ -114,6 +114,7 @@ pub(super) async fn run_tool_calls(
             descriptor.id == call.tool_id && descriptor.kind == ToolKind::ClientExecuted
         }) {
             let ticket = resume_ticket(
+                context,
                 resolved,
                 run_id,
                 delegation_origin,
@@ -216,6 +217,7 @@ pub(super) async fn run_tool_calls(
                                     &mut ledger.staged_state,
                                 )?;
                                 let ticket = resume_ticket(
+                                    context,
                                     resolved,
                                     run_id,
                                     delegation_origin,
@@ -257,6 +259,7 @@ pub(super) async fn run_tool_calls(
                     // Await the run on a structured ticket carrying the pending
                     // call so an allow decision can run it later.
                     let ticket = resume_ticket(
+                        context,
                         resolved,
                         run_id,
                         delegation_origin,
@@ -300,6 +303,7 @@ pub(super) async fn run_tool_calls(
                     // Commit a ScheduledAction (ADR-0020): the call is deferred and
                     // performed later from the committed request, not decided.
                     let ticket = resume_ticket(
+                        context,
                         resolved,
                         run_id,
                         delegation_origin,
@@ -680,6 +684,7 @@ pub(super) async fn recover_tool_batch(
                 }
                 GateOutcome::RequireConfirmation { correlation_id } => {
                     let ticket = resume_ticket(
+                        context,
                         resolved,
                         run_id,
                         delegation_origin,
@@ -710,6 +715,7 @@ pub(super) async fn recover_tool_batch(
                         )));
                     }
                     let ticket = resume_ticket(
+                        context,
                         resolved,
                         run_id,
                         delegation_origin,
@@ -793,6 +799,7 @@ pub(super) async fn recover_tool_batch(
                         &mut ledger.staged_state,
                     )?;
                     let ticket = resume_ticket(
+                        context,
                         resolved,
                         run_id,
                         delegation_origin,

@@ -249,6 +249,7 @@ pub(crate) fn activation() -> RunActivation {
         input: vec![Message::text(MessageId("u1".into()), Role::User, "do it")],
         delegation_origin: None,
         model_ref_override: None,
+        data_subject_id: None,
         tool_capability_narrowing: Default::default(),
     }
 }

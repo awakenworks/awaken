@@ -97,13 +97,13 @@ pub trait AgentChannelSource: Send + Sync {
 #[error("agent channel open failed: {0}")]
 pub struct OpenError(pub String);
 
-/// Identifies a CLI's portable session-home: which conversation (thread) on which
-/// adapter. The on-disk format is adapter-specific, so a Claude and a Codex blob on
-/// the same thread never collide. The tenant / data-subject scope is applied by the
-/// injected [`SessionHomeProvider`] (it is constructed knowing the scope), so this
-/// key stays free of tenancy.
+/// Identifies a CLI's portable session-home: request owner, conversation, and
+/// adapter. Subject scope is explicit because session blobs contain opaque model
+/// content and must be independently erasable; it is never inferred by the
+/// executor or read from ambient process state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionHomeKey {
+    pub data_subject_id: Option<String>,
     pub thread_id: String,
     pub adapter: String,
 }
@@ -485,6 +485,10 @@ impl AcpRunExecutor {
         };
         Some((
             SessionHomeKey {
+                data_subject_id: activation
+                    .data_subject_id
+                    .as_ref()
+                    .map(|subject| subject.0.clone()),
                 thread_id: activation.thread_id.0.clone(),
                 adapter: cli,
             },
@@ -704,6 +708,10 @@ impl AcpRunExecutor {
                         snapshot_id: activation.snapshot.id.0.clone(),
                         catalog_fingerprint: activation.snapshot.fingerprint.0.clone(),
                         delegation_origin: activation.delegation_origin.clone(),
+                        data_subject_id: activation
+                            .data_subject_id
+                            .as_ref()
+                            .map(|subject| subject.0.clone()),
                         reason: AwaitReason::ToolPermission,
                         call_id: Some(ask.call_id.clone()),
                         pending_tool: Some(PendingTool {
@@ -1050,6 +1058,10 @@ fn pause_ticket(activation: &RunActivation, run_id: &RunId, reason: AwaitReason)
             .0
             .clone(),
         delegation_origin: activation.delegation_origin.clone(),
+        data_subject_id: activation
+            .data_subject_id
+            .as_ref()
+            .map(|subject| subject.0.clone()),
         reason,
         call_id: None,
         pending_tool: None,

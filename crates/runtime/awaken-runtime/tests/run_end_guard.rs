@@ -192,6 +192,7 @@ fn activation(plugin_ids: Vec<String>, max_steps: usize) -> RunActivation {
         }],
         delegation_origin: None,
         model_ref_override: None,
+        data_subject_id: None,
         tool_capability_narrowing: Default::default(),
     }
 }

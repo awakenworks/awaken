@@ -326,6 +326,7 @@ mod tests {
             input: vec![Message::text(MessageId("u".into()), Role::User, "go")],
             delegation_origin: None,
             model_ref_override: None,
+            data_subject_id: None,
             tool_capability_narrowing: Default::default(),
         }
     }

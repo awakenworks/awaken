@@ -367,6 +367,7 @@ mod assemble_tests {
             snapshot_id: "snap".into(),
             catalog_fingerprint: "fp".into(),
             delegation_origin: None,
+            data_subject_id: None,
             reason: AwaitReason::UserInput,
             call_id: None,
             pending_tool: None,
