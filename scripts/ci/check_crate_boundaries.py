@@ -893,6 +893,17 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # dev-only: temp dirs for the session-home reference impl's recovery tests.
         "tempfile",
     },
+    # Worker-side ACP application service: discovers trusted-host adapters,
+    # acquires catalog-pinned wrappers, registers secret-free WorkerLocal
+    # bindings, and exposes liveness. It composes executor catalog metadata and
+    # credential ports but owns neither execution nor durable storage.
+    "awaken-acp-application": {
+        "awaken-run-executor-acp",
+        "awaken-runtime-contract",
+        "awaken-credential-vault",
+        "async-trait",
+        "tokio",
+    },
     # A2A executor: a remote A2A agent (Coze / A2A HTTP) as a peer RunExecutor.
     # Runtime plane; foundation contracts + the A2A protocol crate only, like the
     # ACP executor — it constructs no config and names no secret.
@@ -1524,6 +1535,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # The ACP executor: the composition root wires an `acp:*` backend into the Serve
         # host by config (AWAKEN_ACP_ARGV), which the runtime-host plane does not do itself.
         "awaken-run-executor-acp",
+        # Trusted-host ACP discovery/binding application service shared with Flow.
+        "awaken-acp-application",
         "awaken-observability",
         # The composition root registers the brain's active-streams connection-load
         # gauge on the global OTel meter after init (#4), so it names opentelemetry.

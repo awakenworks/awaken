@@ -73,12 +73,14 @@ impl AcpBackend {
                 observer,
                 session_home,
             } => {
-                let source = Arc::new(crate::BoundLocalChannelSource::from_environment(
-                    sandbox,
-                    launch.clone(),
-                    backend,
-                    mcp_servers,
-                ));
+                let source = Arc::new(
+                    crate::sandbox_source::BoundLocalChannelSource::from_environment(
+                        sandbox,
+                        launch.clone(),
+                        backend,
+                        mcp_servers,
+                    ),
+                );
                 let mut executor = AcpRunExecutor::new(source);
                 if let Some(observer) = observer {
                     executor = executor.with_launch_observer(observer.clone());
