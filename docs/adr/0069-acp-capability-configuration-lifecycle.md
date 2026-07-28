@@ -61,6 +61,40 @@ The lifecycle has one rule:
 No second ACP inventory, configuration repository, Worker kind, executor,
 permission engine or Session Environment abstraction is introduced.
 
+### End-to-end target and current focus
+
+Every supported ACP follows one lifecycle:
+
+```text
+catalog declaration
+  -> Worker installation/login discovery
+  -> Worker ACP capability negotiation
+  -> effective capability observation
+  -> Agent intent authoring
+  -> immutable publication
+  -> placement and claim
+  -> launch-time revalidation
+  -> resolved launch
+  -> protocol execution and terminal outcome
+```
+
+The immediate focus is the boundary between Worker preparation and execution.
+Discovery and negotiation are Worker application/provisioning concerns. Runtime
+Host uses their immutable result to choose an environment and construct a
+launch. `awaken-run-executor-acp` and `awaken-protocol-acp` execute that launch
+and validate handshake evidence, but do not scan PATH/HOME, install wrappers,
+probe login, maintain an adapter inventory, persist observations or choose
+configuration.
+
+“Capability” has two related but distinct meanings:
+
+- a **discovered capability** is a Worker-owned, expiring observation used for
+  authoring, publication, placement and readiness;
+- a **session-advertised capability** is launch-time protocol evidence used to
+  fail closed if the claimed Worker no longer matches the publication.
+
+The latter verifies the former; it is not a second discovery repository.
+
 ### D1 — One static descriptor plus one live observation
 
 The existing `AcpCli` catalog evolves into the one versioned adapter descriptor:
@@ -88,8 +122,15 @@ advertised modes, config options, value schemas, choices, reported defaults and
 protocol capabilities. Static data may annotate live options but may not
 override their type, allowed values or default.
 
-The main discovery, Runtime and execution paths never branch on adapter id.
-Adding an adapter adds descriptor data or one leaf delivery adapter.
+Worker application logic, Runtime and execution paths never branch on adapter
+id. Adding an adapter adds descriptor data or one leaf delivery adapter.
+
+The descriptor contract is owned outside the executor. During migration the
+existing `AcpCli` value remains authoritative, but its declaration and probe
+types move to an ACP catalog/contract module. The actual host-process probe
+moves from `awaken-run-executor-acp::host_discovery` to
+`awaken-acp-application`. This is a move, not a copied compatibility facade.
+After callers migrate, the executor has no discovery exports.
 
 ### D2 — Three observations, not one discovery operation
 
@@ -100,13 +141,20 @@ Adding an adapter adds descriptor data or one leaf delivery adapter.
    status command using the same PATH/HOME allowlist as trusted-host launch. It
    periodically returns a secret-free `CredentialObservation` and reruns
    immediately before launch. It never opens the backing login file.
-3. **Capability negotiation** starts a bounded short-lived ACP process and runs
+3. **Capability negotiation** is performed by the Worker application service.
+   It starts a bounded short-lived ACP process and runs
    `initialize` plus `session/new` to observe modes, config options and protocol
    capabilities. It sends no user prompt, Workspace document body, live resource
    handle or provider credential material.
 
 The capability-probe process owns no user Session continuity, commits no Run
 facts, has a fixed timeout and is reaped as a unit.
+
+The Worker application reuses the protocol crate's canonical handshake state
+machine. It may not implement a second JSON-RPC parser or duplicate
+`initialize`/`session/new` sequencing. The protocol crate exposes a narrow
+channel-in/channel-out negotiation operation; process creation, timeout,
+observation revision and persistence remain outside it.
 
 ### D3 — Structurally uniform, semantically native options
 
@@ -148,6 +196,24 @@ include Model, ReasoningEffort, InteractionMode, ApprovalPreference and
 BackendSandboxPreference. A `model_reasoning_effort`, `thinking_level` and token
 budget remain different native options unless a descriptor explicitly maps
 them. Native id and native value remain the execution authority.
+
+All ACPs can therefore be uniformly recognized without pretending they have
+uniform configuration:
+
+| Uniform across adapters | Preserved as adapter-native |
+|---|---|
+| id, label, description and provenance | native option id |
+| value schema and validation result | native value vocabulary |
+| current/default/choice structure | delivery interface |
+| safety classification | mode and option semantics |
+| verified/stale/incompatible lifecycle | dependency/order constraints |
+
+An adapter that advertises an unknown scalar option is immediately renderable
+through the generic contract. A known option may additionally receive a
+versioned semantic annotation. An opaque or security-sensitive option remains
+advanced, unsupported or forbidden until its schema and authority effect are
+proved. This is progressive recognition, not a lowest-common-denominator
+configuration model.
 
 ### D4 — One effective Worker capability profile
 
@@ -346,6 +412,31 @@ Worker-local liveness resolver. `awaken-cli` owns only deployment/resource
 composition around this service; additional composition roots call the same
 service rather than importing CLI modules.
 
+The static dependency direction is:
+
+```text
+ACP catalog/contract
+       ^
+       |
+Worker ACP application ----> credential repository ports
+       |
+       +----> protocol negotiation port ----> neutral ACP channel
+       |
+       v
+effective Worker observation
+       |
+       v
+Agent config/publishing ----> placement/claim
+       |
+       v
+Runtime Host ----> ResolvedAcpLaunch ----> ACP executor/protocol
+```
+
+Neither arrow points from Runtime/executor back to discovery. The application
+service can depend on the neutral protocol negotiation port, while protocol
+code never depends on Worker, credential, catalog, repository or authoring
+types.
+
 ### D12 — Product configuration is typed, not ambient
 
 Adapter identity, wrapper version, launch policy, option selection, databases,
@@ -402,6 +493,72 @@ change
 Installation, login, capability, authored selection, publication and Run state
 are orthogonal values with different owners. They must not collapse into one
 mutable status column.
+
+### State, consistency and refresh boundaries
+
+The lifecycle has four consistency boundaries:
+
+1. **Worker observation revision.** Installation, login and capability evidence
+   are gathered for one adapter version and committed as one secret-free
+   observation with expiry and fingerprint. A partial refresh does not replace
+   the previous complete observation.
+2. **Agent aggregate revision.** Authoring persists only backend/model/mode/
+   option intent. Optimistic concurrency protects edits; no Worker observation
+   is copied into the aggregate.
+3. **Publication revision.** Publication validates one fresh observation and
+   freezes its fingerprint, exact WorkerLocal revision and environment demand.
+   This is the scheduling contract.
+4. **Claim/launch fence.** A claim fixes Worker incarnation and epoch.
+   Immediately before spawn, the Worker repeats all mutable checks and compares
+   the live handshake with the frozen demand.
+
+Refresh is event-driven on process startup, explicit user refresh, adapter
+version/wrapper change, login remediation completion and observed liveness
+change, with a bounded periodic retry for transient failures. Concurrent
+refreshes for the same Worker/adapter coalesce. Failures retain their typed
+evidence and retry time; they do not erase user intent or publish a fallback.
+
+The terminal states visible to callers are `Available`, `InstallationRequired`,
+`LoginRequired`, `CapabilityStale`, `ConfigurationIncompatible`,
+`EnvironmentUnavailable`, `LaunchFailed`, protocol failure, or the ordinary
+committed/cancelled Run outcome. Every non-terminal retry is bounded and
+observable.
+
+## Comparison with oversight-next
+
+The reviewed `oversight-next` implementation has one table-driven
+`AcpAdapterProfile` authority. It declares launch command, credential channel,
+MCP delivery, model delivery and per-adapter `AcpConfigOptionSpec`; Codex, for
+example, statically declares sandbox, approval and reasoning-effort options.
+The execution seam looks up the profile rather than branching on adapter kind.
+
+That design provides useful precedents:
+
+- one data-driven adapter profile and leaf delivery interfaces;
+- a common structural option type with per-adapter values;
+- database-owned model choice kept separate from free ACP configuration;
+- no adapter-id branching in the generic execution seam.
+
+Awaken should reuse those principles, but not copy the implementation or its
+inventory. Compared with the reviewed implementation:
+
+| Dimension | oversight-next reviewed state | Awaken target |
+|---|---|---|
+| adapter differences | single static profile table | single static descriptor |
+| option inventory | primarily static declarations | live ACP evidence merged with annotations |
+| installed-version drift | requires table/version maintenance | fingerprinted observation and launch fence |
+| unsupported native option | absent until declared | generically visible when safely typed |
+| defaults | static profile may declare operational defaults | omission preserves backend default |
+| launch overrides | environment-variable command/arg channels exist | typed deployment config only |
+| local login custody | credential injection is profile-declared | BackendOwned CLI retains host login custody |
+| security-like ACP options | may request broad runtime settings | intersected with Awaken authority/environment |
+
+The oversight approach is simpler for a closed, pinned adapter set and has a
+mature table-driven seam. Awaken's live negotiation costs an extra bounded
+probe and more stale-evidence handling, but it is stronger for independently
+upgraded local CLIs and heterogeneous ACPs. The combined design remains simple:
+one static source for facts the protocol cannot reveal, one live source for
+facts it can reveal, and no synchronization between competing catalogs.
 
 ## Failure and terminal outcomes
 
@@ -471,6 +628,27 @@ Implemented consolidation evidence:
 - Runtime Host selects the Session provider from immutable
   `ModelProvisioning`: BackendOwned uses its trusted Workdir provider while
   Provider/HostExecutor retain the configured managed tier.
+
+Current implementation status is deliberately distinct from the target:
+
+| Lifecycle slice | Current state | Required consolidation |
+|---|---|---|
+| adapter catalog | authoritative `AcpCli` exists | move its neutral contract out of executor ownership |
+| installation/login probe | functional | move process probe from executor crate into Worker application |
+| reusable CLI/Flow preparation | application service exists; CLI partly consumes it | migrate remaining CLI-private callers and Flow; delete the duplicate |
+| capability negotiation | Run handshake observes ids only | expose canonical capability probe and retain full typed descriptors |
+| effective profile/fingerprint | not implemented | add Worker-owned expiring observation |
+| Agent ACP mode/options | mode and one model option reach executor | add typed multi-option intent and publication validation |
+| environment selection | provisioning selects trusted/isolated provider | retain as the sole Session Environment policy |
+| readiness | startup observation projection | query current Worker observation and reconcile revisions |
+| automatic Assistant | still considers detection/catalog order | require exactly one `Available` backend |
+| frontend contract | model type remains handwritten/incomplete | generate the discriminated Rust contract |
+| Flow | old Awaken revision and overlapping ACP config | update revision and consume application service |
+| ambient configuration | Provider proposals/runtime env reads remain | remove duplicate authoring path; use typed deployment config |
+
+Therefore this ADR documents the accepted direction and partial implementation;
+it does not claim that capability discovery, generic ACP configuration, live
+readiness, Flow reuse or real-host E2E are complete.
 
 Managed `CodexAuthJson` is a separate product decision. BackendOwned never
 enters that Provider-only artifact path. A global prohibition on creating
