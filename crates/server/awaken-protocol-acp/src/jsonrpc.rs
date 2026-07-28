@@ -22,9 +22,9 @@ use agent_client_protocol::{
     ClientCapabilities, ContentBlock, InitializeRequest, InitializeResponse, LoadSessionRequest,
     LoadSessionResponse, NewSessionRequest, NewSessionResponse, PermissionOptionKind,
     PromptRequest, PromptResponse, ProtocolVersion, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
-    SessionConfigOption, SessionId, SessionModeId, SessionModeState, SessionNotification,
-    SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionId,
+    SessionModeId, SessionNotification, SetSessionConfigOptionRequest,
+    SetSessionConfigOptionResponse, SetSessionModeRequest,
 };
 use awaken_agent_channel::AgentChannel;
 use serde::Serialize;
@@ -68,9 +68,10 @@ fn to_acp_mcp_servers(
 
 use crate::real_acp::{project_update, termination_from_stop_reason};
 use crate::{
-    AcpError, AcpLaunchEvent, AcpLaunchStage, AcpProjectedEvent, AllowAll, LaunchSink,
-    PermissionAsk, PermissionResolver, PermissionVerdict, RunFactAppender, TerminationReason,
-    TurnConfig, notify_launch,
+    AcpCapabilityProbeConfig, AcpError, AcpLaunchEvent, AcpLaunchStage, AcpProjectedEvent,
+    AllowAll, AppendError, LaunchSink, NegotiatedAcpCapabilities, PermissionAsk,
+    PermissionResolver, PermissionVerdict, RunFactAppender, TerminationReason, TurnConfig,
+    notify_launch,
 };
 
 const JSONRPC: &str = "2.0";
@@ -203,6 +204,103 @@ impl<'a> Wire<'a> {
     }
 }
 
+async fn initialize_agent(
+    wire: &mut Wire<'_>,
+    sink: &mut dyn RunFactAppender,
+    seq: &mut u64,
+    resolver: &dyn PermissionResolver,
+    auth_method_id: Option<&str>,
+) -> Result<InitializeResponse, AcpError> {
+    wire.send_request(
+        ID_INITIALIZE,
+        AGENT_METHOD_NAMES.initialize,
+        InitializeRequest::new(ProtocolVersion::LATEST)
+            .client_capabilities(ClientCapabilities::default()),
+    )
+    .await?;
+    let init: InitializeResponse =
+        parse(pump_to_response(wire, ID_INITIALIZE, sink, seq, resolver).await?)?;
+    if let Some(method_id) = auth_method_id {
+        if !init
+            .auth_methods
+            .iter()
+            .any(|method| method.id().0.as_ref() == method_id)
+        {
+            return Err(AcpError::Frame(format!(
+                "configured ACP authentication method `{method_id}` was not advertised"
+            )));
+        }
+        wire.send_request(
+            ID_AUTHENTICATE,
+            AGENT_METHOD_NAMES.authenticate,
+            AuthenticateRequest::new(method_id.to_string()),
+        )
+        .await?;
+        let _: AuthenticateResponse =
+            parse(pump_to_response(wire, ID_AUTHENTICATE, sink, seq, resolver).await?)?;
+    }
+    Ok(init)
+}
+
+async fn open_new_session(
+    wire: &mut Wire<'_>,
+    sink: &mut dyn RunFactAppender,
+    seq: &mut u64,
+    resolver: &dyn PermissionResolver,
+    cwd: &str,
+    mcp_servers: &[crate::SessionMcpServer],
+) -> Result<NewSessionResponse, AcpError> {
+    wire.send_request(
+        ID_NEW_SESSION,
+        AGENT_METHOD_NAMES.session_new,
+        NewSessionRequest::new(cwd).mcp_servers(to_acp_mcp_servers(mcp_servers)),
+    )
+    .await?;
+    parse(pump_to_response(wire, ID_NEW_SESSION, sink, seq, resolver).await?)
+}
+
+/// Negotiate one prompt-free ACP Session and retain the full advertised
+/// capability descriptors. The caller bounds and reaps the process.
+pub async fn negotiate_capabilities(
+    channel: &mut dyn AgentChannel,
+    config: &AcpCapabilityProbeConfig,
+) -> Result<NegotiatedAcpCapabilities, AcpError> {
+    struct RejectPermission;
+    #[async_trait::async_trait]
+    impl PermissionResolver for RejectPermission {
+        async fn resolve(&self, _ask: &PermissionAsk) -> PermissionVerdict {
+            PermissionVerdict::Deny
+        }
+    }
+    struct DiscardFacts;
+    #[async_trait::async_trait]
+    impl RunFactAppender for DiscardFacts {
+        async fn append(
+            &mut self,
+            _seq: u64,
+            _event: &AcpProjectedEvent,
+        ) -> Result<(), AppendError> {
+            Ok(())
+        }
+    }
+
+    let cwd = config.session_cwd.as_deref().unwrap_or("/");
+    let resolver = RejectPermission;
+    let mut sink = DiscardFacts;
+    let mut seq = 0;
+    let mut wire = Wire::new(channel);
+    let init = initialize_agent(
+        &mut wire,
+        &mut sink,
+        &mut seq,
+        &resolver,
+        config.auth_method_id.as_deref(),
+    )
+    .await?;
+    let session = open_new_session(&mut wire, &mut sink, &mut seq, &resolver, cwd, &[]).await?;
+    Ok(crate::capabilities::project(init, session))
+}
+
 /// Drive one ACP prompt turn over `channel`, projecting each `session/update`
 /// into `sink` with a strictly increasing seq, and returning the reason carried
 /// by the prompt's `stopReason`.
@@ -250,35 +348,15 @@ pub async fn run_turn_with_config(
     //    capabilities (default `ClientCapabilities`), so those agent requests are
     //    refused fail-closed later. Read back the agent's capabilities to gate a
     //    session resume fail-closed (only load when the agent advertises it).
-    wire.send_request(
-        ID_INITIALIZE,
-        AGENT_METHOD_NAMES.initialize,
-        InitializeRequest::new(ProtocolVersion::LATEST)
-            .client_capabilities(ClientCapabilities::default()),
+    let init = initialize_agent(
+        &mut wire,
+        sink,
+        &mut seq,
+        resolver,
+        config.auth_method_id.as_deref(),
     )
     .await?;
-    let init: InitializeResponse =
-        parse(pump_to_response(&mut wire, ID_INITIALIZE, sink, &mut seq, resolver).await?)?;
     let can_load = init.agent_capabilities.load_session;
-    if let Some(method_id) = config.auth_method_id.as_deref() {
-        if !init
-            .auth_methods
-            .iter()
-            .any(|method| method.id().0.as_ref() == method_id)
-        {
-            return Err(AcpError::Frame(format!(
-                "configured ACP authentication method `{method_id}` was not advertised"
-            )));
-        }
-        wire.send_request(
-            ID_AUTHENTICATE,
-            AGENT_METHOD_NAMES.authenticate,
-            AuthenticateRequest::new(method_id.to_string()),
-        )
-        .await?;
-        let _: AuthenticateResponse =
-            parse(pump_to_response(&mut wire, ID_AUTHENTICATE, sink, &mut seq, resolver).await?)?;
-    }
 
     // 2. session/load (resume the CLI's own session across the relaunch) when we
     //    hold a prior id and the agent supports it; else session/new. Fail-safe:
@@ -301,8 +379,8 @@ pub async fn run_turn_with_config(
                     let resp: LoadSessionResponse = parse(result)?;
                     (
                         SessionId::new(prior.as_str()),
-                        mode_ids(resp.modes),
-                        config_option_ids(resp.config_options),
+                        crate::capabilities::mode_ids(resp.modes),
+                        crate::capabilities::config_option_ids(resp.config_options),
                     )
                 }
                 RpcResponse::Error(error) if is_missing_session_error(&error) => {
@@ -310,19 +388,18 @@ pub async fn run_turn_with_config(
                     // lifetime of one ACP process (Kimi Code is one example). No
                     // prompt has been sent yet, so opening a fresh session is a safe
                     // compatibility fallback and cannot replay agent work.
-                    wire.send_request(
-                        ID_NEW_SESSION,
-                        AGENT_METHOD_NAMES.session_new,
-                        NewSessionRequest::new(cwd.as_str())
-                            .mcp_servers(to_acp_mcp_servers(&config.mcp_servers)),
+                    let new_session = open_new_session(
+                        &mut wire,
+                        sink,
+                        &mut seq,
+                        resolver,
+                        &cwd,
+                        &config.mcp_servers,
                     )
                     .await?;
-                    let new_session: NewSessionResponse = parse(
-                        pump_to_response(&mut wire, ID_NEW_SESSION, sink, &mut seq, resolver)
-                            .await?,
-                    )?;
-                    let modes = mode_ids(new_session.modes);
-                    let options = config_option_ids(new_session.config_options);
+                    let modes = crate::capabilities::mode_ids(new_session.modes);
+                    let options =
+                        crate::capabilities::config_option_ids(new_session.config_options);
                     (new_session.session_id, modes, options)
                 }
                 RpcResponse::Error(error) => {
@@ -331,18 +408,17 @@ pub async fn run_turn_with_config(
             }
         }
         _ => {
-            wire.send_request(
-                ID_NEW_SESSION,
-                AGENT_METHOD_NAMES.session_new,
-                NewSessionRequest::new(cwd.as_str())
-                    .mcp_servers(to_acp_mcp_servers(&config.mcp_servers)),
+            let new_session = open_new_session(
+                &mut wire,
+                sink,
+                &mut seq,
+                resolver,
+                &cwd,
+                &config.mcp_servers,
             )
             .await?;
-            let new_session: NewSessionResponse = parse(
-                pump_to_response(&mut wire, ID_NEW_SESSION, sink, &mut seq, resolver).await?,
-            )?;
-            let modes = mode_ids(new_session.modes);
-            let options = config_option_ids(new_session.config_options);
+            let modes = crate::capabilities::mode_ids(new_session.modes);
+            let options = crate::capabilities::config_option_ids(new_session.config_options);
             (new_session.session_id, modes, options)
         }
     };
@@ -654,36 +730,12 @@ fn parse<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, 
     serde_json::from_value(value).map_err(|e| AcpError::Frame(e.to_string()))
 }
 
-/// The ids of the modes an agent advertised for a session (empty when it declares
-/// none), used to validate a mode pin fail-closed.
-fn mode_ids(modes: Option<SessionModeState>) -> Vec<String> {
-    modes
-        .map(|state| {
-            state
-                .available_modes
-                .into_iter()
-                .map(|mode| mode.id.0.to_string())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn config_option_ids(options: Option<Vec<SessionConfigOption>>) -> Vec<String> {
-    options
-        .unwrap_or_default()
-        .into_iter()
-        .map(|option| option.id.0.to_string())
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
-
-    use crate::AppendError;
 
     #[derive(Default)]
     struct RecordingSink {
@@ -758,6 +810,83 @@ mod tests {
             stream.write_all(b"\n").await.unwrap();
             stream.flush().await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn capability_probe_reuses_the_handshake_and_sends_no_prompt() {
+        // Cause graph:
+        // C1 initialize capabilities -> E1 neutral protocol flags.
+        // C2 session mode state -> E2 ids/labels/current mode.
+        // C3 native select option -> E3 category/current/choices retained.
+        // C4 prompt-free probe -> E4 exactly initialize + session/new.
+        //
+        // Decision table:
+        // N1 advertised flags/modes/options -> complete neutral descriptors
+        // N2 absent optional capability     -> false/empty (schema defaults)
+        // N3 probe lifecycle                -> no session/prompt request
+        let (mut ours, theirs) = channel();
+        let methods = Arc::new(Mutex::new(Vec::<String>::new()));
+        let observed = methods.clone();
+        let agent = tokio::spawn(async move {
+            let mut io = AgentIo::new(theirs);
+            let initialize = io.read().await.unwrap();
+            observed.lock().unwrap().push(
+                initialize["method"]
+                    .as_str()
+                    .expect("initialize method")
+                    .to_string(),
+            );
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"promptCapabilities":{"image":true,"embeddedContext":true},"mcpCapabilities":{"http":true}}}}"#,
+            )
+            .await;
+            let new_session = io.read().await.unwrap();
+            observed.lock().unwrap().push(
+                new_session["method"]
+                    .as_str()
+                    .expect("session/new method")
+                    .to_string(),
+            );
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"probe","modes":{"currentModeId":"code","availableModes":[{"id":"code","name":"Code"},{"id":"plan","name":"Plan","description":"Plan first"}]},"configOptions":[{"id":"reasoning","name":"Reasoning effort","description":"Native effort","category":"thought_level","type":"select","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High","description":"More reasoning"}]}]}}"#,
+            )
+            .await;
+        });
+
+        let capabilities = negotiate_capabilities(
+            ours.as_mut(),
+            &AcpCapabilityProbeConfig {
+                session_cwd: Some("/probe".into()),
+                auth_method_id: None,
+            },
+        )
+        .await
+        .expect("N1");
+        agent.await.unwrap();
+
+        assert_eq!(
+            methods.lock().unwrap().as_slice(),
+            &[
+                AGENT_METHOD_NAMES.initialize.to_string(),
+                AGENT_METHOD_NAMES.session_new.to_string(),
+            ],
+            "N3"
+        );
+        assert!(capabilities.load_session && capabilities.prompt_image);
+        assert!(capabilities.prompt_embedded_context && capabilities.mcp_http);
+        assert!(!capabilities.prompt_audio && !capabilities.mcp_sse, "N2");
+        assert_eq!(capabilities.modes.len(), 2);
+        assert!(capabilities.modes[0].current, "N1 current mode");
+        assert_eq!(capabilities.modes[1].native_id, "plan");
+        let option = &capabilities.config_options[0];
+        assert_eq!(option.native_id, "reasoning");
+        assert_eq!(option.category.as_deref(), Some("thought_level"));
+        assert_eq!(option.current_value, "high");
+        assert_eq!(option.choices[1].native_value, "high");
+        assert_eq!(
+            option.choices[1].description.as_deref(),
+            Some("More reasoning")
+        );
     }
 
     /// A scripted in-process ACP agent speaking real JSON-RPC over the duplex: it

@@ -626,6 +626,9 @@ Implemented consolidation evidence:
 - host process probing and observation classification live only in
   `awaken-acp-application`; Runtime Host no longer converts or imports discovery
   observations;
+- `awaken-protocol-acp::negotiate_capabilities` reuses the production
+  initialize/session-new state machine, sends no prompt and returns full neutral
+  mode/config-option descriptors;
 - `CredentialObservationSource` and `WorkerLocalReferenceRevalidator` are
   segregated from `CredentialMaterialResolver`;
 - Runtime Host selects the Session provider from immutable
@@ -639,7 +642,7 @@ Current implementation status is deliberately distinct from the target:
 | adapter catalog | authoritative `AcpCli` exists; inert probe specs remain attached | move its neutral contract out of executor ownership |
 | installation/login probe | Worker application owns process I/O and classification | add revisioned refresh/publication |
 | reusable CLI/Flow preparation | application service exists; CLI partly consumes it | migrate remaining CLI-private callers and Flow; delete the duplicate |
-| capability negotiation | Run handshake observes ids only | expose canonical capability probe and retain full typed descriptors |
+| capability negotiation | canonical prompt-free protocol operation returns full typed descriptors | invoke it from bounded Worker probe and publish evidence |
 | effective profile/fingerprint | not implemented | add Worker-owned expiring observation |
 | Agent ACP mode/options | mode and one model option reach executor | add typed multi-option intent and publication validation |
 | environment selection | provisioning selects trusted/isolated provider | retain as the sole Session Environment policy |
