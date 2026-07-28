@@ -114,7 +114,8 @@ fn canonical_wrapper_argv(executable: &Path) -> Result<Vec<String>, String> {
 
 /// Inputs owned by a composition root, not by ACP discovery.
 pub struct LocalAcpPreparation {
-    pub workspace: String,
+    pub probe_cwd: PathBuf,
+    pub initial_workspace: Option<String>,
     pub wrapper_root: PathBuf,
     pub selected_cli_ids: Option<BTreeSet<String>>,
     pub credentials: Arc<dyn CredentialRepo>,
@@ -126,6 +127,7 @@ pub struct PreparedAcpCapabilities {
     pub launch_argv: BTreeMap<String, Vec<String>>,
     pub effective_profiles: BTreeMap<String, EffectiveAcpCapabilityProfile>,
     pub resolver: Arc<AcpLocalCredentialResolver>,
+    selected_cli_ids: BTreeSet<String>,
 }
 
 /// Production host preparation using the canonical discovery and acquisition adapters.
@@ -177,7 +179,7 @@ pub async fn prepare_host_acp_with(
             .cloned()
             .unwrap_or_else(|| cli.acquisition.local_argv());
         match negotiator
-            .negotiate(&argv, Path::new(&input.workspace), cli.auth_method_id)
+            .negotiate(&argv, &input.probe_cwd, cli.auth_method_id)
             .await
         {
             Ok(negotiated) => {
@@ -199,32 +201,6 @@ pub async fn prepare_host_acp_with(
             }
         }
     }
-    for observation in observations.iter().filter(|observation| {
-        observation.detected()
-            && input
-                .selected_cli_ids
-                .as_ref()
-                .is_none_or(|selected| selected.contains(&observation.cli_id))
-    }) {
-        ensure_worker_local(
-            input.credentials.as_ref(),
-            &input.workspace,
-            WorkerLocalBinding::new(format!("acp:{}", observation.cli_id), "default"),
-            None,
-        )
-        .await
-        .map_err(|error| {
-            format!(
-                "register local ACP binding for {}: {error}",
-                observation.cli_id
-            )
-        })?;
-    }
-    let sources = input
-        .credentials
-        .list(&input.workspace)
-        .await
-        .map_err(|error| format!("list local ACP bindings: {error}"))?;
     let capability_routes = observations
         .iter()
         .filter(|observation| observation.detected())
@@ -238,18 +214,109 @@ pub async fn prepare_host_acp_with(
         })
         .collect();
     let resolver = Arc::new(
-        AcpLocalCredentialResolver::from_sources(discovery, sources)?.with_capability_observations(
+        AcpLocalCredentialResolver::from_sources(discovery, [])?.with_capability_observations(
             negotiator,
             capability_routes,
-            PathBuf::from(&input.workspace),
+            input.probe_cwd,
         ),
     );
-    Ok(PreparedAcpCapabilities {
+    let selected_cli_ids = observations
+        .iter()
+        .filter(|observation| {
+            observation.detected()
+                && input
+                    .selected_cli_ids
+                    .as_ref()
+                    .is_none_or(|selected| selected.contains(&observation.cli_id))
+        })
+        .map(|observation| observation.cli_id.clone())
+        .collect();
+    let prepared = PreparedAcpCapabilities {
         observations,
         launch_argv,
         effective_profiles,
         resolver,
-    })
+        selected_cli_ids,
+    };
+    if let Some(workspace) = input.initial_workspace {
+        prepared
+            .bind_workspace(input.credentials.as_ref(), &workspace)
+            .await?;
+    }
+    Ok(prepared)
+}
+
+impl PreparedAcpCapabilities {
+    /// ACP CLI routes that are safe for this Worker to publish.
+    ///
+    /// A detected CLI without a current login remains routable so a later login
+    /// can become live without restarting the Worker. A CLI that reported an
+    /// available login is published only after its protocol capabilities were
+    /// verified; this prevents a misleading ready route when negotiation failed.
+    #[must_use]
+    pub fn routable_cli_ids(&self) -> Vec<String> {
+        routable_cli_ids(&self.observations, &self.selected_cli_ids)
+    }
+
+    /// Idempotently expose the already-discovered host ACP identities in one
+    /// execution Workspace and add their exact revisions to the shared resolver.
+    pub async fn bind_workspace(
+        &self,
+        credentials: &dyn CredentialRepo,
+        workspace: &str,
+    ) -> Result<(), String> {
+        ensure_workspace_bindings(
+            credentials,
+            workspace,
+            self.selected_cli_ids.iter().map(String::as_str),
+        )
+        .await?;
+        let sources = credentials
+            .list(workspace)
+            .await
+            .map_err(|error| format!("list local ACP bindings: {error}"))?;
+        self.resolver.add_sources(sources)
+    }
+}
+
+/// Idempotently create the non-secret WorkerLocal identities requested by one
+/// execution Workspace. Discovery is deliberately not required here: the
+/// control plane records intent, while Worker observations independently prove
+/// whether a matching host identity is currently usable.
+pub async fn ensure_workspace_bindings<'a>(
+    credentials: &dyn CredentialRepo,
+    workspace: &str,
+    cli_ids: impl IntoIterator<Item = &'a str>,
+) -> Result<(), String> {
+    for cli_id in cli_ids {
+        let cli = acp_cli(cli_id)
+            .ok_or_else(|| format!("local ACP binding names unknown CLI `{cli_id}`"))?;
+        ensure_worker_local(
+            credentials,
+            workspace,
+            WorkerLocalBinding::new(format!("acp:{}", cli.id), "default"),
+            None,
+        )
+        .await
+        .map_err(|error| format!("register local ACP binding for {}: {error}", cli.id))?;
+    }
+    Ok(())
+}
+
+fn routable_cli_ids(
+    observations: &[AcpHostObservation],
+    selected_cli_ids: &BTreeSet<String>,
+) -> Vec<String> {
+    observations
+        .iter()
+        .filter(|observation| {
+            selected_cli_ids.contains(&observation.cli_id)
+                && observation.detected()
+                && (observation.credential_state != Some(CredentialObservationState::Available)
+                    || observation.capability_state == Some(AcpCapabilityState::Verified))
+        })
+        .map(|observation| observation.cli_id.clone())
+        .collect()
 }
 
 #[derive(Clone)]
@@ -262,7 +329,7 @@ struct LocalBinding {
 /// Liveness-only resolver for every `acp:*` WorkerLocal source on one Worker.
 pub struct AcpLocalCredentialResolver {
     discovery: Arc<dyn AcpDiscovery>,
-    bindings: BTreeMap<String, LocalBinding>,
+    bindings: Mutex<BTreeMap<String, LocalBinding>>,
     last_host_observations: Mutex<BTreeMap<String, AcpHostObservation>>,
     capability: Option<CapabilityObservationConfig>,
 }
@@ -317,10 +384,31 @@ impl AcpLocalCredentialResolver {
         }
         Ok(Self {
             discovery,
-            bindings,
+            bindings: Mutex::new(bindings),
             last_host_observations: Mutex::new(BTreeMap::new()),
             capability: None,
         })
+    }
+
+    pub fn add_sources(
+        &self,
+        sources: impl IntoIterator<Item = CredentialSource>,
+    ) -> Result<(), String> {
+        let additions = Self::from_sources(self.discovery.clone(), sources)?;
+        let mut bindings = self.bindings.lock().expect("ACP bindings poisoned");
+        for (id, binding) in additions
+            .bindings
+            .into_inner()
+            .expect("new ACP bindings are not poisoned")
+        {
+            if let Some(existing) = bindings.get(&id)
+                && existing.credential != binding.credential
+            {
+                return Err(format!("conflicting WorkerLocal credential id `{id}`"));
+            }
+            bindings.insert(id, binding);
+        }
+        Ok(())
     }
 
     #[must_use]
@@ -373,7 +461,14 @@ impl AcpCapabilityObservationSource for AcpLocalCredentialResolver {
             return Ok(Vec::new());
         };
         let mut observations = Vec::new();
-        for binding in self.bindings.values() {
+        let bindings = self
+            .bindings
+            .lock()
+            .expect("ACP bindings poisoned")
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for binding in &bindings {
             let observed_at_ms = wall_clock_ms();
             if binding.status != CredentialStatus::Active {
                 observations.push(AcpCapabilityObservation {
@@ -511,7 +606,14 @@ impl CredentialObservationSource for AcpLocalCredentialResolver {
         &self,
     ) -> Result<BTreeSet<CredentialObservation>, CredentialMaterialError> {
         let mut observations = BTreeSet::new();
-        for binding in self.bindings.values() {
+        let bindings = self
+            .bindings
+            .lock()
+            .expect("ACP bindings poisoned")
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for binding in &bindings {
             observations.insert(self.observe(binding).await);
         }
         Ok(observations)
@@ -526,9 +628,174 @@ impl WorkerLocalReferenceRevalidator for AcpLocalCredentialResolver {
     ) -> Result<CredentialObservation, CredentialMaterialError> {
         let binding = self
             .bindings
+            .lock()
+            .expect("ACP bindings poisoned")
             .get(&credential.id)
             .filter(|binding| binding.credential.revision == credential.revision)
+            .cloned()
             .ok_or(CredentialMaterialError::Unavailable)?;
-        require_available(self.observe(binding).await)
+        require_available(self.observe(&binding).await)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_credential_vault::repo::InMemoryCredentialRepo;
+
+    struct AvailableDiscovery;
+
+    fn observation(
+        id: &str,
+        detection: AcpDetectionState,
+        credential: Option<CredentialObservationState>,
+        capability: Option<AcpCapabilityState>,
+    ) -> AcpHostObservation {
+        AcpHostObservation {
+            cli_id: id.into(),
+            display_name: id.into(),
+            detection,
+            version: None,
+            credential_state: credential,
+            reason_code: None,
+            capability_state: capability,
+            capability_fingerprint: None,
+            capability_reason_code: None,
+        }
+    }
+
+    #[test]
+    fn worker_route_admission_follows_the_capability_decision_table() {
+        // Causes: catalog selection, executable detection, current login, and
+        // successful protocol negotiation. Effects:
+        // R1 unselected -> no route; R2 missing -> no route;
+        // R3 detected + not logged in -> route for live revalidation;
+        // R4 available + negotiation failed -> no misleading route;
+        // R5 available + verified -> route.
+        let selected = ["codex".to_string()].into_iter().collect();
+        assert!(
+            routable_cli_ids(
+                &[observation(
+                    "claude",
+                    AcpDetectionState::Detected,
+                    None,
+                    None
+                )],
+                &selected
+            )
+            .is_empty(),
+            "R1"
+        );
+        assert!(
+            routable_cli_ids(
+                &[observation("codex", AcpDetectionState::Missing, None, None)],
+                &selected
+            )
+            .is_empty(),
+            "R2"
+        );
+        assert_eq!(
+            routable_cli_ids(
+                &[observation(
+                    "codex",
+                    AcpDetectionState::Detected,
+                    Some(CredentialObservationState::LoginRequired),
+                    Some(AcpCapabilityState::Unavailable),
+                )],
+                &selected,
+            ),
+            ["codex"],
+            "R3"
+        );
+        assert!(
+            routable_cli_ids(
+                &[observation(
+                    "codex",
+                    AcpDetectionState::Detected,
+                    Some(CredentialObservationState::Available),
+                    Some(AcpCapabilityState::ProbeFailed),
+                )],
+                &selected,
+            )
+            .is_empty(),
+            "R4"
+        );
+        assert_eq!(
+            routable_cli_ids(
+                &[observation(
+                    "codex",
+                    AcpDetectionState::Detected,
+                    Some(CredentialObservationState::Available),
+                    Some(AcpCapabilityState::Verified),
+                )],
+                &selected,
+            ),
+            ["codex"],
+            "R5"
+        );
+    }
+
+    #[async_trait]
+    impl AcpDiscovery for AvailableDiscovery {
+        async fn discover(&self, cli: &AcpCli) -> AcpHostObservation {
+            AcpHostObservation {
+                cli_id: cli.id.into(),
+                display_name: cli.display_name.into(),
+                detection: AcpDetectionState::Detected,
+                version: Some("test".into()),
+                credential_state: Some(CredentialObservationState::Available),
+                reason_code: None,
+                capability_state: None,
+                capability_fingerprint: None,
+                capability_reason_code: None,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn workspace_binding_extends_one_shared_liveness_resolver() {
+        // Cause/effect decision table:
+        // B1 first Workspace -> one idempotent WorkerLocal revision observed;
+        // B2 second Workspace -> both revisions observed by the same resolver;
+        // B3 repeat Workspace -> no duplicate source or competing resolver.
+        let discovery: Arc<dyn AcpDiscovery> = Arc::new(AvailableDiscovery);
+        let resolver = Arc::new(
+            AcpLocalCredentialResolver::from_sources(discovery, []).expect("empty resolver"),
+        );
+        let prepared = PreparedAcpCapabilities {
+            observations: Vec::new(),
+            launch_argv: BTreeMap::new(),
+            effective_profiles: BTreeMap::new(),
+            resolver: resolver.clone(),
+            selected_cli_ids: ["codex".to_string()].into_iter().collect(),
+        };
+        let credentials = InMemoryCredentialRepo::new();
+        prepared
+            .bind_workspace(&credentials, "workspace-a")
+            .await
+            .expect("B1");
+        assert_eq!(
+            resolver.credential_observations().await.unwrap().len(),
+            1,
+            "B1"
+        );
+        prepared
+            .bind_workspace(&credentials, "workspace-b")
+            .await
+            .expect("B2");
+        assert_eq!(
+            resolver.credential_observations().await.unwrap().len(),
+            2,
+            "B2"
+        );
+        prepared
+            .bind_workspace(&credentials, "workspace-a")
+            .await
+            .expect("B3");
+        assert_eq!(
+            resolver.credential_observations().await.unwrap().len(),
+            2,
+            "B3"
+        );
     }
 }

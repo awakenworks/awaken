@@ -44,6 +44,9 @@ use axum::Router;
 // The managed-agents service layer (`awaken-session-executor`): the neutral host,
 // the two port adapters, the per-plane routers, and the authoring/transport
 // re-exports a composition root (and the integration tests) drive directly.
+pub use awaken_acp_application::{
+    LocalAcpPreparation, PreparedAcpCapabilities, ensure_workspace_bindings,
+};
 pub use awaken_managed_routers::{default_models, files_router, models_router};
 pub use awaken_session_executor::{
     ConfigService, ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost,
@@ -57,6 +60,25 @@ pub use worker_registry::{
     WorkerDirectoryHandle, init_postgres as init_postgres_worker_registry,
     inject as init_worker_registry, shared as worker_directory,
 };
+
+/// Canonical trusted-host ACP composition for outer product roots. This
+/// service-layer boundary joins reusable discovery with the production wire.
+pub async fn prepare_local_acp(
+    input: awaken_acp_application::LocalAcpPreparation,
+) -> Result<awaken_acp_application::PreparedAcpCapabilities, String> {
+    awaken_acp_application::prepare_host_acp_with(
+        input,
+        std::sync::Arc::new(awaken_acp_application::AcpHostDiscovery::local(
+            std::time::Duration::from_secs(3),
+        )),
+        std::sync::Arc::new(awaken_acp_application::NpmWrapperInstaller),
+        std::sync::Arc::new(awaken_acp_application::HostAcpCapabilityNegotiator::new(
+            std::time::Duration::from_secs(10),
+            std::sync::Arc::new(awaken_protocol_acp::ProtocolAcpCapabilityHandshake),
+        )),
+    )
+    .await
+}
 
 /// Neutral Resource Catalog validation port used by outer composition roots.
 /// The alias lets binaries depend on this data-plane facade instead of reaching
