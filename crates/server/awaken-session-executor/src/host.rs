@@ -158,6 +158,10 @@ pub struct SharedHost {
     /// Provider for the Session-owned environment shared by Native/ACP/children.
     /// Kept separate from deliberately-fresh housekeeping sandboxes.
     pub(crate) session_provider: crate::session_environment::SessionEnvironmentProvider,
+    /// Trusted-host environment selected only for BackendOwned provisioning.
+    /// It is a policy branch over the same Session owner, not a second executor.
+    pub(crate) backend_owned_session_provider:
+        Option<crate::session_environment::SessionEnvironmentProvider>,
     /// The composition root installed the authoritative Session provider. ACP
     /// assembly must reuse it instead of constructing a deployment-derived peer.
     pub(crate) session_provider_explicit: bool,
