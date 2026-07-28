@@ -491,30 +491,6 @@ struct InstalledSessionContainerProvider {
     provider: Arc<dyn awaken_runtime_host::ContainerEnvironmentProvider>,
 }
 
-/// Run this process as a database-less **worker** of the cell server at `upstream`.
-///
-/// 1. Inject the registered identity-bearing HTTP dispatch transport, so the
-///    Worker drains the Control queue instead of a local one.
-/// 2. Open the shared credential vault + secret store
-///    the same way the Serve composition does — durable under typed `data_dir`
-///    (Option A shared-DB) or in-memory.
-/// 3. Build a [`CredentialInferenceMaterializer`] over those stores, so each drained
-///    run consumes only its snapshot-pinned inference access.
-/// 4. When shared resource backends are explicitly configured, inject the same
-///    File/Memory/Skill/lifecycle ports and Resource Catalog validator used by the
-///    server. Otherwise advertise no resource capability.
-/// 5. Assemble a [`SharedHost`] with an inert default executor and the mandatory
-///    per-run materializer, pushing committed facts to `upstream`. A failed pin
-///    never falls back to the inert executor.
-/// 6. Start the dispatch pool and drain in the background until SIGINT / SIGTERM.
-///
-/// The injected remote dispatch store is the durable-ingress authority and enables
-/// the pool directly; embedding does not require `typed durable ingress`.
-pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let _ = upstream;
-    Err("standalone awaken-worker configuration was removed; run `awaken worker --config <PATH> --server <URL>`".into())
-}
-
 /// Run a Worker from the product command's already-resolved deployment and
 /// store configuration. This path performs no deployment rediscovery.
 pub async fn run_with_config(
