@@ -118,6 +118,7 @@ impl CloudModelMode {
 
 #[derive(Debug, Clone)]
 pub struct WorkerBootstrap {
+    pub worker_id: String,
     pub admin_listen: Option<String>,
     pub drain_grace_secs: u64,
     pub build_digest: Option<String>,
@@ -338,6 +339,10 @@ impl ResolvedDeployment {
             );
         }
         let worker = WorkerBootstrap {
+            worker_id: file
+                .worker_id
+                .clone()
+                .unwrap_or_else(|| "awaken-worker".to_owned()),
             admin_listen: file
                 .worker_admin_listen
                 .clone()
@@ -354,6 +359,9 @@ impl ResolvedDeployment {
                 .worker_credential_observation_ttl_secs
                 .unwrap_or(30),
         };
+        if worker.worker_id.trim().is_empty() {
+            return Err("worker_id must not be empty".to_owned());
+        }
         if worker.credential_probe_interval_secs == 0
             || worker.credential_observation_ttl_secs <= worker.credential_probe_interval_secs
         {
@@ -786,6 +794,7 @@ struct FileConfig {
     mode: Option<String>,
     role: Option<String>,
     worker_server: Option<String>,
+    worker_id: Option<String>,
     worker_admin_listen: Option<String>,
     worker_drain_grace_secs: Option<u64>,
     worker_build_digest: Option<String>,
@@ -1072,6 +1081,40 @@ mod tests {
         )
         .expect_err("R3");
         assert!(error.contains("postgres_max_connections"), "R3: {error}");
+    }
+
+    #[test]
+    fn worker_identity_is_authored_only_at_the_typed_product_boundary() {
+        // Cause/effect graph:
+        // C1 worker_id omitted -> E1 stable product default; C2 non-empty
+        // worker_id supplied -> E2 exact identity retained for WorkerUpstream;
+        // C3 empty identity supplied -> E3 configuration fails before startup.
+        //
+        // Decision table: R1 omitted=>default, R2 non-empty=>exact,
+        // R3 empty=>error.
+        let defaulted = resolve(FileConfig::default(), ConfigOverrides::default());
+        assert_eq!(defaulted.worker.worker_id, "awaken-worker", "R1");
+
+        let explicit = resolve(
+            FileConfig {
+                worker_id: Some("worker-shanghai-1".to_owned()),
+                ..Default::default()
+            },
+            ConfigOverrides::default(),
+        );
+        assert_eq!(explicit.worker.worker_id, "worker-shanghai-1", "R2");
+
+        let error = ResolvedDeployment::resolve_file(
+            ConfigOverrides::default(),
+            Some(PathBuf::from("/home/dev")),
+            PathBuf::from("/home/dev/.awaken/config.toml"),
+            FileConfig {
+                worker_id: Some(" ".to_owned()),
+                ..Default::default()
+            },
+        )
+        .expect_err("R3");
+        assert!(error.contains("worker_id"), "R3: {error}");
     }
 
     #[test]

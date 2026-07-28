@@ -105,6 +105,7 @@ async fn run(command: console::Command) -> Result<(), String> {
                 resource_url,
                 key,
                 awaken_worker::WorkerRunOptions {
+                    worker_id: worker.worker_id,
                     admin_listen: worker.admin_listen,
                     drain_grace: std::time::Duration::from_secs(worker.drain_grace_secs),
                     credential_probe_interval: std::time::Duration::from_secs(

@@ -488,8 +488,10 @@ settings and other remaining production readers still require migration before
 D12 is complete. A2A projection persistence also consumes the Host's injected
 `DeploymentConfig::storage_dir`; the protocol adapter owns only its state
 filename and serialization and no longer discovers a second path from the
-environment. PATH, HOME, DISPLAY and test gate variables are not part of that
-migration.
+environment. Worker transport identity is likewise authored as typed
+`worker_id` at the product boundary and injected into `WorkerUpstream`; Runtime
+Host no longer reads `AWAKEN_WORKER_ID`. PATH, HOME, DISPLAY and test gate
+variables are not part of that migration.
 
 ### D13 — Request attribution and retained ACP content have one lifecycle
 
