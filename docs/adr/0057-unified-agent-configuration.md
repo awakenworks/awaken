@@ -785,14 +785,13 @@ Adds: counterparty generalization of `provider_id` (docs + origin tags, zero sch
 Retires: hand-built transports at `with_remote_a2a` call sites; the URL-only `TransportFactory` as production wiring (`over_http()` stays test-only); `NoAuth` as the silent default where a card demands auth.
 Guard: card-demands-auth-with-no-credential fails closed; anonymous endpoints byte-identical to today.
 Done when: one origin-tagged credential authenticates both A2A paths (peer + delegation) in tests with zero per-path wiring.
-
 Completion evidence (2026-07-28): publication pins `ModelProvisioning::Remote`,
 optional `CredentialAccess` and card fingerprint. The canonical card projection,
 resolver, claim compiler and pinned materializer fail closed on auth, revision,
 holder, receipt or fingerprint drift. The former `RemoteAgent*`, `with_remote_agent` and delegation card route are absent. Direct and durable
 children select the one `A2aRunExecutor` from the published backend and always
-carry placement; loopback, placement and materializer tests cover the chain.
-
+carry placement; the authenticated delegation loopback plus peer-resolution,
+placement and materializer tests cover the same production chain.
 **F `declared-hand`** — *Hand becomes declared intent; placement stays
 host-side; the snapshot stays placement-free.*
 Adds: `NativeSpec.hand` → deploy-time bridge emitting `PlacementEntry` into the
