@@ -14,11 +14,11 @@
   Published/Disabled/Archived admission and fingerprint-retention behavior.
   PostgreSQL pool sizing is also resolved once as a non-zero
   typed deployment value and injected into both runtime stores. A real
-  persisted-login Claude session remains an external release gate. Typed
-  migration of the remaining runtime environment settings is still an explicit
-  implementation gap. “Proposed” therefore means the
-  complete decision is not yet accepted; it does not mean the listed foundation
-  is hypothetical.
+  persisted-login Claude session remains an external release gate. The typed
+  runtime-configuration migration is complete; only admitted OS/trusted-host
+  metadata and explicit test gates remain ambient. “Proposed” therefore means
+  the complete decision is not yet accepted; it does not mean the listed
+  foundation is hypothetical.
 - Amends:
   [ADR-0057](0057-unified-agent-configuration.md), especially its
   backend-owned trusted-host amendment
