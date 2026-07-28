@@ -611,35 +611,16 @@ impl ResolvedDeployment {
     pub fn apply_local_acp_observations(
         &mut self,
         observations: Vec<awaken_acp_application::AcpHostObservation>,
+        routable_cli_ids: Vec<String>,
     ) -> Result<(), String> {
         let explicit = self.runtime.acp.clone();
-        let selected: Vec<_> = observations
-            .iter()
-            .filter(|observation| {
-                explicit
-                    .as_ref()
-                    .is_none_or(|profile| profile.cli_ids().any(|id| id == observation.cli_id))
-            })
-            .cloned()
-            .collect();
         let default_cli = explicit
             .as_ref()
             .and_then(|profile| profile.default_cli().map(str::to_string));
-        let detected = selected
-            .iter()
-            .filter(|observation| {
-                observation.detected()
-                    && (observation.credential_state
-                        != Some(awaken_runtime_contract::CredentialObservationState::Available)
-                        || observation.capability_state
-                            == Some(awaken_acp_application::AcpCapabilityState::Verified))
-            })
-            .map(|observation| observation.cli_id.clone())
-            .collect::<Vec<_>>();
-        self.runtime.acp = if detected.is_empty() {
+        self.runtime.acp = if routable_cli_ids.is_empty() {
             None
         } else {
-            Some(AcpWorkerProfile::new(detected, default_cli)?)
+            Some(AcpWorkerProfile::new(routable_cli_ids, default_cli)?)
         };
         self.local_acp_observations = observations;
         Ok(())
@@ -910,9 +891,9 @@ mod tests {
     #[test]
     fn local_discovery_is_the_only_source_of_worker_routes_and_defaults() {
         // Cause graph:
-        // catalog observations -> detected subset -> AcpWorkerProfile; an
-        // explicit configured subset intersects that detected set. The profile
-        // constructor alone decides whether one row becomes the default.
+        // The ACP application service supplies the already filtered route ids;
+        // this composition method only projects them into AcpWorkerProfile. The
+        // profile constructor alone decides whether one row becomes the default.
         //
         // Decision table:
         // A1 unconfigured + none detected -> no ACP Worker
@@ -928,20 +909,23 @@ mod tests {
         );
 
         let mut none = resolve(FileConfig::default(), ConfigOverrides::default());
-        none.apply_local_acp_observations(vec![missing.clone()])
+        none.apply_local_acp_observations(vec![missing.clone()], vec![])
             .unwrap();
         assert!(none.runtime.acp.is_none(), "A1");
 
         let mut one = resolve(FileConfig::default(), ConfigOverrides::default());
-        one.apply_local_acp_observations(vec![codex.clone(), missing])
+        one.apply_local_acp_observations(vec![codex.clone(), missing], vec!["codex".into()])
             .unwrap();
         let one = one.runtime.acp.unwrap();
         assert_eq!(one.cli_ids().collect::<Vec<_>>(), ["codex"], "A2");
         assert_eq!(one.default_cli(), Some("codex"), "A2");
 
         let mut many = resolve(FileConfig::default(), ConfigOverrides::default());
-        many.apply_local_acp_observations(vec![codex.clone(), claude.clone()])
-            .unwrap();
+        many.apply_local_acp_observations(
+            vec![codex.clone(), claude.clone()],
+            vec!["claude".into(), "codex".into()],
+        )
+        .unwrap();
         let many = many.runtime.acp.unwrap();
         assert_eq!(
             many.cli_ids().collect::<Vec<_>>(),
@@ -956,7 +940,7 @@ mod tests {
         incompatible.capability_fingerprint = None;
         let mut failed = resolve(FileConfig::default(), ConfigOverrides::default());
         failed
-            .apply_local_acp_observations(vec![incompatible])
+            .apply_local_acp_observations(vec![incompatible], vec![])
             .unwrap();
         assert!(failed.runtime.acp.is_none(), "A5");
 
@@ -968,7 +952,7 @@ mod tests {
             ConfigOverrides::default(),
         );
         explicit
-            .apply_local_acp_observations(vec![codex, claude])
+            .apply_local_acp_observations(vec![codex, claude], vec!["claude".into()])
             .unwrap();
         let explicit = explicit.runtime.acp.unwrap();
         assert_eq!(explicit.cli_ids().collect::<Vec<_>>(), ["claude"], "A4");

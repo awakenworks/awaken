@@ -114,7 +114,8 @@ async fn prepare_local_acp_with(
         negotiator,
     )
     .await?;
-    deployment.apply_local_acp_observations(prepared.observations)?;
+    let routable_cli_ids = prepared.routable_cli_ids();
+    deployment.apply_local_acp_observations(prepared.observations, routable_cli_ids)?;
     let Some(profile) = deployment.runtime.acp.as_mut() else {
         return Ok(None);
     };

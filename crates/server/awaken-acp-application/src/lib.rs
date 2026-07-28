@@ -247,6 +247,17 @@ pub async fn prepare_host_acp_with(
 }
 
 impl PreparedAcpCapabilities {
+    /// ACP CLI routes that are safe for this Worker to publish.
+    ///
+    /// A detected CLI without a current login remains routable so a later login
+    /// can become live without restarting the Worker. A CLI that reported an
+    /// available login is published only after its protocol capabilities were
+    /// verified; this prevents a misleading ready route when negotiation failed.
+    #[must_use]
+    pub fn routable_cli_ids(&self) -> Vec<String> {
+        routable_cli_ids(&self.observations, &self.selected_cli_ids)
+    }
+
     /// Idempotently expose the already-discovered host ACP identities in one
     /// execution Workspace and add their exact revisions to the shared resolver.
     pub async fn bind_workspace(
@@ -270,6 +281,22 @@ impl PreparedAcpCapabilities {
             .map_err(|error| format!("list local ACP bindings: {error}"))?;
         self.resolver.add_sources(sources)
     }
+}
+
+fn routable_cli_ids(
+    observations: &[AcpHostObservation],
+    selected_cli_ids: &BTreeSet<String>,
+) -> Vec<String> {
+    observations
+        .iter()
+        .filter(|observation| {
+            selected_cli_ids.contains(&observation.cli_id)
+                && observation.detected()
+                && (observation.credential_state != Some(CredentialObservationState::Available)
+                    || observation.capability_state == Some(AcpCapabilityState::Verified))
+        })
+        .map(|observation| observation.cli_id.clone())
+        .collect()
 }
 
 #[derive(Clone)]
@@ -597,6 +624,96 @@ mod tests {
     use awaken_credential_vault::repo::InMemoryCredentialRepo;
 
     struct AvailableDiscovery;
+
+    fn observation(
+        id: &str,
+        detection: AcpDetectionState,
+        credential: Option<CredentialObservationState>,
+        capability: Option<AcpCapabilityState>,
+    ) -> AcpHostObservation {
+        AcpHostObservation {
+            cli_id: id.into(),
+            display_name: id.into(),
+            detection,
+            version: None,
+            credential_state: credential,
+            reason_code: None,
+            capability_state: capability,
+            capability_fingerprint: None,
+            capability_reason_code: None,
+        }
+    }
+
+    #[test]
+    fn worker_route_admission_follows_the_capability_decision_table() {
+        // Causes: catalog selection, executable detection, current login, and
+        // successful protocol negotiation. Effects:
+        // R1 unselected -> no route; R2 missing -> no route;
+        // R3 detected + not logged in -> route for live revalidation;
+        // R4 available + negotiation failed -> no misleading route;
+        // R5 available + verified -> route.
+        let selected = ["codex".to_string()].into_iter().collect();
+        assert!(
+            routable_cli_ids(
+                &[observation(
+                    "claude",
+                    AcpDetectionState::Detected,
+                    None,
+                    None
+                )],
+                &selected
+            )
+            .is_empty(),
+            "R1"
+        );
+        assert!(
+            routable_cli_ids(
+                &[observation("codex", AcpDetectionState::Missing, None, None)],
+                &selected
+            )
+            .is_empty(),
+            "R2"
+        );
+        assert_eq!(
+            routable_cli_ids(
+                &[observation(
+                    "codex",
+                    AcpDetectionState::Detected,
+                    Some(CredentialObservationState::LoginRequired),
+                    Some(AcpCapabilityState::Unavailable),
+                )],
+                &selected,
+            ),
+            ["codex"],
+            "R3"
+        );
+        assert!(
+            routable_cli_ids(
+                &[observation(
+                    "codex",
+                    AcpDetectionState::Detected,
+                    Some(CredentialObservationState::Available),
+                    Some(AcpCapabilityState::ProbeFailed),
+                )],
+                &selected,
+            )
+            .is_empty(),
+            "R4"
+        );
+        assert_eq!(
+            routable_cli_ids(
+                &[observation(
+                    "codex",
+                    AcpDetectionState::Detected,
+                    Some(CredentialObservationState::Available),
+                    Some(AcpCapabilityState::Verified),
+                )],
+                &selected,
+            ),
+            ["codex"],
+            "R5"
+        );
+    }
 
     #[async_trait]
     impl AcpDiscovery for AvailableDiscovery {
