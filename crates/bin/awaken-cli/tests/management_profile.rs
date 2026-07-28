@@ -1,0 +1,115 @@
+//! Release-contract projection for the product-owned Management authorization
+//! profile.
+//!
+//! Causal decision table:
+//! | invocation | config/storage/network | outcome |
+//! | --- | --- | --- |
+//! | `management iam profile` | unavailable | deterministic profile JSON |
+//! | `management iam profile resources` | unavailable | deterministic resource profile JSON |
+//! | same invocation twice | unavailable | byte-identical JSON |
+//! | extra argument | unavailable | usage failure, no profile |
+
+use std::process::Command;
+
+#[test]
+fn management_profile_is_a_side_effect_free_release_projection() {
+    let binary = env!("CARGO_BIN_EXE_awaken");
+    let first = Command::new(binary)
+        .args(["management", "iam", "profile"])
+        .env("AWAKEN_CONFIG", "/does/not/exist")
+        .output()
+        .expect("run profile projection");
+    let second = Command::new(binary)
+        .args(["management", "iam", "profile"])
+        .env("AWAKEN_CONFIG", "/also/does/not/exist")
+        .output()
+        .expect("run profile projection again");
+
+    assert!(first.status.success(), "{:?}", first.stderr);
+    assert!(second.status.success(), "{:?}", second.stderr);
+    assert_eq!(first.stdout, second.stdout);
+
+    let profile: serde_json::Value =
+        serde_json::from_slice(&first.stdout).expect("profile is JSON");
+    assert_eq!(
+        profile["namespace"],
+        serde_json::json!("awaken.runtime.management")
+    );
+    let grants = profile["document"]["grants"]
+        .as_array()
+        .expect("profile grants");
+    let publisher = grants
+        .iter()
+        .filter(|grant| {
+            grant["subject"]["role_id"]
+                == serde_json::json!("awaken.runtime.management:agent_publisher")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(publisher.len(), 1);
+    assert_eq!(
+        publisher[0]["action_pattern"],
+        serde_json::json!("awaken.runtime.management::workspace.*")
+    );
+}
+
+#[test]
+fn management_resource_profile_is_a_side_effect_free_release_projection() {
+    let binary = env!("CARGO_BIN_EXE_awaken");
+    let first = Command::new(binary)
+        .args(["management", "iam", "profile", "resources"])
+        .env("AWAKEN_CONFIG", "/does/not/exist")
+        .output()
+        .expect("run resource profile projection");
+    let second = Command::new(binary)
+        .args(["management", "iam", "profile", "resources"])
+        .env("AWAKEN_CONFIG", "/also/does/not/exist")
+        .output()
+        .expect("run resource profile projection again");
+
+    assert!(first.status.success(), "{:?}", first.stderr);
+    assert!(second.status.success(), "{:?}", second.stderr);
+    assert_eq!(first.stdout, second.stdout);
+
+    let profile: serde_json::Value =
+        serde_json::from_slice(&first.stdout).expect("resource profile is JSON");
+    assert_eq!(
+        profile["namespace"],
+        serde_json::json!("awaken.runtime.resources")
+    );
+    let actions = profile["document"]["resource_model"]["actions"]
+        .as_array()
+        .expect("resource actions");
+    assert!(
+        actions
+            .iter()
+            .any(|action| action == "awaken.runtime.resources::file.*")
+    );
+    assert!(
+        actions
+            .iter()
+            .any(|action| action == "awaken.runtime.resources::skill.*")
+    );
+    assert!(
+        actions
+            .iter()
+            .all(|action| !action.as_str().unwrap_or_default().contains("apikey"))
+    );
+}
+
+#[test]
+fn management_profile_rejects_an_ambiguous_invocation() {
+    let output = Command::new(env!("CARGO_BIN_EXE_awaken"))
+        .args(["management", "iam", "profile", "extra"])
+        .output()
+        .expect("run invalid profile projection");
+
+    assert!(!output.status.success());
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains("awaken.runtime.management"),
+        "usage output must not contain a profile"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("management iam requires `profile` or `profile resources` exactly")
+    );
+}

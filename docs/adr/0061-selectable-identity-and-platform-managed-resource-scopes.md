@@ -266,3 +266,53 @@ the absent-ledger failure, prove the ledger is still absent afterward, then pass
 after the same bounded context's canonical bundle is migrated. SQLite and
 Postgres Sandbox Policy adapters use that same portable bundle rather than
 maintaining parallel raw DDL.
+
+## Amendment (2026-07-28): Management authorization is a release contract
+
+The Management bounded context is the sole owner of the
+`awaken.runtime.management` and `awaken.runtime.resources` action, scope and
+role-grant contracts. Their existing embedded-IAM constructions are exposed as
+deterministic, side-effect-free `management_authorization_profile()` and
+`management_resource_authorization_profile()` functions. Embedded IAM consumes
+those functions directly; the `awaken management iam profile` commands only
+serialize the same values for a deployment-owned PAP.
+
+```text
+Management action/scope/role definitions
+  -> management_authorization_profile()
+       |-> embedded IAM activation
+       \-> awaken management iam profile
+            -> immutable release JSON
+            -> hosted PAP validation/CAS activation
+
+Management resource action/scope/role definitions
+  -> management_resource_authorization_profile()
+       |-> embedded IAM activation
+       \-> awaken management iam profile resources
+            -> immutable release JSON
+            -> hosted PAP validation/CAS activation
+```
+
+Cloud or another host must consume the contract emitted by the exact Management
+image it deploys. It must not compile a second action matrix from a separately
+pinned library revision. The command does not load deployment configuration,
+read credentials, open storage, contact IAM, or publish policy.
+
+| Invocation | Configuration/storage/network | Outcome |
+|---|---|---|
+| `management iam profile` | unavailable | deterministic `awaken.runtime.management` JSON |
+| `management iam profile resources` | unavailable | deterministic `awaken.runtime.resources` JSON |
+| same exact image, repeated | unavailable | byte-identical JSON |
+| `management iam profile` with extra input | unavailable | usage failure, no JSON |
+| embedded IAM startup | local durable state | activates the same generated document |
+| hosted Management startup | remote IAM configured | does not publish or mutate a profile |
+
+Cross-product automation binds the product-owned
+`awaken.runtime.management:agent_publisher` role. That role grants only
+`workspace.*`; it deliberately excludes `apikey.*`. Human Workspace owners may
+hold `workspace_admin`, but a Flow workload must not inherit credential
+administration merely because both capabilities use the Management API.
+
+This release projection does not merge hosted closed code into Awaken. The open
+Management image remains independently deployable; a hosted release composes
+its immutable image and contract with external IAM lifecycle management.
