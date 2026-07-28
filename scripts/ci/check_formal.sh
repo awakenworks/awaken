@@ -27,6 +27,10 @@ python3 scripts/ci/render_runtime_refinement_traces.py \
   "$rust_trace_dir" "$rendered_trace_dir"
 
 if command -v cargo-kani >/dev/null 2>&1; then
+  # Kani invokes a different compiler/toolchain over the same package graph.
+  # Keep its metadata and rlibs out of the ordinary Cargo target directory so a
+  # later non-Kani build cannot consume an incompatible cached trait surface.
+  export CARGO_TARGET_DIR="$formal_tmp_root/kani-target"
   cargo kani -p awaken-agent-contract \
     --harness ended_is_absorbing_for_every_next_state
   cargo kani -p awaken-agent-contract \
@@ -133,6 +137,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness sandbox_continuity_authorizes_replacement_exactly_when_bound
   cargo kani -p awaken-worker-contract \
     --harness same_incarnation_never_spends_replacement_authority
+  unset CARGO_TARGET_DIR
 else
   echo "skipped Kani: install with 'cargo install --locked kani-verifier && cargo kani setup'"
   missing=1

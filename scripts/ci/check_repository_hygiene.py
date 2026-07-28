@@ -47,6 +47,10 @@ GENERATED_PARTS = {
     "target",
 }
 GENERATED_SUFFIXES = {".pyc", ".pyo"}
+# A pinned third-party distributable is dependency input, not this repository's
+# generated output. Keep the exception exact so project-local `dist/` trees
+# remain forbidden.
+VENDORED_DISTRIBUTION_ROOTS = {("web", "vendor", "awaken-ui", "dist")}
 TEXT_SUFFIXES = {
     ".css",
     ".html",
@@ -137,7 +141,13 @@ def check_path_shape(files: list[str], added_files: list[str]) -> list[str]:
         if FORBIDDEN_ROOT_DIR_RE.search(rel):
             violations.append(f"{rel}: root fixture/profile data belongs under tests/fixtures/ or config examples")
         parts = set(path.parts)
-        if (parts & GENERATED_PARTS) or path.suffix in GENERATED_SUFFIXES:
+        vendored_distribution = any(
+            path.parts[: len(root)] == root for root in VENDORED_DISTRIBUTION_ROOTS
+        )
+        if (
+            ((parts & GENERATED_PARTS) and not vendored_distribution)
+            or path.suffix in GENERATED_SUFFIXES
+        ):
             violations.append(f"{rel}: generated/cache/build output must not be tracked")
 
     for rel in sorted(added_files):
@@ -174,13 +184,28 @@ def check_text_content(files: list[str], staged: bool) -> list[str]:
 def self_test() -> int:
     failures: list[str] = []
     shape_hits = check_path_shape(
-        ["README.md", "NOTES.md", "fixtures/sample.json", "scripts/ci/__pycache__/x.pyc"],
+        [
+            "README.md",
+            "NOTES.md",
+            "fixtures/sample.json",
+            "scripts/ci/__pycache__/x.pyc",
+            "web/dist/app.js",
+            "web/vendor/awaken-ui/dist/index.js",
+        ],
         ["docs/new-progress.md"],
     )
-    expected_fragments = ["NOTES.md", "fixtures/sample.json", "__pycache__", "new-progress.md"]
+    expected_fragments = [
+        "NOTES.md",
+        "fixtures/sample.json",
+        "__pycache__",
+        "new-progress.md",
+        "web/dist/app.js",
+    ]
     for fragment in expected_fragments:
         if not any(fragment in hit for hit in shape_hits):
             failures.append(f"expected shape violation containing {fragment!r}")
+    if any("web/vendor/awaken-ui/dist/index.js" in hit for hit in shape_hits):
+        failures.append("pinned vendored Awaken UI distribution must be accepted")
     content = "ok\nbad\u200b\n<<<<<<< HEAD\nPermission is hereby granted, free of charge\n"
     hits: list[str] = []
     for lineno, line in enumerate(content.splitlines(), 1):
