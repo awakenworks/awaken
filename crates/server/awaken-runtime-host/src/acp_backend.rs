@@ -218,7 +218,7 @@ impl crate::host::SharedHost {
     /// tier. Product code supplies a projected source backed by published access;
     /// deterministic dev fixtures may supply [`crate::LaunchSource::Fixed`] directly.
     pub async fn with_acp_launch_source(
-        mut self,
+        self,
         hand_factory: Arc<dyn crate::HandExecutorFactory>,
         source: crate::LaunchSource,
     ) -> Self {

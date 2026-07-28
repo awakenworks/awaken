@@ -28,6 +28,7 @@ pub(crate) struct WorkerLifecycle {
     pub(crate) acp_capability_observation_source:
         Option<Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>>,
     pub(crate) observations: Arc<WorkerObservationCache>,
+    pub(crate) observation_ttl: std::time::Duration,
 }
 
 impl WorkerLifecycle {
@@ -41,6 +42,21 @@ impl WorkerLifecycle {
             RegistryMutation::Applied => Ok(()),
             other => Err(format!("worker drain rejected: {other:?}")),
         }
+    }
+
+    /// Trigger the canonical atomic observation operation immediately.
+    ///
+    /// The periodic loop, startup and this event entrypoint share the cache's
+    /// coalescing guard, so remediation never creates a parallel discovery path.
+    pub(crate) async fn refresh_observations(&self) -> Result<(), String> {
+        self.observations
+            .refresh(
+                self.credential_observation_resolver.as_deref(),
+                self.acp_capability_observation_source.as_deref(),
+                wall_clock_ms(),
+                self.observation_ttl,
+            )
+            .await
     }
 }
 

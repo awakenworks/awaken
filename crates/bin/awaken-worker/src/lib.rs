@@ -873,6 +873,7 @@ impl WorkerNode {
             credential_observation_resolver: self.credential_observation_resolver,
             acp_capability_observation_source: self.acp_capability_observation_source,
             observations,
+            observation_ttl: self.credential_observation_ttl,
         });
         // Publish Ready before starting the pull loop. Starting the pool while the
         // directory still says Starting creates a tight claim/reject race; publishing
