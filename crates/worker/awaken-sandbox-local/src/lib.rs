@@ -92,9 +92,10 @@ mod repo_bundle;
 // The provider resolves mount bytes from an injected [`pc::BlobSource`] port
 // (ADR-0038 D6, dependency-inverted) — this worker-tier crate links no durable
 // store; the composition root adapts the content-addressed store to the port.
+pub use awaken_local_process::LocalProcess;
 pub use blob_cache::{BlobLru, WorkspaceBlobCache};
 pub use namespace::{NamespaceProvider, NamespaceSandbox, bubblewrap_argv, sandbox_exec_argv};
-pub use provider::{LocalProcess, LocalProvider, LocalSandbox};
+pub use provider::{LocalProvider, LocalSandbox};
 pub use repo_bundle::{clone_repo_bundle, push_repo_bundle};
 
 /// A logical path escaped its environment root.

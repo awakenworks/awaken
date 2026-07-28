@@ -7,9 +7,9 @@
   observations, prompt-free capability negotiation, generated Agent option
   contracts, publication/placement/launch fingerprints, provisioning-derived
   Session Environment selection, live readiness, and shared CLI/Flow
-  composition. Event-triggered publication reconciliation, descendant
-  process-group reap proof, and release-gated real persisted-login LLM sessions
-  remain completion gates. “Proposed” therefore means the complete decision is
+  composition and descendant process-group reaping. Event-triggered publication
+  reconciliation and release-gated real persisted-login LLM sessions remain
+  completion gates. “Proposed” therefore means the complete decision is
   not yet fully accepted; it does not mean the listed foundation is hypothetical.
 - Amends:
   [ADR-0057](0057-unified-agent-configuration.md), especially its
@@ -812,6 +812,9 @@ Implemented consolidation evidence:
 - `HostAcpCapabilityNegotiator` owns the bounded PATH/HOME-only probe process;
   successful evidence becomes an `EffectiveAcpCapabilityProfile` with a
   deterministic SHA-256 fingerprint;
+- `awaken-local-process` is the sole local process-group adapter used by ACP
+  subprocess, Workdir and Namespace launches; Supervisor signals therefore reap
+  the wrapper and descendants through one `ProcessHandle`;
 - the Worker publishes credential and ACP capability observations as one
   atomic, expiring heartbeat batch; it retains the prior deadlines on a hard
   refresh failure and does not store the changing fingerprint in the immutable
@@ -838,7 +841,7 @@ the remaining external/reconciliation gates:
 | adapter catalog | authoritative `AcpCli` plus neutral ACP capability contract | keep protocol-external descriptors versioned with adapter changes |
 | installation/login probe | `awaken-acp-application` owns PATH/HOME-only process I/O and classification; startup, bounded periodic probing and `POST /admin/refresh-observations` share one coalescing atomic refresh operation | wire product-specific login-remediation completion events to the explicit Worker trigger |
 | reusable CLI/Flow preparation | CLI and Flow call the same application service, binding use case, resolver and atomic launch-plan projection | no parallel inventory or composition path remains |
-| capability negotiation | bounded Worker probe invokes the canonical prompt-free protocol operation; periodic and explicit event refreshes coalesce through the same Worker observation cache | add process-group reap proof for adapters that fork descendants |
+| capability negotiation | bounded Worker probe invokes the canonical prompt-free protocol operation; periodic and explicit event refreshes coalesce through the same Worker observation cache; all local launch paths share descendant-aware process-group reaping | retain protocol and process-group conformance tests |
 | effective profile/fingerprint | typed profile and SHA-256 evidence are published dynamically with TTL and pinned by publication/placement/launch fences | retain exact-version compatibility tests |
 | Agent ACP mode/options | generated discriminated selection carries default/exact model, native mode and arbitrary native option values; publication validates them | add richer widgets only as presentation concerns |
 | environment selection | provisioning selects trusted/isolated provider | retain as the sole Session Environment policy |

@@ -15,11 +15,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_channel::{AgentChannel, SplitChannel};
+use awaken_local_process::{LocalProcess, configure_process_group};
 use awaken_provisioning_contract as pc;
-use awaken_provisioning_contract::{ExitStatus, ProcessHandle, SandboxError, Signal};
 use awaken_runtime_contract::activation::RunActivation;
-use tokio::process::{Child, Command};
-use tokio::sync::Mutex;
+use tokio::process::Command;
 
 use crate::{AcpCli, AgentChannelSource, AgentSession, OpenError, ResolvedModel};
 
@@ -177,6 +176,7 @@ async fn spawn(
         .split_first()
         .ok_or_else(|| OpenError("empty argv".to_string()))?;
     let mut command = Command::new(program);
+    configure_process_group(&mut command);
     command
         .args(args)
         .env_clear()
@@ -211,9 +211,7 @@ async fn spawn(
         .take()
         .ok_or_else(|| OpenError("child has no stdin".to_string()))?;
     let channel: Box<dyn AgentChannel> = Box::new(SplitChannel::new(stdout, stdin));
-    let process: Arc<dyn ProcessHandle> = Arc::new(ChildProcess {
-        child: Mutex::new(child),
-    });
+    let process: Arc<dyn pc::ProcessHandle> = Arc::new(LocalProcess::spawned(child));
     Ok(AgentSession {
         channel,
         process,
@@ -671,53 +669,6 @@ impl AgentChannelSource for ProjectingChannelSource {
         // `session/new`; the driver reads them off the session into the turn config.
         session.mcp_session_servers = injection.session_servers;
         Ok(session)
-    }
-}
-
-/// A [`ProcessHandle`] over a tokio child. Local best-effort reaping: tokio's
-/// `Child` exposes SIGKILL; the SIGTERM→grace→SIGKILL ladder is a sandbox-provider
-/// concern (`kill_on_drop` covers the drop path).
-struct ChildProcess {
-    child: Mutex<Child>,
-}
-
-fn exit(status: std::process::ExitStatus) -> ExitStatus {
-    ExitStatus {
-        code: status.code(),
-        signaled: status.code().is_none(),
-    }
-}
-
-#[async_trait]
-impl ProcessHandle for ChildProcess {
-    fn id(&self) -> &str {
-        "acp-subprocess"
-    }
-    async fn wait(&self) -> std::result::Result<ExitStatus, SandboxError> {
-        let status = self
-            .child
-            .lock()
-            .await
-            .wait()
-            .await
-            .map_err(|e| SandboxError::new(e.to_string()))?;
-        Ok(exit(status))
-    }
-    async fn poll(&self) -> std::result::Result<Option<ExitStatus>, SandboxError> {
-        Ok(self
-            .child
-            .lock()
-            .await
-            .try_wait()
-            .map_err(|e| SandboxError::new(e.to_string()))?
-            .map(exit))
-    }
-    async fn signal(&self, _signal: Signal) -> std::result::Result<(), SandboxError> {
-        self.child
-            .lock()
-            .await
-            .start_kill()
-            .map_err(|e| SandboxError::new(e.to_string()))
     }
 }
 
