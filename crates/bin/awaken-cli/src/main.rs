@@ -86,6 +86,16 @@ async fn run(command: console::Command) -> Result<(), String> {
             );
             Ok(())
         }
+        console::Command::ManagementIamRuntimeProfile => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &awaken_control::hosted_runtime_authorization_profile()
+                )
+                .map_err(|error| format!("serialize Hosted Runtime IAM profile: {error}"))?
+            );
+            Ok(())
+        }
         console::Command::Worker {
             server,
             config_path,

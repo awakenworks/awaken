@@ -68,6 +68,90 @@ fn management_profile_is_one_deterministic_workspace_scoped_contract() {
 }
 
 #[test]
+fn hosted_runtime_profile_is_one_workspace_scoped_lifecycle_contract() {
+    use awaken_iam_server::{AuthorizationProfileAdmin, InMemoryStore};
+
+    // Cause graph: canonical Hosted lifecycle vocabulary -> one immutable
+    // profile -> two role grants. Cloud may bind roles at an exact Workspace,
+    // but cannot add actions or reinterpret their scope.
+    //
+    // Decision table:
+    // | role | action | allowed scope | profile effect |
+    // | workspace_admin | run.create/read/resume/cancel | Workspace | allow |
+    // | agent_executor | run.create/read/resume/cancel | Workspace | allow |
+    // | either | credential/management action | any | absent/default deny |
+    // | release profile | IAM PAP validation | any | valid before deployment |
+    let first = hosted_runtime_authorization_profile();
+    let second = hosted_runtime_authorization_profile();
+    assert_eq!(
+        serde_json::to_value(&first).unwrap(),
+        serde_json::to_value(&second).unwrap()
+    );
+    assert_eq!(first.namespace.0, HOSTED_RUNTIME_POLICY_NAMESPACE);
+    assert_eq!(
+        first
+            .document
+            .resource_model
+            .actions
+            .iter()
+            .map(|action| action.0.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "awaken.runtime::run.create",
+            "awaken.runtime::run.read",
+            "awaken.runtime::run.resume",
+            "awaken.runtime::run.cancel",
+        ]
+    );
+    assert_eq!(
+        first
+            .document
+            .action_scope_rules
+            .iter()
+            .map(|rule| rule.action_pattern.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "awaken.runtime::run.create",
+            "awaken.runtime::run.read",
+            "awaken.runtime::run.resume",
+            "awaken.runtime::run.cancel",
+        ]
+    );
+    assert!(
+        first
+            .document
+            .action_scope_rules
+            .iter()
+            .all(|rule| rule.allowed_scope_kinds == [ScopeKind::Workspace])
+    );
+    let role_ids = first
+        .document
+        .grants
+        .iter()
+        .map(|grant| match &grant.subject {
+            GrantSubjectRef::Role { role_id } => role_id.as_str(),
+            _ => panic!("Hosted lifecycle grants must be role-owned"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        role_ids,
+        [
+            HOSTED_RUNTIME_WORKSPACE_ADMIN_ROLE,
+            HOSTED_RUNTIME_AGENT_EXECUTOR_ROLE,
+        ]
+    );
+    assert!(first.document.grants.iter().all(|grant| {
+        grant.action_pattern == "awaken.runtime::run.*"
+            && grant.scope == ScopeRef::Global
+            && grant.effect == GrantEffect::Allow
+    }));
+    let pap = AuthorizationProfileAdmin::new(Arc::new(InMemoryStore::new()));
+    let draft = pap.create_draft(first).unwrap();
+    let validation = pap.validate(&draft.namespace, draft.revision).unwrap();
+    assert!(validation.valid, "{:?}", validation.errors);
+}
+
+#[test]
 fn identity_modes_accept_product_names_and_legacy_aliases() {
     assert_eq!(
         ManagementIdentityMode::parse("no-login"),
@@ -290,10 +374,18 @@ fn cloud_guard_uses_cached_login_and_explicit_bearer_override() {
 
 #[test]
 fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
-    // ProviderConnection authorization decision table:
-    // | Method | Collection route | Expected action   |
-    // | GET    | yes              | workspace:read    |
-    // | POST   | yes              | workspace:write   |
+    // Cause-effect graph:
+    // A request inside one registered Management route family is classified by
+    // method -> workspace/apikey read or write. A publication reference read is
+    // part of the config authority; an unknown sibling remains fail-closed.
+    //
+    // Decision table:
+    // | Family                         | Method | Expected action |
+    // | provider-connections           | GET    | workspace.read  |
+    // | provider-connections           | POST   | workspace.write |
+    // | publications/{fingerprint}     | GET    | workspace.read  |
+    // | publications/{fingerprint}     | POST   | workspace.write |
+    // | unknown config family          | any    | unmapped/deny   |
     // The aggregate contains no credential material; secret entry remains
     // delegated to the credential boundary inside the write command.
     let get = Method::GET;
@@ -324,6 +416,14 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
     );
     assert_eq!(
         action_for(&post, "/v1/config/provider-connections"),
+        Some(WORKSPACE_WRITE)
+    );
+    assert_eq!(
+        action_for(&get, "/v1/config/publications/fingerprint"),
+        Some(WORKSPACE_READ)
+    );
+    assert_eq!(
+        action_for(&post, "/v1/config/publications/fingerprint"),
         Some(WORKSPACE_WRITE)
     );
     assert_eq!(
