@@ -13,7 +13,13 @@ import { useApp } from "../lib/app-state";
 import { useListState } from "../lib/useListState";
 
 function modelId(m: AgentConfig["model"]): string {
-  return typeof m === "string" ? m : (m?.id ?? "");
+  if (typeof m === "string") return m;
+  if ("id" in m) return m.id;
+  if (m.mode === "backend_default") return `${m.backend_ref} (default)`;
+  if (m.mode === "backend_exact") return `${m.backend_ref}/${m.model_ref}`;
+  if (m.mode === "profile") return `profile:${m.profile_id}`;
+  if (m.mode === "pinned") return m.model_ref;
+  return "auto";
 }
 
 export default function ProjectAgentsSurface() {

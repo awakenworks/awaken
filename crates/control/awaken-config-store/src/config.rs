@@ -238,6 +238,7 @@ impl<'de> Deserialize<'de> for ModelSelection {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 enum ModelSelectionWire {
     Auto,
@@ -260,6 +261,17 @@ enum ModelSelectionWire {
         model_ref: String,
         backend_ref: String,
     },
+}
+
+#[cfg(feature = "schema")]
+impl schemars::JsonSchema for ModelSelection {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "ModelSelection".into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        ModelSelectionWire::json_schema(generator)
+    }
 }
 
 /// The delegation roster authored for one Agent.

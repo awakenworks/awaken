@@ -5,6 +5,8 @@
 // ---- admin config plane ----
 
 import type * as Contract from "../../../../contracts/model-config";
+import type { ModelSelection } from "../../../../contracts/model-selection.generated";
+export type { ModelSelection } from "../../../../contracts/model-selection.generated";
 
 export type {
   ApiDialect,
@@ -361,7 +363,7 @@ export interface AgentConfig {
   // managed Agent object fields:
   name?: string | null;
   description?: string | null;
-  model: { id: string; speed?: string } | string;
+  model: ModelSelection | { id: string; speed?: string } | string;
   system?: string;
   metadata?: Record<string, string>;
   tools: string[];
@@ -449,6 +451,25 @@ export interface RuntimeCap {
     login_state?: string | null;
     reason_code?: string | null;
     remediation?: string | null;
+    negotiated?: {
+      modes: Array<{
+        native_id: string;
+        name: string;
+        description?: string | null;
+        current: boolean;
+      }>;
+      config_options: Array<{
+        native_id: string;
+        name: string;
+        description?: string | null;
+        current_value: string;
+        choices: Array<{
+          native_value: string;
+          name: string;
+          description?: string | null;
+        }>;
+      }>;
+    } | null;
   } | null;
 }
 /** A one-click sandbox starting point over `sandbox.config_schema`. */

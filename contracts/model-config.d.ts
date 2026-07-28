@@ -412,11 +412,10 @@ export interface InferenceProfile {
      */
     primary: PrimaryElement;
     /**
-     * Owning workspace, stamped by the trusted configuration edge. Empty only
-     * for legacy rows, which scoped APIs treat as unowned.
+     * Owning workspace, stamped by the trusted configuration edge. An empty
+     * value represents an unstamped domain value and is never treated as owned.
      */
     workspace_id?: string;
-    [property: string]: unknown;
 }
 
 /**
@@ -455,8 +454,8 @@ export interface CredentialBindingObject {
 }
 
 /**
- * Stable, secret-free identity used to select one catalog offering. `model_id`
- * alone remains accepted for compatibility only when it resolves uniquely.
+ * Stable, secret-free identity used to select one catalog offering. Qualifiers
+ * may be omitted when `model_id` identifies exactly one active offering.
  */
 export interface PrimaryTarget {
     model_id:              string;
@@ -505,9 +504,30 @@ export interface ProvenanceValue {
  */
 export type ProvenanceSource = "manual" | "provider_api" | "curated" | "brokered";
 
+export interface ModelSelection {
+    mode:                   Mode;
+    profile_id?:            string;
+    backend_ref?:           string;
+    configuration?:         Tion;
+    model_ref?:             string;
+    provider_identity_ref?: string;
+}
+
 /**
- * Stable, secret-free identity used to select one catalog offering. `model_id`
- * alone remains accepted for compatibility only when it resolves uniquely.
+ * Adapter-native ACP Session intent frozen with one BackendOwned candidate.
+ * Omission preserves backend defaults; no discovered schema is copied here.
+ */
+export interface Tion {
+    mode?:    null | string;
+    options?: { [key: string]: string };
+    [property: string]: unknown;
+}
+
+export type Mode = "auto" | "profile" | "backend_default" | "backend_exact" | "pinned";
+
+/**
+ * Stable, secret-free identity used to select one catalog offering. Qualifiers
+ * may be omitted when `model_id` identifies exactly one active offering.
  */
 export interface ModelTarget {
     model_id:              string;
@@ -910,13 +930,12 @@ export interface ResolveProfileRequest {
 }
 
 /**
- * A dry-run resolve request. New callers send a complete `target`; legacy
- * `model_id` remains accepted only when it resolves to exactly one active offering.
+ * A dry-run resolve request. An unqualified target is valid when the model id
+ * identifies exactly one active offering; callers always use the same target shape.
  */
 export interface ResolveRequest {
     binding:      Binding;
-    model_id?:    null | string;
-    target?:      null | TargetObject;
+    target:       ResolveRequestTarget;
     workspace_id: string;
 }
 
@@ -942,10 +961,10 @@ export interface Binding {
 }
 
 /**
- * Stable, secret-free identity used to select one catalog offering. `model_id`
- * alone remains accepted for compatibility only when it resolves uniquely.
+ * Stable, secret-free identity used to select one catalog offering. Qualifiers
+ * may be omitted when `model_id` identifies exactly one active offering.
  */
-export interface TargetObject {
+export interface ResolveRequestTarget {
     model_id:              string;
     protocol_endpoint_id?: null | string;
     provider_id?:          null | string;

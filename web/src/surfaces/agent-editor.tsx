@@ -32,6 +32,7 @@ import { useApp } from "../lib/app-state";
 import { useCapabilities } from "../lib/useCapabilities";
 import { useModels } from "../lib/useModels";
 import { useUnsavedGuard } from "../lib/useUnsavedGuard";
+import AgentModelSelectionEditor from "../components/agent/AgentModelSelectionEditor";
 import ModelsSurface from "./models";
 
 // Editor sections, organized by user intent (not by mechanism): Behavior groups the
@@ -42,7 +43,7 @@ type Tab = "overview" | "behavior" | "tools" | "integrations" | "resources";
 const BLANK: AgentConfig = {
   id: "",
   name: "",
-  model: { id: "" },
+  model: { mode: "auto" },
   system: "You are a helpful coding agent.",
   metadata: {},
   tools: [],
@@ -53,10 +54,6 @@ const BLANK: AgentConfig = {
   plugin_config: {},
   context_policy: { kind: "keep_all" },
 };
-
-function modelId(m: AgentConfig["model"]): string {
-  return typeof m === "string" ? m : (m?.id ?? "");
-}
 
 export default function AgentEditorSurface() {
   const app = useApp();
@@ -118,13 +115,6 @@ export default function AgentEditorSurface() {
   // Review reset is intentionally tied to a newly hydrated server Draft.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [existing.data]);
-  const currentModel = modelId(cfg.model);
-  // Keep the current selection visible even if it lost its credential (editing an
-  // existing agent), flagged, so a save never silently drops the model.
-  const modelOptions = useMemo(
-    () => (currentModel && !models.includes(currentModel) ? [currentModel, ...models] : models),
-    [currentModel, models],
-  );
   // The config as loaded when the editor opened (the detail query is not refetched on
   // save), so the publish preview diffs the outgoing config against the pre-session state.
   const baseline = useMemo(() => {
@@ -337,41 +327,14 @@ export default function AgentEditorSurface() {
               </div>
             </div>
             <div className={`field${changed("model") ? " agent-change-highlight" : ""}`}>
-              <label className="row" style={{ justifyContent: "space-between" }}>
-                <span>{app.t("Model (references workspace catalog)", "模型(引用工作区 catalog)")}</span>
-                <button className="manage-link" onClick={() => setManageModels(true)}>
-                  {app.t("Manage ↗", "管理 ↗")}
-                </button>
-              </label>
-              {modelOptions.length > 0 ? (
-                <select className="input mono" value={currentModel} onChange={(e) => patch({ model: { id: e.target.value } })}>
-                  <option value="">{app.t("— select a model —", "— 选择模型 —")}</option>
-                  {modelOptions.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                      {!models.includes(m) ? app.t("  ⚠ no credential", "  ⚠ 无凭证") : ""}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <div className="banner gate">
-                  <span>◌</span>
-                  <span>
-                    {app.t(
-                      "No model has a credential yet. Configure a provider + key in Models (Manage ↗) — only credentialed models can be selected.",
-                      "还没有带凭证的模型。在 Models(管理 ↗)里配置一个 provider + key —— 只有带凭证的模型可选。",
-                    )}
-                  </span>
-                </div>
-              )}
-              {allModels.length > models.length && (
-                <span className="mut" style={{ fontSize: 12 }}>
-                  {app.t(
-                    `${allModels.length - models.length} model(s) hidden — no credential for their provider.`,
-                    `${allModels.length - models.length} 个模型因缺凭证已隐藏。`,
-                  )}
-                </span>
-              )}
+              <AgentModelSelectionEditor
+                model={cfg.model}
+                readyModels={models}
+                allModels={allModels}
+                runtimes={caps.data?.runtimes ?? []}
+                onChange={(model) => patch({ model })}
+                onManage={() => setManageModels(true)}
+              />
             </div>
             <div className={changed("description") ? "agent-change-highlight" : undefined}>
             <TextField

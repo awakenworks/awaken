@@ -20,6 +20,7 @@ pub struct CatalogFingerprint(pub String);
 /// Adapter-native ACP Session intent frozen with one BackendOwned candidate.
 /// Omission preserves backend defaults; no discovered schema is copied here.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AcpSessionConfiguration {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
