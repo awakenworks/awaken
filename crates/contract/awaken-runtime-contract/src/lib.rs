@@ -54,8 +54,8 @@ pub use data_subject::{
 pub use delegation::{
     ChildRunCancellation, ChildRunResult, ChildRunResultInbox, DelegationExecutionError,
     DelegationFailureKind, DelegationLimits, DelegationRequest, DelegationResultError,
-    DelegationResume, DelegationStep, DelegationToolInput, PendingChildRunResults, RemoteAgent,
-    ResultRecord, RunDelegationService, RunDelegations,
+    DelegationResume, DelegationStep, DelegationToolInput, PendingChildRunResults, ResultRecord,
+    RunDelegationService, RunDelegations,
 };
 pub use execution::{
     A2A_RUNTIME_CAPABILITY, AttemptExecutorRegistry, AttemptExecutorRegistryError, Cancellation,

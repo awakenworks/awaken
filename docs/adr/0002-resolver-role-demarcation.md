@@ -20,10 +20,12 @@ Only two runtime lookup/materialization interfaces retain the `Resolver` suffix:
 | `RunResolver` | pinned `ExecutableAgentSnapshot` → `ResolvedRun` | Runtime Core |
 
 Delegation is a Run-domain service, not resolution. It is named
-`RunDelegationService`; a
-remote implementation is a `RemoteAgent`, and the A2A adapter is
-`A2aRemoteAgent`. Call sites say `start`, `resume`, `Ended`, and `continuation`,
-matching the Agent domain.
+`RunDelegationService`. As amended by ADR-0057 Phase E, local and remote
+targets are not different delegation implementations: the service creates or
+resumes one ordinary child Run from the target publication, and the child's
+immutable backend selects Native, ACP, or A2A through the common
+`RunAttemptExecutor` registry. Call sites say `start`, `resume`, `Ended`, and
+`continuation`, matching the Agent domain.
 
 Documents and call sites name the concrete role rather than saying only “the
 resolver”. Auxiliary provider/config resolvers are local implementation roles and
@@ -38,8 +40,8 @@ must state what value they resolve.
   `RunDispatch`; `DelegationOrigin` records parentage and `session_thread_id`
   retains parent-Session environment affinity. There is no child executor, child
   store, or delegated completion helper (G40).
-- Local and Remote delegation implement the same lifecycle interface; protocol
-  routing stays outside Runtime Core.
+- Local and remote delegated Agents share the same child-Run lifecycle;
+  protocol routing stays at the attempt execution edge outside Runtime Core.
 - A new `*Resolver` helper must name the value it resolves.
 
 ## References
