@@ -113,6 +113,7 @@ async function main() {
         name: 'Calculator',
         system: 'Use the calculator tool and report its result.',
         model: {
+          mode: 'pinned',
           provider_identity_ref: 'default',
           model_ref: 'management',
           backend_ref: 'default',
@@ -183,7 +184,7 @@ async function main() {
       r = await req(base, 'PUT', `/v1/config/agents/${gatedAgent}`, {
         name: 'Gated Calculator',
         system: 'Use the calculator tool and report its result.',
-        model: { provider_identity_ref: 'default', model_ref: 'management', backend_ref: 'default' },
+        model: { mode: 'pinned', provider_identity_ref: 'default', model_ref: 'management', backend_ref: 'default' },
         mcp_servers: [{ name: 'calc', url: fixture.url, credential: { id: credId, revision: credRevision } }],
         tools: [{ type: 'mcp_toolset', mcp_server_name: 'calc', default_config: { enabled: true, permission_policy: { type: 'always_ask' } } }],
       });
@@ -227,7 +228,7 @@ async function main() {
       r = await req(base, 'PUT', `/v1/config/agents/${badAgent}`, {
         name: 'Bad MCP Auth',
         system: 'Use the calculator tool.',
-        model: { provider_identity_ref: 'default', model_ref: 'management', backend_ref: 'default' },
+        model: { mode: 'pinned', provider_identity_ref: 'default', model_ref: 'management', backend_ref: 'default' },
         mcp_servers: [{ name: 'calc', url: fixture.url, credential: { id: wrong.json.id, revision: wrong.json.version } }],
       });
       assert.equal(r.status, 200, JSON.stringify(r.json));
@@ -250,7 +251,7 @@ async function main() {
       r = await req(base, 'PUT', `/v1/config/agents/${offlineAgent}`, {
         name: 'Offline MCP',
         system: 'Use the unavailable calculator tool.',
-        model: { provider_identity_ref: 'default', model_ref: 'management', backend_ref: 'default' },
+        model: { mode: 'pinned', provider_identity_ref: 'default', model_ref: 'management', backend_ref: 'default' },
         mcp_servers: [{ name: 'offline', url: 'http://127.0.0.1:1/mcp' }],
       });
       assert.equal(r.status, 200, JSON.stringify(r.json));

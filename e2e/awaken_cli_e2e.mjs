@@ -519,6 +519,7 @@ async function main() {
       name: 'owned MCP Agent',
       system: 'Use the owned MCP endpoint.',
       model: {
+        mode: 'pinned',
         provider_identity_ref: 'default',
         model_ref: MODEL,
         backend_ref: 'default',
