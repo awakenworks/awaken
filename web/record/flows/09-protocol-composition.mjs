@@ -1,10 +1,9 @@
-// Protocol-composition proof: author a reusable MCP definition, then assemble a
-// Managed Agents session from an Agent, an ACP environment, Vault references, and
-// an inline MCP server without putting protocol-specific behavior in the Agent.
+// Protocol-composition proof: assemble a Managed Agents session from a portable
+// Agent with direct MCP, an ACP environment, a Vault reference, and a session-only
+// inline MCP server. There is no parallel Workspace MCP catalog.
 import { configureSyntheticModel } from "../support/models.mjs";
 
 const AGENT_ID = "protocol-portable-agent";
-const MCP_ID = "docs-search";
 const MCP_URL = "https://mcp.example.com/docs";
 const MODEL_ID = "protocol-recording-model";
 
@@ -25,7 +24,9 @@ export async function run({ page, goto, intro, say, clearCaption, checkpoint, ah
       name: "Protocol-portable agent",
       model: { id: MODEL_ID },
       system: "Use the resources attached to the session and cite the evidence you use.",
-      metadata: {}, tools: [], mcp_servers: [], skills: [], max_steps: 8,
+      metadata: {}, tools: [],
+      mcp_servers: [{ type: "url", name: "docs-search", url: MCP_URL }],
+      skills: [], max_steps: 8,
       plugins: [], plugin_config: {}, context_policy: { kind: "keep_all" },
     },
   });
@@ -53,25 +54,15 @@ export async function run({ page, goto, intro, say, clearCaption, checkpoint, ah
   );
   expect(credentialResponse.ok()).toBeTruthy();
 
-  await goto("/w/default/mcp-servers");
-  await intro(
-    "Attach tools and execution protocols at the session boundary while keeping the Agent portable.",
-    "Awaken composes Managed Agents sessions from an Agent, a Native or ACP environment, Vault references, and direct inline MCP.",
-  );
-
-  const author = page.locator("main").filter({ hasText: /Author MCP server|作者化 MCP 服务器/ });
-  const fields = author.locator("input");
-  await say("MCP works directly as name plus URL; the Vault supplies matching credentials without putting secrets on the wire.", 4400);
-  await type(fields.nth(0), MCP_ID);
-  await type(fields.nth(1), "Documentation search");
-  await type(fields.nth(2), MCP_URL);
-  await click(author.getByRole("button", { name: /Save|保存/, exact: true }));
-  await wait(900);
-
   await goto("/w/default/sessions");
+  await intro(
+    "Compose protocols without a second MCP configuration catalog.",
+    "The Agent owns reusable direct MCP declarations; the session adds its ACP environment, Vault references, and one-off inline MCP.",
+  );
+  await say("The Agent already carries docs-search as name plus URL; the Vault supplies its matching credential without secrets on the Agent wire.", 4400);
   await click(page.getByRole("button", { name: /New session|新建会话/ }));
   const modal = page.locator(".modal");
-  await say("The Managed Agents session chooses the Agent and ACP environment independently, then merges project and inline MCP.", 4600);
+  await say("The Managed Agents session chooses the Agent and ACP environment independently, then adds only session-specific MCP.", 4600);
   await modal.locator("select").nth(0).selectOption(AGENT_ID);
   await modal.locator("select").nth(1).selectOption(environment.id);
   await type(modal.getByPlaceholder("vlt_…"), vault.id);
@@ -80,11 +71,11 @@ export async function run({ page, goto, intro, say, clearCaption, checkpoint, ah
   await type(modal.getByPlaceholder("https://…"), "https://mcp.example.com/issues");
 
   await checkpoint("the session boundary visibly composes Agent, ACP runtime, Vault, and direct MCP", async () => {
-    const response = await page.request.get("http://127.0.0.1:38080/v1/config/mcp-servers");
-    expect(response.ok()).toBeTruthy();
-    const servers = await response.json();
-    expect(servers).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: MCP_ID, url: MCP_URL, credential_binding: { type: "none" } }),
+    const agentResponse = await page.request.get(`http://127.0.0.1:38080/v1/config/agents/${AGENT_ID}`);
+    expect(agentResponse.ok()).toBeTruthy();
+    const agent = await agentResponse.json();
+    expect(agent.mcp_servers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "docs-search", url: MCP_URL }),
     ]));
     const credentialsResponse = await page.request.get(
       `http://127.0.0.1:38080/v1/vaults/${vault.id}/credentials`,
@@ -98,7 +89,7 @@ export async function run({ page, goto, intro, say, clearCaption, checkpoint, ah
     await expect(modal.locator("select").nth(1)).toHaveValue(environment.id);
     await expect(modal.getByPlaceholder("vlt_…")).toHaveValue(vault.id);
     await expect(modal.getByPlaceholder("https://…")).toHaveValue("https://mcp.example.com/issues");
-    await expect(modal).toContainText(/Project-bound MCP servers merge in automatically|项目绑定的 MCP 自动并入/);
+    await expect(modal).toContainText(/Agent MCP servers are included automatically|Agent 声明的 MCP 服务器会自动包含/);
   });
 
   await say("Create the session: boundary configuration becomes visible runtime provenance, not Agent-specific code.", 4000);

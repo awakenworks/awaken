@@ -12,11 +12,11 @@
 //! Profile cause/effect design (executable rules below):
 //! Causes: C1 primary target is exact; C2 ordered fallbacks exist; C3 one target
 //! is unresolvable; C4 all targets are unresolvable; C5 a target is duplicated;
-//! C6 legacy bare-model JSON is loaded; C7 candidates use different providers and
+//! C6 the retired flat profile JSON is rejected; C7 candidates use different providers and
 //! credential bindings.
 //! Effects: E1 canonical structured profile is saved; E2 candidates preserve
 //! authored order; E3 only the bad candidate is skipped; E4 resolution fails
-//! closed; E5 save is rejected; E6 legacy input is rewritten canonically; E7 each
+//! closed; E5 save is rejected; E6 retired input cannot persist; E7 each
 //! candidate resolves only with its own binding.
 //!
 //! Decision table:

@@ -49,8 +49,8 @@ pub struct InferenceTriple {
     pub dialect: ApiDialect,
 }
 
-/// Stable, secret-free identity used to select one catalog offering. `model_id`
-/// alone remains accepted for compatibility only when it resolves uniquely.
+/// Stable, secret-free identity used to select one catalog offering. Qualifiers
+/// may be omitted when `model_id` identifies exactly one active offering.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ModelTarget {
