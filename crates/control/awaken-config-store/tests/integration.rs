@@ -497,6 +497,39 @@ async fn list_configs_scoped_returns_ids_ascending() {
     assert_eq!(ids, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
 }
 
+#[tokio::test]
+async fn reconciliation_scope_inventory_is_distinct_sorted_and_secret_free() {
+    // Cause/effect decision table:
+    // S1 no configs -> no scopes; S2 several configs in one scope -> one owner;
+    // S3 configs in several scopes -> distinct owners sorted by opaque ScopeId.
+    // The result contains only ownership coordinates; per-scope config reads
+    // remain fenced by list_configs_scoped.
+    let store = SqliteConfigStore::open_in_memory().expect("store");
+    assert!(store.list_config_scopes().await.unwrap().is_empty(), "S1");
+    store
+        .put_config_scoped(&ScopeId::from("scope-z"), &agent_with("z-1", "x"))
+        .await
+        .unwrap();
+    store
+        .put_config_scoped(&ScopeId::from("scope-z"), &agent_with("z-2", "x"))
+        .await
+        .unwrap();
+    assert_eq!(
+        store.list_config_scopes().await.unwrap(),
+        vec![ScopeId::from("scope-z")],
+        "S2"
+    );
+    store
+        .put_config_scoped(&ScopeId::from("scope-a"), &agent_with("a-1", "x"))
+        .await
+        .unwrap();
+    assert_eq!(
+        store.list_config_scopes().await.unwrap(),
+        vec![ScopeId::from("scope-a"), ScopeId::from("scope-z")],
+        "S3"
+    );
+}
+
 // --- CEG: publication scope isolation + idempotency + warm-load list ---------
 
 fn publication_for(cfg: &AgentConfig) -> StoredPublication {

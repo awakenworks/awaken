@@ -27,6 +27,8 @@ use crate::publication::{
 use crate::tool_catalog::RESERVED_ADMIN_SCOPE;
 use crate::tool_catalog::ToolCatalogSource;
 
+mod reconciliation;
+
 #[cfg(test)]
 use crate::config_routes::{get_config, publish, put_config, request_scope, validate};
 #[cfg(test)]
@@ -541,31 +543,6 @@ impl ConfigPlane {
         self.service.installed.uninstall(execution_workspace, id);
     }
 
-    /// Re-resolve and re-publish an `Auto`-bound agent in `scope` (ADR-0052 D5).
-    pub async fn reconcile(&self, scope: &ScopeId, id: &str) -> Result<bool, String> {
-        if scope.as_str() == RESERVED_ADMIN_SCOPE {
-            return Err(PublishError::ExecutionWorkspaceRequired.to_string());
-        }
-        self.reconcile_for_execution_workspace(scope, scope.as_str(), id)
-            .await
-    }
-
-    pub async fn reconcile_for_execution_workspace(
-        &self,
-        configuration_scope: &ScopeId,
-        execution_workspace: &str,
-        id: &str,
-    ) -> Result<bool, String> {
-        self.service
-            .reconcile(
-                &ScopeId::from(execution_workspace),
-                &self.registry_for(configuration_scope),
-                id,
-                &self.catalog_for(configuration_scope),
-            )
-            .await
-    }
-
     /// The scope-free service (for the installed-projection reads).
     #[must_use]
     pub fn service(&self) -> &Arc<ConfigService> {
@@ -885,6 +862,9 @@ pub(crate) mod resource_prompt_tests {
     struct FailingScopedRegistry;
     #[async_trait::async_trait]
     impl ScopedConfigRegistry for FailingScopedRegistry {
+        async fn list_config_scopes(&self) -> Result<Vec<ScopeId>, ConfigStoreError> {
+            Err(ConfigStoreError("boom".into()))
+        }
         async fn put_config_scoped(
             &self,
             _s: &ScopeId,
@@ -1278,7 +1258,7 @@ pub(crate) mod resource_prompt_tests {
         assert_eq!(spec.model_candidates[0].model_ref, "m-second");
 
         // The stored *source* config is still Auto — so a later catalog change can
-        // re-resolve it (reconcile returns true only for an Auto source).
+        // re-resolve it (reconcile returns true for policy-owned sources).
         assert!(plane.reconcile(&scope, "mgmt").await.unwrap());
     }
 
@@ -1303,7 +1283,7 @@ pub(crate) mod resource_prompt_tests {
 
     #[tokio::test]
     async fn reconciler_adapter_republishes_the_named_auto_agents() {
-        use crate::binding_resolver::{AssistantBindingReconciler, ConfigServiceReconciler};
+        use crate::binding_resolver::{ConfigServiceReconciler, PublicationBindingReconciler};
 
         let plane = static_plane(Some(Arc::new(FakeResolver)));
         let scope = ScopeId::from(DEFAULT_SCOPE);
@@ -1321,6 +1301,50 @@ pub(crate) mod resource_prompt_tests {
             vec!["assistant".to_string(), "pinned".to_string()],
         );
         assert_eq!(reconciler.reconcile().await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn observation_reconcile_republishes_policy_agents_in_every_owned_scope() {
+        use crate::binding_resolver::{ConfigServiceReconciler, PublicationBindingReconciler};
+
+        // Cause/effect graph:
+        // C1 configs span ordinary and reserved scopes; C2 Auto is policy-bound;
+        // C3 Pinned is operator-owned; C4 one observation event invokes reconcile_all.
+        // E1 every Auto is republished in its own scope/execution Workspace; E2
+        // Pinned is unchanged; E3 no scope is flattened into another.
+        //
+        // Decision rule O1: C1+C2+C3+C4 => three E1 publications + E2 + E3.
+        // Store-failure propagation is covered by FailingScopedRegistry; single-id
+        // policy/pinned/missing rules are covered by the test above.
+        let plane = static_plane(Some(Arc::new(FakeResolver)));
+        for (scope, id) in [("workspace-a", "auto-a"), ("workspace-b", "auto-b")] {
+            let scope = ScopeId::from(scope);
+            plane.put(&scope, &auto_config(id)).await.unwrap();
+            plane.publish(&scope, id).await.unwrap();
+        }
+        let reserved = ScopeId::from(RESERVED_ADMIN_SCOPE);
+        plane
+            .put(&reserved, &auto_config("assistant"))
+            .await
+            .unwrap();
+        plane
+            .publish_for_execution_workspace(&reserved, "platform-workspace", "assistant")
+            .await
+            .unwrap();
+        let pinned_scope = ScopeId::from("workspace-a");
+        plane
+            .put(&pinned_scope, &agent_config("pinned"))
+            .await
+            .unwrap();
+        plane.publish(&pinned_scope, "pinned").await.unwrap();
+
+        let reconciler = ConfigServiceReconciler::new(
+            plane,
+            RESERVED_ADMIN_SCOPE,
+            "platform-workspace",
+            Vec::new(),
+        );
+        assert_eq!(reconciler.reconcile_all().await.unwrap(), 3, "O1");
     }
 
     #[tokio::test]

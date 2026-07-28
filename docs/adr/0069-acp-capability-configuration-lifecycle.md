@@ -7,9 +7,9 @@
   observations, prompt-free capability negotiation, generated Agent option
   contracts, publication/placement/launch fingerprints, provisioning-derived
   Session Environment selection, live readiness, and shared CLI/Flow
-  composition and descendant process-group reaping. Event-triggered publication
-  reconciliation and release-gated real persisted-login LLM sessions remain
-  completion gates. “Proposed” therefore means the complete decision is
+  composition, descendant process-group reaping, and event-triggered all-scope
+  publication reconciliation. Release-gated real persisted-login LLM sessions
+  remain the external completion gate. “Proposed” therefore means the decision is
   not yet fully accepted; it does not mean the listed foundation is hypothetical.
 - Amends:
   [ADR-0057](0057-unified-agent-configuration.md), especially its
@@ -819,6 +819,9 @@ Implemented consolidation evidence:
   atomic, expiring heartbeat batch; it retains the prior deadlines on a hard
   refresh failure and does not store the changing fingerprint in the immutable
   Worker manifest;
+- successful heartbeats feed one observation-fingerprint gate; changes invoke
+  the existing policy publication reconciler across scope-bound aggregates,
+  while failures leave the fence unchanged for heartbeat retry;
 - `CredentialObservationSource` and `WorkerLocalReferenceRevalidator` are
   segregated from `CredentialMaterialResolver`;
 - `CredentialPool::selection_order_at` owns `RotateSpread`,
@@ -839,23 +842,24 @@ the remaining external/reconciliation gates:
 | Lifecycle slice | Current state | Remaining work |
 |---|---|---|
 | adapter catalog | authoritative `AcpCli` plus neutral ACP capability contract | keep protocol-external descriptors versioned with adapter changes |
-| installation/login probe | `awaken-acp-application` owns PATH/HOME-only process I/O and classification; startup, bounded periodic probing and `POST /admin/refresh-observations` share one coalescing atomic refresh operation | wire product-specific login-remediation completion events to the explicit Worker trigger |
+| installation/login probe | `awaken-acp-application` owns PATH/HOME-only process I/O and classification; startup, bounded periodic probing and `POST /admin/refresh-observations` share one coalescing atomic refresh operation | retain adapter-specific remediation text and the explicit refresh trigger |
 | reusable CLI/Flow preparation | CLI and Flow call the same application service, binding use case, resolver and atomic launch-plan projection | no parallel inventory or composition path remains |
 | capability negotiation | bounded Worker probe invokes the canonical prompt-free protocol operation; periodic and explicit event refreshes coalesce through the same Worker observation cache; all local launch paths share descendant-aware process-group reaping | retain protocol and process-group conformance tests |
 | effective profile/fingerprint | typed profile and SHA-256 evidence are published dynamically with TTL and pinned by publication/placement/launch fences | retain exact-version compatibility tests |
 | Agent ACP mode/options | generated discriminated selection carries default/exact model, native mode and arbitrary native option values; publication validates them | add richer widgets only as presentation concerns |
 | environment selection | provisioning selects trusted/isolated provider | retain as the sole Session Environment policy |
-| readiness | Flow and Console project current expiring Worker observations; automatic selection requires Available + Verified | add event-triggered Agent reconcile after login/version changes |
-| automatic Assistant | exactly one Available+Verified local backend is required | persist the explicit UI choice when zero/multiple are available |
+| readiness | Flow and Console project current expiring Worker observations; a changed observation fingerprint invokes the canonical all-scope publication reconciler and failed reconciliation retries on the next heartbeat | retain live-login/version transition tests |
+| automatic Assistant | exactly one Available+Verified local backend is required; zero remains unconfigured and multiple are resolved through the ordinary persisted Agent model editor | no separate default-backend preference exists |
 | frontend contract | OpenAPI-generated TypeScript consumes the Rust discriminated union and live Worker ACP projection | keep generated-contract freshness gated |
 | Flow | pinned to the pushed Awaken revision; one existing Worker/executor consumes the shared preparation service | keep the revision and lockfile updated atomically |
 | ambient configuration | environment Provider proposals and Flow ACP inventory/default fields are removed; typed deployment configuration owns product choices | continue auditing OS metadata so PATH/HOME never become authoring inputs |
 | real host proof | installed Codex `0.145.0` is detected with host login Available; installed Claude `2.1.220` is correctly login-required when ambient `ANTHROPIC_API_KEY` is cleared | run release-gated real LLM sessions for both persisted host logins |
 
-Therefore discovery, generic ACP configuration, live Worker projection and Flow
-reuse are implemented. Event-triggered reconciliation and real persisted-login
-LLM sessions for every supported adapter remain explicit release gates; the ADR
-does not equate hermetic protocol coverage or an ambient API key with that proof.
+Therefore discovery, generic ACP configuration, live Worker projection,
+event-triggered reconciliation and Flow reuse are implemented. Real
+persisted-login LLM sessions for every supported adapter remain the explicit
+release gate; the ADR does not equate hermetic protocol coverage or an ambient
+API key with that proof.
 
 Managed `CodexAuthJson` is a separate product decision. BackendOwned never
 enters that Provider-only artifact path. A global prohibition on creating

@@ -5,10 +5,10 @@
 //! publication cannot combine a binding from one catalog read with access facts
 //! from another. Compilation remains pure and runtime only consumes the result.
 //!
-//! Freshness (an `Auto` binding can go stale when the catalog changes) is recovered
-//! by one explicit seam — [`AssistantBindingReconciler`] — the catalog write path
-//! calls after a mutation. It re-resolves and re-publishes `Auto` configs and skips
-//! `Pinned` ones; re-publish is idempotent by content address, so a retry is safe.
+//! Freshness (a policy binding can go stale when its authority changes) is recovered
+//! by one explicit seam — [`PublicationBindingReconciler`] — catalog and Worker
+//! observation changes call it after mutation. It re-resolves policy-bound configs
+//! and skips `Pinned` ones; re-publish is idempotent by content address.
 
 use awaken_config_store::ModelSelection;
 use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
@@ -96,23 +96,24 @@ pub trait ModelPublicationResolver: Send + Sync {
     ) -> Result<ResolvedPublicationModels, PublicationResolutionError>;
 }
 
-/// The freshness seam (ADR-0052 D5): the model-catalog write path calls this after a
-/// catalog mutation to re-resolve every `Auto`-bound managed agent and re-publish it.
-/// Named for its consumer (the catalog write path). One testable home for the one
-/// place the design bends: who triggers it (the catalog write), what it touches (only
-/// `Auto` configs), and how failure surfaces (a returned error the caller logs/retries
-/// — a failed reconcile leaves the last good published binding in place).
+/// The freshness seam: model-catalog and Worker-observation changes re-resolve
+/// policy-bound Agents through the ordinary publication path. A failed reconcile
+/// leaves the last good publication in place and is safe to retry.
 #[async_trait::async_trait]
-pub trait AssistantBindingReconciler: Send + Sync {
-    /// Re-resolve and re-publish the `Auto`-bound assistant(s); returns how many were
-    /// actually re-published (a `Pinned` one is skipped, an already-current `Auto` is
-    /// a no-op by content address).
+pub trait PublicationBindingReconciler: Send + Sync {
+    /// Re-resolve the configured fixed Agent set; concrete `Pinned` selections
+    /// are skipped and repeated publications are content-addressed.
     async fn reconcile(&self) -> Result<usize, String>;
+
+    /// Reconcile every policy-bound Agent in every authoring scope. This is the
+    /// Worker-observation event path; authored values are preserved.
+    async fn reconcile_all(&self) -> Result<usize, String>;
 }
 
-/// The concrete reconciler the host wires: it re-publishes a fixed set of agent ids
-/// (the reserved-scope assistant) in a scope through the ordinary config-plane publish
-/// path. It holds the scope edge ([`ConfigPlane`](crate::config_plane::ConfigPlane)),
+/// The concrete reconciler the host wires. Catalog changes use its fixed Agent
+/// set; Worker observation changes use its all-scope operation. Both go through
+/// the ordinary config-plane publication path. It holds the scope edge
+/// ([`ConfigPlane`](crate::config_plane::ConfigPlane)),
 /// the configuration namespace, the execution Workspace, and the agent ids. Keeping
 /// both coordinates explicit prevents a reserved authoring namespace from becoming a
 /// synthetic resource or credential Workspace.
@@ -140,7 +141,7 @@ impl ConfigServiceReconciler {
 }
 
 #[async_trait::async_trait]
-impl AssistantBindingReconciler for ConfigServiceReconciler {
+impl PublicationBindingReconciler for ConfigServiceReconciler {
     async fn reconcile(&self) -> Result<usize, String> {
         let mut republished = 0;
         for id in &self.agent_ids {
@@ -157,5 +158,11 @@ impl AssistantBindingReconciler for ConfigServiceReconciler {
             }
         }
         Ok(republished)
+    }
+
+    async fn reconcile_all(&self) -> Result<usize, String> {
+        self.plane
+            .reconcile_all_policy_bound(&self.execution_workspace)
+            .await
     }
 }

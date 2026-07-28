@@ -241,17 +241,22 @@ auto-selection is missing.
   rather than an ad-hoc callback:
 
   ```rust
-  // Consumer: the model-catalog write path, which calls this after a catalog mutation.
-  // It re-resolves every Auto-bound assistant and re-publishes through the ordinary
-  // ConfigService path; Pinned bindings are skipped (an operator pin is authoritative).
-  trait AssistantBindingReconciler: Send + Sync {
-      async fn reconcile(&self, scope: &ScopeId) -> Result<Reconciled, ReconcileError>;
+  // Catalog writes use the fixed configured set. Worker observation changes use
+  // the all-scope branch. Both re-publish through the ordinary ConfigService
+  // path; Pinned bindings are skipped (an operator pin is authoritative).
+  trait PublicationBindingReconciler: Send + Sync {
+      async fn reconcile(&self) -> Result<usize, String>;
+      async fn reconcile_all(&self) -> Result<usize, String>;
   }
   ```
 
+  ADR-0069 broadens this same port with an all-scope operation for Worker
+  observation changes; it does not introduce an ACP-specific reconciler.
+
   This gives the staleness recovery **one testable home** with an explicit contract for
-  *who triggers it* (the catalog write path), *what it touches* (only `Auto` configs in
-  the scope), and *how failure surfaces* (a `ReconcileError` the caller logs/retries —
+  *who triggers it* (authority-change event paths), *what it touches* (only
+  policy-bound configs in the selected set or enumerated scope), and *how
+  failure surfaces* (an error the caller logs/retries —
   a failed reconcile leaves the last good published binding in place, never a broken
   one). It is idempotent (re-resolving an already-current `Auto` is a no-op by content
   address) so a retry loop is safe. The bounded staleness window is the interval between
@@ -295,7 +300,7 @@ Positive:
   fails loud at configuration time. Its two intents are named at the type level
   (`ModelBinding::{Auto, Pinned}`), not encoded as a magic absent value.
 - The one place the design bends (freshness of an `Auto` binding after a catalog
-  change) is isolated behind a single named port (`AssistantBindingReconciler`) with an
+  change) is isolated behind a single named port (`PublicationBindingReconciler`) with an
   explicit trigger/scope/failure contract, rather than a diffuse hook — so the bend has
   one testable, reason-about-able home.
 
@@ -304,7 +309,7 @@ Costs (accepted):
 - `ConfigService` gains a scope parameter on `validate`/`publish` and swaps its fixed
   `tools` vec for a `ToolCatalogSource`. This is the price of making tool visibility a
   function of scope; it is small and localized.
-- The model-catalog write path must call `AssistantBindingReconciler::reconcile` to
+- The model-catalog write path must call `PublicationBindingReconciler::reconcile` to
   avoid a stale `Auto` binding — a bounded staleness window between the catalog write
   and a successful reconcile (accepted per D5; idempotent + `Pinned`-skipping, so a
   retry is safe; the run-time alternative was rejected).
@@ -353,7 +358,7 @@ Costs (accepted):
   Retire this agent's builder bypass. Test: `Pinned` survives publish untouched.
 - **S4** — `ModelResolver` (first-offering for `Auto`, pass-through for `Pinned`,
   `model_candidates` fill) run in `publish` before `compile`; 409 when no provider-backed
-  model exists. Then `AssistantBindingReconciler` called from the model-catalog write
+  model exists. Then `PublicationBindingReconciler` called from the model-catalog write
   path: re-resolves `Auto` assistants, skips `Pinned`, idempotent by content address.
   Test: a catalog change re-publishes an `Auto` assistant to the new first-offering and
   leaves a `Pinned` one unchanged.
