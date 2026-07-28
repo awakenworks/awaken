@@ -68,7 +68,10 @@ impl PublishedAcpLaunchResolver {
         } = &candidate.provisioning
         else {
             if let ModelProvisioning::BackendOwned {
-                model_selection, ..
+                model_selection,
+                capability_adapter_version,
+                capability_fingerprint,
+                ..
             } = &candidate.provisioning
             {
                 let coherent = match model_selection {
@@ -80,9 +83,19 @@ impl PublishedAcpLaunchResolver {
                         "published backend model policy is incoherent".into(),
                     ));
                 }
+                if capability_adapter_version.trim().is_empty()
+                    || capability_fingerprint.trim().is_empty()
+                {
+                    return Err(OpenError(
+                        "published backend capability pin is missing".into(),
+                    ));
+                }
                 return Ok(ResolvedModel::backend_owned(
                     *model_selection,
                     candidate.binding.model_ref.clone(),
+                    self.cli.id,
+                    capability_adapter_version,
+                    capability_fingerprint,
                 ));
             }
             return Err(OpenError(format!(
@@ -702,6 +715,8 @@ mod tests {
                         revision: 9,
                     },
                     selection,
+                    "test",
+                    "sha256:test-capability",
                 );
             let resolver = PublishedAcpLaunchResolver::new(
                 *awaken_run_executor_acp::acp_cli("codex").unwrap(),
@@ -724,6 +739,7 @@ mod tests {
                     ResolvedModel::BackendOwned {
                         model_selection,
                         ref model,
+                        ..
                     } if model_selection == selection && model == activation.effective_model_ref()
                 ),
                 "{rule}"

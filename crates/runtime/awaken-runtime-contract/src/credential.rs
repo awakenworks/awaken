@@ -309,6 +309,8 @@ mod tests {
                     revision: 3,
                 },
                 selection,
+                "test",
+                "sha256:test-capability",
             );
             assert_eq!(
                 compile_candidate_credential_bindings(

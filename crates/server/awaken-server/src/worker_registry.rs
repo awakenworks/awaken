@@ -23,7 +23,9 @@ pub fn inject(directory: Arc<dyn WorkerDirectory>) {
     let _ = DIRECTORY.set(directory);
 }
 
-pub(crate) fn shared() -> Arc<dyn WorkerDirectory> {
+/// Shared Worker observation authority for outer composition adapters such as
+/// publication readiness. Consumers receive only the neutral directory port.
+pub fn shared() -> Arc<dyn WorkerDirectory> {
     if let Some(directory) = DIRECTORY.get() {
         return directory.clone();
     }

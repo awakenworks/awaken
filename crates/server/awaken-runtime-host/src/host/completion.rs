@@ -57,6 +57,26 @@ fn worker_local_credentials(
         .collect()
 }
 
+fn worker_acp_capabilities(
+    models: &awaken_runtime_contract::resolved::ResolvedSpec,
+) -> BTreeSet<awaken_run_ingress::WorkerAcpCapabilityRequirement> {
+    std::iter::once(&models.model_binding)
+        .chain(models.model_candidates.iter())
+        .filter_map(|candidate| match &candidate.provisioning {
+            awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned {
+                capability_fingerprint,
+                ..
+            } if !capability_fingerprint.trim().is_empty() => {
+                Some(awaken_run_ingress::WorkerAcpCapabilityRequirement {
+                    backend_ref: candidate.binding.backend_ref.clone(),
+                    fingerprint: capability_fingerprint.clone(),
+                })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// Resolve the canonical cold-start inference holder from immutable candidate
 /// backends. Embedded applications that author their own `RunDispatch` use this
 /// same decision instead of duplicating the self-hosted boundary mapping.
@@ -119,6 +139,7 @@ pub(crate) fn remote_worker_placement(
         PlacementRequirements::default()
     };
     placement.required_credentials = required_credentials;
+    placement.required_acp_capabilities = worker_acp_capabilities(models);
     for candidate in std::iter::once(&models.model_binding).chain(models.model_candidates.iter()) {
         placement.required_capabilities.insert(
             awaken_runtime_contract::execution::execution_capability(
@@ -564,6 +585,8 @@ mod completion_tests {
                 revision: 7,
             },
             awaken_runtime_contract::resolved::BackendModelSelection::Default,
+            "test",
+            "sha256:test-capability",
         );
 
         let placement = remote_worker_placement(&models, None, false);
@@ -582,6 +605,15 @@ mod completion_tests {
                 id: "cred:local".into(),
                 revision: 7,
             },])
+        );
+        assert_eq!(
+            placement.required_acp_capabilities,
+            std::collections::BTreeSet::from([
+                awaken_run_ingress::WorkerAcpCapabilityRequirement {
+                    backend_ref: "acp:codex".into(),
+                    fingerprint: "sha256:test-capability".into(),
+                },
+            ])
         );
     }
 

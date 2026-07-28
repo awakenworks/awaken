@@ -301,6 +301,16 @@ pub struct TurnConfig<'a> {
     /// credential itself stays in the launched process environment; the protocol
     /// carries only this advertised method id.
     pub auth_method_id: Option<String>,
+    /// Exact publication-time profile that the live initialize/session
+    /// handshake must reproduce before any configured option or prompt is sent.
+    pub expected_capability: Option<AcpCapabilityExpectation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcpCapabilityExpectation {
+    pub adapter_id: String,
+    pub adapter_version: String,
+    pub fingerprint: String,
 }
 
 impl<'a> TurnConfig<'a> {
@@ -316,6 +326,7 @@ impl<'a> TurnConfig<'a> {
             session_config_option: None,
             session_cwd: None,
             auth_method_id: None,
+            expected_capability: None,
         }
     }
 }

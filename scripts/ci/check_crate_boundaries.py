@@ -542,6 +542,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-agent-channel",
         "async-trait",
         "serde",
+        "sha2",
     },
     # Connection plan (ADR-0045): the topology value object (ConnectionPlan /
     # DialAddr / Wiring / DialPolicy / CredentialRef) + ChannelFactory over the
@@ -1403,6 +1404,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tower",
     },
     "awaken-server": {
+        "awaken-acp-contract",
         "awaken-scenario-host",
         # dev-only: transport conformance assembles the real dispatch service over
         # the in-memory queue while exercising the server's worker registry.

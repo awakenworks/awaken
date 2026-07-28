@@ -266,6 +266,12 @@ pub enum ModelProvisioning {
     BackendOwned {
         credential: crate::CredentialRef,
         model_selection: BackendModelSelection,
+        /// Exact live ACP capability profile validated at publication. Empty
+        /// legacy values fail closed in placement and launch.
+        #[serde(default)]
+        capability_fingerprint: String,
+        #[serde(default)]
+        capability_adapter_version: String,
     },
     /// Exact provider route and credential delivery frozen by publication.
     Provider {
@@ -335,12 +341,16 @@ impl ResolvedModelCandidate {
         binding: ModelBinding,
         credential: crate::CredentialRef,
         model_selection: BackendModelSelection,
+        capability_adapter_version: impl Into<String>,
+        capability_fingerprint: impl Into<String>,
     ) -> Self {
         Self {
             binding,
             provisioning: ModelProvisioning::BackendOwned {
                 credential,
                 model_selection,
+                capability_adapter_version: capability_adapter_version.into(),
+                capability_fingerprint: capability_fingerprint.into(),
             },
         }
     }
@@ -866,6 +876,8 @@ mod tests {
                     revision: 3,
                 },
                 selection,
+                "test",
+                "sha256:test-capability",
             );
             let wire = serde_json::to_string(&candidate).unwrap();
             assert!(!wire.contains("base_url"));

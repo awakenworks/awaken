@@ -55,6 +55,7 @@ pub use legacy_resource_migration::migrate_legacy_skill_registry;
 pub use relay_hand::relay_hand_executor_factory;
 pub use worker_registry::{
     init_postgres as init_postgres_worker_registry, inject as init_worker_registry,
+    shared as worker_directory,
 };
 
 /// Neutral Resource Catalog validation port used by outer composition roots.

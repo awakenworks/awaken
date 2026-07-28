@@ -113,6 +113,7 @@ impl AgentChannelSource for ScriptedSource {
             workspace_cwd: None,
             mcp_session_servers: Vec::new(),
             session_config_option: None,
+            expected_capability: None,
         })
     }
 }
@@ -874,6 +875,7 @@ async fn a_session_persisted_in_one_dir_is_recovered_in_another_through_the_exec
                 workspace_cwd: Some("/workspace".to_string()),
                 mcp_session_servers: Vec::new(),
                 session_config_option: None,
+                expected_capability: None,
             })
         }
     }
@@ -1237,6 +1239,7 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
                 workspace_cwd: None,
                 mcp_session_servers: Vec::new(),
                 session_config_option: None,
+                expected_capability: None,
             })
         }
     }
@@ -1669,6 +1672,7 @@ async fn acp_relaunches_the_cli_every_turn_so_a_model_switch_takes_effect() {
                 workspace_cwd: None,
                 mcp_session_servers: Vec::new(),
                 session_config_option: None,
+                expected_capability: None,
             })
         }
     }
@@ -2184,6 +2188,7 @@ async fn a_cancelled_token_ends_the_run_cancelled() {
                 workspace_cwd: None,
                 mcp_session_servers: Vec::new(),
                 session_config_option: None,
+                expected_capability: None,
             })
         }
     }
@@ -2304,6 +2309,7 @@ async fn a_relaunch_open_failure_mid_run_classifies_and_ends() {
                 workspace_cwd: None,
                 mcp_session_servers: Vec::new(),
                 session_config_option: None,
+                expected_capability: None,
             })
         }
     }

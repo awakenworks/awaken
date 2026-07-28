@@ -9,7 +9,6 @@ use awaken_acp_contract::{
     AcpCapabilityHandshake, AcpCapabilityProbeConfig, NegotiatedAcpCapabilities,
 };
 use awaken_agent_channel::{AgentChannel, SplitChannel};
-use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcpCapabilityState {
@@ -36,7 +35,8 @@ impl EffectiveAcpCapabilityProfile {
     ) -> Self {
         let cli_id = cli_id.into();
         let cli_version = cli_version.into();
-        let fingerprint = capability_fingerprint(&cli_id, &cli_version, &negotiated);
+        let fingerprint =
+            awaken_acp_contract::capability_fingerprint(&cli_id, &cli_version, &negotiated);
         let observed_at_unix_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -132,71 +132,11 @@ impl AcpCapabilityNegotiator for HostAcpCapabilityNegotiator {
     }
 }
 
-fn capability_fingerprint(
-    cli_id: &str,
-    cli_version: &str,
-    capabilities: &NegotiatedAcpCapabilities,
-) -> String {
-    let mut hash = Sha256::new();
-    hash_value(&mut hash, cli_id);
-    hash_value(&mut hash, cli_version);
-    hash_value(&mut hash, &capabilities.protocol_version);
-    for flag in [
-        capabilities.load_session,
-        capabilities.prompt_image,
-        capabilities.prompt_audio,
-        capabilities.prompt_embedded_context,
-        capabilities.mcp_http,
-        capabilities.mcp_sse,
-        capabilities.session_list,
-    ] {
-        hash.update([u8::from(flag)]);
-    }
-    let mut modes = capabilities.modes.iter().collect::<Vec<_>>();
-    modes.sort_by_key(|mode| &mode.native_id);
-    for mode in modes {
-        hash_value(&mut hash, &mode.native_id);
-        hash_value(&mut hash, &mode.name);
-        hash_optional(&mut hash, mode.description.as_deref());
-        hash.update([u8::from(mode.current)]);
-    }
-    let mut options = capabilities.config_options.iter().collect::<Vec<_>>();
-    options.sort_by_key(|option| &option.native_id);
-    for option in options {
-        hash_value(&mut hash, &option.native_id);
-        hash_value(&mut hash, &option.name);
-        hash_optional(&mut hash, option.description.as_deref());
-        hash_optional(&mut hash, option.category.as_deref());
-        hash_value(&mut hash, &option.current_value);
-        let mut choices = option.choices.iter().collect::<Vec<_>>();
-        choices.sort_by_key(|choice| (&choice.group_id, &choice.native_value));
-        for choice in choices {
-            hash_value(&mut hash, &choice.native_value);
-            hash_value(&mut hash, &choice.name);
-            hash_optional(&mut hash, choice.description.as_deref());
-            hash_optional(&mut hash, choice.group_id.as_deref());
-            hash_optional(&mut hash, choice.group_name.as_deref());
-        }
-    }
-    format!("{:x}", hash.finalize())
-}
-
-fn hash_value(hash: &mut Sha256, value: &str) {
-    hash.update(value.len().to_le_bytes());
-    hash.update(value.as_bytes());
-}
-
-fn hash_optional(hash: &mut Sha256, value: Option<&str>) {
-    hash.update([u8::from(value.is_some())]);
-    if let Some(value) = value {
-        hash_value(hash, value);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use awaken_acp_contract::{
         AcpSessionConfigChoice, AcpSessionConfigOptionDescriptor, AcpSessionModeDescriptor,
+        capability_fingerprint,
     };
 
     use super::*;

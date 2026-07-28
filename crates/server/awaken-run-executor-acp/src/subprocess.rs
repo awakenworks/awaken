@@ -38,6 +38,7 @@ pub struct AcpLaunch {
     pub env: Vec<pc::EnvVar>,
     pub identity: AcpLaunchIdentity,
     pub session_config_option: Option<awaken_protocol_acp::SessionConfigOptionSelection>,
+    pub expected_capability: Option<awaken_protocol_acp::AcpCapabilityExpectation>,
 }
 
 impl AcpLaunch {
@@ -56,6 +57,7 @@ impl AcpLaunch {
                 .collect(),
             identity: AcpLaunchIdentity::Managed,
             session_config_option: None,
+            expected_capability: None,
         }
     }
 }
@@ -220,6 +222,7 @@ async fn spawn(
         // Populated by `ProjectingChannelSource::open` for an `AcpSession` CLI.
         mcp_session_servers: Vec::new(),
         session_config_option: launch.session_config_option.clone(),
+        expected_capability: launch.expected_capability.clone(),
     })
 }
 
@@ -1083,6 +1086,7 @@ mod tests {
             }],
             identity: AcpLaunchIdentity::Managed,
             session_config_option: None,
+            expected_capability: None,
         };
         let debug = format!("{launch:?}");
         assert!(!debug.contains("lease://acp-exact"));

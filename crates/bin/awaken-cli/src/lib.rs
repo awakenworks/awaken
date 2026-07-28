@@ -1362,6 +1362,7 @@ async fn management_router_over(
                     credentials.clone(),
                 )
                 .with_profiles(profiles.clone())
+                .with_worker_directory(awaken_server::worker_directory())
                 .with_brokered_access(cloud_models_enabled),
             ),
             materializer: Some(Arc::new({

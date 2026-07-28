@@ -76,6 +76,7 @@ pub struct AgentSession {
     /// Exact backend-owned model selection to apply over ACP after opening the
     /// session. `None` leaves the CLI's own default untouched.
     pub session_config_option: Option<awaken_protocol_acp::SessionConfigOptionSelection>,
+    pub expected_capability: Option<awaken_protocol_acp::AcpCapabilityExpectation>,
 }
 
 /// Opens an [`AgentSession`] for a run. The one seam the host wires: local =
@@ -627,6 +628,7 @@ impl AcpRunExecutor {
             config.session_id = acp_session_id.take();
             config.session_mode = self.session_mode.clone();
             config.session_config_option = session.session_config_option.clone();
+            config.expected_capability = session.expected_capability.clone();
             config.session_cwd = session.workspace_cwd.clone();
             config.auth_method_id = match Backend::from_ref(&backend_ref) {
                 Backend::Acp { cli } => acp_cli(&cli)

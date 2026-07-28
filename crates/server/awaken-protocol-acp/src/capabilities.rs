@@ -14,8 +14,15 @@ pub(crate) fn project(
     init: InitializeResponse,
     session: NewSessionResponse,
 ) -> NegotiatedAcpCapabilities {
-    let modes = session
-        .modes
+    project_parts(init, session.modes, session.config_options)
+}
+
+pub(crate) fn project_parts(
+    init: InitializeResponse,
+    session_modes: Option<SessionModeState>,
+    session_config_options: Option<Vec<SessionConfigOption>>,
+) -> NegotiatedAcpCapabilities {
+    let modes = session_modes
         .map(|state| {
             let current = state.current_mode_id.0;
             state
@@ -30,8 +37,7 @@ pub(crate) fn project(
                 .collect()
         })
         .unwrap_or_default();
-    let config_options = session
-        .config_options
+    let config_options = session_config_options
         .unwrap_or_default()
         .into_iter()
         .filter_map(project_config_option)
@@ -49,26 +55,6 @@ pub(crate) fn project(
         modes,
         config_options,
     }
-}
-
-pub(crate) fn mode_ids(modes: Option<SessionModeState>) -> Vec<String> {
-    modes
-        .map(|state| {
-            state
-                .available_modes
-                .into_iter()
-                .map(|mode| mode.id.0.to_string())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-pub(crate) fn config_option_ids(options: Option<Vec<SessionConfigOption>>) -> Vec<String> {
-    options
-        .unwrap_or_default()
-        .into_iter()
-        .map(|option| option.id.0.to_string())
-        .collect()
 }
 
 fn project_config_option(option: SessionConfigOption) -> Option<AcpSessionConfigOptionDescriptor> {

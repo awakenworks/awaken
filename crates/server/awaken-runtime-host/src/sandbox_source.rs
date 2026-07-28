@@ -198,6 +198,7 @@ impl AgentChannelSource for BoundLocalChannelSource {
             workspace_cwd: Some(self.sandbox.workspace_cwd()),
             mcp_session_servers: injection.session_servers,
             session_config_option: launch.session_config_option,
+            expected_capability: launch.expected_capability,
         })
     }
 }
@@ -445,6 +446,9 @@ mod tests {
             Ok(awaken_run_executor_acp::ResolvedModel::backend_owned(
                 self.selection,
                 self.model,
+                "codex",
+                "test",
+                "sha256:test",
             ))
         }
     }

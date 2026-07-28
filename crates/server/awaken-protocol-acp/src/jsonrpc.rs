@@ -29,7 +29,9 @@ use agent_client_protocol::{
 use awaken_acp_contract::{AcpCapabilityProbeConfig, NegotiatedAcpCapabilities};
 use awaken_agent_channel::AgentChannel;
 use serde::Serialize;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+mod wire;
+use wire::{JSONRPC, Wire};
 
 /// Map the neutral [`crate::SessionMcpServer`]s onto the ACP `session/new` `mcpServers`
 /// param: an HTTP server carries its auth as a header, a stdio server as an env var
@@ -74,7 +76,6 @@ use crate::{
     TurnConfig, notify_launch,
 };
 
-const JSONRPC: &str = "2.0";
 const ID_INITIALIZE: u64 = 1;
 const ID_NEW_SESSION: u64 = 2;
 const ID_PROMPT: u64 = 3;
@@ -88,15 +89,6 @@ const ID_AUTHENTICATE: u64 = 5;
 const ID_SET_CONFIG_OPTION: u64 = 6;
 /// JSON-RPC "method not found" (the reply to any capability we do not advertise).
 const METHOD_NOT_FOUND: i64 = -32601;
-
-/// One outbound JSON-RPC request: `{"jsonrpc","id","method","params"}`.
-#[derive(Serialize)]
-struct OutRequest<'a, P: Serialize> {
-    jsonrpc: &'a str,
-    id: u64,
-    method: &'a str,
-    params: P,
-}
 
 /// One outbound JSON-RPC result response to an inbound request id.
 #[derive(Serialize)]
@@ -118,90 +110,6 @@ struct OutError<'a> {
 struct RpcErrorBody<'a> {
     code: i64,
     message: &'a str,
-}
-
-/// A parsed inbound line — response (`result`/`error` + `id`), agent→client
-/// request (`id` + `method`), or notification (`method`, no `id`).
-#[derive(serde::Deserialize)]
-struct Incoming {
-    #[serde(default)]
-    id: Option<serde_json::Value>,
-    #[serde(default)]
-    method: Option<String>,
-    #[serde(default)]
-    params: Option<serde_json::Value>,
-    #[serde(default)]
-    result: Option<serde_json::Value>,
-    #[serde(default)]
-    error: Option<serde_json::Value>,
-}
-
-/// The newline-delimited JSON-RPC transport over one agent channel: one message
-/// per line (the wire the official stdio connection uses).
-struct Wire<'a> {
-    reader: BufReader<&'a mut dyn AgentChannel>,
-    line: String,
-}
-
-impl<'a> Wire<'a> {
-    fn new(channel: &'a mut dyn AgentChannel) -> Self {
-        Self {
-            reader: BufReader::new(channel),
-            line: String::new(),
-        }
-    }
-
-    async fn send<P: Serialize>(&mut self, msg: &P) -> Result<(), AcpError> {
-        let mut buf = serde_json::to_vec(msg).map_err(|e| AcpError::Frame(e.to_string()))?;
-        buf.push(b'\n');
-        self.reader
-            .get_mut()
-            .write_all(&buf)
-            .await
-            .map_err(|e| AcpError::Io(e.to_string()))?;
-        self.reader
-            .get_mut()
-            .flush()
-            .await
-            .map_err(|e| AcpError::Io(e.to_string()))
-    }
-
-    async fn send_request<P: Serialize>(
-        &mut self,
-        id: u64,
-        method: &str,
-        params: P,
-    ) -> Result<(), AcpError> {
-        self.send(&OutRequest {
-            jsonrpc: JSONRPC,
-            id,
-            method,
-            params,
-        })
-        .await
-    }
-
-    /// Read one message, or `None` at end of stream.
-    async fn read(&mut self) -> Result<Option<Incoming>, AcpError> {
-        loop {
-            self.line.clear();
-            let n = self
-                .reader
-                .read_line(&mut self.line)
-                .await
-                .map_err(|e| AcpError::Io(e.to_string()))?;
-            if n == 0 {
-                return Ok(None);
-            }
-            let trimmed = self.line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            return serde_json::from_str::<Incoming>(trimmed)
-                .map(Some)
-                .map_err(|e| AcpError::Frame(e.to_string()));
-        }
-    }
 }
 
 async fn initialize_agent(
@@ -362,66 +270,85 @@ pub async fn run_turn_with_config(
     //    hold a prior id and the agent supports it; else session/new. Fail-safe:
     //    an agent that does not advertise `loadSession` falls back to a fresh
     //    session (the neutral thread history is the authority — never lost).
-    let (session_id, available_modes, available_config_options): (
-        SessionId,
-        Vec<String>,
-        Vec<String>,
-    ) = match config.session_id.clone() {
-        Some(prior) if can_load => {
-            wire.send_request(
-                ID_NEW_SESSION,
-                AGENT_METHOD_NAMES.session_load,
-                LoadSessionRequest::new(SessionId::new(prior.as_str()), cwd.as_str()),
-            )
-            .await?;
-            match pump_response(&mut wire, ID_NEW_SESSION, sink, &mut seq, resolver).await? {
-                RpcResponse::Result(result) => {
-                    let resp: LoadSessionResponse = parse(result)?;
-                    (
-                        SessionId::new(prior.as_str()),
-                        crate::capabilities::mode_ids(resp.modes),
-                        crate::capabilities::config_option_ids(resp.config_options),
-                    )
-                }
-                RpcResponse::Error(error) if is_missing_session_error(&error) => {
-                    // Some agents advertise loadSession but retain ids only for the
-                    // lifetime of one ACP process (Kimi Code is one example). No
-                    // prompt has been sent yet, so opening a fresh session is a safe
-                    // compatibility fallback and cannot replay agent work.
-                    let new_session = open_new_session(
-                        &mut wire,
-                        sink,
-                        &mut seq,
-                        resolver,
-                        &cwd,
-                        &config.mcp_servers,
-                    )
-                    .await?;
-                    let modes = crate::capabilities::mode_ids(new_session.modes);
-                    let options =
-                        crate::capabilities::config_option_ids(new_session.config_options);
-                    (new_session.session_id, modes, options)
-                }
-                RpcResponse::Error(error) => {
-                    return Err(AcpError::Frame(error.to_string()));
+    let (session_id, negotiated): (SessionId, NegotiatedAcpCapabilities) =
+        match config.session_id.clone() {
+            Some(prior) if can_load => {
+                wire.send_request(
+                    ID_NEW_SESSION,
+                    AGENT_METHOD_NAMES.session_load,
+                    LoadSessionRequest::new(SessionId::new(prior.as_str()), cwd.as_str()),
+                )
+                .await?;
+                match pump_response(&mut wire, ID_NEW_SESSION, sink, &mut seq, resolver).await? {
+                    RpcResponse::Result(result) => {
+                        let resp: LoadSessionResponse = parse(result)?;
+                        let negotiated = crate::capabilities::project_parts(
+                            init.clone(),
+                            resp.modes,
+                            resp.config_options,
+                        );
+                        (SessionId::new(prior.as_str()), negotiated)
+                    }
+                    RpcResponse::Error(error) if is_missing_session_error(&error) => {
+                        // Some agents advertise loadSession but retain ids only for the
+                        // lifetime of one ACP process (Kimi Code is one example). No
+                        // prompt has been sent yet, so opening a fresh session is a safe
+                        // compatibility fallback and cannot replay agent work.
+                        let new_session = open_new_session(
+                            &mut wire,
+                            sink,
+                            &mut seq,
+                            resolver,
+                            &cwd,
+                            &config.mcp_servers,
+                        )
+                        .await?;
+                        let session_id = new_session.session_id.clone();
+                        let negotiated = crate::capabilities::project(init.clone(), new_session);
+                        (session_id, negotiated)
+                    }
+                    RpcResponse::Error(error) => {
+                        return Err(AcpError::Frame(error.to_string()));
+                    }
                 }
             }
+            _ => {
+                let new_session = open_new_session(
+                    &mut wire,
+                    sink,
+                    &mut seq,
+                    resolver,
+                    &cwd,
+                    &config.mcp_servers,
+                )
+                .await?;
+                let session_id = new_session.session_id.clone();
+                let negotiated = crate::capabilities::project(init.clone(), new_session);
+                (session_id, negotiated)
+            }
+        };
+    if let Some(expected) = &config.expected_capability {
+        let actual = awaken_acp_contract::capability_fingerprint(
+            &expected.adapter_id,
+            &expected.adapter_version,
+            &negotiated,
+        );
+        if actual != expected.fingerprint {
+            return Err(AcpError::Frame(
+                "ACP capability fingerprint changed after publication".into(),
+            ));
         }
-        _ => {
-            let new_session = open_new_session(
-                &mut wire,
-                sink,
-                &mut seq,
-                resolver,
-                &cwd,
-                &config.mcp_servers,
-            )
-            .await?;
-            let modes = crate::capabilities::mode_ids(new_session.modes);
-            let options = crate::capabilities::config_option_ids(new_session.config_options);
-            (new_session.session_id, modes, options)
-        }
-    };
+    }
+    let available_modes = negotiated
+        .modes
+        .iter()
+        .map(|mode| mode.native_id.clone())
+        .collect::<Vec<_>>();
+    let available_config_options = negotiated
+        .config_options
+        .iter()
+        .map(|option| option.native_id.clone())
+        .collect::<Vec<_>>();
     // Record the negotiated id so the caller resumes this session next turn.
     config.session_id = Some(session_id.to_string());
 
@@ -1613,6 +1540,88 @@ mod tests {
             .await
             .expect_err("C2");
         assert!(error.to_string().contains("was not advertised"), "C2");
+        agent.await.unwrap();
+    }
+
+    // Cause/effect decision table for the claim-to-launch capability fence:
+    // F1 live handshake fingerprint equals publication pin -> continue.
+    // F2 any mode/option/protocol difference changes fingerprint -> fail before
+    // set_mode, set_config_option, or prompt; no backend/default fallback.
+    #[tokio::test]
+    async fn capability_fingerprint_matches_or_fails_before_prompt() {
+        let live = NegotiatedAcpCapabilities {
+            protocol_version: "1".into(),
+            load_session: false,
+            prompt_image: false,
+            prompt_audio: false,
+            prompt_embedded_context: false,
+            mcp_http: false,
+            mcp_sse: false,
+            session_list: false,
+            modes: Vec::new(),
+            config_options: Vec::new(),
+        };
+        let expected = awaken_acp_contract::capability_fingerprint("codex", "test", &live);
+        let (mut ours, theirs) = channel();
+        let matching_agent = tokio::spawn(async move {
+            let mut io = AgentIo::new(theirs);
+            io.read().await;
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#,
+            )
+            .await;
+            io.read().await;
+            io.write_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1"}}"#)
+                .await;
+            let prompt = io.read().await.expect("F1 prompt");
+            assert_eq!(
+                prompt.get("method").and_then(|value| value.as_str()),
+                Some(AGENT_METHOD_NAMES.session_prompt),
+                "F1"
+            );
+            io.write_line(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#)
+                .await;
+        });
+        let mut sink = RecordingSink::default();
+        let mut config = TurnConfig::new(&AllowAll);
+        config.expected_capability = Some(crate::AcpCapabilityExpectation {
+            adapter_id: "codex".into(),
+            adapter_version: "test".into(),
+            fingerprint: expected,
+        });
+        run_turn_with_config(ours.as_mut(), "p", &mut sink, &mut config, None)
+            .await
+            .expect("F1");
+        matching_agent.await.unwrap();
+
+        let (mut ours, theirs) = channel();
+        let agent = tokio::spawn(async move {
+            let mut io = AgentIo::new(theirs);
+            io.read().await; // initialize
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#,
+            )
+            .await;
+            io.read().await; // session/new
+            io.write_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1"}}"#)
+                .await;
+            assert!(
+                io.read().await.is_none(),
+                "F2: no configuration or prompt follows a mismatched handshake"
+            );
+        });
+        let mut sink = RecordingSink::default();
+        let mut config = TurnConfig::new(&AllowAll);
+        config.expected_capability = Some(crate::AcpCapabilityExpectation {
+            adapter_id: "codex".into(),
+            adapter_version: "test".into(),
+            fingerprint: "sha256:not-the-live-profile".into(),
+        });
+        let error = run_turn_with_config(ours.as_mut(), "p", &mut sink, &mut config, None)
+            .await
+            .expect_err("F2");
+        assert!(error.to_string().contains("fingerprint"), "F2");
+        drop(ours);
         agent.await.unwrap();
     }
 

@@ -353,6 +353,7 @@ pub enum ResolvedModel {
     BackendOwned {
         model_selection: BackendModelSelection,
         model: String,
+        capability: awaken_protocol_acp::AcpCapabilityExpectation,
     },
 }
 
@@ -394,10 +395,21 @@ impl ResolvedModel {
     }
 
     #[must_use]
-    pub fn backend_owned(model_selection: BackendModelSelection, model: impl Into<String>) -> Self {
+    pub fn backend_owned(
+        model_selection: BackendModelSelection,
+        model: impl Into<String>,
+        adapter_id: impl Into<String>,
+        adapter_version: impl Into<String>,
+        fingerprint: impl Into<String>,
+    ) -> Self {
         Self::BackendOwned {
             model_selection,
             model: model.into(),
+            capability: awaken_protocol_acp::AcpCapabilityExpectation {
+                adapter_id: adapter_id.into(),
+                adapter_version: adapter_version.into(),
+                fingerprint: fingerprint.into(),
+            },
         }
     }
 
@@ -464,6 +476,7 @@ impl AcpCli {
         if let ResolvedModel::BackendOwned {
             model_selection,
             model,
+            capability,
         } = model
         {
             // A retained managed projection cannot shadow the CLI-owned account,
@@ -526,6 +539,7 @@ impl AcpCli {
                 env: env.into_values().collect(),
                 identity: AcpLaunchIdentity::BackendOwned,
                 session_config_option,
+                expected_capability: Some(capability.clone()),
             });
         }
 
@@ -551,6 +565,7 @@ impl AcpCli {
                 env: env.into_values().collect(),
                 identity: AcpLaunchIdentity::Managed,
                 session_config_option,
+                expected_capability: None,
             });
         };
         if !base_url.is_empty() {
@@ -599,6 +614,7 @@ impl AcpCli {
             env: env.into_values().collect(),
             identity: AcpLaunchIdentity::Managed,
             session_config_option,
+            expected_capability: None,
         })
     }
 
@@ -1088,7 +1104,13 @@ mod tests {
             }
             let launch = cli
                 .try_project(
-                    &ResolvedModel::backend_owned(BackendModelSelection::Default, ""),
+                    &ResolvedModel::backend_owned(
+                        BackendModelSelection::Default,
+                        "",
+                        cli.id,
+                        "test",
+                        "sha256:test",
+                    ),
                     Some(999),
                     &stale_managed_env,
                 )
@@ -1108,7 +1130,13 @@ mod tests {
             }
         }
 
-        let exact = ResolvedModel::backend_owned(BackendModelSelection::Exact, "model-x");
+        let exact = ResolvedModel::backend_owned(
+            BackendModelSelection::Exact,
+            "model-x",
+            "codex",
+            "test",
+            "sha256:test",
+        );
         let claude = acp_cli("claude")
             .unwrap()
             .try_project(&exact, None, &[])
@@ -1610,7 +1638,13 @@ mod tests {
         let absolute = vec!["/var/lib/awaken/acp-wrappers/claude-agent-acp".to_string()];
         let default = claude
             .try_project_with_argv(
-                &ResolvedModel::backend_owned(BackendModelSelection::Default, ""),
+                &ResolvedModel::backend_owned(
+                    BackendModelSelection::Default,
+                    "",
+                    "codex",
+                    "test",
+                    "sha256:test",
+                ),
                 None,
                 &[],
                 Some(&absolute),
@@ -1620,7 +1654,13 @@ mod tests {
 
         let exact = claude
             .try_project_with_argv(
-                &ResolvedModel::backend_owned(BackendModelSelection::Exact, "model-x"),
+                &ResolvedModel::backend_owned(
+                    BackendModelSelection::Exact,
+                    "model-x",
+                    "codex",
+                    "test",
+                    "sha256:test",
+                ),
                 None,
                 &[],
                 Some(&absolute),
@@ -1634,7 +1674,13 @@ mod tests {
         assert!(
             claude
                 .try_project_with_argv(
-                    &ResolvedModel::backend_owned(BackendModelSelection::Default, ""),
+                    &ResolvedModel::backend_owned(
+                        BackendModelSelection::Default,
+                        "",
+                        "codex",
+                        "test",
+                        "sha256:test",
+                    ),
                     None,
                     &[],
                     Some(&[]),
