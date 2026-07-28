@@ -1097,22 +1097,24 @@ mod tests {
     }
 
     #[test]
-    fn pinned_selection_is_wire_identical_to_the_flat_triple() {
-        // A pinned selection serializes as the bare triple it always was, so a
-        // config's fingerprint is unchanged by the ModelSelection type (ADR-0052 D5).
+    fn every_model_selection_has_one_strict_tagged_wire_shape() {
         let selection = ModelSelection::pinned("p", "m", "b");
         let json = serde_json::to_value(&selection).unwrap();
         assert_eq!(
             json,
-            serde_json::json!({"provider_identity_ref": "p", "model_ref": "m", "backend_ref": "b"})
+            serde_json::json!({"mode": "pinned", "provider_identity_ref": "p", "model_ref": "m", "backend_ref": "b"})
         );
-        // Round-trips, and the historic flat triple still decodes as Pinned.
         assert_eq!(
             serde_json::from_value::<ModelSelection>(json).unwrap(),
             selection
         );
-        // Policy selections use explicit tagged shapes and never masquerade as
-        // the historic flat binding.
+        assert!(
+            serde_json::from_value::<ModelSelection>(
+                serde_json::json!({"provider_identity_ref": "p", "model_ref": "m", "backend_ref": "b"})
+            )
+            .is_err(),
+            "the retired untagged pinned shape must not remain a second path"
+        );
         let auto = serde_json::to_value(ModelSelection::Auto).unwrap();
         assert_eq!(auto, serde_json::json!({"mode": "auto"}));
         assert_eq!(

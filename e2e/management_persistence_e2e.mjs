@@ -134,6 +134,7 @@ async function main() {
       name: 'Calculator',
       system: 'Use the calculator tool and report its result.',
       model: {
+        mode: 'pinned',
         provider_identity_ref: 'default',
         model_ref: 'management',
         backend_ref: 'default',

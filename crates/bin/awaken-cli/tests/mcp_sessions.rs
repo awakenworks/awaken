@@ -446,6 +446,7 @@ async fn published_agent_mcp_binding_takes_effect_without_session_inline_servers
         Some(json!({
             "name": "Calculator",
             "model": {
+                "mode": "pinned",
                 "provider_identity_ref": "default",
                 "model_ref": "management",
                 "backend_ref": "default"

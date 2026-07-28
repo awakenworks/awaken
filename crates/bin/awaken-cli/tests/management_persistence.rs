@@ -200,6 +200,7 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
             Some(json!({
                 "name": "Calculator",
                 "model": {
+                    "mode": "pinned",
                     "provider_identity_ref": "anthropic",
                     "model_ref": "claude-opus-4-8",
                     "backend_ref": "default"
