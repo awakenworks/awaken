@@ -40,6 +40,8 @@ pub use awaken_control::{
     ADMIN_TOKEN_FILE, BOOTSTRAP_PRINCIPAL, BOOTSTRAP_WORKSPACE, ManagementAuthz,
     ManagementIdentityMode, RemoteManagementAuthz, TokenSpec, embedded_iam,
 };
+mod live_runtime_capabilities;
+use live_runtime_capabilities::LiveRuntimeCapabilities;
 
 /// Project the one executable ACP catalog into the management read model. This
 /// composition edge is intentionally the only place that knows both contexts;
@@ -62,6 +64,7 @@ fn runtime_capabilities(
                 remediation: cli
                     .remediation(observation.reason_code.as_deref())
                     .map(str::to_string),
+                negotiated: None,
             })
         }))
         .collect()
@@ -1535,7 +1538,12 @@ async fn management_router_over(
         deployment_state: deployment_state.clone(),
         plane,
         global_tools: global,
-        runtimes: runtime_capabilities(&assembly.local_acp_observations),
+        runtimes: Arc::new(LiveRuntimeCapabilities {
+            initial: assembly.local_acp_observations.clone(),
+            workers: awaken_server::worker_directory(),
+            credentials: credentials.clone(),
+            workspace: platform_workspace.clone(),
+        }),
         org_id: Some(org_id),
         iam,
         remote_iam,

@@ -8,6 +8,8 @@ use awaken_worker_registry::{MemoryWorkerDirectory, PostgresWorkerDirectory, Wor
 
 static DIRECTORY: OnceLock<Arc<dyn WorkerDirectory>> = OnceLock::new();
 
+pub type WorkerDirectoryHandle = Arc<dyn WorkerDirectory>;
+
 pub async fn init_postgres(url: &str) -> Result<(), String> {
     if DIRECTORY.get().is_some() {
         return Ok(());
@@ -25,7 +27,7 @@ pub fn inject(directory: Arc<dyn WorkerDirectory>) {
 
 /// Shared Worker observation authority for outer composition adapters such as
 /// publication readiness. Consumers receive only the neutral directory port.
-pub fn shared() -> Arc<dyn WorkerDirectory> {
+pub fn shared() -> WorkerDirectoryHandle {
     if let Some(directory) = DIRECTORY.get() {
         return directory.clone();
     }

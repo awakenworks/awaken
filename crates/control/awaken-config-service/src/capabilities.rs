@@ -13,6 +13,7 @@
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use axum::extract::State;
 use axum::routing::get;
@@ -41,6 +42,9 @@ pub struct LocalRuntimeCapability {
     pub login_state: Option<String>,
     pub reason_code: Option<String>,
     pub remediation: Option<String>,
+    /// Protocol-neutral negotiated descriptor projection. Its authoritative
+    /// structure is owned by the Worker ACP contract.
+    pub negotiated: Option<Value>,
 }
 
 impl RuntimeCapability {
@@ -94,6 +98,7 @@ impl RuntimeCapability {
                 "login_state": local.login_state,
                 "reason_code": local.reason_code,
                 "remediation": local.remediation,
+                "negotiated": local.negotiated,
             })),
         })
     }
@@ -101,12 +106,42 @@ impl RuntimeCapability {
 
 struct CapabilityState {
     tools: Vec<ToolDescriptor>,
+    runtimes: Arc<dyn RuntimeCapabilitySource>,
+}
+
+/// Read port for current runtime observations. Discovery remains owned by the
+/// composition adapter; this config-plane projection queries it per request.
+#[async_trait]
+pub trait RuntimeCapabilitySource: Send + Sync {
+    async fn current(&self) -> Vec<RuntimeCapability>;
+}
+
+struct StaticRuntimeCapabilities(Vec<RuntimeCapability>);
+
+#[async_trait]
+impl RuntimeCapabilitySource for StaticRuntimeCapabilities {
+    async fn current(&self) -> Vec<RuntimeCapability> {
+        self.0.clone()
+    }
+}
+
+#[must_use]
+pub fn static_runtime_capabilities(
     runtimes: Vec<RuntimeCapability>,
+) -> Arc<dyn RuntimeCapabilitySource> {
+    Arc::new(StaticRuntimeCapabilities(runtimes))
 }
 
 /// Mount `GET /v1/capabilities` over the host's advertised tool descriptors and
 /// the runtime catalog projection supplied by the composition root.
 pub fn capabilities_router(tools: Vec<ToolDescriptor>, runtimes: Vec<RuntimeCapability>) -> Router {
+    capabilities_router_with_source(tools, Arc::new(StaticRuntimeCapabilities(runtimes)))
+}
+
+pub fn capabilities_router_with_source(
+    tools: Vec<ToolDescriptor>,
+    runtimes: Arc<dyn RuntimeCapabilitySource>,
+) -> Router {
     Router::new()
         .route("/v1/capabilities", get(get_capabilities))
         .with_state(Arc::new(CapabilityState { tools, runtimes }))
@@ -126,6 +161,8 @@ async fn get_capabilities(State(state): State<Arc<CapabilityState>>) -> Json<Val
         .collect();
     let runtime_caps: Vec<Value> = state
         .runtimes
+        .current()
+        .await
         .iter()
         .map(RuntimeCapability::to_json)
         .collect();
@@ -247,6 +284,59 @@ fn sandbox_presets() -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct ChangingRuntimeSource(AtomicUsize);
+
+    #[async_trait]
+    impl RuntimeCapabilitySource for ChangingRuntimeSource {
+        async fn current(&self) -> Vec<RuntimeCapability> {
+            let state = self.0.fetch_add(1, Ordering::SeqCst);
+            vec![RuntimeCapability::acp("codex", "Codex", "test").with_local(
+                LocalRuntimeCapability {
+                    detected: true,
+                    version: Some("1".into()),
+                    login_state: Some(if state == 0 {
+                        "login_required".into()
+                    } else {
+                        "available".into()
+                    }),
+                    reason_code: None,
+                    remediation: None,
+                    negotiated: None,
+                },
+            )]
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_source_is_queried_for_each_capability_projection() {
+        // Cause/effect decision table:
+        // R1 first observation login_required -> first projection unavailable;
+        // R2 later observation available      -> next projection available.
+        // No startup snapshot is retained by the config service.
+        let source = ChangingRuntimeSource(AtomicUsize::new(0));
+        assert_eq!(
+            source.current().await[0]
+                .local
+                .as_ref()
+                .unwrap()
+                .login_state
+                .as_deref(),
+            Some("login_required"),
+            "R1"
+        );
+        assert_eq!(
+            source.current().await[0]
+                .local
+                .as_ref()
+                .unwrap()
+                .login_state
+                .as_deref(),
+            Some("available"),
+            "R2"
+        );
+    }
 
     #[test]
     fn plugin_catalog_lists_schema_carrying_plugins() {
@@ -301,6 +391,7 @@ mod tests {
             login_state: Some("available".into()),
             reason_code: Some("acp_login_available".into()),
             remediation: None,
+            negotiated: None,
         });
         let json = observed.to_json();
         assert_eq!(json["supported"], true, "C2");
