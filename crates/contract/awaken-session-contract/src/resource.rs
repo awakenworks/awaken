@@ -34,15 +34,11 @@ pub struct ResolvedRepositoryCredential {
 }
 
 /// Canonical consumption contract for a host-mediated HTTPS Git operation. The
-/// Worker adapter performs the Basic transformation; Resource and Vault contexts
-/// share this existing HTTP usage value instead of defining Git-specific secret
-/// injection vocabulary.
+/// Worker adapter performs the Basic transformation from typed username/password
+/// material; no preformatted header or token convention crosses this boundary.
 #[must_use]
 pub fn repository_transport_credential_usage() -> awaken_credential_contract::CredentialUsage {
-    awaken_credential_contract::CredentialUsage::HttpHeader {
-        name: "authorization".into(),
-        scheme: Some("Basic".into()),
-    }
+    awaken_credential_contract::CredentialUsage::HttpBasicAuth
 }
 
 impl ResolvedRepositoryCredential {

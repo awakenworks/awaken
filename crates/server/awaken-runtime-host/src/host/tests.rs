@@ -276,6 +276,24 @@ fn managed_with_resource_source(host: Arc<SharedHost>) -> crate::ManagedHost {
     crate::ManagedHost::new(host).with_resource_validator(Arc::new(TestResourceBindingValidator))
 }
 
+fn http_basic_material(username: &str, password: &str) -> awaken_agent_contract::RedactedString {
+    awaken_credential_vault::StructuredCredentialMaterial {
+        type_id: awaken_runtime_contract::credential::HTTP_BASIC_MATERIAL_TYPE.into(),
+        fields: std::collections::BTreeMap::from([
+            (
+                "username".into(),
+                awaken_agent_contract::RedactedString::new(username),
+            ),
+            (
+                "password".into(),
+                awaken_agent_contract::RedactedString::new(password),
+            ),
+        ]),
+    }
+    .encode()
+    .expect("encode HTTP Basic test material")
+}
+
 fn effective_resources(
     resources: Vec<TestInput>,
 ) -> awaken_protocol_managed::ResolvedSessionResources {
@@ -3093,9 +3111,7 @@ async fn a_github_repository_resource_does_not_create_a_parallel_mcp_projection(
             kind: awaken_credential_vault::CredentialKind::Vault,
             provider_id: Some("git".into()),
             env_key: None,
-            secret: Some(awaken_agent_contract::RedactedString::from(
-                "ghp_secret_token".to_string(),
-            )),
+            secret: Some(http_basic_material("x-access-token", "ghp_secret_token")),
             oauth_command: None,
         },
         secrets.as_ref(),
@@ -3141,7 +3157,7 @@ async fn a_github_repository_resource_does_not_create_a_parallel_mcp_projection(
         host.thread_repository_activations("t-gh")[0]
             .credential
             .as_ref()
-            .map(|credential| credential.expose_secret().to_string()),
+            .map(|credential| credential.expose_password().to_string()),
         Some("ghp_secret_token".to_string()),
         "the exact Resource realization still receives its credential"
     );
@@ -3172,9 +3188,7 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
                 kind: awaken_credential_vault::CredentialKind::Vault,
                 provider_id: Some("git".into()),
                 env_key: None,
-                secret: Some(awaken_agent_contract::RedactedString::from(
-                    "dispatch-repository-secret".to_string(),
-                )),
+                secret: Some(http_basic_material("git", "dispatch-repository-secret")),
                 oauth_command: None,
             },
             secrets.as_ref(),
@@ -3212,7 +3226,7 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
                 host.thread_repository_activations(&thread)[0]
                     .credential
                     .as_ref()
-                    .map(|material| material.expose_secret()),
+                    .map(|material| material.expose_password()),
                 Some("dispatch-repository-secret"),
                 "{rule}"
             );
@@ -3251,6 +3265,7 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
 /// | H10 | present | T | T | T | T | F | reject stale revision |
 /// | H11 | present | T | T | T | T | F | reject inactive source |
 /// | H12 | present | T | T | T | T | F | reject cross-Workspace source |
+/// | H13 | present | T | T | T | T | scalar | reject material kind |
 #[tokio::test]
 async fn repository_credential_realization_follows_the_decision_table() {
     use awaken_protocol_managed::{SessionInit, SessionRuntime};
@@ -3269,6 +3284,7 @@ async fn repository_credential_realization_follows_the_decision_table() {
         StaleRevision,
         InactiveSource,
         CrossWorkspace,
+        WrongMaterial,
     }
     struct Rule {
         id: &'static str,
@@ -3336,6 +3352,11 @@ async fn repository_credential_realization_follows_the_decision_table() {
             case: Case::CrossWorkspace,
             expected_error: Some("credential material recipient mismatch"),
         },
+        Rule {
+            id: "H13",
+            case: Case::WrongMaterial,
+            expected_error: Some("credential material kind is unsupported"),
+        },
     ];
 
     for rule in rules {
@@ -3352,9 +3373,11 @@ async fn repository_credential_realization_follows_the_decision_table() {
                 kind: awaken_credential_vault::CredentialKind::Vault,
                 provider_id: Some("git".into()),
                 env_key: None,
-                secret: Some(awaken_agent_contract::RedactedString::from(
-                    "repository-decision-secret".to_string(),
-                )),
+                secret: Some(if matches!(rule.case, Case::WrongMaterial) {
+                    awaken_agent_contract::RedactedString::new("legacy-scalar-token")
+                } else {
+                    http_basic_material("git", "repository-decision-secret")
+                }),
                 oauth_command: None,
             },
             secrets.as_ref(),
@@ -3434,7 +3457,7 @@ async fn repository_credential_realization_follows_the_decision_table() {
             Case::StaleRevision => {
                 credential.as_mut().unwrap().access.credential.revision = 2;
             }
-            Case::InactiveSource | Case::CrossWorkspace => {}
+            Case::InactiveSource | Case::CrossWorkspace | Case::WrongMaterial => {}
         }
         let thread = format!("repository-decision-{}", rule.id);
         let result = managed
@@ -3478,7 +3501,7 @@ async fn repository_credential_realization_follows_the_decision_table() {
 /// Applying a repository manifest with a new credential reference re-keys the
 /// Resource realization only; it still creates no MCP projection.
 #[tokio::test]
-async fn rotating_a_github_repository_token_re_keys_only_the_clone() {
+async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
     use awaken_protocol_managed::{SessionInit, SessionRuntime};
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
@@ -3489,9 +3512,7 @@ async fn rotating_a_github_repository_token_re_keys_only_the_clone() {
             kind: awaken_credential_vault::CredentialKind::Vault,
             provider_id: Some("git".into()),
             env_key: None,
-            secret: Some(awaken_agent_contract::RedactedString::from(
-                "ghp_old".to_string(),
-            )),
+            secret: Some(http_basic_material("x-access-token", "ghp_old")),
             oauth_command: None,
         },
         secrets.as_ref(),
@@ -3526,13 +3547,13 @@ async fn rotating_a_github_repository_token_re_keys_only_the_clone() {
         .await
         .unwrap();
 
-    let clone_token = |h: &SharedHost| {
+    let clone_password = |h: &SharedHost| {
         h.thread_repository_activations("t-rot")[0]
             .credential
             .as_ref()
-            .map(|t| t.expose_secret().to_string())
+            .map(|t| t.expose_password().to_string())
     };
-    assert_eq!(clone_token(&host).as_deref(), Some("ghp_old"));
+    assert_eq!(clone_password(&host).as_deref(), Some("ghp_old"));
 
     let next_credential = awaken_credential_vault::repo::enter_credential(
         awaken_credential_vault::CredentialCreateParams {
@@ -3540,9 +3561,7 @@ async fn rotating_a_github_repository_token_re_keys_only_the_clone() {
             kind: awaken_credential_vault::CredentialKind::Vault,
             provider_id: Some("git".into()),
             env_key: None,
-            secret: Some(awaken_agent_contract::RedactedString::from(
-                "ghp_new".to_string(),
-            )),
+            secret: Some(http_basic_material("x-access-token", "ghp_new")),
             oauth_command: None,
         },
         secrets.as_ref(),
@@ -3557,7 +3576,7 @@ async fn rotating_a_github_repository_token_re_keys_only_the_clone() {
         Some(next_credential.id.0),
     );
 
-    // The Managed adapter stores the supplied token in the Vault and publishes a
+    // The Managed adapter stores the supplied credential in the Vault and publishes a
     // new Repository config before invoking this complete-manifest runtime port.
     managed
         .apply_session_inputs("t-rot", host.local_workspace(), &next)
@@ -3565,9 +3584,9 @@ async fn rotating_a_github_repository_token_re_keys_only_the_clone() {
         .unwrap();
 
     assert_eq!(
-        clone_token(&host).as_deref(),
+        clone_password(&host).as_deref(),
         Some("ghp_new"),
-        "clone token rotated"
+        "clone credential rotated"
     );
     assert!(host.active_mcp_projections("t-rot").is_empty());
 }

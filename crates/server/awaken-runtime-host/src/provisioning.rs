@@ -126,7 +126,7 @@ pub(crate) enum ResourceBindingCheck {
 #[derive(Clone)]
 pub(crate) struct RepositoryActivation {
     pub plan: pc::RepositoryRealizationPlan,
-    pub credential: Option<awaken_agent_contract::RedactedString>,
+    pub credential: Option<pc::RepositoryHttpBasicCredential>,
 }
 
 impl SharedHost {
@@ -417,13 +417,7 @@ impl SharedHost {
             .unwrap_or_default();
         for repository in repositories {
             realizer
-                .realize_repository(
-                    &repository.plan,
-                    repository
-                        .credential
-                        .as_ref()
-                        .map(|value| value.expose_secret()),
-                )
+                .realize_repository(&repository.plan, repository.credential.as_ref())
                 .await
                 .map_err(|e| crate::host::HostError::internal(e.to_string()))?;
         }
@@ -455,10 +449,7 @@ impl SharedHost {
             let _ = pc::RepositoryRealizer::publish_repository(
                 env.as_ref(),
                 &repository.plan,
-                repository
-                    .credential
-                    .as_ref()
-                    .map(|value| value.expose_secret()),
+                repository.credential.as_ref(),
             )
             .await;
         }

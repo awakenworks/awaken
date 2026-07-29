@@ -767,7 +767,7 @@ impl pc::RepositoryRealizer for LocalSandbox {
     async fn realize_repository(
         &self,
         plan: &pc::RepositoryRealizationPlan,
-        credential: Option<&str>,
+        credential: Option<&pc::RepositoryHttpBasicCredential>,
     ) -> Result<(), pc::SandboxError> {
         provision_repo_at(
             &self.root,
@@ -783,7 +783,7 @@ impl pc::RepositoryRealizer for LocalSandbox {
     async fn publish_repository(
         &self,
         plan: &pc::RepositoryRealizationPlan,
-        credential: Option<&str>,
+        credential: Option<&pc::RepositoryHttpBasicCredential>,
     ) -> Result<bool, pc::SandboxError> {
         push_repo_at(&self.root, &plan.mount_path, credential).map_err(err)
     }

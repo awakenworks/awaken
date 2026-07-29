@@ -116,6 +116,38 @@ pub struct RepositoryRealizationPlan {
     pub access: MountAccess,
 }
 
+/// Ephemeral Basic-auth value translated from an already-admitted credential at
+/// the Repository boundary. It is deliberately non-serializable and absent from
+/// [`RepositoryRealizationPlan`]; only the target adapter may expose its fields.
+#[derive(Debug, Clone)]
+pub struct RepositoryHttpBasicCredential {
+    username: awaken_agent_contract::RedactedString,
+    password: awaken_agent_contract::RedactedString,
+}
+
+impl RepositoryHttpBasicCredential {
+    #[must_use]
+    pub fn new(
+        username: impl Into<awaken_agent_contract::RedactedString>,
+        password: impl Into<awaken_agent_contract::RedactedString>,
+    ) -> Self {
+        Self {
+            username: username.into(),
+            password: password.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn expose_username(&self) -> &str {
+        self.username.expose_secret()
+    }
+
+    #[must_use]
+    pub fn expose_password(&self) -> &str {
+        self.password.expose_secret()
+    }
+}
+
 /// Environment-side adapter for a mutable Repository input. Authorization and
 /// configuration resolution happen before this port is called; implementations
 /// only construct/use a working tree. A credential value is injected ephemerally
@@ -127,7 +159,7 @@ pub trait RepositoryRealizer: Send + Sync {
     async fn realize_repository(
         &self,
         plan: &RepositoryRealizationPlan,
-        credential: Option<&str>,
+        credential: Option<&RepositoryHttpBasicCredential>,
     ) -> Result<(), SandboxError>;
 
     /// Publish Agent-authored commits from the current working branch. The caller
@@ -136,7 +168,7 @@ pub trait RepositoryRealizer: Send + Sync {
     async fn publish_repository(
         &self,
         plan: &RepositoryRealizationPlan,
-        credential: Option<&str>,
+        credential: Option<&RepositoryHttpBasicCredential>,
     ) -> Result<bool, SandboxError>;
 }
 
