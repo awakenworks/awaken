@@ -565,6 +565,7 @@ impl MetricsRecorder for RecordingMetrics {
 pub struct FlakyDispatchStore {
     inner: Arc<awaken_run_ingress::MemoryDispatchStore>,
     fail_claims: AtomicUsize,
+    claim_attempts: AtomicUsize,
 }
 
 impl FlakyDispatchStore {
@@ -573,12 +574,18 @@ impl FlakyDispatchStore {
         Self {
             inner: Arc::new(awaken_run_ingress::MemoryDispatchStore::new()),
             fail_claims: AtomicUsize::new(fail_claims),
+            claim_attempts: AtomicUsize::new(0),
         }
     }
 
     /// How many injected claim failures remain (test introspection).
     pub fn remaining_failures(&self) -> usize {
         self.fail_claims.load(Ordering::SeqCst)
+    }
+
+    /// Total ordinary queue claims, including injected failures and empty polls.
+    pub fn claim_attempts(&self) -> usize {
+        self.claim_attempts.load(Ordering::SeqCst)
     }
 }
 
@@ -630,6 +637,7 @@ impl awaken_run_ingress::DispatchQueue for FlakyDispatchStore {
         now_ms: u64,
         capabilities: &CredentialRealizationCapabilities,
     ) -> Result<Option<awaken_run_ingress::Claimed>, awaken_run_ingress::DispatchError> {
+        self.claim_attempts.fetch_add(1, Ordering::SeqCst);
         if self.fail_claims.load(Ordering::SeqCst) > 0 {
             self.fail_claims.fetch_sub(1, Ordering::SeqCst);
             return Err(awaken_run_ingress::DispatchError::Rejected(
