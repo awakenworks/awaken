@@ -16,6 +16,7 @@ mod assistant_selection;
 mod brain_admin;
 pub mod config;
 mod console_assets;
+mod exact_host_model;
 mod hosted_control;
 mod management_surface;
 mod observation_reconcile;
@@ -31,6 +32,7 @@ use awaken_runtime_host::{
     SharedHost, ToolCatalogSource,
 };
 use axum::Router;
+use exact_host_model::ExactHostModelPublicationResolver;
 
 pub use crate::brain_admin::{
     DrainController, brain_admin_router, register_active_streams_gauge, with_brain_admin,
@@ -344,47 +346,6 @@ type IdentityWiring = (
     Option<Arc<ManagementAuthz>>,
     Option<Arc<RemoteManagementAuthz>>,
 );
-
-struct ExactHostModelPublicationResolver {
-    binding: awaken_runtime_contract::resolved::ModelBinding,
-}
-
-#[async_trait::async_trait]
-impl awaken_runtime_host::ModelPublicationResolver for ExactHostModelPublicationResolver {
-    async fn resolve_models(
-        &self,
-        _workspace: &awaken_tenancy::ScopeId,
-        selection: &awaken_config_store::ModelSelection,
-        candidates: &[awaken_runtime_contract::resolved::ModelBinding],
-    ) -> Result<
-        awaken_runtime_host::ResolvedPublicationModels,
-        awaken_runtime_host::PublicationResolutionError,
-    > {
-        if let Some(authored) = selection.resolved() {
-            let matches_host = authored.model_ref == self.binding.model_ref
-                && (authored.provider_identity_ref.is_empty()
-                    || authored.provider_identity_ref == self.binding.provider_identity_ref)
-                && (authored.backend_ref.is_empty()
-                    || authored.backend_ref == self.binding.backend_ref);
-            if !matches_host {
-                return Err(format!(
-                    "scenario host executor `{}` cannot publish model `{}`",
-                    self.binding.model_ref, authored.model_ref
-                )
-                .into());
-            }
-        }
-        if !candidates.is_empty() {
-            return Err("a single host executor cannot publish fallback candidates".into());
-        }
-        Ok(awaken_runtime_host::ResolvedPublicationModels::host(
-            self.binding.clone(),
-            Vec::new(),
-            None,
-            None,
-        ))
-    }
-}
 
 /// The store set the management plane runs over — one instance of each port,
 /// shared by the authoring router, the vault front door, and session prepare.
