@@ -14,6 +14,7 @@
 mod acp_backend;
 mod acp_provision;
 mod acp_serve;
+mod acp_tool_export;
 mod agent_catalog;
 mod agent_runner;
 mod application;
@@ -60,6 +61,7 @@ mod skills_api;
 mod store;
 #[cfg(test)]
 mod test_mcp;
+mod web_search;
 mod worker_http;
 mod worker_security;
 
@@ -95,6 +97,7 @@ mod postgres_migration_lock;
 mod worker_control_client;
 
 // The neutral session substrate and its resume vocabulary.
+pub use crate::acp_tool_export::{AcpToolExport, AcpToolExporter};
 pub use crate::application::{
     ApplicationSessionControlClient, ApplicationSessionControlReceipt, ApplicationSessionError,
     ApplicationSessionPlan, ApplicationSessionProvisioner, WorkerControlApplicationSessionClient,
@@ -109,7 +112,12 @@ pub use crate::host::{
     SharedHost, remote_worker_placement, self_hosted_inference_holder,
 };
 pub use crate::postgres_migration_lock::PostgresMigrationLock;
+pub use crate::web_search::WebSearchConfigurationValidator;
 pub use crate::worker_control_client::WorkerControlClient;
+pub use awaken_ext_builtin_tools::{
+    WebSearchProvider, WebSearchProviderDescriptor, WebSearchProviderRegistry,
+    WebSearchRegistryError,
+};
 pub use awaken_protocol_managed::McpAttachmentRealizer;
 pub use awaken_sandbox_container::{ContainerEnvironment, ContainerEnvironmentProvider};
 // ACP launch projection consumes the Session environment selected by the host.
@@ -130,8 +138,9 @@ pub use crate::binding_resolver::{
 };
 pub use crate::capabilities::capabilities_router;
 pub use crate::config::{
-    advertised_tools, authorable_config_sections, authorable_tools, block_text,
-    platform_plugin_capabilities,
+    advertised_tools, authorable_config_sections, authorable_config_sections_with_web_search,
+    authorable_tools, block_text, platform_plugin_capabilities,
+    platform_plugin_capabilities_with_web_search,
 };
 pub use crate::config_plane::{
     ConfigPlane, ConfigService, ConfigServiceAgentSource, PublishError, config_router,

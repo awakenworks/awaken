@@ -1279,6 +1279,7 @@ async fn management_router_over(
         credentials.clone(),
         secrets.clone(),
     );
+    let web_search_providers = awaken_runtime_host::WebSearchProviderRegistry::builtins();
     let model_wiring = match model_composition {
         ManagementModelComposition::PublishedProviders => ManagementModelWiring {
             executor: Arc::new(awaken_server::no_model::NoModelConfiguredExecutor),
@@ -1330,6 +1331,11 @@ async fn management_router_over(
         ConfigService::new(model_wiring.publication_resolver)
             .with_credential_reference_validator(Arc::new(
                 awaken_control::CredentialRevisionValidator::new(credentials.clone()),
+            ))
+            .with_plugin_configuration_validator(Arc::new(
+                awaken_runtime_host::WebSearchConfigurationValidator::new(
+                    web_search_providers.clone(),
+                ),
             ))
             .with_resources(resource_store.clone()),
     );
@@ -1398,7 +1404,7 @@ async fn management_router_over(
         // The installable plugins (state_machine / memory / compact) so the assistant
         // knows it CAN author a state machine etc. — not an empty list (it would
         // otherwise refuse, thinking no plugins exist).
-        &awaken_runtime_host::authorable_config_sections(),
+        &awaken_runtime_host::authorable_config_sections_with_web_search(&web_search_providers),
         // The config plane, to list existing agent ids in the tenant scope.
         plane.clone(),
         platform_workspace.clone(),
@@ -1468,7 +1474,9 @@ async fn management_router_over(
         deployment_state: deployment_state.clone(),
         plane,
         global_tools: global,
-        plugins: awaken_runtime_host::platform_plugin_capabilities(),
+        plugins: awaken_runtime_host::platform_plugin_capabilities_with_web_search(
+            &web_search_providers,
+        ),
         runtimes: Arc::new(LiveRuntimeCapabilities {
             initial: assembly.local_acp_observations.clone(),
             workers: awaken_server::worker_directory(),
@@ -1513,6 +1521,9 @@ async fn management_router_over(
     };
     host_builder = host_builder
         .with_local_workspace(platform_workspace.clone())
+        .with_credential_materializer(credential_materializer.clone())
+        .with_web_search_provider_registry(web_search_providers)
+        .with_acp_tool_exporter(Arc::new(awaken_server::mcp_export::SessionToolExporter))
         .with_remote_attempt_executor(awaken_server::a2a_attempt_executor(Some(
             credential_materializer.clone(),
         )))

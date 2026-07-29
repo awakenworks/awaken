@@ -11,6 +11,8 @@ import { Card, SchemaForm, Switch } from "../ui";
 import type { JsonSchema } from "../ui";
 import { useApp } from "../../lib/app-state";
 import StateMachineEditor from "./StateMachineEditor";
+import WebSearchBehaviorEditor, { defaultWebSearchConfig } from "./WebSearchBehaviorEditor";
+import type { CredentialSource } from "../../lib/api/types";
 
 /** Friendly title + one-line description for a known runtime plugin. */
 export const BEHAVIORS: Record<string, { title: string; zh: string; desc: string; descZh: string }> = {
@@ -32,6 +34,12 @@ export const BEHAVIORS: Record<string, { title: string; zh: string; desc: string
     desc: "Control tool preconditions, durable run/thread state, lifecycle facts, reminders, and completion constraints as agent configuration.",
     descZh: "在 Agent 配置中统一控制工具前置条件、run/thread 持久状态、生命周期事实、reminder 与完成约束。",
   },
+  web_search: {
+    title: "Web search",
+    zh: "网页搜索",
+    desc: "Choose a free or paid search provider and bind paid API access to an exact Vault credential revision.",
+    descZh: "选择免费或付费搜索供应商，并把付费 API 绑定到 Vault 中的精确凭证版本。",
+  },
 };
 
 export default function BehaviorCard({
@@ -42,6 +50,7 @@ export default function BehaviorCard({
   onToggle,
   onConfig,
   changed = false,
+  credentials = [],
 }: {
   id: string;
   schema?: JsonSchema;
@@ -51,6 +60,7 @@ export default function BehaviorCard({
   onConfig: (next: unknown) => void;
   /** The assistant changed this behavior since the operator last authored it. */
   changed?: boolean;
+  credentials?: CredentialSource[];
 }) {
   const app = useApp();
   const meta = BEHAVIORS[id];
@@ -88,7 +98,13 @@ export default function BehaviorCard({
           </div>
           <div className="behavior-desc">{desc}</div>
         </span>
-        <Switch aria-label={title} checked={enabled} onChange={(e) => onToggle(e.target.checked)} />
+        <Switch aria-label={title} checked={enabled} onChange={(e) => {
+          const next = e.target.checked;
+          if (next && id === "web_search" && schema && !config.provider_id) {
+            onConfig(defaultWebSearchConfig(schema));
+          }
+          onToggle(next);
+        }} />
       </label>
       {enabled && (
         <div style={{ marginTop: 10 }}>
@@ -96,6 +112,16 @@ export default function BehaviorCard({
             // The state machine gets a purpose-built diagram + table editor (not the
             // generic schema form) — its nested graph is far clearer visually.
             <StateMachineEditor value={config} onChange={onConfig} />
+          ) : id === "web_search" && schema ? (
+            <>
+              <WebSearchBehaviorEditor schema={schema} value={config} credentials={credentials} onChange={onConfig} />
+              <details style={{ marginTop: 8 }}>
+                <summary className="mut" style={{ fontSize: 12, cursor: "pointer" }}>
+                  {app.t("Advanced (raw JSON)", "高级(原始 JSON)")}
+                </summary>
+                <div style={{ marginTop: 6 }}>{jsonBox}</div>
+              </details>
+            </>
           ) : schema ? (
             <>
               <SchemaForm schema={schema} value={config} onChange={onConfig} />
