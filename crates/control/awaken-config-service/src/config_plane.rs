@@ -21,7 +21,7 @@ use awaken_tenancy::ScopeId;
 use crate::binding_resolver::ModelPublicationResolver;
 use crate::credential_reference::{CredentialReferenceValidator, validate_credential_references};
 use crate::installed_catalog::InstalledAgentCatalog;
-use crate::plugin_validation::{PluginConfigurationValidator, validate_plugin_configuration};
+use crate::plugin_validation::{PluginPublicationResolver, resolve_plugin_configuration};
 use crate::publication::{
     PublishError, ValidationIssue, prepare_agent_publication, snapshot_metadata,
 };
@@ -66,7 +66,7 @@ pub struct ConfigService {
     /// publish through an implicit host/provider fallback.
     pub(crate) model_publication_resolver: Arc<dyn ModelPublicationResolver>,
     pub(crate) credential_reference_validator: Option<Arc<dyn CredentialReferenceValidator>>,
-    pub(crate) plugin_configuration_validators: Vec<Arc<dyn PluginConfigurationValidator>>,
+    pub(crate) plugin_publication_resolvers: Vec<Arc<dyn PluginPublicationResolver>>,
 }
 
 impl ConfigService {
@@ -86,7 +86,7 @@ impl ConfigService {
         // (`CompileError::field_path`), so the UI projects the issue to the right section
         // instead of parsing a free-text string. An auto-model that can't resolve is a
         // `model` issue; a compile failure carries its own field.
-        let resolved = prepare_agent_publication(
+        let mut resolved = prepare_agent_publication(
             self.model_publication_resolver.as_ref(),
             workspace,
             AgentConfigRevision {
@@ -99,6 +99,12 @@ impl ConfigService {
             path: "model".to_string(),
             message: e.to_string(),
         })?;
+        resolve_plugin_configuration(
+            &self.plugin_publication_resolvers,
+            workspace,
+            &mut resolved.config,
+        )
+        .await?;
         validate_credential_references(
             self.credential_reference_validator.as_ref(),
             workspace,
@@ -109,7 +115,6 @@ impl ConfigService {
             path: error.path,
             message: error.message,
         })?;
-        validate_plugin_configuration(&self.plugin_configuration_validators, &resolved.config)?;
         awaken_config_store::compile_published(
             &resolved.config,
             catalog,
@@ -227,12 +232,21 @@ impl ConfigService {
             return Err(PublishError::Unavailable(id.to_string()));
         }
         let source_revision = versioned.revision;
-        let resolved = prepare_agent_publication(
+        let mut resolved = prepare_agent_publication(
             self.model_publication_resolver.as_ref(),
             workspace,
             versioned,
         )
         .await?;
+        resolve_plugin_configuration(
+            &self.plugin_publication_resolvers,
+            workspace,
+            &mut resolved.config,
+        )
+        .await
+        .map_err(|error| {
+            PublishError::Unresolvable(format!("{}: {}", error.path, error.message))
+        })?;
         validate_credential_references(
             self.credential_reference_validator.as_ref(),
             workspace,
@@ -242,10 +256,6 @@ impl ConfigService {
         .map_err(|error| {
             PublishError::Unresolvable(format!("{}: {}", error.path, error.message))
         })?;
-        validate_plugin_configuration(&self.plugin_configuration_validators, &resolved.config)
-            .map_err(|error| {
-                PublishError::Unresolvable(format!("{}: {}", error.path, error.message))
-            })?;
         let mut metadata = snapshot_metadata(&resolved);
         if let Some(defaults) = self.resources.as_ref().and_then(|store| {
             store

@@ -41,7 +41,7 @@ pub use config_plane::{ConfigPlane, ConfigService};
 pub use config_routes::config_router;
 pub use credential_reference::CredentialReferenceValidator;
 pub use managed_agent::{agent_config_from_managed, managed_from_agent_config};
-pub use plugin_validation::PluginConfigurationValidator;
+pub use plugin_validation::PluginPublicationResolver;
 pub use publication::{PublishError, ValidationIssue};
 pub use tool_catalog::{
     RESERVED_ADMIN_SCOPE, ScopedToolCatalog, StaticToolCatalog, ToolCatalogSource,

@@ -33,6 +33,7 @@ pub async fn build_control_assembly_with_deployment(
         deployment,
         key,
         ManagementModelComposition::PublishedProviders,
+        None,
     )
     .await
 }
@@ -49,10 +50,35 @@ pub async fn build_control_router_with_publication_resolver(
     key: &[u8; 32],
     resolver: Arc<dyn awaken_session_executor::ModelPublicationResolver>,
 ) -> Result<Router, String> {
+    let providers = awaken_session_executor::WebSearchProviderRegistry::builtins();
+    let publication_resolver = Arc::new(awaken_session_executor::WebSearchPublicationResolver::new(
+        providers.clone(),
+    ));
+    build_control_router_with_publication_resolver_and_web_search(
+        deployment,
+        key,
+        resolver,
+        providers,
+        publication_resolver,
+    )
+    .await
+}
+
+/// Hosted control assembly with deployment-owned model and WebSearch
+/// publication adapters. This remains the same canonical Management assembly;
+/// the closed composition supplies only existing open ports and provider facts.
+pub async fn build_control_router_with_publication_resolver_and_web_search(
+    deployment: &config::ResolvedDeployment,
+    key: &[u8; 32],
+    resolver: Arc<dyn awaken_session_executor::ModelPublicationResolver>,
+    web_search_providers: awaken_session_executor::WebSearchProviderRegistry,
+    web_search_publication_resolver: Arc<dyn awaken_session_executor::PluginPublicationResolver>,
+) -> Result<Router, String> {
     build_control_assembly_with_model_composition(
         deployment,
         key,
         ManagementModelComposition::HostedPublication { resolver },
+        Some((web_search_providers, web_search_publication_resolver)),
     )
     .await
     .map(|assembly| assembly.router)
@@ -62,6 +88,10 @@ async fn build_control_assembly_with_model_composition(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
     model_composition: ManagementModelComposition,
+    web_search: Option<(
+        awaken_session_executor::WebSearchProviderRegistry,
+        Arc<dyn awaken_session_executor::PluginPublicationResolver>,
+    )>,
 ) -> Result<ManagementAssembly, String> {
     let identity = identity_wiring(
         deployment.identity_mode,
@@ -96,6 +126,8 @@ async fn build_control_assembly_with_model_composition(
             cloud_models_enabled: deployment.cloud_models.is_enabled(),
             local_acp_observations: Vec::new(),
             hand_executors: BTreeMap::new(),
+            web_search_providers: web_search.as_ref().map(|value| value.0.clone()),
+            web_search_publication_resolver: web_search.map(|value| value.1),
         },
         None,
     )

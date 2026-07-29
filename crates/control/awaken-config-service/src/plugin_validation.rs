@@ -1,37 +1,49 @@
-//! Publication-side port for extension-owned configuration semantics.
+//! Publication-side port for extension-owned configuration resolution.
 //!
 //! JSON Schema drives discovery and forms; the extension remains the semantic
-//! authority. A composition supplies one validator catalog so ConfigService
-//! never imports concrete plugins or duplicates their parsing rules.
+//! authority. A composition supplies one resolver catalog so ConfigService
+//! never imports concrete plugins or duplicates validation and publication
+//! transformation rules.
 
 use awaken_config_store::AgentConfig;
 
-pub trait PluginConfigurationValidator: Send + Sync {
+#[async_trait::async_trait]
+pub trait PluginPublicationResolver: Send + Sync {
     fn plugin_id(&self) -> &str;
-    fn validate(&self, config: Option<&serde_json::Value>) -> Result<(), String>;
+    /// Validate authored configuration and return its canonical, secret-free
+    /// publication form. Implementations may resolve deployment-owned immutable
+    /// references, but must not materialize credentials or perform runtime I/O.
+    async fn resolve(
+        &self,
+        workspace: &awaken_tenancy::ScopeId,
+        config: Option<&serde_json::Value>,
+    ) -> Result<serde_json::Value, String>;
 }
 
-pub(crate) fn validate_plugin_configuration(
-    validators: &[std::sync::Arc<dyn PluginConfigurationValidator>],
-    config: &AgentConfig,
+pub(crate) async fn resolve_plugin_configuration(
+    resolvers: &[std::sync::Arc<dyn PluginPublicationResolver>],
+    workspace: &awaken_tenancy::ScopeId,
+    config: &mut AgentConfig,
 ) -> Result<(), crate::publication::ValidationIssue> {
-    for plugin_id in &config.plugin_ids {
-        let mut owned = validators
+    for plugin_id in config.plugin_ids.clone() {
+        let mut owned = resolvers
             .iter()
-            .filter(|validator| validator.plugin_id() == plugin_id);
-        if let Some(validator) = owned.next() {
+            .filter(|resolver| resolver.plugin_id() == plugin_id);
+        if let Some(resolver) = owned.next() {
             if owned.next().is_some() {
                 return Err(crate::publication::ValidationIssue {
                     path: format!("plugin_config.{plugin_id}"),
-                    message: format!("plugin `{plugin_id}` has more than one semantic validator"),
+                    message: format!("plugin `{plugin_id}` has more than one publication resolver"),
                 });
             }
-            validator
-                .validate(config.plugin_config.get(plugin_id))
+            let resolved = resolver
+                .resolve(workspace, config.plugin_config.get(&plugin_id))
+                .await
                 .map_err(|message| crate::publication::ValidationIssue {
                     path: format!("plugin_config.{plugin_id}"),
                     message,
                 })?;
+            config.plugin_config.insert(plugin_id, resolved);
         }
     }
     Ok(())
@@ -43,27 +55,36 @@ mod tests {
 
     struct Catalog;
 
-    impl PluginConfigurationValidator for Catalog {
+    #[async_trait::async_trait]
+    impl PluginPublicationResolver for Catalog {
         fn plugin_id(&self) -> &str {
             "owned"
         }
 
-        fn validate(&self, config: Option<&serde_json::Value>) -> Result<(), String> {
-            config
-                .and_then(|value| value.get("valid"))
-                .and_then(serde_json::Value::as_bool)
-                .filter(|valid| *valid)
-                .map(|_| ())
-                .ok_or_else(|| "owned config is invalid".into())
+        async fn resolve(
+            &self,
+            workspace: &awaken_tenancy::ScopeId,
+            config: Option<&serde_json::Value>,
+        ) -> Result<serde_json::Value, String> {
+            let authored = config.ok_or_else(|| "owned config is invalid".to_string())?;
+            if authored.get("valid").and_then(serde_json::Value::as_bool) != Some(true) {
+                return Err("owned config is invalid".to_string());
+            }
+            Ok(serde_json::json!({
+                "valid": authored["valid"],
+                "workspace": workspace.as_str(),
+            }))
         }
     }
 
-    #[test]
-    fn active_owned_plugin_uses_extension_semantics() {
-        // Cause/effect table: active+owned+valid succeeds; active+owned+bad
-        // reports the plugin path; inactive sections and active unowned plugins
-        // are not reinterpreted by this catalog.
-        let validators: Vec<std::sync::Arc<dyn PluginConfigurationValidator>> =
+    #[tokio::test]
+    async fn active_owned_plugin_uses_one_resolution_semantics() {
+        // Cause/effect graph and decision table:
+        // R1 active+owned+valid -> canonical Workspace-bound value;
+        // R2 active+owned+bad -> exact plugin path error;
+        // R3 inactive or active+unowned -> unchanged. This proves validation and
+        // publication transformation share one resolver rather than two catalogs.
+        let resolvers: Vec<std::sync::Arc<dyn PluginPublicationResolver>> =
             vec![std::sync::Arc::new(Catalog)];
         let mut config = AgentConfig {
             plugin_ids: vec!["owned".into(), "external".into()],
@@ -76,14 +97,37 @@ mod tests {
             .collect(),
             ..Default::default()
         };
-        assert!(validate_plugin_configuration(&validators, &config).is_ok());
+        resolve_plugin_configuration(
+            &resolvers,
+            &awaken_tenancy::ScopeId::from("workspace-a"),
+            &mut config,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            config.plugin_config["owned"],
+            serde_json::json!({ "valid": true, "workspace": "workspace-a" })
+        );
+        assert_eq!(
+            config.plugin_config["external"],
+            serde_json::json!({ "anything": true })
+        );
+        assert_eq!(
+            config.plugin_config["inactive"],
+            serde_json::json!({ "valid": false })
+        );
         config
             .plugin_config
             .insert("owned".into(), serde_json::json!({ "valid": false }));
         assert_eq!(
-            validate_plugin_configuration(&validators, &config)
-                .unwrap_err()
-                .path,
+            resolve_plugin_configuration(
+                &resolvers,
+                &awaken_tenancy::ScopeId::from("workspace-a"),
+                &mut config,
+            )
+            .await
+            .unwrap_err()
+            .path,
             "plugin_config.owned"
         );
     }

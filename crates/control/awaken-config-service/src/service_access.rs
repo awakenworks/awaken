@@ -17,7 +17,7 @@ impl ConfigService {
             resources: None,
             model_publication_resolver,
             credential_reference_validator: None,
-            plugin_configuration_validators: Vec::new(),
+            plugin_publication_resolvers: Vec::new(),
         }
     }
 
