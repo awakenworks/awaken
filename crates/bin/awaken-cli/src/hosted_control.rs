@@ -81,6 +81,7 @@ async fn build_control_router_with_model_composition(
             cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url.clone()),
             cloud_models_enabled: deployment.cloud_models.is_enabled(),
             local_acp_observations: Vec::new(),
+            hand_executors: Default::default(),
         },
         None,
     )
