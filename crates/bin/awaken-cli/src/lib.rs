@@ -17,8 +17,8 @@ mod brain_admin;
 pub mod config;
 mod console_assets;
 mod exact_host_model;
-mod identity;
 mod hosted_control;
+mod identity;
 mod management_surface;
 mod observation_reconcile;
 
@@ -44,7 +44,8 @@ pub use acp_local_credentials::{
 };
 pub use console_assets::mount as mount_console;
 pub use hosted_control::{
-    build_control_router_with_deployment, build_control_router_with_publication_resolver,
+    build_control_assembly_with_deployment, build_control_router_with_deployment,
+    build_control_router_with_publication_resolver,
 };
 use identity::identity_wiring;
 // Embedded management-plane IAM (ADR-0042/0043 P1) + the mint spec and bootstrap
@@ -1902,6 +1903,7 @@ mod management_only_surface_tests {
         let called = Arc::new(AtomicBool::new(false));
         let app = management_router_over(
             in_memory_management_stores(),
+            None,
             None,
             None,
             ManagementModelComposition::HostedPublication {
