@@ -253,11 +253,13 @@ async fn serve_resolved(
         .map_err(|error| format!("initialize Postgres commit store: {error}"))?;
     }
 
-    let app = if management_only {
-        awaken_cli::build_control_router_with_deployment(&deployment, &seal_key).await?
+    let assembly = if management_only {
+        awaken_cli::build_control_assembly_with_deployment(&deployment, &seal_key).await?
     } else {
-        awaken_cli::build_management_router_with_deployment(&deployment, &seal_key).await?
+        awaken_cli::build_management_assembly_with_deployment(&deployment, &seal_key).await?
     };
+    let local_setup = assembly.local_setup;
+    let app = assembly.router;
     if let Some(lock) = migration_lock {
         lock.release()
             .await
@@ -297,6 +299,10 @@ async fn serve_resolved(
         Presentation::Interactive => {
             eprintln!("\n  Awaken is ready\n");
             eprintln!("  Console   {url}");
+            if let Some(setup) = &local_setup {
+                eprintln!("  Setup     {}", setup.setup_token);
+                eprintln!("  Expires   {}", setup.expires_at.0);
+            }
             eprintln!("  Data      {}", deployment.data_dir.display());
             eprintln!("  Stop      Ctrl+C\n");
             if !deployment.no_browser
@@ -305,11 +311,19 @@ async fn serve_resolved(
                 eprintln!("awaken: could not open a browser ({error}); open {url} manually");
             }
         }
-        Presentation::Headless => eprintln!(
-            "awaken: ready url={url} data_dir={} mode={}",
-            deployment.data_dir.display(),
-            deployment.mode.as_str()
-        ),
+        Presentation::Headless => {
+            eprintln!(
+                "awaken: ready url={url} data_dir={} mode={}",
+                deployment.data_dir.display(),
+                deployment.mode.as_str()
+            );
+            if let Some(setup) = &local_setup {
+                eprintln!(
+                    "awaken: local setup token={} expires_at={}",
+                    setup.setup_token, setup.expires_at.0
+                );
+            }
+        }
     }
 
     let server = std::future::IntoFuture::into_future(

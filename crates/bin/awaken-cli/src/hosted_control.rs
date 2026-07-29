@@ -17,7 +17,19 @@ pub async fn build_control_router_with_deployment(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
 ) -> Result<Router, String> {
-    build_control_router_with_model_composition(
+    build_control_assembly_with_deployment(deployment, key)
+        .await
+        .map(|assembly| assembly.router)
+}
+
+/// Canonical hosted assembly, including the one-time local setup handoff owned
+/// by the shared identity wiring. The router-only entry point projects this
+/// value instead of maintaining a second composition path.
+pub async fn build_control_assembly_with_deployment(
+    deployment: &config::ResolvedDeployment,
+    key: &[u8; 32],
+) -> Result<ManagementAssembly, String> {
+    build_control_assembly_with_model_composition(
         deployment,
         key,
         ManagementModelComposition::PublishedProviders,
@@ -37,20 +49,21 @@ pub async fn build_control_router_with_publication_resolver(
     key: &[u8; 32],
     resolver: Arc<dyn awaken_runtime_host::ModelPublicationResolver>,
 ) -> Result<Router, String> {
-    build_control_router_with_model_composition(
+    build_control_assembly_with_model_composition(
         deployment,
         key,
         ManagementModelComposition::HostedPublication { resolver },
     )
     .await
+    .map(|assembly| assembly.router)
 }
 
-async fn build_control_router_with_model_composition(
+async fn build_control_assembly_with_model_composition(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
     model_composition: ManagementModelComposition,
-) -> Result<Router, String> {
-    let (iam, remote_iam) = identity_wiring(
+) -> Result<ManagementAssembly, String> {
+    let identity = identity_wiring(
         deployment.identity_mode,
         Some(&deployment.data_dir),
         &deployment.org_id,
@@ -68,10 +81,11 @@ async fn build_control_router_with_model_composition(
         PostgresSchemaMode::Verify,
     )
     .await?;
-    Ok(management_router_over(
+    let router = management_router_over(
         stores,
-        iam,
-        remote_iam,
+        identity.iam,
+        identity.remote_iam,
+        identity.local_browser_auth,
         model_composition,
         AssemblyOverrides {
             deployment: None,
@@ -81,9 +95,13 @@ async fn build_control_router_with_model_composition(
             cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url.clone()),
             cloud_models_enabled: deployment.cloud_models.is_enabled(),
             local_acp_observations: Vec::new(),
-            hand_executors: Default::default(),
+            hand_executors: BTreeMap::new(),
         },
         None,
     )
-    .await)
+    .await;
+    Ok(ManagementAssembly {
+        router,
+        local_setup: identity.local_setup,
+    })
 }

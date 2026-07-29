@@ -3,6 +3,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { RouterProvider } from "react-router";
 import { AppProvider } from "./lib/app-state";
+import LocalSetupGate from "./components/app/LocalSetupGate";
 import { router } from "./routes";
 import "./styles/tokens.css";
 import "@awaken/ui/styles.css";
@@ -27,7 +28,9 @@ createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <AppProvider>
-        <RouterProvider router={router} />
+        <LocalSetupGate>
+          <RouterProvider router={router} />
+        </LocalSetupGate>
       </AppProvider>
     </QueryClientProvider>
   </StrictMode>,

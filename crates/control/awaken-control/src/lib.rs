@@ -50,6 +50,8 @@ pub use crate::managed_agents::ConfigPlaneManagedAgentRepository;
 pub use awaken_config_service::{
     LocalRuntimeCapability, RuntimeCapability, RuntimeCapabilitySource, static_runtime_capabilities,
 };
+pub use awaken_iam_contract::AccountId;
+pub use awaken_iam_host::{LocalBrowserAuth, LocalSetupHandoff};
 // The database-less worker's materialization subset (Stage C): only the credential
 // vault + secret store needed by snapshot-pinned inference access.
 pub use crate::worker_stores::{
@@ -210,6 +212,9 @@ pub struct ControlRouterInput {
     pub org_id: Option<String>,
     /// The embedded IAM guard, when enabled by typed deployment identity mode.
     pub iam: Option<Arc<ManagementAuthz>>,
+    /// Canonical local setup/session routes, mounted outside the protected
+    /// surface so an unauthenticated browser can exchange its one-time token.
+    pub local_browser_auth: Option<awaken_iam_host::LocalBrowserAuth>,
     /// Awaken Cloud identity adapter. Mutually exclusive with `iam`.
     pub remote_iam: Option<Arc<RemoteManagementAuthz>>,
     /// Short-lived credentials used only by browser/application protocol routes.
@@ -244,6 +249,7 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
         runtimes,
         org_id,
         iam,
+        local_browser_auth,
         remote_iam,
         application_access,
     } = input;
@@ -370,6 +376,9 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
             audit_plane,
             durable_management_audit,
         ));
+    }
+    if let Some(local_browser_auth) = local_browser_auth {
+        mgmt = mgmt.merge(awaken_iam_host::local_browser_router(local_browser_auth));
     }
     (mgmt, webhook_sink)
 }
