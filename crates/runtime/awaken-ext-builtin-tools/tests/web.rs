@@ -1,5 +1,5 @@
-//! Network tools. `web_fetch` is exercised against a hermetic local server;
-//! `web_search` hits DuckDuckGo and is ignored by default (needs network).
+//! The static network surface contains only `web_fetch`; configurable search is
+//! owned by `WebSearchPlugin` and covered by its provider-contract tests.
 
 use awaken_ext_builtin_tools::web_hand_tools;
 use awaken_runtime_contract::tool::{RawTool, ToolCall};
@@ -101,18 +101,4 @@ async fn web_fetch_caps_the_body_at_one_mebibyte() {
         out.content.bytes().all(|b| b == b'a'),
         "the capped prefix is the served body"
     );
-}
-
-#[tokio::test]
-#[ignore = "requires network (DuckDuckGo)"]
-async fn web_search_returns_results() {
-    let out = tool("web_search")
-        .invoke(call(
-            "web_search",
-            serde_json::json!({ "query": "rust programming language" }),
-        ))
-        .await
-        .expect("search");
-    println!("[web_search] -> {}", out.content);
-    assert!(!out.content.is_empty());
 }

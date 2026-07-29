@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 
 /// The `hand` toolset's model-visible descriptors and the registered
 /// implementations (`executable_hand_tools` + `web_hand_tools`) must name exactly
-/// the same 8 tool ids — a descriptor with no implementation (or vice versa) would
+/// the same 7 tool ids — a descriptor with no implementation (or vice versa) would
 /// be a model-callable tool that never runs, or an unreachable implementation.
 #[test]
 fn hand_descriptors_exactly_cover_the_erased_hand_tool_implementations() {
@@ -26,16 +26,16 @@ fn hand_descriptors_exactly_cover_the_erased_hand_tool_implementations() {
 
     assert_eq!(
         descriptor_ids.len(),
-        8,
-        "the hand toolset is exactly the 8 in-process descriptors"
+        7,
+        "the hand toolset is exactly the 7 in-process descriptors"
     );
     assert_eq!(
         descriptor_ids, implementation_ids,
         "every hand descriptor has a matching erased implementation and vice versa"
     );
-    // The split between the two constructors is 6 local + 2 network = 8.
+    // Search has one configurable plugin owner; the static split is 6 local + fetch.
     assert_eq!(executable_hand_tools().len(), 6);
-    assert_eq!(web_hand_tools().len(), 2);
+    assert_eq!(web_hand_tools().len(), 1);
 }
 
 #[test]

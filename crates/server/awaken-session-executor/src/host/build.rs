@@ -240,6 +240,7 @@ impl SharedHost {
                 session_slots.clone(),
             ),
             acp: None,
+            acp_tool_exporter: None,
             remote_attempt_executor: None,
             remote_credential_realization: Default::default(),
             application_attempt_decorator: None,
@@ -260,6 +261,8 @@ impl SharedHost {
             skill_fork_placement: crate::skills::SkillForkPlacement::SharedSession,
             plugin_ids: Vec::new(),
             plugin_config: std::collections::BTreeMap::new(),
+            web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins(),
+            credential_materializer: None,
             hub: Arc::new(ThreadEventHub::new()),
             // `with_store_dir` still overrides this environment-derived default.
             store_dir: store_dir.clone(),
@@ -303,6 +306,56 @@ impl SharedHost {
     ) -> Self {
         self.worker_credential_resolver = Some(resolver);
         self
+    }
+
+    #[must_use]
+    pub fn with_acp_tool_exporter(mut self, exporter: Arc<dyn crate::AcpToolExporter>) -> Self {
+        self.acp_tool_exporter = Some(exporter);
+        self
+    }
+
+    /// Install the canonical exact credential materializer used by runtime
+    /// extensions such as paid WebSearch. The value is cloned from the same
+    /// composition-root instance used by Managed MCP/Resource realization.
+    #[must_use]
+    pub fn with_credential_materializer(
+        mut self,
+        materializer: crate::PinnedCredentialMaterializer,
+    ) -> Self {
+        self.credential_materializer = Some(materializer);
+        self
+    }
+
+    /// Add one externally owned WebSearch provider to the authoritative
+    /// registry. Duplicate ids fail at composition time instead of shadowing a
+    /// built-in or changing dispatch order at runtime.
+    pub fn with_web_search_provider(
+        mut self,
+        provider: Arc<dyn awaken_ext_builtin_tools::WebSearchProvider>,
+    ) -> Result<Self, awaken_ext_builtin_tools::WebSearchRegistryError> {
+        self.web_search_providers.register(provider)?;
+        Ok(self)
+    }
+
+    /// Replace the built-in registry with one composition-owned registry. Use
+    /// the same clone for capability projection and semantic publication
+    /// validation to keep discovery, validation, and dispatch identical.
+    #[must_use]
+    pub fn with_web_search_provider_registry(
+        mut self,
+        providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
+    ) -> Self {
+        self.web_search_providers = providers;
+        self
+    }
+
+    /// Read-only provider discovery for an embedding capability endpoint. The
+    /// returned registry is the same value Session dispatch uses.
+    #[must_use]
+    pub fn web_search_provider_registry(
+        &self,
+    ) -> &awaken_ext_builtin_tools::WebSearchProviderRegistry {
+        &self.web_search_providers
     }
 
     /// Install the adapter that drives snapshot-selected remote attempts. The

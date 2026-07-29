@@ -20,7 +20,14 @@ pub use task::{
     CancelTaskArgs, CancelTaskTool, MessageRecovery, MessageSender, RecoverFailedMessagesArgs,
     RecoverFailedMessagesTool, SendMessageArgs, SendMessageTool, TaskCanceller, task_tools,
 };
-pub use web::{WebFetchArgs, WebFetchTool, WebSearchArgs, WebSearchTool, web_hand_tools};
+pub use web::{
+    BRAVE_PROVIDER_ID, BraveSearchProvider, DUCKDUCKGO_PROVIDER_ID, DuckDuckGoProvider,
+    WEB_SEARCH_PLUGIN_ID, WEB_SEARCH_TOOL_ID, WebFetchArgs, WebFetchTool, WebSearchArgs,
+    WebSearchConfig, WebSearchCredentialRequirement, WebSearchCredentialResolver, WebSearchPlugin,
+    WebSearchProvider, WebSearchProviderDescriptor, WebSearchProviderRegistry,
+    WebSearchRegistryError, WebSearchRequest, WebSearchResult, WebSearchTool, web_hand_tools,
+    web_search_descriptor,
+};
 
 use awaken_runtime_contract::resolved::{ToolDescriptor, ToolKind};
 use awaken_runtime_contract::tool::ToolRecoveryPolicy;
@@ -71,11 +78,6 @@ pub fn builtin_tools() -> Vec<BuiltinTool> {
             path_arg("pattern", "regular expression"),
         ),
         hand_tool("web_fetch", "Fetch a URL", path_arg("url", "URL to fetch")),
-        hand_tool(
-            "web_search",
-            "Search the web",
-            path_arg("query", "search query"),
-        ),
         task_tool(
             "send_message",
             "Send a message to another thread",

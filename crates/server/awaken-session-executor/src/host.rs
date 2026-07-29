@@ -149,6 +149,10 @@ pub struct SharedHost {
     pub(crate) inference_routing: crate::inference_routing::InferenceRouting,
     /// ACP runtime backend (R3/R4): serves `acp:*` sessions on an external CLI.
     pub(crate) acp: Option<Arc<crate::acp_backend::AcpBackend>>,
+    /// Higher-layer transport adapter for Session-owned tools exposed to ACP.
+    /// The Host names only this port; concrete MCP server assembly remains in
+    /// `awaken-server` and does not add a protocol dependency to the substrate.
+    pub(crate) acp_tool_exporter: Option<Arc<dyn crate::AcpToolExporter>>,
     /// Remote attempt adapter injected by the composition root. The neutral host
     /// owns only the `RunAttemptExecutor` port and never names the A2A protocol.
     pub(crate) remote_attempt_executor:
@@ -188,6 +192,14 @@ pub struct SharedHost {
     /// sections (e.g. the tool state machine). Empty by default.
     pub(crate) plugin_ids: Vec<String>,
     pub(crate) plugin_config: std::collections::BTreeMap<String, serde_json::Value>,
+    /// One provider registry is used to derive authoring schema and to dispatch
+    /// Native/ACP WebSearch calls. External compositions extend this registry;
+    /// sessions never construct a provider-specific side registry.
+    pub(crate) web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
+    /// Canonical exact materializer used by runtime extensions. The Managed
+    /// adapter may retain another clone, but both share the same repositories,
+    /// secret store, revision checks, and extension-consumer registry.
+    pub(crate) credential_materializer: Option<crate::PinnedCredentialMaterializer>,
     pub(crate) hub: Arc<ThreadEventHub>,
     /// When set, each thread commits to a durable SQLite database at
     /// `store_dir/<thread>.db`, so an awaiting run survives a process restart. When

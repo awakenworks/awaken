@@ -652,6 +652,44 @@ impl SharedHost {
         {
             config.resolved_spec.plugin_config.agent.toolsets = toolsets;
         }
+        // WebSearch has one configuration/dispatch owner for both execution
+        // backends. Native lets Runtime resolve the plugin once; ACP resolves
+        // the same plugin once and exports that RawTool through MCP. A Session
+        // never constructs both copies.
+        let web_search = if config
+            .resolved_spec
+            .plugin_ids
+            .iter()
+            .any(|id| id == awaken_ext_builtin_tools::WEB_SEARCH_PLUGIN_ID)
+        {
+            let credentials = self.credential_materializer.clone().map(|materializer| {
+                Arc::new(crate::web_search::HostWebSearchCredentialResolver::new(
+                    materializer,
+                    self.thread_workspace(thread),
+                )) as Arc<dyn awaken_ext_builtin_tools::WebSearchCredentialResolver>
+            });
+            let plugin = Arc::new(awaken_ext_builtin_tools::WebSearchPlugin::new(
+                self.web_search_providers.clone(),
+                credentials,
+            ));
+            if is_acp {
+                Some(
+                    plugin
+                        .configured_tool(
+                            config
+                                .resolved_spec
+                                .plugin_config
+                                .get(awaken_ext_builtin_tools::WEB_SEARCH_PLUGIN_ID),
+                        )
+                        .map_err(|error| HostError::bad_request(error.to_string()))?,
+                )
+            } else {
+                runtime = runtime.with_plugin(plugin);
+                None
+            }
+        } else {
+            None
+        };
         // D6: for an ACP run, hand the session's staged MCP servers to the CLI's own MCP
         // client via `plugin_config.acp.mcp_servers`. The immutable publication's
         // `backend_ref` is the routing authority. The credential form is the host's
@@ -662,7 +700,7 @@ impl SharedHost {
         // realization lifecycle.  It must not start a relay or recreate routes:
         // after restart, durable rehydration stages and publishes them first.
         let relay = self.mcp_relay.get();
-        let acp_mcp_servers = if is_acp {
+        let mut acp_mcp_servers = if is_acp {
             active_mcp
                 .iter()
                 .filter_map(|projection| {
@@ -677,6 +715,28 @@ impl SharedHost {
                 .collect::<Result<Vec<_>, _>>()?
         } else {
             Vec::new()
+        };
+        let web_search_mcp = if is_acp {
+            match web_search {
+                Some((descriptor, tool)) => {
+                    let export = self
+                        .acp_tool_exporter
+                        .as_ref()
+                        .ok_or_else(|| {
+                            HostError::internal(
+                                "ACP WebSearch requires an installed tool-export adapter",
+                            )
+                        })?
+                        .export("awaken_web_search", descriptor, tool)
+                        .await
+                        .map_err(HostError::internal)?;
+                    acp_mcp_servers.push(export.server.clone());
+                    Some(export)
+                }
+                None => None,
+            }
+        } else {
+            None
         };
         // Recover the session's position from committed truth: a durable store may
         // already hold this thread's history and an awaiting run after a restart.
@@ -761,6 +821,7 @@ impl SharedHost {
             terminal_observers,
             stream_checkpoint,
             session_plugins: mcp.plugins,
+            _web_search_mcp: web_search_mcp,
             hand_placement,
             capture_sink: self
                 .capture_sink

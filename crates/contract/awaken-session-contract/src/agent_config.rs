@@ -103,16 +103,8 @@ pub struct AgentToolDefaultConfig {
 
 /// The official Managed Agent toolset's versioned membership. It lives beside
 /// the wire value so every adapter normalizes the same closed set.
-pub const AGENT_TOOLSET_TOOL_IDS: [&str; 8] = [
-    "bash",
-    "read",
-    "write",
-    "edit",
-    "glob",
-    "grep",
-    "web_fetch",
-    "web_search",
-];
+pub const AGENT_TOOLSET_TOOL_IDS: [&str; 7] =
+    ["bash", "read", "write", "edit", "glob", "grep", "web_fetch"];
 
 #[must_use]
 pub fn is_agent_toolset_member(name: &str) -> bool {

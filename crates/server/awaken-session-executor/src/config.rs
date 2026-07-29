@@ -10,7 +10,9 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Message, Role};
-use awaken_ext_builtin_tools::{Toolset, builtin_tools, executable_hand_tools};
+use awaken_ext_builtin_tools::{
+    Toolset, WebSearchPlugin, WebSearchProviderRegistry, builtin_tools, executable_hand_tools,
+};
 use awaken_ext_permission::{
     Mode, PermissionRule, PermissionRuleset, RuleBasedToolPermissionPolicy, ToolCallPattern,
     ToolPermissionBehavior,
@@ -19,6 +21,7 @@ use awaken_ext_state_machine::{STATE_MACHINE_PLUGIN_ID, StateMachinePlugin};
 use awaken_runtime::{PermissionGate, Runtime};
 use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::llm::LlmExecutor;
+use awaken_runtime_contract::plugin::Plugin;
 use awaken_runtime_contract::resolved::{ContextPolicy, ModelBinding, ToolDescriptor};
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 use awaken_sandbox_local::LocalSandbox;
@@ -313,6 +316,17 @@ pub(crate) fn server_config(
 /// config frontend can discover and author each section. One place declares a
 /// plugin's id and its schema, so registration and discovery cannot drift.
 pub fn platform_plugin_capabilities() -> Vec<PluginCapability> {
+    platform_plugin_capabilities_with_web_search(&WebSearchProviderRegistry::builtins())
+}
+
+/// Capability projection for an externally extended WebSearch registry. The
+/// same descriptors used for dispatch derive this schema, so an embedding
+/// composition can advertise custom providers without modifying core enums.
+pub fn platform_plugin_capabilities_with_web_search(
+    providers: &WebSearchProviderRegistry,
+) -> Vec<PluginCapability> {
+    let web_search = WebSearchPlugin::new(providers.clone(), None);
+    let manifest = web_search.manifest();
     vec![
         PluginCapability {
             id: STATE_MACHINE_PLUGIN_ID.to_string(),
@@ -332,6 +346,12 @@ pub fn platform_plugin_capabilities() -> Vec<PluginCapability> {
             config_schema: Some(awaken_ext_compact::compact_config_schema()),
             bound: Default::default(),
         },
+        PluginCapability {
+            id: manifest.id,
+            schema_keys: manifest.config_sections,
+            config_schema: Some(providers.config_schema()),
+            bound: manifest.bound,
+        },
     ]
 }
 
@@ -341,7 +361,13 @@ pub fn platform_plugin_capabilities() -> Vec<PluginCapability> {
 /// [`platform_plugin_capabilities`]; the assistant needs it advertised — with its
 /// schema — or it cannot author a permission gate (it does not know the key/shape).
 pub fn authorable_config_sections() -> Vec<PluginCapability> {
-    let mut sections = platform_plugin_capabilities();
+    authorable_config_sections_with_web_search(&WebSearchProviderRegistry::builtins())
+}
+
+pub fn authorable_config_sections_with_web_search(
+    providers: &WebSearchProviderRegistry,
+) -> Vec<PluginCapability> {
+    let mut sections = platform_plugin_capabilities_with_web_search(providers);
     sections.push(PluginCapability {
         id: PERMISSION_CONFIG_KEY.to_string(),
         schema_keys: vec![PERMISSION_CONFIG_KEY.to_string()],
@@ -458,10 +484,35 @@ mod tests {
 
     #[test]
     fn platform_capabilities_expose_the_schema() {
+        // Cause/effect: installed provider descriptors derive one plugin schema
+        // and exact tool bound. The free provider is the first authoring default;
+        // paid provider authentication remains the common CredentialUsage wire.
         let caps = platform_plugin_capabilities();
         assert!(
             caps.iter()
                 .any(|c| c.id == STATE_MACHINE_PLUGIN_ID && c.config_schema.is_some())
+        );
+        let web = caps
+            .iter()
+            .find(|capability| capability.id == awaken_ext_builtin_tools::WEB_SEARCH_PLUGIN_ID)
+            .expect("WebSearch capability");
+        assert_eq!(
+            web.bound.tools,
+            awaken_runtime_contract::plugin::IdBound::Exact(vec![
+                awaken_ext_builtin_tools::WEB_SEARCH_TOOL_ID.into()
+            ])
+        );
+        let branches = web.config_schema.as_ref().unwrap()["oneOf"]
+            .as_array()
+            .unwrap();
+        assert_eq!(branches.len(), 2);
+        assert_eq!(
+            branches[0]["properties"]["provider_id"]["const"],
+            "duckduckgo"
+        );
+        assert_eq!(
+            branches[1]["properties"]["credential"]["x-awaken-credential-application"]["type"],
+            "http_header"
         );
     }
 
