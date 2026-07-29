@@ -319,14 +319,59 @@ so retrieval is reconnect-safe from any node that can `adopt` the sandbox — bu
 nothing about it enters run truth. Artifacts add **no** new storage and touch
 neither `awaken-agent-contract` nor the Checkpoint.
 
+### A4: Managed outputs become durable Files before Sandbox release
+
+**Supersedes A3(b)'s on-demand byte retrieval.** Anthropic's external lifecycle
+contract makes a Files API File independent from its producing Session. Therefore
+the Session owner must harvest outputs before disposal; a Files GET cannot be the
+write edge and cannot depend on an adoptable Sandbox.
+
+Static ownership remains deliberately small:
+
+| Owner | Authority |
+|---|---|
+| `Sandbox::artifacts/read_artifact` | the one runtime output enumeration/read port |
+| `FileStore` | immutable content-addressed bytes (`blob_id`) |
+| `FileCatalog` | public `file_...` identity, metadata, Workspace, optional Session scope/path, harvest idempotency |
+| resource lifecycle index | File-to-blob reference preventing premature physical reclamation |
+
+`FileCatalog` is the logical Files API aggregate, not an Artifact Store. An output
+has no second metadata model: it is a File record whose `scope_id` and
+`logical_path` identify its origin. Equal bytes may share one private blob while
+remaining independent public Files.
+
+The authoritative transition is:
+
+```text
+step completion or terminal release
+  -> Sandbox::artifacts/read_artifact
+  -> verify Artifact.id == content_hash == FileStore content id
+  -> FileStore.put(bytes)
+  -> FileCatalog.create(file_..., session/path/blob metadata)
+  -> add Artifact lifecycle reference to blob
+  -> only then may terminal release dispose the Sandbox
+```
+
+The harvest key `(session_id, logical_path, content_hash)` makes retries converge
+on the already-created File. A harvest failure blocks terminal disposal so cleanup
+can retry without losing bytes. `GET /v1/files` is a pure, Workspace-scoped
+catalog query; deleting a Session removes its bindings/Sandbox but not harvested
+Files. Deleting a File commits logical denial, removes its File-owned blob
+reference, and schedules physical reclamation, which remains blocked while any
+other logical File references the deduplicated blob.
+
+Managed input Files use their public File id for the API and resolve through the
+catalog to a private blob id. They are OS-enforced read-only at
+`/mnt/session/uploads/...`; a provider without path fidelity and enforced
+read-only capability fails closed instead of silently projecting a writable copy.
+
 ### Consequences of the amendment
 
 - The resource plane has **exactly one content-addressed blob store** as its byte
   substrate — shared by `file` in and `skill` bundles — plus one mutable keyed
-  store (`memory_store`) and the vault (`secret`). Reference resources add zero
-  storage; **artifacts add none either** (outputs path injected into the system
-  prompt at bind time, bytes read on demand); the skill registry is a control-plane
-  index, not a backend.
+  store (`memory_store`) and the vault (`secret`). Output artifacts reuse the File
+  aggregate and blob store; they do not add an Artifact Store or a parallel byte
+  backend. The skill registry is a control-plane index, not a backend.
 - Every resource kind's prompt is injected **at config-bind/resolve time** into the
   agent's effective system prompt (A3a), mirroring the MCP binding path — not
   rendered per-turn at runtime; provisioning realizes bytes/mounts and never

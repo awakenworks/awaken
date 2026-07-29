@@ -556,6 +556,17 @@ impl ManagedState {
             .iter()
             .map(crate::types::resource::ResourceInput::to_parsed_input)
             .collect::<Vec<_>>();
+        if resources
+            .iter()
+            .filter(|resource| matches!(resource.target, ParsedInputTarget::File(_)))
+            .count()
+            > super::resource::MAX_SESSION_FILE_RESOURCES
+        {
+            return Err(StateError::Run(RunError::bad_request(format!(
+                "a Session supports at most {} files",
+                super::resource::MAX_SESSION_FILE_RESOURCES
+            ))));
+        }
         // Lower compatibility Repository URLs/tokens before the neutral resolver:
         // the catalog receives a Session-scoped definition and a Vault reference,
         // never the token. File/Memory already carry platform identities on wire.

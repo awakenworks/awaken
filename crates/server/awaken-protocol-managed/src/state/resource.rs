@@ -50,6 +50,8 @@ pub(crate) struct ParsedSessionInput {
     pub instructions: Option<String>,
 }
 
+pub(crate) const MAX_SESSION_FILE_RESOURCES: usize = 500;
+
 impl ResourceInput {
     pub(crate) fn to_parsed_input(&self) -> ParsedSessionInput {
         match self {

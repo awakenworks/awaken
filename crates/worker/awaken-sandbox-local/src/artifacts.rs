@@ -1,6 +1,6 @@
 //! Shared outputs-directory scan used by every local-machine provider tier: an
 //! artifact is a file the agent wrote under the environment's outputs path,
-//! addressed by a stable id derived from its sandbox-relative path.
+//! addressed by the immutable content id used by the shared FileStore.
 
 use std::path::PathBuf;
 
@@ -37,16 +37,22 @@ pub(crate) fn scan_outputs(
                 stack.push(path);
                 continue;
             }
+            // Never follow links out of the sandbox output tree. Provider-owned
+            // artifact discovery accepts regular files only.
+            if !ft.is_file() {
+                continue;
+            }
             let rel = path.strip_prefix(host_outputs).unwrap_or(&path);
             let rel_str = rel.to_string_lossy().replace('\\', "/");
             let sandbox_path = format!("{}/{}", outputs_path.trim_end_matches('/'), rel_str);
             let bytes = std::fs::read(&path).map_err(err)?;
+            let content_hash = content_fingerprint(&bytes);
             out.push((
                 pc::Artifact {
-                    id: content_fingerprint(rel_str.as_bytes()),
+                    id: content_hash.clone(),
                     path: sandbox_path,
                     size_bytes: bytes.len() as u64,
-                    content_hash: content_fingerprint(&bytes),
+                    content_hash,
                 },
                 path,
             ));
@@ -71,7 +77,7 @@ mod tests {
     }
 
     #[test]
-    fn it_recurses_subdirs_and_sorts_by_sandbox_path_addressing_by_rel_path() {
+    fn it_recurses_subdirs_and_sorts_by_sandbox_path_addressing_by_content() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join("sub")).unwrap();
         std::fs::write(root.path().join("b.txt"), b"bbb").unwrap();
@@ -83,18 +89,25 @@ mod tests {
         assert_eq!(arts[0].0.path, "/mnt/session/outputs/b.txt");
         assert_eq!(arts[1].0.path, "/mnt/session/outputs/sub/a.txt");
         assert_eq!(arts[0].0.size_bytes, 3);
-        // The id is derived from the sandbox-relative path so read_artifact can match.
-        assert_eq!(arts[0].0.id, content_fingerprint(b"b.txt"));
+        // Cause C1: regular output bytes; effect E1: Artifact.id is the canonical
+        // content hash (ADR-0038), independent of its logical path.
+        assert_eq!(arts[0].0.id, content_fingerprint(b"bbb"));
+        assert_eq!(arts[0].0.id, arts[0].0.content_hash);
         // The returned host path points back at the real file.
         assert_eq!(arts[1].1, root.path().join("sub/a.txt"));
     }
 
     #[cfg(unix)]
     #[test]
-    fn an_unreadable_entry_surfaces_a_sandbox_error() {
-        // A dangling symlink is listed by read_dir but fails to read → the err() path.
+    fn a_symlink_is_not_an_artifact() {
+        // Decision rule R2: non-regular output (C1=false) => no artifact and no
+        // attempt to read through the sandbox boundary (E2).
         let root = tempfile::tempdir().unwrap();
         std::os::unix::fs::symlink("/no/such/target", root.path().join("dangling")).unwrap();
-        assert!(scan_outputs(root.path(), "/mnt/session/outputs").is_err());
+        assert!(
+            scan_outputs(root.path(), "/mnt/session/outputs")
+                .unwrap()
+                .is_empty()
+        );
     }
 }
