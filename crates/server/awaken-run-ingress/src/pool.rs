@@ -24,6 +24,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -97,6 +98,7 @@ pub struct DispatchPool<S> {
     wake: Arc<dyn WakeSignal>,
     shutdown: CancellationToken,
     drains: Vec<JoinHandle<()>>,
+    wake_coordinator: JoinHandle<()>,
     maintenance: JoinHandle<()>,
     renewal: Option<JoinHandle<()>>,
     completion: Option<Arc<dyn CompletionSink>>,
@@ -112,6 +114,7 @@ struct DrainAdmission {
 struct PoolAdmission {
     gate: tokio::sync::RwLock<DrainAdmission>,
     in_flight: Arc<AtomicU32>,
+    wake: Notify,
 }
 
 impl Default for PoolAdmission {
@@ -119,6 +122,7 @@ impl Default for PoolAdmission {
         Self {
             gate: tokio::sync::RwLock::new(DrainAdmission::default()),
             in_flight: Arc::new(AtomicU32::new(0)),
+            wake: Notify::new(),
         }
     }
 }
@@ -258,17 +262,21 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
                 tokio::spawn(drain_loop(
                     store.clone(),
                     clock.clone(),
-                    wake.clone(),
                     shutdown.clone(),
                     owner.clone(),
                     lease_ms,
                     resolver.clone(),
-                    config.poll_interval,
                     completion.clone(),
                     admission.clone(),
                 ))
             })
             .collect();
+        let wake_coordinator = tokio::spawn(wake_coordinator_loop(
+            wake.clone(),
+            admission.clone(),
+            shutdown.clone(),
+            config.poll_interval,
+        ));
         let maintenance = tokio::spawn(maintenance_loop(
             store.clone(),
             clock.clone(),
@@ -295,6 +303,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
             wake,
             shutdown,
             drains,
+            wake_coordinator,
             maintenance,
             renewal,
             completion,
@@ -417,6 +426,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
         for drain in self.drains {
             let _ = drain.await;
         }
+        let _ = self.wake_coordinator.await;
         let _ = self.maintenance.await;
         if let Some(renewal) = self.renewal {
             let _ = renewal.await;
@@ -430,18 +440,17 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
 async fn drain_loop<S: Dispatch + 'static>(
     store: Arc<S>,
     clock: Arc<dyn Clock>,
-    wake: Arc<dyn WakeSignal>,
     shutdown: CancellationToken,
     owner: String,
     lease_ms: u64,
     resolver: Arc<dyn WorkerResolver<S>>,
-    poll_interval: Duration,
     completion: Option<Arc<dyn CompletionSink>>,
     admission: Arc<PoolAdmission>,
 ) {
     loop {
-        if shutdown.is_cancelled() {
-            break;
+        tokio::select! {
+            _ = shutdown.cancelled() => break,
+            _ = admission.wake.notified() => {}
         }
         // Drain everything runnable now. A store error is transient — the next
         // tick retries — so swallow it rather than kill the task.
@@ -467,10 +476,25 @@ async fn drain_loop<S: Dispatch + 'static>(
                 tracing::warn!(owner = %owner, error = %err, "drain tick failed; retrying");
             }
         }
+    }
+}
+
+/// Convert the external/cross-node wake plus the fallback timer into one
+/// process-local claim permit. The fixed-size drain pool therefore preserves
+/// execution concurrency without multiplying idle queue polls by that capacity.
+async fn wake_coordinator_loop(
+    wake: Arc<dyn WakeSignal>,
+    admission: Arc<PoolAdmission>,
+    shutdown: CancellationToken,
+    poll_interval: Duration,
+) {
+    // One initial authoritative poll recovers work that predated this process.
+    admission.wake.notify_one();
+    loop {
         tokio::select! {
             _ = shutdown.cancelled() => break,
-            _ = wake.wait() => {}
-            _ = tokio::time::sleep(poll_interval) => {}
+            _ = wake.wait() => admission.wake.notify_one(),
+            _ = tokio::time::sleep(poll_interval) => admission.wake.notify_one(),
         }
     }
 }
@@ -505,6 +529,9 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     let Some(claimed) = claimed else {
         return Ok(false);
     };
+    // A successful claim proves that more work may be queued. Hand one permit to
+    // a peer before driving this run so capacity scales without idle pollers.
+    admission.wake.notify_one();
     let _in_flight = InFlightGuard::new(admission.in_flight.clone());
     // Route to the runtime that owns this run's thread, then drive+settle there.
     // The resolved worker shares this store and owner, so the settle it performs
