@@ -10,7 +10,8 @@ use awaken_admin_config_api::{AdminState, admin_router};
 use awaken_config_resolver::resolve_inference;
 use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo};
 use awaken_credential_vault::{
-    CredentialBinding, CredentialSource, CredentialSourceId, InMemorySecretStore,
+    CredentialBinding, CredentialSource, CredentialSourceId, CredentialStatus, InMemorySecretStore,
+    SecretStore,
 };
 use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo};
 use axum::Router;
@@ -78,6 +79,11 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
 
 #[tokio::test]
 async fn author_catalog_and_credential_then_resolve_a_run() {
+    // End-to-end cause/effect decision rule E1:
+    // valid config + write-only secret => sealed save + secret-free response;
+    // exact active binding => materialize/use succeeds; archive => higher disabled
+    // revision + reference removal + physical secret reclamation + future resolve
+    // fails closed. This traces the complete configure→save→materialize→use→reclaim flow.
     let h = harness();
     support::seed_model(
         &h.catalog,
@@ -119,6 +125,7 @@ async fn author_catalog_and_credential_then_resolve_a_run() {
         .await
         .unwrap();
     let mut sources: HashMap<String, CredentialSource> = HashMap::new();
+    let old_ref = source.material_ref.clone().expect("Vault material ref");
     sources.insert(source.id.0.clone(), source);
 
     let resolved = resolve_inference(
@@ -142,5 +149,38 @@ async fn author_catalog_and_credential_then_resolve_a_run() {
     assert_eq!(
         resolved.credential.as_ref().unwrap().expose_secret(),
         "sk-admin-secret"
+    );
+
+    let (status, retired) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/config/credentials/{cred_id}/archive"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(retired["status"], "disabled");
+    let durable = h
+        .credentials
+        .get(&CredentialSourceId(cred_id.clone()))
+        .await
+        .unwrap();
+    assert_eq!(durable.status, CredentialStatus::Disabled);
+    assert!(durable.material_ref.is_none());
+    assert!(h.secrets.get(&old_ref).await.is_err());
+
+    sources.insert(cred_id.clone(), durable);
+    assert!(
+        resolve_inference(
+            &catalog,
+            "claude-opus-4-8",
+            &CredentialBinding::Exact {
+                credential_source_id: CredentialSourceId(cred_id),
+            },
+            &sources,
+            &*h.secrets,
+        )
+        .await
+        .is_err()
     );
 }

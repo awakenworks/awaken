@@ -506,6 +506,12 @@ async fn archive_credential_soft_deletes_and_hides_from_list() {
     let vault_id = create_vault(&h, "v").await;
     let keep = create_credential(&h, &vault_id, "KEEP").await;
     let gone = create_credential(&h, &vault_id, "GONE").await;
+    let gone_source_id = h.state.credential_source_id(&vault_id, &gone).unwrap();
+    let gone_before = {
+        use awaken_credential_vault::repo::CredentialRepo;
+        h.credentials.get(&gone_source_id).await.unwrap()
+    };
+    let gone_ref = gone_before.material_ref.unwrap();
 
     let (s, archived) = call(
         &h.app,
@@ -517,6 +523,18 @@ async fn archive_credential_soft_deletes_and_hides_from_list() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(archived["type"], "vault_credential");
     assert!(archived["archived_at"].is_string());
+    // Cause/effect rule V1: archive keeps the wire audit projection but retires
+    // the canonical source and physically reclaims its material.
+    let gone_after = {
+        use awaken_credential_vault::repo::CredentialRepo;
+        h.credentials.get(&gone_source_id).await.unwrap()
+    };
+    assert_eq!(
+        gone_after.status,
+        awaken_credential_vault::CredentialStatus::Archived
+    );
+    assert!(gone_after.material_ref.is_none());
+    assert!(h.secrets.get(&gone_ref).await.is_err());
 
     let (_, page) = call(
         &h.app,
@@ -672,6 +690,12 @@ async fn update_credential_patches_fields_reseals_secret_and_rejects_type_change
     let h = harness();
     let vault_id = create_vault(&h, "v").await;
     let cred_id = create_credential(&h, &vault_id, "ENVKEY").await;
+    let source_id = h.state.credential_source_id(&vault_id, &cred_id).unwrap();
+    let before = {
+        use awaken_credential_vault::repo::CredentialRepo;
+        h.credentials.get(&source_id).await.unwrap()
+    };
+    let old_ref = before.material_ref.clone().unwrap();
 
     // Patch networking + re-seal the secret + set display_name + patch metadata.
     let (s, updated) = call(
@@ -705,11 +729,13 @@ async fn update_credential_patches_fields_reseals_secret_and_rejects_type_change
     );
 
     // The re-seal reached the domain: materialize yields the new secret.
-    let source_id = h.state.credential_source_id(&vault_id, &cred_id).unwrap();
     let source = {
         use awaken_credential_vault::repo::CredentialRepo;
         h.credentials.get(&source_id).await.unwrap()
     };
+    assert_eq!(source.version, before.version + 1);
+    assert_ne!(source.material_ref, before.material_ref);
+    assert!(h.secrets.get(&old_ref).await.is_err());
     let secret = awaken_credential_vault::materialize(&source, &*h.secrets)
         .await
         .unwrap();
