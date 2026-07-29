@@ -27,6 +27,7 @@ use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_ext_skills::{SkillRegistry, SkillSpec};
 use awaken_file_store::FileStore;
+use awaken_protocol_managed::resource_plane::FileCatalog;
 use awaken_run_ingress::{
     AnyDispatchStore, CompletionSink, DEFAULT_LEASE_MS, DispatchPool, DispatchQueue,
     DispatchServiceConfig, DurableRunIngress, RunDispatch, SubmitOptions, SystemClock,
@@ -263,6 +264,9 @@ pub struct SharedHost {
     /// Content-addressed blob store backing the Files API, file-resource mounts, and
     /// collected artifacts. In-memory by default (one server process).
     pub(crate) file_store: Arc<dyn FileStore>,
+    /// Logical Files-API truth: public identity, metadata, Workspace visibility,
+    /// Session scope, and harvest idempotency. Bytes remain in `file_store` only.
+    pub(crate) file_catalog: Arc<dyn FileCatalog>,
     /// Durable workspace ownership projection for content-addressed resources.
     /// Durable resource-plane lifecycle/reference state. It contains intrinsic
     /// Workspace/resource edges only and is independent of the IAM deployment.

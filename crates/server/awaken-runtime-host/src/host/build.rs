@@ -10,15 +10,19 @@ use awaken_runtime_contract::delegation::RunDelegationService;
 #[derive(Clone)]
 pub struct ResourcePlanePorts {
     file_store: Arc<dyn awaken_file_store::FileStore>,
+    file_catalog: Arc<dyn awaken_protocol_managed::resource_plane::FileCatalog>,
     memory_repository: Arc<dyn awaken_memory_store::MemoryRepository>,
     skill_store: Arc<dyn awaken_skill_store::SkillStore>,
     lifecycle: Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>,
 }
 
-/// The four backend-neutral ports exposed when a composition root needs to
-/// mount the resource APIs beside the runtime host.
+/// The five backend-neutral ports exposed when a composition root needs to
+/// mount the resource APIs beside the runtime host. `FileStore` and
+/// `FileCatalog` are two capabilities of the same opened File aggregate, not two
+/// independently selected persistence tracks.
 pub type ResourcePlanePortSet = (
     Arc<dyn awaken_file_store::FileStore>,
+    Arc<dyn awaken_protocol_managed::resource_plane::FileCatalog>,
     Arc<dyn awaken_memory_store::MemoryRepository>,
     Arc<dyn awaken_skill_store::SkillStore>,
     Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>,
@@ -27,12 +31,14 @@ pub type ResourcePlanePortSet = (
 impl ResourcePlanePorts {
     pub fn new(
         file_store: Arc<dyn awaken_file_store::FileStore>,
+        file_catalog: Arc<dyn awaken_protocol_managed::resource_plane::FileCatalog>,
         memory_repository: Arc<dyn awaken_memory_store::MemoryRepository>,
         skill_store: Arc<dyn awaken_skill_store::SkillStore>,
         lifecycle: Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>,
     ) -> Self {
         Self {
             file_store,
+            file_catalog,
             memory_repository,
             skill_store,
             lifecycle,
@@ -44,6 +50,7 @@ impl ResourcePlanePorts {
     pub fn into_parts(self) -> ResourcePlanePortSet {
         (
             self.file_store,
+            self.file_catalog,
             self.memory_repository,
             self.skill_store,
             self.lifecycle,
@@ -215,17 +222,29 @@ impl SharedHost {
         if let Some(ports) = &resources {
             skills.set_store(ports.skill_store.clone());
         }
-        let file_store = resources.as_ref().map_or_else(
+        let (file_store, file_catalog) = resources.as_ref().map_or_else(
             || match store_dir.as_ref() {
-                Some(dir) => Arc::new(
-                    awaken_file_store::sqlite::SqliteFileStore::open(
-                        &dir.join("files.db").to_string_lossy(),
+                Some(dir) => {
+                    let files = Arc::new(
+                        awaken_file_store::sqlite::SqliteFileStore::open(
+                            &dir.join("files.db").to_string_lossy(),
+                        )
+                        .expect("open durable file store"),
+                    );
+                    (
+                        files.clone() as Arc<dyn awaken_file_store::FileStore>,
+                        files as Arc<dyn awaken_protocol_managed::resource_plane::FileCatalog>,
                     )
-                    .expect("open durable file store"),
-                ) as Arc<dyn awaken_file_store::FileStore>,
-                None => Arc::new(awaken_file_store::InMemoryFileStore::new()),
+                }
+                None => {
+                    let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
+                    (
+                        files.clone() as Arc<dyn awaken_file_store::FileStore>,
+                        files as Arc<dyn awaken_protocol_managed::resource_plane::FileCatalog>,
+                    )
+                }
             },
-            |ports| ports.file_store.clone(),
+            |ports| (ports.file_store.clone(), ports.file_catalog.clone()),
         );
         let resource_lifecycle = resources.as_ref().map(|ports| ports.lifecycle.clone());
         #[cfg(test)]
@@ -284,6 +303,7 @@ impl SharedHost {
             mcp_relay: tokio::sync::OnceCell::new(),
             dispatch_session_runtime: std::sync::RwLock::new(None),
             file_store,
+            file_catalog,
             resource_lifecycle,
             memory_stores,
             memory_mounter: std::sync::RwLock::new(None),

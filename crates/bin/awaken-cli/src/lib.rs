@@ -385,6 +385,7 @@ struct ManagementStores {
 struct ResourcePlaneStores {
     lifecycle: Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>,
     files: Arc<dyn awaken_file_store::FileStore>,
+    file_catalog: Arc<dyn awaken_runtime_host::FileCatalog>,
     memory: Arc<dyn awaken_memory_store::MemoryRepository>,
     skills: Arc<dyn awaken_skill_store::SkillStore>,
 }
@@ -397,23 +398,26 @@ enum PostgresSchemaMode {
 
 impl ResourcePlaneStores {
     fn ephemeral() -> Self {
+        let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
         Self {
             lifecycle: Arc::new(
                 awaken_resource_store::SqliteResourceStore::in_memory()
                     .expect("open ephemeral resource lifecycle sqlite"),
             ),
-            files: Arc::new(awaken_file_store::InMemoryFileStore::new()),
+            files: files.clone(),
+            file_catalog: files,
             memory: Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
             skills: Arc::new(awaken_skill_store::InMemorySkillStore::new()),
         }
     }
 
     fn embedded(root: &std::path::Path) -> Self {
-        let (files, memory, skills, lifecycle) =
+        let (files, file_catalog, memory, skills, lifecycle) =
             awaken_server::embedded_resource_plane(root).into_parts();
         Self {
             lifecycle,
             files,
+            file_catalog,
             memory,
             skills,
         }
@@ -435,15 +439,17 @@ impl ResourcePlaneStores {
                     }
                 }
                 .map_err(|error| format!("connect resource lifecycle Postgres: {error}"))?;
-                let files = match postgres_schema {
-                    PostgresSchemaMode::Migrate => {
-                        awaken_file_store::postgres::PgFileStore::connect(&url).await
+                let files = Arc::new(
+                    match postgres_schema {
+                        PostgresSchemaMode::Migrate => {
+                            awaken_file_store::postgres::PgFileStore::connect(&url).await
+                        }
+                        PostgresSchemaMode::Verify => {
+                            awaken_file_store::postgres::PgFileStore::connect_existing(&url).await
+                        }
                     }
-                    PostgresSchemaMode::Verify => {
-                        awaken_file_store::postgres::PgFileStore::connect_existing(&url).await
-                    }
-                }
-                .map_err(|error| format!("connect resource file Postgres: {error}"))?;
+                    .map_err(|error| format!("connect resource file Postgres: {error}"))?,
+                );
                 let memory = match postgres_schema {
                     PostgresSchemaMode::Migrate => {
                         awaken_memory_store::PostgresMemoryRepository::connect(&url).await
@@ -464,7 +470,8 @@ impl ResourcePlaneStores {
                 .map_err(|error| format!("connect resource skill Postgres: {error}"))?;
                 Ok(Self {
                     lifecycle: Arc::new(lifecycle),
-                    files: Arc::new(files),
+                    files: files.clone(),
+                    file_catalog: files,
                     memory: Arc::new(memory),
                     skills: Arc::new(skills),
                 })
@@ -1197,6 +1204,7 @@ async fn management_router_over(
     let ResourcePlaneStores {
         lifecycle: resource_lifecycle,
         files: file_store,
+        file_catalog,
         memory: memory_store,
         skills: skill_store,
     } = resource_plane;
@@ -1502,6 +1510,7 @@ async fn management_router_over(
     // restart.
     let resource_ports = awaken_runtime_host::ResourcePlanePorts::new(
         file_store,
+        file_catalog,
         memory_store,
         skill_store,
         resource_lifecycle,

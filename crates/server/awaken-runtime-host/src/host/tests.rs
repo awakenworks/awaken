@@ -1744,13 +1744,15 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
 
     // A blob to mount, and a first turn that builds + caches the thread's sandbox.
     let file_id = host
-        .file_store()
-        .put(b"hello-attached")
+        .create_uploaded_file(
+            host.local_workspace(),
+            "data.txt".into(),
+            "text/plain".into(),
+            b"hello-attached",
+        )
         .await
-        .expect("put blob");
-    host.register_file_ownership(host.local_workspace(), &file_id)
-        .await
-        .unwrap();
+        .expect("create File")
+        .id;
     host.run(None, "t-attach", user("hi"))
         .await
         .expect("first turn");
@@ -1797,7 +1799,10 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         "runtime rebuild retains the one Session environment"
     );
     assert_eq!(
-        environment_before.list_files(".mnt").await.unwrap(),
+        environment_before
+            .list_files("mnt/session/uploads")
+            .await
+            .unwrap(),
         vec![("data.txt".into(), b"hello-attached".to_vec())],
         "the live environment receives the file before attach returns"
     );
@@ -2201,10 +2206,16 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
 
     // Seed a file blob and pass the already-resolved File and Repository inputs.
     let binary = vec![0, 0xff, b'R', 0x80, b'\n'];
-    let file_id = host.file_store().put(&binary).await.expect("put blob");
-    host.register_file_ownership(host.local_workspace(), &file_id)
+    let record = host
+        .create_uploaded_file(
+            host.local_workspace(),
+            "notes.txt".into(),
+            "application/octet-stream".into(),
+            &binary,
+        )
         .await
         .unwrap();
+    let file_id = record.id;
     let managed = managed_with_resource_source(host.clone());
 
     managed
@@ -2250,13 +2261,8 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
     // no UTF-8 conversion can corrupt binary input.
     let spec = host.sandbox_spec("t-multi");
     let mount = &spec.mounts[0];
-    assert_eq!(mount.mount_path, ".mnt/mnt/files/notes.txt");
-    assert_eq!(
-        mount.access,
-        MountAccess::ReadWrite,
-        "an immutable FileStore input is a disposable copy on Workdir; its read-only \
-         resource authorization is not encoded as an unsupported OS guarantee"
-    );
+    assert_eq!(mount.mount_path, "/mnt/session/uploads/mnt/files/notes.txt");
+    assert_eq!(mount.access, MountAccess::ReadOnly);
     let MountSource::InlineBytes {
         contents,
         content_hash,
@@ -2265,7 +2271,7 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
         panic!("effective File input must use the binary-safe carried source")
     };
     assert_eq!(contents, &binary);
-    assert_eq!(content_hash.as_deref(), Some(file_id.as_str()));
+    assert_eq!(content_hash.as_deref(), Some(record.blob_id.as_str()));
 
     // The repo is staged for a host-side clone (not a byte mount).
     let repositories = host.thread_repository_activations("t-multi");
@@ -2306,18 +2312,33 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
         }
     }
 
-    let declared_id = awaken_sandbox_local::content_fingerprint(b"declared bytes");
+    let declared_blob_id = awaken_sandbox_local::content_fingerprint(b"declared bytes");
     let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
     raw_host.file_store = Arc::new(CorruptFileStore);
     let host = Arc::new(raw_host);
-    host.register_file_ownership(host.local_workspace(), &declared_id)
+    let public_id = "file_corrupt".to_string();
+    host.file_catalog()
+        .create_file(awaken_protocol_managed::resource_plane::FileRecord {
+            id: public_id.clone(),
+            workspace_id: host.local_workspace().into(),
+            blob_id: declared_blob_id,
+            filename: "input.bin".into(),
+            mime_type: "application/octet-stream".into(),
+            size_bytes: 14,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            downloadable: false,
+            scope_id: None,
+            logical_path: None,
+            harvest_key: None,
+            deleted: false,
+        })
         .await
         .unwrap();
     let managed = crate::ManagedHost::new(host.clone());
     let mut init = bare_session("a", host.local_workspace());
     init.resources = effective_resources(vec![TestInput {
         kind: "file".into(),
-        id: declared_id,
+        id: public_id,
         mount_path: "/mnt/input.bin".into(),
         access: ResourceAccess::ReadOnly,
         instructions: None,
@@ -2338,10 +2359,16 @@ async fn file_activation_enforces_workspace_ownership_without_iam_policy_logic()
     use awaken_protocol_managed::SessionRuntime;
 
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-    let file_id = host.file_store().put(b"workspace-a").await.unwrap();
-    host.register_file_ownership("workspace-a", &file_id)
+    let file_id = host
+        .create_uploaded_file(
+            "workspace-a",
+            "input.txt".into(),
+            "text/plain".into(),
+            b"workspace-a",
+        )
         .await
-        .unwrap();
+        .unwrap()
+        .id;
     let managed = crate::ManagedHost::new(host);
     let mut init = bare_session("a", "workspace-b");
     init.resources = effective_resources(vec![TestInput {

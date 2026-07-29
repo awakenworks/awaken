@@ -1049,15 +1049,29 @@ mod tests {
     #[tokio::test]
     async fn cold_worker_installs_frozen_file_manifest_before_opening_environment() {
         let storage = tempfile::tempdir().expect("storage");
-        let host = Arc::new(
-            SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
-        );
+        let mut raw_host =
+            SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
+        // Cause: immutable Managed File input. Effect: the selected provider must
+        // guarantee both `/mnt/session/uploads/...` path fidelity and OS-enforced
+        // read-only semantics; Workdir correctly fails this compatibility rule.
+        raw_host.session_provider =
+            crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
+                storage.path().join("sandboxes"),
+                false,
+            );
+        let host = Arc::new(raw_host);
         let _managed = crate::ManagedHost::new(host.clone());
         let bytes = b"frozen worker input".to_vec();
-        let file_id = host.file_store().put(&bytes).await.expect("store file");
-        host.register_file_ownership("workspace-a", &file_id)
+        let file_id = host
+            .create_uploaded_file(
+                "workspace-a",
+                "input.bin".into(),
+                "application/octet-stream".into(),
+                &bytes,
+            )
             .await
-            .expect("own file");
+            .expect("create file")
+            .id;
         let manifest = awaken_protocol_managed::SessionResourceManifest::new(
             "workspace-a",
             awaken_protocol_managed::ResolvedSessionResources {
@@ -1091,17 +1105,22 @@ mod tests {
         .await
         .expect("open environment after resource install");
 
-        let environment = host
-            .session_environment("thread-cold-resource")
-            .await
-            .expect("environment");
-        let files = environment.list_files(".mnt").await.expect("list mounts");
-        assert!(
-            files
-                .iter()
-                .any(|(path, contents)| path.ends_with("uploads/input.bin") && contents == &bytes),
-            "the first environment contains the exact immutable File bytes"
+        let mount = host
+            .sandbox_spec("thread-cold-resource")
+            .mounts
+            .into_iter()
+            .find(|mount| mount.mount_id == file_id)
+            .expect("frozen File mount");
+        assert_eq!(mount.mount_path, "/mnt/session/uploads/uploads/input.bin");
+        assert_eq!(
+            mount.access,
+            awaken_provisioning_contract::MountAccess::ReadOnly
         );
+        let awaken_provisioning_contract::MountSource::InlineBytes { contents, .. } = mount.source
+        else {
+            panic!("frozen File uses the binary-safe carried source")
+        };
+        assert_eq!(contents, bytes);
         assert_eq!(
             host.thread_resource_manifest("thread-cold-resource"),
             Some(manifest)

@@ -116,15 +116,17 @@ pub fn embedded_resource_plane(root: &std::path::Path) -> awaken_runtime_host::R
     memory
         .import_legacy_versions(&root.join("resource-api.db"))
         .expect("import legacy resource memory versions");
+    let files = Arc::new(
+        awaken_file_store::sqlite::SqliteFileStore::open(
+            root.join("files.db")
+                .to_str()
+                .expect("resource file path is valid UTF-8"),
+        )
+        .expect("open resource file sqlite"),
+    );
     awaken_runtime_host::ResourcePlanePorts::new(
-        Arc::new(
-            awaken_file_store::sqlite::SqliteFileStore::open(
-                root.join("files.db")
-                    .to_str()
-                    .expect("resource file path is valid UTF-8"),
-            )
-            .expect("open resource file sqlite"),
-        ),
+        files.clone(),
+        files,
         Arc::new(memory),
         Arc::new({
             let skills = awaken_skill_store::FsSkillStore::open(root.join("skills"))
@@ -161,12 +163,14 @@ pub async fn shared_worker_resource_plane(
                 .to_string(),
         );
     }
+    let files = Arc::new(
+        awaken_file_store::postgres::PgFileStore::connect(url)
+            .await
+            .map_err(|error| format!("connect shared FileStore: {error}"))?,
+    );
     Ok(Some(awaken_runtime_host::ResourcePlanePorts::new(
-        Arc::new(
-            awaken_file_store::postgres::PgFileStore::connect(url)
-                .await
-                .map_err(|error| format!("connect shared FileStore: {error}"))?,
-        ),
+        files.clone(),
+        files,
         Arc::new(
             awaken_memory_store::PostgresMemoryRepository::connect(url)
                 .await

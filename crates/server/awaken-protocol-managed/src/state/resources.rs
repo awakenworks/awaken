@@ -365,6 +365,24 @@ impl ManagedState {
             .await
             .ok_or(StateError::NotFound)?;
         let current = persisted.resources.active.clone();
+        if matches!(parsed.target, ParsedInputTarget::File(_))
+            && current
+                .inputs
+                .iter()
+                .filter(|input| {
+                    matches!(
+                        input.source,
+                        awaken_session_contract::ResolvedInputSource::File { .. }
+                    )
+                })
+                .count()
+                >= super::resource::MAX_SESSION_FILE_RESOURCES
+        {
+            return Err(StateError::Run(RunError::bad_request(format!(
+                "a Session supports at most {} files",
+                super::resource::MAX_SESSION_FILE_RESOURCES
+            ))));
+        }
         let mut suffix = current.inputs.len();
         let binding_id = loop {
             let candidate = format!("session:{id}:live:{suffix}");

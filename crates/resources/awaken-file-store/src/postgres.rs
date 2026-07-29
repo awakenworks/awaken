@@ -6,11 +6,38 @@ use async_trait::async_trait;
 use sqlx::{PgPool, Row};
 
 use crate::schema::{NS, file_store_bundle};
-use crate::{FileStore, FileStoreError, content_id};
+use crate::{
+    CreateFileRecordOutcome, FileCatalog, FileCatalogError, FileRecord, FileStore, FileStoreError,
+    content_id,
+};
 
 fn e(x: impl ToString) -> FileStoreError {
     FileStoreError(x.to_string())
 }
+
+fn ce(x: impl ToString) -> FileCatalogError {
+    FileCatalogError::Storage(x.to_string())
+}
+
+fn row_record(row: &sqlx::postgres::PgRow) -> FileRecord {
+    FileRecord {
+        id: row.get("id"),
+        workspace_id: row.get("workspace_id"),
+        blob_id: row.get("blob_id"),
+        filename: row.get("filename"),
+        mime_type: row.get("mime_type"),
+        size_bytes: row.get::<i64, _>("size_bytes") as u64,
+        created_at: row.get("file_created_at"),
+        downloadable: row.get::<i32, _>("downloadable") != 0,
+        scope_id: row.get("scope_id"),
+        logical_path: row.get("logical_path"),
+        harvest_key: row.get("harvest_key"),
+        deleted: row.get::<i32, _>("deleted") != 0,
+    }
+}
+
+const FILE_COLUMNS: &str = "id, workspace_id, blob_id, filename, mime_type, size_bytes, \
+created_at AS file_created_at, downloadable, scope_id, logical_path, harvest_key, deleted";
 
 /// A Postgres-backed [`FileStore`] over a `file_store_blob(id, bytes, size, created_at)` table.
 pub struct PgFileStore {
@@ -108,5 +135,122 @@ impl FileStore for PgFileStore {
             .await
             .map_err(e)?;
         Ok(res.rows_affected() > 0)
+    }
+}
+
+#[async_trait]
+impl FileCatalog for PgFileStore {
+    async fn create_file(
+        &self,
+        record: FileRecord,
+    ) -> Result<CreateFileRecordOutcome, FileCatalogError> {
+        crate::validate_record(&record)?;
+        let inserted = sqlx::query(&format!(
+            "INSERT INTO file_store_file \
+             (id,workspace_id,blob_id,filename,mime_type,size_bytes,created_at,downloadable,scope_id,logical_path,harvest_key,deleted) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) \
+             ON CONFLICT DO NOTHING RETURNING {FILE_COLUMNS}"
+        ))
+        .bind(&record.id)
+        .bind(&record.workspace_id)
+        .bind(&record.blob_id)
+        .bind(&record.filename)
+        .bind(&record.mime_type)
+        .bind(record.size_bytes as i64)
+        .bind(&record.created_at)
+        .bind(i32::from(record.downloadable))
+        .bind(&record.scope_id)
+        .bind(&record.logical_path)
+        .bind(&record.harvest_key)
+        .bind(i32::from(record.deleted))
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(ce)?;
+        if let Some(row) = inserted {
+            return Ok(CreateFileRecordOutcome::Inserted(row_record(&row)));
+        }
+        let existing = if let Some(key) = record.harvest_key.as_deref() {
+            sqlx::query(&format!(
+                "SELECT {FILE_COLUMNS} FROM file_store_file \
+                 WHERE workspace_id=$1 AND harvest_key=$2 AND deleted=0"
+            ))
+            .bind(&record.workspace_id)
+            .bind(key)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(ce)?
+        } else {
+            return Err(FileCatalogError::Invalid(format!(
+                "file id `{}` already exists",
+                record.id
+            )));
+        };
+        Ok(CreateFileRecordOutcome::Existing(row_record(&existing)))
+    }
+
+    async fn get_file(
+        &self,
+        workspace_id: &str,
+        file_id: &str,
+        include_deleted: bool,
+    ) -> Result<Option<FileRecord>, FileCatalogError> {
+        sqlx::query(&format!(
+            "SELECT {FILE_COLUMNS} FROM file_store_file \
+             WHERE id=$1 AND workspace_id=$2 AND ($3 OR deleted=0)"
+        ))
+        .bind(file_id)
+        .bind(workspace_id)
+        .bind(include_deleted)
+        .fetch_optional(&self.pool)
+        .await
+        .map(|row| row.map(|row| row_record(&row)))
+        .map_err(ce)
+    }
+
+    async fn list_files(
+        &self,
+        workspace_id: &str,
+        scope_id: Option<&str>,
+    ) -> Result<Vec<FileRecord>, FileCatalogError> {
+        let rows = sqlx::query(&format!(
+            "SELECT {FILE_COLUMNS} FROM file_store_file \
+             WHERE workspace_id=$1 AND deleted=0 AND ($2::TEXT IS NULL OR scope_id=$2) \
+             ORDER BY created_at DESC, id DESC"
+        ))
+        .bind(workspace_id)
+        .bind(scope_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(ce)?;
+        Ok(rows.iter().map(row_record).collect())
+    }
+
+    async fn mark_file_deleted(
+        &self,
+        workspace_id: &str,
+        file_id: &str,
+    ) -> Result<Option<FileRecord>, FileCatalogError> {
+        sqlx::query(&format!(
+            "UPDATE file_store_file SET deleted=1 WHERE id=$1 AND workspace_id=$2 \
+             RETURNING {FILE_COLUMNS}"
+        ))
+        .bind(file_id)
+        .bind(workspace_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map(|row| row.map(|row| row_record(&row)))
+        .map_err(ce)
+    }
+
+    async fn active_size_bytes(&self, workspace_id: &str) -> Result<u64, FileCatalogError> {
+        sqlx::query(
+            "SELECT COALESCE(SUM(size_bytes),0)::BIGINT AS total FROM file_store_file \
+             WHERE workspace_id=$1 AND deleted=0",
+        )
+        .bind(workspace_id)
+        .fetch_one(&self.pool)
+        .await
+        .map(|row| row.get::<i64, _>("total") as u64)
+        .map_err(ce)
     }
 }

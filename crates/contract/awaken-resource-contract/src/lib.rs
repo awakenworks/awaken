@@ -1,7 +1,8 @@
 //! Port-only contract for the resources plane (files, memory, repositories, skills).
 //!
-//! The three mountable-resource **ports** — [`FileStore`], [`MemoryRepository`],
-//! [`SkillStore`] — plus the value/error types in their signatures,
+//! The mountable-resource **ports** — [`FileStore`] + [`FileCatalog`] as the two
+//! capabilities of one File aggregate, [`MemoryRepository`], and [`SkillStore`]
+//! — plus the value/error types in their signatures,
 //! and **nothing else**: no backend, no SQL driver, no filesystem. It mirrors
 //! [`awaken-provisioning-contract`](https://docs.rs/awaken-provisioning-contract):
 //! an adapter (or a consumer reusing these stores inside its own database) can
@@ -50,6 +51,87 @@ pub use lifecycle::{
 #[derive(Debug, thiserror::Error)]
 #[error("file store error: {0}")]
 pub struct FileStoreError(pub String);
+
+/// A logical Files-API record. `id` is the public opaque `file_...` identity;
+/// `blob_id` is the private content-addressed identity in [`FileStore`]. Keeping
+/// these identities separate lets equal bytes deduplicate physically without
+/// merging filenames, scopes, download policy, or deletion lifecycles.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileRecord {
+    pub id: String,
+    pub workspace_id: String,
+    pub blob_id: String,
+    pub filename: String,
+    pub mime_type: String,
+    pub size_bytes: u64,
+    pub created_at: String,
+    pub downloadable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logical_path: Option<String>,
+    /// Stable internal idempotency key for Sandbox-output harvest. Uploads have
+    /// no key because every upload creates an independent logical File.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harvest_key: Option<String>,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
+/// Whether an idempotent FileCatalog create inserted the candidate or recovered
+/// the already-committed record for the same harvest key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CreateFileRecordOutcome {
+    Inserted(FileRecord),
+    Existing(FileRecord),
+}
+
+impl CreateFileRecordOutcome {
+    #[must_use]
+    pub fn record(&self) -> &FileRecord {
+        match self {
+            Self::Inserted(record) | Self::Existing(record) => record,
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum FileCatalogError {
+    #[error("invalid file record: {0}")]
+    Invalid(String),
+    #[error("file catalog storage error: {0}")]
+    Storage(String),
+}
+
+/// Durable logical Files-API catalog. It owns metadata, Workspace visibility,
+/// Session scope, and harvest idempotency; bytes remain exclusively in
+/// [`FileStore`]. Lists are newest-first with `id` as the deterministic tie-break.
+#[async_trait]
+pub trait FileCatalog: Send + Sync {
+    async fn create_file(
+        &self,
+        record: FileRecord,
+    ) -> Result<CreateFileRecordOutcome, FileCatalogError>;
+    async fn get_file(
+        &self,
+        workspace_id: &str,
+        file_id: &str,
+        include_deleted: bool,
+    ) -> Result<Option<FileRecord>, FileCatalogError>;
+    async fn list_files(
+        &self,
+        workspace_id: &str,
+        scope_id: Option<&str>,
+    ) -> Result<Vec<FileRecord>, FileCatalogError>;
+    /// Mark one logical File deleted and return its retained cleanup metadata.
+    async fn mark_file_deleted(
+        &self,
+        workspace_id: &str,
+        file_id: &str,
+    ) -> Result<Option<FileRecord>, FileCatalogError>;
+    /// Logical active-byte accounting used by the Workspace Files quota.
+    async fn active_size_bytes(&self, workspace_id: &str) -> Result<u64, FileCatalogError>;
+}
 
 /// A content-addressed, immutable blob store. `put` returns the content id and is
 /// idempotent (equal bytes → same id → no-op if present, so retries are safe). The

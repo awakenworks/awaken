@@ -38,6 +38,7 @@ mod hub;
 mod inference_routing;
 mod judge;
 mod live_inbox;
+mod managed_resource_projection;
 mod mcp;
 mod mcp_relay;
 mod memory;
@@ -80,6 +81,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, RunState};
 use awaken_protocol_managed::resource_plane as awaken_resource_contract;
+pub use awaken_protocol_managed::resource_plane::{FileCatalog, FileRecord, ResourcePurgeError};
 use awaken_protocol_managed::{
     AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot, OutcomeIteration, OutcomeReport, Pending, RunError, SessionRuntime,
@@ -92,6 +94,7 @@ use awaken_protocol_transport::{
 use awaken_runtime_contract::live_inbox::{EditError, LiveInboxMessageId, MessageOrigin, Offer};
 
 use crate::host::{HostError, HostErrorKind, PendingTool, RunResult};
+use crate::managed_resource_projection::{managed_file_mount_path, resolved_resource_prompt};
 
 mod postgres_migration_lock;
 mod worker_control_client;
@@ -451,33 +454,6 @@ impl SharedHost {
     }
 }
 
-fn resolved_resource_prompt(input: &awaken_protocol_managed::ResolvedInput) -> String {
-    use awaken_protocol_managed::ResolvedInputSource;
-    use awaken_resource_contract::ResourceAccess;
-
-    let access = match input.access {
-        ResourceAccess::ReadOnly => "read-only",
-        ResourceAccess::ReadWrite => "read/write",
-    };
-    let carried_path = format!(".mnt/{}", input.mount_path.trim_start_matches('/'));
-    let base = match &input.source {
-        ResolvedInputSource::File { .. } => {
-            format!("A file is mounted read-only at `{carried_path}`.")
-        }
-        ResolvedInputSource::MemoryStore { .. } => {
-            format!("A persistent memory store is mounted {access} at `{carried_path}`.")
-        }
-        ResolvedInputSource::Repository { .. } => format!(
-            "A git repository is checked out at `{}` ({access}); use git there to read, edit, commit, and push.",
-            input.mount_path
-        ),
-    };
-    match &input.instructions {
-        Some(instructions) if !instructions.is_empty() => format!("{base}\n{instructions}"),
-        _ => base,
-    }
-}
-
 fn repository_http_basic_credential(
     material: awaken_runtime_contract::CredentialMaterial,
 ) -> Result<awaken_provisioning_contract::RepositoryHttpBasicCredential, &'static str> {
@@ -523,6 +499,34 @@ impl ManagedHost {
         });
     }
 
+    async fn harvest_artifacts(&self, thread: &str) -> Result<(), RunError> {
+        self.host
+            .harvest_thread_artifacts(thread)
+            .await
+            .map(|_| ())
+            .map_err(|error| RunError::internal(error.to_string()))
+    }
+
+    /// One post-step edge for every execution variant. Outputs written before a
+    /// failed model/tool step are harvested too; the original execution error
+    /// remains the caller-visible failure and terminal release can retry harvest.
+    async fn finish_step(
+        &self,
+        thread: &str,
+        result: Result<RunResult, HostError>,
+    ) -> Result<StepOutcome, RunError> {
+        match result {
+            Ok(result) => {
+                self.harvest_artifacts(thread).await?;
+                to_step_outcome(result)
+            }
+            Err(error) => {
+                let _ = self.harvest_artifacts(thread).await;
+                Err(to_run_error(error))
+            }
+        }
+    }
+
     /// Wire the live resource-invariant port used at activation and Memory use.
     /// Configuration was already selected by the Session control plane; this port
     /// only validates trusted Workspace ownership, lifecycle state, and the frozen
@@ -555,48 +559,44 @@ impl ManagedHost {
 
         match &input.source {
             ResolvedInputSource::File { file_id } => {
-                if !self
+                let record = self
                     .host
-                    .owns_file(workspace, file_id.as_str())
+                    .file_record(workspace, file_id.as_str())
                     .await
                     .map_err(|error| RunError::internal(error.to_string()))?
-                {
-                    return Err(RunError::bad_request(format!(
-                        "file resource `{file_id}` not found in this workspace"
-                    )));
-                }
+                    .ok_or_else(|| {
+                        RunError::bad_request(format!(
+                            "file resource `{file_id}` not found in this workspace"
+                        ))
+                    })?;
                 let bytes = self
                     .host
                     .file_store()
-                    .get(file_id.as_str())
+                    .get(&record.blob_id)
                     .await
-                    .ok()
-                    .flatten()
+                    .map_err(|error| RunError::internal(error.to_string()))?
                     .ok_or_else(|| {
                         RunError::bad_request(format!(
-                            "file resource `{file_id}` not found in the blob store"
+                            "file resource `{file_id}` references a missing blob"
                         ))
                     })?;
                 let actual = awaken_sandbox_local::content_fingerprint(&bytes);
-                if actual != file_id.as_str() {
+                if actual != record.blob_id {
                     return Err(RunError::bad_request(format!(
                         "file resource `{file_id}` content hash mismatch (realized `{actual}`)"
                     )));
                 }
+                let managed_path = managed_file_mount_path(&input.mount_path);
                 staged
                     .mounts
                     .push(awaken_provisioning_contract::MountRequirement {
                         mount_id: file_id.to_string(),
                         source: awaken_provisioning_contract::MountSource::InlineBytes {
                             contents: bytes,
-                            content_hash: Some(file_id.to_string()),
+                            content_hash: Some(record.blob_id),
                         },
-                        mount_path: format!(".mnt/{logical}"),
-                        // FileStore content is immutable and this per-run copy has no
-                        // write-back path. Editing the disposable projection cannot
-                        // mutate the File identified by `file_id`; publishing edited
-                        // bytes creates a distinct File or Artifact.
-                        access: awaken_provisioning_contract::MountAccess::ReadWrite,
+                        mount_path: managed_path,
+                        access: awaken_provisioning_contract::MountAccess::ReadOnly,
                         lifetime: awaken_provisioning_contract::MountLifetime::PerRun,
                         required: true,
                     });
@@ -855,11 +855,12 @@ impl ManagedHost {
         for check in checks {
             match check {
                 ResourceBindingCheck::File { file_id } => {
-                    if !self
+                    if self
                         .host
-                        .owns_file(&workspace, &file_id)
+                        .file_record(&workspace, &file_id)
                         .await
                         .map_err(|error| RunError::internal(error.to_string()))?
+                        .is_none()
                     {
                         return Err(RunError::bad_request(format!(
                             "file resource `{file_id}` is unavailable in this Workspace"
@@ -951,6 +952,9 @@ impl SessionRuntime for ManagedHost {
         // run-authored Skills, then dispose. A GET /files poll is never a write edge.
         self.host.publish_thread_repositories(thread).await;
         self.host.harvest_thread_skills(thread).await;
+        // Failure is terminal-release blocking: keep the Sandbox available for
+        // the durable cleanup retry instead of disposing unharvested outputs.
+        self.harvest_artifacts(thread).await?;
         // Memory is owned by its MemoryMount guard: FUSE writes through live and
         // copy realization performs one CAS harvest during teardown.
         self.host.end_session(thread).await.map_err(to_run_error)
@@ -966,9 +970,8 @@ impl SessionRuntime for ManagedHost {
         let result = self
             .host
             .run(Some(agent), thread, vec![user_message(content)])
-            .await
-            .map_err(to_run_error)?;
-        to_step_outcome(result)
+            .await;
+        self.finish_step(thread, result).await
     }
 
     async fn run_attributed(
@@ -987,9 +990,8 @@ impl SessionRuntime for ManagedHost {
                 vec![user_message(content)],
                 data_subject_id.map(awaken_runtime_contract::DataSubjectId),
             )
-            .await
-            .map_err(to_run_error)?;
-        to_step_outcome(result)
+            .await;
+        self.finish_step(thread, result).await
     }
 
     async fn run_streaming(
@@ -1005,9 +1007,8 @@ impl SessionRuntime for ManagedHost {
         let result = self
             .host
             .run_streaming(Some(agent), thread, vec![user_message(content)], sink)
-            .await
-            .map_err(to_run_error)?;
-        to_step_outcome(result)
+            .await;
+        self.finish_step(thread, result).await
     }
 
     async fn run_streaming_attributed(
@@ -1028,9 +1029,8 @@ impl SessionRuntime for ManagedHost {
                 sink,
                 data_subject_id.map(awaken_runtime_contract::DataSubjectId),
             )
-            .await
-            .map_err(to_run_error)?;
-        to_step_outcome(result)
+            .await;
+        self.finish_step(thread, result).await
     }
 
     async fn resume(
@@ -1050,9 +1050,8 @@ impl SessionRuntime for ManagedHost {
                     note: decision.note,
                 },
             )
-            .await
-            .map_err(to_run_error)?;
-        to_step_outcome(result)
+            .await;
+        self.finish_step(thread, result).await
     }
 
     async fn resume_custom(
@@ -1073,9 +1072,8 @@ impl SessionRuntime for ManagedHost {
                     is_error,
                 },
             )
-            .await
-            .map_err(to_run_error)?;
-        to_step_outcome(result)
+            .await;
+        self.finish_step(thread, result).await
     }
 
     async fn live_inbox_snapshot(&self, thread: &str) -> LiveInboxSnapshot {

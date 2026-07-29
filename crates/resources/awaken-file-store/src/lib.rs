@@ -8,6 +8,11 @@
 //! `awaken-file-store-s3`) fit the same seam as the local ones here (`FsFileStore`,
 //! `InMemoryFileStore`). The **id is computed in this core**, never in a backend, so
 //! it is identical across every implementation.
+//!
+//! [`FileCatalog`] is implemented by the same durable adapters and owns public
+//! Files API identity/metadata. Its opaque `file_...` ids are deliberately not
+//! the content ids described above: equal bytes deduplicate without merging two
+//! logical Files or their lifecycles.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -18,7 +23,9 @@ use tokio::sync::Mutex;
 
 // The `FileStore` port + its error live in the port-only contract crate; this crate
 // implements them and re-exports so `awaken_file_store::FileStore` keeps resolving.
-pub use awaken_resource_contract::{FileStore, FileStoreError};
+pub use awaken_resource_contract::{
+    CreateFileRecordOutcome, FileCatalog, FileCatalogError, FileRecord, FileStore, FileStoreError,
+};
 
 fn e(x: impl ToString) -> FileStoreError {
     FileStoreError(x.to_string())
@@ -137,6 +144,120 @@ impl FileStore for FsFileStore {
 #[derive(Default)]
 pub struct InMemoryFileStore {
     blobs: Mutex<HashMap<String, Vec<u8>>>,
+    files: Mutex<HashMap<String, FileRecord>>,
+}
+
+fn validate_record(record: &FileRecord) -> Result<(), FileCatalogError> {
+    if record.id.trim().is_empty()
+        || record.workspace_id.trim().is_empty()
+        || record.blob_id.trim().is_empty()
+        || record.filename.is_empty()
+        || record.mime_type.trim().is_empty()
+        || record.created_at.trim().is_empty()
+    {
+        return Err(FileCatalogError::Invalid(
+            "id, workspace, blob, filename, MIME type, and created_at are required".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[async_trait]
+impl FileCatalog for InMemoryFileStore {
+    async fn create_file(
+        &self,
+        record: FileRecord,
+    ) -> Result<CreateFileRecordOutcome, FileCatalogError> {
+        validate_record(&record)?;
+        let mut files = self.files.lock().await;
+        if let Some(key) = record.harvest_key.as_deref()
+            && let Some(existing) = files.values().find(|candidate| {
+                !candidate.deleted
+                    && candidate.workspace_id == record.workspace_id
+                    && candidate.harvest_key.as_deref() == Some(key)
+            })
+        {
+            return Ok(CreateFileRecordOutcome::Existing(existing.clone()));
+        }
+        if files.contains_key(&record.id) {
+            return Err(FileCatalogError::Invalid(format!(
+                "file id `{}` already exists",
+                record.id
+            )));
+        }
+        files.insert(record.id.clone(), record.clone());
+        Ok(CreateFileRecordOutcome::Inserted(record))
+    }
+
+    async fn get_file(
+        &self,
+        workspace_id: &str,
+        file_id: &str,
+        include_deleted: bool,
+    ) -> Result<Option<FileRecord>, FileCatalogError> {
+        Ok(self
+            .files
+            .lock()
+            .await
+            .get(file_id)
+            .filter(|record| {
+                record.workspace_id == workspace_id && (include_deleted || !record.deleted)
+            })
+            .cloned())
+    }
+
+    async fn list_files(
+        &self,
+        workspace_id: &str,
+        scope_id: Option<&str>,
+    ) -> Result<Vec<FileRecord>, FileCatalogError> {
+        let mut records = self
+            .files
+            .lock()
+            .await
+            .values()
+            .filter(|record| {
+                !record.deleted
+                    && record.workspace_id == workspace_id
+                    && scope_id.is_none_or(|scope| record.scope_id.as_deref() == Some(scope))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        records.sort_by(|left, right| {
+            right
+                .created_at
+                .cmp(&left.created_at)
+                .then_with(|| right.id.cmp(&left.id))
+        });
+        Ok(records)
+    }
+
+    async fn mark_file_deleted(
+        &self,
+        workspace_id: &str,
+        file_id: &str,
+    ) -> Result<Option<FileRecord>, FileCatalogError> {
+        let mut files = self.files.lock().await;
+        let Some(record) = files
+            .get_mut(file_id)
+            .filter(|record| record.workspace_id == workspace_id)
+        else {
+            return Ok(None);
+        };
+        record.deleted = true;
+        Ok(Some(record.clone()))
+    }
+
+    async fn active_size_bytes(&self, workspace_id: &str) -> Result<u64, FileCatalogError> {
+        Ok(self
+            .files
+            .lock()
+            .await
+            .values()
+            .filter(|record| !record.deleted && record.workspace_id == workspace_id)
+            .map(|record| record.size_bytes)
+            .sum())
+    }
 }
 
 impl InMemoryFileStore {
@@ -224,6 +345,125 @@ mod tests {
         assert!(store.delete(&id).await.unwrap());
         assert!(!store.delete(&id).await.unwrap());
         assert!(store.get(&id).await.unwrap().is_none());
+    }
+
+    fn file_record(
+        id: &str,
+        workspace: &str,
+        created_at: &str,
+        scope: Option<&str>,
+        harvest_key: Option<&str>,
+    ) -> FileRecord {
+        FileRecord {
+            id: id.into(),
+            workspace_id: workspace.into(),
+            blob_id: format!("blob-{id}"),
+            filename: format!("{id}.txt"),
+            mime_type: "text/plain".into(),
+            size_bytes: 3,
+            created_at: created_at.into(),
+            downloadable: scope.is_some(),
+            scope_id: scope.map(str::to_string),
+            logical_path: scope.map(|_| format!("{id}.txt")),
+            harvest_key: harvest_key.map(str::to_string),
+            deleted: false,
+        }
+    }
+
+    async fn catalog_contract(store: &dyn FileCatalog) {
+        // Cause/effect graph:
+        // C1 unique upload; C2 same harvest key; C3 Workspace/scope selector;
+        // C4 logical delete. Effects: E1 insert, E2 recover original idempotently,
+        // E3 isolation + newest-first order, E4 active-byte decrement and hidden read.
+        // Decision rules R1..R4 are exercised in order below for every backend.
+        let old = file_record("file_old", "w1", "2026-01-01T00:00:00Z", None, None);
+        let scoped = file_record(
+            "file_scoped",
+            "w1",
+            "2026-01-02T00:00:00Z",
+            Some("session-1"),
+            Some("session-1\0out.txt\0hash"),
+        );
+        let other_workspace = file_record(
+            "file_other",
+            "w2",
+            "2026-01-03T00:00:00Z",
+            Some("session-1"),
+            Some("session-1\0out.txt\0hash"),
+        );
+        assert!(matches!(
+            store.create_file(old.clone()).await.unwrap(),
+            CreateFileRecordOutcome::Inserted(_)
+        ));
+        store.create_file(scoped.clone()).await.unwrap();
+        store.create_file(other_workspace).await.unwrap();
+
+        let retry = FileRecord {
+            id: "file_retry_candidate".into(),
+            ..scoped.clone()
+        };
+        assert_eq!(
+            store.create_file(retry).await.unwrap().record().id,
+            scoped.id,
+            "R2: harvest retry returns the committed logical File"
+        );
+        assert_eq!(
+            store
+                .list_files("w1", None)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|record| record.id)
+                .collect::<Vec<_>>(),
+            vec![scoped.id.clone(), old.id.clone()]
+        );
+        assert_eq!(
+            store.list_files("w1", Some("session-1")).await.unwrap(),
+            vec![scoped.clone()]
+        );
+        assert!(
+            store
+                .list_files("w1", Some("session-2"))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            store.list_files("w2", Some("session-1")).await.unwrap()[0].id,
+            "file_other",
+            "harvest idempotency is Workspace-scoped"
+        );
+        assert_eq!(store.active_size_bytes("w1").await.unwrap(), 6);
+
+        let tombstone = store
+            .mark_file_deleted("w1", &scoped.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(tombstone.deleted);
+        assert!(
+            store
+                .get_file("w1", &scoped.id, false)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .get_file("w1", &scoped.id, true)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(store.active_size_bytes("w1").await.unwrap(), 3);
+        let replacement = FileRecord {
+            id: "file_reharvested".into(),
+            ..scoped
+        };
+        assert!(matches!(
+            store.create_file(replacement).await.unwrap(),
+            CreateFileRecordOutcome::Inserted(_)
+        ));
     }
 
     #[tokio::test]
@@ -355,6 +595,11 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn in_memory_catalog_obeys_identity_scope_idempotency_and_delete_contract() {
+        catalog_contract(&InMemoryFileStore::new()).await;
+    }
+
+    #[tokio::test]
     async fn fs_empty_bytes_round_trip() {
         let tmp = tempfile::tempdir().unwrap();
         empty_bytes_round_trip(&FsFileStore::open(tmp.path()).await.unwrap()).await;
@@ -419,6 +664,7 @@ mod tests {
         let store = PgFileStore::connect(&url).await.unwrap();
         PgFileStore::connect_existing(&url).await.unwrap();
         round_trip(&store).await;
+        catalog_contract(&store).await;
         // Same id as the core, across the network backend too.
         assert_eq!(
             store.put(b"portable").await.unwrap(),
@@ -444,6 +690,11 @@ mod tests {
         #[tokio::test]
         async fn sqlite_empty_bytes_round_trip() {
             empty_bytes_round_trip(&SqliteFileStore::open_in_memory().unwrap()).await;
+        }
+
+        #[tokio::test]
+        async fn sqlite_catalog_obeys_identity_scope_idempotency_and_delete_contract() {
+            catalog_contract(&SqliteFileStore::open_in_memory().unwrap()).await;
         }
 
         #[tokio::test]
