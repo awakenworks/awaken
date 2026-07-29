@@ -57,7 +57,26 @@ fn open_file_connection(path: &str) -> Result<Connection, StoreError> {
     connection
         .busy_timeout(FILE_BUSY_TIMEOUT)
         .map_err(|err| StoreError::Open(err.to_string()))?;
+    connection
+        .execute_batch("PRAGMA journal_mode = WAL;")
+        .map_err(|err| StoreError::Open(err.to_string()))?;
     Ok(connection)
+}
+
+/// Apply the credential bundle once and construct both adapters over the same
+/// serialized connection. This is the canonical application startup path: the
+/// metadata and sealed-material halves are one credential persistence boundary,
+/// so they must not create competing SQLite writers or repeat migration work.
+pub fn open_migrated_pair(
+    path: &str,
+) -> Result<(SqliteCredentialRepo, SqliteSealedBlobStore), StoreError> {
+    let connection = open_file_connection(path)?;
+    run_migrations(&connection)?;
+    let conn = Arc::new(Mutex::new(connection));
+    Ok((
+        SqliteCredentialRepo { conn: conn.clone() },
+        SqliteSealedBlobStore { conn },
+    ))
 }
 
 async fn with_conn<T, F>(conn: &Arc<Mutex<Connection>>, f: F) -> Result<T, CredentialError>
@@ -568,8 +587,10 @@ mod tests {
         // | R1 | metadata | absent | normal write succeeds (covered by conformance) |
         // | R2 | metadata | short-lived | waits, then writes without leaking SQLITE_BUSY |
         // | R3 | sealed blob | short-lived | waits, then writes without leaking SQLITE_BUSY |
+        // | R4 | metadata read | long-lived | WAL snapshot reads without waiting for the writer |
         // A lock held longer than the bounded timeout still fails closed; this test
-        // covers the transient contention produced by sibling adapters in one host.
+        // covers the transient write contention and concurrent provisioning reads
+        // produced by sibling adapters in one host.
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("credential.db");
         let path = path.to_string_lossy().into_owned();
@@ -597,5 +618,66 @@ mod tests {
             }
             blocker.join().unwrap();
         }
+
+        repo.put(source("cred:read-during-write")).await.unwrap();
+        let blocker_path = path.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let blocker = std::thread::spawn(move || {
+            let connection = Connection::open(blocker_path).unwrap();
+            connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+            connection
+                .execute(
+                    "INSERT INTO credential_secret (secret_ref, sealed) VALUES (?1, ?2)",
+                    params!["sec:writer", b"sealed"],
+                )
+                .unwrap();
+            ready_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            connection.execute_batch("COMMIT").unwrap();
+        });
+        ready_rx.recv().unwrap();
+        let read = tokio::time::timeout(
+            Duration::from_millis(500),
+            repo.get(&CredentialSourceId("cred:read-during-write".into())),
+        )
+        .await
+        .expect("WAL reader must not wait for a sibling writer")
+        .unwrap();
+        assert_eq!(read.id.0, "cred:read-during-write");
+        release_tx.send(()).unwrap();
+        blocker.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn migrated_pair_owns_one_credential_persistence_boundary() {
+        // Cause/effect decision table:
+        // | Rule | startup path | metadata write | sealed write | Effect |
+        // | R1 | canonical pair | succeeds | succeeds | both halves share one migrated scope |
+        // | R2 | standalone seam | succeeds | n/a | retained for isolated adapter tests |
+        // | R3 | standalone seam | n/a | succeeds | retained for isolated adapter tests |
+        // Standalone coverage lives above; this rule prevents application
+        // composition from reopening and migrating one bounded context twice.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("credential.db");
+        let path = path.to_string_lossy().into_owned();
+        let (repo, blobs) = open_migrated_pair(&path).unwrap();
+
+        repo.put(source("cred:paired")).await.unwrap();
+        let reference = SecretRef("sec:paired".into());
+        blobs
+            .put_blob(&reference, b"sealed".to_vec())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            repo.get(&CredentialSourceId("cred:paired".into()))
+                .await
+                .unwrap()
+                .id
+                .0,
+            "cred:paired"
+        );
+        assert_eq!(blobs.get_blob(&reference).await.unwrap(), b"sealed");
     }
 }

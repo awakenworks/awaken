@@ -531,16 +531,10 @@ async fn open_management_stores(
     ) = match &cfg.credential {
         StoreBackend::Sqlite(p) => {
             let file = path(p);
-            let creds = Arc::new(
-                awaken_credential_vault::SqliteCredentialRepo::open(&file)
-                    .map_err(|error| format!("open credential SQLite {}: {error}", p.display()))?,
-            );
-            let blobs =
-                awaken_credential_vault::SqliteSealedBlobStore::open(&file).map_err(|error| {
-                    format!("open sealed credential SQLite {}: {error}", p.display())
-                })?;
+            let (creds, blobs) = awaken_credential_vault::sqlite::open_migrated_pair(&file)
+                .map_err(|error| format!("open credential SQLite {}: {error}", p.display()))?;
             (
-                creds,
+                Arc::new(creds),
                 Arc::new(awaken_credential_vault::SealedAeadSecretStore::over(
                     key,
                     Arc::new(blobs),
