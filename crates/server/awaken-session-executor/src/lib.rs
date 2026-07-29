@@ -119,8 +119,9 @@ pub use crate::web_search::WebSearchPublicationResolver;
 pub use crate::worker_control_client::WorkerControlClient;
 pub use awaken_config_service::PluginPublicationResolver;
 pub use awaken_ext_builtin_tools::{
-    WebSearchCredentialRequirement, WebSearchProvider, WebSearchProviderDescriptor,
-    WebSearchProviderRegistry, WebSearchRegistryError, WebSearchRequest, WebSearchResult,
+    WEB_SEARCH_PLUGIN_ID, WebSearchCredentialRequirement, WebSearchProvider,
+    WebSearchProviderDescriptor, WebSearchProviderRegistry, WebSearchRegistryError,
+    WebSearchRequest, WebSearchResult,
 };
 pub use awaken_protocol_managed::McpAttachmentRealizer;
 pub use awaken_sandbox_container::{ContainerEnvironment, ContainerEnvironmentProvider};
