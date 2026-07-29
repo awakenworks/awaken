@@ -140,6 +140,7 @@ impl SkillCatalog {
         let files = vec![awaken_skill_store::SkillBundleFile {
             path: "SKILL.md".into(),
             content: content.as_bytes().to_vec(),
+            executable: false,
         }];
         let created_unix_nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -350,6 +351,7 @@ mod tests {
         let files = vec![SkillBundleFile {
             path: "SKILL.md".into(),
             content: body.as_bytes().to_vec(),
+            executable: false,
         }];
         SkillVersion {
             id: format!("skver-{id}-{ordinal}").into(),

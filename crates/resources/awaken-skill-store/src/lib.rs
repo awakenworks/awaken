@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+mod bundle;
 #[cfg(feature = "postgres")]
 mod postgres;
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
@@ -20,6 +21,10 @@ mod schema;
 #[cfg(feature = "sqlite")]
 mod sqlite;
 
+pub use bundle::{
+    CanonicalSkillBundle, MAX_SKILL_ARCHIVE_BYTES, MAX_SKILL_BUNDLE_BYTES, MAX_SKILL_FILE_BYTES,
+    MAX_SKILL_FILES, UploadedSkillBundleFile, canonicalize_skill_bundle, normalize_bundle_path,
+};
 #[cfg(feature = "postgres")]
 pub use postgres::{PgSkillStore, PgStoreError};
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
@@ -86,6 +91,7 @@ pub(crate) fn legacy_aggregate(workspace: &str, id: &str, content: &[u8]) -> Ski
     let files = vec![SkillBundleFile {
         path: "SKILL.md".into(),
         content: content.to_vec(),
+        executable: false,
     }];
     SkillAggregate {
         definition: SkillDefinition {
@@ -127,6 +133,11 @@ pub fn bundle_sha256(files: &[SkillBundleFile]) -> String {
         hash.update(file.path.as_bytes());
         hash.update((file.content.len() as u64).to_be_bytes());
         hash.update(&file.content);
+        // Keep legacy hashes stable for the default (`false`) value while binding
+        // the security-relevant executable bit whenever it is enabled.
+        if file.executable {
+            hash.update(b"\0awaken-skill-executable\0");
+        }
     }
     format!("sha256:{:x}", hash.finalize())
 }
@@ -757,6 +768,7 @@ mod tests {
         let files = vec![SkillBundleFile {
             path: "SKILL.md".into(),
             content: b"---\ndescription: test\n---\nbody".to_vec(),
+            executable: false,
         }];
         (
             SkillDefinition {

@@ -756,7 +756,7 @@ impl NamespaceSandbox {
     pub fn materialize_read_only_tree(
         &self,
         subdir: &str,
-        files: &[(String, Vec<u8>)],
+        files: &[(String, Vec<u8>, bool)],
     ) -> Result<(), pc::SandboxError> {
         materialize_read_only_tree_at(&self.workspace_root(), workspace_relative(subdir), files)
     }

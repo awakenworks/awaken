@@ -45,7 +45,7 @@ static READ_ONLY_TREE_WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
 pub(crate) fn materialize_read_only_tree_at(
     root: &IsolatedRoot,
     subdir: &str,
-    files: &[(String, Vec<u8>)],
+    files: &[(String, Vec<u8>, bool)],
 ) -> Result<(), pc::SandboxError> {
     let base = root.resolve(subdir).map_err(err)?;
     if let Ok(metadata) = std::fs::symlink_metadata(&base) {
@@ -56,7 +56,7 @@ pub(crate) fn materialize_read_only_tree_at(
         std::fs::create_dir_all(&base).map_err(err)?;
     }
 
-    for (relative, bytes) in files {
+    for (relative, bytes, executable) in files {
         if relative.is_empty()
             || relative.contains('\\')
             || std::path::Path::new(relative).is_absolute()
@@ -97,30 +97,36 @@ pub(crate) fn materialize_read_only_tree_at(
         {
             return Err(err(format!("read-only tree file `{relative}` is unsafe")));
         }
-        if std::fs::read(&destination).is_ok_and(|current| current == *bytes) {
-            continue;
+        if !std::fs::read(&destination).is_ok_and(|current| current == *bytes) {
+            let sequence = READ_ONLY_TREE_WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
+            let temporary = parent.join(format!(".awaken-tree-{}-{sequence}", std::process::id()));
+            let write = (|| -> std::io::Result<()> {
+                let mut file = std::fs::OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .open(&temporary)?;
+                file.write_all(bytes)?;
+                file.sync_all()?;
+                drop(file);
+                std::fs::rename(&temporary, &destination)
+            })();
+            if let Err(error) = write {
+                let _ = std::fs::remove_file(&temporary);
+                return Err(err(error));
+            }
         }
-        let sequence = READ_ONLY_TREE_WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
-        let temporary = parent.join(format!(".awaken-tree-{}-{sequence}", std::process::id()));
-        let write = (|| -> std::io::Result<()> {
-            let mut file = std::fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&temporary)?;
-            file.write_all(bytes)?;
-            file.sync_all()?;
-            let mut permissions = file.metadata()?.permissions();
-            permissions.set_readonly(true);
-            file.set_permissions(permissions)?;
-            drop(file);
-            std::fs::rename(&temporary, &destination)
-        })();
-        if let Err(error) = write {
-            let _ = std::fs::remove_file(&temporary);
-            return Err(err(error));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = if *executable { 0o500 } else { 0o400 };
+            std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(mode))
+                .map_err(err)?;
         }
+        #[cfg(not(unix))]
         let mut permissions = std::fs::metadata(&destination).map_err(err)?.permissions();
+        #[cfg(not(unix))]
         permissions.set_readonly(true);
+        #[cfg(not(unix))]
         std::fs::set_permissions(&destination, permissions).map_err(err)?;
     }
     Ok(())
@@ -595,7 +601,7 @@ impl LocalSandbox {
     pub fn materialize_read_only_tree(
         &self,
         subdir: &str,
-        files: &[(String, Vec<u8>)],
+        files: &[(String, Vec<u8>, bool)],
     ) -> Result<(), pc::SandboxError> {
         materialize_read_only_tree_at(&self.root, subdir, files)
     }
@@ -1553,6 +1559,11 @@ mod workdir_helper_tests {
         );
     }
 
+    // Materialization cause/effect rules: C1 binary regular file + non-executable
+    // flag -> E1 exact bytes and no write/execute permission; C2 script + executable
+    // flag -> E2 owner execute but no write permission; C3 unsafe lexical/symlink
+    // paths -> E3 rejection. One test keeps these permission and jail effects at
+    // the IO boundary that actually enforces them.
     #[tokio::test]
     async fn read_only_tree_preserves_binary_files_and_rejects_traversal() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1565,8 +1576,9 @@ mod workdir_helper_tests {
             .materialize_read_only_tree(
                 ".skills/greet",
                 &[
-                    ("SKILL.md".into(), b"# greet".to_vec()),
-                    ("assets/data.bin".into(), binary.clone()),
+                    ("SKILL.md".into(), b"# greet".to_vec(), false),
+                    ("assets/data.bin".into(), binary.clone(), false),
+                    ("scripts/run.sh".into(), b"#!/bin/sh\n".to_vec(), true),
                 ],
             )
             .unwrap();
@@ -1580,19 +1592,43 @@ mod workdir_helper_tests {
                 .permissions()
                 .readonly()
         );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let root = tmp.path().join("skill-tree/.skills/greet");
+            let data_mode = std::fs::metadata(root.join("assets/data.bin"))
+                .unwrap()
+                .permissions()
+                .mode();
+            let script_mode = std::fs::metadata(root.join("scripts/run.sh"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(
+                data_mode & 0o333,
+                0,
+                "ordinary files are read-only and non-executable"
+            );
+            assert_eq!(script_mode & 0o222, 0, "scripts remain read-only");
+            assert_ne!(
+                script_mode & 0o100,
+                0,
+                "executable scripts retain owner execute"
+            );
+        }
         // Rehydrating identical bytes is idempotent even though the target is
         // read-only; a changed immutable version is atomically replaced and ends
         // read-only as well.
         sandbox
             .materialize_read_only_tree(
                 ".skills/greet",
-                &[("SKILL.md".into(), b"# greet".to_vec())],
+                &[("SKILL.md".into(), b"# greet".to_vec(), false)],
             )
             .unwrap();
         sandbox
             .materialize_read_only_tree(
                 ".skills/greet",
-                &[("SKILL.md".into(), b"# greet v2".to_vec())],
+                &[("SKILL.md".into(), b"# greet v2".to_vec(), false)],
             )
             .unwrap();
         let skill_md = tmp.path().join("skill-tree/.skills/greet/SKILL.md");
@@ -1605,17 +1641,17 @@ mod workdir_helper_tests {
         );
         assert!(
             sandbox
-                .materialize_read_only_tree(".skills/bad", &[("../escape".into(), vec![])])
+                .materialize_read_only_tree(".skills/bad", &[("../escape".into(), vec![], false)])
                 .is_err()
         );
         assert!(
             sandbox
-                .materialize_read_only_tree(".skills/bad", &[("bad\\path".into(), vec![])])
+                .materialize_read_only_tree(".skills/bad", &[("bad\\path".into(), vec![], false)])
                 .is_err()
         );
         assert!(
             sandbox
-                .materialize_read_only_tree(".skills/bad", &[("/absolute".into(), vec![])])
+                .materialize_read_only_tree(".skills/bad", &[("/absolute".into(), vec![], false)])
                 .is_err()
         );
 
@@ -1623,7 +1659,7 @@ mod workdir_helper_tests {
         std::fs::write(root.join("unsafe-root"), b"file").unwrap();
         assert!(
             sandbox
-                .materialize_read_only_tree("unsafe-root", &[("value".into(), vec![])])
+                .materialize_read_only_tree("unsafe-root", &[("value".into(), vec![], false)])
                 .is_err()
         );
 
@@ -1632,7 +1668,7 @@ mod workdir_helper_tests {
             sandbox
                 .materialize_read_only_tree(
                     "unsafe-destination",
-                    &[("dir".into(), b"not-a-directory".to_vec())],
+                    &[("dir".into(), b"not-a-directory".to_vec(), false)],
                 )
                 .is_err()
         );
@@ -1645,7 +1681,10 @@ mod workdir_helper_tests {
             std::os::unix::fs::symlink(&outside, root.join("unsafe-parent/link")).unwrap();
             assert!(
                 sandbox
-                    .materialize_read_only_tree("unsafe-parent", &[("link/value".into(), vec![])],)
+                    .materialize_read_only_tree(
+                        "unsafe-parent",
+                        &[("link/value".into(), vec![], false)],
+                    )
                     .is_err()
             );
         }
