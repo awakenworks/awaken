@@ -590,8 +590,9 @@ const FAKE_ACP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_acp::A
 /// `session/new` request it received carried the session's MCP server and, if so,
 /// whether the endpoint is the host-owned loopback relay rather than a provider endpoint
 /// carrying a raw vault token. It captures the `session/new` line (`id:2`) and, on the
-/// prompt (`id:3`), classifies it into its agent message: `saw-calc` if the `calc` server
-/// name crossed, `host-relay` if the URL points at the per-session loopback relay. The
+/// prompt (`id:3`), classifies it into its agent message: `saw-calc`/`saw-search`
+/// when that exact server name crossed, `host-relay` if the URL points at the
+/// per-session loopback relay. The
 /// managed-API e2e can therefore assert the whole D6→D5 chain (session `mcp_servers` →
 /// staged → host relay → `session/new`) without exposing authorization material to the
 /// external ACP process. Any retained `session-mcp:` credential marker is classified as
@@ -601,7 +602,7 @@ const FAKE_ACP_MCP_ECHO_SCRIPT: &str = "while IFS= read -r line; do \
         *'\"id\":1'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}';; \
         *'\"id\":2'*) SN=\"$line\"; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s1\"}}';; \
         *'\"id\":3'*) \
-          N=noname; case \"$SN\" in *calc*) N=saw-calc;; esac; \
+          N=noname; case \"$SN\" in *search*) N=saw-search;; *calc*) N=saw-calc;; esac; \
           A=noref; case \"$SN\" in *'/sesn_'*) A=host-relay;; *'session-mcp:'*) A=credential-leaked;; esac; \
           printf '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"mcp %s %s\"}}}}\\n' \"$N\" \"$A\"; \
           printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'; \

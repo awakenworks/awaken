@@ -241,7 +241,7 @@ This pass closed the following local contract cases against that Anthropic oracl
 | Case | Local coverage | Verification |
 |---|---|---|
 | Session `agent.tools` full replacement | implemented and asserted | `management_sessions_family_e2e.mjs` |
-| Session `agent.mcp_servers` full replacement | **target gap**: the handler currently accepts and rewrites only the wire/event projection; it does not mutate durable Runtime MCP and therefore must not be counted as implemented or covered | ADR-0066 Slice 0/2 must replace this with attachment diff + real Runtime update E2E; `management_sessions_family_e2e.mjs` currently proves only `agent.tools` and immutable-field rejection |
+| Session `agent.mcp_servers` full replacement | implemented and asserted through the one durable attachment lifecycle | `managed_mcp_hot_swap_e2e.ts` calls only the newly active Native generation across add/replace/remove; `managed_mcp_recovery_e2e.ts` proves restart; `acp_managed_mcp_e2e.mjs` proves a relaunched ACP receives only the replacement generation and then the empty set after removal |
 | Create-time null/empty overrides | `system`, `tools`, `mcp_servers`, `skills`; `model:null` remains 400 | `managed_model_override_e2e.mjs` |
 | MCP server ↔ `mcp_toolset` references | dangling server rejected; declared toolset projects | `managed_model_override_e2e.mjs` |
 | MCP `always_ask` confirmation | permission policy parks and resumes MCP calls | `management_mcp_e2e.mjs` |
