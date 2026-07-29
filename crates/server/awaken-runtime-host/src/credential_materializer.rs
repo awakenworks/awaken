@@ -156,9 +156,11 @@ impl PinnedCredentialMaterializer {
             material_sources,
             realization_kinds: [realization].into_iter().collect(),
             recipient_bound_envelopes,
-            extension_consumers: (realization == CredentialRealizationKind::WorkerRelay)
-                .then(|| self.extension_capabilities())
-                .unwrap_or_default(),
+            extension_consumers: if realization == CredentialRealizationKind::WorkerRelay {
+                self.extension_capabilities()
+            } else {
+                Default::default()
+            },
             alternatives: Vec::new(),
         }
     }
