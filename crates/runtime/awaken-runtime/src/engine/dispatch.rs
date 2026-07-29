@@ -246,7 +246,15 @@ pub(super) async fn run_tool_calls(
                             Some(Err(error)) => delegation_error_output(&call.call_id, error)?,
                             None => {
                                 let operation_id = format!("{}:{}", batch.id.0, call.call_id);
-                                execute_tool(runtime, Some(env), &call, context, operation_id).await
+                                execute_tool(
+                                    runtime,
+                                    Some(env),
+                                    &call,
+                                    context,
+                                    run_id,
+                                    operation_id,
+                                )
+                                .await
                             }
                         }
                     }
@@ -820,7 +828,7 @@ pub(super) async fn recover_tool_batch(
                 Some(Err(error)) => delegation_error_output(&call.call_id, error)?,
                 None => {
                     let operation_id = format!("{}:{}", batch.id.0, call.call_id);
-                    execute_tool(runtime, Some(env), &call, context, operation_id).await
+                    execute_tool(runtime, Some(env), &call, context, run_id, operation_id).await
                 }
             }
         };
