@@ -407,6 +407,7 @@ async fn a_secretless_worker_reads_the_snapshot_pinned_access() {
             .into_iter()
             .collect(),
             recipient_bound_envelopes: false,
+            extension_consumers: Default::default(),
             alternatives: Vec::new(),
         },
     );

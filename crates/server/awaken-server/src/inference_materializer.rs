@@ -264,6 +264,7 @@ impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
             .into_iter()
             .collect(),
             recipient_bound_envelopes,
+            extension_consumers: Default::default(),
             alternatives: Vec::new(),
         }
     }

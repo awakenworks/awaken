@@ -96,10 +96,93 @@ pub enum CredentialKind {
     WorkerLocal,
 }
 
+/// Canonical material-location projection over the retained [`CredentialKind`]
+/// wire. New domain decisions use this axis instead of interpreting `kind`
+/// themselves; the legacy enum remains only for storage/API compatibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialMaterialOrigin {
+    Vault,
+    WorkerLocal,
+    ExternalHelper,
+    LegacyEnvironment,
+}
+
+/// Canonical acquisition projection, orthogonal to material location.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialAcquisition {
+    Static,
+    HelperMinted,
+}
+
 /// Claude Code's documented long-lived `setup-token` process-secret channel.
 /// It is a CLI credential, not an Anthropic Messages API key, so generic
 /// provider resolution must never treat it as native provider material.
 pub const CLAUDE_CODE_SETUP_TOKEN_ENV: &str = "CLAUDE_CODE_OAUTH_TOKEN";
+
+const STRUCTURED_MATERIAL_PREFIX: &str = "awaken-credential-material-v1:";
+
+/// Structured plaintext accepted at the one Vault write seam. The value is
+/// encoded as one versioned sealed document, never flattened into
+/// `username:password` or an ad-hoc PEM concatenation.
+#[derive(Debug)]
+pub struct StructuredCredentialMaterial {
+    pub type_id: String,
+    pub fields: std::collections::BTreeMap<String, RedactedString>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StructuredCredentialMaterialWire {
+    type_id: String,
+    fields: std::collections::BTreeMap<String, String>,
+}
+
+impl StructuredCredentialMaterial {
+    /// Encode a typed document for sealing by the existing [`SecretStore`].
+    pub fn encode(self) -> Result<RedactedString, CredentialError> {
+        if self.type_id.trim().is_empty() || self.fields.is_empty() {
+            return Err(CredentialError::InvalidSource(
+                "structured credential requires a type_id and fields".into(),
+            ));
+        };
+        let wire = StructuredCredentialMaterialWire {
+            type_id: self.type_id,
+            fields: self
+                .fields
+                .into_iter()
+                .map(|(name, value)| (name, value.expose_secret().to_string()))
+                .collect(),
+        };
+        serde_json::to_string(&wire)
+            .map(|json| RedactedString::new(format!("{STRUCTURED_MATERIAL_PREFIX}{json}")))
+            .map_err(|error| CredentialError::InvalidSource(error.to_string()))
+    }
+
+    /// Decode only the reserved versioned envelope. Ordinary legacy secrets are
+    /// returned unchanged; malformed reserved documents fail closed.
+    pub fn decode(value: RedactedString) -> Result<Result<Self, RedactedString>, CredentialError> {
+        let Some(json) = value
+            .expose_secret()
+            .strip_prefix(STRUCTURED_MATERIAL_PREFIX)
+        else {
+            return Ok(Err(value));
+        };
+        let wire: StructuredCredentialMaterialWire = serde_json::from_str(json)
+            .map_err(|error| CredentialError::InvalidSource(error.to_string()))?;
+        if wire.type_id.trim().is_empty() || wire.fields.is_empty() {
+            return Err(CredentialError::InvalidSource(
+                "structured credential requires a type_id and fields".into(),
+            ));
+        }
+        Ok(Ok(Self {
+            type_id: wire.type_id,
+            fields: wire
+                .fields
+                .into_iter()
+                .map(|(name, value)| (name, RedactedString::new(value)))
+                .collect(),
+        }))
+    }
+}
 
 /// Server-owned OAuth token helper. The API carries this allowlisted id, never
 /// an operator-supplied command line; the credential bounded context owns how
@@ -168,6 +251,52 @@ pub struct CredentialSource {
     pub worker_local_binding: Option<WorkerLocalBinding>,
     pub status: CredentialStatus,
     pub version: i64,
+}
+
+impl CredentialSource {
+    /// Normalize the retained storage discriminator into one material-origin
+    /// fact. This is the sole mapping from legacy `CredentialKind` semantics.
+    #[must_use]
+    pub fn material_origin(&self) -> CredentialMaterialOrigin {
+        match self.kind {
+            CredentialKind::Vault => CredentialMaterialOrigin::Vault,
+            CredentialKind::WorkerLocal => CredentialMaterialOrigin::WorkerLocal,
+            CredentialKind::Oauth => CredentialMaterialOrigin::ExternalHelper,
+            CredentialKind::Env => CredentialMaterialOrigin::LegacyEnvironment,
+        }
+    }
+
+    /// Normalize how executable material is acquired independently of location.
+    #[must_use]
+    pub fn acquisition(&self) -> CredentialAcquisition {
+        match self.kind {
+            CredentialKind::Oauth => CredentialAcquisition::HelperMinted,
+            CredentialKind::Vault | CredentialKind::WorkerLocal | CredentialKind::Env => {
+                CredentialAcquisition::Static
+            }
+        }
+    }
+
+    /// Retained authoring hint for compiling an explicit process-secret usage.
+    /// Runtime adapters must consume only the resulting `CredentialAccess.usage`.
+    #[must_use]
+    pub fn process_secret_environment_hint(&self) -> Option<&str> {
+        self.env_key.as_deref()
+    }
+
+    /// Claude setup tokens are an ACP workload credential, not provider API
+    /// material. Centralizing the classification prevents selection, UI defaults,
+    /// and publication from drifting in their string interpretation.
+    #[must_use]
+    pub fn is_claude_code_setup_token(&self) -> bool {
+        self.process_secret_environment_hint() == Some(CLAUDE_CODE_SETUP_TOKEN_ENV)
+    }
+
+    /// Whether this retained source can participate in execution publication.
+    #[must_use]
+    pub fn is_executable_origin(&self) -> bool {
+        self.material_origin() != CredentialMaterialOrigin::LegacyEnvironment
+    }
 }
 
 /// The "which credential" axis (oversight-next / awaken-management-contract).
@@ -821,6 +950,96 @@ mod tests {
             status: CredentialStatus::Active,
             version: 1,
         }
+    }
+
+    /// Cause-effect graph: the retained kind is a storage input; normalization
+    /// emits independent origin/acquisition facts and executability. No caller is
+    /// allowed to recreate this mapping.
+    ///
+    /// | Rule | retained kind | origin | acquisition | executable |
+    /// |---|---|---|---|---|
+    /// | N1 | vault | Vault | Static | yes |
+    /// | N2 | oauth | ExternalHelper | HelperMinted | yes |
+    /// | N3 | worker_local | WorkerLocal | Static | yes |
+    /// | N4 | env | LegacyEnvironment | Static | no |
+    #[test]
+    fn retained_kinds_have_one_normalized_domain_projection() {
+        let rules = [
+            (
+                "N1",
+                CredentialKind::Vault,
+                CredentialMaterialOrigin::Vault,
+                CredentialAcquisition::Static,
+                true,
+            ),
+            (
+                "N2",
+                CredentialKind::Oauth,
+                CredentialMaterialOrigin::ExternalHelper,
+                CredentialAcquisition::HelperMinted,
+                true,
+            ),
+            (
+                "N3",
+                CredentialKind::WorkerLocal,
+                CredentialMaterialOrigin::WorkerLocal,
+                CredentialAcquisition::Static,
+                true,
+            ),
+            (
+                "N4",
+                CredentialKind::Env,
+                CredentialMaterialOrigin::LegacyEnvironment,
+                CredentialAcquisition::Static,
+                false,
+            ),
+        ];
+        for (id, kind, origin, acquisition, executable) in rules {
+            let source = bare_source(kind);
+            assert_eq!(source.material_origin(), origin, "{id}");
+            assert_eq!(source.acquisition(), acquisition, "{id}");
+            assert_eq!(source.is_executable_origin(), executable, "{id}");
+        }
+    }
+
+    /// Cause-effect graph: namespaced type + non-empty fields -> one sealed
+    /// versioned document -> exact typed decode. Legacy scalars remain scalars;
+    /// malformed reserved documents fail closed rather than becoming API keys.
+    ///
+    /// | Rule | input | effect |
+    /// |---|---|---|
+    /// | T1 | external SSH type + fields | exact typed round trip |
+    /// | T2 | legacy scalar | unchanged scalar |
+    /// | T3 | reserved malformed document | InvalidSource |
+    #[test]
+    fn structured_material_codec_is_open_versioned_and_fail_closed() {
+        let encoded = StructuredCredentialMaterial {
+            type_id: "acme.ssh-key/v1".into(),
+            fields: std::collections::BTreeMap::from([
+                ("private_key".into(), RedactedString::new("pem")),
+                ("known_hosts".into(), RedactedString::new("host-key")),
+            ]),
+        }
+        .encode()
+        .expect("T1 encode");
+        let Ok(decoded) = StructuredCredentialMaterial::decode(encoded).expect("T1 decode") else {
+            panic!("T1 must remain typed")
+        };
+        assert_eq!(decoded.type_id, "acme.ssh-key/v1", "T1");
+        assert_eq!(decoded.fields["private_key"].expose_secret(), "pem", "T1");
+
+        let scalar = RedactedString::new("legacy-api-key");
+        let Err(scalar) = StructuredCredentialMaterial::decode(scalar).expect("T2 decode") else {
+            panic!("T2 must remain scalar")
+        };
+        assert_eq!(scalar.expose_secret(), "legacy-api-key", "T2");
+
+        assert!(matches!(
+            StructuredCredentialMaterial::decode(RedactedString::new(format!(
+                "{STRUCTURED_MATERIAL_PREFIX}not-json"
+            ))),
+            Err(CredentialError::InvalidSource(_))
+        ));
     }
 
     #[test]

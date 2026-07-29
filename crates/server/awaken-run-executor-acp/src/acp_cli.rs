@@ -10,7 +10,9 @@ use crate::discovery_spec::{
 };
 use crate::{AcpLaunch, AcpLaunchIdentity, OpenError};
 use awaken_provisioning_contract as pc;
-use awaken_runtime_contract::{CredentialObservationState, resolved::BackendModelSelection};
+use awaken_runtime_contract::{
+    CredentialObservationState, CredentialUsage, resolved::BackendModelSelection,
+};
 
 /// How the local host obtains the ACP-serving executable. This is the sole local
 /// argv authority; discovery and launch both project it instead of inferring an
@@ -80,6 +82,26 @@ impl ModelDelivery {
     #[must_use]
     pub fn supports_credential_env(self, name: &str) -> bool {
         self.credential_env.contains(&name)
+    }
+
+    /// Compile the retained authoring hint into the only execution-time usage.
+    /// The delivery catalog owns this allowlist; publishers and launchers must
+    /// never independently interpret environment-variable names.
+    pub fn compile_credential_usage(
+        self,
+        environment_hint: Option<&str>,
+    ) -> Result<CredentialUsage, String> {
+        let Some(name) = environment_hint else {
+            return Ok(CredentialUsage::ProviderAdapter);
+        };
+        if !self.supports_credential_env(name) {
+            return Err(format!(
+                "ACP model delivery does not accept credential environment {name}"
+            ));
+        }
+        Ok(CredentialUsage::EnvironmentVariable {
+            name: name.to_string(),
+        })
     }
 }
 
@@ -1052,6 +1074,41 @@ mod tests {
         assert!(acp_cli("gemini").is_some());
         assert!(acp_cli("opencode").is_some());
         assert!(acp_cli("no_such_cli").is_none());
+    }
+
+    /// Cause-effect graph: one catalog delivery plus an optional retained hint
+    /// compiles the execution usage. Missing hints preserve provider-adapter
+    /// delivery, allowlisted hints become explicit process secrets, and every
+    /// other value fails closed.
+    ///
+    /// | Rule | hint | allowlisted | result |
+    /// |---|---|---|---|
+    /// | U1 | absent | - | ProviderAdapter |
+    /// | U2 | ANTHROPIC_API_KEY | yes | EnvironmentVariable |
+    /// | U3 | PATH | no | error |
+    #[test]
+    fn model_delivery_is_the_only_credential_usage_compiler() {
+        let delivery = acp_cli("claude")
+            .and_then(|profile| profile.model_delivery)
+            .expect("Claude managed delivery");
+        assert_eq!(
+            delivery.compile_credential_usage(None).unwrap(),
+            CredentialUsage::ProviderAdapter,
+            "U1"
+        );
+        assert_eq!(
+            delivery
+                .compile_credential_usage(Some("ANTHROPIC_API_KEY"))
+                .unwrap(),
+            CredentialUsage::EnvironmentVariable {
+                name: "ANTHROPIC_API_KEY".into()
+            },
+            "U2"
+        );
+        assert!(
+            delivery.compile_credential_usage(Some("PATH")).is_err(),
+            "U3"
+        );
     }
 
     #[test]

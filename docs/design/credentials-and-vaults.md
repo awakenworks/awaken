@@ -266,6 +266,19 @@ current-Vault rediscovery. Target binding, streaming lifecycle, and
 sandbox-facing MCP route projection remain Runtime Host adapter
 responsibilities. Failure never authorizes plaintext in another trust domain.
 
+Credential material and last-mile consumers are open to external extensions
+without adding protocol variants to the core enum. A structured Vault document
+contains a namespaced, versioned `type_id` plus opaque named secret fields;
+`CredentialUsage::Extension` pins the exact `consumer_id`, expected material
+type, and explicitly secret-free `public_config`. Installed Worker capability evidence
+must advertise that exact consumer/material pair before admission. The external
+consumer implements `CredentialExtensionConsumer` and receives only the already
+selected material, access, and target-use binding. SSH is therefore an extension
+(for example `acme.ssh-key/v1` + `acme.ssh-agent/v1`), not a permanently built-in
+credential kind. Built-in process/file delivery continues through `SecretBroker`,
+and external material sources continue through `CredentialMaterialResolver`; the
+extension consumer does not replace or duplicate either port.
+
 ## Credential Custody and Model Exposure
 
 [ADR-0067](../adr/0067-credential-custody-model-exposure-and-secret-delivery.md)
