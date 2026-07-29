@@ -129,6 +129,8 @@ pub awaken_sandbox_container::RuntimeAgentProcess::process: alloc::boxed::Box<dy
 pub struct awaken_sandbox_container::SecretBytes(_)
 impl core::fmt::Debug for awaken_sandbox_container::SecretBytes
 pub fn awaken_sandbox_container::SecretBytes::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub const awaken_sandbox_container::DEFAULT_REAPER_INTERVAL_SECS: u64
+pub const awaken_sandbox_container::DEFAULT_REAPER_MAX_AGE_SECS: u64
 pub trait awaken_sandbox_container::AgentContainerProvider: core::marker::Send + core::marker::Sync
 pub fn awaken_sandbox_container::AgentContainerProvider::open_agent<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::spec::SandboxSpec) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_sandbox_container::AgentContainerSession, awaken_provisioning_contract::sandbox::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 impl<R: awaken_sandbox_container::ContainerRuntime + 'static> awaken_sandbox_container::AgentContainerProvider for awaken_sandbox_container::ContainerProvider<R>

@@ -25,6 +25,7 @@ pub mod dynamic_placement;
 pub mod inference_materializer;
 mod legacy_resource_migration;
 pub mod mcp_export;
+pub mod model_discovery;
 pub mod model_resolver;
 pub mod no_model;
 pub mod placement;

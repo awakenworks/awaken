@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use crate::{
     CredentialCreateParams, CredentialError, CredentialKind, CredentialPool, CredentialPoolId,
     CredentialSource, CredentialSourceId, CredentialStatus, SecretStore, WorkerLocalBinding,
-    prepare_source, validate_create_params,
+    prepare_source, prepare_source_with_id, validate_create_params,
 };
 
 /// Secret-free write-ahead intent for create, rotate, disable, archive, or
@@ -313,6 +313,89 @@ pub async fn enter_credential(
     enter_credential_with_materials(params, BTreeMap::new(), store, repo).await
 }
 
+/// Result of an idempotent credential-entry command.
+pub struct CredentialEntry {
+    pub source: CredentialSource,
+    pub created: bool,
+}
+
+/// Enter a credential once at a stable application-command identity.
+///
+/// Replaying the same identity returns the durable source without writing
+/// material again. A conflicting identity projection fails closed rather than
+/// treating two different credential commands as equivalent.
+pub async fn enter_credential_idempotent(
+    id: CredentialSourceId,
+    params: CredentialCreateParams,
+    store: &dyn SecretStore,
+    repo: &dyn CredentialRepo,
+) -> Result<CredentialEntry, CredentialError> {
+    validate_create_params(&params)?;
+    let expected = CredentialSource {
+        id: id.clone(),
+        workspace_id: params.workspace_id.clone(),
+        kind: params.kind,
+        provider_id: params.provider_id.clone(),
+        env_key: params.env_key.clone(),
+        material_ref: (params.kind == CredentialKind::Vault && params.secret.is_some())
+            .then(|| crate::SecretRef(format!("sec:{}", id.0))),
+        auxiliary_material_refs: BTreeMap::new(),
+        oauth_command: params.oauth_command.clone(),
+        worker_local_binding: None,
+        status: CredentialStatus::Active,
+        version: 1,
+    };
+    match repo.get(&id).await {
+        Ok(source) => {
+            validate_idempotent_source(&source, &expected)?;
+            return Ok(CredentialEntry {
+                source,
+                created: false,
+            });
+        }
+        Err(CredentialError::SourceNotFound(_)) => {}
+        Err(error) => return Err(error),
+    }
+
+    match enter_credential_with_id(id.clone(), params, store, repo).await {
+        Ok(source) => Ok(CredentialEntry {
+            source,
+            created: true,
+        }),
+        Err(CredentialError::MutationConflict(_)) => {
+            let source = repo.get(&id).await?;
+            validate_idempotent_source(&source, &expected)?;
+            Ok(CredentialEntry {
+                source,
+                created: false,
+            })
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn validate_idempotent_source(
+    actual: &CredentialSource,
+    expected: &CredentialSource,
+) -> Result<(), CredentialError> {
+    if actual.id != expected.id
+        || actual.workspace_id != expected.workspace_id
+        || actual.kind != expected.kind
+        || actual.provider_id != expected.provider_id
+        || actual.env_key != expected.env_key
+        || actual.material_ref != expected.material_ref
+        || actual.oauth_command != expected.oauth_command
+        || actual.worker_local_binding.is_some()
+        || !actual.auxiliary_material_refs.is_empty()
+    {
+        return Err(CredentialError::InvalidSource(format!(
+            "idempotent credential identity conflicts with existing source {}",
+            actual.id.0
+        )));
+    }
+    Ok(())
+}
+
 /// Enter one credential and every extension-defined auxiliary material slot as
 /// a single recoverable aggregate revision.
 pub async fn enter_credential_with_materials(
@@ -323,7 +406,29 @@ pub async fn enter_credential_with_materials(
 ) -> Result<CredentialSource, CredentialError> {
     validate_create_params(&params)?;
     validate_material_slots(auxiliary.keys().map(String::as_str))?;
-    let (mut source, secret) = prepare_source(params);
+    let (source, secret) = prepare_source(params);
+    enter_prepared_credential(source, secret, auxiliary, store, repo).await
+}
+
+async fn enter_credential_with_id(
+    id: CredentialSourceId,
+    params: CredentialCreateParams,
+    store: &dyn SecretStore,
+    repo: &dyn CredentialRepo,
+) -> Result<CredentialSource, CredentialError> {
+    validate_create_params(&params)?;
+    let (source, secret) = prepare_source_with_id(id, params);
+    enter_prepared_credential(source, secret, BTreeMap::new(), store, repo).await
+}
+
+async fn enter_prepared_credential(
+    mut source: CredentialSource,
+    secret: Option<awaken_agent_contract::RedactedString>,
+    auxiliary: BTreeMap<String, awaken_agent_contract::RedactedString>,
+    store: &dyn SecretStore,
+    repo: &dyn CredentialRepo,
+) -> Result<CredentialSource, CredentialError> {
+    validate_material_slots(auxiliary.keys().map(String::as_str))?;
     let mut materials = Vec::new();
     if let (Some(reference), Some(secret)) = (source.material_ref.clone(), secret) {
         materials.push((reference, secret));
@@ -1290,6 +1395,49 @@ mod tests {
         // ...but a direct `get` with the id returns it regardless of workspace.
         let cross_read = repo.get(&owned.id).await.unwrap();
         assert_eq!(cross_read.workspace_id, "ws-owner");
+    }
+
+    // Idempotent-entry decision table:
+    // R1 missing identity + valid command -> create one row and one material ref.
+    // R2 same identity + same non-secret facts -> return the existing row without
+    //    creating another material ref.
+    // R3 same identity + different provider facts -> fail closed as a conflict.
+    #[tokio::test]
+    async fn idempotent_entry_has_one_identity_and_rejects_conflicting_facts() {
+        let store = InMemorySecretStore::new();
+        let repo = InMemoryCredentialRepo::new();
+        let id = CredentialSourceId("cred:ws:provider-command".into());
+        let params = |provider: &str, secret: &str| CredentialCreateParams {
+            workspace_id: "ws".into(),
+            kind: CredentialKind::Vault,
+            provider_id: Some(provider.into()),
+            env_key: None,
+            secret: Some(RedactedString::new(secret)),
+            oauth_command: None,
+        };
+
+        let first =
+            enter_credential_idempotent(id.clone(), params("anthropic", "first"), &store, &repo)
+                .await
+                .unwrap();
+        let replay = enter_credential_idempotent(
+            id.clone(),
+            params("anthropic", "ignored-on-replay"),
+            &store,
+            &repo,
+        )
+        .await
+        .unwrap();
+        let conflict =
+            enter_credential_idempotent(id, params("openai", "different-command"), &store, &repo)
+                .await;
+
+        assert!(first.created);
+        assert!(!replay.created);
+        assert_eq!(first.source.id, replay.source.id);
+        assert_eq!(repo.list("ws").await.unwrap().len(), 1);
+        assert_eq!(store.inventory().await.unwrap().len(), 1);
+        assert!(matches!(conflict, Err(CredentialError::InvalidSource(_))));
     }
 
     #[tokio::test]

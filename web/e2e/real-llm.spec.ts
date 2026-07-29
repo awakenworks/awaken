@@ -20,6 +20,7 @@ test.skip(!KEY, "needs a Gemini/Google key to submit via the credential API");
 async function configureGemini(request: APIRequestContext) {
   const response = await request.post("/v1/config/provider-connections", {
     data: {
+      idempotency_key: "real-llm-gemini",
       workspace_id: "wrkspc_default",
       provider_id: "gemini",
       display_name: "Google AI Studio",

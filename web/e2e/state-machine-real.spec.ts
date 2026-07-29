@@ -22,6 +22,7 @@ async function configureKimi(request: APIRequestContext) {
   );
   const response = await request.post("/v1/config/provider-connections", {
     data: {
+      idempotency_key: "state-machine-real-kimi",
       workspace_id: "wrkspc_default",
       provider_id: "kimi",
       display_name: "Kimi",

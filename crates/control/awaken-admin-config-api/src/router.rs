@@ -27,8 +27,7 @@ use awaken_credential_vault::{
 };
 use awaken_model_catalog::repo::{CatalogRepo, RepoError};
 use awaken_model_catalog::{
-    CatalogSyncResult, DiscoveredModel, ModelAttributeSource, ModelAttributes, OfferingSource,
-    OfferingStatus, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
+    CatalogSyncResult, ModelAttributeSource, ModelAttributes, OfferingSource, OfferingStatus,
 };
 use awaken_runtime_contract::resilience::Disposition;
 use awaken_tenancy::WorkspaceScope as ResourceWorkspace;
@@ -38,11 +37,17 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 
-mod provider_connections;
-use provider_connections::list_provider_connections;
-pub use provider_connections::{
-    ProviderConnectionStatus, ProviderConnectionSummary, ProviderConnectionView,
+use crate::provider_connection::{
+    ConnectProviderCommand, ModelCatalogDiscovery, ModelCatalogDiscoveryError,
+    ProviderConnectionAuthentication, ProviderConnectionError, ProviderConnectionService,
 };
+
+mod provider_connections;
+pub use provider_connections::{
+    ExecutableModelOption, ExecutableModelReadiness, ProviderConnectionStatus,
+    ProviderConnectionSummary, ProviderConnectionView, project_executable_models,
+};
+use provider_connections::{list_executable_models, list_provider_connections};
 
 /// The admin config plane's injected stores. The router depends on the domain
 /// ports, not a concrete backend, so the same routes serve the in-memory dev
@@ -157,42 +162,9 @@ pub trait CredentialProbe: Send + Sync {
     async fn probe(&self, base_url: &str, secret: &RedactedString, model: &str) -> ProbeStatus;
 }
 
-/// Provisioning port for obtaining one complete, provider-neutral model listing.
-/// Runtime execution never depends on this port and never reads the catalog.
-#[async_trait::async_trait]
-pub trait ModelCatalogDiscovery: Send + Sync {
-    async fn discover(
-        &self,
-        endpoint: &ProtocolEndpoint,
-        credential: &CredentialSource,
-    ) -> Result<Vec<DiscoveredModel>, ModelCatalogDiscoveryError>;
-
-    /// Test a not-yet-persisted API key. The default is fail-closed so an
-    /// adapter must opt into Test & Save explicitly.
-    async fn discover_with_secret(
-        &self,
-        _endpoint: &ProtocolEndpoint,
-        _secret: &RedactedString,
-    ) -> Result<Vec<DiscoveredModel>, ModelCatalogDiscoveryError> {
-        Err(ModelCatalogDiscoveryError::CredentialUnavailable(
-            "adapter does not support pre-save credential testing".into(),
-        ))
-    }
-}
-
 #[async_trait::async_trait]
 pub trait BrokeredCatalogDiscovery: Send + Sync {
     async fn projection(&self) -> Result<awaken_model_catalog::BrokeredCatalogProjection, String>;
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum ModelCatalogDiscoveryError {
-    /// The exact source cannot be materialized by this provisioning adapter
-    /// (notably a worker-private reference on the control-plane process).
-    #[error("credential cannot be materialized by this provisioning adapter: {0}")]
-    CredentialUnavailable(String),
-    #[error("provider model listing failed: {0}")]
-    Provider(String),
 }
 
 /// Author the model catalog and enter credentials. The resolver consumes the same
@@ -215,6 +187,7 @@ pub fn admin_router_with_capabilities(
             "/v1/config/provider-connections",
             post(test_and_save_provider_connection).get(list_provider_connections),
         )
+        .route("/v1/config/executable-models", get(list_executable_models))
         .route(
             "/v1/config/model-attributes/{model_id}",
             put(put_model_attributes),
@@ -387,6 +360,49 @@ fn model_discovery_problem(error: &ModelCatalogDiscoveryError, rid: &str) -> Pro
     ))
 }
 
+fn provider_connection_problem(error: &ProviderConnectionError, rid: &str) -> Problem {
+    match error {
+        ProviderConnectionError::Credential(error) => cred_problem(error, rid),
+        ProviderConnectionError::Discovery(error) => model_discovery_problem(error, rid),
+        ProviderConnectionError::Catalog(error) => repo_problem(error, rid),
+        ProviderConnectionError::UnsupportedProvider(_) => Problem(ApiError::new(
+            422,
+            "provider_unsupported",
+            "Unsupported provider",
+            error.to_string(),
+            rid,
+        )),
+        ProviderConnectionError::UnsupportedDialect { .. } => Problem(ApiError::new(
+            422,
+            "dialect_unsupported",
+            "Unsupported provider protocol",
+            error.to_string(),
+            rid,
+        )),
+        ProviderConnectionError::UnsupportedAuthentication { .. } => Problem(ApiError::new(
+            422,
+            "connection_auth_unsupported",
+            "Unsupported authentication method",
+            error.to_string(),
+            rid,
+        )),
+        ProviderConnectionError::Invalid(_) => Problem(ApiError::new(
+            422,
+            "connection_auth_invalid",
+            "Invalid provider connection",
+            error.to_string(),
+            rid,
+        )),
+        ProviderConnectionError::NoModelsDiscovered => Problem(ApiError::new(
+            422,
+            "no_models_discovered",
+            "No models discovered",
+            error.to_string(),
+            rid,
+        )),
+    }
+}
+
 fn config_repository_problem(error: &ConfigRepositoryError, rid: &str) -> Problem {
     Problem(ApiError::new(
         500,
@@ -422,6 +438,7 @@ async fn get_provider_descriptors() -> Json<Vec<awaken_model_catalog::ProviderDr
 #[derive(serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SaveProviderConnectionRequest {
+    pub idempotency_key: String,
     pub workspace_id: String,
     pub provider_id: String,
     pub display_name: String,
@@ -429,6 +446,8 @@ pub struct SaveProviderConnectionRequest {
     pub dialect: awaken_model_catalog::ApiDialect,
     #[serde(default)]
     pub base_url: Option<String>,
+    #[serde(default)]
+    pub configuration: std::collections::BTreeMap<String, String>,
     #[serde(default = "default_connection_timeout")]
     pub timeout_secs: u64,
     /// Write-only API key. Exactly one of `secret`, `oauth_helper`, or
@@ -457,33 +476,6 @@ async fn test_and_save_provider_connection(
 ) -> Result<(StatusCode, Json<ProviderConnectionView>), Problem> {
     let rid = req_id(&headers);
     let workspace_id = scope.map_or(body.workspace_id.clone(), |Extension(scope)| scope.0);
-    let descriptor = awaken_model_catalog::provider_driver_descriptors()
-        .into_iter()
-        .find(|descriptor| descriptor.provider_kind == body.provider_id)
-        .ok_or_else(|| {
-            Problem(ApiError::new(
-                422,
-                "provider_unsupported",
-                "Unsupported provider",
-                format!(
-                    "provider `{}` has no installed descriptor",
-                    body.provider_id
-                ),
-                &rid,
-            ))
-        })?;
-    if !descriptor.supported_dialects.contains(&body.dialect) {
-        return Err(Problem(ApiError::new(
-            422,
-            "dialect_unsupported",
-            "Unsupported provider protocol",
-            format!(
-                "provider `{}` does not support {:?}",
-                body.provider_id, body.dialect
-            ),
-            &rid,
-        )));
-    }
     let supplied_auth = usize::from(body.secret.is_some())
         + usize::from(body.oauth_helper.is_some())
         + usize::from(body.credential_source_id.is_some());
@@ -496,70 +488,6 @@ async fn test_and_save_provider_connection(
             &rid,
         )));
     }
-    if body
-        .secret
-        .as_deref()
-        .is_some_and(|secret| secret.trim().is_empty())
-    {
-        return Err(cred_problem(
-            &CredentialError::InvalidSource("vault secret is required".into()),
-            &rid,
-        ));
-    }
-    if body.secret.is_some()
-        && !descriptor
-            .auth_methods
-            .contains(&awaken_model_catalog::ProviderAuthMethod::ApiKey)
-    {
-        return Err(Problem(ApiError::new(
-            422,
-            "connection_auth_unsupported",
-            "Unsupported authentication method",
-            format!("provider `{}` does not accept API keys", body.provider_id),
-            &rid,
-        )));
-    }
-    if body.oauth_helper.is_some()
-        && !descriptor
-            .auth_methods
-            .contains(&awaken_model_catalog::ProviderAuthMethod::OAuth)
-    {
-        return Err(Problem(ApiError::new(
-            422,
-            "connection_auth_unsupported",
-            "Unsupported authentication method",
-            format!(
-                "provider `{}` does not accept an OAuth helper",
-                body.provider_id
-            ),
-            &rid,
-        )));
-    }
-    let provider = Provider {
-        id: ProviderId::new(body.provider_id.clone()),
-        slug: body.provider_id.clone(),
-        display_name: body.display_name,
-        version: 1,
-    };
-    let base_url = body
-        .base_url
-        .filter(|url| !url.trim().is_empty())
-        .or_else(|| {
-            descriptor
-                .default_endpoints
-                .iter()
-                .find(|endpoint| endpoint.dialect == body.dialect)
-                .map(|endpoint| endpoint.base_url.clone())
-        });
-    let endpoint = ProtocolEndpoint {
-        id: ProtocolEndpointId::new(body.endpoint_id),
-        provider_id: provider.id.clone(),
-        dialect: body.dialect,
-        base_url,
-        timeout_secs: body.timeout_secs,
-        display_name: format!("{} · {:?}", provider.display_name, body.dialect),
-        version: 1,
-    };
     let discovery = state.model_discovery.as_ref().ok_or_else(|| {
         Problem(ApiError::new(
             503,
@@ -569,170 +497,42 @@ async fn test_and_save_provider_connection(
             &rid,
         ))
     })?;
-
-    enum ConnectionCredential {
-        ApiKey(RedactedString),
-        OAuth(OAuthHelper),
-        Existing(Box<CredentialSource>),
-    }
-
-    let connection_credential = if let Some(secret) = body.secret {
-        ConnectionCredential::ApiKey(RedactedString::new(secret))
-    } else if let Some(helper) = body.oauth_helper {
-        ConnectionCredential::OAuth(helper)
-    } else {
-        let credential_id = body
-            .credential_source_id
-            .expect("auth cardinality checked above");
-        let credential = state
-            .credentials
-            .get(&credential_id)
-            .await
-            .map_err(|error| cred_problem(&error, &rid))?;
-        if credential.workspace_id != workspace_id {
-            return Err(cred_problem(
-                &CredentialError::SourceNotFound(credential.id.0),
-                &rid,
-            ));
+    let authentication = match (body.secret, body.oauth_helper, body.credential_source_id) {
+        (Some(secret), None, None) => {
+            ProviderConnectionAuthentication::ApiKey(RedactedString::new(secret))
         }
-        if credential.status != CredentialStatus::Active {
-            return Err(cred_problem(
-                &CredentialError::NotActive(credential.id.0),
-                &rid,
-            ));
-        }
-        if credential
-            .provider_id
-            .as_deref()
-            .is_some_and(|provider_id| provider_id != body.provider_id)
-        {
-            return Err(cred_problem(&CredentialError::NoCredential, &rid));
-        }
-        if credential.is_claude_code_setup_token() {
-            return Err(Problem(ApiError::new(
-                422,
-                "connection_auth_unsupported",
-                "Unsupported authentication method",
-                "Claude Code setup tokens authenticate only the acp:claude runtime and cannot discover a provider model directory",
-                &rid,
-            )));
-        }
-        ConnectionCredential::Existing(Box::new(credential))
+        (None, Some(helper), None) => ProviderConnectionAuthentication::OAuth(helper),
+        (None, None, Some(id)) => ProviderConnectionAuthentication::Existing(id),
+        _ => unreachable!("authentication cardinality checked above"),
     };
-
-    let models = match &connection_credential {
-        ConnectionCredential::ApiKey(secret) => {
-            discovery.discover_with_secret(&endpoint, secret).await
-        }
-        ConnectionCredential::OAuth(helper) => {
-            // The OAuth helper is safe to test before persistence: this ephemeral
-            // source contains only an allowlisted helper id/argv and is never
-            // written to either repository.
-            let probe_source = CredentialSource {
-                id: CredentialSourceId("cred:provider-connection-probe".into()),
-                workspace_id: workspace_id.clone(),
-                kind: CredentialKind::Oauth,
-                provider_id: Some(body.provider_id.clone()),
-                env_key: None,
-                material_ref: None,
-                auxiliary_material_refs: Default::default(),
-                oauth_command: Some(helper.command()),
-                worker_local_binding: None,
-                status: CredentialStatus::Active,
-                version: 1,
-            };
-            discovery.discover(&endpoint, &probe_source).await
-        }
-        ConnectionCredential::Existing(credential) => {
-            discovery.discover(&endpoint, credential.as_ref()).await
-        }
-    }
-    .map_err(|error| model_discovery_problem(&error, &rid))?;
-    if models.is_empty() {
-        return Err(Problem(ApiError::new(
-            422,
-            "no_models_discovered",
-            "No models discovered",
-            "the provider connection succeeded but returned no models",
-            &rid,
-        )));
-    }
-
-    let (mut staged, created) = match connection_credential {
-        ConnectionCredential::Existing(source) => (*source, false),
-        ConnectionCredential::ApiKey(secret) => (
-            enter_credential(
-                CredentialCreateParams {
-                    workspace_id,
-                    kind: CredentialKind::Vault,
-                    provider_id: Some(provider.id.0.clone()),
-                    env_key: None,
-                    secret: Some(secret),
-                    oauth_command: None,
-                },
-                &*state.secrets,
-                &*state.credentials,
-            )
-            .await
-            .map_err(|error| cred_problem(&error, &rid))?,
-            true,
-        ),
-        ConnectionCredential::OAuth(helper) => (
-            enter_credential(
-                CredentialCreateParams {
-                    workspace_id,
-                    kind: CredentialKind::Oauth,
-                    provider_id: Some(provider.id.0.clone()),
-                    env_key: None,
-                    secret: None,
-                    oauth_command: Some(helper.command()),
-                },
-                &*state.secrets,
-                &*state.credentials,
-            )
-            .await
-            .map_err(|error| cred_problem(&error, &rid))?,
-            true,
-        ),
-    };
-
-    if created {
-        // Stage fail-closed: a newly entered source is disabled before catalog
-        // publication. Reused credentials remain active and are never mutated by
-        // a connection refresh.
-        staged = awaken_credential_vault::repo::transition_credential_status(
-            &staged.id,
-            CredentialStatus::Disabled,
-            state.credentials.as_ref(),
-        )
+    let service = ProviderConnectionService::new(
+        state.catalog.clone(),
+        state.credentials.clone(),
+        state.secrets.clone(),
+        discovery.clone(),
+    );
+    let connected = service
+        .connect(ConnectProviderCommand {
+            idempotency_key: body.idempotency_key,
+            workspace_id,
+            provider_id: body.provider_id,
+            display_name: body.display_name,
+            endpoint_id: body.endpoint_id,
+            dialect: body.dialect,
+            base_url: body.base_url,
+            configuration: body.configuration,
+            timeout_secs: body.timeout_secs,
+            authentication,
+        })
         .await
-        .map_err(|error| cred_problem(&error, &rid))?;
-    }
-
-    let sync = match state
-        .catalog
-        .put_discovered_connection(provider.clone(), endpoint.clone(), models, unix_time_ms())
-        .await
-    {
-        Ok(sync) => sync,
-        Err(error) => return Err(repo_problem(&error, &rid)),
-    };
-    if created {
-        staged = awaken_credential_vault::repo::transition_credential_status(
-            &staged.id,
-            CredentialStatus::Active,
-            state.credentials.as_ref(),
-        )
-        .await
-        .map_err(|error| cred_problem(&error, &rid))?;
-    }
+        .map_err(|error| provider_connection_problem(&error, &rid))?;
     Ok((
         StatusCode::CREATED,
         Json(ProviderConnectionView {
-            provider,
-            endpoint,
-            credential: staged.into(),
-            sync,
+            provider: connected.provider,
+            endpoint: connected.endpoint,
+            credential: connected.credential.into(),
+            sync: connected.sync,
         }),
     ))
 }
