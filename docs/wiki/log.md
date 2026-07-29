@@ -77,3 +77,11 @@
   rather than copying the role/action matrix.
 - Validated the release value through the IAM PAP and attached an exact
   Workspace scope rule to every registered lifecycle action.
+
+## 2026-07-29 (Dispatch operational time remains store-owned)
+
+- Amended ADR-0065 and the remote Worker protocol so every newly appended
+  dispatch operation carries a store-assigned durable wall-clock timestamp.
+- Kept claim/settle operation order as the sole Worker lifecycle authority;
+  downstream elapsed-time projections consume the feed and never create a
+  second running-state machine.

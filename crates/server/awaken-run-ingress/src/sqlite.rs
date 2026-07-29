@@ -1562,24 +1562,35 @@ impl DispatchOperationalFeed for SqliteDispatchStore {
         self.with_conn(move |conn, prefix| {
             let mut statement = conn
                 .prepare(&format!(
-                    "SELECT sequence, operation FROM {prefix}_dispatch_operation \
+                    "SELECT sequence, recorded_at_ms, operation FROM {prefix}_dispatch_operation \
                      WHERE sequence > ?1 ORDER BY sequence LIMIT ?2"
                 ))
                 .map_err(reject)?;
             let rows = statement
                 .query_map(params![after, limit], |row| {
-                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<i64>>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
                 })
                 .map_err(reject)?;
             let mut events = Vec::new();
             for row in rows {
-                let (sequence, operation) = row.map_err(reject)?;
+                let (sequence, recorded_at_ms, operation) = row.map_err(reject)?;
                 events.push(DispatchOperationalEvent {
                     cursor: DispatchCursor(u64::try_from(sequence).map_err(|_| {
                         DispatchError::Rejected(
                             "persisted dispatch operation sequence is negative".to_string(),
                         )
                     })?),
+                    recorded_at_ms: recorded_at_ms.map(u64::try_from).transpose().map_err(
+                        |_| {
+                            DispatchError::Rejected(
+                                "persisted dispatch operation time is negative".to_string(),
+                            )
+                        },
+                    )?,
                     operation: serde_json::from_str(&operation).map_err(json_err)?,
                 });
             }
@@ -1722,9 +1733,13 @@ fn insert_operation(
     prefix: &str,
     operation: &DispatchOperation,
 ) -> Result<(), DispatchError> {
+    let recorded_at_ms = i64::try_from(crate::clock::system_now_ms()).unwrap_or(i64::MAX);
     tx.execute(
-        &format!("INSERT INTO {prefix}_dispatch_operation (run_id, operation) VALUES (?1, ?2)"),
-        params![operation.run_id().0, json(operation)?],
+        &format!(
+            "INSERT INTO {prefix}_dispatch_operation \
+             (run_id, operation, recorded_at_ms) VALUES (?1, ?2, ?3)"
+        ),
+        params![operation.run_id().0, json(operation)?, recorded_at_ms],
     )
     .map_err(reject)?;
     Ok(())
