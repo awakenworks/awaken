@@ -2,8 +2,8 @@
 
 use awaken_config_resolver::{CredentialCandidateSet, SourceLookup, credential_candidates};
 use awaken_credential_vault::{
-    CredentialBinding, CredentialKind, CredentialPool, CredentialSource, CredentialStatus,
-    SelectionPolicy,
+    CredentialBinding, CredentialMaterialOrigin, CredentialPool, CredentialSource,
+    CredentialStatus, SelectionPolicy,
 };
 use awaken_model_catalog::{Offering, ProviderCatalog};
 use awaken_runtime_contract::resolved::{Backend, ModelBinding, ResolvedModelCandidate};
@@ -107,7 +107,7 @@ impl CatalogModelPublicationResolver {
             direct @ CredentialCandidateSet::Direct { .. } => direct
                 .first_eligible(|source| {
                     source.status == CredentialStatus::Active
-                        && source.kind != CredentialKind::Env
+                        && source.is_executable_origin()
                         && Self::credential_usage(binding, source).is_ok()
                 })
                 .map(|source| PublicationAccess::Direct(Some(source)))
@@ -134,9 +134,7 @@ impl CatalogModelPublicationResolver {
         source: &CredentialSource,
     ) -> Result<CredentialUsage, String> {
         let Backend::Acp { cli } = Backend::from_ref(&binding.backend_ref) else {
-            if source.env_key.as_deref()
-                == Some(awaken_credential_vault::CLAUDE_CODE_SETUP_TOKEN_ENV)
-            {
+            if source.is_claude_code_setup_token() {
                 return Err("Claude Code setup tokens require backend acp:claude".into());
             }
             return Ok(CredentialUsage::ProviderAdapter);
@@ -146,17 +144,9 @@ impl CatalogModelPublicationResolver {
         let Some(delivery) = profile.model_delivery else {
             return Ok(CredentialUsage::ProviderAdapter);
         };
-        let Some(name) = source.env_key.as_deref() else {
-            return Ok(CredentialUsage::ProviderAdapter);
-        };
-        if !delivery.supports_credential_env(name) {
-            return Err(format!(
-                "ACP backend {cli} does not accept credential environment {name}"
-            ));
-        }
-        Ok(CredentialUsage::EnvironmentVariable {
-            name: name.to_string(),
-        })
+        delivery
+            .compile_credential_usage(source.process_secret_environment_hint())
+            .map_err(|error| format!("ACP backend {cli}: {error}"))
     }
 
     pub(super) fn provider_candidate(
@@ -199,14 +189,15 @@ impl CatalogModelPublicationResolver {
                             id: credential.id.0.clone(),
                             revision,
                         },
-                        match credential.kind {
-                            CredentialKind::WorkerLocal => {
+                        match credential.material_origin() {
+                            CredentialMaterialOrigin::WorkerLocal => {
                                 CredentialMaterialSource::WorkerReference
                             }
-                            CredentialKind::Vault | CredentialKind::Oauth => {
+                            CredentialMaterialOrigin::Vault
+                            | CredentialMaterialOrigin::ExternalHelper => {
                                 CredentialMaterialSource::ControlPlaneReference
                             }
-                            CredentialKind::Env => {
+                            CredentialMaterialOrigin::LegacyEnvironment => {
                                 return Err(unavailable(
                                     "environment credentials cannot be frozen into a publication"
                                         .into(),
