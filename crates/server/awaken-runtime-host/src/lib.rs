@@ -100,7 +100,9 @@ pub use crate::application::{
     ApplicationSessionPlan, ApplicationSessionProvisioner, WorkerControlApplicationSessionClient,
 };
 pub use crate::commit_backend::init_shared_postgres_commit;
-pub use crate::credential_materializer::PinnedCredentialMaterializer;
+pub use crate::credential_materializer::{
+    CredentialExtensionRegistryError, PinnedCredentialMaterializer,
+};
 pub use crate::dispatch_backend::init_shared_postgres_dispatch_with_config;
 pub use crate::host::{
     AttemptExecutorDecorator, HostResume, RemoteAttemptInstallation, ResourcePlanePorts,

@@ -5,7 +5,7 @@
 //! Workspace/revision/usage pins against the persisted row, then materializes that exact secret. Native
 //! provider execution and ACP provisioning share this adapter so they cannot drift.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -41,12 +41,19 @@ struct PendingCredentialArtifact {
     expires_at_unix_ms: u64,
 }
 
+#[derive(Clone)]
+struct RegisteredExtensionConsumer {
+    descriptor: awaken_runtime_contract::CredentialExtensionDescriptor,
+    consumer: Arc<dyn awaken_runtime_contract::CredentialExtensionConsumer>,
+}
+
 /// Worker/host-side realization of one already-published credential reference.
 #[derive(Clone)]
 pub struct PinnedCredentialMaterializer {
     credentials: Arc<dyn CredentialRepo>,
     secrets: Arc<dyn SecretStore>,
     external_material_resolver: Option<Arc<dyn CredentialMaterialResolver>>,
+    extension_consumers: Arc<BTreeMap<String, RegisteredExtensionConsumer>>,
     pending_process_secrets: Arc<Mutex<HashMap<String, PendingProcessSecret>>>,
     pending_credential_artifacts: Arc<Mutex<HashMap<String, PendingCredentialArtifact>>>,
 }
@@ -58,6 +65,7 @@ impl PinnedCredentialMaterializer {
             credentials,
             secrets,
             external_material_resolver: None,
+            extension_consumers: Arc::new(BTreeMap::new()),
             pending_process_secrets: Arc::new(Mutex::new(HashMap::new())),
             pending_credential_artifacts: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -73,6 +81,51 @@ impl PinnedCredentialMaterializer {
     ) -> Self {
         self.external_material_resolver = Some(resolver);
         self
+    }
+
+    /// Register one externally owned last-mile consumer. The descriptor is the
+    /// single source for both Worker capability discovery and runtime dispatch;
+    /// duplicate ids and invalid descriptors fail closed at composition time.
+    pub fn with_extension_consumer(
+        mut self,
+        consumer: Arc<dyn awaken_runtime_contract::CredentialExtensionConsumer>,
+    ) -> Result<Self, CredentialExtensionRegistryError> {
+        let descriptor = consumer.descriptor();
+        if descriptor.consumer_id.trim().is_empty()
+            || descriptor.material_types.is_empty()
+            || descriptor
+                .material_types
+                .iter()
+                .any(|material_type| material_type.trim().is_empty())
+        {
+            return Err(CredentialExtensionRegistryError::InvalidDescriptor);
+        }
+        let consumers = Arc::make_mut(&mut self.extension_consumers);
+        if consumers.contains_key(&descriptor.consumer_id) {
+            return Err(CredentialExtensionRegistryError::DuplicateConsumer(
+                descriptor.consumer_id,
+            ));
+        }
+        consumers.insert(
+            descriptor.consumer_id.clone(),
+            RegisteredExtensionConsumer {
+                descriptor,
+                consumer,
+            },
+        );
+        Ok(self)
+    }
+
+    fn extension_capabilities(&self) -> BTreeMap<String, std::collections::BTreeSet<String>> {
+        self.extension_consumers
+            .iter()
+            .map(|(consumer_id, registration)| {
+                (
+                    consumer_id.clone(),
+                    registration.descriptor.material_types.clone(),
+                )
+            })
+            .collect()
     }
 
     /// Installed source evidence used by standard Worker manifest derivation.
@@ -103,7 +156,9 @@ impl PinnedCredentialMaterializer {
             material_sources,
             realization_kinds: [realization].into_iter().collect(),
             recipient_bound_envelopes,
-            extension_consumers: Default::default(),
+            extension_consumers: (realization == CredentialRealizationKind::WorkerRelay)
+                .then(|| self.extension_capabilities())
+                .unwrap_or_default(),
             alternatives: Vec::new(),
         }
     }
@@ -130,6 +185,62 @@ impl PinnedCredentialMaterializer {
             ),
             CredentialRealizationKind::ProcessSecretEnvironment,
         )
+    }
+
+    /// Resolve and dispatch one exact extension binding without exposing its
+    /// plaintext to the caller. Selection, holder admission, revision/workspace
+    /// fences, material-type validation, consumer dispatch, and receipt checks
+    /// are one fail-closed operation.
+    pub async fn consume_extension_for_workspace<T: serde::Serialize>(
+        &self,
+        access: &CredentialAccess,
+        selected_holder: &PlaintextHolder,
+        workspace: &str,
+        target: &T,
+    ) -> Result<awaken_runtime_contract::CredentialExtensionReceipt, CredentialMaterialError> {
+        let CredentialUsage::Extension {
+            consumer_id,
+            material_type,
+            ..
+        } = &access.usage
+        else {
+            return Err(CredentialMaterialError::MaterialKindMismatch);
+        };
+        let registration = self
+            .extension_consumers
+            .get(consumer_id)
+            .ok_or(CredentialMaterialError::Unavailable)?;
+        access
+            .admit(
+                selected_holder,
+                CredentialRealizationKind::WorkerRelay,
+                &self.worker_relay_capabilities(),
+                unix_time_ms(),
+            )
+            .map_err(|_| CredentialMaterialError::Unavailable)?;
+        let binding = CredentialMaterialBinding::for_target(workspace, target, &access.usage);
+        let resolved = self
+            .resolve_validated(access, selected_holder, binding.clone(), None)
+            .await?;
+        let awaken_runtime_contract::CredentialMaterial::Structured(material) = &resolved.material
+        else {
+            return Err(CredentialMaterialError::MaterialKindMismatch);
+        };
+        let receipt = registration
+            .consumer
+            .consume(awaken_runtime_contract::CredentialExtensionRequest {
+                access,
+                material,
+                binding: &binding,
+            })
+            .await?;
+        if receipt.consumer_id != *consumer_id
+            || receipt.material_type != *material_type
+            || receipt.target_use_fingerprint != binding.target_use_fingerprint
+        {
+            return Err(CredentialMaterialError::ResolverMismatch);
+        }
+        Ok(receipt)
     }
 
     fn claimed_provider_binding<'a>(
@@ -646,6 +757,14 @@ impl PinnedCredentialMaterializer {
     pub(crate) fn secret_store(&self) -> Arc<dyn SecretStore> {
         self.secrets.clone()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CredentialExtensionRegistryError {
+    #[error("credential extension descriptor is invalid")]
+    InvalidDescriptor,
+    #[error("credential extension consumer `{0}` is already registered")]
+    DuplicateConsumer(String),
 }
 
 fn unix_time_ms() -> u64 {
@@ -1602,6 +1721,164 @@ mod tests {
                 .unwrap()
                 .expose_secret(),
             "remote-token"
+        );
+    }
+
+    struct SshExtensionConsumer {
+        corrupt_receipt: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_runtime_contract::CredentialExtensionConsumer for SshExtensionConsumer {
+        fn descriptor(&self) -> awaken_runtime_contract::CredentialExtensionDescriptor {
+            awaken_runtime_contract::CredentialExtensionDescriptor {
+                consumer_id: "example.ssh-agent".into(),
+                material_types: std::collections::BTreeSet::from([
+                    "example.ssh-private-key/v1".into()
+                ]),
+            }
+        }
+
+        async fn consume(
+            &self,
+            request: awaken_runtime_contract::CredentialExtensionRequest<'_>,
+        ) -> Result<awaken_runtime_contract::CredentialExtensionReceipt, CredentialMaterialError>
+        {
+            if request
+                .material
+                .fields
+                .get("private_key")
+                .map(RedactedString::expose_secret)
+                != Some("ssh-secret")
+            {
+                return Err(CredentialMaterialError::Invalid);
+            }
+            Ok(awaken_runtime_contract::CredentialExtensionReceipt {
+                consumer_id: "example.ssh-agent".into(),
+                material_type: "example.ssh-private-key/v1".into(),
+                target_use_fingerprint: if self.corrupt_receipt {
+                    "wrong-target".into()
+                } else {
+                    request.binding.target_use_fingerprint.clone()
+                },
+            })
+        }
+    }
+
+    async fn extension_fixture(
+        corrupt_receipt: bool,
+    ) -> (
+        PinnedCredentialMaterializer,
+        CredentialAccess,
+        PlaintextHolder,
+    ) {
+        let credentials = Arc::new(InMemoryCredentialRepo::new());
+        let secrets = Arc::new(InMemorySecretStore::new());
+        let material = awaken_credential_vault::StructuredCredentialMaterial {
+            type_id: "example.ssh-private-key/v1".into(),
+            fields: std::collections::BTreeMap::from([(
+                "private_key".into(),
+                RedactedString::new("ssh-secret"),
+            )]),
+        }
+        .encode()
+        .unwrap();
+        let source = enter_credential(
+            CredentialCreateParams {
+                workspace_id: "workspace-a".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("example.ssh-agent".into()),
+                env_key: None,
+                secret: Some(material),
+                oauth_command: None,
+            },
+            secrets.as_ref(),
+            credentials.as_ref(),
+        )
+        .await
+        .unwrap();
+        let holder = PlaintextHolder::new(
+            PlaintextBoundary::Worker,
+            awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+        );
+        let access = CredentialAccess::new(
+            CredentialRef {
+                id: source.id.0,
+                revision: u64::try_from(source.version).unwrap(),
+            },
+            CredentialMaterialSource::ControlPlaneReference,
+            CredentialUsage::Extension {
+                consumer_id: "example.ssh-agent".into(),
+                material_type: "example.ssh-private-key/v1".into(),
+                public_config: serde_json::json!({"socket": "agent.sock"}),
+            },
+            CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
+        );
+        let materializer = PinnedCredentialMaterializer::new(credentials, secrets)
+            .with_extension_consumer(Arc::new(SshExtensionConsumer { corrupt_receipt }))
+            .unwrap();
+        (materializer, access, holder)
+    }
+
+    #[tokio::test]
+    async fn extension_registry_drives_discovery_resolution_consumption_and_receipt() {
+        // Cause/effect decision rule X1: installed descriptor + matching Extension
+        // usage + exact active revision/workspace/holder + matching typed material
+        // => advertise the same descriptor, dispatch once without returning
+        // plaintext, and accept only an exact target-bound receipt.
+        let (materializer, access, holder) = extension_fixture(false).await;
+        assert_eq!(
+            materializer
+                .worker_relay_capabilities()
+                .extension_consumers
+                .get("example.ssh-agent"),
+            Some(&std::collections::BTreeSet::from([
+                "example.ssh-private-key/v1".into()
+            ]))
+        );
+
+        let receipt = materializer
+            .consume_extension_for_workspace(
+                &access,
+                &holder,
+                "workspace-a",
+                &("repository-a", "git.example"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(receipt.consumer_id, "example.ssh-agent");
+        assert_eq!(receipt.material_type, "example.ssh-private-key/v1");
+        assert!(!receipt.target_use_fingerprint.is_empty());
+    }
+
+    #[tokio::test]
+    async fn extension_registry_rejects_duplicates_and_forged_receipts() {
+        // Decision rules X2/X3: duplicate consumer ids are composition conflicts;
+        // a consumer receipt for a different target is a resolver mismatch. In
+        // both cases no second dispatch authority is synthesized.
+        let duplicate = PinnedCredentialMaterializer::new(
+            Arc::new(InMemoryCredentialRepo::new()),
+            Arc::new(InMemorySecretStore::new()),
+        )
+        .with_extension_consumer(Arc::new(SshExtensionConsumer {
+            corrupt_receipt: false,
+        }))
+        .unwrap()
+        .with_extension_consumer(Arc::new(SshExtensionConsumer {
+            corrupt_receipt: false,
+        }));
+        assert!(matches!(
+            duplicate,
+            Err(CredentialExtensionRegistryError::DuplicateConsumer(id))
+                if id == "example.ssh-agent"
+        ));
+
+        let (materializer, access, holder) = extension_fixture(true).await;
+        assert_eq!(
+            materializer
+                .consume_extension_for_workspace(&access, &holder, "workspace-a", &"target")
+                .await,
+            Err(CredentialMaterialError::ResolverMismatch)
         );
     }
 }
