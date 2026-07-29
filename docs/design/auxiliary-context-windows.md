@@ -2,9 +2,10 @@
 
 ## End-to-End Objective
 
-Memory, Compact, and Outcome evaluation reuse one immutable transcript service
-and one ordinary Agent Run lifecycle. They differ only in the window they select
-and in whether the parent Run may continue before the auxiliary result is ready.
+Memory Extraction, Dream Memory Consolidation, Compact, and Outcome evaluation
+reuse one immutable transcript service and one ordinary Agent Run lifecycle.
+They differ in the evidence they select, the result they own, and whether the
+parent Run may continue before the auxiliary result is ready.
 Committed Thread history remains the only conversational truth; caches and
 background tasks are replaceable accelerators.
 
@@ -18,6 +19,7 @@ TranscriptSnapshot (thread, view, version, message ids)
       +-- Memory Recall Window -----> request-only context
       +-- Compact Fold Window ------> stable Compactor Run --> summary + bridge
       +-- Goal Evaluation Window ---> stable Grader Run
+      +-- Dream Session Windows ----> JSONL files --> Memory Consolidator Run
       `-- Main Inference Window ----> model request
 ```
 
@@ -35,6 +37,7 @@ projection retain their existing owners.
 | Memory Extraction controller | intent, retry, receipt | terminal snapshot, stable Run, MemoryStore | at-least-once observation, exactly-once effect |
 | Compact plugin/backend | thresholds, fold range, artifact cache | snapshot, stable Run | soft prefetch; hard join; no raw-history rewrite |
 | Outcome controller/Grader | evaluation range and state transition | snapshot, stable Run, Thread state | frozen evidence range; version-guarded transition |
+| Dream Memory Consolidation | explicit cross-Session Memory curation | Session snapshots, JSONL exports, source/result MemoryStores, ordinary Managed Session | product-owned lifecycle and mounts defined by [Managed Dream Memory Consolidation](managed-dream-memory-consolidation.md) |
 | Runtime Host | concrete Run/store/provider wiring | neutral ports above | no Memory/Compact/Outcome lifecycle ownership |
 | ACP/A2A adapters | external execution/projection | prepared input and ordinary Run facts | no extension vocabulary or independent memory truth |
 
@@ -51,6 +54,9 @@ The per-extension indexes have deliberately different durability:
   control workflow continuation.
 - Compact artifacts are an in-process cache. The stable Compactor Run is the
   recoverable truth; a cache miss recomputes or joins that Run.
+- Dream is a durable product job because it creates an independently governed
+  result MemoryStore. Its Session snapshots and JSONL artifacts are immutable
+  evidence; its ordinary Agent Run is execution truth, not Dream state truth.
 - Transcript snapshots are version-addressed immutable read values reconstructed
   from committed history. Their materialized messages may be cached, but the
   cache is not a second transcript store.
