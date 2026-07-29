@@ -3,9 +3,8 @@
 //
 // A client drives "pending -> acknowledged" UI off processed_at. In this server the
 // distinction is observable across two surfaces: the POST .../events RECEIPT carries
-// processed_at:null for each just-queued event, while every COMMITTED event returned
-// by events.list carries a non-null timestamp. This locks both halves so a receipt
-// that started stamping (or a list that started returning null) is caught.
+// processed_at:null for each just-queued message, while its same-id persisted event
+// and every generated event returned by events.list carry a non-null timestamp.
 //
 // Run: (from e2e/)  node managed_processed_at_e2e.mjs
 
@@ -26,7 +25,10 @@ async function main() {
         betas: BETAS,
       });
 
-      // Each send returns a receipt whose queued events carry processed_at: null.
+      // Cause graph: a standard queued user.message yields a null receipt timestamp;
+      // successful processing yields the same id in history with a timestamp. The
+      // three messages also prove request ordering, rather than one lucky id match.
+      const receipts = [];
       for (const text of ['one', 'two', 'three']) {
         const receipt = await client.beta.sessions.events.send(session.id, {
           events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
@@ -37,6 +39,7 @@ async function main() {
         assert.equal(r.type, 'user.message', 'the receipt echoes the queued event type');
         assert.ok(r.id, 'the receipt assigns an event id');
         assert.equal(r.processed_at, null, 'a just-queued event is acknowledged with processed_at: null');
+        receipts.push(r);
       }
       pass('every events.send receipt carries processed_at: null (queued/acknowledged)');
 
@@ -50,11 +53,11 @@ async function main() {
           `committed ${ev.type} carries a processed_at timestamp (got ${JSON.stringify(ev.processed_at)})`,
         );
       }
-      // The committed history is outbound only (agent.* / session.*), the inbound
-      // acknowledgements live on the receipts above — assert that separation too.
-      assert.ok(
-        events.every((e) => e.type.startsWith('agent.') || e.type.startsWith('session.')),
-        `list() returns committed outbound events only (got ${events.map((e) => e.type)})`,
+      const persistedInputs = events.filter((event) => event.type === 'user.message');
+      assert.deepEqual(
+        persistedInputs.map((event) => event.id),
+        receipts.map((receipt) => receipt.id),
+        'queued receipts and persisted inputs share ids and request order',
       );
       pass('every committed event in events.list() carries a non-null processed_at');
     });

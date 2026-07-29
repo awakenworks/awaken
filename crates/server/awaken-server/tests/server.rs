@@ -106,9 +106,12 @@ async fn echo_turn_end_to_end() {
     let app = build_router(Arc::new(EchoModel), "echo-model");
     let id = create_session(&app).await;
     let list = send_message(&app, &id, "hi there").await;
+    // Cause/effect rule: accepting a user.message first persists that exact
+    // inbound event, then brackets the resulting turn with running/output/idle.
     assert_eq!(
         event_types(&list),
         vec![
+            "user.message",
             "session.status_running",
             "agent.message",
             "session.status_idle"
@@ -193,9 +196,12 @@ async fn hitl_write_awaits_then_confirms_and_reads_rooted() {
 
     // The write is asked -> the run awaits.
     let list = send_message(&app, &id, "HELLO-SANDBOX").await;
+    // Decision rule: user.message + permission-gated tool call persists the
+    // input, starts the turn, projects the request, then idles awaiting action.
     assert_eq!(
         event_types(&list),
         vec![
+            "user.message",
             "session.status_running",
             "agent.tool_use",
             "session.status_idle"
@@ -347,9 +353,12 @@ async fn custom_tool_use_through_real_kernel() {
 
     // The model calls the client-executed tool `submit_answer` -> awaits as custom.
     let list = send_message(&app, &id, "solve it").await;
+    // Decision rule: user.message + client-executed tool persists the input,
+    // starts the turn, projects custom_tool_use, then idles awaiting its result.
     assert_eq!(
         event_types(&list),
         vec![
+            "user.message",
             "session.status_running",
             "agent.custom_tool_use",
             "session.status_idle"
@@ -436,7 +445,8 @@ async fn system_message_reaches_next_turn() {
     let app = build_router(Arc::new(SystemEchoModel), "sys");
     let id = create_session(&app).await;
 
-    // A `system.message` is accept-only (no projected events) but buffered.
+    // A `system.message` is accept-only (no agent/session projection) but its
+    // canonical inbound event is persisted and the directive is buffered.
     let receipts = json_call(
         &app,
         "POST",
@@ -452,10 +462,10 @@ async fn system_message_reaches_next_turn() {
         serde_json::Value::Null,
     )
     .await;
-    assert!(
-        before["data"].as_array().unwrap().is_empty(),
-        "system.message projects nothing on its own"
-    );
+    // Cause/effect rule: accepted system.message -> one processed inbound event,
+    // with no running/message/idle projection until a later user turn.
+    assert_eq!(event_types(&before), vec!["system.message"]);
+    assert!(before["data"][0]["processed_at"].is_string());
 
     // The next user turn sees the buffered directive.
     let list = send_message(&app, &id, "hello").await;

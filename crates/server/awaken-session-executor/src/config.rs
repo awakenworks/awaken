@@ -8,7 +8,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::message::{Message, Role};
 use awaken_ext_builtin_tools::{
     Toolset, WebSearchPlugin, WebSearchProviderRegistry, builtin_tools, executable_hand_tools,
@@ -28,16 +28,9 @@ use awaken_sandbox_local::LocalSandbox;
 
 const SYSTEM_PROMPT: &str = "You are a helpful assistant working in a local repository.";
 
-/// Concatenate the text of a content-block list.
+/// Return the contract's canonical recursive plain-text view of content blocks.
 pub fn block_text(content: &[ContentBlock]) -> String {
-    content
-        .iter()
-        .filter_map(|b| match b {
-            ContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("")
+    extract_text(content)
 }
 
 /// The text of the last assistant message in a transcript.
@@ -301,10 +294,16 @@ pub(crate) fn server_config(
         .plugins(plugin_ids.iter().cloned())
         .plugin_config(plugin_config.iter().map(|(k, v)| (k.clone(), v.clone())))
         .agent_bindings(awaken_runtime_contract::agent_bindings::AgentBindings {
-            delegate_ids: delegates
+            delegates: delegates
                 .iter()
                 .cloned()
-                .map(awaken_runtime_contract::snapshot::AgentId)
+                .map(
+                    |id| awaken_runtime_contract::agent_bindings::AgentDelegateBinding {
+                        agent_id: awaken_runtime_contract::snapshot::AgentId(id),
+                        source_revision: None,
+                        recursive_self: false,
+                    },
+                )
                 .collect(),
             ..Default::default()
         })

@@ -1,5 +1,14 @@
 [
   {
+    "type": "user.message",
+    "content": [
+      {
+        "type": "text",
+        "text": "work"
+      }
+    ]
+  },
+  {
     "type": "session.status_running"
   },
   {

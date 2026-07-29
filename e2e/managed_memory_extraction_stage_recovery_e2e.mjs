@@ -18,6 +18,7 @@ import { sqliteExec, sqliteRows } from './sqlite.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38244);
 const BETAS = ['managed-agents-2026-04-01'];
+const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
 const STORE_DIR = `/tmp/awaken-memory-stage-recovery-${process.pid}`;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -120,6 +121,7 @@ async function hardKill(server) {
 async function createMemory(storeId, pathName, content) {
   const response = await client.post(`/v1/memory_stores/${storeId}/memories`, {
     body: { path: pathName, content },
+    headers: MEMORY_HEADERS,
   });
   return response;
 }
@@ -139,7 +141,10 @@ async function main() {
     servers.push(first.server);
     await waitForPort(PORT);
 
-    const store = await client.post('/v1/memory_stores', { body: { name: 'stage-recovery' } });
+    const store = await client.post('/v1/memory_stores', {
+      body: { name: 'stage-recovery' },
+      headers: MEMORY_HEADERS,
+    });
     const oldUpdate = 'old update value';
     const already = 'already committed value';
     const updateHead = await createMemory(store.id, '/update.md', oldUpdate);
@@ -360,7 +365,9 @@ async function main() {
     }
     persistIntent(database, validCompleted, false);
 
-    const memories = await client.get(`/v1/memory_stores/${store.id}/memories`);
+    const memories = await client.get(`/v1/memory_stores/${store.id}/memories`, {
+      headers: MEMORY_HEADERS,
+    });
     const byPath = new Map(memories.data.map((memory) => [memory.path, memory]));
     assert.equal(byPath.get('/created.md').content, createContent);
     assert.equal(byPath.get('/update.md').content, updateContent);

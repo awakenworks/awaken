@@ -9,6 +9,8 @@ import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import { withRealServer, pass } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
+const MEMORY_BETAS = ['agent-memory-2026-07-22'];
+const MEMORY_HEADERS = { 'anthropic-beta': MEMORY_BETAS[0] };
 
 async function main() {
   await withRealServer('echo', 38272, async (base) => {
@@ -20,7 +22,7 @@ async function main() {
       betas: BETAS,
     });
     assert.ok(file.id, 'file uploaded');
-    const mem = await client.post('/v1/memory_stores');
+    const mem = await client.post('/v1/memory_stores', { headers: MEMORY_HEADERS });
     assert.ok(mem.id, 'memory store created');
 
     // A session mounting both resources — realized into the sandbox at prepare.
@@ -40,7 +42,7 @@ async function main() {
     // v2 into the already-created Session.
     const configUpdate = await fetch(`${base}/v1/memory_stores/${mem.id}/config`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...MEMORY_HEADERS },
       body: JSON.stringify({
         expected_config_version: 1,
         recall_policy: { enabled: false, max_results: 1 },
@@ -62,7 +64,7 @@ async function main() {
 
     // Lifecycle state is deliberately live. Archiving the store must deny the
     // next use even though the immutable v1 config still exists.
-    await client.beta.memoryStores.archive(mem.id, { betas: BETAS });
+    await client.beta.memoryStores.archive(mem.id, { betas: MEMORY_BETAS });
     const agentMessagesBeforeDeny = events.filter((type) => type === 'agent.message').length;
     await assert.rejects(
       () =>

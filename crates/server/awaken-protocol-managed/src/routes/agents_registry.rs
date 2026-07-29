@@ -73,12 +73,27 @@ pub trait ManagedAgentRepository: Send + Sync {
 /// Router state containing exactly one Agent repository implementation.
 pub struct AgentRegistryState {
     repository: Arc<dyn ManagedAgentRepository>,
+    deployments: Option<Arc<crate::routes::deployments::DeploymentState>>,
 }
 
 impl AgentRegistryState {
     #[must_use]
     pub fn from_repository(repository: Arc<dyn ManagedAgentRepository>) -> Self {
-        Self { repository }
+        Self {
+            repository,
+            deployments: None,
+        }
+    }
+
+    /// Bind the existing Deployment aggregate so archiving a primary Agent can
+    /// terminally archive its deployments in the same request operation.
+    #[must_use]
+    pub fn with_deployments(
+        mut self,
+        deployments: Arc<crate::routes::deployments::DeploymentState>,
+    ) -> Self {
+        self.deployments = Some(deployments);
+        self
     }
 }
 
@@ -198,12 +213,16 @@ async fn archive_agent(
     Path(id): Path<String>,
     scope: Option<Extension<WorkspaceScope>>,
 ) -> Result<Json<Agent>, WireError> {
-    state
+    let scope = request_scope(&scope);
+    let agent = state
         .repository
-        .archive(&request_scope(&scope), &id)
+        .archive(&scope, &id)
         .await
-        .map(Json)
-        .map_err(wire_error)
+        .map_err(wire_error)?;
+    if let Some(deployments) = &state.deployments {
+        deployments.archive_for_agent(&scope, &id);
+    }
+    Ok(Json(agent))
 }
 
 async fn list_versions(

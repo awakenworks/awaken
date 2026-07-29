@@ -182,7 +182,7 @@ impl SessionAttemptExecutor {
         Self::from_executors(native, acp, remote, &snapshots)
     }
 
-    fn from_executors(
+    pub(crate) fn from_executors(
         native: Arc<dyn RunAttemptExecutor>,
         acp: Option<Arc<dyn RunAttemptExecutor>>,
         a2a: Option<Arc<dyn RunAttemptExecutor>>,

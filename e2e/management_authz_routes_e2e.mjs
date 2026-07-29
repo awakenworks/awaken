@@ -15,6 +15,11 @@ const SEAL_KEY = 'ffeeddccbbaa99887766554433221100ffeeddccbbaa998877665544332211
 
 async function req(base, method, uri, token, body) {
   const headers = {};
+  if (uri === '/v1/memory_stores' || uri.startsWith('/v1/memory_stores/')) {
+    headers['anthropic-beta'] = 'agent-memory-2026-07-22';
+  } else if (uri === '/v1/skills' || uri.startsWith('/v1/skills/')) {
+    headers['anthropic-beta'] = 'skills-2025-10-02';
+  }
   if (token) headers.authorization = `Bearer ${token}`;
   if (body !== undefined) headers['content-type'] = 'application/json';
   const res = await fetch(`${base}${uri}`, {
@@ -28,6 +33,11 @@ async function req(base, method, uri, token, body) {
 
 async function apiKeyReq(base, method, uri, token, body) {
   const headers = { 'x-api-key': token };
+  if (uri === '/v1/memory_stores' || uri.startsWith('/v1/memory_stores/')) {
+    headers['anthropic-beta'] = 'agent-memory-2026-07-22';
+  } else if (uri === '/v1/skills' || uri.startsWith('/v1/skills/')) {
+    headers['anthropic-beta'] = 'skills-2025-10-02';
+  }
   if (body !== undefined) headers['content-type'] = 'application/json';
   const res = await fetch(`${base}${uri}`, {
     method,

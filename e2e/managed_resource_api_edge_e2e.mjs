@@ -9,7 +9,13 @@ import { withRealServer, pass } from './harness.mjs';
 async function req(base, method, uri, rawBody) {
   const res = await fetch(`${base}${uri}`, {
     method,
-    headers: rawBody === undefined ? {} : { 'content-type': 'application/json' },
+    headers: {
+      ...(uri.startsWith('/v1/memory_stores')
+        ? { 'anthropic-beta': 'agent-memory-2026-07-22' }
+        : {}),
+      ...(uri.startsWith('/v1/skills') ? { 'anthropic-beta': 'skills-2025-10-02' } : {}),
+      ...(rawBody === undefined ? {} : { 'content-type': 'application/json' }),
+    },
     body: rawBody,
   });
   return { status: res.status };

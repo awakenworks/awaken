@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import { withScenarioServer, pass } from './harness.mjs';
 
-const BETAS = ['managed-agents-2026-04-01'];
+const BETAS = ['agent-memory-2026-07-22'];
 
 async function drain(pagePromise) {
   const items = [];
@@ -32,7 +32,10 @@ async function drain(pagePromise) {
 async function json(baseUrl, method, route, body) {
   const response = await fetch(`${baseUrl}${route}`, {
     method,
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    headers: {
+      'anthropic-beta': BETAS[0],
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await response.text();

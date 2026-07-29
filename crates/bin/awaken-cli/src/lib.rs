@@ -1097,6 +1097,8 @@ async fn management_router_over(
     let cloud_api_base_url = assembly.cloud_api_base_url;
     let cloud_models_enabled = assembly.cloud_models_enabled;
     let org_id = assembly.org_id.unwrap_or_else(local_org_id);
+    let managed_rate_limiter =
+        Arc::new(awaken_protocol_managed::ManagedRateLimiter::for_organization(org_id.clone()));
     let mcp_bearer_token = assembly.mcp_bearer_token;
     let ManagementStores {
         workspace_root,
@@ -1370,6 +1372,7 @@ async fn management_router_over(
     // deployments + environments + config plane + capabilities), guard applied over
     // admin + vault only. Returns the webhook sink the data plane feeds.
     let deployment_state = Arc::new(awaken_protocol_managed::DeploymentState::new());
+    deployment_state.bind_rate_limiter(managed_rate_limiter.clone());
     // Keep the IAM handles for the sibling resource PEP. The authoring router owns
     // its PEP; File/Memory/Skill routes are wrapped independently after the data
     // router is assembled, so neither plane depends on the other's services.
@@ -1407,7 +1410,7 @@ async fn management_router_over(
             credentials: credentials.clone(),
             workspace: platform_workspace.clone(),
         }),
-        org_id: Some(org_id),
+        org_id: Some(org_id.clone()),
         iam,
         remote_iam,
         local_browser_auth,
@@ -1415,7 +1418,13 @@ async fn management_router_over(
     });
 
     if management_only {
-        return management_surface::finish(mgmt, mcp_export, reconciler, platform_workspace);
+        return management_surface::finish(
+            mgmt,
+            mcp_export,
+            reconciler,
+            platform_workspace,
+            managed_rate_limiter,
+        );
     }
 
     // The data plane: the host runs the server model, resolves a session's agent to
@@ -1587,7 +1596,13 @@ async fn management_router_over(
         ));
     }
     let flat = data.merge(mgmt);
-    management_surface::finish(flat, mcp_export, reconciler, platform_workspace)
+    management_surface::finish(
+        flat,
+        mcp_export,
+        reconciler,
+        platform_workspace,
+        managed_rate_limiter,
+    )
 }
 
 /// Resolve the hidden local Org from one composition-root seam. Self-managed

@@ -133,8 +133,13 @@ impl AcpLaunchRegistry {
 /// config-plane-selected CLI, or `Fixed` for a trusted/test single argv.
 #[derive(Clone)]
 pub enum LaunchSource {
-    /// One CLI for every `acp:*` thread (explicit trusted/test composition only).
+    /// One newline-fixture CLI for every `acp:*` thread (explicit trusted/test
+    /// composition only).
     Fixed(AcpLaunch),
+    /// One official JSON-RPC ACP fixture for every `acp:*` thread. This differs
+    /// only in codec selection; launch and Session-environment ownership stay on
+    /// the same bound source as [`Self::Fixed`].
+    FixedAcp(Box<AcpLaunch>),
     /// The run's config-plane-selected CLI, exact-routed by `acp:<cli>`.
     Projected(AcpLaunchRegistry),
 }
@@ -151,7 +156,7 @@ impl LaunchSource {
         backend: &awaken_runtime_contract::resolved::Backend,
     ) -> Result<awaken_runtime_contract::CredentialRealizationCapabilities, OpenError> {
         match self {
-            Self::Fixed(_) => Ok(Default::default()),
+            Self::Fixed(_) | Self::FixedAcp(_) => Ok(Default::default()),
             Self::Projected(registry) => registry.credential_realization_capabilities(backend),
         }
     }
@@ -166,6 +171,11 @@ impl LaunchSource {
         match self {
             LaunchSource::Fixed(launch) => Ok(ResolvedLaunch {
                 launch: launch.clone(),
+                credential_artifact: None,
+                secret_broker: None,
+            }),
+            LaunchSource::FixedAcp(launch) => Ok(ResolvedLaunch {
+                launch: launch.as_ref().clone(),
                 credential_artifact: None,
                 secret_broker: None,
             }),
@@ -198,7 +208,7 @@ impl LaunchSource {
         backend: &awaken_runtime_contract::resolved::Backend,
     ) -> Result<Option<&AcpCli>, OpenError> {
         match self {
-            LaunchSource::Fixed(_) => Ok(None),
+            LaunchSource::Fixed(_) | LaunchSource::FixedAcp(_) => Ok(None),
             LaunchSource::Projected(registry) => {
                 registry.selected(backend).map(|route| Some(&route.cli))
             }

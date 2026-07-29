@@ -36,7 +36,9 @@ impl BoundLocalChannelSource {
     ) -> Self {
         let codec = match &launch {
             LaunchSource::Fixed(_) => awaken_run_executor_acp::Codec::Newline,
-            LaunchSource::Projected(_) => awaken_run_executor_acp::Codec::Acp,
+            LaunchSource::FixedAcp(_) | LaunchSource::Projected(_) => {
+                awaken_run_executor_acp::Codec::Acp
+            }
         };
         Self {
             sandbox,

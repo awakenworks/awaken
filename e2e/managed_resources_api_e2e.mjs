@@ -14,11 +14,15 @@ import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import { withRealServer, pass } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
+const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
 
 async function request(baseUrl, method, route, body) {
   const response = await fetch(`${baseUrl}${route}`, {
     method,
-    headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+    headers: {
+      ...(route.startsWith('/v1/memory_stores') ? MEMORY_HEADERS : {}),
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await response.text();
@@ -93,6 +97,7 @@ async function main() {
 
       // ── MemoryStore: catalog patch + CAS heads + versions + redaction + delete ─
       const mem = await client.post('/v1/memory_stores', {
+        headers: MEMORY_HEADERS,
         body: {
           name: 'embedded-memory',
           description: 'initial',
@@ -100,11 +105,13 @@ async function main() {
         },
       });
       assert.ok(mem.id?.startsWith('memstore_'), 'memory store gets a memstore_ id');
-      const read = await client.get(`/v1/memory_stores/${mem.id}`);
+      const read = await client.get(`/v1/memory_stores/${mem.id}`, { headers: MEMORY_HEADERS });
       assert.equal(read.id, mem.id);
       assert.equal(read.content, undefined, 'store definition does not duplicate mutable content');
       assert.equal(read.size_bytes, undefined);
-      const memories = await client.get(`/v1/memory_stores/${mem.id}/memories`);
+      const memories = await client.get(`/v1/memory_stores/${mem.id}/memories`, {
+        headers: MEMORY_HEADERS,
+      });
       assert.deepEqual(memories.data, [], 'a fresh memory store has no memory heads');
       pass(`memory store created and reads back empty: ${mem.id}`);
 
@@ -226,7 +233,7 @@ async function main() {
       pass('embedded MemoryStore preserves CAS, version, redaction, and lifecycle invariants');
 
       await assert.rejects(
-        () => client.get('/v1/memory_stores/memstore_absent'),
+        () => client.get('/v1/memory_stores/memstore_absent', { headers: MEMORY_HEADERS }),
         (e) => String(e).includes('404'),
         'unknown memory store is a 404',
       );

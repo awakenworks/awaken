@@ -431,10 +431,11 @@ impl LlmExecutor for GenaiExecutor {
                         None => tool_calls.push(call),
                     }
                 }
-                // Live reasoning: accumulate; the completed form becomes a folded
-                // `Thinking` block. Not forwarded as a text delta (reasoning is not
-                // answer content).
+                // Live reasoning: announce progress on the distinct reasoning
+                // channel; Managed exposes only a start marker and never the text.
+                // The completed form still becomes the committed `Thinking` block.
                 ChatStreamEvent::ReasoningChunk(chunk) => {
+                    sink.on_reasoning(&chunk.content).await;
                     reasoning.push_str(&chunk.content);
                 }
                 // Committed turn: genai's parsed, ordered content and usage.

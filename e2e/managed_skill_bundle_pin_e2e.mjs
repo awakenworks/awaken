@@ -14,6 +14,7 @@ import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38237);
 const BETAS = ['managed-agents-2026-04-01'];
+const SKILLS_BETA = 'skills-2025-10-02';
 const SEAL_KEY = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
 const AGENT = 'skill-pin-agent';
 const V1 = 'PINNED_SKILL_V1_7119';
@@ -25,9 +26,15 @@ function skillMarkdown(marker) {
 }
 
 async function request(baseUrl, method, route, body) {
+  const skillHeaders = route === '/v1/skills' || route.startsWith('/v1/skills/')
+    ? { 'anthropic-beta': SKILLS_BETA }
+    : {};
   const response = await fetch(`${baseUrl}${route}`, {
     method,
-    headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+    headers: {
+      ...skillHeaders,
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const bytes = new Uint8Array(await response.arrayBuffer());
@@ -43,7 +50,9 @@ async function uploadBundle(baseUrl, route, marker, binary = undefined) {
   if (binary !== undefined) {
     form.append('file', new Blob([binary], { type: 'application/octet-stream' }), 'assets/data.bin');
   }
-  const response = await fetch(`${baseUrl}${route}`, { method: 'POST', body: form });
+  const response = await fetch(`${baseUrl}${route}`, {
+    method: 'POST', headers: { 'anthropic-beta': SKILLS_BETA }, body: form,
+  });
   const body = await response.json().catch(() => ({}));
   assert.equal(response.status, 200, `${route}: ${JSON.stringify(body)}`);
   return body;
@@ -67,9 +76,13 @@ async function publishAgent(baseUrl, skillId) {
   assert.equal(published.body.installed, true, 'agent publication installed');
 }
 
-async function createSession(client) {
+async function createSession(client, skillSelection = undefined) {
   return client.beta.sessions.create({
-    agent: AGENT,
+    agent: skillSelection === undefined ? AGENT : {
+      id: AGENT,
+      type: 'agent_with_overrides',
+      skills: skillSelection,
+    },
     environment_id: 'env_local',
     betas: BETAS,
   });
@@ -125,6 +138,7 @@ async function main() {
   fs.writeFileSync(path.join(configDir, 'config.toml'), [
     `data_dir = ${JSON.stringify(managementDir)}`,
     `control_seal_key = ${JSON.stringify(SEAL_KEY)}`,
+    'identity_mode = "no-login"',
     'sandbox_tier = "local"',
     '',
   ].join('\n'));
@@ -163,6 +177,19 @@ async function main() {
       V2,
     );
     assert.equal(version2.version, '2', 'v2 appended monotonically');
+
+    // Causes: the published Agent selects `latest`, while a create-time override
+    // selects exact v1 after v2 exists. Constraint: the override replaces the
+    // root Agent list and resolution occurs once before preparation. Effects:
+    // P1 latest -> v2; P2 exact "1" -> v1; both persist immutable pins.
+    const exactV1 = await createSession(client, [{
+      type: 'custom', skill_id: skillId, version: '1',
+    }]);
+    const exactReply = await runAndReadLastReply(client, exactV1.id, 'use exact version one');
+    assert.ok(exactReply.includes(V1), `P2 exact selector resolved v1 after v2 existed: ${exactReply}`);
+    assert.ok(!exactReply.includes(V2), 'P2 exact selector did not drift to latest');
+    pass('create-time exact custom Skill selector replaces latest and pins v1');
+
     const retired = await request(
       first.baseUrl,
       'DELETE',

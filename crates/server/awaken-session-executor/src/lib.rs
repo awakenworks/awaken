@@ -38,6 +38,7 @@ mod hub;
 mod inference_routing;
 mod judge;
 mod live_inbox;
+mod managed_model_capability;
 mod managed_resource_projection;
 mod mcp;
 mod mcp_relay;
@@ -62,6 +63,7 @@ mod skills_api;
 mod store;
 #[cfg(test)]
 mod test_mcp;
+mod tool_output_spill;
 mod web_search;
 mod worker_http;
 mod worker_security;
@@ -1165,6 +1167,16 @@ impl SessionRuntime for ManagedHost {
             .map_err(to_run_error)
     }
 
+    async fn supports_mid_conversation_system(&self, thread: &str) -> bool {
+        managed_model_capability::supports_mid_conversation_system(
+            &self.host.model_for_thread(thread),
+        )
+    }
+
+    async fn pending_tool(&self, thread: &str) -> Option<Pending> {
+        to_pending(self.host.pending_tool(thread).await)
+    }
+
     async fn interrupt(&self, thread: &str) -> Result<(), RunError> {
         self.host.interrupt(thread).await.map_err(to_run_error)
     }
@@ -1211,14 +1223,14 @@ impl SessionRuntime for ManagedHost {
     async fn resolve_session_skills(
         &self,
         workspace_id: &str,
-        skill_ids: &[String],
+        skills: &[awaken_agent_contract::AgentSkillBinding],
     ) -> Result<Vec<awaken_protocol_managed::ResolvedSkillBinding>, RunError> {
-        if skill_ids.is_empty() {
+        if skills.is_empty() {
             return Ok(Vec::new());
         }
         self.host
             .skills
-            .resolve_latest(workspace_id, skill_ids)
+            .resolve(workspace_id, skills)
             .await
             .map_err(|error| RunError::bad_request(error.to_string()))
     }

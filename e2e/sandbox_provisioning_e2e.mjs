@@ -27,6 +27,7 @@ import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import { withRealServer, pass } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
+const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
 const PORT = Number(process.env.E2E_PORT ?? 38291);
 const TMP = path.join(os.tmpdir(), `awaken-sbxprov-e2e-${process.pid}`);
 const git = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8' });
@@ -69,7 +70,7 @@ async function main() {
       betas: BETAS,
     });
     assert.ok(file.id, 'file uploaded');
-    const mem = await client.post('/v1/memory_stores');
+    const mem = await client.post('/v1/memory_stores', { headers: MEMORY_HEADERS });
     assert.ok(mem.id, 'memory store created');
     pass('supplied a file + a memory store; local bare repo seeded');
 
