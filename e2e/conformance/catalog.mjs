@@ -25,16 +25,18 @@ const MANAGED_E2E = 'e2e/managed_e2e.mjs';
 // -- SDK oracle -------------------------------------------------------------
 
 // Every event `type` string literal the installed SDK declares, split by family.
-// The SDK's outbound stream union also echoes `user.*` events; `OutboundKind` does
-// not model those (awaken never re-emits a user event), so the outbound catalog we
-// compare against is the agent./session./span. families. Inbound = user./system.
+// The SDK's outbound SessionEvent union includes the accepted `user.*` and
+// `system.message` history events as well as agent/session/span events. The
+// inbound EventParams union is the user/system subset. Keeping the outbound set
+// complete catches a history/list projection that accepts an event but cannot
+// serialize it back through the official union.
 export function sdkEventTypes() {
   const text = read(EVENTS_DTS) + '\n' + read(SESSIONS_DTS);
   const all = new Set();
   for (const m of text.matchAll(/type:\s*'([a-z_]+(?:\.[a-z_]+)+)'/g)) all.add(m[1]);
   const types = [...all];
   return {
-    outbound: types.filter((t) => /^(agent|session|span)\./.test(t)).sort(),
+    outbound: types.filter((t) => /^(agent|session|span|user|system)\./.test(t)).sort(),
     inbound: types.filter((t) => /^(user|system)\./.test(t)).sort(),
   };
 }

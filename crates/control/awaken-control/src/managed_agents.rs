@@ -217,11 +217,11 @@ fn config_from_create(
         recovery_policies: BTreeMap::new(),
         compaction: None,
     };
-    validate_managed_tool_bindings(&config)?;
+    validate_managed_agent_config(&config)?;
     Ok(config)
 }
 
-fn validate_managed_tool_bindings(config: &AgentConfig) -> Result<(), ManagedAgentError> {
+fn validate_managed_agent_config(config: &AgentConfig) -> Result<(), ManagedAgentError> {
     if config.mcp_servers.len() > 20 {
         return Err(ManagedAgentError::Invalid(
             "mcp_servers supports at most 20 entries".into(),
@@ -232,6 +232,20 @@ fn validate_managed_tool_bindings(config: &AgentConfig) -> Result<(), ManagedAge
         .iter()
         .map(|server| server.name.as_str())
         .collect::<std::collections::BTreeSet<_>>();
+    for server in &config.mcp_servers {
+        if !(1..=255).contains(&server.name.chars().count()) {
+            return Err(ManagedAgentError::Invalid(
+                "mcp_server name must be 1-255 characters".into(),
+            ));
+        }
+        if server.url.chars().count() > 2048
+            || awaken_agent_contract::McpTarget::identity(&server.url).is_err()
+        {
+            return Err(ManagedAgentError::Invalid(
+                "mcp_server url must be an HTTP(S) URL of at most 2048 characters".into(),
+            ));
+        }
+    }
     if server_names.len() != config.mcp_servers.len() {
         return Err(ManagedAgentError::Invalid(
             "mcp_servers names must be unique".into(),
@@ -283,6 +297,19 @@ fn validate_managed_tool_bindings(config: &AgentConfig) -> Result<(), ManagedAge
         return Err(ManagedAgentError::Invalid(format!(
             "every MCP server must have one mcp_toolset; missing {missing:?}"
         )));
+    }
+    if config.skill_ids.len() > 500 {
+        return Err(ManagedAgentError::Invalid(
+            "skills supports at most 500 entries".into(),
+        ));
+    }
+    let mut skill_ids = std::collections::BTreeSet::new();
+    for skill_id in &config.skill_ids {
+        if skill_id.trim().is_empty() || !skill_ids.insert(skill_id.as_str()) {
+            return Err(ManagedAgentError::Invalid(
+                "skill ids must be non-empty and unique".into(),
+            ));
+        }
     }
     let declared_count = config.client_tools.len()
         + config
@@ -524,6 +551,11 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             .await
             .map_err(ManagedAgentError::Storage)?
             .ok_or(ManagedAgentError::NotFound)?;
+        if params.version == Some(0) {
+            return Err(ManagedAgentError::Invalid(
+                "version must be greater than or equal to 1".into(),
+            ));
+        }
         if params
             .version
             .is_some_and(|version| current.revision != version)
@@ -539,14 +571,24 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
                 "disabled or archived Agent cannot be updated".into(),
             ));
         }
-        let mut config = current.config;
+        let mut config = current.config.clone();
         if let Some(name) = params.name {
             config.name = Some(name);
         }
         if let Some(model) = params.model {
             let model = model.into_config();
+            let current_model = config
+                .model_binding
+                .resolved()
+                .map(|binding| binding.model_ref.as_str());
+            let preserve_effort =
+                current_model == Some(model.id.as_str()) && model.effort.is_none();
+            let prior_effort = config.inference.effort;
             config.inference =
                 inference_from_wire(model.speed, model.effort.map(|value| value.resolved()));
+            if preserve_effort {
+                config.inference.effort = prior_effort;
+            }
             config.model_binding = ModelSelection::pinned("", model.id, "");
         }
         if let Some(description) = params.description {
@@ -587,7 +629,10 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         if let Some(multiagent) = params.multiagent {
             config.multiagent = multiagent.map(|multiagent| typed_multiagent(id, multiagent));
         }
-        validate_managed_tool_bindings(&config)?;
+        validate_managed_agent_config(&config)?;
+        if config == current.config {
+            return Ok(project(current));
+        }
         match self
             .plane
             .put_if_revision(&scope, &config, current.revision)

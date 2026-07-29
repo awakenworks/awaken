@@ -165,6 +165,10 @@ async function main() {
       // | nullable update field = null            | clear exact field/bag  |
       // | metadata value = null                   | delete only that key   |
       // | update version omitted                  | unconditional CAS write|
+      // | matching/stale version + semantic no-op | same revision / 409     |
+      // | same model + effort omitted             | preserve prior effort   |
+      // | changed model + effort omitted          | reset model default     |
+      // | MCP/Skill at/over documented boundary   | accept / reject atomic  |
       // | list archived/time partition            | filter before paging   |
       const rich = await json(baseUrl, 'POST', '/v1/agents', {
         name: 'rich-agent',
@@ -233,8 +237,48 @@ async function main() {
       );
       assert.deepEqual(rich.body.multiagent, { type: 'coordinator', agents: ['researcher'] });
 
-      const richUpdated = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}`, {
+      // Causes: matching or stale CAS revision, same/different model id, and
+      // omitted effort. Constraints: stale rejection precedes no-op detection;
+      // only an unchanged model inherits effort. Effects: B2/B3/B4/B5 preserve
+      // or increment exactly one revision and never synthesize an effort value.
+      const sameModel = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}`, {
         version: rich.body.version,
+        model: { id: 'claude-sonnet-5', speed: 'standard' },
+      });
+      assert.equal(sameModel.status, 200, JSON.stringify(sameModel.body));
+      assert.equal(sameModel.body.version, rich.body.version + 1, 'B4');
+      assert.deepEqual(sameModel.body.model, {
+        id: 'claude-sonnet-5',
+        speed: 'standard',
+        effort: { type: 'xhigh' },
+      }, 'same model preserves omitted effort');
+      const matchingNoop = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}`, {
+        version: sameModel.body.version,
+        model: { id: 'claude-sonnet-5', speed: 'standard' },
+      });
+      assert.equal(matchingNoop.body.version, sameModel.body.version, 'B3');
+      const unconditionalNoop = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}`, {
+        name: rich.body.name,
+      });
+      assert.equal(unconditionalNoop.body.version, sameModel.body.version, 'B5');
+      assert.equal((await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}`, {
+        version: rich.body.version,
+        model: { id: 'claude-sonnet-5', speed: 'standard' },
+      })).status, 409, 'B2: a stale semantic no-op still conflicts');
+      assert.equal((await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}`, {
+        version: 0,
+      })).status, 400, 'version has an inclusive minimum of one');
+      const changedModel = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}`, {
+        version: sameModel.body.version,
+        model: { id: 'claude-opus-5', speed: 'standard' },
+      });
+      assert.equal(changedModel.body.version, sameModel.body.version + 1, 'B4');
+      assert.deepEqual(changedModel.body.model, {
+        id: 'claude-opus-5', speed: 'standard',
+      }, 'changed model resets omitted effort to its default');
+
+      const richUpdated = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}`, {
+        version: changedModel.body.version,
         model: { id: 'claude-sonnet-5', speed: 'standard', effort: { type: 'low' } },
         description: 'replaced',
         system: 'replaced system',
@@ -302,6 +346,36 @@ async function main() {
       assert.equal(richV2.description, 'replaced', 'later null clear does not rewrite history');
       assert.deepEqual(richV2.metadata, { team: 'runtime' });
 
+      // Causes: MCP name/url and Skill selection are exactly at their inclusive
+      // maxima. Constraints: one matching MCP toolset and unique non-empty Skill
+      // ids. Effects: admission succeeds and the official DTO preserves every
+      // value; the max+1/error partitions below reject without persistence.
+      const maxMcpName = 'm'.repeat(255);
+      const maxMcpUrl = `https://example.invalid/${'x'.repeat(2024)}`;
+      assert.equal(maxMcpUrl.length, 2048);
+      const boundaryMcpServers = [
+        { name: maxMcpName, type: 'url', url: maxMcpUrl },
+        ...Array.from({ length: 19 }, (_, i) => ({
+          name: `mcp-${i}`, type: 'url', url: `https://mcp-${i}.example.invalid`,
+        })),
+      ];
+      const boundaryAgent = await json(baseUrl, 'POST', '/v1/agents', {
+        name: 'boundary-agent',
+        model: 'claude-sonnet-5',
+        mcp_servers: boundaryMcpServers,
+        tools: boundaryMcpServers.map(({ name }) => ({
+          type: 'mcp_toolset', mcp_server_name: name,
+        })),
+        skills: Array.from({ length: 500 }, (_, i) => ({
+          type: 'custom', skill_id: `skill-boundary-${i}`,
+        })),
+      });
+      assert.equal(boundaryAgent.status, 200, JSON.stringify(boundaryAgent.body));
+      assert.equal(boundaryAgent.body.mcp_servers.length, 20);
+      assert.equal(boundaryAgent.body.mcp_servers[0].name.length, 255);
+      assert.equal(boundaryAgent.body.mcp_servers[0].url.length, 2048);
+      assert.equal(boundaryAgent.body.skills.length, 500);
+
       const countBeforeRejectedCreates = (await drain(client.beta.agents.list({
         include_archived: true,
         betas: BETAS,
@@ -327,6 +401,38 @@ async function main() {
             type: 'agent_toolset_20260401',
             configs: [{ name: 'not_a_tool', enabled: true }],
           }],
+        }],
+        ['empty-mcp-name', {
+          mcp_servers: [{ name: '', type: 'url', url: 'https://example.invalid/mcp' }],
+          tools: [{ type: 'mcp_toolset', mcp_server_name: '' }],
+        }],
+        ['long-mcp-name', {
+          mcp_servers: [{ name: 'm'.repeat(256), type: 'url', url: 'https://example.invalid/mcp' }],
+          tools: [{ type: 'mcp_toolset', mcp_server_name: 'm'.repeat(256) }],
+        }],
+        ['invalid-mcp-url', {
+          mcp_servers: [{ name: 'docs', type: 'url', url: 'file:///tmp/mcp.sock' }],
+          tools: [{ type: 'mcp_toolset', mcp_server_name: 'docs' }],
+        }],
+        ['long-mcp-url', {
+          mcp_servers: [{ name: 'docs', type: 'url', url: `https://example.invalid/${'x'.repeat(2048)}` }],
+          tools: [{ type: 'mcp_toolset', mcp_server_name: 'docs' }],
+        }],
+        ['empty-skill-id', { skills: [{ type: 'custom', skill_id: '' }] }],
+        ['duplicate-skill-id', { skills: [
+          { type: 'custom', skill_id: 'skill-a' },
+          { type: 'custom', skill_id: 'skill-a' },
+        ] }],
+        ['too-many-skills', { skills: Array.from({ length: 501 }, (_, i) => ({
+          type: 'custom', skill_id: `skill-${i}`,
+        })) }],
+        ['too-many-mcp-servers', {
+          mcp_servers: Array.from({ length: 21 }, (_, i) => ({
+            name: `mcp-${i}`, type: 'url', url: `https://mcp-${i}.example.invalid`,
+          })),
+          tools: Array.from({ length: 21 }, (_, i) => ({
+            type: 'mcp_toolset', mcp_server_name: `mcp-${i}`,
+          })),
         }],
       ]) {
         const rejected = await json(baseUrl, 'POST', '/v1/agents', {

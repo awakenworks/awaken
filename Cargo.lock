@@ -308,6 +308,7 @@ name = "awaken-agent-contract"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
+ "http",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
