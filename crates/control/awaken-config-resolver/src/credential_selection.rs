@@ -272,6 +272,7 @@ mod tests {
             provider_id: Some(provider.into()),
             env_key: env_key.map(str::to_string),
             material_ref: None,
+            auxiliary_material_refs: Default::default(),
             oauth_command: None,
             worker_local_binding: None,
             status,

@@ -96,6 +96,7 @@ mod tests {
             provider_id: provider.map(str::to_string),
             env_key: env_key.map(str::to_string),
             material_ref: None,
+            auxiliary_material_refs: Default::default(),
             oauth_command: None,
             worker_local_binding: worker_driver
                 .map(|driver| WorkerLocalBinding::new(driver, "local-user")),

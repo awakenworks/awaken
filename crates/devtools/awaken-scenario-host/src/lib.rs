@@ -1145,6 +1145,7 @@ pub async fn build_oauth_resolved_router() -> Router {
         provider_id: Some("anthropic".into()),
         env_key: None,
         material_ref: None,
+        auxiliary_material_refs: Default::default(),
         // OAuth helper portability decision table:
         // | Windows | helper                                      | token bytes |
         // | true    | cmd.exe /D /C echo|set /p=<token>           | exact       |

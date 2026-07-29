@@ -71,8 +71,8 @@ pub enum CredentialNetworking {
 /// The token-endpoint auth scheme as it arrives on the wire
 /// (`BetaManagedAgentsTokenEndpointAuth{None,Basic,Post}Param`). The
 /// `client_secret` is write-only: for a confidential-client scheme it is sealed
-/// into the `SecretStore` under `sec:client:{source_id}` (see `routes::vaults`),
-/// never echoed — every response projection stays tag-only
+/// into the credential aggregate's named client-secret slot, never echoed —
+/// every response projection stays tag-only
 /// ([`TokenEndpointAuthResponse`]).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -94,8 +94,8 @@ pub enum TokenEndpointAuthResponse {
 }
 
 /// `BetaManagedAgentsMCPOAuthRefreshParams` — refresh configuration on create.
-/// `refresh_token` is write-only: sealed under its own `SecretRef` next to the
-/// credential row, never echoed back.
+/// `refresh_token` is write-only: sealed in the credential aggregate's named
+/// refresh-token slot, never echoed back.
 #[derive(Debug, Clone, Deserialize)]
 pub struct McpOauthRefreshParams {
     pub client_id: String,

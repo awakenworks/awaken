@@ -35,7 +35,7 @@ pub use sealed::{SealedAeadSecretStore, generate_seal_key_hex, parse_seal_key};
 #[cfg(feature = "sqlite")]
 pub use sqlite::{SqliteCredentialRepo, SqliteSealedBlobStore};
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 
 use awaken_agent_contract::RedactedString;
@@ -46,6 +46,11 @@ pub use awaken_agent_contract::StructuredCredentialMaterial;
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(transparent)]
 pub struct SecretRef(pub String);
+
+/// Conventional slots used by OAuth refresh consumers. They are ordinary
+/// extension-defined slots and receive no special lifecycle treatment.
+pub const OAUTH_REFRESH_TOKEN_SLOT: &str = "oauth_refresh_token";
+pub const OAUTH_CLIENT_SECRET_SLOT: &str = "oauth_client_secret";
 
 /// Stable id of a [`CredentialSource`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -236,6 +241,11 @@ pub struct CredentialSource {
     /// Vault reference; `None` for `Env` (the secret never crosses the control plane).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub material_ref: Option<SecretRef>,
+    /// Additional, named material owned by the same credential revision. Slot
+    /// names are extension-defined; the credential domain owns only their
+    /// lifecycle and never interprets their contents.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub auxiliary_material_refs: BTreeMap<String, SecretRef>,
     /// The refresh helper for a [`CredentialKind::Oauth`] source: `[program,
     /// args…]`, whose trimmed stdout is a fresh access token. `None` for every
     /// other kind. Only a *reference to a command* travels — never a token.
@@ -250,6 +260,21 @@ pub struct CredentialSource {
 }
 
 impl CredentialSource {
+    /// Every sealed-material reference owned by this aggregate, including the
+    /// compatibility primary slot and open extension-defined auxiliary slots.
+    pub fn material_refs(&self) -> impl Iterator<Item = &SecretRef> {
+        self.material_ref
+            .iter()
+            .chain(self.auxiliary_material_refs.values())
+    }
+
+    /// Resolve one extension-defined material slot without exposing storage
+    /// layout to its consumer.
+    #[must_use]
+    pub fn auxiliary_material_ref(&self, slot: &str) -> Option<&SecretRef> {
+        self.auxiliary_material_refs.get(slot)
+    }
+
     /// Normalize the retained storage discriminator into one material-origin
     /// fact. This is the sole mapping from legacy `CredentialKind` semantics.
     #[must_use]
@@ -777,6 +802,7 @@ pub(crate) fn prepare_source(
             provider_id: params.provider_id,
             env_key: params.env_key,
             material_ref,
+            auxiliary_material_refs: BTreeMap::new(),
             oauth_command: params.oauth_command,
             worker_local_binding: None,
             status: CredentialStatus::Active,
@@ -943,6 +969,7 @@ mod tests {
             provider_id: None,
             env_key: None,
             material_ref: None,
+            auxiliary_material_refs: Default::default(),
             oauth_command: None,
             worker_local_binding: None,
             status: CredentialStatus::Active,
