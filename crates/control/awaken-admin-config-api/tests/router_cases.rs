@@ -514,6 +514,62 @@ async fn post_credential_is_201_and_never_echoes_the_secret() {
     assert!(!serde_json::to_string(&listed).unwrap().contains(secret));
 }
 
+/// Cause-effect graph: the generic API accepts a namespaced material type and
+/// opaque fields without knowing an SSH/database/vendor schema; exactly one of
+/// legacy scalar or structured material may cross the write-only seam.
+///
+/// | Rule | scalar | structured | effect |
+/// |---|---|---|---|
+/// | E1 | no | external SSH document | 201, secret-free response |
+/// | E2 | yes | external document | 422 ambiguous input |
+#[tokio::test]
+async fn credential_entry_is_open_to_external_material_types_without_secret_leaks() {
+    let h = harness();
+    let private_key = "external-private-key"; // awaken-allow: secret
+    let material = json!({
+        "type_id": "acme.ssh-key/v1",
+        "fields": {
+            "private_key": private_key,
+            "known_hosts": "example ssh-ed25519 AAAA"
+        }
+    });
+    let (status, credential) = call(
+        &h.app,
+        "POST",
+        "/v1/config/credentials",
+        Some(json!({
+            "workspace_id": "ws",
+            "kind": "vault",
+            "material": material
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "E1: {credential}");
+    assert!(
+        !serde_json::to_string(&credential)
+            .unwrap()
+            .contains(private_key)
+    );
+
+    let (status, problem) = call(
+        &h.app,
+        "POST",
+        "/v1/config/credentials",
+        Some(json!({
+            "workspace_id": "ws",
+            "kind": "vault",
+            "secret": "legacy",
+            "material": {
+                "type_id": "acme.ssh-key/v1",
+                "fields": {"private_key": private_key}
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "E2: {problem}");
+    assert_eq!(problem["code"], "credential_invalid", "E2");
+}
+
 #[tokio::test]
 async fn oauth_credentials_accept_only_the_allowlisted_gcloud_helper() {
     let h = harness();

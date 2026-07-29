@@ -29,7 +29,7 @@ pub(crate) fn encode(
         (CredentialArtifactCodec::CodexAuthJson, CredentialMaterial::OAuth(bundle)) => {
             encode_codex_oauth(bundle)
         }
-        (CredentialArtifactCodec::CodexAuthJson, CredentialMaterial::UsernamePassword { .. }) => {
+        (CredentialArtifactCodec::CodexAuthJson, CredentialMaterial::Structured(_)) => {
             Err("credential_artifact_material_unsupported".to_string())
         }
     }

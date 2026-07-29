@@ -117,6 +117,7 @@ impl awaken_run_executor_acp::LaunchResolver for ScenarioEnvAcpModel {
             .into_iter()
             .collect(),
             recipient_bound_envelopes: false,
+            extension_consumers: Default::default(),
             alternatives: Vec::new(),
         }
     }

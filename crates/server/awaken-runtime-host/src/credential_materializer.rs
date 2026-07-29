@@ -103,6 +103,7 @@ impl PinnedCredentialMaterializer {
             material_sources,
             realization_kinds: [realization].into_iter().collect(),
             recipient_bound_envelopes,
+            extension_consumers: Default::default(),
             alternatives: Vec::new(),
         }
     }
@@ -572,7 +573,17 @@ impl PinnedCredentialMaterializer {
                 },
             )
         } else {
-            awaken_runtime_contract::CredentialMaterial::secret(access_token)
+            match awaken_credential_vault::StructuredCredentialMaterial::decode(access_token)
+                .map_err(|_| CredentialMaterialError::Invalid)?
+            {
+                Ok(material) => awaken_runtime_contract::CredentialMaterial::Structured(
+                    awaken_runtime_contract::StructuredCredentialMaterial {
+                        type_id: material.type_id,
+                        fields: material.fields,
+                    },
+                ),
+                Err(secret) => awaken_runtime_contract::CredentialMaterial::secret(secret),
+            }
         };
         material.validate_usage(&access.usage)?;
         Ok(ResolvedCredentialMaterial {
@@ -662,6 +673,7 @@ fn admit_exact_adapter(
             material_sources,
             realization_kinds: [realization].into_iter().collect(),
             recipient_bound_envelopes,
+            extension_consumers: Default::default(),
             alternatives: Vec::new(),
         },
         unix_time_ms(),
