@@ -199,6 +199,7 @@ are checked separately by the OKF/wiki hooks.
 | `run-ingress-message-delivery.md` | Boundary guidance for run ingress, durable dispatch, pending input, and message delivery |
 | `remote-worker-protocol.md` | Recoverable remote Worker claim/recovery/commit protocol, public Worker assembly, phased production identity/feed/active-active work, and storage alternatives |
 | `anthropic-alignment-and-sessions.md` | Boundary guidance for downstream protocol/product adapters and anti-corruption mapping |
+| `managed-dream-memory-consolidation.md` | Managed Dream API and explicit cross-Session Memory Consolidation: frozen JSONL evidence, read-only source snapshot, write-through result MemoryStore, ordinary auxiliary Agent, recovery, and compatibility tests |
 | `awaken-server-local-overview.md` | Single-machine assembly of runtime kernel + sandbox/tool-relay + Managed adapter: component map, interaction flow, and distributed seams |
 | `credentials-and-vaults.md` | Boundary guidance for product-owned credential lifecycle and authorization boundaries |
 | `resources-memory-files-skills.md` | File/Memory/Repository input identities, Agent/Session binding, config-version resolution, lifecycle component ownership, activation, recovery, reclamation, and the separate Skill boundary |

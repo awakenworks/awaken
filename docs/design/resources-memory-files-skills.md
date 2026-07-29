@@ -471,6 +471,15 @@ entry CAS/version prevents silent lost updates
 read-only binding. Internal entry `version` and `content_sha256` remain CAS/API
 data and are not binding pins.
 
+A Managed Dream is deliberately not an ordinary mutable Session Memory binding.
+It captures a purpose-built `MemoryStoreContentSnapshot`, mounts that evidence
+read-only, clones an independent result MemoryStore from the same exact heads,
+and gives its Memory Consolidator Agent a required write-through mount of only
+the result. The complete lifecycle and naming are owned by
+[Managed Dream Memory Consolidation](managed-dream-memory-consolidation.md).
+Ordinary Sessions may use ADR-0053's conflict-safe copy/harvest fallback; a Dream
+result may not, because every accepted partial result must already be durable.
+
 ### Release and reclaim
 
 Release closes/detaches the scoped handle; it never deletes the store. Reliable
