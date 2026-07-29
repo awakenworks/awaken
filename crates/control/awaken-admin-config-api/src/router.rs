@@ -1383,15 +1383,15 @@ async fn archive_credential(
     headers: HeaderMap,
 ) -> Result<Json<CredentialSourceView>, Problem> {
     let rid = req_id(&headers);
-    let mut source =
-        credential_in_scope(&state, &CredentialSourceId(id), scope.as_ref(), &rid).await?;
-    source.status = CredentialStatus::Disabled;
-    source.version += 1;
-    state
-        .credentials
-        .put(source.clone())
-        .await
-        .map_err(|e| cred_problem(&e, &rid))?;
+    let source = credential_in_scope(&state, &CredentialSourceId(id), scope.as_ref(), &rid).await?;
+    let source = awaken_credential_vault::repo::revoke_credential(
+        &source.id,
+        awaken_credential_vault::repo::CredentialRetirement::Disable,
+        state.secrets.as_ref(),
+        state.credentials.as_ref(),
+    )
+    .await
+    .map_err(|e| cred_problem(&e, &rid))?;
     Ok(Json(source.into()))
 }
 

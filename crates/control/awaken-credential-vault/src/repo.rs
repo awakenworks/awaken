@@ -12,10 +12,24 @@ use crate::{
     prepare_source, validate_create_params,
 };
 
-/// Secret-free durable intent written before secret material is touched.
+/// Secret-free write-ahead intent for create, rotate, disable, archive, or
+/// revoke. `before = None` is creation; every other change compares the exact
+/// previous revision before atomically publishing `after`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct CredentialCreationIntent {
-    pub source: CredentialSource,
+pub struct CredentialMutationIntent {
+    #[serde(default)]
+    pub before: Option<CredentialSource>,
+    #[serde(alias = "source")]
+    pub after: CredentialSource,
+}
+
+/// Terminal material-reclaim outcome. Both variants make the source
+/// non-materializable; `Archived` additionally communicates terminal retention
+/// to management projections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialRetirement {
+    Disable,
+    Archive,
 }
 
 /// The credential-source store port. Secret-free rows only. Pools are stored here
@@ -32,12 +46,16 @@ pub trait CredentialRepo: Send + Sync {
     async fn get(&self, id: &CredentialSourceId) -> Result<CredentialSource, CredentialError>;
     async fn list(&self, workspace_id: &str) -> Result<Vec<CredentialSource>, CredentialError>;
 
-    async fn begin_creation(&self, intent: CredentialCreationIntent)
+    async fn begin_mutation(&self, intent: CredentialMutationIntent)
     -> Result<(), CredentialError>;
-    /// Atomically publish the source and retire its creation intent.
-    async fn commit_creation(&self, source: CredentialSource) -> Result<(), CredentialError>;
-    async fn pending_creations(&self) -> Result<Vec<CredentialCreationIntent>, CredentialError>;
-    async fn abort_creation(&self, id: &CredentialSourceId) -> Result<(), CredentialError>;
+    /// Atomically compare/publish the source while retaining the WAL intent until
+    /// material cleanup completes.
+    async fn apply_mutation(
+        &self,
+        intent: &CredentialMutationIntent,
+    ) -> Result<(), CredentialError>;
+    async fn pending_mutations(&self) -> Result<Vec<CredentialMutationIntent>, CredentialError>;
+    async fn complete_mutation(&self, id: &CredentialSourceId) -> Result<(), CredentialError>;
     /// Every material reference reachable from committed metadata.
     async fn material_refs(&self) -> Result<Vec<crate::SecretRef>, CredentialError> {
         Err(CredentialError::Storage(
@@ -55,7 +73,7 @@ pub trait CredentialRepo: Send + Sync {
 struct RepoState {
     rows: HashMap<String, CredentialSource>,
     pools: HashMap<String, CredentialPool>,
-    intents: HashMap<String, CredentialCreationIntent>,
+    intents: HashMap<String, CredentialMutationIntent>,
 }
 
 #[derive(Default)]
@@ -115,27 +133,49 @@ impl CredentialRepo for InMemoryCredentialRepo {
             .collect())
     }
 
-    async fn begin_creation(
+    async fn begin_mutation(
         &self,
-        intent: CredentialCreationIntent,
+        intent: CredentialMutationIntent,
     ) -> Result<(), CredentialError> {
-        self.state
-            .lock()
-            .expect("credential repo")
-            .intents
-            .entry(intent.source.id.0.clone())
-            .or_insert(intent);
-        Ok(())
-    }
-
-    async fn commit_creation(&self, source: CredentialSource) -> Result<(), CredentialError> {
         let mut state = self.state.lock().expect("credential repo");
-        state.rows.insert(source.id.0.clone(), source.clone());
-        state.intents.remove(&source.id.0);
+        match state.intents.entry(intent.after.id.0.clone()) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(intent);
+                Ok(())
+            }
+            std::collections::hash_map::Entry::Occupied(entry) if entry.get() == &intent => Ok(()),
+            std::collections::hash_map::Entry::Occupied(_) => Err(
+                CredentialError::MutationConflict("another credential mutation is pending".into()),
+            ),
+        }
+    }
+
+    async fn apply_mutation(
+        &self,
+        intent: &CredentialMutationIntent,
+    ) -> Result<(), CredentialError> {
+        let mut state = self.state.lock().expect("credential repo");
+        if state.intents.get(&intent.after.id.0) != Some(intent) {
+            return Err(CredentialError::MutationConflict(
+                "credential mutation has no matching durable intent".into(),
+            ));
+        }
+        let current = state.rows.get(&intent.after.id.0);
+        if current == Some(&intent.after) {
+            return Ok(());
+        }
+        if current != intent.before.as_ref() {
+            return Err(CredentialError::MutationConflict(
+                "credential revision changed during mutation".into(),
+            ));
+        }
+        state
+            .rows
+            .insert(intent.after.id.0.clone(), intent.after.clone());
         Ok(())
     }
 
-    async fn pending_creations(&self) -> Result<Vec<CredentialCreationIntent>, CredentialError> {
+    async fn pending_mutations(&self) -> Result<Vec<CredentialMutationIntent>, CredentialError> {
         Ok(self
             .state
             .lock()
@@ -146,7 +186,7 @@ impl CredentialRepo for InMemoryCredentialRepo {
             .collect())
     }
 
-    async fn abort_creation(&self, id: &CredentialSourceId) -> Result<(), CredentialError> {
+    async fn complete_mutation(&self, id: &CredentialSourceId) -> Result<(), CredentialError> {
         self.state
             .lock()
             .expect("credential repo")
@@ -261,10 +301,11 @@ pub async fn enter_credential(
 ) -> Result<CredentialSource, CredentialError> {
     validate_create_params(&params)?;
     let (source, secret) = prepare_source(params);
-    repo.begin_creation(CredentialCreationIntent {
-        source: source.clone(),
-    })
-    .await?;
+    let intent = CredentialMutationIntent {
+        before: None,
+        after: source.clone(),
+    };
+    repo.begin_mutation(intent.clone()).await?;
 
     if let (Some(material_ref), Some(secret)) = (&source.material_ref, secret)
         && let Err(error) = store.put(material_ref, secret).await
@@ -272,35 +313,146 @@ pub async fn enter_credential(
         // A failed put may still have partially written. Only retire the durable
         // intent after idempotent cleanup succeeds; otherwise recovery owns it.
         if store.delete(material_ref).await.is_ok() {
-            repo.abort_creation(&source.id).await?;
+            repo.complete_mutation(&source.id).await?;
         }
         return Err(error);
     }
-    // Never compensate an ambiguous commit error inline: the intent remains the
+    // Never compensate an ambiguous apply error inline: the intent remains the
     // recovery authority, preventing deletion of a source that actually committed.
-    repo.commit_creation(source.clone()).await?;
+    repo.apply_mutation(&intent).await?;
+    repo.complete_mutation(&source.id).await?;
     Ok(source)
 }
 
-/// Reconcile every interrupted creation after restart. A published source wins
-/// and keeps its material; an unpublished intent is compensated and retired.
-pub async fn recover_credential_creations(
+/// Rotate the material of one active Vault source without ever overwriting the
+/// reference used by an older exact revision.
+pub async fn rotate_credential(
+    id: &CredentialSourceId,
+    material: awaken_agent_contract::RedactedString,
+    store: &dyn SecretStore,
+    repo: &dyn CredentialRepo,
+) -> Result<CredentialSource, CredentialError> {
+    let before = repo.get(id).await?;
+    if before.kind != CredentialKind::Vault || before.status != CredentialStatus::Active {
+        return Err(CredentialError::NotActive(id.0.clone()));
+    }
+    let version = before
+        .version
+        .checked_add(1)
+        .ok_or_else(|| CredentialError::InvalidSource("credential revision overflow".into()))?;
+    let mut after = before.clone();
+    after.version = version;
+    after.material_ref = Some(crate::SecretRef(format!("sec:{}:r{version}", id.0)));
+    let intent = CredentialMutationIntent {
+        before: Some(before.clone()),
+        after: after.clone(),
+    };
+    repo.begin_mutation(intent.clone()).await?;
+    let material_ref = after
+        .material_ref
+        .as_ref()
+        .expect("Vault rotation assigns a material ref");
+    if let Err(error) = store.put(material_ref, material).await {
+        if store.delete(material_ref).await.is_ok() {
+            repo.complete_mutation(id).await?;
+        }
+        return Err(error);
+    }
+    repo.apply_mutation(&intent).await?;
+    cleanup_retired_material(&intent, store).await?;
+    repo.complete_mutation(id).await?;
+    Ok(after)
+}
+
+/// Terminally revoke one source: publish a higher disabled/archived revision
+/// first, then erase its material while the WAL intent remains recoverable.
+pub async fn revoke_credential(
+    id: &CredentialSourceId,
+    retirement: CredentialRetirement,
+    store: &dyn SecretStore,
+    repo: &dyn CredentialRepo,
+) -> Result<CredentialSource, CredentialError> {
+    let before = repo.get(id).await?;
+    let mut after = before.clone();
+    after.version = before
+        .version
+        .checked_add(1)
+        .ok_or_else(|| CredentialError::InvalidSource("credential revision overflow".into()))?;
+    after.status = match retirement {
+        CredentialRetirement::Disable => CredentialStatus::Disabled,
+        CredentialRetirement::Archive => CredentialStatus::Archived,
+    };
+    after.material_ref = None;
+    let intent = CredentialMutationIntent {
+        before: Some(before),
+        after: after.clone(),
+    };
+    repo.begin_mutation(intent.clone()).await?;
+    repo.apply_mutation(&intent).await?;
+    cleanup_retired_material(&intent, store).await?;
+    repo.complete_mutation(id).await?;
+    Ok(after)
+}
+
+async fn cleanup_retired_material(
+    intent: &CredentialMutationIntent,
+    store: &dyn SecretStore,
+) -> Result<(), CredentialError> {
+    let before = intent
+        .before
+        .as_ref()
+        .and_then(|source| source.material_ref.as_ref());
+    let after = intent.after.material_ref.as_ref();
+    if before != after
+        && let Some(reference) = before
+    {
+        store.delete(reference).await?;
+    }
+    Ok(())
+}
+
+async fn cleanup_unpublished_material(
+    intent: &CredentialMutationIntent,
+    store: &dyn SecretStore,
+) -> Result<(), CredentialError> {
+    let before = intent
+        .before
+        .as_ref()
+        .and_then(|source| source.material_ref.as_ref());
+    let after = intent.after.material_ref.as_ref();
+    if before != after
+        && let Some(reference) = after
+    {
+        store.delete(reference).await?;
+    }
+    Ok(())
+}
+
+/// Reconcile every interrupted create/rotate/revoke after restart. The exact
+/// durable source decides whether old or new material is retained.
+pub async fn recover_credential_mutations(
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
 ) -> Result<usize, CredentialError> {
-    let intents = repo.pending_creations().await?;
+    let intents = repo.pending_mutations().await?;
     let mut recovered = 0;
     for intent in intents {
-        match repo.get(&intent.source.id).await {
-            Ok(_) => repo.abort_creation(&intent.source.id).await?,
-            Err(CredentialError::SourceNotFound(_)) => {
-                if let Some(material_ref) = &intent.source.material_ref {
-                    store.delete(material_ref).await?;
-                }
-                repo.abort_creation(&intent.source.id).await?;
-            }
+        let current = match repo.get(&intent.after.id).await {
+            Ok(source) => Some(source),
+            Err(CredentialError::SourceNotFound(_)) => None,
             Err(error) => return Err(error),
+        };
+        if current.as_ref() == Some(&intent.after) {
+            cleanup_retired_material(&intent, store).await?;
+        } else if current == intent.before {
+            cleanup_unpublished_material(&intent, store).await?;
+        } else {
+            return Err(CredentialError::MutationConflict(format!(
+                "credential {} no longer matches its pending mutation",
+                intent.after.id.0
+            )));
         }
+        repo.complete_mutation(&intent.after.id).await?;
         recovered += 1;
     }
     Ok(recovered)
@@ -323,18 +475,19 @@ pub async fn reconcile_credential_inventory(
     // Read intents first. Publication atomically removes an intent while adding
     // its metadata row, so either this read sees the in-flight protection or the
     // following committed-reference read sees the published source.
-    let pending = repo.pending_creations().await?;
+    let pending = repo.pending_mutations().await?;
     let committed = repo.material_refs().await?;
     let present: HashSet<String> = inventory.iter().map(|item| item.0.clone()).collect();
     let committed_keys: HashSet<String> = committed.iter().map(|item| item.0.clone()).collect();
     let protected: HashSet<String> = committed_keys
         .iter()
         .cloned()
-        .chain(pending.iter().filter_map(|intent| {
+        .chain(pending.iter().flat_map(|intent| {
             intent
-                .source
-                .material_ref
-                .as_ref()
+                .before
+                .iter()
+                .filter_map(|source| source.material_ref.as_ref())
+                .chain(intent.after.material_ref.iter())
                 .map(|reference| reference.0.clone())
         }))
         .collect();
@@ -425,25 +578,28 @@ mod tests {
             Ok(Vec::new())
         }
 
-        async fn begin_creation(
+        async fn begin_mutation(
             &self,
-            intent: CredentialCreationIntent,
+            intent: CredentialMutationIntent,
         ) -> Result<(), CredentialError> {
-            self.inner.begin_creation(intent).await
+            self.inner.begin_mutation(intent).await
         }
 
-        async fn commit_creation(&self, _source: CredentialSource) -> Result<(), CredentialError> {
+        async fn apply_mutation(
+            &self,
+            _intent: &CredentialMutationIntent,
+        ) -> Result<(), CredentialError> {
             Err(CredentialError::Storage("injected row failure".into()))
         }
 
-        async fn pending_creations(
+        async fn pending_mutations(
             &self,
-        ) -> Result<Vec<CredentialCreationIntent>, CredentialError> {
-            self.inner.pending_creations().await
+        ) -> Result<Vec<CredentialMutationIntent>, CredentialError> {
+            self.inner.pending_mutations().await
         }
 
-        async fn abort_creation(&self, id: &CredentialSourceId) -> Result<(), CredentialError> {
-            self.inner.abort_creation(id).await
+        async fn complete_mutation(&self, id: &CredentialSourceId) -> Result<(), CredentialError> {
+            self.inner.complete_mutation(id).await
         }
 
         async fn put_pool(&self, _pool: CredentialPool) -> Result<(), CredentialError> {
@@ -517,11 +673,11 @@ mod tests {
         // break a row whose commit succeeded but whose response was lost.
         assert_eq!(store.map.lock().expect("secret store mutex").len(), 1);
         assert_eq!(
-            recover_credential_creations(&store, &repo).await.unwrap(),
+            recover_credential_mutations(&store, &repo).await.unwrap(),
             1
         );
         assert!(store.map.lock().expect("secret store mutex").is_empty());
-        assert!(repo.pending_creations().await.unwrap().is_empty());
+        assert!(repo.pending_mutations().await.unwrap().is_empty());
     }
 
     async fn interrupted_creation(store: &dyn SecretStore, repo: &dyn CredentialRepo) {
@@ -537,8 +693,9 @@ mod tests {
             status: crate::CredentialStatus::Active,
             version: 1,
         };
-        repo.begin_creation(CredentialCreationIntent {
-            source: source.clone(),
+        repo.begin_mutation(CredentialMutationIntent {
+            before: None,
+            after: source.clone(),
         })
         .await
         .unwrap();
@@ -560,14 +717,14 @@ mod tests {
         };
         let repo = InMemoryCredentialRepo::new();
         interrupted_creation(&store, &repo).await;
-        assert!(recover_credential_creations(&store, &repo).await.is_err());
-        assert_eq!(repo.pending_creations().await.unwrap().len(), 1);
+        assert!(recover_credential_mutations(&store, &repo).await.is_err());
+        assert_eq!(repo.pending_mutations().await.unwrap().len(), 1);
         store.fail_before_delete.store(false, Ordering::SeqCst);
         assert_eq!(
-            recover_credential_creations(&store, &repo).await.unwrap(),
+            recover_credential_mutations(&store, &repo).await.unwrap(),
             1
         );
-        assert!(repo.pending_creations().await.unwrap().is_empty());
+        assert!(repo.pending_mutations().await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -579,13 +736,205 @@ mod tests {
         };
         let repo = InMemoryCredentialRepo::new();
         interrupted_creation(&store, &repo).await;
-        assert!(recover_credential_creations(&store, &repo).await.is_err());
-        assert_eq!(repo.pending_creations().await.unwrap().len(), 1);
+        assert!(recover_credential_mutations(&store, &repo).await.is_err());
+        assert_eq!(repo.pending_mutations().await.unwrap().len(), 1);
         assert_eq!(
-            recover_credential_creations(&store, &repo).await.unwrap(),
+            recover_credential_mutations(&store, &repo).await.unwrap(),
             1
         );
-        assert!(repo.pending_creations().await.unwrap().is_empty());
+        assert!(repo.pending_mutations().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn rotation_publishes_a_new_revision_and_reclaims_the_old_material() {
+        // Causes: L2 active Vault source + replacement material. Effects: source
+        // revision/ref advance together, new material resolves, old ref is erased,
+        // and no WAL remains. This is decision-table rule rotate/success.
+        let store = InMemorySecretStore::new();
+        let repo = InMemoryCredentialRepo::new();
+        let before = enter_credential(
+            CredentialCreateParams {
+                workspace_id: "ws".into(),
+                kind: CredentialKind::Vault,
+                provider_id: None,
+                env_key: None,
+                secret: Some(RedactedString::new("old")),
+                oauth_command: None,
+            },
+            &store,
+            &repo,
+        )
+        .await
+        .unwrap();
+        let old_ref = before.material_ref.clone().unwrap();
+
+        let after = rotate_credential(&before.id, RedactedString::new("new"), &store, &repo)
+            .await
+            .unwrap();
+
+        assert_eq!(after.version, before.version + 1);
+        assert_ne!(after.material_ref, before.material_ref);
+        assert_eq!(
+            materialize(&after, &store).await.unwrap().expose_secret(),
+            "new"
+        );
+        assert!(store.get(&old_ref).await.is_err());
+        assert!(repo.pending_mutations().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn retirement_fails_closed_and_reclaims_material() {
+        // Causes: L3 active source + Archive retirement. Effects: a higher
+        // archived revision with no material ref is durable, the secret is erased,
+        // and both direct and pinned materialization fail closed.
+        let store = InMemorySecretStore::new();
+        let repo = InMemoryCredentialRepo::new();
+        let before = enter_credential(
+            CredentialCreateParams {
+                workspace_id: "ws".into(),
+                kind: CredentialKind::Vault,
+                provider_id: None,
+                env_key: None,
+                secret: Some(RedactedString::new("retire-me")),
+                oauth_command: None,
+            },
+            &store,
+            &repo,
+        )
+        .await
+        .unwrap();
+        let old_ref = before.material_ref.clone().unwrap();
+
+        let after = revoke_credential(&before.id, CredentialRetirement::Archive, &store, &repo)
+            .await
+            .unwrap();
+
+        assert_eq!(after.status, CredentialStatus::Archived);
+        assert_eq!(after.version, before.version + 1);
+        assert!(after.material_ref.is_none());
+        assert!(store.get(&old_ref).await.is_err());
+        assert!(matches!(
+            materialize(&after, &store).await,
+            Err(CredentialError::NotActive(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn recovery_uses_the_durable_side_of_a_rotation_as_cleanup_authority() {
+        // Mutation recovery decision table:
+        // R6 current==before => delete unpublished after-ref and keep old-ref.
+        // R7 current==after  => delete retired old-ref and keep new-ref.
+        for publish_after in [false, true] {
+            let store = InMemorySecretStore::new();
+            let repo = InMemoryCredentialRepo::new();
+            let before = enter_credential(
+                CredentialCreateParams {
+                    workspace_id: "ws".into(),
+                    kind: CredentialKind::Vault,
+                    provider_id: None,
+                    env_key: None,
+                    secret: Some(RedactedString::new("old")),
+                    oauth_command: None,
+                },
+                &store,
+                &repo,
+            )
+            .await
+            .unwrap();
+            let mut after = before.clone();
+            after.version += 1;
+            after.material_ref = Some(crate::SecretRef(format!(
+                "sec:{}:r{}",
+                after.id.0, after.version
+            )));
+            let intent = CredentialMutationIntent {
+                before: Some(before.clone()),
+                after: after.clone(),
+            };
+            repo.begin_mutation(intent.clone()).await.unwrap();
+            store
+                .put(
+                    after.material_ref.as_ref().unwrap(),
+                    RedactedString::new("new"),
+                )
+                .await
+                .unwrap();
+            if publish_after {
+                repo.apply_mutation(&intent).await.unwrap();
+            }
+
+            assert_eq!(
+                recover_credential_mutations(&store, &repo).await.unwrap(),
+                1
+            );
+            let durable = repo.get(&before.id).await.unwrap();
+            if publish_after {
+                assert_eq!(durable, after);
+                assert!(
+                    store
+                        .get(before.material_ref.as_ref().unwrap())
+                        .await
+                        .is_err()
+                );
+                assert!(
+                    store
+                        .get(after.material_ref.as_ref().unwrap())
+                        .await
+                        .is_ok()
+                );
+            } else {
+                assert_eq!(durable, before);
+                assert!(
+                    store
+                        .get(before.material_ref.as_ref().unwrap())
+                        .await
+                        .is_ok()
+                );
+                assert!(
+                    store
+                        .get(after.material_ref.as_ref().unwrap())
+                        .await
+                        .is_err()
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn mutation_rejects_a_competing_revision_and_retains_recovery_evidence() {
+        // Causes: R8 matching WAL but current is neither exact before nor after.
+        // Effects: publication fails with MutationConflict and the WAL remains so
+        // no material can be silently reclaimed against ambiguous metadata.
+        let repo = InMemoryCredentialRepo::new();
+        let before = CredentialSource {
+            id: CredentialSourceId("cred:ws:conflict".into()),
+            workspace_id: "ws".into(),
+            kind: CredentialKind::Vault,
+            provider_id: None,
+            env_key: None,
+            material_ref: Some(crate::SecretRef("sec:cred:ws:conflict".into())),
+            oauth_command: None,
+            worker_local_binding: None,
+            status: CredentialStatus::Active,
+            version: 1,
+        };
+        repo.put(before.clone()).await.unwrap();
+        let mut after = before.clone();
+        after.version = 2;
+        let intent = CredentialMutationIntent {
+            before: Some(before.clone()),
+            after,
+        };
+        repo.begin_mutation(intent.clone()).await.unwrap();
+        let mut competing = before;
+        competing.version = 3;
+        repo.put(competing).await.unwrap();
+
+        assert!(matches!(
+            repo.apply_mutation(&intent).await,
+            Err(CredentialError::MutationConflict(_))
+        ));
+        assert_eq!(repo.pending_mutations().await.unwrap(), vec![intent]);
     }
 
     #[tokio::test]

@@ -35,10 +35,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_agent_contract::RedactedString;
-use awaken_credential_vault::repo::{CredentialRepo, enter_credential};
+use awaken_credential_vault::repo::{
+    CredentialRepo, CredentialRetirement, enter_credential, revoke_credential, rotate_credential,
+};
 use awaken_credential_vault::{
     CredentialCreateParams as DomainCredentialCreateParams, CredentialKind, CredentialSourceId,
-    SecretRef, SecretStore,
+    SecretRef, SecretStore, StructuredCredentialMaterial,
 };
 use awaken_managed_bridge::{
     WireEnvVarCreate, WireMcpOauthCreate, WireStaticBearerCreate, env_var_to_create_params,
@@ -220,13 +222,21 @@ impl VaultState {
         workspace_id: &str,
         token: String,
     ) -> Result<CredentialSourceId, awaken_credential_vault::CredentialError> {
+        let material = StructuredCredentialMaterial {
+            type_id: awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE.to_string(),
+            fields: BTreeMap::from([
+                ("username".into(), RedactedString::new("x-access-token")),
+                ("password".into(), RedactedString::from(token)),
+            ]),
+        }
+        .encode()?;
         enter_credential(
             DomainCredentialCreateParams {
                 workspace_id: workspace_id.to_string(),
                 kind: CredentialKind::Vault,
                 provider_id: Some("git".into()),
                 env_key: None,
-                secret: Some(RedactedString::from(token)),
+                secret: Some(material),
                 oauth_command: None,
             },
             self.secrets.as_ref(),
@@ -919,15 +929,17 @@ async fn delete_credential(
     State(state): State<Arc<VaultState>>,
     Path((vault_id, id)): Path<(String, String)>,
 ) -> Result<Json<DeletedCredential>, WireError> {
-    let mut store = state.inner.lock().unwrap();
-    let matches_vault = store
+    let record = state
+        .inner
+        .lock()
+        .unwrap()
         .credentials
         .get(&id)
-        .is_some_and(|c| c.vault_id == vault_id);
-    if !matches_vault {
-        return Err(not_found("credential"));
-    }
-    store.credentials.remove(&id);
+        .filter(|record| record.vault_id == vault_id)
+        .cloned()
+        .ok_or_else(|| not_found("credential"))?;
+    retire_record(&state, &record).await?;
+    state.inner.lock().unwrap().credentials.remove(&id);
     Ok(Json(DeletedCredential {
         id,
         object_type: "vault_credential_deleted",
@@ -941,6 +953,16 @@ async fn archive_credential(
     State(state): State<Arc<VaultState>>,
     Path((vault_id, id)): Path<(String, String)>,
 ) -> Result<Json<Credential>, WireError> {
+    let record = state
+        .inner
+        .lock()
+        .unwrap()
+        .credentials
+        .get(&id)
+        .filter(|record| record.vault_id == vault_id)
+        .cloned()
+        .ok_or_else(|| not_found("credential"))?;
+    retire_record(&state, &record).await?;
     let mut store = state.inner.lock().unwrap();
     let record = store
         .credentials
@@ -949,6 +971,41 @@ async fn archive_credential(
         .ok_or_else(|| not_found("credential"))?;
     record.archived_at = Some(OBJECT_AT.to_string());
     Ok(Json(VaultState::project_credential(&id, record)))
+}
+
+fn auxiliary_secret_refs(record: &CredentialRecord) -> Vec<SecretRef> {
+    match &record.auth {
+        AuthRecord::McpOauth {
+            refresh: Some(refresh),
+            ..
+        } => std::iter::once(refresh.refresh_token_ref.clone())
+            .chain(refresh.client_secret_ref.clone().map(SecretRef))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+async fn retire_record(state: &VaultState, record: &CredentialRecord) -> Result<(), WireError> {
+    // Cause/effect lifecycle rule L1: a valid wire record owns one domain source
+    // and zero or more auxiliary OAuth secrets. Retirement first publishes a
+    // non-materializable higher revision, then idempotently erases every owned
+    // secret; the wire projection changes only after both effects succeed.
+    revoke_credential(
+        &record.source_id,
+        CredentialRetirement::Archive,
+        state.secrets.as_ref(),
+        state.credentials.as_ref(),
+    )
+    .await
+    .map_err(|error| bad_request(error.to_string()))?;
+    for secret_ref in auxiliary_secret_refs(record) {
+        state
+            .secrets
+            .delete(&secret_ref)
+            .await
+            .map_err(|error| bad_request(error.to_string()))?;
+    }
+    Ok(())
 }
 
 /// `POST /v1/vaults/:vault_id/credentials/:id` — partial update (the SDK
@@ -1012,7 +1069,8 @@ async fn update_credential(
         record.source_id.clone()
     };
 
-    // Phase 2 — re-seal every supplied secret under its existing ref (no lock).
+    // Phase 2 — rotate primary material through the domain lifecycle. A higher
+    // source revision means an old exact pin fails before any new material opens.
     if let Some(auth) = &params.auth {
         let primary = match auth {
             CredentialUpdateAuth::EnvironmentVariable { secret_value, .. } => secret_value.clone(),
@@ -1020,19 +1078,14 @@ async fn update_credential(
             CredentialUpdateAuth::McpOauth { access_token, .. } => access_token.clone(),
         };
         if let Some(secret) = primary {
-            let row = state
-                .credentials
-                .get(&source_id)
-                .await
-                .map_err(|e| bad_request(e.to_string()))?;
-            let material_ref = row
-                .material_ref
-                .ok_or_else(|| bad_request("credential row has no material_ref"))?;
-            state
-                .secrets
-                .put(&material_ref, RedactedString::new(secret))
-                .await
-                .map_err(|e| bad_request(e.to_string()))?;
+            rotate_credential(
+                &source_id,
+                RedactedString::new(secret),
+                state.secrets.as_ref(),
+                state.credentials.as_ref(),
+            )
+            .await
+            .map_err(|e| bad_request(e.to_string()))?;
         }
         if let CredentialUpdateAuth::McpOauth {
             refresh: Some(update),

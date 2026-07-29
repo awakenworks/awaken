@@ -475,9 +475,9 @@ impl ResourcePlaneStores {
 
 const CREDENTIAL_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(60);
 
-/// Keep retrying interrupted credential creations after startup. A failed secret
-/// deletion leaves its durable intent intact, so the next tick resumes safely.
-fn spawn_credential_creation_reconciliation(
+/// Keep retrying interrupted credential mutations after startup. A failed
+/// material cleanup leaves its durable intent intact, so the next tick resumes.
+fn spawn_credential_mutation_reconciliation(
     secrets: Arc<dyn awaken_credential_vault::SecretStore>,
     credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
 ) {
@@ -488,13 +488,13 @@ fn spawn_credential_creation_reconciliation(
         interval.tick().await;
         loop {
             interval.tick().await;
-            if let Err(error) = awaken_credential_vault::repo::recover_credential_creations(
+            if let Err(error) = awaken_credential_vault::repo::recover_credential_mutations(
                 secrets.as_ref(),
                 credentials.as_ref(),
             )
             .await
             {
-                eprintln!("credential creation reconciliation failed: {error}");
+                eprintln!("credential mutation reconciliation failed: {error}");
             }
             match awaken_credential_vault::repo::reconcile_credential_inventory(
                 secrets.as_ref(),
@@ -1235,15 +1235,15 @@ async fn management_router_over(
             eprintln!("migrated {migrated} legacy Skill aggregate(s)");
         }
     }
-    // Finish or compensate any credential creation interrupted by a prior hard
+    // Finish or compensate any credential mutation interrupted by a prior hard
     // process crash before exposing the management/data planes.
-    if let Err(error) = awaken_credential_vault::repo::recover_credential_creations(
+    if let Err(error) = awaken_credential_vault::repo::recover_credential_mutations(
         secrets.as_ref(),
         credentials.as_ref(),
     )
     .await
     {
-        eprintln!("credential creation recovery failed: {error}");
+        eprintln!("credential mutation recovery failed: {error}");
     }
     match awaken_credential_vault::repo::reconcile_credential_inventory(
         secrets.as_ref(),
@@ -1258,7 +1258,7 @@ async fn management_router_over(
         Err(error) => eprintln!("credential inventory reconciliation failed: {error}"),
         _ => {}
     }
-    spawn_credential_creation_reconciliation(secrets.clone(), credentials.clone());
+    spawn_credential_mutation_reconciliation(secrets.clone(), credentials.clone());
     // ONE resource-binding store shared by the admin router (which authors an agent's
     // resources) and the config service (which reads them into resource prompts +
     // mounts at compile) — so a binding authored through the API reaches the compiled

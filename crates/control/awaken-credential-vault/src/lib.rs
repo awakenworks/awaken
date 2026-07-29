@@ -563,6 +563,8 @@ pub enum CredentialError {
     WorkerLocalSourceUnsupported(String),
     #[error("invalid credential source: {0}")]
     InvalidSource(String),
+    #[error("credential mutation conflict: {0}")]
+    MutationConflict(String),
     #[error("secret seal/open failed (wrong key or corrupt ciphertext)")]
     Seal,
     #[error("oauth token refresh failed: {0}")]

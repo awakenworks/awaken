@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use awaken_agent_contract::RedactedString;
 use awaken_credential_vault::repo::{
-    CredentialCreationIntent, CredentialRepo, recover_credential_creations,
+    CredentialMutationIntent, CredentialRepo, recover_credential_mutations,
 };
 use awaken_credential_vault::sqlite::{SqliteCredentialRepo, SqliteSealedBlobStore};
 use awaken_credential_vault::{
@@ -42,13 +42,19 @@ fn stores(path: &str) -> (SqliteCredentialRepo, SealedAeadSecretStore) {
 
 #[tokio::test]
 async fn secret_write_survives_kill_and_is_compensated_from_the_intent() {
+    // Cause/effect rule CR1: before=None, unpublished source, and a durable new
+    // secret after process death => recovery deletes the unpublished secret,
+    // completes the WAL record, and a second recovery is a no-op.
     if std::env::var_os(CHILD_MODE).is_some() {
         let db = std::env::var(DB_PATH).unwrap();
         let marker = std::env::var(MARKER_PATH).unwrap();
         let (repo, secrets) = stores(&db);
-        repo.begin_creation(CredentialCreationIntent { source: source() })
-            .await
-            .unwrap();
+        repo.begin_mutation(CredentialMutationIntent {
+            before: None,
+            after: source(),
+        })
+        .await
+        .unwrap();
         secrets
             .put(
                 source().material_ref.as_ref().unwrap(),
@@ -87,7 +93,7 @@ async fn secret_write_survives_kill_and_is_compensated_from_the_intent() {
     assert!(!child.wait().unwrap().success());
 
     let (repo, secrets) = stores(db.to_str().unwrap());
-    assert_eq!(repo.pending_creations().await.unwrap().len(), 1);
+    assert_eq!(repo.pending_mutations().await.unwrap().len(), 1);
     assert!(
         secrets
             .get(source().material_ref.as_ref().unwrap())
@@ -95,10 +101,10 @@ async fn secret_write_survives_kill_and_is_compensated_from_the_intent() {
             .is_ok()
     );
     assert_eq!(
-        recover_credential_creations(&secrets, &repo).await.unwrap(),
+        recover_credential_mutations(&secrets, &repo).await.unwrap(),
         1
     );
-    assert!(repo.pending_creations().await.unwrap().is_empty());
+    assert!(repo.pending_mutations().await.unwrap().is_empty());
     assert!(
         secrets
             .get(source().material_ref.as_ref().unwrap())
@@ -106,7 +112,7 @@ async fn secret_write_survives_kill_and_is_compensated_from_the_intent() {
             .is_err()
     );
     assert_eq!(
-        recover_credential_creations(&secrets, &repo).await.unwrap(),
+        recover_credential_mutations(&secrets, &repo).await.unwrap(),
         0
     );
 }

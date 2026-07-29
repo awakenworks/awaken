@@ -15,7 +15,7 @@ use sqlx::Row;
 use sqlx::postgres::PgPool;
 use sqlx::types::Json;
 
-use crate::repo::{CredentialCreationIntent, CredentialRepo};
+use crate::repo::{CredentialMutationIntent, CredentialRepo};
 use crate::schema::credential_bundle;
 use crate::{
     CredentialError, CredentialPool, CredentialPoolId, CredentialSource, CredentialSourceId,
@@ -183,45 +183,92 @@ impl CredentialRepo for PostgresCredentialRepo {
             .collect()
     }
 
-    async fn begin_creation(
+    async fn begin_mutation(
         &self,
-        intent: CredentialCreationIntent,
+        intent: CredentialMutationIntent,
     ) -> Result<(), CredentialError> {
         sqlx::query(&format!(
             "INSERT INTO {NS}_creation_intent (source_id, data) VALUES ($1, $2) \
              ON CONFLICT (source_id) DO NOTHING"
         ))
-        .bind(&intent.source.id.0)
+        .bind(&intent.after.id.0)
         .bind(Json(&intent))
         .execute(&self.pool)
         .await
         .map_err(storage)?;
+        let row = sqlx::query(&format!(
+            "SELECT data FROM {NS}_creation_intent WHERE source_id = $1"
+        ))
+        .bind(&intent.after.id.0)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(storage)?;
+        let Json(durable): Json<CredentialMutationIntent> = row.try_get("data").map_err(storage)?;
+        if durable != intent {
+            return Err(CredentialError::MutationConflict(
+                "another credential mutation is pending".into(),
+            ));
+        }
         Ok(())
     }
 
-    async fn commit_creation(&self, source: CredentialSource) -> Result<(), CredentialError> {
+    async fn apply_mutation(
+        &self,
+        intent: &CredentialMutationIntent,
+    ) -> Result<(), CredentialError> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
+        let row = sqlx::query(&format!(
+            "SELECT data FROM {NS}_creation_intent WHERE source_id = $1 FOR UPDATE"
+        ))
+        .bind(&intent.after.id.0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage)?
+        .ok_or_else(|| {
+            CredentialError::MutationConflict(
+                "credential mutation has no matching durable intent".into(),
+            )
+        })?;
+        let Json(durable): Json<CredentialMutationIntent> = row.try_get("data").map_err(storage)?;
+        if durable != *intent {
+            return Err(CredentialError::MutationConflict(
+                "credential mutation does not match durable intent".into(),
+            ));
+        }
+        let current = sqlx::query(&format!(
+            "SELECT data FROM {NS}_source WHERE id = $1 FOR UPDATE"
+        ))
+        .bind(&intent.after.id.0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage)?
+        .map(|row| {
+            let Json(source): Json<CredentialSource> = row.try_get("data").map_err(storage)?;
+            Ok(source)
+        })
+        .transpose()?;
+        if current.as_ref() == Some(&intent.after) {
+            return tx.commit().await.map_err(storage);
+        }
+        if current != intent.before {
+            return Err(CredentialError::MutationConflict(
+                "credential revision changed during mutation".into(),
+            ));
+        }
         sqlx::query(&format!(
             "INSERT INTO {NS}_source (id, workspace_id, data) VALUES ($1, $2, $3) \
              ON CONFLICT (id) DO UPDATE SET workspace_id = excluded.workspace_id, data = excluded.data"
         ))
-        .bind(&source.id.0)
-        .bind(&source.workspace_id)
-        .bind(Json(&source))
-        .execute(&mut *tx)
-        .await
-        .map_err(storage)?;
-        sqlx::query(&format!(
-            "DELETE FROM {NS}_creation_intent WHERE source_id = $1"
-        ))
-        .bind(&source.id.0)
+        .bind(&intent.after.id.0)
+        .bind(&intent.after.workspace_id)
+        .bind(Json(&intent.after))
         .execute(&mut *tx)
         .await
         .map_err(storage)?;
         tx.commit().await.map_err(storage)
     }
 
-    async fn pending_creations(&self) -> Result<Vec<CredentialCreationIntent>, CredentialError> {
+    async fn pending_mutations(&self) -> Result<Vec<CredentialMutationIntent>, CredentialError> {
         sqlx::query(&format!(
             "SELECT data FROM {NS}_creation_intent ORDER BY created_at, source_id"
         ))
@@ -230,14 +277,14 @@ impl CredentialRepo for PostgresCredentialRepo {
         .map_err(storage)?
         .into_iter()
         .map(|row| {
-            let Json(intent): Json<CredentialCreationIntent> =
+            let Json(intent): Json<CredentialMutationIntent> =
                 row.try_get("data").map_err(storage)?;
             Ok(intent)
         })
         .collect()
     }
 
-    async fn abort_creation(&self, id: &CredentialSourceId) -> Result<(), CredentialError> {
+    async fn complete_mutation(&self, id: &CredentialSourceId) -> Result<(), CredentialError> {
         sqlx::query(&format!(
             "DELETE FROM {NS}_creation_intent WHERE source_id = $1"
         ))
