@@ -11,6 +11,155 @@ static gate (`npm run test:conformance`) already pins awaken's event catalog +
 `MANAGED_BETA` + the serde golden to that SDK — the audit below is about *behavioral*
 coverage on top of that structural conformance.
 
+## Exhaustive contract baseline (2026-07-29)
+
+The current English sitemap contains 26 Managed Agents pages. This document is the
+single docs-driven coverage owner for all of them. `PROTOCOL_COMPATIBILITY_TEST_DESIGN.md`
+continues to own only the cross-protocol normalization method; tests must not duplicate
+the Managed state machine there or create one suite per documentation page.
+
+Files and Dreams are explicitly excluded from the implementation initiative that added
+this baseline. File behavior remains recorded in the traceability table so its existing
+coverage is visible, but it creates no new work. Dreams remains an explicit absent
+research-preview surface and likewise creates no implementation work.
+
+### Complete cause and effect inventory
+
+Every concrete test added under this initiative must carry a comment naming one rule
+from the decision tables below. The comment is the durable test-design record; a second
+case catalog must not be introduced.
+
+Causes:
+
+1. endpoint family and endpoint-specific beta-header set;
+2. caller identity, Workspace ownership, resource existence and lifecycle state;
+3. request schema, required fields, discriminators, counts, byte sizes and references;
+4. effective Agent version and create-time override composition;
+5. current Session/thread/deployment/environment status;
+6. tool kind, enabled state, permission policy and client decision/result;
+7. model, MCP, credential, network, package, Worker and sandbox availability;
+8. revision/CAS/idempotency key, concurrent mutation, retry and process-failure point;
+9. stream opt-in, connection timing, reconnect point and thread scope;
+10. cron instant/timezone/DST, webhook response and asynchronous job state;
+11. access mode, secret-injection location, retention and deletion/archival state.
+
+Effects:
+
+1. HTTP/SSE status and official DTO/error union;
+2. atomic rejection with no row, event, work item, sandbox or external side effect;
+3. version, metadata, configuration, credential and resource mutation;
+4. Session/thread/deployment/job state transition and stop reason;
+5. event type, identity, ordering, `processed_at`, usage and durable history;
+6. tool/network/package/repository/memory side effect or its denial;
+7. retry/reschedule/reclaim/auto-disable behavior;
+8. list/stream/reconnect completeness and deduplication;
+9. secret non-disclosure, egress scoping and Workspace isolation;
+10. idle/terminated/completed/failed/canceled terminal outcome.
+
+### Decision table A — request admission and endpoint headers
+
+| Rule | Endpoint | Required beta set | Other condition | Effect |
+|---|---|---|---|---|
+| A1 | ordinary Managed endpoint | `managed-agents-2026-04-01` | valid request | continue to domain validation |
+| A2 | ordinary Managed endpoint | missing Managed beta | any | reject before mutation |
+| A3 | memory-store endpoint | `agent-memory-2026-07-22` only | valid request | continue to memory validation |
+| A4 | memory-store endpoint | Managed + memory beta | any | 400, no mutation |
+| A5 | non-memory Managed endpoint | memory beta only | any | reject before mutation |
+| A6 | any endpoint | correct beta | malformed/oversized body | 400/413, no mutation |
+
+### Decision table B — Agent update
+
+| Rule | Archived | Version supplied | Matches current | Effective change | Effect |
+|---|---:|---:|---:|---:|---|
+| B1 | yes | any | any | any | reject; no version/event |
+| B2 | no | yes | no | any | 409, including a semantic no-op |
+| B3 | no | yes | yes | no | return current version; no update webhook |
+| B4 | no | yes | yes | yes | increment once; publish update |
+| B5 | no | no | n/a | no | return current version |
+| B6 | no | no | n/a | yes | last-write-wins; increment once |
+
+Scalar fields replace; list fields replace in full and clear on `null`/`[]`;
+metadata merges by key and deletes a key on `null`; `multiagent` replaces as a
+whole. An unchanged model id preserves omitted effort, while a changed model id
+resets omitted effort to that model's default.
+
+### Decision table C — Session creation and initial events
+
+| Rule | `initial_events` | Effective overrides/limits | Effect |
+|---|---|---|---|
+| C1 | omitted or empty | valid | create idle; no execution |
+| C2 | 1..=50 message/outcome events | valid | validate/persist in order; create running |
+| C3 | contains any other event type | any | reject whole create; no Session |
+| C4 | any event invalid | any | reject whole create; no partial events/Session |
+| C5 | >50 | any | 400 |
+| C6 | >1 outcome or missing rubric | any | 400 |
+| C7 | valid | `model:null` | 400 `agent_model_required` |
+| C8 | valid | tools cleared while skills remain | 400 |
+| C9 | valid | MCP servers cleared while a toolset dangles | 400 |
+| C10 | valid | list override supplied | replace in full, never merge |
+
+### Decision table D — tool execution
+
+| Rule | Tool kind | Enabled | Policy | Client response | Effect |
+|---|---|---:|---|---|---|
+| D1 | built-in/MCP | no | any | n/a | tool unavailable; no use event |
+| D2 | built-in/MCP | yes | `always_allow` | n/a | execute automatically |
+| D3 | built-in/MCP | yes | `always_ask` | missing | idle/requires_action indefinitely |
+| D4 | built-in/MCP | yes | `always_ask` | allow all blockers | execute and resume |
+| D5 | built-in/MCP | yes | `always_ask` | deny | do not execute; rejected result reaches model |
+| D6 | custom | yes | ignored | missing | idle/requires_action |
+| D7 | custom | yes | ignored | success/error result | route to originating thread and resume |
+
+### Decision table E — live preview and reconnect
+
+| Rule | Opt-in | Event/connection | Effect |
+|---|---|---|---|
+| E1 | none | message | buffered event only |
+| E2 | `agent.message` | online | start, zero-or-more deltas, authoritative buffered event; ids agree |
+| E3 | `agent.thinking` | online | start only; no delta |
+| E4 | invalid value or >100 values | any | 400 |
+| E5 | valid | server sheds deltas | preview is a contiguous prefix; buffered event remains complete |
+| E6 | valid | disconnect/reconnect | deltas never replay; list history supplies buffered events |
+| E7 | valid | child activity on primary stream | no child preview; use the child stream |
+
+### Decision table F — environment and egress credential
+
+| Rule | Environment reaches host | Credential allows host | Injection location enabled | Client sends placeholder verbatim | Effect |
+|---|---:|---:|---:|---:|---|
+| F1 | no | any | any | any | network request denied |
+| F2 | yes | no | any | yes | request may leave, literal placeholder remains |
+| F3 | yes | yes | no | yes | literal placeholder remains in disabled location |
+| F4 | yes | yes | yes | yes | substitute only at egress; sandbox never sees secret |
+| F5 | yes | yes | yes | no | local validation/signature fails; no hidden fallback |
+| F6 | self-hosted | n/a | environment-variable credential | any | reject unsupported binding |
+
+### Decision table G — outcomes, deployment and webhook
+
+| Rule | Cause | Effect |
+|---|---|---|
+| G1 | outcome satisfied | idle |
+| G2 | outcome needs revision | next contiguous iteration |
+| G3 | max iterations | final acknowledgment, then idle |
+| G4 | outcome failed/interrupted | terminal evaluation, then idle |
+| G5 | scheduled transient/rate-limit failure | failed run; deployment remains active |
+| G6 | archived environment/vault/subagent | failed run; deployment auto-pauses with same error |
+| G7 | primary Agent archived/deleted | deployment archives; no run row |
+| G8 | manual run while paused | run is allowed |
+| G9 | webhook 2xx | acknowledge and reset failure window |
+| G10 | webhook 3xx | never follow/retry; disable immediately |
+| G11 | webhook 4xx/5xx/transport failure | at most three jittered-backoff attempts; drop after final failure |
+| G12 | endpoint resolves non-public | disable immediately |
+| G13 | duplicate/late/out-of-order webhook | stable event id; consumer dedupes and fetches current resource |
+
+### Required test-comment form
+
+```rust
+/// Causes: <inputs, state, dependency and failure trigger>.
+/// Constraints: <invalid combinations or ordering rule>.
+/// Effects: <response, state, events, side effects and terminal outcome>.
+/// Decision rule: <table>/<rule>.
+```
+
 ## Method
 
 Every documented page was decomposed into concrete testable behaviors, then
