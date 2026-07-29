@@ -70,6 +70,26 @@ impl WorkerResolver<MemoryDispatchStore> for MapResolver {
     }
 }
 
+struct RejectingResolver {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl WorkerResolver<MemoryDispatchStore> for RejectingResolver {
+    async fn worker_for(
+        &self,
+        _thread_id: &ThreadId,
+        _agent_id: Option<&str>,
+    ) -> Result<Arc<MemWorker>, Error> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(Error::Execution(
+            awaken_runtime_contract::execution::Error::Execution(
+                "synthetic provisioning failure".into(),
+            ),
+        ))
+    }
+}
+
 struct FlakyResolver {
     worker: Arc<FlakyWorker>,
 }
@@ -958,6 +978,60 @@ async fn the_renewal_loop_keeps_a_long_run_from_being_reclaimed() {
         wait_for(|| commit.commit_count() >= 1).await,
         "the run finished once released"
     );
+    pool.shutdown().await;
+}
+
+#[tokio::test]
+async fn renewal_stops_when_claim_resolution_fails() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // Cause/effect decision table:
+    // | Rule | claim | resolver/drive | local activity | renewal/recovery effect |
+    // | R1 | live | blocked | present | exact lease renews (covered above) |
+    // | R2 | live | fails | removed | lease expires and a peer reclaims |
+    // | R3 | absent | n/a | absent | no lease write (idle-poller test) |
+    // R2 prevents the owner-wide heartbeat from indefinitely preserving an
+    // un-settled claim after provisioning or runtime construction has failed.
+    let store = Arc::new(MemoryDispatchStore::new());
+    store
+        .enqueue(RunDispatch::new(activation("resolver-failure")))
+        .await
+        .unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let lease_ms = 100;
+    let pool = DispatchPool::spawn_with_wake(
+        store.clone(),
+        Arc::new(SystemClock),
+        "failed-owner",
+        lease_ms,
+        DispatchServiceConfig {
+            poll_interval: Duration::from_secs(3600),
+            lease_renewal_interval: Some(Duration::from_millis(20)),
+            ..Default::default()
+        },
+        Arc::new(RejectingResolver {
+            calls: calls.clone(),
+        }),
+        1,
+        Arc::new(BlackholeWake),
+    );
+
+    assert!(
+        wait_for(|| calls.load(Ordering::SeqCst) == 1).await,
+        "R2 resolver failure observed"
+    );
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let reclaimed = store
+        .claim(
+            "recovery-owner",
+            lease_ms,
+            SystemClock.now_ms(),
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+    assert!(reclaimed.is_some(), "R2 failed claim must expire");
+
     pool.shutdown().await;
 }
 
