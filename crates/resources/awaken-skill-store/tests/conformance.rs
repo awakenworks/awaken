@@ -12,10 +12,12 @@ fn version(id: &str, ordinal: u64, marker: &[u8]) -> SkillVersion {
         SkillBundleFile {
             path: "SKILL.md".into(),
             content: format!("---\ndescription: version {ordinal}\n---\nBODY").into_bytes(),
+            executable: false,
         },
         SkillBundleFile {
             path: "assets/data.bin".into(),
             content: marker.to_vec(),
+            executable: false,
         },
     ];
     SkillVersion {
@@ -40,6 +42,24 @@ fn definition(workspace: &str, id: &str) -> SkillDefinition {
         last_version: 1,
         timestamps: Default::default(),
     }
+}
+
+// Hash decision table: identical path/bytes with C1 executable=false and C2
+// executable=true must produce different pins (E1), while the default false case
+// keeps the legacy byte hash algorithm (E2, exercised by every persisted fixture).
+// This prevents permission escalation without a Session bundle-hash change.
+#[test]
+fn executable_metadata_is_bound_into_new_bundle_hashes() {
+    let ordinary = SkillBundleFile {
+        path: "scripts/run.sh".into(),
+        content: b"#!/bin/sh\n".to_vec(),
+        executable: false,
+    };
+    let executable = SkillBundleFile {
+        executable: true,
+        ..ordinary.clone()
+    };
+    assert_ne!(bundle_sha256(&[ordinary]), bundle_sha256(&[executable]));
 }
 
 async fn aggregate_lifecycle(store: &dyn SkillStore) {

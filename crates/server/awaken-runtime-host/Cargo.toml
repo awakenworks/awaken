@@ -83,7 +83,6 @@ regex = "1"
 # binary installs; this crate emits spans, never wires an exporter.
 tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
-
 [features]
 # Cross-node dispatch wake over NATS: passes through to awaken-run-ingress so the
 # host's wake selector can build a `NatsWakeSignal` when AWAKEN_DISPATCH_WAKE=nats.
@@ -98,6 +97,9 @@ container-podman = ["awaken-sandbox-container/podman"]
 container-k8s = ["awaken-sandbox-container/k8s"]
 
 [dev-dependencies]
+# Test-only ZIP construction for the HTTP import compatibility suite. Production
+# decoding is owned by awaken-skill-store's canonical bundle ingestor.
+zip = { version = "8.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 awaken-admin-config-api = { workspace = true, features = ["sqlite"] }
 awaken-run-ingress-testkit = { workspace = true }
 # The durable session-store round-trip test opens a real sessions.db under a temp dir.

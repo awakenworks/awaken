@@ -207,7 +207,7 @@ pub(crate) async fn wire_skills(
             let materialized = version
                 .files
                 .iter()
-                .map(|file| (file.path.clone(), file.content.clone()))
+                .map(|file| (file.path.clone(), file.content.clone(), file.executable))
                 .collect::<Vec<_>>();
             env.materialize_read_only_tree(&directory, &materialized)
                 .await
@@ -300,6 +300,7 @@ mod tests {
         let bundle = vec![SkillBundleFile {
             path: "SKILL.md".into(),
             content: body.clone(),
+            executable: false,
         }];
         store
             .create(

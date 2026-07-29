@@ -3875,10 +3875,12 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
         SkillBundleFile {
             path: "SKILL.md".into(),
             content: b"---\nname: governed\ndescription: governed\n---\nuse it".to_vec(),
+            executable: false,
         },
         SkillBundleFile {
             path: "scripts/old.sh".into(),
             content: b"exit 0".to_vec(),
+            executable: false,
         },
     ];
     let hash = bundle_sha256(&files);

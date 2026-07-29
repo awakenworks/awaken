@@ -1,4 +1,7 @@
 import { expect, test } from "@playwright/test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // Locks the console↔endpoint round-trip for the managed-resource surfaces
 // (memory / skills / environments / deployments): drive the real UI against the
@@ -58,6 +61,46 @@ test("Skills: the surface reads the delivered-skill catalog", async ({ page, req
   } else {
     await expect(page.locator("tr", { hasText: catalog.data[0].id }).first()).toBeVisible();
   }
+});
+
+test("Skills: import a bundle and publish an online edit as a new version", async ({ page, request }) => {
+  // UI cause/effect rules: C1 a selected local root SKILL.md -> E1 one durable
+  // catalog row; C2 edit latest text and publish -> E2 append v2 (never mutate
+  // v1), E3 the version content endpoint returns the edit, and C3 an executable
+  // toggle -> E4 the new immutable version retains that bit. Backend decision
+  // rules separately cover ZIP/folder canonicalization, binary retention, and
+  // stale If-Match; this scenario owns the browser→real HTTP round trip.
+  const marker = `ui-skill-${Date.now()}`;
+  await page.goto("/w/default/skills");
+  await page.getByRole("button", { name: /Import Skill|导入技能/ }).click();
+  await page.getByLabel(/Display title|显示名称/).fill(marker);
+  const folder = page.locator('input[type="file"]').first();
+  const skillDir = await mkdtemp(join(tmpdir(), "awaken-ui-skill-"));
+  await writeFile(join(skillDir, "SKILL.md"), `---\nname: ${marker}\ndescription: browser import\n---\nversion one`);
+  await writeFile(join(skillDir, "helper.bin"), new Uint8Array([0, 159, 255]));
+  await folder.setInputFiles(skillDir);
+  await page.getByRole("button", { name: /Import|导入/, exact: true }).click();
+  await expect(page.getByRole("dialog", { name: /Import Skill|导入技能/ })).toBeHidden();
+  await rm(skillDir, { recursive: true, force: true });
+  const row = page.locator("tr", { hasText: marker });
+  await expect(row).toBeVisible();
+  await row.getByRole("button", { name: /Edit|编辑/ }).click();
+  await page.getByRole("button", { name: "helper.bin", exact: true }).click();
+  await page.getByLabel(/Executable script|可执行脚本/).check();
+  await page.getByRole("button", { name: "SKILL.md", exact: true }).click();
+  const editor = page.locator("textarea");
+  await expect(editor).toHaveValue(/version one/);
+  await editor.fill(`---\nname: ${marker}\ndescription: browser import\n---\nversion two`);
+  await page.getByRole("button", { name: /Publish new version|发布新版本/ }).click();
+  await expect(row).toContainText("2");
+
+  const catalog = await (await request.get("/v1/skills")).json();
+  const skill = catalog.data.find((candidate: { display_title?: string }) => candidate.display_title === marker);
+  expect(skill).toBeTruthy();
+  const content = await (await request.get(`/v1/skills/${skill.id}/versions/latest/content`)).text();
+  expect(content).toContain("version two");
+  const latest = await (await request.get(`/v1/skills/${skill.id}/versions/latest`)).json();
+  expect(latest.file_entries.find((file: { path: string }) => file.path === "helper.bin").executable).toBe(true);
 });
 
 test("Agent Resources: bind a memory store to an agent and persist it", async ({ page, request }) => {

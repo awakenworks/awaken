@@ -18,6 +18,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
+use std::io::Write;
 use tower::ServiceExt;
 
 mod support;
@@ -56,31 +57,70 @@ fn in_test_workspace(mut request: Request<Body>) -> Request<Body> {
     request
 }
 
-fn multipart_skill(content: &str) -> Vec<u8> {
+fn multipart_files(files: &[(&str, &[u8])]) -> Vec<u8> {
+    multipart_files_with_fields(files, &[])
+}
+
+fn multipart_files_with_fields(files: &[(&str, &[u8])], fields: &[(&str, &str)]) -> Vec<u8> {
     let mut body = Vec::new();
-    body.extend_from_slice(format!("--{BOUNDARY}\r\n").as_bytes());
-    body.extend_from_slice(
-        b"Content-Disposition: form-data; name=\"file\"; filename=\"SKILL.md\"\r\n",
-    );
-    body.extend_from_slice(b"Content-Type: text/markdown\r\n\r\n");
-    body.extend_from_slice(content.as_bytes());
-    body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
+    for (path, content) in files {
+        body.extend_from_slice(format!("--{BOUNDARY}\r\n").as_bytes());
+        body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"files\"; filename=\"{path}\"\r\n\r\n")
+                .as_bytes(),
+        );
+        body.extend_from_slice(content);
+        body.extend_from_slice(b"\r\n");
+    }
+    for (name, value) in fields {
+        body.extend_from_slice(format!("--{BOUNDARY}\r\n").as_bytes());
+        body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n")
+                .as_bytes(),
+        );
+    }
+    body.extend_from_slice(format!("--{BOUNDARY}--\r\n").as_bytes());
     body
 }
 
+fn multipart_skill(content: &str) -> Vec<u8> {
+    multipart_files(&[("SKILL.md", content.as_bytes())])
+}
+
 async fn post_multipart(router: &Router, uri: &str, content: &str) -> (StatusCode, Value) {
-    let req = in_test_workspace(
-        Request::builder()
-            .method("POST")
-            .uri(uri)
-            .header(
-                "content-type",
-                format!("multipart/form-data; boundary={BOUNDARY}"),
-            )
-            .body(Body::from(multipart_skill(content)))
-            .unwrap(),
+    post_multipart_body(router, uri, multipart_skill(content), None).await
+}
+
+async fn post_multipart_body(
+    router: &Router,
+    uri: &str,
+    body: Vec<u8>,
+    if_match: Option<&str>,
+) -> (StatusCode, Value) {
+    let mut builder = Request::builder().method("POST").uri(uri).header(
+        "content-type",
+        format!("multipart/form-data; boundary={BOUNDARY}"),
     );
+    if let Some(version) = if_match {
+        builder = builder.header("if-match", version);
+    }
+    let req = in_test_workspace(builder.body(Body::from(body)).unwrap());
     read(router.clone().oneshot(req).await.unwrap()).await
+}
+
+fn skill_zip(name: &str, files: &[(&str, &[u8], u32)]) -> Vec<u8> {
+    let cursor = std::io::Cursor::new(Vec::new());
+    let mut writer = zip::ZipWriter::new(cursor);
+    for (path, content, mode) in files {
+        writer
+            .start_file(
+                format!("{name}/{path}"),
+                zip::write::SimpleFileOptions::default().unix_permissions(*mode),
+            )
+            .unwrap();
+        writer.write_all(content).unwrap();
+    }
+    writer.finish().unwrap().into_inner()
 }
 
 async fn post_json(router: &Router, uri: &str, body: Value) -> (StatusCode, Value) {
@@ -150,6 +190,199 @@ async fn read(resp: axum::response::Response) -> (StatusCode, Value) {
 const SKILL_V1: &str = "---\nname: Greeter\ndescription: says hi\n---\nsay hello";
 const SKILL_V2: &str = "---\nname: Greeter\ndescription: says hi\n---\nsay HELLO LOUDER";
 
+// Cause/effect graph for canonical import:
+// C1 input is one ZIP or path-preserving multipart directory; C2 exactly one
+// bundle root contains UTF-8 SKILL.md; C3 support files include text, binary, and
+// an executable script. Effects: E1 both inputs lose only the transport root,
+// E2 every support byte remains addressable, E3 ZIP/script metadata survives in
+// the immutable version, and E4 editor metadata can preserve that bit in a later
+// complete upload. Decision rules R1=ZIP+C2+C3 -> E1/E2/E3,
+// R2=directory+C2 -> E1/E2, and R3=files+matching executable_paths -> E4.
+// These rules prove import adapters converge before the one SkillStore write
+// instead of becoming parallel content models.
+#[tokio::test]
+async fn zip_and_directory_import_converge_on_one_canonical_bundle() {
+    let (router, dir) = router_with_store();
+    let zip_skill = b"---\nname: Zip Skill\ndescription: imported\n---\nUse scripts/run.sh";
+    let zip = skill_zip(
+        "zip-skill",
+        &[
+            ("SKILL.md", zip_skill, 0o644),
+            ("references/api.md", b"reference", 0o644),
+            ("scripts/run.sh", b"#!/bin/sh\necho ok\n", 0o755),
+            ("assets/data.bin", &[0, 159, 255], 0o644),
+        ],
+    );
+    let (status, created) = post_multipart_body(
+        &router,
+        "/v1/skills",
+        multipart_files(&[("zip-skill.zip", &zip)]),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let zip_id = created["id"].as_str().unwrap();
+    let (status, version) = read(
+        router
+            .clone()
+            .oneshot(in_test_workspace(
+                Request::builder()
+                    .uri(format!("/v1/skills/{zip_id}/versions/latest"))
+                    .body(Body::empty())
+                    .unwrap(),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{version}");
+    assert_eq!(version["directory"], "zip-skill");
+    let paths = version["files"].as_array().unwrap();
+    assert!(paths.contains(&json!("SKILL.md")));
+    assert!(paths.contains(&json!("references/api.md")));
+    assert!(
+        !paths
+            .iter()
+            .any(|path| path.as_str().unwrap().starts_with("zip-skill/"))
+    );
+    let executable = version["file_entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["path"] == "scripts/run.sh")
+        .unwrap();
+    assert_eq!(executable["executable"], true);
+    let (status, bytes) = get_bytes(
+        &router,
+        &format!("/v1/skills/{zip_id}/versions/latest/files/assets/data.bin"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bytes, vec![0, 159, 255]);
+
+    let edited = multipart_files_with_fields(
+        &[
+            ("SKILL.md", zip_skill),
+            ("tools/helper", b"opaque executable"),
+        ],
+        &[("executable_paths", r#"["tools/helper"]"#)],
+    );
+    let (status, edited_version) = post_multipart_body(
+        &router,
+        &format!("/v1/skills/{zip_id}/versions"),
+        edited,
+        Some("1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{edited_version}");
+    let helper = edited_version["file_entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["path"] == "tools/helper")
+        .unwrap();
+    assert_eq!(helper["executable"], true);
+
+    let directory_skill =
+        b"---\nname: Directory Skill\ndescription: imported\n---\nRead references/api.md";
+    let body = multipart_files(&[
+        ("directory-skill/SKILL.md", directory_skill),
+        ("directory-skill/references/api.md", b"directory reference"),
+    ]);
+    let (status, created) = post_multipart_body(&router, "/v1/skills", body, None).await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let id = created["id"].as_str().unwrap();
+    let (status, content) = get(
+        &router,
+        &format!("/v1/skills/{id}/versions/latest/files/references/api.md"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(content, "directory reference");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+// Invalid-import decision table: C1 unsafe traversal, C2 multiple transport
+// roots, C3 missing root SKILL.md, C4 case-folded duplicate path, C5 ZIP mixed
+// with ordinary files, C6 expanded entry above the per-file limit, C7 metadata
+// naming an absent file, or C8 metadata attempting to override ZIP permissions
+// each causes E1=400 and E2=no Skill definition. One-condition rules isolate every
+// validator boundary; the final empty listing observes the no-write effect.
+#[tokio::test]
+async fn invalid_import_shapes_fail_before_the_skill_store_write() {
+    let (router, dir) = router_with_store();
+    let oversized = vec![b'x'; 2 * 1024 * 1024 + 1];
+    let oversized_zip = skill_zip(
+        "large",
+        &[
+            ("SKILL.md", b"# large", 0o644),
+            ("assets/large.bin", &oversized, 0o644),
+        ],
+    );
+    let cases = [
+        multipart_files(&[("../SKILL.md", b"# traversal")]),
+        multipart_files(&[("one/SKILL.md", b"# one"), ("two/ref.md", b"two")]),
+        multipart_files(&[("only/references/readme.md", b"missing")]),
+        multipart_files(&[("SKILL.md", b"# duplicate"), ("skill.md", b"collision")]),
+        multipart_files(&[("bundle.zip", b"not zip"), ("SKILL.md", b"# mixed")]),
+        multipart_files(&[("large.zip", &oversized_zip)]),
+        multipart_files_with_fields(
+            &[("SKILL.md", b"# absent executable")],
+            &[("executable_paths", r#"["scripts/missing.sh"]"#)],
+        ),
+        multipart_files_with_fields(
+            &[(
+                "bundle.zip",
+                &skill_zip("valid", &[("SKILL.md", b"# zip", 0o644)]),
+            )],
+            &[("executable_paths", r#"["SKILL.md"]"#)],
+        ),
+    ];
+    for body in cases {
+        let (status, _) = post_multipart_body(&router, "/v1/skills", body, None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    let (status, listing) = get(&router, "/v1/skills").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        serde_json::from_str::<Value>(&listing).unwrap()["data"],
+        json!([])
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+// Optimistic-publication decision table: C1 If-Match equals latest -> E1 append
+// exactly one version; C2 If-Match is stale after that append -> E2 409 and E3 no
+// extra version. This covers the browser draft race while the no-header SDK path
+// remains covered by the ordinary lifecycle test below.
+#[tokio::test]
+async fn browser_publish_rejects_a_stale_base_version_without_appending() {
+    let (router, dir) = router_with_store();
+    let (status, created) = post_multipart(&router, "/v1/skills", SKILL_V1).await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let id = created["id"].as_str().unwrap();
+    let route = format!("/v1/skills/{id}/versions");
+    let (status, _) =
+        post_multipart_body(&router, &route, multipart_skill(SKILL_V2), Some("1")).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, conflict) =
+        post_multipart_body(&router, &route, multipart_skill(SKILL_V1), Some("1")).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
+    let (status, versions) = read(
+        router
+            .clone()
+            .oneshot(in_test_workspace(
+                Request::builder().uri(route).body(Body::empty()).unwrap(),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(versions["data"].as_array().unwrap().len(), 2);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[tokio::test]
 async fn multipart_bundle_preserves_binary_support_files() {
     let (router, dir) = router_with_store();
@@ -203,7 +436,7 @@ async fn sdk_multipart_create_list_retrieve_and_version_lifecycle() {
     let id = created["id"].as_str().unwrap().to_string();
     assert_eq!(created["type"], "skill");
     assert_eq!(created["latest_version"], "1");
-    assert_eq!(created["source"], "api");
+    assert_eq!(created["source"], "custom");
 
     // List surfaces it.
     let (status, list) = get(&router, "/v1/skills").await;

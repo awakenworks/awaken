@@ -283,7 +283,7 @@ impl SessionEnvironment {
     pub(crate) async fn materialize_read_only_tree(
         &self,
         subdir: &str,
-        files: &[(String, Vec<u8>)],
+        files: &[(String, Vec<u8>, bool)],
     ) -> Result<(), pc::SandboxError> {
         match self {
             Self::Workdir(sandbox) => sandbox.materialize_read_only_tree(subdir, files),
@@ -855,7 +855,7 @@ mod tests {
         environment
             .materialize_read_only_tree(
                 "generated-skills",
-                &[("skill/SKILL.md".into(), b"generated".to_vec())],
+                &[("skill/SKILL.md".into(), b"generated".to_vec(), false)],
             )
             .await
             .unwrap();

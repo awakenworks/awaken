@@ -106,6 +106,45 @@ async function upload<T>(path: string, file: File, fields?: Record<string, strin
   return (await res.json()) as T;
 }
 
+export interface MultipartFile {
+  readonly path: string;
+  readonly blob: Blob;
+}
+
+/** Upload a complete path-preserving bundle. Skill directory import and the
+ * browser editor both use this exact seam, so neither invents a second wire
+ * representation for authored content. */
+async function uploadMany<T>(
+  path: string,
+  files: readonly MultipartFile[],
+  fields?: Record<string, string>,
+  headers?: Record<string, string>,
+): Promise<T> {
+  const requestHeaders: Record<string, string> = { ...(headers ?? {}) };
+  const token = getToken();
+  if (token) requestHeaders.authorization = `Bearer ${token}`;
+  const form = new FormData();
+  for (const file of files) form.append("files", file.blob, file.path);
+  for (const [key, value] of Object.entries(fields ?? {})) form.append(key, value);
+  const response = await fetch(path, {
+    method: "POST",
+    headers: requestHeaders,
+    body: form,
+    credentials: "same-origin",
+  });
+  if (!response.ok) throw await toError(response);
+  return (await response.json()) as T;
+}
+
+async function bytes(path: string): Promise<ArrayBuffer> {
+  const headers: Record<string, string> = {};
+  const token = getToken();
+  if (token) headers.authorization = `Bearer ${token}`;
+  const response = await fetch(path, { headers, credentials: "same-origin" });
+  if (!response.ok) throw await toError(response);
+  return response.arrayBuffer();
+}
+
 /** Download a file's bytes and save them under `filename`. The content endpoint carries
  * the bearer like any GET, so it goes through the auth path — not a bare `<a href>` that
  * would omit the token. Symmetric with `upload`. */
@@ -130,6 +169,8 @@ export const api = {
   put: <T>(path: string, body?: unknown) => request<T>("PUT", path, body),
   del: <T>(path: string) => request<T>("DELETE", path),
   upload,
+  uploadMany,
+  bytes,
   download,
 };
 

@@ -11,11 +11,14 @@
 //! versions, and binary bundle share that one Workspace-scoped repository; the
 //! former API-local registry is migration input only.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use awaken_protocol_managed::resource_plane::{ResourceKind, ResourceTarget};
-use awaken_skill_store::{SkillBundleFile, SkillDefinition, SkillStoreError, SkillVersion};
+use awaken_skill_store::{
+    CanonicalSkillBundle, MAX_SKILL_ARCHIVE_BYTES, MAX_SKILL_FILES, SkillDefinition,
+    SkillStoreError, SkillVersion, UploadedSkillBundleFile, canonicalize_skill_bundle,
+    normalize_bundle_path,
+};
 use axum::extract::{FromRequest, Multipart, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
@@ -44,7 +47,7 @@ fn project_definition(definition: &SkillDefinition) -> Value {
         "updated_at": timestamp(definition.timestamps.updated_unix_nanos),
         "display_title": definition.display_title,
         "latest_version": definition.latest_version.to_string(),
-        "source": "api",
+        "source": "custom",
     })
 }
 
@@ -59,6 +62,11 @@ fn project_version(version: &SkillVersion) -> Value {
         "skill_id": version.skill_id,
         "version": version.version.to_string(),
         "files": version.files.iter().map(|file| &file.path).collect::<Vec<_>>(),
+        "file_entries": version.files.iter().map(|file| json!({
+            "path": file.path,
+            "size_bytes": file.content.len(),
+            "executable": file.executable,
+        })).collect::<Vec<_>>(),
         "bundle_sha256": version.bundle_sha256,
     })
 }
@@ -169,62 +177,83 @@ fn err(status: StatusCode, message: impl Into<String>) -> axum::response::Respon
 
 /// Collect a multipart body without decoding file bytes. Non-file text fields are
 /// read for `display_title`; bundle contents remain binary-safe end to end.
-async fn read_multipart(mut multipart: Multipart) -> (Option<String>, Vec<(String, Vec<u8>)>) {
+async fn read_multipart(
+    mut multipart: Multipart,
+) -> Result<(Option<String>, Vec<UploadedSkillBundleFile>), String> {
     let mut display_title = None;
+    let mut executable_paths = None;
     let mut files = Vec::new();
-    while let Ok(Some(field)) = multipart.next_field().await {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|error| error.to_string())?
+    {
         let name = field.name().map(str::to_string);
         let filename = field.file_name().map(str::to_string);
         if let Some(fname) = filename {
-            if let Ok(bytes) = field.bytes().await {
-                files.push((fname, bytes.to_vec()));
+            let bytes = field.bytes().await.map_err(|error| error.to_string())?;
+            if bytes.len() > MAX_SKILL_ARCHIVE_BYTES {
+                return Err(format!(
+                    "skill upload file exceeds {MAX_SKILL_ARCHIVE_BYTES} bytes"
+                ));
             }
+            files.push(UploadedSkillBundleFile {
+                path: fname,
+                content: bytes.to_vec(),
+                executable: false,
+            });
         } else if name.as_deref() == Some("display_title") {
-            display_title = field.text().await.ok();
+            display_title = Some(field.text().await.map_err(|error| error.to_string())?);
+        } else if name.as_deref() == Some("executable_paths") {
+            if executable_paths.is_some() {
+                return Err("executable_paths may be supplied only once".into());
+            }
+            let bytes = field.bytes().await.map_err(|error| error.to_string())?;
+            if bytes.len() > 16 * 1024 {
+                return Err("executable_paths metadata is too large".into());
+            }
+            let paths: Vec<String> = serde_json::from_slice(&bytes)
+                .map_err(|error| format!("invalid executable_paths metadata: {error}"))?;
+            if paths.len() > MAX_SKILL_FILES {
+                return Err(format!(
+                    "executable_paths exceeds {MAX_SKILL_FILES} entries"
+                ));
+            }
+            executable_paths = Some(paths);
         }
     }
-    (display_title, files)
+    if let Some(paths) = executable_paths {
+        if files.len() == 1 && files[0].path.to_ascii_lowercase().ends_with(".zip") {
+            return Err("executable_paths cannot override ZIP permissions".into());
+        }
+        for raw_path in paths {
+            let path = normalize_bundle_path(&raw_path)?;
+            let mut matched = false;
+            for file in &mut files {
+                if normalize_bundle_path(&file.path)? == path {
+                    file.executable = true;
+                    matched = true;
+                }
+            }
+            if !matched {
+                return Err(format!(
+                    "executable path `{raw_path}` is absent from the uploaded bundle"
+                ));
+            }
+        }
+    }
+    Ok((display_title, files))
 }
 
-fn normalize_bundle(files: Vec<(String, Vec<u8>)>) -> Result<BTreeMap<String, Vec<u8>>, String> {
-    const MAX_FILES: usize = 128;
-    const MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
-    const MAX_BYTES: usize = 4 * 1024 * 1024;
-    if files.len() > MAX_FILES {
-        return Err(format!("skill bundle exceeds {MAX_FILES} files"));
-    }
-    let mut total = 0usize;
-    let mut bundle = BTreeMap::new();
-    for (raw, content) in files {
-        let path = raw.replace('\\', "/");
-        if path.starts_with('/')
-            || path
-                .split('/')
-                .any(|part| part.is_empty() || matches!(part, "." | ".."))
-        {
-            return Err(format!("invalid skill bundle path `{raw}`"));
-        }
-        if content.len() > MAX_FILE_BYTES {
-            return Err(format!("skill bundle file exceeds {MAX_FILE_BYTES} bytes"));
-        }
-        total = total.saturating_add(content.len());
-        if total > MAX_BYTES {
-            return Err(format!("skill bundle exceeds {MAX_BYTES} bytes"));
-        }
-        if bundle.insert(path.clone(), content).is_some() {
-            return Err(format!("duplicate skill bundle path `{path}`"));
-        }
-    }
-    Ok(bundle)
-}
-
-fn bundle_skill_md(bundle: &BTreeMap<String, Vec<u8>>) -> Result<&str, String> {
+fn bundle_skill_md(bundle: &CanonicalSkillBundle) -> Result<&str, String> {
     bundle
+        .files
         .iter()
-        .find(|(name, _)| *name == "SKILL.md" || name.ends_with("/SKILL.md"))
-        .ok_or_else(|| "skill upload has no SKILL.md file".to_string())
-        .and_then(|(_, content)| {
-            std::str::from_utf8(content).map_err(|_| "SKILL.md must be valid UTF-8".to_string())
+        .find(|file| file.path == "SKILL.md")
+        .ok_or_else(|| "skill upload has no SKILL.md at the bundle root".to_string())
+        .and_then(|file| {
+            std::str::from_utf8(&file.content)
+                .map_err(|_| "SKILL.md must be valid UTF-8".to_string())
         })
 }
 
@@ -236,13 +265,10 @@ fn build_version(
     skill_id: &str,
     content: &str,
     ordinal: u64,
-    files: BTreeMap<String, Vec<u8>>,
+    bundle: CanonicalSkillBundle,
 ) -> SkillVersion {
     let spec = awaken_ext_skills::parse_skill_md("skill", content);
-    let files = files
-        .into_iter()
-        .map(|(path, content)| SkillBundleFile { path, content })
-        .collect::<Vec<_>>();
+    let files = bundle.files;
     SkillVersion {
         id: format!(
             "skver_{}_{ordinal}",
@@ -253,7 +279,9 @@ fn build_version(
         version: ordinal,
         name: spec.name.clone(),
         description: spec.description.clone(),
-        directory: format!("/skills/{}", awaken_skill_store::sanitize_stem(&spec.name)),
+        directory: bundle
+            .source_directory
+            .unwrap_or_else(|| awaken_skill_store::sanitize_stem(&spec.name)),
         bundle_sha256: awaken_skill_store::bundle_sha256(&files),
         files,
         created_unix_nanos: now_nanos(),
@@ -304,8 +332,11 @@ async fn create_skill(
             Ok(m) => m,
             Err(e) => return err(StatusCode::BAD_REQUEST, e.to_string()),
         };
-        let (display_title, files) = read_multipart(multipart).await;
-        let bundle = match normalize_bundle(files) {
+        let (display_title, files) = match read_multipart(multipart).await {
+            Ok(upload) => upload,
+            Err(error) => return err(StatusCode::BAD_REQUEST, error),
+        };
+        let bundle = match canonicalize_skill_bundle(files) {
             Ok(bundle) => bundle,
             Err(error) => return err(StatusCode::BAD_REQUEST, error),
         };
@@ -355,12 +386,13 @@ async fn create_skill(
         );
     };
     let id = awaken_skill_store::sanitize_stem(id);
-    let version = build_version(
-        &id,
-        content,
-        1,
-        BTreeMap::from([("SKILL.md".to_owned(), content.as_bytes().to_vec())]),
-    );
+    let bundle = canonicalize_skill_bundle(vec![UploadedSkillBundleFile {
+        path: "SKILL.md".to_owned(),
+        content: content.as_bytes().to_vec(),
+        executable: false,
+    }])
+    .expect("one validated legacy SKILL.md");
+    let version = build_version(&id, content, 1, bundle);
     let definition = SkillDefinition {
         id: id.clone().into(),
         workspace_id: workspace,
@@ -466,6 +498,7 @@ async fn create_version(
     State(state): State<Arc<SkillsApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
+    headers: HeaderMap,
     multipart: Multipart,
 ) -> axum::response::Response {
     let definition = match state.definition(&workspace, &id).await {
@@ -475,8 +508,25 @@ async fn create_version(
             return err(StatusCode::NOT_FOUND, format!("skill `{id}` not found"));
         }
     };
-    let (_title, files) = read_multipart(multipart).await;
-    let bundle = match normalize_bundle(files) {
+    if let Some(expected) = headers
+        .get(axum::http::header::IF_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.trim_matches('"'))
+        && expected != definition.latest_version.to_string()
+    {
+        return err(
+            StatusCode::CONFLICT,
+            format!(
+                "skill `{id}` changed: expected version {expected}, latest is {}",
+                definition.latest_version
+            ),
+        );
+    }
+    let (_title, files) = match read_multipart(multipart).await {
+        Ok(upload) => upload,
+        Err(error) => return err(StatusCode::BAD_REQUEST, error),
+    };
+    let bundle = match canonicalize_skill_bundle(files) {
         Ok(bundle) => bundle,
         Err(error) => return err(StatusCode::BAD_REQUEST, error),
     };
@@ -589,8 +639,8 @@ async fn version_file(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, version, path)): Path<(String, String, String)>,
 ) -> axum::response::Response {
-    let normalized = match normalize_bundle(vec![(path, Vec::new())]) {
-        Ok(bundle) => bundle.into_keys().next().expect("one normalized path"),
+    let normalized = match normalize_bundle_path(&path) {
+        Ok(path) => path,
         Err(error) => return err(StatusCode::BAD_REQUEST, error),
     };
     match find_version(&state, &workspace, &id, &version).await {

@@ -523,7 +523,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde",
         "serde_json",
         "sha2",
-        "rusqlite",
+        "zip", "rusqlite",
         # feature `postgres`: the multi-node SkillStore backend.
         "sqlx",
         "awaken-scoped-migration",
@@ -1340,7 +1340,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde_json",
         "sha2",
         "regex",
-        "thiserror",
+        "zip", "thiserror",
         "tokio",
         "tracing", "uuid",  # unpredictable one-shot process-secret capability ids
     },

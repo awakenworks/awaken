@@ -102,6 +102,7 @@ fn decode_versions(
                 files.push(SkillBundleFile {
                     path: path.clone(),
                     content: content.as_bytes().to_vec(),
+                    executable: false,
                 });
             }
         }
@@ -112,6 +113,7 @@ fn decode_versions(
             files.push(SkillBundleFile {
                 path: "SKILL.md".into(),
                 content: fallback_content.into_bytes(),
+                executable: false,
             });
         }
         versions.push(SkillVersion {

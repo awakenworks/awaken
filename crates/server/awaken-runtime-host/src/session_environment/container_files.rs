@@ -127,7 +127,7 @@ fn require_success(status: pc::ExitStatus, operation: &str) -> Result<(), pc::Sa
 pub(super) async fn materialize_read_only_tree(
     sandbox: &dyn awaken_sandbox_container::ContainerEnvironment,
     subdir: &str,
-    files: &[(String, Vec<u8>)],
+    files: &[(String, Vec<u8>, bool)],
 ) -> Result<(), pc::SandboxError> {
     let root = workspace_path(subdir)?;
     let setup = sandbox
@@ -146,13 +146,20 @@ pub(super) async fn materialize_read_only_tree(
         })
         .await?;
     require_success(setup.wait().await?, "container read-only tree setup")?;
-    for (relative, contents) in files {
-        write(
-            sandbox,
-            &read_only_tree_file_path(&root, relative)?,
-            contents,
-        )
-        .await?;
+    for (relative, contents, executable) in files {
+        let path = read_only_tree_file_path(&root, relative)?;
+        write(sandbox, &path, contents).await?;
+        if *executable {
+            let chmod = sandbox
+                .spawn(pc::Command {
+                    argv: vec!["chmod".into(), "u+x".into(), "--".into(), path],
+                    cwd: "/workspace".into(),
+                    env: Vec::new(),
+                    stdio: pc::Stdio::Null,
+                })
+                .await?;
+            require_success(chmod.wait().await?, "container executable Skill file chmod")?;
+        }
     }
     let restrict = sandbox
         .spawn(pc::Command {

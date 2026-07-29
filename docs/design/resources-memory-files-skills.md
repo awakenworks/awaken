@@ -668,6 +668,37 @@ authorization policy:
 An unavailable required bundle, resource, or MCP endpoint is a typed
 pre-execution failure, not instructions-only degradation.
 
+### Skill authoring and import
+
+Every custom-Skill authoring surface produces one complete immutable bundle;
+there is no mutable file store beside `SkillStore`. Multipart individual files,
+a ZIP import, and the browser's ephemeral editor draft all enter the same
+canonical ingestion path owned by `awaken-skill-store::canonicalize_skill_bundle`;
+the HTTP layer only collects transport fields. That path rejects traversal, links and special archive
+entries, mixed ZIP/file input, multiple transport roots, duplicate normalized
+paths, missing or non-UTF-8 root `SKILL.md`, and expanded size/count violations.
+It strips one common transport directory before persisting normalized relative
+paths, preserving binary references/assets and a constrained executable bit for
+regular scripts rather than arbitrary archive permissions.
+Browser publication preserves that bit through a bounded `executable_paths`
+multipart field; it may only name files present in the same complete upload and
+cannot override ZIP metadata.
+
+Publishing appends a version and atomically advances `latest_version`; it never
+overwrites version bytes. Browser publication supplies the opened version through
+`If-Match`, so a stale draft conflicts instead of replacing a concurrently
+published bundle. The browser draft is memory-local and disposable. Existing
+Sessions retain their frozen id/version/hash, while later Session resolution sees
+the new latest version.
+
+```text
+directory | ZIP | browser draft
+             -> canonical bundle ingestion
+             -> append immutable SkillVersion
+             -> advance latest pointer
+             -> new Sessions pin id/version/hash
+```
+
 ## External Work
 
 External work is tool or backend execution offload, not a second resource or
@@ -717,6 +748,9 @@ internal config version remains an awaken governance detail.
 - delivered Skill bundles form one exact `.skills` projection: rebuilding replaces
   the tree, and changing to an empty or different pin removes obsolete scripts,
   references, templates, and binary assets before the next Run.
+- directory/ZIP import and browser editing publish through the same canonical
+  complete-bundle ingestion path; no draft or archive store exists beside the
+  versioned Skill aggregate.
 
 ### Completed consolidation
 
