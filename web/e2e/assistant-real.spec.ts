@@ -120,7 +120,7 @@ test("KIMI writes and recalls an Agent-bound memory store across fresh sessions"
   await page.getByRole("button", { name: /bind a store/ }).click();
   await page.locator("select").nth(1).selectOption({ label: store.name });
   await page.getByRole("button", { name: /Save resources/ }).click();
-  await expect(page.locator(".toast").filter({ hasText: /Resources saved|资源已保存/ })).toBeVisible();
+  await expect(page.locator(".ui-toast").filter({ hasText: /Resources saved|资源已保存/ })).toBeVisible();
   const published = await request.post(`/v1/config/agents/${agent}/publish`);
   expect(published.ok()).toBe(true);
 

@@ -138,7 +138,7 @@ export default function ProviderConnectionPanel({
       setApiKey("");
       setSyncCredential(connection.credential.id);
       setAuthMode("existing");
-      void qc.invalidateQueries({ queryKey: ["catalog"] });
+      void qc.invalidateQueries({ queryKey: ["catalog", workspace] });
       void qc.invalidateQueries({ queryKey: ["credentials", workspace] });
       void qc.invalidateQueries({ queryKey: ["provider-connections", workspace] });
     },

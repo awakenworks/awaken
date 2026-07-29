@@ -4,7 +4,7 @@
 import { useApp } from "../lib/app-state";
 import { Card, Pill } from "../components/ui";
 import { useCapabilities } from "../lib/useCapabilities";
-import type { RuntimeCap } from "../lib/api/types";
+import { runtimeStatus } from "../lib/readiness";
 
 export const PROTOCOLS = [
   { id: "managed", name: "Managed Agents", endpoint: "/v1/sessions", mode: "HTTP + SSE", token: "service" },
@@ -47,11 +47,6 @@ export const MANAGED_CURL = `curl http://localhost:8080/v1/sessions \\
   -H "Authorization: Bearer $AWAKEN_API_KEY" \\
   -H 'content-type: application/json' \\
   -d '{"agent":"support","title":"backend job"}'`;
-
-export function runtimeStatus(runtime: RuntimeCap): "ready" | "login_required" | "not_detected" {
-  if (!runtime.local?.detected) return "not_detected";
-  return runtime.local.login_state === "available" ? "ready" : "login_required";
-}
 
 export default function ProtocolsSurface() {
   const app = useApp();

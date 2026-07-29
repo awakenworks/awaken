@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { api } from "../../lib/api/client";
+import { api, ws } from "../../lib/api/client";
 import type { AgentConfig, AgentConfigItem, ValidationIssue, ValidationResult } from "../../lib/api/types";
 import { diffConfig } from "../../lib/config-diff";
 import {
@@ -94,13 +94,13 @@ export function useAgentDraftReview(options: DraftReviewOptions) {
     try {
       if (dirtyRef.current) {
         setStatus("saving");
-        await api.put(`/v1/config/agents/${current.agentId}`, body);
+        await api.put(ws(`/v1/config/agents/${current.agentId}`), body);
         current.setDirty(false);
         dirtyRef.current = false;
         void qc.invalidateQueries({ queryKey: ["config-agents"] });
       }
       setStatus("validating");
-      const result = await api.post<ValidationResult>(`/v1/config/agents/${current.agentId}/validate`, body);
+      const result = await api.post<ValidationResult>(ws(`/v1/config/agents/${current.agentId}/validate`), body);
       current.onIssues(result.issues ?? []);
       if (result.valid) {
         setStatus("ready");
@@ -125,7 +125,7 @@ export function useAgentDraftReview(options: DraftReviewOptions) {
       setStatus("validating");
       void (async () => {
         try {
-          const item = await api.get<AgentConfigItem>(`/v1/config/agents/${detail.id}`);
+          const item = await api.get<AgentConfigItem>(ws(`/v1/config/agents/${detail.id}`));
           const { published: _published, ...rest } = item;
           const saved = { ...current.blank, ...rest };
           const hintedPaths = detail.paths ?? [];
@@ -166,7 +166,7 @@ export function useAgentDraftReview(options: DraftReviewOptions) {
           if (hintedPaths.includes("resources")) {
             void qc.invalidateQueries({ queryKey: ["agent-resources", detail.id] });
           }
-          const result = await api.post<ValidationResult>(`/v1/config/agents/${detail.id}/validate`, next);
+          const result = await api.post<ValidationResult>(ws(`/v1/config/agents/${detail.id}/validate`), next);
           current.onIssues(result.issues ?? []);
           if (result.valid) {
             const repairing = repairInFlight.current;

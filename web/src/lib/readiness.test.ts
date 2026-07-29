@@ -1,0 +1,46 @@
+import { describe, expect, it } from "vitest";
+import { deriveReadiness, runtimeStatus } from "./readiness";
+
+// Cause/effect graph:
+// C1=runnable Provider model, C2=ready ACP, C3=published Agent,
+// C4=native Runtime, C5=Environment. Effects are the three independently owned
+// readiness rows. Constraints: supply is C1∨C2; execution is C2∨C4∨C5; Agent is C3.
+// Decision rules: R1 all absent -> actionable supply/Agent + attention execution;
+// R2 Provider+Agent+native -> all ready; R3 ACP+Agent only -> all ready without
+// inventing Provider/Environment requirements; R4 detected ACP without login ->
+// not ready, while an available login is ready.
+describe("Workspace readiness decision table", () => {
+  const empty = {
+    workspace: "default",
+    models: 0,
+    providerConnections: 0,
+    acp: 0,
+    publishedAgents: 0,
+    environments: 0,
+    nativeRuntime: false,
+  };
+
+  it("R1 exposes the owning remediation for every missing fact", () => {
+    expect(deriveReadiness(empty).map(({ status, href }) => [status, href])).toEqual([
+      ["action", "/w/default/models"],
+      ["action", "/w/default/agents"],
+      ["attention", "/w/default/environments"],
+    ]);
+  });
+
+  it("R2 and R3 accept either complete Provider or ACP execution paths", () => {
+    expect(deriveReadiness({ ...empty, models: 2, providerConnections: 1, publishedAgents: 1, nativeRuntime: true })
+      .every((item) => item.status === "ready")).toBe(true);
+    expect(deriveReadiness({ ...empty, acp: 1, publishedAgents: 1 })
+      .every((item) => item.status === "ready")).toBe(true);
+  });
+
+  it("R4 treats installed and authenticated ACP observations separately", () => {
+    const runtime = { id: "acp:claude", label: "Claude", kind: "acp" as const, description: "" };
+    expect(runtimeStatus(runtime)).toBe("not_detected");
+    expect(runtimeStatus({ ...runtime, local: { detected: true, login_state: "login_required" } }))
+      .toBe("login_required");
+    expect(runtimeStatus({ ...runtime, local: { detected: true, login_state: "available" } }))
+      .toBe("ready");
+  });
+});

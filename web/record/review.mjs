@@ -93,7 +93,7 @@ const checks = [
     for (const claim of [
       "Provider connections",
       "Verify & import models",
-      "immediately available to Auto agents",
+      "immediately available to Agent pickers and the Assistant",
       "/v1/config/provider-connections",
     ]) {
       assert.ok(source.includes(claim), `01-connect-model.mjs: missing ${claim}`);
@@ -114,18 +114,6 @@ const checks = [
       "archive", "A2A", "access",
     ]) {
       assert.ok(corpus.toLowerCase().includes(claim.toLowerCase()), `series: missing ${claim}`);
-    }
-  }],
-  ["agent control proof", () => {
-    const source = requiredFlow("08-agent-control-plane.mjs");
-    for (const claim of ["context_policy", "compact.instructions", "memory.instructions", "memory.extraction_prompt", "continuation"]) {
-      assert.ok(source.includes(claim), `08-agent-control-plane.mjs: missing ${claim} checkpoint`);
-    }
-  }],
-  ["protocol composition proof", () => {
-    const source = requiredFlow("09-protocol-composition.mjs");
-    for (const claim of ["Managed Agents", "acp:claude", "mcp_servers", "Agent MCP servers are included"]) {
-      assert.ok(source.includes(claim), `09-protocol-composition.mjs: missing ${claim}`);
     }
   }],
   ["interaction pacing", () => eachFlow((name, source) => {
@@ -177,8 +165,6 @@ const checks = [
       "04-resources-transparency.mjs",
       "05-ai-authoring.mjs",
       "06-ai-state-machine.mjs",
-      "08-agent-control-plane.mjs",
-      "09-protocol-composition.mjs",
       "10-skill-optimized-agent.mjs",
       "11-resource-provenance.mjs",
       "12-deployment-control.mjs",

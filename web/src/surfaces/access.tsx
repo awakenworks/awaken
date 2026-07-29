@@ -3,28 +3,27 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { api, isAbsent } from "../lib/api/client";
+import { api, isAbsent, ws } from "../lib/api/client";
 import type { IamTokenView } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 import GatedPage from "../components/app/GatedPage";
 import { Button, Card, CopyButton, Pill, TextField, SelectField } from "../components/ui";
 
-const WORKSPACE = "wrkspc_default";
-
 export default function AccessSurface() {
   const app = useApp();
+  const workspace = app.workspaceId;
   const qc = useQueryClient();
   const tokens = useQuery({
-    queryKey: ["iam-tokens"],
-    queryFn: () => api.get<IamTokenView[]>(`/v1/config/iam/tokens?workspace_id=${WORKSPACE}`),
+    queryKey: ["iam-tokens", workspace],
+    queryFn: () => api.get<IamTokenView[]>(ws(`/v1/config/iam/tokens?workspace_id=${workspace}`)),
     retry: false,
   });
   const [form, setForm] = useState({ name: "console", role: "workspace_admin" });
   const [minted, setMinted] = useState<string | null>(null);
   const mint = useMutation({
     mutationFn: () =>
-      api.post<Record<string, unknown>>("/v1/config/iam/tokens", {
-        workspace_id: WORKSPACE,
+      api.post<Record<string, unknown>>(ws("/v1/config/iam/tokens"), {
+        workspace_id: workspace,
         name: form.name,
         role: form.role,
       }),
@@ -33,12 +32,12 @@ export default function AccessSurface() {
         .map((k) => r[k])
         .find((v): v is string => typeof v === "string");
       setMinted(secret ?? JSON.stringify(r));
-      void qc.invalidateQueries({ queryKey: ["iam-tokens"] });
+      void qc.invalidateQueries({ queryKey: ["iam-tokens", workspace] });
     },
   });
   const revoke = useMutation({
-    mutationFn: (id: string) => api.del(`/v1/config/iam/tokens/${id}`),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["iam-tokens"] }),
+    mutationFn: (id: string) => api.del(ws(`/v1/config/iam/tokens/${id}`)),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["iam-tokens", workspace] }),
   });
 
   if (tokens.isError && isAbsent(tokens.error)) {

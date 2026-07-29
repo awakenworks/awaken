@@ -40,7 +40,7 @@ export default function ResourcesTab({ agentId }: { agentId: string }) {
   });
   const existing = useQuery({
     queryKey: ["agent-resources", agentId],
-    queryFn: () => api.get<AgentInputConfig>(`/v1/config/agents/${agentId}/resources`),
+    queryFn: () => api.get<AgentInputConfig>(ws(`/v1/config/agents/${agentId}/resources`)),
     retry: false,
   });
 
@@ -93,7 +93,7 @@ export default function ResourcesTab({ agentId }: { agentId: string }) {
 
   const save = useMutation({
     mutationFn: () =>
-      api.put<AgentInputConfig>(`/v1/config/agents/${agentId}/resources`, {
+      api.put<AgentInputConfig>(ws(`/v1/config/agents/${agentId}/resources`), {
         agent_id: agentId,
         // Strip the client-only `label` before persisting.
         inputs: rows.map(({ label: _label, ...b }) => b),

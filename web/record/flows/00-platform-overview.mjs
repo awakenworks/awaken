@@ -65,7 +65,8 @@ export async function run({ page, goto, intro, beat, clearCaption, checkpoint, a
     "See the whole Agent platform in about a minute before choosing a focused workflow.",
     "Awaken controls models, prompts, Skills, MCP, memory, state, protocols, sandboxes, and observable Managed Agents sessions.",
   );
-  await beat("Live workspace first: active and running sessions are operational facts, not a static dashboard.", page.locator(".kpis"), 2600);
+  await beat("Workspace readiness shows exactly what is runnable and routes every missing fact to its one owner.", page.locator(".readiness-panel"), 2800);
+  await beat("Recent Sessions close setup with observable runtime facts, not a configuration-only dashboard.", page.locator(".kpis"), 2600);
 
   await goto("/w/default/models");
   await beat("Models resolve through the visible provider → endpoint → offering chain.", page.locator("tr", { hasText: MODEL }), 2600);
