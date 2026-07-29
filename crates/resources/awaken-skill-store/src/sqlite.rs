@@ -419,6 +419,7 @@ mod tests {
         let files = vec![crate::SkillBundleFile {
             path: "SKILL.md".into(),
             content: b"---\ndescription: test\n---\nbody".to_vec(),
+            executable: false,
         }];
         (
             SkillDefinition {

@@ -179,6 +179,11 @@ pub struct SkillBundleFile {
     pub path: String,
     #[serde(with = "skill_bytes")]
     pub content: Vec<u8>,
+    /// Whether the runtime may execute this regular file directly. The bundle
+    /// format intentionally models only this safe bit rather than arbitrary
+    /// owner/group/mode metadata from an untrusted archive.
+    #[serde(default)]
+    pub executable: bool,
 }
 
 /// One immutable version of a Skill bundle. The version freezes authored Skill

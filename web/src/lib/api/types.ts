@@ -286,9 +286,30 @@ export interface Skill {
   type?: string;
   name?: string;
   display_name?: string;
+  display_title?: string | null;
   description?: string | null;
   latest_version?: string | number;
+  source?: "custom" | "anthropic" | string;
   [k: string]: unknown;
+}
+
+export interface SkillVersionFile {
+  path: string;
+  size_bytes: number;
+  executable: boolean;
+}
+export interface SkillVersion {
+  id: string;
+  type: "skill_version";
+  skill_id: string;
+  version: string;
+  name: string;
+  description: string;
+  directory: string;
+  files: string[];
+  file_entries?: SkillVersionFile[];
+  bundle_sha256: string;
+  created_at: string;
 }
 
 // ---- deployments ----

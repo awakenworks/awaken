@@ -819,6 +819,7 @@ mod tests {
         let files = vec![SkillBundleFile {
             path: "SKILL.md".into(),
             content: b"# greet".to_vec(),
+            executable: false,
         }];
         skills
             .create(
