@@ -286,9 +286,9 @@ write-time `Cron::parse` 400), `cron.rs` (dependency-free 5-field evaluator),
 (`SpanOutcomeEvaluationStart{outcome_id,iteration}`). All three suites are registered in
 `package.json` (`test` + `test:extended`) and pass.
 
-## Implemented, untested (backlog — ranked)
+## Former implemented test gaps
 
-These are real coverage gaps: awaken implements the behavior, no e2e asserts it.
+All non-excluded behavior in this former backlog now has executable coverage.
 
 1. ~~**MCP tool confirmation (`always_ask`) approve/deny**~~ — closed in `management_mcp_e2e.mjs`.
 2. ~~**MCP `session.error` classification**~~ — closed in
@@ -297,12 +297,13 @@ These are real coverage gaps: awaken implements the behavior, no e2e asserts it.
 3. ~~**Mid-run interrupt + steer**~~ — closed in `managed_error_recovery_e2e.mjs`.
 4. ~~**Session agent-update gate**~~ — closed in `management_sessions_family_e2e.mjs`.
 5. ~~**Overrides clearing rules**~~ — closed in `managed_model_override_e2e.mjs`.
-6. **`agent.thinking` start-only preview + no-replay-on-reconnect** — start-only,
-   private-content suppression, and preview-to-buffered id reconciliation are now
-   deterministic in the existing Rust streaming suite; marker/content ordering is also
-   covered by `managed_real_thinking_e2e.mjs` with a thinking-capable provider. Generic
-   reconnect/replay is covered by `managed_reconnect_real_e2e.mjs`; the combined
-   thinking-specific no-replay assertion remains provider-gated.
+6. ~~**`agent.thinking` start-only preview + no-replay-on-reconnect**~~ — closed in
+   `managed_real_thinking_e2e.mjs`: a thinking-capable live provider produces one
+   start-only preview; the durable contentless marker reuses its id; the client drops
+   that SSE connection, immediately reopens with the same opt-in, observes no replayed
+   `event_start`/`event_delta`, and recovers the complete answer plus idle from the
+   reopened stream and authoritative history. The deterministic Rust streaming suite
+   independently covers private-content suppression and preview reconciliation.
 7. ~~**Deployment run failure taxonomy + auto-pause**~~ — closed across
    `management_deployments_e2e.mjs` and `management_deployment_schedule_e2e.mjs`:
    the exact tagged run-error union replaces the former free-form/fixed-null field;
@@ -422,8 +423,9 @@ KIMI's raw `/messages` returns `thinking` blocks, and awaken now surfaces them a
    content**, so the reasoning text stays off the answer wire. AI-SDK / AG-UI drop the marker
    (not in their vocabulary).
 
-Validated live: `managed_real_thinking_e2e` (KIMI) asserts the contentless marker precedes
-the answer and no reasoning text leaks. **No regression**: echo mode produces no reasoning →
+Validated live: `managed_real_thinking_e2e` (KIMI) asserts the start-only preview,
+contentless durable marker, disconnect/reconnect no-replay rule, answer recovery, and
+that no reasoning text leaks. **No regression**: echo mode produces no reasoning →
 no marker → the serde golden and all deterministic suites are unchanged. Blast radius was
 small (base-enum additions rippled to only a handful of `_`-less matches). This moves
 `agent.thinking` from ▲ to ✅.
