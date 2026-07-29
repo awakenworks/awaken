@@ -14,6 +14,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use axum::extract::State;
 use axum::routing::get;
@@ -106,6 +107,7 @@ impl RuntimeCapability {
 
 struct CapabilityState {
     tools: Vec<ToolDescriptor>,
+    plugins: Vec<PluginCapability>,
     runtimes: Arc<dyn RuntimeCapabilitySource>,
 }
 
@@ -134,17 +136,30 @@ pub fn static_runtime_capabilities(
 
 /// Mount `GET /v1/capabilities` over the host's advertised tool descriptors and
 /// the runtime catalog projection supplied by the composition root.
-pub fn capabilities_router(tools: Vec<ToolDescriptor>, runtimes: Vec<RuntimeCapability>) -> Router {
-    capabilities_router_with_source(tools, Arc::new(StaticRuntimeCapabilities(runtimes)))
+pub fn capabilities_router(
+    tools: Vec<ToolDescriptor>,
+    plugins: Vec<PluginCapability>,
+    runtimes: Vec<RuntimeCapability>,
+) -> Router {
+    capabilities_router_with_source(
+        tools,
+        plugins,
+        Arc::new(StaticRuntimeCapabilities(runtimes)),
+    )
 }
 
 pub fn capabilities_router_with_source(
     tools: Vec<ToolDescriptor>,
+    plugins: Vec<PluginCapability>,
     runtimes: Arc<dyn RuntimeCapabilitySource>,
 ) -> Router {
     Router::new()
         .route("/v1/capabilities", get(get_capabilities))
-        .with_state(Arc::new(CapabilityState { tools, runtimes }))
+        .with_state(Arc::new(CapabilityState {
+            tools,
+            plugins,
+            runtimes,
+        }))
 }
 
 async fn get_capabilities(State(state): State<Arc<CapabilityState>>) -> Json<Value> {
@@ -169,7 +184,7 @@ async fn get_capabilities(State(state): State<Arc<CapabilityState>>) -> Json<Val
     Json(json!({
         "runtime_version": env!("CARGO_PKG_VERSION"),
         "tools": tool_caps,
-        "plugins": plugin_catalog(),
+        "plugins": plugin_catalog(&state.plugins),
         "policies": policy_catalog(),
         "runtimes": runtime_caps,
         "sandbox_execution_policy": sandbox_execution_policy_capability(),
@@ -202,28 +217,20 @@ fn policy_cap(id: &str, config_schema: Value) -> Value {
     json!({ "id": id, "config_section": id, "config_schema": config_schema })
 }
 
-/// The installable plugins whose per-plugin `plugin_config` section the editor can
-/// render from `config_schema`. Only plugins that expose a config schema are
-/// listed (the permission engine is a gate policy, not a config-section plugin).
-fn plugin_catalog() -> Vec<Value> {
-    vec![
-        plugin_cap(
-            awaken_ext_state_machine::STATE_MACHINE_PLUGIN_ID,
-            awaken_ext_state_machine::config_schema(),
-        ),
-        plugin_cap(
-            awaken_ext_compact::COMPACT_PLUGIN_ID,
-            awaken_ext_compact::compact_config_schema(),
-        ),
-        plugin_cap(
-            awaken_ext_memory::MEMORY_PLUGIN_ID,
-            awaken_ext_memory::memory_config_schema(),
-        ),
-    ]
-}
-
-fn plugin_cap(id: &str, config_schema: Value) -> Value {
-    json!({ "id": id, "config_sections": [id], "config_schema": config_schema })
+/// Public projection of the exact plugin capability rows supplied by the runtime
+/// composition root. The config plane owns no plugin inventory of its own.
+fn plugin_catalog(plugins: &[PluginCapability]) -> Vec<Value> {
+    plugins
+        .iter()
+        .map(|plugin| {
+            json!({
+                "id": plugin.id,
+                "config_sections": plugin.schema_keys,
+                "config_schema": plugin.config_schema,
+                "bound": plugin.bound,
+            })
+        })
+        .collect()
 }
 
 /// Grammar the field schema cannot convey (isolation ranking and enforceability).
@@ -339,20 +346,27 @@ mod tests {
     }
 
     #[test]
-    fn plugin_catalog_lists_schema_carrying_plugins() {
-        let plugins = plugin_catalog();
-        // The editor's plugin picker + schema-driven config forms consume this.
-        assert!(plugins.iter().any(|p| p["id"] == "state_machine"));
-        assert!(plugins.iter().any(|p| p["id"] == "compact"));
-        assert!(plugins.iter().any(|p| p["id"] == "memory"));
-        // Every listed plugin carries an object config_schema (never null), so the
-        // editor renders a form rather than a raw JSON textarea.
-        assert!(
-            plugins
-                .iter()
-                .all(|p| p["config_schema"].is_object() && p["config_sections"].is_array()),
-            "every plugin needs an object config_schema: {plugins:?}"
+    fn plugin_catalog_projects_only_the_injected_runtime_facts() {
+        // Cause/effect decision table:
+        // R1 injected capability -> exact id/keys/schema/bound public projection;
+        // R2 absent capability   -> no Config Service fallback row is fabricated.
+        let source = vec![PluginCapability {
+            id: "external.example".into(),
+            schema_keys: vec!["external_config".into()],
+            config_schema: Some(json!({"type": "object"})),
+            bound: Default::default(),
+        }];
+        let plugins = plugin_catalog(&source);
+        assert_eq!(plugins.len(), 1, "R1/R2");
+        assert_eq!(plugins[0]["id"], "external.example", "R1");
+        assert_eq!(
+            plugins[0]["config_sections"],
+            json!(["external_config"]),
+            "R1"
         );
+        assert!(plugins[0]["config_schema"].is_object(), "R1");
+        assert!(plugins[0]["bound"].is_object(), "R1");
+        assert!(plugins.iter().all(|p| p["id"] != "state_machine"), "R2");
     }
 
     #[test]

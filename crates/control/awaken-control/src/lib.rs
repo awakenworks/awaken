@@ -70,6 +70,7 @@ use awaken_protocol_managed::{
     AgentRegistryState, DeploymentState, EnvironmentState, UserProfileState, VaultState,
     agents_router, deployments_router, environments_router, user_profiles_router, vault_router,
 };
+use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_tenancy::ScopeId;
 use awaken_webhook_managed::{WebhookLifecycleSink, assemble_with_session_repo};
@@ -205,6 +206,8 @@ pub struct ControlRouterInput {
     pub plane: ConfigPlane,
     /// The host's global tool descriptors, for `GET /v1/capabilities`.
     pub global_tools: Vec<ToolDescriptor>,
+    /// The exact installable plugin catalog composed by the runtime host.
+    pub plugins: Vec<PluginCapability>,
     /// Runtime capabilities projected by the composition root from the one
     /// executable catalog.
     pub runtimes: Arc<dyn RuntimeCapabilitySource>,
@@ -246,6 +249,7 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
         deployment_state,
         plane,
         global_tools,
+        plugins,
         runtimes,
         org_id,
         iam,
@@ -328,7 +332,7 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
     // Capability snapshot (`GET /v1/capabilities`): the host's tool descriptors +
     // installable plugins (with config schema) so the console authors data-driven.
     let capabilities =
-        awaken_config_service::capabilities_router_with_source(global_tools, runtimes);
+        awaken_config_service::capabilities_router_with_source(global_tools, plugins, runtimes);
 
     // The IAM guard (when enabled) wraps the admin + vault routers only. An
     // axum layer binds to the routes present when it is applied, so merging

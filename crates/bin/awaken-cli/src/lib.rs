@@ -1468,6 +1468,7 @@ async fn management_router_over(
         deployment_state: deployment_state.clone(),
         plane,
         global_tools: global,
+        plugins: awaken_runtime_host::platform_plugin_capabilities(),
         runtimes: Arc::new(LiveRuntimeCapabilities {
             initial: assembly.local_acp_observations.clone(),
             workers: awaken_server::worker_directory(),
