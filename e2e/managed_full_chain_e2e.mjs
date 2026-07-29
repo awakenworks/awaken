@@ -23,6 +23,8 @@ import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEn
 
 const PORT = Number(process.env.E2E_PORT ?? 38221);
 const BETAS = ['managed-agents-2026-04-01'];
+const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
+const SKILL_HEADERS = { 'anthropic-beta': 'skills-2025-10-02' };
 const TMP = path.join(os.tmpdir(), `awaken-fullchain-e2e-${process.pid}`);
 const STORE_DIR = `${TMP}/storage`;
 const README = 'SEED_README_FULLCHAIN';
@@ -94,7 +96,7 @@ async function main() {
     const c = client();
 
     // 1) Configure resources via the API: a fresh memory store + the github repo.
-    const mem = await c.post('/v1/memory_stores');
+    const mem = await c.post('/v1/memory_stores', { headers: MEMORY_HEADERS });
     assert.ok(mem.id, 'POST /v1/memory_stores returned an id');
     pass(`configured a memory_store via the API: ${mem.id}`);
 
@@ -142,7 +144,9 @@ async function main() {
     await c.beta.sessions.delete(session.id, { betas: BETAS });
     for (let i = 0; i < 20; i += 1) {
       try {
-        const page = await c.get(`/v1/memory_stores/${mem.id}/memories`);
+        const page = await c.get(`/v1/memory_stores/${mem.id}/memories`, {
+          headers: MEMORY_HEADERS,
+        });
         memContent = (page?.data ?? []).map((memory) => memory.content ?? '').join('\n');
       } catch {
         memContent = '';
@@ -229,7 +233,7 @@ async function main() {
       await c.beta.sessions.delete(authored.id, { betas: BETAS });
     };
     const skillVersions = async () => {
-      const response = await c.get('/v1/skills/authored/versions');
+      const response = await c.get('/v1/skills/authored/versions', { headers: SKILL_HEADERS });
       return response.data ?? [];
     };
     await author('author-skill-v1');
@@ -242,10 +246,14 @@ async function main() {
     );
     await author('author-skill-v2');
     assert.deepEqual((await skillVersions()).map((version) => version.version), ['1', '2']);
-    const authoredLatest = await c.get('/v1/skills/authored/versions/latest');
+    const authoredLatest = await c.get('/v1/skills/authored/versions/latest', {
+      headers: SKILL_HEADERS,
+    });
     assert.equal(authoredLatest.version, '2');
     assert.match(
-      await (await fetch(`http://127.0.0.1:${PORT}/v1/skills/authored/versions/2/content`)).text(),
+      await (await fetch(`http://127.0.0.1:${PORT}/v1/skills/authored/versions/2/content`, {
+        headers: SKILL_HEADERS,
+      })).text(),
       /AUTHORED_SKILL_V2/u,
     );
     const consumingSession = await c.beta.sessions.create({

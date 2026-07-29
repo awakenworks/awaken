@@ -24,6 +24,7 @@ import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEn
 
 const PORT = Number(process.env.E2E_PORT ?? 38213);
 const BETAS = ['managed-agents-2026-04-01'];
+const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
 const STORE_DIR = path.join(os.tmpdir(), `awaken-mem-extract-durable-e2e-${process.pid}`);
 // A distinctive, once-only memory. The deterministic extractor saves a memory
 // named after a `fact-<tag>` token in the transcript; a recall prompt WITHOUT such
@@ -97,7 +98,10 @@ async function main() {
     servers.push(a.server);
     await waitForPort(PORT);
 
-    const store = await client.post('/v1/memory_stores', { body: { name: 'durable-extraction' } });
+    const store = await client.post('/v1/memory_stores', {
+      body: { name: 'durable-extraction' },
+      headers: MEMORY_HEADERS,
+    });
     const readOnly = await client.beta.sessions.create({
       agent: 'assistant',
       betas: BETAS,
@@ -120,7 +124,9 @@ async function main() {
       'a read-only binding must not enqueue durable extraction work',
     );
     assert.deepEqual(
-      (await client.get(`/v1/memory_stores/${store.id}/memories`)).data,
+      (await client.get(`/v1/memory_stores/${store.id}/memories`, {
+        headers: MEMORY_HEADERS,
+      })).data,
       [],
       'a denied read-only activation must not mutate the bound MemoryStore',
     );

@@ -27,6 +27,8 @@ import { REPO_ROOT } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38143);
 const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
+const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
+const SKILL_HEADERS = { 'anthropic-beta': 'skills-2025-10-02' };
 const MARKER = 'CONTAINER-AGENT-OK';
 const ENGINE = process.env.AWAKEN_E2E_CONTAINER_ENGINE ?? 'docker';
 assert.ok(['docker', 'podman'].includes(ENGINE), `unsupported container engine ${ENGINE}`);
@@ -365,11 +367,13 @@ async function main() {
       file: await toFile(Buffer.from('CONTAINER-FILE-OK'), 'input.txt'),
       betas: BETAS,
     });
-    const memory = await client.post('/v1/memory_stores');
+    const memory = await client.post('/v1/memory_stores', { headers: MEMORY_HEADERS });
     await client.post(`/v1/memory_stores/${memory.id}/memories`, {
       body: { path: '/seed.txt', content: 'CONTAINER-MEMORY-SEED' },
+      headers: MEMORY_HEADERS,
     });
     await client.post('/v1/skills', {
+      headers: SKILL_HEADERS,
       body: {
         id: 'delivered-container',
         content: '---\ndescription: delivered container skill\n---\nCONTAINER-DELIVERED-SKILL-OK',
@@ -552,7 +556,9 @@ async function main() {
     // release edge. Read-only resource APIs must never acquire this write side effect.
     await client.beta.sessions.delete(session.id, { betas: BETAS });
     assert.equal(testContainers({ all: true }).length, 0, 'Session release must reap its container');
-    const harvested = await client.get(`/v1/memory_stores/${memory.id}/memories`);
+    const harvested = await client.get(`/v1/memory_stores/${memory.id}/memories`, {
+      headers: MEMORY_HEADERS,
+    });
     assert.equal(
       harvested.data.find((entry) => entry.path === '/container.txt')?.content,
       'CONTAINER-MEMORY-OK',

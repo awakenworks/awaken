@@ -12,7 +12,7 @@
 import assert from 'node:assert/strict';
 import { withScenarioServer, pass } from './harness.mjs';
 
-const BETA = 'managed-agents-2026-04-01';
+const BETA = 'agent-memory-2026-07-22';
 const H = { 'content-type': 'application/json', 'anthropic-beta': BETA };
 
 async function main() {

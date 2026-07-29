@@ -23,6 +23,7 @@ import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEn
 
 const PORT = Number(process.env.E2E_PORT ?? 38211);
 const BETAS = ['managed-agents-2026-04-01'];
+const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
 const STORE_DIR = `/tmp/awaken-memstore-durable-e2e-${process.pid}`;
 const MARKER = 'PERSISTED_MARKER_7788';
 
@@ -52,7 +53,9 @@ async function approveGated(sid, evs, approved) {
 
 async function memContent(id) {
   try {
-    const page = await client.get(`/v1/memory_stores/${id}/memories`);
+    const page = await client.get(`/v1/memory_stores/${id}/memories`, {
+      headers: MEMORY_HEADERS,
+    });
     return (page?.data ?? []).map((memory) => memory.content ?? '').join('\n');
   } catch {
     return '';
@@ -70,7 +73,7 @@ async function main() {
     servers.push(a.server);
     await waitForPort(PORT);
 
-    const mem = await client.post('/v1/memory_stores');
+    const mem = await client.post('/v1/memory_stores', { headers: MEMORY_HEADERS });
     assert.ok(mem.id, 'POST /v1/memory_stores returned an id');
 
     const session = await client.beta.sessions.create({

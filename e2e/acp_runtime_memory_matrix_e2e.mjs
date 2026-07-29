@@ -22,6 +22,7 @@ import { withServer, pass } from './harness.mjs';
 import { loadKimiConfig } from './kimi_config.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
+const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
 const RUNTIMES = (process.env.ACP_RUNTIMES ?? 'kimi,opencode,claude,hermes')
   .split(',')
   .map((runtime) => runtime.trim())
@@ -96,7 +97,9 @@ async function driveUntil(client, sessionId, text, check) {
 }
 
 async function memoryContent(client, storeId) {
-  const page = await client.get(`/v1/memory_stores/${storeId}/memories`);
+  const page = await client.get(`/v1/memory_stores/${storeId}/memories`, {
+    headers: MEMORY_HEADERS,
+  });
   return (page?.data ?? []).map((memory) => memory.content ?? '').join('\n');
 }
 
@@ -189,10 +192,12 @@ async function main() {
         if (storeId === null) {
           const store = await client.post('/v1/memory_stores', {
             body: { name: 'cross-runtime-memory' },
+            headers: MEMORY_HEADERS,
           });
           storeId = store.id;
           await client.post(`/v1/memory_stores/${storeId}/memories`, {
             body: { path: '/seed.md', content: seed },
+            headers: MEMORY_HEADERS,
           });
         }
 

@@ -230,6 +230,8 @@ pub use awaken_tenancy::WorkspaceScope;
 
 /// The endpoint-specific beta required by the standalone Skills resource API.
 pub const SKILLS_BETA: &str = "skills-2025-10-02";
+/// The endpoint-specific beta that replaces the Managed beta on Memory APIs.
+pub const MEMORY_BETA: &str = "agent-memory-2026-07-22";
 
 fn has_beta(req: &Request, expected: &str) -> bool {
     req.headers()
@@ -243,15 +245,35 @@ fn has_beta(req: &Request, expected: &str) -> bool {
 /// Axum middleware enforcing the `anthropic-beta: managed-agents-2026-04-01` opt-in
 /// on every ordinary Managed Agents endpoint. Applied by each executable
 /// composition root, NOT baked into [`router`], so router-level tests remain focused
-/// on domain behavior. Endpoint families with their own beta (Memory, User Profiles,
-/// Files) are deliberately left to their family-specific gate. Skills is gated
-/// here with its own `skills-2025-10-02` beta rather than the Managed beta.
+/// on domain behavior. Memory and Skills are gated here with their exclusive
+/// endpoint-specific betas; User Profiles and Files remain with their family gates.
 pub async fn enforce_managed_beta(
     req: Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     let path = req.uri().path();
     let is_family = |family: &str| path == family || path.starts_with(&format!("{family}/"));
+    if is_family("/v1/memory_stores") {
+        let has_memory = has_beta(&req, MEMORY_BETA);
+        let has_managed = has_beta(&req, awaken_managed_bridge::MANAGED_BETA);
+        if !has_memory || has_managed {
+            let message = if has_memory && has_managed {
+                format!(
+                    "the {MEMORY_BETA} beta replaces {managed} on memory store endpoints; do not send both",
+                    managed = awaken_managed_bridge::MANAGED_BETA,
+                )
+            } else {
+                format!(
+                    "the {MEMORY_BETA} beta is required: send the `anthropic-beta: {MEMORY_BETA}` header"
+                )
+            };
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse::new("invalid_request_error", message)),
+            )
+                .into_response();
+        }
+    }
     if is_family("/v1/skills") && !has_beta(&req, SKILLS_BETA) {
         return (
             StatusCode::BAD_REQUEST,

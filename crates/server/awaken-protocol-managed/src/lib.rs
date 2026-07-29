@@ -58,7 +58,7 @@ pub use routes::deployments::{
 pub use routes::environments::{EnvironmentState, environments_router};
 pub use routes::user_profiles::{UserProfileState, user_profiles_router};
 pub use routes::vaults::{McpProbe, McpProbeStatus, VaultState, vault_router};
-pub use routes::{SKILLS_BETA, WorkspaceScope, enforce_managed_beta, router};
+pub use routes::{MEMORY_BETA, SKILLS_BETA, WorkspaceScope, enforce_managed_beta, router};
 // The session-repository port family now lives in `awaken-session-contract`;
 // re-exported so existing `awaken_protocol_managed::…` paths keep resolving.
 pub use awaken_ext_memory::{

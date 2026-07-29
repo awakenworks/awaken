@@ -16,6 +16,8 @@ import { spawnServer, stopServer, waitForPort } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38172);
 const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
+const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
+const SKILL_HEADERS = { 'anthropic-beta': 'skills-2025-10-02' };
 const TMP = path.join(os.tmpdir(), `awaken-namespace-session-e2e-${process.pid}`);
 const TIER = process.env.SESSION_ENVIRONMENT_TIER ?? 'namespace';
 const AGENT = 'namespace-agent';
@@ -147,18 +149,20 @@ async function main() {
   try {
     await waitForPort(PORT, 180_000, server);
     let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: running.baseUrl });
-    const memory = await client.post('/v1/memory_stores');
+    const memory = await client.post('/v1/memory_stores', { headers: MEMORY_HEADERS });
     await client.post(`/v1/memory_stores/${memory.id}/memories`, {
       body: { path: '/seed.txt', content: 'NAMESPACE-MEMORY-OK' },
+      headers: MEMORY_HEADERS,
     });
     const createdSkill = await client.post('/v1/skills', {
+      headers: SKILL_HEADERS,
       body: {
         id: 'delivered-namespace',
         content: '---\ndescription: namespace skill\n---\nNAMESPACE-SKILL-OK',
       },
     });
     assert.equal(createdSkill.id, 'delivered-namespace');
-    const listedSkills = await client.get('/v1/skills');
+    const listedSkills = await client.get('/v1/skills', { headers: SKILL_HEADERS });
     assert.ok(
       listedSkills.data.some((skill) => skill.id === 'delivered-namespace'),
       'the Skill is visible in the runtime catalog before Session creation',

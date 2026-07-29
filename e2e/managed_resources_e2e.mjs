@@ -22,6 +22,7 @@ import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import { withServer, pass } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
+const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
 // Distinctive test markers, not credentials.
 const TOKEN = 'ZEBRA_QUASAR_4718'; // awaken-allow: secret
 const ARTIFACT = 'DONE_9931'; // awaken-allow: secret
@@ -176,7 +177,7 @@ async function main() {
       // ── 3. MEMORY: write-back + cross-session read ─────────────────────────────
       // The memory-store endpoints have no typed SDK binding, so we drive them via the
       // SDK's low-level `client.post` / `client.get` (still the TS SDK).
-      const mem = await client.post('/v1/memory_stores');
+      const mem = await client.post('/v1/memory_stores', { headers: MEMORY_HEADERS });
       assert.ok(mem.id, 'POST /v1/memory_stores returned an id');
       pass(`memory store created: ${mem.id}`);
 
@@ -197,7 +198,9 @@ async function main() {
         async () => {
           // The Memory API is a read-only observation here. The governed mount
           // writes through to the same repository; Files GET has no hidden write edge.
-          const page = await client.get(`/v1/memory_stores/${mem.id}/memories`);
+          const page = await client.get(`/v1/memory_stores/${mem.id}/memories`, {
+            headers: MEMORY_HEADERS,
+          });
           memContent = (page?.data ?? []).map((memory) => memory.content ?? '').join('\n');
           return memContent.includes(MEMTOKEN);
         },

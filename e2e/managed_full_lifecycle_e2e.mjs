@@ -24,6 +24,7 @@ import { withScenarioServer, pass } from './harness.mjs';
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
+const MEMORY_BETAS = ['agent-memory-2026-07-22'];
 const CALC_TOKEN = 'calc-bearer-token-full-e2e'; // awaken-allow: secret
 const FILE_MARK = 'FILE_MARK_5150'; // awaken-allow: secret
 const MEM_MARK = 'MEM_MARK_2718'; // awaken-allow: secret
@@ -100,13 +101,13 @@ async function main() {
       const store = await client.beta.memoryStores.create({
         name: 'kb',
         description: 'seeded knowledge base',
-        betas: BETAS,
+        betas: MEMORY_BETAS,
       });
       assert.equal(store.type, 'memory_store');
       const seeded = await client.beta.memoryStores.memories.create(store.id, {
         path: '/kb.md',
         content: `remember: ${MEM_MARK}`,
-        betas: BETAS,
+        betas: MEMORY_BETAS,
       });
       assert.equal(seeded.path, '/kb.md');
       pass(`memory store created + seeded: ${store.id}`);
@@ -216,14 +217,14 @@ async function main() {
         (gotAgent.mcp_servers ?? []).some((m) => m.name === 'calc'),
         'the agent retains its declared MCP server',
       );
-      const memList = await drain(client.beta.memoryStores.memories.list(store.id, { betas: BETAS }));
+      const memList = await drain(client.beta.memoryStores.memories.list(store.id, { betas: MEMORY_BETAS }));
       assert.ok(
         memList.some((m) => m.type === 'memory' && m.path === '/kb.md'),
         'the seeded memory is listed',
       );
       const gotMem = await client.beta.memoryStores.memories.retrieve(seeded.id, {
         memory_store_id: store.id,
-        betas: BETAS,
+        betas: MEMORY_BETAS,
       });
       assert.ok((gotMem.content ?? '').includes(MEM_MARK), 'the seeded memory content reads back');
       // (a global files.list() is session-output-scoped in this build; the uploaded

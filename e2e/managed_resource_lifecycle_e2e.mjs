@@ -26,6 +26,7 @@ import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import { withRealServer, pass } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
+const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
 
 async function listResources(client, sessionId) {
   const out = [];
@@ -41,7 +42,7 @@ async function main() {
       file: await toFile(Buffer.from('live-attach bytes'), 'doc.txt'),
       betas: BETAS,
     });
-    const mem = await client.post('/v1/memory_stores');
+    const mem = await client.post('/v1/memory_stores', { headers: MEMORY_HEADERS });
 
     // ── create-time backfill: a session created WITH resources echoes them ──────
     const seeded = await client.beta.sessions.create({

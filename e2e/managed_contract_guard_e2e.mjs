@@ -15,6 +15,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { withRealServer, pass } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
+const MEMORY_BETA = 'agent-memory-2026-07-22';
 const PORT = Number(process.env.E2E_PORT ?? 38142);
 
 // Raw POST /v1/sessions with the beta + version headers the SDK would send, so the
@@ -65,6 +66,29 @@ async function main() {
       }
       assert.equal(afterHeaderRejects.length, 0, 'A2 rejected create has no mutation');
       pass('Managed beta header decision rules A1/A2/A5 reject before mutation');
+
+      // Causes: Memory endpoint with missing, Managed-only, Memory-only, or both
+      // endpoint betas. Constraint: Memory beta replaces (is not combined with)
+      // the Managed beta. Effects: A3 reaches the handler; A4 and missing/wrong
+      // partitions reject before resource lookup or mutation.
+      for (const [rule, beta, expected] of [
+        ['A3 memory-only', MEMORY_BETA, 200],
+        ['A4 both', `${MEMORY_BETA},${BETAS[0]}`, 400],
+        ['A4 managed-only', BETAS[0], 400],
+        ['A4 missing', null, 400],
+      ]) {
+        const response = await fetch(`${baseUrl}/v1/memory_stores`, {
+          headers: {
+            'x-api-key': 'e2e-dummy',
+            ...(beta ? { 'anthropic-beta': beta } : {}),
+          },
+        });
+        assert.equal(response.status, expected, rule);
+        if (expected === 400) {
+          assert.equal((await response.json()).error.type, 'invalid_request_error', rule);
+        }
+      }
+      pass('Memory beta header decision rules A3/A4 are exclusive and fail closed');
 
       // --- retrieve unknown session -> 404 + not_found_error envelope ---
       await assert.rejects(

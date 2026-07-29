@@ -273,7 +273,8 @@ non-regression and second-turn relaunch coverage.
 | Inbound events persist under their receipt id and converge `processed_at` according to the documented immediate/queued classes | events-and-streaming / reference | existing adapter tests + `managed_system_message_e2e.mjs` | decision H9; no receipt-only shadow path |
 | `system.message` content bounds, primary-model capability, and `requires_action` ordering | events-and-streaming | existing adapter/HITL tests + native/ACP SDK E2E | decision H1-H7; whole-batch rejection precedes mutation |
 | Event-delta admission at 100/101 and start-only thinking reconciliation | events-and-streaming | existing streaming suite | decision E3/E4; thinking content never crosses the wire and committed ids equal preview ids |
-| Managed beta gate covers ordinary Session/Agent/Environment/Deployment/Vault families; Skills uses its own beta | overview / skills / reference | existing contract-guard + Skills E2E | decision A1/A2/A5/A7; family-specific Memory header remains a separate open phase |
+| Managed beta gate covers ordinary Session/Agent/Environment/Deployment/Vault families; Skills uses its own beta | overview / skills / reference | existing contract-guard + Skills E2E | decision A1/A2/A5/A7; Memory follows the exclusive A3/A4 rule below |
+| Memory Store endpoints require only `agent-memory-2026-07-22`; missing, Managed-only, or both headers reject before domain work | using-agent-memory / beta-headers / reference | existing `managed_contract_guard_e2e.mjs` + Memory family/lifecycle suites | decision A3/A4; one prefix gate covers the collection and every subresource |
 
 Verified against source before writing: `deployments.rs` (`projected_schedule`/`active_cron` +
 write-time `Cron::parse` 400), `cron.rs` (dependency-free 5-field evaluator),
@@ -345,7 +346,6 @@ assert against absent features.
 | Doc surface | Status in awaken | Evidence |
 |---|---|---|
 | **Dreams** (`/v1/dreams`, `dreaming-2026-04-21` header, create/poll/cancel/archive) | Not implemented — research preview | no `dreams`/`Dream` route or type in `crates/` |
-| **`agent-memory-2026-07-22` endpoint header + two-header 400 conflict** | Not implemented — awaken keys memory-store endpoints off the same managed beta | no `agent-memory-2026-07-22` string in `crates/` |
 | **Cloud env `packages` provisioning** (pip/npm/apt/cargo/gem/go, version pinning) | Implemented through the one neutral Sandbox provisioning seam. Podman resolves the selected base image to its exact local ID, builds/reuses a content-addressed derived image, and the real workload observes the installed effect. Providers without package provisioning reject before workload creation; there is no fallback. | Admission/update semantics: `management_environments_e2e.mjs`; real success/fail-closed behavior: `managed_container_agent_e2e.mjs`; provider/cache side effects: `awaken-sandbox-container` cause-table tests |
 | **Rate limits** (300 create/min, 1200 read/min; 1,000-scheduled-deployment cap; 10s jitter) | Out of scope — org/infra-level policy, not modeled in the core wire | no per-org rate-limit middleware in `protocol-managed` |
 | **100k tool-output / oversized-block spill to file (preview + path)** | Partial / deferred — tracked open item **C11**; compaction covers token/message windows, not single-block spill | 6 compaction suites are window-only |
