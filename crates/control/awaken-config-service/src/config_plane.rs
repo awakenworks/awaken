@@ -21,6 +21,7 @@ use awaken_tenancy::ScopeId;
 use crate::binding_resolver::ModelPublicationResolver;
 use crate::credential_reference::{CredentialReferenceValidator, validate_credential_references};
 use crate::installed_catalog::InstalledAgentCatalog;
+use crate::plugin_validation::{PluginConfigurationValidator, validate_plugin_configuration};
 use crate::publication::{
     PublishError, ValidationIssue, prepare_agent_publication, snapshot_metadata,
 };
@@ -65,6 +66,7 @@ pub struct ConfigService {
     /// publish through an implicit host/provider fallback.
     pub(crate) model_publication_resolver: Arc<dyn ModelPublicationResolver>,
     pub(crate) credential_reference_validator: Option<Arc<dyn CredentialReferenceValidator>>,
+    pub(crate) plugin_configuration_validators: Vec<Arc<dyn PluginConfigurationValidator>>,
 }
 
 impl ConfigService {
@@ -104,9 +106,10 @@ impl ConfigService {
         )
         .await
         .map_err(|error| ValidationIssue {
-            path: "mcp_servers".to_string(),
-            message: error,
+            path: error.path,
+            message: error.message,
         })?;
+        validate_plugin_configuration(&self.plugin_configuration_validators, &resolved.config)?;
         awaken_config_store::compile_published(
             &resolved.config,
             catalog,
@@ -236,7 +239,13 @@ impl ConfigService {
             &resolved.config,
         )
         .await
-        .map_err(PublishError::Unresolvable)?;
+        .map_err(|error| {
+            PublishError::Unresolvable(format!("{}: {}", error.path, error.message))
+        })?;
+        validate_plugin_configuration(&self.plugin_configuration_validators, &resolved.config)
+            .map_err(|error| {
+                PublishError::Unresolvable(format!("{}: {}", error.path, error.message))
+            })?;
         let mut metadata = snapshot_metadata(&resolved);
         if let Some(defaults) = self.resources.as_ref().and_then(|store| {
             store

@@ -46,6 +46,9 @@ pub(crate) struct SessionCtx {
     /// claim-prepared MCP servers). They join every attempt through
     /// `RuntimeRunContext` without rewriting the immutable Agent publication.
     pub(crate) session_plugins: Vec<Arc<dyn awaken_runtime_contract::plugin::Plugin>>,
+    /// Session lifetime for the ACP-facing projection of the configured
+    /// WebSearch RawTool. Native sessions leave this empty.
+    pub(crate) _web_search_mcp: Option<crate::AcpToolExport>,
     /// Where this session's runs execute tool calls (ADR-0044/0046), cloned from
     /// `SharedHost::hand_placement` at session creation: the session-wide remote hand
     /// and the per-run placement provider, behind one type owning their precedence.
