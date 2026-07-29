@@ -28,9 +28,26 @@ use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::resume::ResumeResult;
 
-use harness::{activation, activation_on, blocking_tool_runtime, text_runtime, tool_runtime};
+use harness::{
+    FlakyDispatchStore, activation, activation_on, blocking_tool_runtime, text_runtime,
+    tool_runtime,
+};
 
 type MemWorker = DispatchWorker<MemoryDispatchStore>;
+type FlakyWorker = DispatchWorker<FlakyDispatchStore>;
+
+struct BlackholeWake;
+
+#[async_trait]
+impl WakeSignal for BlackholeWake {
+    async fn publish(&self) -> Result<(), DispatchError> {
+        Ok(())
+    }
+
+    async fn wait(&self) {
+        std::future::pending::<()>().await
+    }
+}
 
 /// A resolver over a fixed thread → worker map, the test analogue of the host's
 /// session lookup. All workers share the pool's store and owner.
@@ -53,6 +70,41 @@ impl WorkerResolver<MemoryDispatchStore> for MapResolver {
     }
 }
 
+struct RejectingResolver {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl WorkerResolver<MemoryDispatchStore> for RejectingResolver {
+    async fn worker_for(
+        &self,
+        _thread_id: &ThreadId,
+        _agent_id: Option<&str>,
+    ) -> Result<Arc<MemWorker>, Error> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(Error::Execution(
+            awaken_runtime_contract::execution::Error::Execution(
+                "synthetic provisioning failure".into(),
+            ),
+        ))
+    }
+}
+
+struct FlakyResolver {
+    worker: Arc<FlakyWorker>,
+}
+
+#[async_trait]
+impl WorkerResolver<FlakyDispatchStore> for FlakyResolver {
+    async fn worker_for(
+        &self,
+        _thread_id: &ThreadId,
+        _agent_id: Option<&str>,
+    ) -> Result<Arc<FlakyWorker>, Error> {
+        Ok(self.worker.clone())
+    }
+}
+
 /// Build a worker over the shared store, with its own runtime + commit boundary.
 fn worker_over(
     runtime: Arc<Runtime>,
@@ -72,22 +124,52 @@ async fn wait_for(cond: impl Fn() -> bool) -> bool {
     cond()
 }
 
+#[tokio::test]
+async fn idle_pool_uses_one_fallback_poller_independent_of_execution_capacity() {
+    // Cause/effect decision table:
+    // | Rule | queued work | execution capacity | trigger | queue-claim effect |
+    // | P1 | absent | 32 | startup | one recovery poll |
+    // | P2 | absent | 32 | one fallback tick | one additional poll |
+    // | P3 | present | >1 | successful claim | peer permit scales execution |
+    // P3 is covered by the existing two-thread routing test; P1/P2 prevent idle
+    // queue traffic from being multiplied by the execution-capacity setting.
+    let store = Arc::new(FlakyDispatchStore::new(0));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let worker = Arc::new(DispatchWorker::new(
+        text_runtime(),
+        store.clone(),
+        commit,
+        "idle-pool",
+    ));
+    let interval = Duration::from_secs(1);
+    let pool = DispatchPool::spawn_with_wake(
+        store.clone(),
+        Arc::new(SystemClock),
+        "idle-pool",
+        DEFAULT_LEASE_MS,
+        DispatchServiceConfig {
+            poll_interval: interval,
+            ..Default::default()
+        },
+        Arc::new(FlakyResolver { worker }),
+        32,
+        Arc::new(BlackholeWake),
+    );
+
+    assert!(wait_for(|| store.claim_attempts() >= 1).await, "P1 poll");
+    assert_eq!(store.claim_attempts(), 1, "P1");
+
+    assert!(wait_for(|| store.claim_attempts() >= 2).await, "P2 poll");
+    assert_eq!(store.claim_attempts(), 2, "P2");
+
+    pool.shutdown().await;
+}
+
 /// Durable cancellation uses the same exact-claim WorkerResolver as ordinary
 /// pool draining; it does not reconstruct a second per-Session worker path.
 #[tokio::test]
 async fn pool_cancellation_resolves_and_drives_the_frozen_claim() {
     use awaken_agent_contract::agent::run::EndCause;
-
-    struct SleepingWake;
-    #[async_trait]
-    impl WakeSignal for SleepingWake {
-        async fn publish(&self) -> Result<(), DispatchError> {
-            Ok(())
-        }
-        async fn wait(&self) {
-            std::future::pending::<()>().await
-        }
-    }
 
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
@@ -106,7 +188,7 @@ async fn pool_cancellation_resolves_and_drives_the_frozen_claim() {
         },
         resolver,
         1,
-        Arc::new(SleepingWake),
+        Arc::new(BlackholeWake),
     );
     // Close background admission so this test deterministically exercises the
     // synchronous exact-run command rather than racing a drain task.
@@ -329,19 +411,6 @@ async fn pool_uses_the_injected_wake_signal() {
 /// and commit the run to the SAME terminal state the wake-driven path reaches.
 #[tokio::test]
 async fn a_lost_wake_still_drains_through_the_poll_fallback_to_the_same_outcome() {
-    struct BlackholeWake;
-    #[async_trait]
-    impl WakeSignal for BlackholeWake {
-        // The hint is dropped on the floor — as if every cross-node wake were lost.
-        async fn publish(&self) -> Result<(), DispatchError> {
-            Ok(())
-        }
-        // Never fires, so ONLY the poll fallback can drive the drain.
-        async fn wait(&self) {
-            std::future::pending::<()>().await
-        }
-    }
-
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = worker_over(text_runtime(), store.clone(), commit.clone());
@@ -909,6 +978,60 @@ async fn the_renewal_loop_keeps_a_long_run_from_being_reclaimed() {
         wait_for(|| commit.commit_count() >= 1).await,
         "the run finished once released"
     );
+    pool.shutdown().await;
+}
+
+#[tokio::test]
+async fn renewal_stops_when_claim_resolution_fails() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // Cause/effect decision table:
+    // | Rule | claim | resolver/drive | local activity | renewal/recovery effect |
+    // | R1 | live | blocked | present | exact lease renews (covered above) |
+    // | R2 | live | fails | removed | lease expires and a peer reclaims |
+    // | R3 | absent | n/a | absent | no lease write (idle-poller test) |
+    // R2 prevents the owner-wide heartbeat from indefinitely preserving an
+    // un-settled claim after provisioning or runtime construction has failed.
+    let store = Arc::new(MemoryDispatchStore::new());
+    store
+        .enqueue(RunDispatch::new(activation("resolver-failure")))
+        .await
+        .unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let lease_ms = 100;
+    let pool = DispatchPool::spawn_with_wake(
+        store.clone(),
+        Arc::new(SystemClock),
+        "failed-owner",
+        lease_ms,
+        DispatchServiceConfig {
+            poll_interval: Duration::from_secs(3600),
+            lease_renewal_interval: Some(Duration::from_millis(20)),
+            ..Default::default()
+        },
+        Arc::new(RejectingResolver {
+            calls: calls.clone(),
+        }),
+        1,
+        Arc::new(BlackholeWake),
+    );
+
+    assert!(
+        wait_for(|| calls.load(Ordering::SeqCst) == 1).await,
+        "R2 resolver failure observed"
+    );
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let reclaimed = store
+        .claim(
+            "recovery-owner",
+            lease_ms,
+            SystemClock.now_ms(),
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+    assert!(reclaimed.is_some(), "R2 failed claim must expire");
+
     pool.shutdown().await;
 }
 
