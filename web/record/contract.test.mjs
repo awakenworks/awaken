@@ -80,12 +80,21 @@ test("model setup records the single Provider Connection workflow", () => {
   const model = readFileSync(resolve(flowsDir, "01-connect-model.mjs"), "utf8");
   assert.match(model, /Provider connections/);
   assert.match(model, /Verify & import models/);
-  assert.match(model, /immediately available to Auto agents/);
+  assert.match(model, /immediately available to Agent pickers and the Assistant/);
   assert.match(model, /\/v1\/config\/provider-connections/);
   assert.doesNotMatch(model, /\/v1\/config\/providers/);
   assert.doesNotMatch(model, /\/v1\/config\/endpoints/);
   assert.doesNotMatch(model, /\/v1\/config\/offerings/);
   assert.doesNotMatch(model, /goto\(["']\/w\/default\/credentials/);
+  assert.doesNotMatch(model, /Workspace profile|Workspace-default/);
+});
+
+test("recording guidance separates Provider authentication from ACP credentials", () => {
+  const readme = readFileSync(resolve(here, "README.md"), "utf8");
+  assert.match(readme, /There is no\s+Workspace-default model step/);
+  assert.match(readme, /claude setup-token/);
+  assert.match(readme, /does not run an OAuth login inside ACP/);
+  assert.match(readme, /Codex ACP uses its native operator-selected `auth\.json`/);
 });
 
 test("the complete series covers every release-ready platform capability", () => {
@@ -97,8 +106,6 @@ test("the complete series covers every release-ready platform capability", () =>
     "04-resources-transparency.mjs",
     "05-ai-authoring.mjs",
     "06-ai-state-machine.mjs",
-    "08-agent-control-plane.mjs",
-    "09-protocol-composition.mjs",
     "10-skill-optimized-agent.mjs",
     "11-resource-provenance.mjs",
     "12-deployment-control.mjs",
@@ -114,6 +121,14 @@ test("the complete series covers every release-ready platform capability", () =>
   for (const claim of ["Skill", "resource", "Deployment", "/v1/sessions", "archive", "A2A", "revoke", "AI SDK", "AG-UI"]) {
     assert.ok(corpus.includes(claim), `series: missing supplemental proof for ${claim}`);
   }
+});
+
+test("the release set excludes configuration-only stories without an effect", () => {
+  assert.ok(!flows.includes("08-agent-control-plane.mjs"));
+  assert.ok(!flows.includes("09-protocol-composition.mjs"));
+  const strategy = readFileSync(resolve(here, "VIDEO_STRATEGY.md"), "utf8");
+  assert.match(strategy, /Agent behavior controls are proven by the Memory and State Machine runtime stories/);
+  assert.match(strategy, /Protocol composition is proven by the\s+runtime MCP and Codex ACP stories/);
 });
 
 test("the Codex ACP video proves a real adapter result rather than configuration", () => {

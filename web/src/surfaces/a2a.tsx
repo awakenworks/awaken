@@ -1,6 +1,6 @@
 import { useMutation } from "@tanstack/react-query";
 import { useState } from "react";
-import { api } from "../lib/api/client";
+import { api, ws } from "../lib/api/client";
 import { useApp } from "../lib/app-state";
 import { Button, Card } from "../components/ui";
 
@@ -8,7 +8,7 @@ export default function A2aSurface() {
   const app = useApp();
   const [agentId, setAgentId] = useState("");
   const card = useMutation({
-    mutationFn: (id: string) => api.get<Record<string, unknown>>(`/v1/delegates/${id}/card`),
+    mutationFn: (id: string) => api.get<Record<string, unknown>>(ws(`/v1/delegates/${id}/card`)),
   });
   return (
     <>

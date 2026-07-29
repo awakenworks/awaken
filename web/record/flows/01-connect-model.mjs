@@ -1,6 +1,6 @@
 // Connect Vertex Gemini through the consolidated Provider Connection workflow:
-// one descriptor-driven form verifies gcloud OAuth, persists the credential and
-// catalog once, then explicitly binds the Workspace profile.
+// one descriptor-driven form verifies gcloud OAuth, persists one credential, and
+// imports the catalog. Agent and Assistant selection consume it directly.
 
 import { LIVE_MODEL_ID as MODEL } from "../support/models.mjs";
 
@@ -21,7 +21,7 @@ export async function run({ page, goto, say, clearCaption, intro, checkpoint, ru
   await goto("/w/default/models");
   await intro(
     "Connect Gemini without repeating provider, credential, and model configuration across separate screens.",
-    "Awaken renders one backend-described Provider Connection, verifies gcloud OAuth, imports models, and hands the exact route to the Workspace profile.",
+    "Awaken renders one backend-described Provider Connection, verifies gcloud OAuth, and imports ready models for Agents and the Assistant automatically.",
   );
 
   const connectionCard = page.locator(".card").filter({ hasText: /Provider connections|供应商连接/ });
@@ -44,7 +44,7 @@ export async function run({ page, goto, say, clearCaption, intro, checkpoint, ru
   });
   await wait(500);
 
-  await say("The verified connection is immediately available to Auto agents—there is no second Workspace-default step.", 3800);
+  await say("The verified connection is immediately available to Agent pickers and the Assistant—there is no second default-model step.", 3800);
   await checkpoint("the connected model is immediately discoverable for Agent authoring", async () => {
     const catalog = await (await page.request.get("http://127.0.0.1:38080/v1/config/catalog")).json();
     expect(catalog.offerings.some((offering) => offering.model_id === MODEL && offering.provider_id === "vertex")).toBe(true);

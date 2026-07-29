@@ -24,9 +24,10 @@ export default defineConfig({
       // The management backend (advertises /v1/capabilities, config plane, sessions…).
       // `awaken` (awaken-cli) is the production binary that subsumes awaken-server: its
       // default Serve role mounts the full management + data plane over AWAKEN_HTTP_ADDR.
-      command: "cargo run --quiet -p awaken-cli --bin awaken",
+      // Worktrees can otherwise race on the repository-level Cargo target
+      // directory and load stale trait metadata from another branch.
+      command: "CARGO_TARGET_DIR=/tmp/awaken-target-ia-ui-ux-p0-p2 cargo run --quiet -p awaken-cli --bin awaken -- start --port 38080 --data-dir /tmp/awaken-e2e-ia-ui-ux-p0-p2 --no-browser",
       cwd: "..",
-      env: { AWAKEN_HTTP_ADDR: "127.0.0.1:38080" },
       url: "http://127.0.0.1:38080/v1/config/catalog",
       timeout: 240_000,
       reuseExistingServer: true,

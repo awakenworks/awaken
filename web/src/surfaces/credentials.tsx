@@ -99,7 +99,7 @@ export default function CredentialsSurface() {
     queryFn: () => api.get<CredentialSource[]>(ws(`/v1/config/credentials?workspace_id=${workspace}`)),
   });
   const catalog = useQuery({
-    queryKey: ["catalog"],
+    queryKey: ["catalog", workspace],
     queryFn: () => api.get<ProviderCatalog>(ws("/v1/config/catalog")),
   });
   const addSetupToken = useMutation({

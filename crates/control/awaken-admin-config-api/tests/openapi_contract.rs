@@ -41,6 +41,14 @@ fn state() -> AdminState {
 fn document_shape_and_schema_components() {
     let doc = openapi_document();
     assert_eq!(doc["openapi"], "3.1.0");
+    // Cause → effect → assertion:
+    // Ambient environment proposals created a second Provider-connection
+    // authoring path → deleting only its UI could leave a callable compatibility
+    // API → the public contract must not expose that retired path.
+    assert!(
+        doc["paths"]["/v1/config/provider-proposals"].is_null(),
+        "retired provider-proposals path must stay absent"
+    );
     let schemas = doc["components"]["schemas"]
         .as_object()
         .expect("schemas object");

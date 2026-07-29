@@ -1,10 +1,10 @@
-// Project · Memory stores: workspace-scoped persistent memory that survives
+// Workspace · Memory stores: persistent memory that survives
 // across sessions (Managed Agents `/v1/memory_stores`). A session mounts one
 // via a `resources[]` entry.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { api } from "../lib/api/client";
+import { api, ws } from "../lib/api/client";
 import type { MemoryStore, Page } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 import { Button, Card, Modal, Pill, TextField } from "../components/ui";
@@ -16,7 +16,7 @@ function CreateModal({ onClose }: { onClose: () => void }) {
   const [description, setDescription] = useState("");
   const create = useMutation({
     mutationFn: () =>
-      api.post<MemoryStore>("/v1/memory_stores", {
+      api.post<MemoryStore>(ws("/v1/memory_stores"), {
         name: name || "memory-store",
         ...(description ? { description } : {}),
       }),
@@ -53,15 +53,15 @@ export default function MemorySurface() {
   const [creating, setCreating] = useState(false);
   const stores = useQuery({
     queryKey: ["memory-stores"],
-    queryFn: () => api.get<Page<MemoryStore>>("/v1/memory_stores"),
+    queryFn: () => api.get<Page<MemoryStore>>(ws("/v1/memory_stores")),
     refetchInterval: 30_000,
   });
   const archive = useMutation({
-    mutationFn: (id: string) => api.post(`/v1/memory_stores/${id}/archive`),
+    mutationFn: (id: string) => api.post(ws(`/v1/memory_stores/${id}/archive`)),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["memory-stores"] }),
   });
   const remove = useMutation({
-    mutationFn: (id: string) => api.del(`/v1/memory_stores/${id}`),
+    mutationFn: (id: string) => api.del(ws(`/v1/memory_stores/${id}`)),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["memory-stores"] }),
   });
   const rows = stores.data?.data ?? [];

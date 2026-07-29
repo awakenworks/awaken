@@ -1,9 +1,9 @@
-// Project · Skills: the runtime delivered-skill catalog the host offers on
+// Workspace · Skills: the runtime delivered-skill catalog the host offers on
 // every thread (Managed Agents `/v1/skills`). Authoring/registration is a
 // multipart upload (CLI/SDK); this read-mostly page lists and deletes.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "../lib/api/client";
+import { api, ws } from "../lib/api/client";
 import type { Page, Skill } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 import { Button, Card } from "../components/ui";
@@ -13,11 +13,11 @@ export default function SkillsSurface() {
   const qc = useQueryClient();
   const skills = useQuery({
     queryKey: ["skills"],
-    queryFn: () => api.get<Page<Skill>>("/v1/skills"),
+    queryFn: () => api.get<Page<Skill>>(ws("/v1/skills")),
     refetchInterval: 30_000,
   });
   const remove = useMutation({
-    mutationFn: (id: string) => api.del(`/v1/skills/${id}`),
+    mutationFn: (id: string) => api.del(ws(`/v1/skills/${id}`)),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["skills"] }),
   });
   const rows = skills.data?.data ?? [];
