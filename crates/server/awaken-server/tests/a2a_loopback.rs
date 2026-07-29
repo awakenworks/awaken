@@ -11,7 +11,7 @@ use awaken_credential_vault::{CredentialCreateParams, CredentialKind, InMemorySe
 use awaken_protocol_a2a::{Response, Transport};
 use awaken_run_executor_a2a::{A2aRunExecutor, TransportResolver};
 use awaken_runtime_contract::StaticPublishedAgentSnapshots;
-use awaken_runtime_contract::agent_bindings::AgentBindings;
+use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
 use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
 use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshot};
 use awaken_runtime_contract::{
@@ -97,7 +97,11 @@ fn delegating_host(transport: Arc<dyn Transport>) -> SharedHost {
         .model(ModelBinding::new("default", "parent", "default"))
         .tools(awaken_runtime_host::authorable_tools())
         .agent_bindings(AgentBindings {
-            delegate_ids: vec![AgentId("researcher".into())],
+            delegates: vec![AgentDelegateBinding {
+                agent_id: AgentId("researcher".into()),
+                source_revision: None,
+                recursive_self: false,
+            }],
             ..Default::default()
         })
         .build();
@@ -131,7 +135,11 @@ fn published_delegating_host(
         .model(ModelBinding::new("default", "parent", "default"))
         .tools(awaken_runtime_host::authorable_tools())
         .agent_bindings(AgentBindings {
-            delegate_ids: vec![AgentId("researcher".into())],
+            delegates: vec![AgentDelegateBinding {
+                agent_id: AgentId("researcher".into()),
+                source_revision: None,
+                recursive_self: false,
+            }],
             ..Default::default()
         })
         .build();

@@ -24,4 +24,14 @@ impl PublishedAgentSnapshotSource for ConfigService {
         self.installed
             .snapshot_by_fingerprint(workspace, &fingerprint.0)
     }
+
+    fn at_revision(
+        &self,
+        workspace: &str,
+        agent_id: &AgentId,
+        source_revision: u64,
+    ) -> Option<ExecutableAgentSnapshot> {
+        self.installed
+            .snapshot_at_revision(workspace, &agent_id.0, source_revision)
+    }
 }

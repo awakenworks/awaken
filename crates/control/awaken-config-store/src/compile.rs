@@ -443,24 +443,25 @@ fn normalize_agent_bindings(
     Ok(AgentBindings {
         mcp_servers: config.mcp_servers.clone(),
         skills: config.skills.clone(),
-        delegate_ids: config
+        delegates: config
             .multiagent
             .as_ref()
             .map(|multiagent| {
                 multiagent
                     .agents
                     .iter()
-                    .map(|target| target.resolved_id(&config.id).to_string())
-                    .map(awaken_runtime_contract::snapshot::AgentId)
+                    .map(
+                        |target| awaken_runtime_contract::agent_bindings::AgentDelegateBinding {
+                            agent_id: awaken_runtime_contract::snapshot::AgentId(
+                                target.resolved_id(&config.id).to_string(),
+                            ),
+                            source_revision: target.version(),
+                            recursive_self: target.is_self_reference(),
+                        },
+                    )
                     .collect()
             })
             .unwrap_or_default(),
-        recursive_self: config.multiagent.as_ref().is_some_and(|multiagent| {
-            multiagent
-                .agents
-                .iter()
-                .any(crate::config::MultiagentTarget::is_self_reference)
-        }),
         toolsets,
     })
 }
@@ -1421,9 +1422,9 @@ mod tests {
         );
         assert_eq!(
             bindings
-                .delegate_ids
+                .delegates
                 .iter()
-                .map(|id| id.0.as_str())
+                .map(|binding| binding.agent_id.0.as_str())
                 .collect::<Vec<_>>(),
             vec!["researcher", "reviewer"]
         );
@@ -1491,12 +1492,14 @@ mod tests {
         });
         let snapshot = compile(&cfg, std::slice::from_ref(&delegation)).expect("M1");
         assert_eq!(
-            snapshot.resolved_spec.plugin_config.agent.delegate_ids,
-            vec![awaken_runtime_contract::snapshot::AgentId(cfg.id.clone())],
-            "M1"
-        );
-        assert!(
-            snapshot.resolved_spec.plugin_config.agent.recursive_self,
+            snapshot.resolved_spec.plugin_config.agent.delegates,
+            vec![
+                awaken_runtime_contract::agent_bindings::AgentDelegateBinding {
+                    agent_id: awaken_runtime_contract::snapshot::AgentId(cfg.id.clone()),
+                    source_revision: None,
+                    recursive_self: true,
+                }
+            ],
             "M1"
         );
 
@@ -1507,8 +1510,13 @@ mod tests {
             }],
         });
         let ordinary = compile(&cfg, std::slice::from_ref(&delegation)).expect("M2");
+        assert_eq!(
+            ordinary.resolved_spec.plugin_config.agent.delegates[0].source_revision,
+            Some(2),
+            "M2"
+        );
         assert!(
-            !ordinary.resolved_spec.plugin_config.agent.recursive_self,
+            !ordinary.resolved_spec.plugin_config.agent.delegates[0].recursive_self,
             "M2"
         );
 

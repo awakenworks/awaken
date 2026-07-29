@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use awaken_runtime_contract::StaticPublishedAgentSnapshots;
-use awaken_runtime_contract::agent_bindings::AgentBindings;
+use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
 use awaken_runtime_contract::resolved::{ModelBinding, ToolKind};
 use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshot};
 use axum::Router;
@@ -18,17 +18,23 @@ use super::{DelegatingModel, FAKE_ACP_SCRIPT, scenario_model, scenario_shell_arg
 pub fn build_delegation_router() -> Router {
     let (model, model_ref) = scenario_model(Arc::new(DelegatingModel), "delegate");
     let snapshot =
-        |agent_id: &str, backend_ref: &str, delegates: Vec<AgentId>, recursive_self: bool| {
+        |owner_id: &str, backend_ref: &str, delegates: Vec<AgentId>, recursive_self: bool| {
             let mut tools = awaken_runtime_host::authorable_tools();
             if delegates.is_empty() {
                 tools.retain(|tool| tool.kind != ToolKind::AgentDelegation);
             }
-            ExecutableAgentSnapshot::builder(agent_id)
+            ExecutableAgentSnapshot::builder(owner_id)
                 .model(ModelBinding::new("default", &model_ref, backend_ref))
                 .tools(tools)
                 .agent_bindings(AgentBindings {
-                    delegate_ids: delegates,
-                    recursive_self,
+                    delegates: delegates
+                        .into_iter()
+                        .map(|agent_id| AgentDelegateBinding {
+                            recursive_self: recursive_self && agent_id.0 == owner_id,
+                            agent_id,
+                            source_revision: None,
+                        })
+                        .collect(),
                     ..Default::default()
                 })
                 .build()

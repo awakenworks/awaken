@@ -33,7 +33,7 @@ use awaken_agent_contract::agent::message::Role;
 use awaken_protocol_managed::ManagedState;
 use awaken_provider_genai::{AdapterKind, GenaiExecutor};
 use awaken_runtime_contract::StaticPublishedAgentSnapshots;
-use awaken_runtime_contract::agent_bindings::AgentBindings;
+use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
@@ -1583,7 +1583,11 @@ pub fn build_remote_delegation_router() -> Router {
         .model(ModelBinding::new("default", &model_ref, "default"))
         .tools(tools)
         .agent_bindings(AgentBindings {
-            delegate_ids: vec![AgentId("researcher".into())],
+            delegates: vec![AgentDelegateBinding {
+                agent_id: AgentId("researcher".into()),
+                source_revision: None,
+                recursive_self: false,
+            }],
             ..Default::default()
         })
         .build();

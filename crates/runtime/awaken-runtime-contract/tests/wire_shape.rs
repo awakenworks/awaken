@@ -92,7 +92,6 @@ fn resolved_spec_field_names_are_pinned() {
         v["plugin_config"],
         json!({
             "agent": {
-                "delegate_ids": [],
                 "mcp_servers": [],
                 "skills": [],
             },
@@ -105,6 +104,28 @@ fn resolved_spec_field_names_are_pinned() {
 
     // An empty tool presentation renders as `{}` (its `facets` map is skipped empty).
     assert_eq!(v["tool_presentation"], json!({}));
+}
+
+#[test]
+fn delegation_bindings_read_legacy_ids_but_write_one_canonical_shape() {
+    // Cause graph: C1 persisted input uses legacy `delegate_ids: [string]`;
+    // C2 input uses revision-aware `delegates` objects. Both cause E1=one
+    // canonical in-memory binding; every subsequent serialization causes
+    // E2=only the revision-aware shape. Decision rules L1=C1→E1+E2 and
+    // L2=C2→E1+E2; no parallel runtime roster survives deserialization.
+    let legacy: awaken_runtime_contract::agent_bindings::AgentBindings =
+        serde_json::from_value(json!({
+            "mcp_servers": [],
+            "skills": [],
+            "delegate_ids": ["worker"]
+        }))
+        .unwrap();
+    assert_eq!(legacy.delegates[0].agent_id, AgentId("worker".into()));
+    assert_eq!(legacy.delegates[0].source_revision, None);
+    assert_eq!(
+        serde_json::to_value(legacy).unwrap()["delegates"],
+        json!([{ "agent_id": "worker" }])
+    );
 }
 
 #[test]

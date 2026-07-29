@@ -109,6 +109,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             )
             .await
         }
+        Ok("management-agents") => {
+            awaken_cli::build_management_router_with_scenario_model(
+                std::sync::Arc::new(awaken_scenario_host::RegistryDelegatingModel),
+                "management-agents".to_string(),
+            )
+            .await
+        }
         // Production model composition for provider/BYOK/brokered e2e: no
         // deterministic Host executor is installed, so publications resolve from
         // the authored catalog and execute through the real materializer.

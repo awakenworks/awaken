@@ -301,10 +301,16 @@ pub(crate) fn server_config(
         .plugins(plugin_ids.iter().cloned())
         .plugin_config(plugin_config.iter().map(|(k, v)| (k.clone(), v.clone())))
         .agent_bindings(awaken_runtime_contract::agent_bindings::AgentBindings {
-            delegate_ids: delegates
+            delegates: delegates
                 .iter()
                 .cloned()
-                .map(awaken_runtime_contract::snapshot::AgentId)
+                .map(
+                    |id| awaken_runtime_contract::agent_bindings::AgentDelegateBinding {
+                        agent_id: awaken_runtime_contract::snapshot::AgentId(id),
+                        source_revision: None,
+                        recursive_self: false,
+                    },
+                )
                 .collect(),
             ..Default::default()
         })

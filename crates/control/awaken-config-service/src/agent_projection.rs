@@ -115,7 +115,11 @@ impl ConfigServiceAgentSource {
                 })
                 .collect(),
             skills: bindings.skills,
-            delegate_ids: bindings.delegate_ids.into_iter().map(|id| id.0).collect(),
+            delegate_ids: bindings
+                .delegates
+                .into_iter()
+                .map(|binding| binding.agent_id.0)
+                .collect(),
             resources: defaults.inputs,
             environment: defaults.environment.map(|binding| {
                 awaken_session_contract::AgentEnvironmentBindingView {

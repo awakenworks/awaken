@@ -9,7 +9,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::RunState;
 use awaken_run_ingress::{AnyDispatchStore, Dispatch, MemoryDispatchStore};
 use awaken_runtime_contract::StaticPublishedAgentSnapshots;
-use awaken_runtime_contract::agent_bindings::AgentBindings;
+use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult, ToolCall,
 };
@@ -31,7 +31,14 @@ fn test_snapshot(agent_id: &str, delegates: Vec<AgentId>) -> ExecutableAgentSnap
         .model(ModelBinding::new("default", "stub", "default"))
         .tools(tools)
         .agent_bindings(AgentBindings {
-            delegate_ids: delegates,
+            delegates: delegates
+                .into_iter()
+                .map(|agent_id| AgentDelegateBinding {
+                    agent_id,
+                    source_revision: None,
+                    recursive_self: false,
+                })
+                .collect(),
             ..Default::default()
         })
         .build()

@@ -20,6 +20,7 @@ struct InstalledEntry {
 pub(crate) struct InstalledAgentCatalog {
     entries: Mutex<HashMap<(String, String), InstalledEntry>>,
     publications: Mutex<HashMap<(String, String), ExecutableAgentSnapshot>>,
+    revisions: Mutex<HashMap<(String, String, u64), ExecutableAgentSnapshot>>,
     unavailable: Mutex<HashSet<(String, String)>>,
 }
 
@@ -42,6 +43,13 @@ impl InstalledAgentCatalog {
             .expect("published Agent catalog")
             .insert(
                 (workspace.to_string(), snapshot.fingerprint.0.clone()),
+                snapshot.clone(),
+            );
+        self.revisions
+            .lock()
+            .expect("revision Agent catalog")
+            .insert(
+                (workspace.to_string(), agent_id.to_string(), source_revision),
                 snapshot.clone(),
             );
         let mut entries = self.entries.lock().expect("installed Agent catalog");
@@ -82,6 +90,19 @@ impl InstalledAgentCatalog {
             .expect("installed Agent catalog")
             .get(&(workspace.to_string(), agent_id.to_string()))
             .map(|entry| entry.snapshot.clone())
+    }
+
+    pub(crate) fn snapshot_at_revision(
+        &self,
+        workspace: &str,
+        agent_id: &str,
+        source_revision: u64,
+    ) -> Option<ExecutableAgentSnapshot> {
+        self.revisions
+            .lock()
+            .expect("revision Agent catalog")
+            .get(&(workspace.to_string(), agent_id.to_string(), source_revision))
+            .cloned()
     }
 
     pub(crate) fn declared_hand_for_agent(&self, agent_id: &str) -> Result<Option<String>, String> {
@@ -150,6 +171,10 @@ mod tests {
 
     #[test]
     fn current_moves_forward_while_exact_publications_remain_addressable() {
+        // Cause graph: installing a newer source revision advances only current;
+        // the fingerprint and (Agent, source revision) indexes retain both exact
+        // publications. Decision rules: I1 lookup current -> v2; I2 fingerprint
+        // v1 -> v1; I3 Agent revision 1 -> v1; unknown revision -> absent.
         let catalog = InstalledAgentCatalog::default();
         let first = ExecutableAgentSnapshot::builder("researcher")
             .fingerprint("fp-1")
@@ -165,6 +190,16 @@ mod tests {
         assert_eq!(
             catalog.snapshot_by_fingerprint("workspace", "fp-1"),
             Some(first)
+        );
+        assert_eq!(
+            catalog.snapshot_at_revision("workspace", "researcher", 1),
+            catalog.snapshot_by_fingerprint("workspace", "fp-1"),
+            "I3"
+        );
+        assert_eq!(
+            catalog.snapshot_at_revision("workspace", "researcher", 99),
+            None,
+            "unknown revision"
         );
     }
 

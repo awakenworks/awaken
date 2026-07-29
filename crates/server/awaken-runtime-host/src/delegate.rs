@@ -6,7 +6,7 @@
 //! immutable publication. This module owns child-Run admission; ordinary attempt
 //! routing owns the Native/ACP/A2A execution edge.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -39,44 +39,40 @@ pub(crate) struct HostRunDelegationService {
     /// Native children execute in the Session-owned environment. Isolation is a
     /// Session placement decision, not a per-delegation switch.
     sandbox: Arc<crate::session_environment::SessionEnvironment>,
-    /// Exact targets frozen into the snapshot of the Run using this service.
-    allowed_targets: HashSet<AgentId>,
-    /// Exact owner publication used by an explicit `self` roster edge. It is the
-    /// Session's frozen snapshot, never a later current-catalog lookup.
-    self_snapshot: Option<ExecutableAgentSnapshot>,
+    /// The one frozen target map used by admission and execution. Keeping the
+    /// snapshot beside the edge removes current-catalog lookup from child start.
+    targets: HashMap<AgentId, ResolvedDelegationTarget>,
     adapters: crate::agent_runner::ChildExecutionAdapters,
     publications: Option<Arc<dyn PublishedAgentSnapshotSource>>,
     workspace: String,
     scheduler: Option<RunScheduler>,
 }
 
+#[derive(Clone, Debug)]
+struct ResolvedDelegationTarget {
+    snapshot: ExecutableAgentSnapshot,
+    recursive_self: bool,
+}
+
 impl HostRunDelegationService {
     pub(crate) fn new(
         llm: Arc<dyn LlmExecutor>,
         sandbox: Arc<crate::session_environment::SessionEnvironment>,
-        allowed_targets: HashSet<AgentId>,
+        parent_snapshot: &ExecutableAgentSnapshot,
         adapters: crate::agent_runner::ChildExecutionAdapters,
-    ) -> Self {
-        Self {
-            llm,
-            sandbox,
-            allowed_targets,
-            self_snapshot: None,
-            adapters,
-            publications: None,
-            workspace: String::new(),
-            scheduler: None,
-        }
-    }
-
-    pub(crate) fn with_publications(
-        mut self,
         publications: Option<Arc<dyn PublishedAgentSnapshotSource>>,
         workspace: String,
-    ) -> Self {
-        self.publications = publications;
-        self.workspace = workspace;
-        self
+    ) -> Result<Self, DelegationExecutionError> {
+        let targets = Self::resolve_targets(parent_snapshot, publications.as_deref(), &workspace)?;
+        Ok(Self {
+            llm,
+            sandbox,
+            targets,
+            adapters,
+            publications,
+            workspace,
+            scheduler: None,
+        })
     }
 
     pub(crate) fn with_scheduler(mut self, scheduler: Option<RunScheduler>) -> Self {
@@ -84,24 +80,66 @@ impl HostRunDelegationService {
         self
     }
 
-    pub(crate) fn with_self_snapshot(mut self, snapshot: Option<ExecutableAgentSnapshot>) -> Self {
-        self.self_snapshot = snapshot;
-        self
-    }
-
-    fn current_snapshot(
-        &self,
-        agent_id: &AgentId,
-    ) -> Result<ExecutableAgentSnapshot, DelegationExecutionError> {
-        self.publications
-            .as_ref()
-            .and_then(|source| source.current(&self.workspace, agent_id))
-            .ok_or_else(|| {
-                DelegationExecutionError::new(format!(
-                    "delegate agent {:?} has no published executable snapshot",
-                    agent_id.0
-                ))
-            })
+    fn resolve_targets(
+        parent: &ExecutableAgentSnapshot,
+        publications: Option<&dyn PublishedAgentSnapshotSource>,
+        workspace: &str,
+    ) -> Result<HashMap<AgentId, ResolvedDelegationTarget>, DelegationExecutionError> {
+        let mut targets = HashMap::new();
+        for binding in &parent.resolved_spec.plugin_config.agent.delegates {
+            if targets.contains_key(&binding.agent_id) {
+                return Err(DelegationExecutionError::new(format!(
+                    "delegate agent {:?} occurs more than once in the published targets",
+                    binding.agent_id.0
+                )));
+            }
+            let snapshot = if binding.recursive_self {
+                if binding.agent_id != parent.root_agent_id {
+                    return Err(DelegationExecutionError::new(
+                        "recursive-self delegation target does not match its owner",
+                    ));
+                }
+                parent.clone()
+            } else {
+                let source = publications.ok_or_else(|| {
+                    DelegationExecutionError::new(format!(
+                        "delegate agent {:?} has no publication source",
+                        binding.agent_id.0
+                    ))
+                })?;
+                binding
+                    .source_revision
+                    .and_then(|revision| {
+                        source.at_revision(workspace, &binding.agent_id, revision)
+                    })
+                    .or_else(|| {
+                        binding
+                            .source_revision
+                            .is_none()
+                            .then(|| source.current(workspace, &binding.agent_id))
+                            .flatten()
+                    })
+                    .ok_or_else(|| {
+                        DelegationExecutionError::new(format!(
+                            "delegate agent {:?} revision {:?} has no published executable snapshot",
+                            binding.agent_id.0, binding.source_revision
+                        ))
+                    })?
+            };
+            if snapshot.root_agent_id != binding.agent_id {
+                return Err(DelegationExecutionError::new(
+                    "published delegate snapshot identity does not match its target",
+                ));
+            }
+            targets.insert(
+                binding.agent_id.clone(),
+                ResolvedDelegationTarget {
+                    snapshot,
+                    recursive_self: binding.recursive_self,
+                },
+            );
+        }
+        Ok(targets)
     }
 
     fn exact_snapshot(
@@ -133,26 +171,21 @@ impl HostRunDelegationService {
         let child_run_id = request.run_id.clone();
         // The child keeps its own committed usage; the returned value additionally
         // rolls that usage into the initiating Run's accounting projection.
-        let allowed_targets: HashSet<_> = snapshot
+        let run_delegation = if snapshot
             .resolved_spec
             .plugin_config
             .agent
-            .delegate_ids
-            .iter()
-            .cloned()
-            .collect();
-        let child_self_snapshot = snapshot
-            .resolved_spec
-            .plugin_config
-            .agent
-            .recursive_self
-            .then(|| snapshot.clone());
-        let run_delegation = if allowed_targets.is_empty() {
+            .delegates
+            .is_empty()
+        {
             None
         } else {
             let mut child_service = self.clone();
-            child_service.allowed_targets = allowed_targets;
-            child_service.self_snapshot = child_self_snapshot;
+            child_service.targets = Self::resolve_targets(
+                &snapshot,
+                child_service.publications.as_deref(),
+                &child_service.workspace,
+            )?;
             Some(Arc::new(child_service) as Arc<dyn RunDelegationService>)
         };
         let boundary = crate::agent_runner::run_configured_agent_until_boundary(
@@ -206,9 +239,9 @@ impl RunDelegationService for HostRunDelegationService {
     }
 
     fn allows_recursive_target(&self, agent_id: &AgentId) -> bool {
-        self.self_snapshot
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.root_agent_id == *agent_id)
+        self.targets
+            .get(agent_id)
+            .is_some_and(|target| target.recursive_self)
     }
 
     fn target_agent_id(&self, arguments: &Value) -> Result<AgentId, DelegationExecutionError> {
@@ -227,23 +260,16 @@ impl RunDelegationService for HostRunDelegationService {
         }
         let agent_id = input.agent_id;
         let input = input.input;
-        if !self.allowed_targets.contains(&agent_id) {
-            return Err(DelegationExecutionError::new(format!(
-                "delegate agent {:?} is not in this Agent's published targets",
-                agent_id.0
-            )));
-        }
         let snapshot = self
-            .self_snapshot
-            .as_ref()
-            .filter(|snapshot| snapshot.root_agent_id == agent_id)
-            .cloned()
-            .map_or_else(|| self.current_snapshot(&agent_id), Ok)?;
-        if snapshot.root_agent_id != agent_id {
-            return Err(DelegationExecutionError::new(
-                "published delegate snapshot identity does not match its target",
-            ));
-        }
+            .targets
+            .get(&agent_id)
+            .map(|target| target.snapshot.clone())
+            .ok_or_else(|| {
+                DelegationExecutionError::new(format!(
+                    "delegate agent {:?} is not in this Agent's published targets",
+                    agent_id.0
+                ))
+            })?;
         self.native_boundary(
             snapshot,
             ChildRunRequest {
@@ -265,7 +291,7 @@ impl RunDelegationService for HostRunDelegationService {
         // The continuation identifies placement only; lifecycle authority remains
         // the child Run's committed state and ResumeTicket.
         let agent_id = request.target_agent_id;
-        if !self.allowed_targets.contains(&agent_id) {
+        if !self.targets.contains_key(&agent_id) {
             return Err(DelegationExecutionError::new(format!(
                 "delegate agent {:?} is not in this Agent's published targets",
                 agent_id.0
@@ -348,12 +374,19 @@ mod durable_cancel_tests {
     use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
     use awaken_run_ingress::{AnyDispatchStore, DispatchQueue};
     use awaken_runtime::memory::MemoryCommitCoordinator;
+    use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
     use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse};
     use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+    use std::collections::HashSet;
 
     struct AwaitPermission;
 
     struct TestPublications(ExecutableAgentSnapshot);
+
+    struct VersionedPublications {
+        first: ExecutableAgentSnapshot,
+        current: ExecutableAgentSnapshot,
+    }
 
     impl PublishedAgentSnapshotSource for TestPublications {
         fn current(&self, _workspace: &str, agent_id: &AgentId) -> Option<ExecutableAgentSnapshot> {
@@ -367,6 +400,107 @@ mod durable_cancel_tests {
         ) -> Option<ExecutableAgentSnapshot> {
             (self.0.fingerprint == *fingerprint).then(|| self.0.clone())
         }
+    }
+
+    impl PublishedAgentSnapshotSource for VersionedPublications {
+        fn current(&self, _workspace: &str, agent_id: &AgentId) -> Option<ExecutableAgentSnapshot> {
+            (self.current.root_agent_id == *agent_id).then(|| self.current.clone())
+        }
+
+        fn exact(
+            &self,
+            _workspace: &str,
+            fingerprint: &CatalogFingerprint,
+        ) -> Option<ExecutableAgentSnapshot> {
+            [&self.first, &self.current]
+                .into_iter()
+                .find(|snapshot| snapshot.fingerprint == *fingerprint)
+                .cloned()
+        }
+
+        fn at_revision(
+            &self,
+            _workspace: &str,
+            agent_id: &AgentId,
+            source_revision: u64,
+        ) -> Option<ExecutableAgentSnapshot> {
+            (source_revision == 1 && self.first.root_agent_id == *agent_id)
+                .then(|| self.first.clone())
+        }
+    }
+
+    #[test]
+    fn delegation_target_resolution_freezes_exact_or_current_once() {
+        // Cause graph: C1=edge has an exact revision; C2=that publication exists;
+        // C3=edge intentionally omits a revision. C1+C2 -> E1 freeze exact even
+        // when current is newer; C1+!C2 -> E2 reject setup; !C1+C3 -> E3 resolve
+        // current once and freeze it in the target map; C4=duplicate target ->
+        // E4 reject rather than silently selecting one edge.
+        //
+        // | Rule | revision | publication | effect |
+        // | V1 | 1 | v1 exists, current=v2 | freeze v1 |
+        // | V2 | 99 | absent | fail before child start |
+        // | V3 | none | current=v2 | freeze v2 once |
+        // | V4 | duplicate | either | fail before child start |
+        let first = ExecutableAgentSnapshot::builder("worker")
+            .instructions("version one")
+            .fingerprint("worker-v1")
+            .build();
+        let current = ExecutableAgentSnapshot::builder("worker")
+            .instructions("version two")
+            .fingerprint("worker-v2")
+            .build();
+        let source = VersionedPublications {
+            first: first.clone(),
+            current: current.clone(),
+        };
+        let parent = |source_revision| {
+            ExecutableAgentSnapshot::builder("coordinator")
+                .agent_bindings(AgentBindings {
+                    delegates: vec![AgentDelegateBinding {
+                        agent_id: AgentId("worker".into()),
+                        source_revision,
+                        recursive_self: false,
+                    }],
+                    ..Default::default()
+                })
+                .build()
+        };
+
+        let exact =
+            HostRunDelegationService::resolve_targets(&parent(Some(1)), Some(&source), "workspace")
+                .expect("V1");
+        assert_eq!(exact[&AgentId("worker".into())].snapshot, first, "V1/E1");
+
+        let error = HostRunDelegationService::resolve_targets(
+            &parent(Some(99)),
+            Some(&source),
+            "workspace",
+        )
+        .expect_err("V2 missing exact publication must fail");
+        assert!(error.to_string().contains("Some(99)"), "V2/E2");
+
+        let resolved_current =
+            HostRunDelegationService::resolve_targets(&parent(None), Some(&source), "workspace")
+                .expect("V3");
+        assert_eq!(
+            resolved_current[&AgentId("worker".into())].snapshot,
+            current,
+            "V3/E3"
+        );
+
+        let mut duplicate = parent(Some(1));
+        let repeated = duplicate.resolved_spec.plugin_config.agent.delegates[0].clone();
+        duplicate
+            .resolved_spec
+            .plugin_config
+            .agent
+            .delegates
+            .push(repeated);
+        let error =
+            HostRunDelegationService::resolve_targets(&duplicate, Some(&source), "workspace")
+                .expect_err("V4 duplicate target must fail");
+        assert!(error.to_string().contains("more than once"), "V4/E4");
     }
 
     #[async_trait]
@@ -412,7 +546,7 @@ mod durable_cancel_tests {
             recovery_projection: None,
             session_resources: None,
         };
-        let snapshot = crate::config::server_config(
+        let child_snapshot = crate::config::server_config(
             "researcher",
             "stub",
             &HashSet::new(),
@@ -422,13 +556,25 @@ mod durable_cancel_tests {
             &[],
             awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
         );
+        let parent_snapshot = crate::config::server_config(
+            "assistant",
+            "stub",
+            &HashSet::new(),
+            &HashSet::from(["researcher".to_string()]),
+            &[],
+            &Default::default(),
+            &[],
+            awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
+        );
         let service = HostRunDelegationService::new(
             Arc::new(AwaitPermission),
             sandbox,
-            HashSet::from([AgentId("researcher".to_string())]),
+            &parent_snapshot,
             crate::agent_runner::ChildExecutionAdapters::default(),
+            Some(Arc::new(TestPublications(child_snapshot))),
+            "default".into(),
         )
-        .with_publications(Some(Arc::new(TestPublications(snapshot))), "default".into())
+        .expect("resolve test roster")
         .with_scheduler(Some(scheduler));
         let origin = DelegationOrigin::root_for_agent(
             RunId("parent-run".into()),

@@ -332,7 +332,10 @@ These are real coverage gaps: awaken implements the behavior, no e2e asserts it.
     frozen backend routes the child through the external ACP executor. The management
     API suite covers the 1..=20 cardinality, duplicate/self constraints, missing,
     archived, nested-coordinator and exact/current version-reference partitions. The
-    protocol cause/decision-table test
+    same suite executes coordinators created before and after a worker update: the old
+    coordinator runs the worker's exact v1 publication while the new coordinator runs
+    v2, proving execution consumes the frozen revision rather than current catalog state.
+    The protocol cause/decision-table test
     `interrupt_selector_targets_one_thread_or_all_non_terminal_threads` covers the
     documented optional `user.interrupt.session_thread_id`: a named
     `requires_action`/idle child targets only that child Run, omission targets the

@@ -17,6 +17,19 @@ async function drain(pagePromise) {
   return items;
 }
 
+async function runTurn(client, sessionId, text) {
+  await client.beta.sessions.events.send(sessionId, {
+    events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
+    betas: BETAS,
+  });
+  return drain(client.beta.sessions.events.list(sessionId, { betas: BETAS }));
+}
+
+const agentTexts = (events) => events
+  .filter((event) => event.type === 'agent.message')
+  .flatMap((event) => event.content ?? [])
+  .map((block) => block.text ?? '');
+
 async function json(baseUrl, method, route, body) {
   const response = await fetch(`${baseUrl}${route}`, {
     method,
@@ -32,7 +45,7 @@ async function json(baseUrl, method, route, body) {
 
 async function main() {
   try {
-    await withScenarioServer('management', 'mcp', 38138, async (baseUrl) => {
+    await withScenarioServer('management-agents', 'default', 38138, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
       const agent = await client.beta.agents.create({
@@ -320,6 +333,50 @@ async function main() {
       assert.deepEqual(exactOld.multiagent.agents, [
         { type: 'agent', id: rosterWorker.id, version: 1 },
       ], 'R2 exact historical target is preserved');
+
+      // Runtime pin rules extend R2 from representation to behavior:
+      // | rule | coordinator creation | worker current at Session start | child effect |
+      // | R6 | before worker v2 | v2 | executes frozen v1 publication |
+      // | R7 | after worker v2 | v2 | executes newly resolved v2 publication |
+      const executionWorker = await client.beta.agents.create({
+        name: 'execution-worker',
+        model: 'management-agents',
+        system: 'WORKER_REVISION_ONE',
+        betas: BETAS,
+      });
+      const pinnedCoordinator = await client.beta.agents.create({
+        name: 'pinned-coordinator',
+        model: 'management-agents',
+        system: 'coordinate',
+        multiagent: { type: 'coordinator', agents: [executionWorker.id] },
+        betas: BETAS,
+      });
+      const executionWorkerV2 = await client.beta.agents.update(executionWorker.id, {
+        version: 1,
+        system: 'WORKER_REVISION_TWO',
+        betas: BETAS,
+      });
+      assert.equal(executionWorkerV2.version, 2);
+      const latestCoordinator = await client.beta.agents.create({
+        name: 'latest-coordinator',
+        model: 'management-agents',
+        system: 'coordinate',
+        multiagent: { type: 'coordinator', agents: [executionWorker.id] },
+        betas: BETAS,
+      });
+      for (const [rule, coordinator, expected, rejected] of [
+        ['R6', pinnedCoordinator, 'WORKER_REVISION_ONE', 'WORKER_REVISION_TWO'],
+        ['R7', latestCoordinator, 'WORKER_REVISION_TWO', 'WORKER_REVISION_ONE'],
+      ]) {
+        const session = await client.beta.sessions.create({
+          agent: coordinator.id,
+          environment_id: 'env_local',
+          betas: BETAS,
+        });
+        const texts = agentTexts(await runTurn(client, session.id, `delegate to ${executionWorker.id}`));
+        assert.ok(texts.some((text) => text.includes(expected)), `${rule} executes ${expected}: ${texts}`);
+        assert.ok(!texts.some((text) => text.includes(rejected)), `${rule} must not drift to ${rejected}: ${texts}`);
+      }
 
       const archivedTarget = await client.beta.agents.create({
         name: 'archived-roster-target', model: 'claude-sonnet-5', betas: BETAS,

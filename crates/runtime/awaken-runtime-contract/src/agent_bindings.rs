@@ -66,6 +66,45 @@ pub struct AgentMcpServerBinding {
     pub credential: Option<crate::credential::CredentialRef>,
 }
 
+/// One immutable delegation edge compiled into an Agent publication.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentDelegateBinding {
+    pub agent_id: AgentId,
+    /// Exact referenced Agent authoring revision. `None` is retained only for
+    /// embedded publications that intentionally resolve current at Session setup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_revision: Option<u64>,
+    /// The target is an intentional copy of the publication that owns this edge.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub recursive_self: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum AgentDelegateBindingWire {
+    LegacyId(AgentId),
+    Binding(AgentDelegateBinding),
+}
+
+fn deserialize_delegate_bindings<'de, D>(
+    deserializer: D,
+) -> Result<Vec<AgentDelegateBinding>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Vec::<AgentDelegateBindingWire>::deserialize(deserializer)?
+        .into_iter()
+        .map(|wire| match wire {
+            AgentDelegateBindingWire::LegacyId(agent_id) => AgentDelegateBinding {
+                agent_id,
+                source_revision: None,
+                recursive_self: false,
+            },
+            AgentDelegateBindingWire::Binding(binding) => binding,
+        })
+        .collect())
+}
+
 /// The normalized, executable subset of Agent integration configuration.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentBindings {
@@ -73,20 +112,24 @@ pub struct AgentBindings {
     pub mcp_servers: Vec<AgentMcpServerBinding>,
     #[serde(default, alias = "skill_ids")]
     pub skills: Vec<awaken_agent_contract::AgentSkillBinding>,
-    /// Published Agent ids this Agent may invoke through `agent_run`.
-    #[serde(default)]
-    pub delegate_ids: Vec<AgentId>,
-    /// Whether the owner's id came from the explicit recursive-self sentinel.
-    /// Frozen beside the roster so runtime admission can distinguish intentional
-    /// recursive copies from an accidental A→…→A topology.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub recursive_self: bool,
+    /// Exact published Agent edges this Agent may invoke through `agent_run`.
+    #[serde(
+        default,
+        alias = "delegate_ids",
+        deserialize_with = "deserialize_delegate_bindings",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub delegates: Vec<AgentDelegateBinding>,
     /// Exact tool availability/confirmation policy compiled from authoring.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub toolsets: Vec<ToolsetPolicy>,
 }
 
 impl AgentBindings {
+    pub fn delegate_ids(&self) -> impl Iterator<Item = &AgentId> {
+        self.delegates.iter().map(|binding| &binding.agent_id)
+    }
+
     /// Resolve a concrete runtime tool id against the exact matching toolset.
     /// `None` means the tool is outside all authored toolsets and retains its
     /// ordinary exact-id capability behavior.

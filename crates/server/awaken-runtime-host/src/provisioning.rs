@@ -773,9 +773,9 @@ impl SharedHost {
                     .resolved_spec
                     .plugin_config
                     .agent
-                    .delegate_ids
+                    .delegates
                     .into_iter()
-                    .map(|id| id.0)
+                    .map(|binding| binding.agent_id.0)
                     .collect()
             })
             .unwrap_or_default()

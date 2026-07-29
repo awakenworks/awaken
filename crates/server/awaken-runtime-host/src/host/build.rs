@@ -916,10 +916,18 @@ impl SharedHost {
         sandbox: Arc<crate::session_environment::SessionEnvironment>,
         permission: Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>,
         commit: Arc<crate::store::HostCommit>,
-        allowed_targets: HashSet<awaken_runtime_contract::snapshot::AgentId>,
-        self_snapshot: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
+        parent_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
     ) -> Result<Option<Arc<dyn RunDelegationService>>, HostError> {
-        if allowed_targets.is_empty() {
+        let Some(parent_snapshot) = parent_snapshot else {
+            return Ok(None);
+        };
+        if parent_snapshot
+            .resolved_spec
+            .plugin_config
+            .agent
+            .delegates
+            .is_empty()
+        {
             return Ok(None);
         }
         let scheduler = if self.deployment.durable {
@@ -954,18 +962,16 @@ impl SharedHost {
         let service = HostRunDelegationService::new(
             self.llm.clone(),
             sandbox,
-            allowed_targets,
+            parent_snapshot,
             crate::agent_runner::ChildExecutionAdapters {
                 acp,
                 remote: self.remote_attempt_executor.clone(),
                 remote_credentials: self.remote_credential_realization.clone(),
             },
-        )
-        .with_self_snapshot(self_snapshot)
-        .with_publications(
             self.agent_publications.clone(),
             self.thread_workspace(thread),
         )
+        .map_err(|error| HostError::bad_request(error.to_string()))?
         .with_scheduler(scheduler);
         Ok(Some(Arc::new(service)))
     }

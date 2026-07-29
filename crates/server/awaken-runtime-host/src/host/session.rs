@@ -469,34 +469,12 @@ impl SharedHost {
         }
         // Delegation is a runtime concern: inject the executor so the kernel runs
         // `agent_run` as a sub-agent (native or remote), not the tool registry.
-        let published_delegate_targets = installed
-            .as_ref()
-            .map(|snapshot| {
-                snapshot
-                    .resolved_spec
-                    .plugin_config
-                    .agent
-                    .delegate_ids
-                    .iter()
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default();
-        let self_snapshot = installed.as_ref().and_then(|snapshot| {
-            snapshot
-                .resolved_spec
-                .plugin_config
-                .agent
-                .recursive_self
-                .then(|| snapshot.clone())
-        });
         if let Some(service) = self.run_delegation(
             thread,
             env.clone(),
             permission.clone(),
             commit.clone(),
-            published_delegate_targets,
-            self_snapshot,
+            installed.as_ref(),
         )? {
             runtime = runtime.with_run_delegation(service);
         }
@@ -637,8 +615,7 @@ impl SharedHost {
                     .resolved_spec
                     .plugin_config
                     .agent
-                    .delegate_ids
-                    .iter()
+                    .delegate_ids()
                     .map(|id| id.0.clone())
                     .collect()
             })

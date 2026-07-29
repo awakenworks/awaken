@@ -444,6 +444,72 @@ impl LlmExecutor for InstructionEchoModel {
     }
 }
 
+/// Registry-backed coordinator fixture: a coordinator delegates to the Agent id
+/// named after `delegate to `; a tool-free worker returns its frozen instructions.
+/// This makes an authored roster's source-revision pin observable end to end.
+pub struct RegistryDelegatingModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for RegistryDelegatingModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let has_delegation = request.tools.iter().any(|tool| tool.id == "agent_run");
+        if !has_delegation {
+            let system = request
+                .messages
+                .iter()
+                .rev()
+                .find(|message| message.role == Role::System)
+                .map(|message| block_text(&message.content))
+                .unwrap_or_default();
+            return Ok(ChatResponse {
+                output: AssistantOutput::text(format!("worker instructions: {system}")),
+                usage: None,
+                stop_reason: None,
+            });
+        }
+        let result = request.messages.iter().rev().find_map(|message| {
+            (message.role == Role::Tool).then(|| {
+                message
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::ToolResult { content, .. } => Some(block_text(content)),
+                        _ => None,
+                    })
+                    .collect::<String>()
+            })
+        });
+        let output = match result {
+            Some(result) => AssistantOutput::text(format!("delegate said: {result}")),
+            None => {
+                let user = request
+                    .messages
+                    .iter()
+                    .find(|message| message.role == Role::User)
+                    .map(|message| block_text(&message.content))
+                    .unwrap_or_default();
+                let agent_id = user.strip_prefix("delegate to ").unwrap_or_default().trim();
+                AssistantOutput::from_tool_calls(vec![ToolCall {
+                    call_id: "registry-delegate".into(),
+                    tool_id: "agent_run".into(),
+                    arguments: serde_json::json!({
+                        "agent_id": agent_id,
+                        "input": "report your frozen instructions"
+                    }),
+                }])
+            }
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
 /// A deterministic model for the Outcome E2E. It acts as both the Worker and
 /// the default tool-free Judge, making the production Agent-Grader path
 /// observable without provider credentials.
