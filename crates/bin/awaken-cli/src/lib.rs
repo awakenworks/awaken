@@ -337,6 +337,8 @@ struct AssemblyOverrides {
     local_acp_observations: Vec<awaken_acp_application::AcpHostObservation>,
     hand_executors: BTreeMap<String, Arc<dyn awaken_runtime_contract::tool::ToolExecutor>>,
     web_search_providers: Option<awaken_runtime_host::WebSearchProviderRegistry>,
+    web_search_publication_resolver:
+        Option<Arc<dyn awaken_runtime_host::PluginPublicationResolver>>,
 }
 
 struct ConfigDeclaredHandSource(Arc<ConfigService>);
@@ -926,6 +928,7 @@ pub async fn build_management_assembly_with_deployment(
             local_acp_observations: deployment.local_acp_observations.clone(),
             hand_executors,
             web_search_providers: None,
+            web_search_publication_resolver: None,
         },
         None,
     )
@@ -1027,6 +1030,7 @@ async fn build_management_router_with_composition(
             local_acp_observations: deployment.local_acp_observations,
             hand_executors,
             web_search_providers: None,
+            web_search_publication_resolver: None,
         },
         None,
     )
@@ -1333,16 +1337,18 @@ async fn management_router_over(
     // model an operator adds AFTER startup is visible when we re-publish the
     // reserved-scope assistant. The resolver is mandatory: no config service can
     // be constructed with an implicit model fallback.
+    let web_search_publication_resolver =
+        assembly.web_search_publication_resolver.unwrap_or_else(|| {
+            Arc::new(awaken_runtime_host::WebSearchPublicationResolver::new(
+                web_search_providers.clone(),
+            ))
+        });
     let config_service = Arc::new(
         ConfigService::new(model_wiring.publication_resolver)
             .with_credential_reference_validator(Arc::new(
                 awaken_control::CredentialRevisionValidator::new(credentials.clone()),
             ))
-            .with_plugin_publication_resolver(Arc::new(
-                awaken_runtime_host::WebSearchPublicationResolver::new(
-                    web_search_providers.clone(),
-                ),
-            ))
+            .with_plugin_publication_resolver(web_search_publication_resolver)
             .with_resources(resource_store.clone()),
     );
     // Warm-load the installed catalog from the durable config store BEFORE the plane

@@ -50,11 +50,16 @@ pub async fn build_control_router_with_publication_resolver(
     key: &[u8; 32],
     resolver: Arc<dyn awaken_runtime_host::ModelPublicationResolver>,
 ) -> Result<Router, String> {
+    let providers = awaken_runtime_host::WebSearchProviderRegistry::builtins();
+    let publication_resolver = Arc::new(awaken_runtime_host::WebSearchPublicationResolver::new(
+        providers.clone(),
+    ));
     build_control_router_with_publication_resolver_and_web_search(
         deployment,
         key,
         resolver,
-        awaken_runtime_host::WebSearchProviderRegistry::builtins(),
+        providers,
+        publication_resolver,
     )
     .await
 }
@@ -67,12 +72,13 @@ pub async fn build_control_router_with_publication_resolver_and_web_search(
     key: &[u8; 32],
     resolver: Arc<dyn awaken_runtime_host::ModelPublicationResolver>,
     web_search_providers: awaken_runtime_host::WebSearchProviderRegistry,
+    web_search_publication_resolver: Arc<dyn awaken_runtime_host::PluginPublicationResolver>,
 ) -> Result<Router, String> {
     build_control_assembly_with_model_composition(
         deployment,
         key,
         ManagementModelComposition::HostedPublication { resolver },
-        Some(web_search_providers),
+        Some((web_search_providers, web_search_publication_resolver)),
     )
     .await
     .map(|assembly| assembly.router)
@@ -82,7 +88,10 @@ async fn build_control_assembly_with_model_composition(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
     model_composition: ManagementModelComposition,
-    web_search_providers: Option<awaken_runtime_host::WebSearchProviderRegistry>,
+    web_search: Option<(
+        awaken_runtime_host::WebSearchProviderRegistry,
+        Arc<dyn awaken_runtime_host::PluginPublicationResolver>,
+    )>,
 ) -> Result<ManagementAssembly, String> {
     let identity = identity_wiring(
         deployment.identity_mode,
@@ -117,7 +126,8 @@ async fn build_control_assembly_with_model_composition(
             cloud_models_enabled: deployment.cloud_models.is_enabled(),
             local_acp_observations: Vec::new(),
             hand_executors: BTreeMap::new(),
-            web_search_providers,
+            web_search_providers: web_search.as_ref().map(|value| value.0.clone()),
+            web_search_publication_resolver: web_search.map(|value| value.1),
         },
         None,
     )
