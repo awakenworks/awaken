@@ -72,6 +72,12 @@ impl DispatchOperation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DispatchOperationalEvent {
     pub cursor: DispatchCursor,
+    /// Store-assigned wall-clock time of the atomic authority mutation.
+    ///
+    /// `None` is retained only for wire/schema compatibility with historical
+    /// rows. Consumers that calculate elapsed time must not invent it.
+    #[serde(default)]
+    pub recorded_at_ms: Option<u64>,
     pub operation: DispatchOperation,
 }
 
@@ -117,5 +123,23 @@ mod tests {
 
         assert_eq!(decoded, operation);
         assert_eq!(decoded.run_id(), &RunId("run".into()));
+    }
+
+    #[test]
+    fn historical_event_without_store_time_remains_readable_but_explicitly_unknown() {
+        // Cause-effect decision table:
+        // R1 new payload + timestamp => Some(timestamp) (covered by store
+        // conformance); R2 historical payload without timestamp => None. R2
+        // must not fabricate elapsed time while preserving rolling upgrades.
+        let decoded: DispatchOperationalEvent = serde_json::from_value(serde_json::json!({
+            "cursor": 7,
+            "operation": {
+                "type": "claimed",
+                "claim": { "run_id": "run", "owner": "worker", "epoch": 1 }
+            }
+        }))
+        .expect("historical event remains readable");
+
+        assert_eq!(decoded.recorded_at_ms, None);
     }
 }
