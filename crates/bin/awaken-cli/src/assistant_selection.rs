@@ -5,9 +5,7 @@
 
 use awaken_acp_application::AcpHostObservation;
 use awaken_config_store::ModelSelection;
-use awaken_credential_vault::{
-    CLAUDE_CODE_SETUP_TOKEN_ENV, CredentialKind, CredentialSource, CredentialStatus,
-};
+use awaken_credential_vault::{CredentialKind, CredentialSource, CredentialStatus};
 use awaken_model_catalog::{OfferingStatus, ProviderCatalog};
 
 pub(crate) fn select(
@@ -24,7 +22,7 @@ pub(crate) fn select(
 
     if detected("claude")
         && credentials.iter().filter(active).any(|source| {
-            source.env_key.as_deref() == Some(CLAUDE_CODE_SETUP_TOKEN_ENV)
+            source.is_claude_code_setup_token()
                 && source.provider_id.as_deref() == Some("anthropic")
         })
         && let Some(offering) = catalog.offerings.iter().find(|offering| {
@@ -42,7 +40,7 @@ pub(crate) fn select(
     if catalog.offerings.iter().any(|offering| {
         offering.status == OfferingStatus::Active
             && credentials.iter().filter(active).any(|source| {
-                source.env_key.as_deref() != Some(CLAUDE_CODE_SETUP_TOKEN_ENV)
+                !source.is_claude_code_setup_token()
                     && source.kind != CredentialKind::WorkerLocal
                     && awaken_config_resolver::can_consume(offering.provider_id.as_str(), source)
             })
@@ -152,7 +150,7 @@ mod tests {
             "setup",
             CredentialKind::Vault,
             Some("anthropic"),
-            Some(CLAUDE_CODE_SETUP_TOKEN_ENV),
+            Some(awaken_credential_vault::CLAUDE_CODE_SETUP_TOKEN_ENV),
             None,
         );
         assert_eq!(

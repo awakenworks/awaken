@@ -100,6 +100,7 @@ impl InferenceExecutorMaterializer for SchemeMaterializer {
             .into_iter()
             .collect(),
             recipient_bound_envelopes: false,
+            extension_consumers: Default::default(),
             alternatives: Vec::new(),
         }
     }

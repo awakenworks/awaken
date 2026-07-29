@@ -212,6 +212,7 @@ impl LaunchResolver for PublishedAcpLaunchResolver {
             .into_iter()
             .collect(),
             recipient_bound_envelopes,
+            extension_consumers: Default::default(),
             alternatives: Vec::new(),
         }
     }

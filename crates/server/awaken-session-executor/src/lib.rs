@@ -664,7 +664,7 @@ impl ManagedHost {
                                     ))
                                 })?
                                 .material
-                                .into_bearer()
+                                .into_secret()
                                 .map_err(|error| {
                                     RunError::bad_request(format!(
                                         "repository `{repository_id}` credential: {error}"
@@ -1587,6 +1587,7 @@ impl awaken_protocol_managed::McpAttachmentRealizer for ManagedHost {
                                 CredentialRealizationKind::WorkerRelay,
                             ]),
                             recipient_bound_envelopes,
+                            extension_consumers: Default::default(),
                             alternatives: Vec::new(),
                         },
                         now_unix_ms,
@@ -1613,7 +1614,7 @@ impl awaken_protocol_managed::McpAttachmentRealizer for ManagedHost {
                         )
                     })?
                     .material
-                    .into_bearer()
+                    .into_secret()
                     .map_err(|error| {
                         RunError::classified(
                             "mcp_credential_material_kind_mismatch",

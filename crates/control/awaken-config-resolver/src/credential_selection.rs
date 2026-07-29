@@ -3,9 +3,11 @@
 //! This module is the single secret-free selection authority shared by
 //! publication and permitted management materialization.
 
+#[cfg(test)]
+use awaken_credential_vault::CredentialKind;
 use awaken_credential_vault::{
-    AvailabilityLedger, CredentialBinding, CredentialKind, CredentialPool, CredentialPoolId,
-    CredentialPoolMember, CredentialSource, CredentialStatus, SelectionPolicy,
+    AvailabilityLedger, CredentialBinding, CredentialMaterialOrigin, CredentialPool,
+    CredentialPoolId, CredentialPoolMember, CredentialSource, CredentialStatus, SelectionPolicy,
 };
 use awaken_model_catalog::ApiDialect;
 
@@ -47,11 +49,11 @@ pub fn validate_acp_dialect(backend_ref: &str, actual: ApiDialect) -> Result<(),
 /// May this credential authenticate the model provider?
 #[must_use]
 pub fn can_consume(offering_provider_id: &str, source: &CredentialSource) -> bool {
-    if source.env_key.as_deref() == Some(awaken_credential_vault::CLAUDE_CODE_SETUP_TOKEN_ENV) {
+    if source.is_claude_code_setup_token() {
         return false;
     }
-    match (source.kind, source.provider_id.as_deref()) {
-        (CredentialKind::WorkerLocal, None) => false,
+    match (source.material_origin(), source.provider_id.as_deref()) {
+        (CredentialMaterialOrigin::WorkerLocal, None) => false,
         (_, None) => true,
         (_, Some(scoped)) => scoped == offering_provider_id,
     }
@@ -67,7 +69,7 @@ pub fn credential_can_supply(
     backend_ref: &str,
     source: &CredentialSource,
 ) -> bool {
-    if source.env_key.as_deref() == Some(awaken_credential_vault::CLAUDE_CODE_SETUP_TOKEN_ENV) {
+    if source.is_claude_code_setup_token() {
         return offering_provider_id == "anthropic"
             && backend_ref == "acp:claude"
             && source.provider_id.as_deref() == Some("anthropic");
@@ -89,16 +91,11 @@ pub fn derive_vendor_pool(
         .filter(|source| {
             source.workspace_id == workspace_id
                 && source.status == CredentialStatus::Active
-                && source.kind != CredentialKind::Env
+                && source.is_executable_origin()
                 && credential_can_supply(offering_provider_id, backend_ref, source)
         })
         .collect::<Vec<_>>();
-    eligible.sort_by_key(|source| {
-        (
-            source.env_key.as_deref() != Some(awaken_credential_vault::CLAUDE_CODE_SETUP_TOKEN_ENV),
-            source.id.0.as_str(),
-        )
-    });
+    eligible.sort_by_key(|source| (!source.is_claude_code_setup_token(), source.id.0.as_str()));
     let members = eligible
         .into_iter()
         .enumerate()
