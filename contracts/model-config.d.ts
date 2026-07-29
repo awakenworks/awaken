@@ -343,6 +343,11 @@ export interface EnterCredentialRequest {
     env_key?: null | string;
     kind:     CredentialKind;
     /**
+     * Structured material sealed as one versioned Vault document. Mutually
+     * exclusive with the legacy `secret` field.
+     */
+    material?: null | MaterialObject;
+    /**
      * A server-owned OAuth refresh helper. This is an allowlisted identifier,
      * never an operator-supplied command line.
      */
@@ -356,6 +361,30 @@ export interface EnterCredentialRequest {
     workspace_id: string;
     [property: string]: unknown;
 }
+
+export interface MaterialObject {
+    /**
+     * Opaque named secret fields. Core stores and transports them but never
+     * assign protocol meaning; the matching consumer owns validation.
+     */
+    fields: { [key: string]: string };
+    /**
+     * Namespaced, versioned type owned by the installed consumer extension,
+     * for example `acme.ssh-key/v1`.
+     */
+    type_id: string;
+    [property: string]: unknown;
+}
+
+export interface ExecutableModelOption {
+    endpoint_id: string;
+    model_id:    string;
+    provider_id: string;
+    readiness:   ExecutableModelReadiness;
+    [property: string]: unknown;
+}
+
+export type ExecutableModelReadiness = "ready" | "offering_unavailable" | "credential_unavailable";
 
 /**
  * An authored "how to run this model" unit (ADR-0043 `InferenceProfile` /
@@ -1000,7 +1029,8 @@ export interface ResolvedInferenceView {
 }
 
 export interface SaveProviderConnectionRequest {
-    base_url?: null | string;
+    base_url?:      null | string;
+    configuration?: { [key: string]: string };
     /**
      * Reuse one active Workspace credential instead of creating a duplicate.
      */
@@ -1008,6 +1038,7 @@ export interface SaveProviderConnectionRequest {
     dialect:               APIDialect;
     display_name:          string;
     endpoint_id:           string;
+    idempotency_key:       string;
     /**
      * Server-owned OAuth helper used to mint a short-lived token for both the
      * pre-save discovery and the persisted credential source.

@@ -12,6 +12,7 @@
 //! (features `sealed-aead` + `sqlite`), which stores only `nonce ‖ ciphertext`.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -24,6 +25,7 @@ use crate::{
 
 /// The credential component's table namespace (its bundle prefix).
 const NS: &str = "credential";
+const FILE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Errors from opening or migrating the store.
 #[derive(Debug, thiserror::Error)]
@@ -48,6 +50,14 @@ fn run_migrations(conn: &Connection) -> Result<(), StoreError> {
 
 fn storage(err: impl std::fmt::Display) -> CredentialError {
     CredentialError::Storage(err.to_string())
+}
+
+fn open_file_connection(path: &str) -> Result<Connection, StoreError> {
+    let connection = Connection::open(path).map_err(|err| StoreError::Open(err.to_string()))?;
+    connection
+        .busy_timeout(FILE_BUSY_TIMEOUT)
+        .map_err(|err| StoreError::Open(err.to_string()))?;
+    Ok(connection)
 }
 
 async fn with_conn<T, F>(conn: &Arc<Mutex<Connection>>, f: F) -> Result<T, CredentialError>
@@ -105,8 +115,7 @@ impl SqliteCredentialRepo {
     /// Open (or create) a database file and apply the credential migrations
     /// (one-step convenience for a store-owned database).
     pub fn open(path: &str) -> Result<Self, StoreError> {
-        let store =
-            Self::over(Connection::open(path).map_err(|err| StoreError::Open(err.to_string()))?);
+        let store = Self::over(open_file_connection(path)?);
         store.ensure_schema()?;
         Ok(store)
     }
@@ -414,8 +423,7 @@ impl SqliteSealedBlobStore {
     /// Open (or create) a database file and apply the credential migrations
     /// (one-step convenience for a store-owned database).
     pub fn open(path: &str) -> Result<Self, StoreError> {
-        let store =
-            Self::over(Connection::open(path).map_err(|err| StoreError::Open(err.to_string()))?);
+        let store = Self::over(open_file_connection(path)?);
         store.ensure_schema()?;
         Ok(store)
     }
@@ -518,17 +526,9 @@ mod tests {
     use super::*;
     use crate::{CredentialKind, CredentialStatus};
 
-    /// Both stores' injection seam: a caller-owned connection, `over` wraps it WITHOUT
-    /// migrating, `ensure_schema` applies the shared `credential` scope — so a unified
-    /// migration pipeline can own the schema and these stores share the caller's
-    /// database (mirrors the resource-family stores). Round-trips the repo and the
-    /// sealed blob store, which key the same scope.
-    #[tokio::test]
-    async fn over_then_ensure_schema_round_trips_on_a_caller_owned_connection() {
-        let repo = SqliteCredentialRepo::over(Connection::open_in_memory().unwrap());
-        repo.ensure_schema().unwrap();
-        repo.put(CredentialSource {
-            id: CredentialSourceId("cred:a".into()),
+    fn source(id: &str) -> CredentialSource {
+        CredentialSource {
+            id: CredentialSourceId(id.into()),
             workspace_id: "ws".into(),
             kind: CredentialKind::Vault,
             provider_id: Some("anthropic".into()),
@@ -539,9 +539,19 @@ mod tests {
             worker_local_binding: None,
             status: CredentialStatus::Active,
             version: 1,
-        })
-        .await
-        .unwrap();
+        }
+    }
+
+    /// Both stores' injection seam: a caller-owned connection, `over` wraps it WITHOUT
+    /// migrating, `ensure_schema` applies the shared `credential` scope — so a unified
+    /// migration pipeline can own the schema and these stores share the caller's
+    /// database (mirrors the resource-family stores). Round-trips the repo and the
+    /// sealed blob store, which key the same scope.
+    #[tokio::test]
+    async fn over_then_ensure_schema_round_trips_on_a_caller_owned_connection() {
+        let repo = SqliteCredentialRepo::over(Connection::open_in_memory().unwrap());
+        repo.ensure_schema().unwrap();
+        repo.put(source("cred:a")).await.unwrap();
         assert_eq!(repo.list("ws").await.unwrap().len(), 1);
 
         let blobs = SqliteSealedBlobStore::over(Connection::open_in_memory().unwrap());
@@ -549,5 +559,43 @@ mod tests {
         let r = SecretRef("sec:a".into());
         blobs.put_blob(&r, b"sealed".to_vec()).await.unwrap();
         assert_eq!(blobs.get_blob(&r).await.unwrap(), b"sealed");
+    }
+
+    #[tokio::test]
+    async fn file_stores_wait_for_short_lived_sibling_writer_contention() {
+        // Cause/effect decision table:
+        // | Rule | adapter | sibling write lock | Effect |
+        // | R1 | metadata | absent | normal write succeeds (covered by conformance) |
+        // | R2 | metadata | short-lived | waits, then writes without leaking SQLITE_BUSY |
+        // | R3 | sealed blob | short-lived | waits, then writes without leaking SQLITE_BUSY |
+        // A lock held longer than the bounded timeout still fails closed; this test
+        // covers the transient contention produced by sibling adapters in one host.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("credential.db");
+        let path = path.to_string_lossy().into_owned();
+        let repo = SqliteCredentialRepo::open(&path).unwrap();
+        let blobs = SqliteSealedBlobStore::open(&path).unwrap();
+
+        for write in ["metadata", "blob"] {
+            let blocker_path = path.clone();
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+            let blocker = std::thread::spawn(move || {
+                let connection = Connection::open(blocker_path).unwrap();
+                connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+                ready_tx.send(()).unwrap();
+                std::thread::sleep(Duration::from_millis(100));
+                connection.execute_batch("COMMIT").unwrap();
+            });
+            ready_rx.recv().unwrap();
+            if write == "metadata" {
+                repo.put(source("cred:contended")).await.unwrap();
+            } else {
+                blobs
+                    .put_blob(&SecretRef("sec:contended".into()), b"sealed".to_vec())
+                    .await
+                    .unwrap();
+            }
+            blocker.join().unwrap();
+        }
     }
 }

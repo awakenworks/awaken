@@ -43,6 +43,8 @@ pub fn contract_schemas() -> Map<String, Value> {
         "ProviderConnectionSummary",
         crate::ProviderConnectionSummary
     );
+    add!("ExecutableModelOption", crate::ExecutableModelOption);
+    add!("ExecutableModelReadiness", crate::ExecutableModelReadiness);
     add!("ProtocolEndpoint", awaken_model_catalog::ProtocolEndpoint);
     add!("Offering", awaken_model_catalog::Offering);
     add!("CatalogSyncResult", awaken_model_catalog::CatalogSyncResult);
@@ -246,6 +248,14 @@ fn paths() -> Value {
                     "schema": { "type": "string" },
                     "description": "Workspace whose model-source readiness to derive"
                 })], None, 200, array_of("ProviderConnectionSummary"))
+        },
+        "/v1/config/executable-models": {
+            "get": op("list_executable_models", "catalog", "List model routes with authoritative catalog and credential readiness",
+                &[json!({
+                    "name": "workspace_id", "in": "query", "required": true,
+                    "schema": { "type": "string" },
+                    "description": "Workspace whose executable model routes to project"
+                })], None, 200, array_of("ExecutableModelOption"))
         },
         "/v1/config/catalog": {
             "get": op("get_catalog", "catalog", "Snapshot the full authored catalog (what the resolver binds against)",

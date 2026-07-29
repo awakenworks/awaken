@@ -7,6 +7,7 @@ import type * as Contract from "../../../../contracts/model-config";
 export type ApiDialect = Contract.APIDialect;
 export type CatalogSyncResult = Contract.CatalogSyncResult;
 export type ConfigCapabilitiesView = Contract.ConfigCapabilitiesView;
+export type ExecutableModelOption = Contract.ExecutableModelOption;
 export type ModelAttributes = Contract.ModelAttributes;
 export type ModelTarget = Contract.ModelTarget;
 export type Offering = Contract.Offering;
