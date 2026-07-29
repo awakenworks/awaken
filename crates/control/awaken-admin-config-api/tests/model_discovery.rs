@@ -209,6 +209,7 @@ async fn author_prerequisites(app: &Router) -> String {
 
 fn connection_request(workspace_id: &str, credential_source_id: &str) -> Value {
     json!({
+        "idempotency_key": "test-existing-command",
         "workspace_id": workspace_id,
         "provider_id": "anthropic",
         "display_name": "Anthropic",
@@ -423,6 +424,7 @@ async fn test_and_save_activates_all_facts_only_after_discovery_succeeds() {
         "POST",
         "/v1/config/provider-connections",
         json!({
+            "idempotency_key":"test-api-key-command",
             "workspace_id":"workspace-a",
             "provider_id":"anthropic",
             "display_name":"Anthropic",
@@ -450,6 +452,73 @@ async fn test_and_save_activates_all_facts_only_after_discovery_succeeds() {
     assert_eq!(catalog.offerings.len(), 2);
 }
 
+// Provider-command identity decision table:
+// R1 same Workspace/provider/endpoint/key replay -> same credential source.
+// R2 same connection with a different key -> distinct credential source.
+// R3 blank key -> reject before discovery or persistence.
+#[tokio::test]
+async fn provider_connection_command_is_idempotent_and_requires_an_explicit_key() {
+    let harness = harness();
+    let request = |key: &str| {
+        json!({
+            "idempotency_key": key,
+            "workspace_id":"workspace-a",
+            "provider_id":"anthropic",
+            "display_name":"Anthropic",
+            "endpoint_id":"anthropic-messages",
+            "dialect":"anthropic_messages",
+            "secret":"idempotent-fixture" // awaken-allow: secret -- inert fixture
+        })
+    };
+
+    let (first_status, first) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/provider-connections",
+        request("command-a"),
+    )
+    .await;
+    let (replay_status, replay) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/provider-connections",
+        request("command-a"),
+    )
+    .await;
+    let (second_status, second) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/provider-connections",
+        request("command-b"),
+    )
+    .await;
+    let (blank_status, _) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/provider-connections",
+        request(""),
+    )
+    .await;
+
+    assert_eq!(first_status, StatusCode::CREATED);
+    assert_eq!(replay_status, StatusCode::CREATED);
+    assert_eq!(second_status, StatusCode::CREATED);
+    assert_eq!(blank_status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(first["credential"]["id"], replay["credential"]["id"]);
+    assert_eq!(
+        first["credential"]["version"],
+        replay["credential"]["version"]
+    );
+    assert_ne!(first["credential"]["id"], second["credential"]["id"]);
+    assert_eq!(
+        harness.credentials.list("workspace-a").await.unwrap().len(),
+        2
+    );
+}
+
+// Provider configuration ownership rule:
+// C1 Vertex descriptor + project/location configuration causes E1 server-owned
+// endpoint construction; the client neither supplies nor computes a base URL.
 #[tokio::test]
 async fn oauth_connection_uses_the_same_command_and_persists_only_the_helper() {
     let harness = harness();
@@ -458,12 +527,13 @@ async fn oauth_connection_uses_the_same_command_and_persists_only_the_helper() {
         "POST",
         "/v1/config/provider-connections",
         json!({
+            "idempotency_key":"test-oauth-command",
             "workspace_id":"workspace-a",
             "provider_id":"vertex",
             "display_name":"Vertex AI",
             "endpoint_id":"vertex-gemini",
             "dialect":"vertex_gemini",
-            "base_url":"https://aiplatform.googleapis.com/v1/projects/p/locations/global/",
+            "configuration":{"project_id":"p", "location":"global"},
             "oauth_helper":"gcloud"
         }),
     )
@@ -471,6 +541,10 @@ async fn oauth_connection_uses_the_same_command_and_persists_only_the_helper() {
     assert_eq!(status, StatusCode::CREATED, "{result}");
     assert_eq!(result["credential"]["kind"], "oauth");
     assert_eq!(result["credential"]["oauth_helper"], "gcloud");
+    assert_eq!(
+        result["endpoint"]["base_url"],
+        "https://aiplatform.googleapis.com/v1/projects/p/locations/global/"
+    );
     assert!(result.get("oauth_command").is_none());
     assert_eq!(
         harness.discovery.calls.lock().unwrap().as_slice(),
@@ -506,6 +580,7 @@ async fn existing_credential_connection_reuses_the_source_without_creating_a_dup
         "POST",
         "/v1/config/provider-connections",
         json!({
+            "idempotency_key":"test-existing-openai-command",
             "workspace_id":"workspace-a",
             "provider_id":"openai",
             "display_name":"OpenAI",
@@ -545,6 +620,7 @@ async fn provider_connection_rejects_a_claude_code_setup_token_before_discovery(
         "POST",
         "/v1/config/provider-connections",
         json!({
+            "idempotency_key":"test-setup-token-command",
             "workspace_id":"workspace-a",
             "provider_id":"anthropic",
             "display_name":"Anthropic",
@@ -567,6 +643,7 @@ async fn connection_rejects_parallel_or_unsupported_auth_inputs() {
         "POST",
         "/v1/config/provider-connections",
         json!({
+            "idempotency_key":"test-parallel-auth-command",
             "workspace_id":"workspace-a",
             "provider_id":"anthropic",
             "display_name":"Anthropic",
@@ -585,6 +662,7 @@ async fn connection_rejects_parallel_or_unsupported_auth_inputs() {
         "POST",
         "/v1/config/provider-connections",
         json!({
+            "idempotency_key":"test-unsupported-auth-command",
             "workspace_id":"workspace-a",
             "provider_id":"anthropic",
             "display_name":"Anthropic",
@@ -607,6 +685,7 @@ async fn failed_connection_test_leaves_no_executable_catalog_facts() {
         "POST",
         "/v1/config/provider-connections",
         json!({
+            "idempotency_key":"test-failed-discovery-command",
             "workspace_id":"workspace-a",
             "provider_id":"openai",
             "display_name":"OpenAI",
@@ -633,6 +712,7 @@ async fn unsupported_provider_and_empty_key_fail_before_discovery() {
         "POST",
         "/v1/config/provider-connections",
         json!({
+            "idempotency_key":"test-unknown-provider-command",
             "workspace_id":"workspace-a",
             "provider_id":"unknown-provider",
             "display_name":"Unknown",
@@ -650,6 +730,7 @@ async fn unsupported_provider_and_empty_key_fail_before_discovery() {
         "POST",
         "/v1/config/provider-connections",
         json!({
+            "idempotency_key":"test-empty-key-command",
             "workspace_id":"workspace-a",
             "provider_id":"openai",
             "display_name":"OpenAI",
@@ -684,6 +765,7 @@ async fn catalog_rejection_disables_the_already_sealed_credential() {
         "POST",
         "/v1/config/provider-connections",
         json!({
+            "idempotency_key":"test-catalog-rejection-command",
             "workspace_id":"workspace-a",
             "provider_id":"anthropic",
             "display_name":"Anthropic",
@@ -734,6 +816,7 @@ async fn connection_summaries_cover_not_configured_ready_stale_and_unavailable()
         "POST",
         "/v1/config/provider-connections",
         json!({
+            "idempotency_key":"test-summary-command",
             "workspace_id":"workspace-a", "provider_id":"anthropic",
             "display_name":"Anthropic", "endpoint_id":"anthropic-messages",
             "dialect":"anthropic_messages", "secret":"summary-secret" // awaken-allow: secret -- inert fixture

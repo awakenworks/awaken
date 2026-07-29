@@ -4,7 +4,6 @@ import { cloudModelUiState } from "./model-cloud-capability";
 import {
   providerConfigurationDefaults,
   providerDraftDefaults,
-  providerEndpointCoordinates,
 } from "./provider-connection-panel";
 
 // UI cause/effect rules kept beside the executable tests:
@@ -57,7 +56,7 @@ describe("providerDraftDefaults", () => {
     });
   });
 
-  it("derives Vertex endpoint coordinates from descriptor-owned configuration fields", () => {
+  it("derives provider fields without owning provider endpoint rules", () => {
     const vertex: ProviderDriverDescriptor = {
       ...openai,
       provider_kind: "vertex",
@@ -72,17 +71,6 @@ describe("providerDraftDefaults", () => {
     expect(providerConfigurationDefaults(vertex)).toEqual({
       project_id: "",
       location: "global",
-    });
-    expect(
-      providerEndpointCoordinates(
-        vertex,
-        { endpoint: "vertex-gemini", baseUrl: "" },
-        { project_id: "demo-project", location: "us-central1" },
-      ),
-    ).toEqual({
-      endpoint: "vertex-gemini",
-      baseUrl:
-        "https://us-central1-aiplatform.googleapis.com/v1/projects/demo-project/locations/us-central1/",
     });
   });
 });

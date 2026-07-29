@@ -47,28 +47,6 @@ export function providerConfigurationDefaults(descriptor: ProviderDriverDescript
   );
 }
 
-export function providerEndpointCoordinates(
-  descriptor: ProviderDriverDescriptor | undefined,
-  draft: { endpoint: string; baseUrl: string },
-  configuration: Record<string, string>,
-) {
-  if (descriptor?.provider_kind !== "vertex") {
-    return { endpoint: draft.endpoint, baseUrl: draft.baseUrl };
-  }
-  const project = configuration.project_id?.trim() ?? "";
-  const location = configuration.location?.trim() || "global";
-  const host =
-    location === "global"
-      ? "aiplatform.googleapis.com"
-      : `${location}-aiplatform.googleapis.com`;
-  return {
-    endpoint: draft.endpoint || "vertex-gemini",
-    baseUrl: project
-      ? `https://${host}/v1/projects/${encodeURIComponent(project)}/locations/${encodeURIComponent(location)}/`
-      : "",
-  };
-}
-
 export default function ProviderConnectionPanel({
   credentials,
   descriptors,
@@ -89,6 +67,7 @@ export default function ProviderConnectionPanel({
   );
   const [configuration, setConfiguration] = useState<Record<string, string>>({});
   const [syncCredential, setSyncCredential] = useState("");
+  const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID());
   const selectedDescriptor = descriptors.find(
     (descriptor) => descriptor.provider_kind === draft.provider,
   );
@@ -111,20 +90,17 @@ export default function ProviderConnectionPanel({
 
   const connect = useMutation({
     mutationFn: () => {
-      const coordinates = providerEndpointCoordinates(
-        selectedDescriptor,
-        draft,
-        configuration,
-      );
       return api.post<ProviderConnectionView>(
         ws("/v1/config/provider-connections"),
         {
+          idempotency_key: idempotencyKey,
           workspace_id: workspace,
           provider_id: draft.provider,
           display_name: selectedDescriptor?.display_name ?? draft.provider,
-          endpoint_id: coordinates.endpoint,
+          endpoint_id: draft.endpoint,
           dialect: draft.dialect,
-          base_url: coordinates.baseUrl || null,
+          base_url: draft.baseUrl || null,
+          configuration,
           timeout_secs: 60,
           ...(authMode === "api_key" ? { secret: apiKey } : {}),
           ...(authMode === "oauth" ? { oauth_helper: "gcloud" } : {}),
@@ -135,6 +111,7 @@ export default function ProviderConnectionPanel({
       );
     },
     onSuccess: (connection) => {
+      setIdempotencyKey(crypto.randomUUID());
       setApiKey("");
       setSyncCredential(connection.credential.id);
       setAuthMode("existing");

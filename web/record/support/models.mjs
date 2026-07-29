@@ -37,8 +37,6 @@ export async function configureLiveModel(page) {
   if (!project) throw new Error("this runtime-effect story requires GEMINI_PROJECT");
   const provider = "vertex";
   const endpoint = "vertex-endpoint";
-  const host = location === "global" ? "aiplatform.googleapis.com" : `${location}-aiplatform.googleapis.com`;
-  const baseUrl = `https://${host}/v1/projects/${project}/locations/${location}/`;
 
   const credentials = await (await page.request.get(`${BACKEND}/v1/config/credentials?workspace_id=wrkspc_default`)).json();
   const existing = credentials.find(
@@ -50,12 +48,13 @@ export async function configureLiveModel(page) {
   );
   const connected = await page.request.post(`${BACKEND}/v1/config/provider-connections`, {
     data: {
+      idempotency_key: "record-live-vertex",
       workspace_id: "wrkspc_default",
       provider_id: provider,
       display_name: "Vertex AI",
       endpoint_id: endpoint,
       dialect: "vertex_gemini",
-      base_url: baseUrl,
+      configuration: { project_id: project, location },
       timeout_secs: 60,
       ...(existing
         ? { credential_source_id: existing.id }
@@ -88,6 +87,7 @@ export async function configureSyntheticModel(page, id) {
   );
   const response = await page.request.post(`${BACKEND}/v1/config/provider-connections`, {
     data: {
+      idempotency_key: `record-synthetic-${id}`,
       workspace_id: "wrkspc_default",
       provider_id: provider,
       display_name: "Recording fixture",

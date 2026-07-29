@@ -15,6 +15,7 @@ pub mod openapi;
 pub mod postgres;
 #[cfg(feature = "postgres")]
 mod postgres_resource_catalog;
+mod provider_connection;
 #[cfg(any(test, feature = "sqlite", feature = "postgres"))]
 mod resource_catalog_codec;
 mod router;
@@ -37,14 +38,19 @@ pub use awaken_config_resolver::{
     AgentInputBindingRepository, InMemoryAgentInputBindingRepository, InMemoryProfileStore,
     InMemoryWebhookStore, InferenceProfileStore, WebhookStore,
 };
+pub use provider_connection::{
+    ConnectProviderCommand, ModelCatalogDiscovery, ModelCatalogDiscoveryError,
+    ProviderConnectionAuthentication, ProviderConnectionError, ProviderConnectionResult,
+    ProviderConnectionService,
+};
 pub use router::{
     AdminState, BrokeredCatalogDiscovery, ConfigCapabilitiesView, CooldownRequest, CredentialProbe,
-    CredentialSourceView, CredentialValidation, EnterCredentialRequest, IdentityCapabilityView,
-    ModelCatalogDiscovery, ModelCatalogDiscoveryError, ModelSupplyCapabilityView, PoolEligibleView,
+    CredentialSourceView, CredentialValidation, EnterCredentialRequest, ExecutableModelOption,
+    ExecutableModelReadiness, IdentityCapabilityView, ModelSupplyCapabilityView, PoolEligibleView,
     ProbeStatus, ProviderConnectionStatus, ProviderConnectionSummary, ProviderConnectionView,
     PutModelAttributesRequest, ResolveProfileRequest, ResolveRequest, ResolvedCandidatesView,
     ResolvedInferenceView, SaveProviderConnectionRequest, ValidateCredentialRequest, admin_router,
-    admin_router_with_capabilities,
+    admin_router_with_capabilities, project_executable_models,
 };
 
 /// The API surface version this crate serves.

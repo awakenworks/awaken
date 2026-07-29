@@ -817,6 +817,26 @@
             }
           ]
         },
+        "CredentialMaterialInput": {
+          "properties": {
+            "fields": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Opaque named secret fields. Core stores and transports them but never\nassign protocol meaning; the matching consumer owns validation.",
+              "type": "object"
+            },
+            "type_id": {
+              "description": "Namespaced, versioned type owned by the installed consumer extension,\nfor example `acme.ssh-key/v1`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type_id",
+            "fields"
+          ],
+          "type": "object"
+        },
         "OAuthHelper": {
           "description": "Server-owned OAuth token helper. The API carries this allowlisted id, never\nan operator-supplied command line; the credential bounded context owns how\nit becomes a token source for model, MCP, and A2A consumers alike.",
           "oneOf": [
@@ -840,6 +860,17 @@
         },
         "kind": {
           "$ref": "#/$defs/CredentialKind"
+        },
+        "material": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CredentialMaterialInput"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Structured material sealed as one versioned Vault document. Mutually\nexclusive with the legacy `secret` field."
         },
         "oauth_helper": {
           "anyOf": [
@@ -878,6 +909,51 @@
       ],
       "title": "EnterCredentialRequest",
       "type": "object"
+    },
+    "ExecutableModelOption": {
+      "$defs": {
+        "ExecutableModelReadiness": {
+          "enum": [
+            "ready",
+            "offering_unavailable",
+            "credential_unavailable"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "endpoint_id": {
+          "type": "string"
+        },
+        "model_id": {
+          "type": "string"
+        },
+        "provider_id": {
+          "type": "string"
+        },
+        "readiness": {
+          "$ref": "#/$defs/ExecutableModelReadiness"
+        }
+      },
+      "required": [
+        "provider_id",
+        "model_id",
+        "endpoint_id",
+        "readiness"
+      ],
+      "title": "ExecutableModelOption",
+      "type": "object"
+    },
+    "ExecutableModelReadiness": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "enum": [
+        "ready",
+        "offering_unavailable",
+        "credential_unavailable"
+      ],
+      "title": "ExecutableModelReadiness",
+      "type": "string"
     },
     "InferenceProfile": {
       "$defs": {
@@ -2594,6 +2670,13 @@
             "null"
           ]
         },
+        "configuration": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "type": "object"
+        },
         "credential_source_id": {
           "anyOf": [
             {
@@ -2613,6 +2696,9 @@
           "type": "string"
         },
         "endpoint_id": {
+          "type": "string"
+        },
+        "idempotency_key": {
           "type": "string"
         },
         "oauth_helper": {
@@ -2649,6 +2735,7 @@
         }
       },
       "required": [
+        "idempotency_key",
         "workspace_id",
         "provider_id",
         "display_name",

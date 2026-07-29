@@ -785,6 +785,16 @@ pub(crate) fn prepare_source(
     params: CredentialCreateParams,
 ) -> (CredentialSource, Option<RedactedString>) {
     let id = CredentialSourceId(format!("cred:{}:{}", params.workspace_id, next_id()));
+    prepare_source_with_id(id, params)
+}
+
+/// Mint a source at a caller-owned stable identity. Only the credential
+/// application layer may expose this through an idempotent create operation;
+/// transports must not construct material references themselves.
+pub(crate) fn prepare_source_with_id(
+    id: CredentialSourceId,
+    params: CredentialCreateParams,
+) -> (CredentialSource, Option<RedactedString>) {
     let (material_ref, secret) = match (params.kind, params.secret) {
         (CredentialKind::Vault, Some(secret)) => {
             (Some(SecretRef(format!("sec:{}", id.0))), Some(secret))

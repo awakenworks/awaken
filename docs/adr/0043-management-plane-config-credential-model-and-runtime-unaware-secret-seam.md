@@ -2,6 +2,9 @@
 
 - Status: Proposed
 - Date: 2026-07-04
+- Amended 2026-07-29: provider connection is one reusable application command,
+  and executable model readiness is one server-owned Catalog/Credential
+  projection shared by HTTP and embedded hosts.
 - Amended 2026-07-04: provider/endpoint/offering/routing live in a **dedicated
   management-plane crate `awaken-management-contract`** (mirroring awaken-next
   ADR-0088), orthogonal to execution (execution never depends on it — I4 = D6/D9);
@@ -180,6 +183,29 @@ to their own pins. A failed, partial, malformed, or unconfigured discovery perfo
 no catalog mutation. Worker-private material requires a worker/provisioning adapter
 that owns that reference; a control-plane adapter cannot fall back to environment
 variables or request the plaintext.
+
+`ProviderConnectionService` is the one application-service owner of this use
+case. HTTP and embedded hosts perform scope/authentication and map their DTOs,
+then call the same command; they do not recreate provider, credential, discovery,
+or catalog orchestration. Provider-driver descriptors own authoring fields, and
+the service owns provider-specific endpoint construction, so clients submit
+non-secret configuration values instead of duplicating driver URL rules.
+
+For API-key and OAuth authoring, the initiator supplies a stable idempotency key.
+The Credential/Vault context derives one command-owned source identity and its
+material reference, returns the durable winner on replay, and rejects conflicting
+non-secret facts. The application discovers before persistence, stages a newly
+entered source as disabled, atomically reconciles Catalog facts, then activates
+the source. Catalog rejection therefore leaves no executable offering and only a
+disabled, retryable credential source. Replaying a completed command reuses the
+same source and reconciliation path; there is no transport-owned retry store or
+second credential-create path.
+
+Selection clients read `ExecutableModelOption`, the authoritative read model
+joining current Catalog offerings with Workspace Credential availability. The
+projection reports readiness but grants no authorization and never selects a
+runtime fallback. Clients must not reconstruct that join from separate catalog
+and credential endpoints.
 
 ## Management-plane decomposition, layering, and naming (amended 2026-07-04)
 
