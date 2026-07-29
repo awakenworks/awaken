@@ -20,7 +20,7 @@ pub use audit::record::Record as EventRecord;
 pub use event::AgentEvent;
 pub use fingerprint::stable_fingerprint;
 pub use model_spec::ModelSpec;
-pub use secret::RedactedString;
+pub use secret::{RedactedString, StructuredCredentialMaterial};
 pub use stream::event::Event as StreamEvent;
 pub use stream::sink::Sink as StreamSink;
 pub use thread::commit::coordinator::Coordinator as CommitCoordinator;

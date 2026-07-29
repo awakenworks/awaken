@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use async_trait::async_trait;
 use awaken_agent_contract::RedactedString;
+pub use awaken_agent_contract::StructuredCredentialMaterial;
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// Stable built-in trust domains used by the self-hosted execution profile.
@@ -866,14 +867,6 @@ pub struct OAuthCredentialMaterial {
 }
 
 pub const HTTP_BASIC_MATERIAL_TYPE: &str = "awaken.http-basic/v1";
-
-/// Open structured material shared with external credential extensions. Field
-/// names are owned by `type_id`; every value remains redacted in Debug output.
-#[derive(Debug)]
-pub struct StructuredCredentialMaterial {
-    pub type_id: String,
-    pub fields: BTreeMap<String, RedactedString>,
-}
 
 /// Capability-discovery record published by an external last-mile consumer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

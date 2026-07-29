@@ -684,15 +684,10 @@ impl PinnedCredentialMaterializer {
                 },
             )
         } else {
-            match awaken_credential_vault::StructuredCredentialMaterial::decode(access_token)
+            match awaken_credential_vault::decode_structured_material(access_token)
                 .map_err(|_| CredentialMaterialError::Invalid)?
             {
-                Ok(material) => awaken_runtime_contract::CredentialMaterial::Structured(
-                    awaken_runtime_contract::StructuredCredentialMaterial {
-                        type_id: material.type_id,
-                        fields: material.fields,
-                    },
-                ),
+                Ok(material) => awaken_runtime_contract::CredentialMaterial::Structured(material),
                 Err(secret) => awaken_runtime_contract::CredentialMaterial::secret(secret),
             }
         };
@@ -1780,9 +1775,8 @@ mod tests {
                 "private_key".into(),
                 RedactedString::new("ssh-secret"),
             )]),
-        }
-        .encode()
-        .unwrap();
+        };
+        let material = awaken_credential_vault::encode_structured_material(material).unwrap();
         let source = enter_credential(
             CredentialCreateParams {
                 workspace_id: "workspace-a".into(),

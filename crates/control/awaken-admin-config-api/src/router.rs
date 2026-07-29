@@ -1507,7 +1507,7 @@ impl CredentialMaterialInput {
                 .map(|(name, value)| (name, RedactedString::new(value)))
                 .collect(),
         };
-        material.encode()
+        awaken_credential_vault::encode_structured_material(material)
     }
 }
 

@@ -228,8 +228,8 @@ impl VaultState {
                 ("username".into(), RedactedString::new("x-access-token")),
                 ("password".into(), RedactedString::from(token)),
             ]),
-        }
-        .encode()?;
+        };
+        let material = awaken_credential_vault::encode_structured_material(material)?;
         enter_credential(
             DomainCredentialCreateParams {
                 workspace_id: workspace_id.to_string(),
