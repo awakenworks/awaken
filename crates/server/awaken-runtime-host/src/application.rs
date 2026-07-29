@@ -404,6 +404,230 @@ impl RunAttemptExecutor for SessionPromptAttemptExecutor {
     }
 }
 
+/// Loads selected Skills and bounded Memory recall into ACP's request-only
+/// context. Native execution keeps using its existing Skill tools and
+/// `BeforeInference` Memory hook; this adapter only bridges the external backend
+/// through the neutral `RuntimeRunContext` field.
+pub(crate) struct AcpContextAttemptExecutor {
+    inner: Arc<dyn RunAttemptExecutor>,
+    skills: Option<Arc<dyn awaken_ext_skills::SkillRegistry>>,
+    memory: Option<awaken_ext_memory::MemoryRecall>,
+    session_id: String,
+}
+
+impl AcpContextAttemptExecutor {
+    pub(crate) fn new(
+        inner: Arc<dyn RunAttemptExecutor>,
+        skills: Option<Arc<dyn awaken_ext_skills::SkillRegistry>>,
+        memory: Option<awaken_ext_memory::MemoryRecall>,
+        session_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            inner,
+            skills,
+            memory,
+            session_id: session_id.into(),
+        }
+    }
+
+    async fn load_context(
+        &self,
+        activation: &RunActivation,
+        context: &mut awaken_runtime_contract::RuntimeRunContext,
+    ) {
+        if !activation
+            .snapshot
+            .resolved_spec
+            .model_binding
+            .backend_ref
+            .starts_with("acp:")
+        {
+            return;
+        }
+        if let Some(skills) = &self.skills {
+            let loaded = skills
+                .list()
+                .into_iter()
+                .filter(|skill| skill.model_invocable)
+                .map(|skill| {
+                    awaken_ext_skills::render_backend_context(&skill, Some(&self.session_id))
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            if !loaded.is_empty() {
+                context.request_context.push(Message::text(
+                    MessageId(format!("acp-skills:{}", activation.run_id.0)),
+                    Role::System,
+                    loaded,
+                ));
+            }
+        }
+        if let Some(memory) = &self.memory
+            && let Some(recalled) = memory.context(&activation.input).await
+        {
+            context.request_context.push(Message::text(
+                MessageId(format!("acp-memory:{}", activation.run_id.0)),
+                Role::System,
+                recalled,
+            ));
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_runtime_contract::execution::RunExecutor for AcpContextAttemptExecutor {
+    async fn execute(
+        &self,
+        activation: RunActivation,
+        mut context: awaken_runtime_contract::RuntimeRunContext,
+    ) -> awaken_runtime_contract::execution::Result<RunState> {
+        self.load_context(&activation, &mut context).await;
+        self.inner.execute(activation, context).await
+    }
+
+    fn capabilities(&self) -> ExecutorCapabilities {
+        self.inner.capabilities()
+    }
+}
+
+#[async_trait::async_trait]
+impl RunAttemptExecutor for AcpContextAttemptExecutor {
+    async fn resume(
+        &self,
+        activation: RunActivation,
+        command: awaken_runtime_contract::resume::ResumeCommand,
+        mut context: awaken_runtime_contract::RuntimeRunContext,
+    ) -> awaken_runtime_contract::execution::Result<RunState> {
+        self.load_context(&activation, &mut context).await;
+        self.inner.resume(activation, command, context).await
+    }
+
+    async fn cancel(
+        &self,
+        activation: RunActivation,
+        context: awaken_runtime_contract::RuntimeRunContext,
+    ) -> awaken_runtime_contract::execution::Result<()> {
+        self.inner.cancel(activation, context).await
+    }
+}
+
+#[cfg(test)]
+mod acp_context_tests {
+    use super::*;
+    use awaken_agent_contract::agent::run::Id as RunId;
+    use awaken_agent_contract::agent::thread::Id as ThreadId;
+    use awaken_runtime_contract::execution::{Error, RunExecutor};
+    use awaken_runtime_contract::resolved::ModelBinding;
+    use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
+
+    struct UnusedExecutor;
+
+    #[async_trait::async_trait]
+    impl RunExecutor for UnusedExecutor {
+        async fn execute(
+            &self,
+            _activation: RunActivation,
+            _context: awaken_runtime_contract::RuntimeRunContext,
+        ) -> Result<RunState, Error> {
+            panic!("load_context test never executes the inner adapter")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RunAttemptExecutor for UnusedExecutor {
+        async fn resume(
+            &self,
+            _activation: RunActivation,
+            _command: awaken_runtime_contract::resume::ResumeCommand,
+            _context: awaken_runtime_contract::RuntimeRunContext,
+        ) -> Result<RunState, Error> {
+            panic!("load_context test never resumes the inner adapter")
+        }
+    }
+
+    fn activation(backend: &str) -> RunActivation {
+        RunActivation::new(
+            RunId("run-1".into()),
+            ThreadId("session-1".into()),
+            ExecutableAgentSnapshot::builder("agent")
+                .model(ModelBinding::new("provider", "model", backend))
+                .build(),
+            vec![Message::text(
+                MessageId("user-1".into()),
+                Role::User,
+                "current request",
+            )],
+        )
+    }
+
+    /// Cause/effect graph:
+    /// C1 ACP backend, C2 selected model-invocable Skill, C3 non-empty Memory
+    /// -> E1 one Skill context and E2 one bounded Memory context; a Native
+    /// backend (C1=false) -> E3 no adapter context because its existing Skill
+    /// tools and BeforeInference hook remain authoritative.
+    ///
+    /// | Rule | ACP | Skill | Memory | Context messages |
+    /// | A1 | T | T | T | skill + memory |
+    /// | A2 | F | T | T | empty |
+    #[tokio::test]
+    async fn acp_loads_selected_skills_and_memory_as_request_only_context() {
+        let skill = awaken_ext_skills::SkillSpec::new(
+            "review",
+            "Review",
+            "Review carefully",
+            "Use ${SESSION_ID} and inspect the evidence.",
+        );
+        let skills: Arc<dyn awaken_ext_skills::SkillRegistry> =
+            Arc::new(awaken_ext_skills::InMemorySkillRegistry::from_specs([
+                skill,
+            ]));
+        let root = std::env::temp_dir().join(format!(
+            "awaken-acp-memory-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let memory = awaken_ext_memory::MemoryDir::new(root);
+        memory
+            .write("preference", "Prefer concise answers.")
+            .expect("seed memory");
+        let loader = AcpContextAttemptExecutor::new(
+            Arc::new(UnusedExecutor),
+            Some(skills),
+            Some(awaken_ext_memory::MemoryRecall::new(
+                Arc::new(memory),
+                awaken_ext_memory::RecallBounds::default(),
+            )),
+            "session-1",
+        );
+
+        let acp = activation("acp:codex");
+        let durable_input = acp.input.clone();
+        let mut acp_context = awaken_runtime_contract::RuntimeRunContext::default();
+        loader.load_context(&acp, &mut acp_context).await;
+        assert_eq!(acp_context.request_context.len(), 2, "A1");
+        assert!(
+            acp_context.request_context[0]
+                .text_content()
+                .contains("Use session-1"),
+            "A1 skill template"
+        );
+        assert!(
+            acp_context.request_context[1]
+                .text_content()
+                .contains("Prefer concise answers"),
+            "A1 memory"
+        );
+        assert_eq!(acp.input, durable_input, "request context is non-durable");
+
+        let native = activation("genai");
+        let mut native_context = awaken_runtime_contract::RuntimeRunContext::default();
+        loader.load_context(&native, &mut native_context).await;
+        assert!(native_context.request_context.is_empty(), "A2");
+    }
+}
+
 impl crate::SharedHost {
     pub(crate) fn install_session_realization_lease(
         &self,

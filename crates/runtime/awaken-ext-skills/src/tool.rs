@@ -356,6 +356,13 @@ pub fn render_user_invocation(skill: &SkillSpec, args: &str, session_id: Option<
     resolved_body(skill, args, session_id).0
 }
 
+/// Render a selected Skill for an external backend that cannot invoke Awaken's
+/// native `Skill` tool. Template substitution remains single-sourced here.
+pub fn render_backend_context(skill: &SkillSpec, session_id: Option<&str>) -> String {
+    let body = resolved_body(skill, "", session_id).0;
+    format!("Loaded Skill `{}` ({}):\n{}", skill.id, skill.name, body)
+}
+
 /// The inline activation result: a header naming the skill, its resolved
 /// instructions, and — only when the body used no argument token — the raw args
 /// echoed for the model.
