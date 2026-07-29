@@ -96,6 +96,24 @@ pub enum CredentialKind {
     WorkerLocal,
 }
 
+/// Canonical material-location projection over the retained [`CredentialKind`]
+/// wire. New domain decisions use this axis instead of interpreting `kind`
+/// themselves; the legacy enum remains only for storage/API compatibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialMaterialOrigin {
+    Vault,
+    WorkerLocal,
+    ExternalHelper,
+    LegacyEnvironment,
+}
+
+/// Canonical acquisition projection, orthogonal to material location.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialAcquisition {
+    Static,
+    HelperMinted,
+}
+
 /// Claude Code's documented long-lived `setup-token` process-secret channel.
 /// It is a CLI credential, not an Anthropic Messages API key, so generic
 /// provider resolution must never treat it as native provider material.
@@ -168,6 +186,52 @@ pub struct CredentialSource {
     pub worker_local_binding: Option<WorkerLocalBinding>,
     pub status: CredentialStatus,
     pub version: i64,
+}
+
+impl CredentialSource {
+    /// Normalize the retained storage discriminator into one material-origin
+    /// fact. This is the sole mapping from legacy `CredentialKind` semantics.
+    #[must_use]
+    pub fn material_origin(&self) -> CredentialMaterialOrigin {
+        match self.kind {
+            CredentialKind::Vault => CredentialMaterialOrigin::Vault,
+            CredentialKind::WorkerLocal => CredentialMaterialOrigin::WorkerLocal,
+            CredentialKind::Oauth => CredentialMaterialOrigin::ExternalHelper,
+            CredentialKind::Env => CredentialMaterialOrigin::LegacyEnvironment,
+        }
+    }
+
+    /// Normalize how executable material is acquired independently of location.
+    #[must_use]
+    pub fn acquisition(&self) -> CredentialAcquisition {
+        match self.kind {
+            CredentialKind::Oauth => CredentialAcquisition::HelperMinted,
+            CredentialKind::Vault | CredentialKind::WorkerLocal | CredentialKind::Env => {
+                CredentialAcquisition::Static
+            }
+        }
+    }
+
+    /// Retained authoring hint for compiling an explicit process-secret usage.
+    /// Runtime adapters must consume only the resulting `CredentialAccess.usage`.
+    #[must_use]
+    pub fn process_secret_environment_hint(&self) -> Option<&str> {
+        self.env_key.as_deref()
+    }
+
+    /// Claude setup tokens are an ACP workload credential, not provider API
+    /// material. Centralizing the classification prevents selection, UI defaults,
+    /// and publication from drifting in their string interpretation.
+    #[must_use]
+    pub fn is_claude_code_setup_token(&self) -> bool {
+        self.process_secret_environment_hint() == Some(CLAUDE_CODE_SETUP_TOKEN_ENV)
+    }
+
+    /// Whether this retained source can participate in execution publication.
+    #[must_use]
+    pub fn is_executable_origin(&self) -> bool {
+        self.material_origin() != CredentialMaterialOrigin::LegacyEnvironment
+    }
 }
 
 /// The "which credential" axis (oversight-next / awaken-management-contract).
@@ -820,6 +884,56 @@ mod tests {
             worker_local_binding: None,
             status: CredentialStatus::Active,
             version: 1,
+        }
+    }
+
+    /// Cause-effect graph: the retained kind is a storage input; normalization
+    /// emits independent origin/acquisition facts and executability. No caller is
+    /// allowed to recreate this mapping.
+    ///
+    /// | Rule | retained kind | origin | acquisition | executable |
+    /// |---|---|---|---|---|
+    /// | N1 | vault | Vault | Static | yes |
+    /// | N2 | oauth | ExternalHelper | HelperMinted | yes |
+    /// | N3 | worker_local | WorkerLocal | Static | yes |
+    /// | N4 | env | LegacyEnvironment | Static | no |
+    #[test]
+    fn retained_kinds_have_one_normalized_domain_projection() {
+        let rules = [
+            (
+                "N1",
+                CredentialKind::Vault,
+                CredentialMaterialOrigin::Vault,
+                CredentialAcquisition::Static,
+                true,
+            ),
+            (
+                "N2",
+                CredentialKind::Oauth,
+                CredentialMaterialOrigin::ExternalHelper,
+                CredentialAcquisition::HelperMinted,
+                true,
+            ),
+            (
+                "N3",
+                CredentialKind::WorkerLocal,
+                CredentialMaterialOrigin::WorkerLocal,
+                CredentialAcquisition::Static,
+                true,
+            ),
+            (
+                "N4",
+                CredentialKind::Env,
+                CredentialMaterialOrigin::LegacyEnvironment,
+                CredentialAcquisition::Static,
+                false,
+            ),
+        ];
+        for (id, kind, origin, acquisition, executable) in rules {
+            let source = bare_source(kind);
+            assert_eq!(source.material_origin(), origin, "{id}");
+            assert_eq!(source.acquisition(), acquisition, "{id}");
+            assert_eq!(source.is_executable_origin(), executable, "{id}");
         }
     }
 

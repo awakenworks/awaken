@@ -608,9 +608,7 @@ async fn test_and_save_provider_connection(
         {
             return Err(cred_problem(&CredentialError::NoCredential, &rid));
         }
-        if credential.env_key.as_deref()
-            == Some(awaken_credential_vault::CLAUDE_CODE_SETUP_TOKEN_ENV)
-        {
+        if credential.is_claude_code_setup_token() {
             return Err(Problem(ApiError::new(
                 422,
                 "connection_auth_unsupported",

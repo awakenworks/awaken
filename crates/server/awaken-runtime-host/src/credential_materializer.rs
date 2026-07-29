@@ -268,7 +268,7 @@ impl PinnedCredentialMaterializer {
     ) -> Result<Option<RedactedString>, String> {
         self.materialize_claimed_provider_material(candidate, context, expected_kind)
             .await?
-            .map(|material| material.into_bearer().map_err(|error| error.to_string()))
+            .map(|material| material.into_secret().map_err(|error| error.to_string()))
             .transpose()
     }
 
@@ -313,7 +313,7 @@ impl PinnedCredentialMaterializer {
             .await
             .map_err(|error| error.to_string())?;
         secret
-            .into_bearer()
+            .into_secret()
             .map(Some)
             .map_err(|error| error.to_string())
     }
@@ -377,7 +377,7 @@ impl PinnedCredentialMaterializer {
             CredentialRealizationKind::WorkerProviderAdapter,
         )
         .await?
-        .into_bearer()
+        .into_secret()
         .map_err(|error| error.to_string())
     }
 
@@ -523,6 +523,7 @@ impl PinnedCredentialMaterializer {
             if resolved.credential != access.credential || resolved.holder != *selected_holder {
                 return Err(CredentialMaterialError::ResolverMismatch);
             }
+            resolved.material.validate_usage(&access.usage)?;
             return Ok(resolved);
         }
         if access.material_source != CredentialMaterialSource::ControlPlaneReference {
@@ -571,8 +572,9 @@ impl PinnedCredentialMaterializer {
                 },
             )
         } else {
-            awaken_runtime_contract::CredentialMaterial::bearer(access_token)
+            awaken_runtime_contract::CredentialMaterial::secret(access_token)
         };
+        material.validate_usage(&access.usage)?;
         Ok(ResolvedCredentialMaterial {
             credential: access.credential.clone(),
             holder: selected_holder.clone(),
@@ -869,7 +871,7 @@ mod tests {
             Ok(ResolvedCredentialMaterial {
                 credential: request.access.credential.clone(),
                 holder: self.returned_holder.clone(),
-                material: awaken_runtime_contract::CredentialMaterial::bearer(RedactedString::new(
+                material: awaken_runtime_contract::CredentialMaterial::secret(RedactedString::new(
                     "external-sealed-material",
                 )),
             })
@@ -1083,7 +1085,7 @@ mod tests {
                     assert_eq!(material.credential, access.credential, "{}", rule.id);
                     assert_eq!(material.holder, holder, "{}", rule.id);
                     assert_eq!(
-                        material.material.access_token().expose_secret(),
+                        material.material.single_secret().unwrap().expose_secret(),
                         "decision-table-secret"
                     );
                 }
@@ -1266,7 +1268,7 @@ mod tests {
             .await
             .expect("S1 exact envelope");
         assert_eq!(
-            resolved.material.access_token().expose_secret(),
+            resolved.material.single_secret().unwrap().expose_secret(),
             "external-sealed-material"
         );
 
@@ -1341,7 +1343,11 @@ mod tests {
             .await
             .expect("S8 WorkerReference delegates through the same port");
         assert_eq!(
-            worker_resolved.material.access_token().expose_secret(),
+            worker_resolved
+                .material
+                .single_secret()
+                .unwrap()
+                .expose_secret(),
             "external-sealed-material"
         );
 

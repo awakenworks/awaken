@@ -76,6 +76,10 @@ pub enum CredentialUsage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scheme: Option<String>,
     },
+    /// RFC 7617 HTTP Basic authentication. This usage accepts only structured
+    /// [`CredentialMaterial::UsernamePassword`] material; callers must never
+    /// pre-encode `username:password` into an opaque secret.
+    HttpBasicAuth,
     QueryParameter {
         name: String,
     },
@@ -825,29 +829,61 @@ pub struct OAuthCredentialMaterial {
 /// consume OAuth as a bundle; legacy bearer consumers can only accept `Bearer`.
 #[derive(Debug)]
 pub enum CredentialMaterial {
-    Bearer(RedactedString),
+    /// One opaque secret. Whether it becomes an API-key header, a Bearer header,
+    /// or a process secret is decided exclusively by [`CredentialUsage`].
+    Secret(RedactedString),
+    /// Structured HTTP credentials. Keeping both fields distinct preserves
+    /// validation and independent rotation until the last-mile HTTP adapter.
+    UsernamePassword {
+        username: RedactedString,
+        password: RedactedString,
+    },
     OAuth(OAuthCredentialMaterial),
 }
 
 impl CredentialMaterial {
     #[must_use]
-    pub fn bearer(value: RedactedString) -> Self {
-        Self::Bearer(value)
+    pub fn secret(value: RedactedString) -> Self {
+        Self::Secret(value)
     }
 
-    #[must_use]
-    pub fn access_token(&self) -> &RedactedString {
+    pub fn single_secret(&self) -> Result<&RedactedString, CredentialMaterialError> {
         match self {
-            Self::Bearer(value) => value,
-            Self::OAuth(bundle) => &bundle.access_token,
+            Self::Secret(value) => Ok(value),
+            Self::OAuth(bundle) => Ok(&bundle.access_token),
+            Self::UsernamePassword { .. } => Err(CredentialMaterialError::MaterialKindMismatch),
         }
     }
 
-    pub fn into_bearer(self) -> Result<RedactedString, CredentialMaterialError> {
+    pub fn into_secret(self) -> Result<RedactedString, CredentialMaterialError> {
         match self {
-            Self::Bearer(value) => Ok(value),
-            Self::OAuth(_) => Err(CredentialMaterialError::MaterialKindMismatch),
+            Self::Secret(value) => Ok(value),
+            Self::UsernamePassword { .. } | Self::OAuth(_) => {
+                Err(CredentialMaterialError::MaterialKindMismatch)
+            }
         }
+    }
+
+    /// Enforce the one material/application compatibility table before a
+    /// last-mile adapter can observe plaintext.
+    pub fn validate_usage(&self, usage: &CredentialUsage) -> Result<(), CredentialMaterialError> {
+        let valid = matches!(
+            (self, usage),
+            (
+                Self::UsernamePassword { .. },
+                CredentialUsage::HttpBasicAuth
+            ) | (
+                Self::Secret(_),
+                CredentialUsage::ProviderAdapter
+                    | CredentialUsage::HttpHeader { .. }
+                    | CredentialUsage::QueryParameter { .. }
+                    | CredentialUsage::EnvironmentVariable { .. }
+                    | CredentialUsage::File { .. }
+            ) | (Self::OAuth(_), CredentialUsage::ProviderAdapter)
+        );
+        valid
+            .then_some(())
+            .ok_or(CredentialMaterialError::MaterialKindMismatch)
     }
 }
 
@@ -1655,6 +1691,83 @@ mod tests {
                 )
                 .unwrap_err(),
             CredentialAdmissionError::DirectPublicationRejected
+        );
+    }
+
+    /// Cause-effect graph: material shape and application usage are independent
+    /// inputs; only an explicitly supported pair may reach a last-mile adapter.
+    /// A username/password pair must never degrade to one opaque secret, while an
+    /// OAuth bundle must remain provider-owned.
+    ///
+    /// | Rule | material | usage | effect |
+    /// |---|---|---|---|
+    /// | M1 | Secret | HTTP header | admitted |
+    /// | M2 | UsernamePassword | HTTP Basic | admitted |
+    /// | M3 | UsernamePassword | HTTP header | rejected |
+    /// | M4 | Secret | HTTP Basic | rejected |
+    /// | M5 | OAuth | Provider adapter | admitted |
+    /// | M6 | OAuth | HTTP Basic | rejected |
+    #[test]
+    fn material_usage_compatibility_is_explicit_and_fail_closed() {
+        let secret = || CredentialMaterial::secret(RedactedString::new("secret"));
+        let pair = || CredentialMaterial::UsernamePassword {
+            username: RedactedString::new("user"),
+            password: RedactedString::new("password"),
+        };
+        let oauth = || {
+            CredentialMaterial::OAuth(OAuthCredentialMaterial {
+                access_token: RedactedString::new("access"),
+                refresh_token: RedactedString::new("refresh"),
+                expires_at_unix_ms: None,
+                account_id: None,
+                account_plan: None,
+            })
+        };
+        let header = CredentialUsage::HttpHeader {
+            name: "authorization".into(),
+            scheme: Some("Bearer".into()),
+        };
+        let rules = [
+            ("M1", secret().validate_usage(&header), true),
+            (
+                "M2",
+                pair().validate_usage(&CredentialUsage::HttpBasicAuth),
+                true,
+            ),
+            ("M3", pair().validate_usage(&header), false),
+            (
+                "M4",
+                secret().validate_usage(&CredentialUsage::HttpBasicAuth),
+                false,
+            ),
+            (
+                "M5",
+                oauth().validate_usage(&CredentialUsage::ProviderAdapter),
+                true,
+            ),
+            (
+                "M6",
+                oauth().validate_usage(&CredentialUsage::HttpBasicAuth),
+                false,
+            ),
+        ];
+        for (id, result, admitted) in rules {
+            assert_eq!(result.is_ok(), admitted, "decision rule {id}: {result:?}");
+        }
+    }
+
+    /// Coverage rationale: a structured pair has no meaningful single-secret
+    /// projection. Rejecting the conversion prevents callers from silently using
+    /// the password as an API key or Bearer token.
+    #[test]
+    fn structured_credentials_cannot_be_downgraded_to_one_secret() {
+        let material = CredentialMaterial::UsernamePassword {
+            username: RedactedString::new("user"),
+            password: RedactedString::new("password"),
+        };
+        assert_eq!(
+            material.single_secret().unwrap_err(),
+            CredentialMaterialError::MaterialKindMismatch
         );
     }
 }
