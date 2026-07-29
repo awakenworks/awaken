@@ -22,6 +22,7 @@ import { api, isAbsent, ws } from "../lib/api/client";
 import type {
   AgentConfig,
   AgentConfigItem,
+  CredentialSource,
   ContextPolicy,
   PermissionConfig,
   PublishResult,
@@ -86,6 +87,10 @@ export default function AgentEditorSurface() {
     retry: (n, err) => !isAbsent(err) && n < 2,
   });
   const caps = useCapabilities();
+  const credentials = useQuery({
+    queryKey: ["credentials", wsId],
+    queryFn: () => api.get<CredentialSource[]>(ws(`/v1/config/credentials?workspace_id=${wsId}`)),
+  });
   // Only models whose provider has a credential — a picked model always resolves a
   // real executor (never a run-time "no key" failure). `all` drives the hidden hint.
   const { ready: models, all: allModels } = useModels();
@@ -428,6 +433,7 @@ export default function AgentEditorSurface() {
                     enabled={cfg.plugins.includes(p.id)}
                     config={(cfg.plugin_config[p.id] as Record<string, unknown>) ?? {}}
                     changed={changed(`plugin_config.${p.id}`)}
+                    credentials={credentials.data ?? []}
                     onToggle={(on) => {
                       if (on) {
                         patch({ plugins: [...cfg.plugins, p.id] });
