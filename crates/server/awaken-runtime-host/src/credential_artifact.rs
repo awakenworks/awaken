@@ -17,7 +17,7 @@ pub(crate) fn encode(
     material: CredentialMaterial,
 ) -> Result<EncodedCredentialArtifact, String> {
     match (codec, material) {
-        (CredentialArtifactCodec::CodexAuthJson, CredentialMaterial::Bearer(api_key)) => {
+        (CredentialArtifactCodec::CodexAuthJson, CredentialMaterial::Secret(api_key)) => {
             Ok(EncodedCredentialArtifact {
                 bytes: serde_json::to_vec(&serde_json::json!({
                     "auth_mode": "apikey",
@@ -28,6 +28,9 @@ pub(crate) fn encode(
         }
         (CredentialArtifactCodec::CodexAuthJson, CredentialMaterial::OAuth(bundle)) => {
             encode_codex_oauth(bundle)
+        }
+        (CredentialArtifactCodec::CodexAuthJson, CredentialMaterial::UsernamePassword { .. }) => {
+            Err("credential_artifact_material_unsupported".to_string())
         }
     }
 }
@@ -100,7 +103,7 @@ mod tests {
 
         let codex = encode(
             CredentialArtifactCodec::CodexAuthJson,
-            CredentialMaterial::bearer(RedactedString::new("api-key")),
+            CredentialMaterial::secret(RedactedString::new("api-key")),
         )
         .expect("Codex API-key artifact");
         let codex: serde_json::Value = serde_json::from_slice(&codex.bytes).unwrap();
