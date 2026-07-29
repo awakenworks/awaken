@@ -923,7 +923,7 @@ impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer
             .load_active_source(reference)
             .await
             .map_err(|error| awaken_provisioning_contract::SandboxError::new(error.to_string()))?;
-        let material_ref = source.material_ref.as_ref().ok_or_else(|| {
+        source.material_ref.as_ref().ok_or_else(|| {
             awaken_provisioning_contract::SandboxError::new(format!(
                 "credential {} has no material",
                 source.id.0
@@ -934,10 +934,15 @@ impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer
                 "credential write-back is not valid UTF-8",
             )
         })?;
-        self.secrets
-            .put(material_ref, RedactedString::new(material))
-            .await
-            .map_err(|error| awaken_provisioning_contract::SandboxError::new(error.to_string()))
+        awaken_credential_vault::repo::rotate_credential(
+            &source.id,
+            RedactedString::new(material),
+            self.secrets.as_ref(),
+            self.credentials.as_ref(),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| awaken_provisioning_contract::SandboxError::new(error.to_string()))
     }
 }
 

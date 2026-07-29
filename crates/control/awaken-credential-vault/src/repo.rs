@@ -364,6 +364,34 @@ pub async fn rotate_credential(
     Ok(after)
 }
 
+/// Change only lifecycle availability while retaining material. This is the
+/// canonical reversible transition for staged publication; retirement/reclaim
+/// remains a separate terminal operation.
+pub async fn transition_credential_status(
+    id: &CredentialSourceId,
+    status: CredentialStatus,
+    repo: &dyn CredentialRepo,
+) -> Result<CredentialSource, CredentialError> {
+    let before = repo.get(id).await?;
+    if before.status == status {
+        return Ok(before);
+    }
+    let mut after = before.clone();
+    after.version = before
+        .version
+        .checked_add(1)
+        .ok_or_else(|| CredentialError::InvalidSource("credential revision overflow".into()))?;
+    after.status = status;
+    let intent = CredentialMutationIntent {
+        before: Some(before),
+        after: after.clone(),
+    };
+    repo.begin_mutation(intent.clone()).await?;
+    repo.apply_mutation(&intent).await?;
+    repo.complete_mutation(id).await?;
+    Ok(after)
+}
+
 /// Terminally revoke one source: publish a higher disabled/archived revision
 /// first, then erase its material while the WAL intent remains recoverable.
 pub async fn revoke_credential(
@@ -817,6 +845,49 @@ mod tests {
             materialize(&after, &store).await,
             Err(CredentialError::NotActive(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn reversible_status_transition_retains_material_and_advances_revision() {
+        // Decision rule L4: active source + reversible Disabled transition =>
+        // higher fail-closed revision, unchanged material ref/bytes, no pending
+        // WAL. A repeated identical transition is an idempotent no-op.
+        let store = InMemorySecretStore::new();
+        let repo = InMemoryCredentialRepo::new();
+        let before = enter_credential(
+            CredentialCreateParams {
+                workspace_id: "ws".into(),
+                kind: CredentialKind::Vault,
+                provider_id: None,
+                env_key: None,
+                secret: Some(RedactedString::new("retained")),
+                oauth_command: None,
+            },
+            &store,
+            &repo,
+        )
+        .await
+        .unwrap();
+        let disabled = transition_credential_status(&before.id, CredentialStatus::Disabled, &repo)
+            .await
+            .unwrap();
+        assert_eq!(disabled.version, before.version + 1);
+        assert_eq!(disabled.material_ref, before.material_ref);
+        assert_eq!(
+            store
+                .get(disabled.material_ref.as_ref().unwrap())
+                .await
+                .unwrap()
+                .expose_secret(),
+            "retained"
+        );
+        assert_eq!(
+            transition_credential_status(&disabled.id, CredentialStatus::Disabled, &repo,)
+                .await
+                .unwrap(),
+            disabled
+        );
+        assert!(repo.pending_mutations().await.unwrap().is_empty());
     }
 
     #[tokio::test]
