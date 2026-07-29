@@ -1007,6 +1007,7 @@ pub awaken_runtime_contract::runtime_context::RuntimeRunContext::model_executor:
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::ownership: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::pause: core::option::Option<awaken_runtime_contract::pause::PauseSignal>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader>>
+pub awaken_runtime_contract::runtime_context::RuntimeRunContext::request_context: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::reschedules: core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicU32>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::session_plugins: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::Plugin>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::stream_checkpoint: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>>
@@ -1720,6 +1721,7 @@ pub awaken_runtime_contract::RuntimeRunContext::model_executor: core::option::Op
 pub awaken_runtime_contract::RuntimeRunContext::ownership: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>>
 pub awaken_runtime_contract::RuntimeRunContext::pause: core::option::Option<awaken_runtime_contract::pause::PauseSignal>
 pub awaken_runtime_contract::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader>>
+pub awaken_runtime_contract::RuntimeRunContext::request_context: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub awaken_runtime_contract::RuntimeRunContext::reschedules: core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicU32>>
 pub awaken_runtime_contract::RuntimeRunContext::session_plugins: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::Plugin>>
 pub awaken_runtime_contract::RuntimeRunContext::stream_checkpoint: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>>

@@ -15,6 +15,7 @@
 
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
@@ -70,6 +71,10 @@ pub struct CaptureContext {
 
 #[derive(Clone, Default)]
 pub struct RuntimeRunContext {
+    /// Request-only context assembled for this attempt. Executors may project
+    /// these messages into the model request, but must never append them to the
+    /// durable Thread transcript.
+    pub request_context: Vec<Message>,
     /// Live best-effort progress delivery; absent means no live streaming.
     pub stream_sink: Option<Arc<dyn StreamSink>>,
     /// Durable write boundary for this attempt; absent means no persistence.
@@ -165,6 +170,7 @@ impl RuntimeRunContext {
     #[must_use]
     pub fn for_child_run(&self) -> Self {
         let mut child = self.clone();
+        child.request_context.clear();
         child.cancellation = self
             .cancellation
             .as_ref()

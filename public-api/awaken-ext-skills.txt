@@ -118,5 +118,6 @@ pub fn awaken_ext_skills::SkillSource::scan(&self) -> alloc::vec::Vec<awaken_ext
 pub fn awaken_ext_skills::expand_slash_commands(&dyn awaken_ext_skills::SkillRegistry, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub fn awaken_ext_skills::list_skills_tool_descriptor() -> awaken_runtime_contract::resolved::ToolDescriptor
 pub fn awaken_ext_skills::parse_skill_md(impl core::convert::Into<alloc::string::String>, &str) -> awaken_ext_skills::SkillSpec
+pub fn awaken_ext_skills::render_backend_context(&awaken_ext_skills::SkillSpec, core::option::Option<&str>) -> alloc::string::String
 pub fn awaken_ext_skills::render_user_invocation(&awaken_ext_skills::SkillSpec, &str, core::option::Option<&str>) -> alloc::string::String
 pub fn awaken_ext_skills::skill_tool_descriptor() -> awaken_runtime_contract::resolved::ToolDescriptor
