@@ -61,8 +61,7 @@ async fn managed_session_folds_builtins_into_the_agent_toolset() {
                 { "name": "bash", "enabled": true, "permission_policy": { "type": "always_ask" } },
                 { "name": "write", "enabled": true, "permission_policy": { "type": "always_ask" } },
                 { "name": "edit", "enabled": true, "permission_policy": { "type": "always_ask" } },
-                { "name": "web_fetch", "enabled": false, "permission_policy": { "type": "always_allow" } },
-                { "name": "web_search", "enabled": false, "permission_policy": { "type": "always_allow" } }
+                { "name": "web_fetch", "enabled": false, "permission_policy": { "type": "always_allow" } }
             ],
             "default_config": { "enabled": true, "permission_policy": { "type": "always_allow" } }
         }])
