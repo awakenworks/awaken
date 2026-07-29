@@ -117,6 +117,7 @@ pub use crate::host::{
 pub use crate::postgres_migration_lock::PostgresMigrationLock;
 pub use crate::web_search::WebSearchPublicationResolver;
 pub use crate::worker_control_client::WorkerControlClient;
+pub use awaken_config_service::PluginPublicationResolver;
 pub use awaken_ext_builtin_tools::{
     WebSearchCredentialRequirement, WebSearchProvider, WebSearchProviderDescriptor,
     WebSearchProviderRegistry, WebSearchRegistryError, WebSearchRequest, WebSearchResult,
