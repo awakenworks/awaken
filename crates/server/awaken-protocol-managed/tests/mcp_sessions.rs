@@ -776,7 +776,11 @@ async fn create_carries_the_refresh_binding_of_a_refreshable_credential() {
     let source_id = h.vaults.credential_source_id(&vault_id, &cred_id).unwrap();
     assert_eq!(
         refresh.refresh_token_ref,
-        format!("sec:refresh:{}", source_id.0)
+        format!(
+            "sec:{}:r1:{}",
+            source_id.0,
+            awaken_credential_vault::OAUTH_REFRESH_TOKEN_SLOT
+        )
     );
 }
 

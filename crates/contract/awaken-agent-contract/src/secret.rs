@@ -9,6 +9,15 @@
 
 use zeroize::Zeroize;
 
+/// Open, typed secret material shared by storage and execution contracts.
+/// Namespaced `type_id` owners define field semantics; core keeps values
+/// redacted and never serializes this plaintext form.
+#[derive(Debug)]
+pub struct StructuredCredentialMaterial {
+    pub type_id: String,
+    pub fields: std::collections::BTreeMap<String, RedactedString>,
+}
+
 /// An already-resolved secret value. See module docs.
 #[derive(Clone)]
 pub struct RedactedString(String);

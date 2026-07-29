@@ -12,18 +12,18 @@ pub(super) async fn provision(
     url: &str,
     initial_branch: Option<&str>,
     initial_commit: Option<&str>,
-    token: Option<&str>,
+    credential: Option<&pc::RepositoryHttpBasicCredential>,
 ) -> Result<(), pc::SandboxError> {
     let url_owned = url.to_string();
     let initial_branch_owned = initial_branch.map(str::to_string);
     let initial_commit_owned = initial_commit.map(str::to_string);
-    let token_owned = token.map(str::to_string);
+    let credential_owned = credential.cloned();
     let bundle = tokio::task::spawn_blocking(move || {
         awaken_sandbox_local::clone_repo_bundle(
             &url_owned,
             initial_branch_owned.as_deref(),
             initial_commit_owned.as_deref(),
-            token_owned.as_deref(),
+            credential_owned.as_ref(),
         )
     })
     .await
@@ -78,7 +78,7 @@ pub(super) async fn push(
     sandbox: &dyn awaken_sandbox_container::ContainerEnvironment,
     logical: &str,
     url: &str,
-    token: Option<&str>,
+    credential: Option<&pc::RepositoryHttpBasicCredential>,
 ) -> Result<bool, pc::SandboxError> {
     let repo = super::container_files::logical_path(logical)?;
     let process = sandbox
@@ -116,9 +116,9 @@ pub(super) async fn push(
         )));
     }
     let url = url.to_string();
-    let token = token.map(str::to_string);
+    let credential = credential.cloned();
     tokio::task::spawn_blocking(move || {
-        awaken_sandbox_local::push_repo_bundle(&bundle, &url, token.as_deref())
+        awaken_sandbox_local::push_repo_bundle(&bundle, &url, credential.as_ref())
     })
     .await
     .map_err(|error| pc::SandboxError::new(error.to_string()))?

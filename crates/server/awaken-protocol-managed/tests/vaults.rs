@@ -13,8 +13,7 @@ use awaken_config_resolver::resolve_inference;
 use awaken_credential_contract::TokenEndpointAuth;
 use awaken_credential_vault::repo::InMemoryCredentialRepo;
 use awaken_credential_vault::{
-    CredentialBinding, CredentialSource, CredentialSourceId, InMemorySecretStore, SecretRef,
-    SecretStore,
+    CredentialBinding, CredentialSource, CredentialSourceId, InMemorySecretStore, SecretStore,
 };
 use awaken_model_catalog::repo::CatalogRepo;
 use awaken_model_catalog::repo::InMemoryCatalogRepo;
@@ -506,6 +505,12 @@ async fn archive_credential_soft_deletes_and_hides_from_list() {
     let vault_id = create_vault(&h, "v").await;
     let keep = create_credential(&h, &vault_id, "KEEP").await;
     let gone = create_credential(&h, &vault_id, "GONE").await;
+    let gone_source_id = h.state.credential_source_id(&vault_id, &gone).unwrap();
+    let gone_before = {
+        use awaken_credential_vault::repo::CredentialRepo;
+        h.credentials.get(&gone_source_id).await.unwrap()
+    };
+    let gone_ref = gone_before.material_ref.unwrap();
 
     let (s, archived) = call(
         &h.app,
@@ -517,6 +522,18 @@ async fn archive_credential_soft_deletes_and_hides_from_list() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(archived["type"], "vault_credential");
     assert!(archived["archived_at"].is_string());
+    // Cause/effect rule V1: archive keeps the wire audit projection but retires
+    // the canonical source and physically reclaims its material.
+    let gone_after = {
+        use awaken_credential_vault::repo::CredentialRepo;
+        h.credentials.get(&gone_source_id).await.unwrap()
+    };
+    assert_eq!(
+        gone_after.status,
+        awaken_credential_vault::CredentialStatus::Archived
+    );
+    assert!(gone_after.material_ref.is_none());
+    assert!(h.secrets.get(&gone_ref).await.is_err());
 
     let (_, page) = call(
         &h.app,
@@ -672,6 +689,12 @@ async fn update_credential_patches_fields_reseals_secret_and_rejects_type_change
     let h = harness();
     let vault_id = create_vault(&h, "v").await;
     let cred_id = create_credential(&h, &vault_id, "ENVKEY").await;
+    let source_id = h.state.credential_source_id(&vault_id, &cred_id).unwrap();
+    let before = {
+        use awaken_credential_vault::repo::CredentialRepo;
+        h.credentials.get(&source_id).await.unwrap()
+    };
+    let old_ref = before.material_ref.clone().unwrap();
 
     // Patch networking + re-seal the secret + set display_name + patch metadata.
     let (s, updated) = call(
@@ -705,11 +728,13 @@ async fn update_credential_patches_fields_reseals_secret_and_rejects_type_change
     );
 
     // The re-seal reached the domain: materialize yields the new secret.
-    let source_id = h.state.credential_source_id(&vault_id, &cred_id).unwrap();
     let source = {
         use awaken_credential_vault::repo::CredentialRepo;
         h.credentials.get(&source_id).await.unwrap()
     };
+    assert_eq!(source.version, before.version + 1);
+    assert_ne!(source.material_ref, before.material_ref);
+    assert!(h.secrets.get(&old_ref).await.is_err());
     let secret = awaken_credential_vault::materialize(&source, &*h.secrets)
         .await
         .unwrap();
@@ -789,6 +814,8 @@ async fn update_mcp_oauth_refresh_rotates_sealed_secrets() {
     .await;
     let cred_id = cred["id"].as_str().unwrap().to_string();
     let source_id = h.state.credential_source_id(&vault_id, &cred_id).unwrap();
+    use awaken_credential_vault::repo::CredentialRepo;
+    let before = h.credentials.get(&source_id).await.unwrap();
 
     // Rotate the refresh token + client secret and change the scheme + scope.
     let (s, updated) = call(
@@ -816,16 +843,33 @@ async fn update_mcp_oauth_refresh_rotates_sealed_secrets() {
     let raw = serde_json::to_string(&updated).unwrap();
     assert!(!raw.contains("rt-new") && !raw.contains("cs-new"));
 
-    // Both rotated secrets are re-sealed under their existing sibling refs.
+    // Cause/effect rule M2: changing two auxiliary secrets publishes one higher
+    // source revision; both new refs belong to that revision and old refs are
+    // reclaimed rather than overwritten.
+    let source = h.credentials.get(&source_id).await.unwrap();
+    assert_eq!(source.version, before.version + 1);
+    assert_eq!(source.material_ref, before.material_ref);
+    assert_ne!(
+        source.auxiliary_material_refs,
+        before.auxiliary_material_refs
+    );
     let rt = h
         .secrets
-        .get(&SecretRef(format!("sec:refresh:{}", source_id.0)))
+        .get(
+            source
+                .auxiliary_material_ref(awaken_credential_vault::OAUTH_REFRESH_TOKEN_SLOT)
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(rt.expose_secret(), "rt-new");
     let cs = h
         .secrets
-        .get(&SecretRef(format!("sec:client:{}", source_id.0)))
+        .get(
+            source
+                .auxiliary_material_ref(awaken_credential_vault::OAUTH_CLIENT_SECRET_SLOT)
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(cs.expose_secret(), "cs-new");
@@ -838,7 +882,9 @@ async fn update_mcp_oauth_refresh_rotates_sealed_secrets() {
     );
     assert_eq!(
         binding.client_secret_ref.as_deref(),
-        Some(format!("sec:client:{}", source_id.0).as_str())
+        source
+            .auxiliary_material_ref(awaken_credential_vault::OAUTH_CLIENT_SECRET_SLOT)
+            .map(|reference| reference.0.as_str())
     );
 
     // Updating refresh on a credential that has none is a 400.
@@ -876,6 +922,8 @@ async fn update_refresh_token_endpoint_auth_omitting_client_secret_keeps_the_sea
     .await;
     let cred_id = cred["id"].as_str().unwrap().to_string();
     let source_id = h.state.credential_source_id(&vault_id, &cred_id).unwrap();
+    use awaken_credential_vault::repo::CredentialRepo;
+    let before = h.credentials.get(&source_id).await.unwrap();
 
     // Switch scheme to `post` WITHOUT a client_secret — a valid SDK payload.
     let (s, updated) = call(
@@ -899,11 +947,22 @@ async fn update_refresh_token_endpoint_auth_omitting_client_secret_keeps_the_sea
         updated["auth"]["refresh"]["token_endpoint_auth"]["type"],
         "client_secret_post"
     );
-    // The original sealed client secret is preserved (not wiped), and the binding
-    // still points at the stable ref for the new scheme.
+    // The original sealed client secret is preserved (not wiped), and the
+    // binding still points at the aggregate-owned ref for the new scheme.
+    let source = h.credentials.get(&source_id).await.unwrap();
+    assert_eq!(source.version, before.version + 1);
+    assert_eq!(source.material_ref, before.material_ref);
+    assert_eq!(
+        source.auxiliary_material_refs,
+        before.auxiliary_material_refs
+    );
     let cs = h
         .secrets
-        .get(&SecretRef(format!("sec:client:{}", source_id.0)))
+        .get(
+            source
+                .auxiliary_material_ref(awaken_credential_vault::OAUTH_CLIENT_SECRET_SLOT)
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(cs.expose_secret(), "cs-orig");
@@ -915,7 +974,9 @@ async fn update_refresh_token_endpoint_auth_omitting_client_secret_keeps_the_sea
     );
     assert_eq!(
         binding.client_secret_ref.as_deref(),
-        Some(format!("sec:client:{}", source_id.0).as_str())
+        source
+            .auxiliary_material_ref(awaken_credential_vault::OAUTH_CLIENT_SECRET_SLOT)
+            .map(|reference| reference.0.as_str())
     );
 }
 
@@ -1313,15 +1374,20 @@ async fn mcp_oauth_credential_with_refresh_never_leaks_secrets() {
     assert!(!raw.contains("rt-secret-token"));
     assert!(!raw.contains("cs-secret"));
 
-    // The client secret was SEALED (not dropped): it materializes back through
-    // the store under the deterministic `sec:client:{source_id}` ref, so the
-    // confidential-client refresh grant can authenticate later.
+    // The client secret was SEALED (not dropped) in the aggregate's named slot,
+    // so the confidential-client refresh grant can authenticate later.
     let source_id = h.state.credential_source_id(&vault_id, &cred_id).unwrap();
+    use awaken_credential_vault::repo::CredentialRepo;
+    let source = h.credentials.get(&source_id).await.unwrap();
     let sealed = h
         .secrets
-        .get(&SecretRef(format!("sec:client:{}", source_id.0)))
+        .get(
+            source
+                .auxiliary_material_ref(awaken_credential_vault::OAUTH_CLIENT_SECRET_SLOT)
+                .unwrap(),
+        )
         .await
-        .expect("the client secret is sealed under sec:client:{source_id}");
+        .expect("the client secret is sealed in its named material slot");
     assert_eq!(sealed.expose_secret(), "cs-secret");
 }
 
@@ -1673,7 +1739,11 @@ async fn exact_mcp_access_compiles_public_and_confidential_refresh() {
     // The refresh token itself stays sealed: the binding carries only its ref.
     assert_eq!(
         binding.refresh_token_ref,
-        format!("sec:refresh:{}", source_id.0)
+        format!(
+            "sec:{}:r1:{}",
+            source_id.0,
+            awaken_credential_vault::OAUTH_REFRESH_TOKEN_SLOT
+        )
     );
     assert!(binding.has_valid_configuration_fingerprint());
 
@@ -1721,9 +1791,14 @@ async fn exact_mcp_access_compiles_public_and_confidential_refresh() {
             .expect("exact confidential MCP access compiles");
         let binding = access.refresh.expect("confidential refresh is pinned");
         assert_eq!(binding.client_id, "cli_conf");
-        // The auth binding carries the sealed client secret's ref — the
-        // deterministic `sec:client:{source_id}` shape, never material.
-        let secret_ref = format!("sec:client:{}", confidential_source.0);
+        // The auth binding carries the aggregate-owned sealed client-secret
+        // ref, never material.
+        use awaken_credential_vault::repo::CredentialRepo;
+        let source = h.credentials.get(&confidential_source).await.unwrap();
+        let secret_ref = &source
+            .auxiliary_material_ref(awaken_credential_vault::OAUTH_CLIENT_SECRET_SLOT)
+            .unwrap()
+            .0;
         let expected = match auth_type {
             "client_secret_basic" => TokenEndpointAuth::ClientSecretBasic,
             _ => TokenEndpointAuth::ClientSecretPost,

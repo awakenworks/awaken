@@ -19,6 +19,7 @@ fn source(id: &str, ws: &str) -> CredentialSource {
         provider_id: Some("anthropic".into()),
         env_key: Some("ANTHROPIC_API_KEY".into()),
         material_ref: None,
+        auxiliary_material_refs: Default::default(),
         oauth_command: None,
         worker_local_binding: None,
         status: CredentialStatus::Active,

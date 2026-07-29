@@ -144,8 +144,8 @@ pub struct WireMcpOauthCreate {
 /// An `mcp_oauth` credential mapped for the domain: the access token rides the
 /// row's create params (sealed as its `material_ref`); the refresh token — a
 /// *second* secret — comes back as a sealed-ready `RedactedString` for the caller
-/// to put under its own `SecretRef` next to the row. Consumer: the vault surface's
-/// create handler in `awaken-protocol-managed`.
+/// to enter in the same aggregate's named material set. Consumer: the vault
+/// surface's create handler in `awaken-protocol-managed`.
 pub struct McpOauthDomainCreate {
     pub params: CredentialCreateParams,
     /// Present iff the wire supplied a refresh token; never placed on the row.
@@ -154,8 +154,7 @@ pub struct McpOauthDomainCreate {
 
 /// Map a wire `mcp_oauth` credential into secret-in domain create params. Both
 /// tokens cross into `RedactedString`s here; the domain row stays secret-free
-/// (the access token sealed as `material_ref`, the refresh token sealed by the
-/// caller under a sibling ref).
+/// (the access token and refresh slot are committed together by the caller).
 #[must_use]
 pub fn mcp_oauth_to_create_params(
     workspace_id: impl Into<String>,
@@ -415,6 +414,7 @@ mod tests {
             provider_id: None,
             env_key: None,
             material_ref: None,
+            auxiliary_material_refs: Default::default(),
             oauth_command: None,
             worker_local_binding: None,
             status: awaken_credential_vault::CredentialStatus::Active,
