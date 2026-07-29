@@ -1184,6 +1184,7 @@ mod tests {
             provider_id: None,
             env_key: None,
             material_ref: None,
+            auxiliary_material_refs: Default::default(),
             oauth_command: None,
             worker_local_binding: None,
             status: CredentialStatus::Disabled,

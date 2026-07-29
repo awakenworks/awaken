@@ -347,7 +347,12 @@ impl CredentialRepo for SqliteCredentialRepo {
                 .collect::<Result<_, _>>()?;
             Ok(sources
                 .into_iter()
-                .filter_map(|source| source.material_ref)
+                .flat_map(|source| {
+                    source
+                        .material_ref
+                        .into_iter()
+                        .chain(source.auxiliary_material_refs.into_values())
+                })
                 .collect())
         })
         .await
@@ -529,6 +534,7 @@ mod tests {
             provider_id: Some("anthropic".into()),
             env_key: Some("ANTHROPIC_API_KEY".into()),
             material_ref: None,
+            auxiliary_material_refs: Default::default(),
             oauth_command: None,
             worker_local_binding: None,
             status: CredentialStatus::Active,

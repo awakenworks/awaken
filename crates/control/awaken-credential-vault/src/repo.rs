@@ -3,7 +3,7 @@
 //! separate port). Its own `credential` migration scope is what lets the whole
 //! domain be split into its own database/service (blast-radius isolation).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Mutex;
 
 use crate::{
@@ -30,6 +30,15 @@ pub struct CredentialMutationIntent {
 pub enum CredentialRetirement {
     Disable,
     Archive,
+}
+
+/// Material changes published as one credential revision. `primary = None`
+/// preserves the compatibility primary slot; auxiliary `Some` values rotate a
+/// named slot and `None` values remove it. Slot names are extension-owned.
+#[derive(Default)]
+pub struct CredentialMaterialPatch {
+    pub primary: Option<awaken_agent_contract::RedactedString>,
+    pub auxiliary: BTreeMap<String, Option<awaken_agent_contract::RedactedString>>,
 }
 
 /// The credential-source store port. Secret-free rows only. Pools are stored here
@@ -202,7 +211,7 @@ impl CredentialRepo for InMemoryCredentialRepo {
             .expect("credential repo")
             .rows
             .values()
-            .filter_map(|source| source.material_ref.clone())
+            .flat_map(|source| source.material_refs().cloned())
             .collect())
     }
 
@@ -269,6 +278,7 @@ pub async fn ensure_worker_local(
         provider_id,
         env_key: None,
         material_ref: None,
+        auxiliary_material_refs: BTreeMap::new(),
         oauth_command: None,
         worker_local_binding: Some(binding),
         status: CredentialStatus::Active,
@@ -281,6 +291,7 @@ pub async fn ensure_worker_local(
         || durable.worker_local_binding != expected.worker_local_binding
         || durable.env_key.is_some()
         || durable.material_ref.is_some()
+        || !durable.auxiliary_material_refs.is_empty()
         || durable.oauth_command.is_some()
     {
         return Err(CredentialError::InvalidSource(format!(
@@ -299,29 +310,153 @@ pub async fn enter_credential(
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
 ) -> Result<CredentialSource, CredentialError> {
+    enter_credential_with_materials(params, BTreeMap::new(), store, repo).await
+}
+
+/// Enter one credential and every extension-defined auxiliary material slot as
+/// a single recoverable aggregate revision.
+pub async fn enter_credential_with_materials(
+    params: CredentialCreateParams,
+    auxiliary: BTreeMap<String, awaken_agent_contract::RedactedString>,
+    store: &dyn SecretStore,
+    repo: &dyn CredentialRepo,
+) -> Result<CredentialSource, CredentialError> {
     validate_create_params(&params)?;
-    let (source, secret) = prepare_source(params);
+    validate_material_slots(auxiliary.keys().map(String::as_str))?;
+    let (mut source, secret) = prepare_source(params);
+    let mut materials = Vec::new();
+    if let (Some(reference), Some(secret)) = (source.material_ref.clone(), secret) {
+        materials.push((reference, secret));
+    }
+    for (slot, secret) in auxiliary {
+        let reference = material_ref_for(&source.id, source.version, &slot);
+        source
+            .auxiliary_material_refs
+            .insert(slot, reference.clone());
+        materials.push((reference, secret));
+    }
     let intent = CredentialMutationIntent {
         before: None,
         after: source.clone(),
     };
     repo.begin_mutation(intent.clone()).await?;
 
-    if let (Some(material_ref), Some(secret)) = (&source.material_ref, secret)
-        && let Err(error) = store.put(material_ref, secret).await
-    {
-        // A failed put may still have partially written. Only retire the durable
-        // intent after idempotent cleanup succeeds; otherwise recovery owns it.
-        if store.delete(material_ref).await.is_ok() {
-            repo.complete_mutation(&source.id).await?;
+    for (reference, secret) in materials {
+        if let Err(error) = store.put(&reference, secret).await {
+            // A failed put may still have partially written. Only retire the
+            // durable intent after every candidate ref is idempotently clean.
+            if cleanup_unpublished_material(&intent, store).await.is_ok() {
+                repo.complete_mutation(&source.id).await?;
+            }
+            return Err(error);
         }
-        return Err(error);
     }
     // Never compensate an ambiguous apply error inline: the intent remains the
     // recovery authority, preventing deletion of a source that actually committed.
     repo.apply_mutation(&intent).await?;
     repo.complete_mutation(&source.id).await?;
     Ok(source)
+}
+
+fn validate_material_slots<'a>(
+    slots: impl Iterator<Item = &'a str>,
+) -> Result<(), CredentialError> {
+    for slot in slots {
+        if slot.is_empty()
+            || !slot
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+        {
+            return Err(CredentialError::InvalidSource(format!(
+                "credential material slot `{slot}` is invalid"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn material_ref_for(id: &CredentialSourceId, version: i64, slot: &str) -> crate::SecretRef {
+    crate::SecretRef(format!("sec:{}:r{version}:{slot}", id.0))
+}
+
+/// Rotate an exact credential revision and all requested material slots in one
+/// WAL/CAS transaction. A stale expected revision fails before any new secret is
+/// written.
+pub async fn rotate_credential_materials_exact(
+    id: &CredentialSourceId,
+    expected_version: i64,
+    patch: CredentialMaterialPatch,
+    store: &dyn SecretStore,
+    repo: &dyn CredentialRepo,
+) -> Result<CredentialSource, CredentialError> {
+    validate_material_slots(patch.auxiliary.keys().map(String::as_str))?;
+    let before = repo.get(id).await?;
+    if before.version != expected_version {
+        return Err(CredentialError::MutationConflict(
+            "credential revision changed before material rotation".into(),
+        ));
+    }
+    if before.kind != CredentialKind::Vault || before.status != CredentialStatus::Active {
+        return Err(CredentialError::NotActive(id.0.clone()));
+    }
+    if patch.primary.is_none() && patch.auxiliary.is_empty() {
+        return Ok(before);
+    }
+    let version = before
+        .version
+        .checked_add(1)
+        .ok_or_else(|| CredentialError::InvalidSource("credential revision overflow".into()))?;
+    let mut after = before.clone();
+    after.version = version;
+    let mut materials = Vec::new();
+    if let Some(material) = patch.primary {
+        let reference = material_ref_for(id, version, "primary");
+        after.material_ref = Some(reference.clone());
+        materials.push((reference, material));
+    }
+    for (slot, material) in patch.auxiliary {
+        match material {
+            Some(material) => {
+                let reference = material_ref_for(id, version, &slot);
+                after
+                    .auxiliary_material_refs
+                    .insert(slot, reference.clone());
+                materials.push((reference, material));
+            }
+            None => {
+                after.auxiliary_material_refs.remove(&slot);
+            }
+        }
+    }
+    let intent = CredentialMutationIntent {
+        before: Some(before),
+        after: after.clone(),
+    };
+    repo.begin_mutation(intent.clone()).await?;
+    for (reference, material) in materials {
+        if let Err(error) = store.put(&reference, material).await {
+            if cleanup_unpublished_material(&intent, store).await.is_ok() {
+                repo.complete_mutation(id).await?;
+            }
+            return Err(error);
+        }
+    }
+    repo.apply_mutation(&intent).await?;
+    cleanup_retired_material(&intent, store).await?;
+    repo.complete_mutation(id).await?;
+    Ok(after)
+}
+
+/// Rotate material from the currently committed revision. Callers that retain
+/// an execution pin should use [`rotate_credential_materials_exact`] instead.
+pub async fn rotate_credential_materials(
+    id: &CredentialSourceId,
+    patch: CredentialMaterialPatch,
+    store: &dyn SecretStore,
+    repo: &dyn CredentialRepo,
+) -> Result<CredentialSource, CredentialError> {
+    let version = repo.get(id).await?.version;
+    rotate_credential_materials_exact(id, version, patch, store, repo).await
 }
 
 /// Rotate the material of one active Vault source without ever overwriting the
@@ -332,34 +467,39 @@ pub async fn rotate_credential(
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
 ) -> Result<CredentialSource, CredentialError> {
+    rotate_credential_materials(
+        id,
+        CredentialMaterialPatch {
+            primary: Some(material),
+            auxiliary: BTreeMap::new(),
+        },
+        store,
+        repo,
+    )
+    .await
+}
+
+/// Publish a higher exact revision for executable, secret-free configuration
+/// changes while retaining the complete material set.
+pub async fn advance_credential_revision(
+    id: &CredentialSourceId,
+    repo: &dyn CredentialRepo,
+) -> Result<CredentialSource, CredentialError> {
     let before = repo.get(id).await?;
-    if before.kind != CredentialKind::Vault || before.status != CredentialStatus::Active {
+    if before.status != CredentialStatus::Active {
         return Err(CredentialError::NotActive(id.0.clone()));
     }
-    let version = before
+    let mut after = before.clone();
+    after.version = before
         .version
         .checked_add(1)
         .ok_or_else(|| CredentialError::InvalidSource("credential revision overflow".into()))?;
-    let mut after = before.clone();
-    after.version = version;
-    after.material_ref = Some(crate::SecretRef(format!("sec:{}:r{version}", id.0)));
     let intent = CredentialMutationIntent {
-        before: Some(before.clone()),
+        before: Some(before),
         after: after.clone(),
     };
     repo.begin_mutation(intent.clone()).await?;
-    let material_ref = after
-        .material_ref
-        .as_ref()
-        .expect("Vault rotation assigns a material ref");
-    if let Err(error) = store.put(material_ref, material).await {
-        if store.delete(material_ref).await.is_ok() {
-            repo.complete_mutation(id).await?;
-        }
-        return Err(error);
-    }
     repo.apply_mutation(&intent).await?;
-    cleanup_retired_material(&intent, store).await?;
     repo.complete_mutation(id).await?;
     Ok(after)
 }
@@ -411,6 +551,7 @@ pub async fn revoke_credential(
         CredentialRetirement::Archive => CredentialStatus::Archived,
     };
     after.material_ref = None;
+    after.auxiliary_material_refs.clear();
     let intent = CredentialMutationIntent {
         before: Some(before),
         after: after.clone(),
@@ -428,12 +569,11 @@ async fn cleanup_retired_material(
 ) -> Result<(), CredentialError> {
     let before = intent
         .before
-        .as_ref()
-        .and_then(|source| source.material_ref.as_ref());
-    let after = intent.after.material_ref.as_ref();
-    if before != after
-        && let Some(reference) = before
-    {
+        .iter()
+        .flat_map(CredentialSource::material_refs)
+        .collect::<HashSet<_>>();
+    let after = intent.after.material_refs().collect::<HashSet<_>>();
+    for reference in before.difference(&after) {
         store.delete(reference).await?;
     }
     Ok(())
@@ -445,12 +585,11 @@ async fn cleanup_unpublished_material(
 ) -> Result<(), CredentialError> {
     let before = intent
         .before
-        .as_ref()
-        .and_then(|source| source.material_ref.as_ref());
-    let after = intent.after.material_ref.as_ref();
-    if before != after
-        && let Some(reference) = after
-    {
+        .iter()
+        .flat_map(CredentialSource::material_refs)
+        .collect::<HashSet<_>>();
+    let after = intent.after.material_refs().collect::<HashSet<_>>();
+    for reference in after.difference(&before) {
         store.delete(reference).await?;
     }
     Ok(())
@@ -494,7 +633,8 @@ pub struct CredentialInventoryReport {
 
 /// Compare the secret inventory with committed metadata and in-flight intents.
 /// Only credential-owned `sec:cred:` keys are eligible for deletion; webhook and
-/// OAuth material may share the physical store and is deliberately untouched.
+/// other domains' material may share the physical store and is deliberately
+/// untouched.
 pub async fn reconcile_credential_inventory(
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
@@ -514,8 +654,8 @@ pub async fn reconcile_credential_inventory(
             intent
                 .before
                 .iter()
-                .filter_map(|source| source.material_ref.as_ref())
-                .chain(intent.after.material_ref.iter())
+                .flat_map(CredentialSource::material_refs)
+                .chain(intent.after.material_refs())
                 .map(|reference| reference.0.clone())
         }))
         .collect();
@@ -716,6 +856,7 @@ mod tests {
             provider_id: Some("anthropic".into()),
             env_key: None,
             material_ref: Some(crate::SecretRef("sec:cred:ws:interrupted".into())),
+            auxiliary_material_refs: Default::default(),
             oauth_command: None,
             worker_local_binding: None,
             status: crate::CredentialStatus::Active,
@@ -984,6 +1125,7 @@ mod tests {
             provider_id: None,
             env_key: None,
             material_ref: Some(crate::SecretRef("sec:cred:ws:conflict".into())),
+            auxiliary_material_refs: Default::default(),
             oauth_command: None,
             worker_local_binding: None,
             status: CredentialStatus::Active,
@@ -1069,6 +1211,7 @@ mod tests {
             provider_id: None,
             env_key: None,
             material_ref: Some(reference.clone()),
+            auxiliary_material_refs: Default::default(),
             oauth_command: None,
             worker_local_binding: None,
             status: crate::CredentialStatus::Active,

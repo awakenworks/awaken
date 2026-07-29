@@ -754,6 +754,10 @@ impl PinnedCredentialMaterializer {
     pub(crate) fn secret_store(&self) -> Arc<dyn SecretStore> {
         self.secrets.clone()
     }
+
+    pub(crate) fn credential_repo(&self) -> Arc<dyn CredentialRepo> {
+        self.credentials.clone()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

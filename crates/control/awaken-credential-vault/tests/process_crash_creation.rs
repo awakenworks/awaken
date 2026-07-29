@@ -27,6 +27,7 @@ fn source() -> CredentialSource {
         provider_id: Some("anthropic".into()),
         env_key: None,
         material_ref: Some(SecretRef("sec:cred:ws:process-crash".into())),
+        auxiliary_material_refs: Default::default(),
         oauth_command: None,
         worker_local_binding: None,
         status: CredentialStatus::Active,

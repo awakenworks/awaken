@@ -573,7 +573,7 @@ async fn test_and_save_provider_connection(
     enum ConnectionCredential {
         ApiKey(RedactedString),
         OAuth(OAuthHelper),
-        Existing(CredentialSource),
+        Existing(Box<CredentialSource>),
     }
 
     let connection_credential = if let Some(secret) = body.secret {
@@ -617,7 +617,7 @@ async fn test_and_save_provider_connection(
                 &rid,
             )));
         }
-        ConnectionCredential::Existing(credential)
+        ConnectionCredential::Existing(Box::new(credential))
     };
 
     let models = match &connection_credential {
@@ -635,6 +635,7 @@ async fn test_and_save_provider_connection(
                 provider_id: Some(body.provider_id.clone()),
                 env_key: None,
                 material_ref: None,
+                auxiliary_material_refs: Default::default(),
                 oauth_command: Some(helper.command()),
                 worker_local_binding: None,
                 status: CredentialStatus::Active,
@@ -643,7 +644,7 @@ async fn test_and_save_provider_connection(
             discovery.discover(&endpoint, &probe_source).await
         }
         ConnectionCredential::Existing(credential) => {
-            discovery.discover(&endpoint, credential).await
+            discovery.discover(&endpoint, credential.as_ref()).await
         }
     }
     .map_err(|error| model_discovery_problem(&error, &rid))?;
@@ -658,7 +659,7 @@ async fn test_and_save_provider_connection(
     }
 
     let (mut staged, created) = match connection_credential {
-        ConnectionCredential::Existing(source) => (source, false),
+        ConnectionCredential::Existing(source) => (*source, false),
         ConnectionCredential::ApiKey(secret) => (
             enter_credential(
                 CredentialCreateParams {

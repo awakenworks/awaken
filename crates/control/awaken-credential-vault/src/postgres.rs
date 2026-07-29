@@ -303,7 +303,11 @@ impl CredentialRepo for PostgresCredentialRepo {
         rows.into_iter()
             .map(|row| {
                 let Json(source): Json<CredentialSource> = row.try_get("data").map_err(storage)?;
-                Ok(source.material_ref)
+                Ok(source
+                    .material_ref
+                    .into_iter()
+                    .chain(source.auxiliary_material_refs.into_values())
+                    .collect::<Vec<_>>())
             })
             .collect::<Result<Vec<_>, CredentialError>>()
             .map(|items| items.into_iter().flatten().collect())

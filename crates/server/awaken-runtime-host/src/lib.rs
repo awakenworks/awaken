@@ -1638,7 +1638,12 @@ impl awaken_protocol_managed::McpAttachmentRealizer for ManagedHost {
                         )
                     })?;
                 let refresh = access.refresh.as_ref().map(|refresh| {
-                    crate::mcp::McpRefreshMaterial::new(refresh.clone(), injector.secret_store())
+                    crate::mcp::McpRefreshMaterial::new(
+                        awaken_credential_vault::CredentialSourceId(access.credential.id.clone()),
+                        refresh.clone(),
+                        injector.credential_repo(),
+                        injector.secret_store(),
+                    )
                 });
                 (
                     Some(bearer),
