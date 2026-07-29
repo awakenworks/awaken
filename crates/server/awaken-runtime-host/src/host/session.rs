@@ -581,10 +581,17 @@ impl SharedHost {
         // Seed with host-registered plugins (e.g. the tool state machine via
         // `with_state_machine`), then append the per-run memory/compact plugins.
         let mut plugin_ids: Vec<String> = self.plugin_ids.clone();
-        if let Some(mem) = self
+        let recalled_memory = self
             .memory_for_thread(thread)
-            .filter(|memory| memory.recall_enabled())
-        {
+            .filter(|memory| memory.recall_enabled());
+        let acp_memory_recall = recalled_memory.as_ref().map(|mem| {
+            let recall = awaken_ext_memory::MemoryRecall::new(mem.store(), mem.bounds());
+            match &self.memory_selector {
+                Some(selector) => recall.with_selector(selector.clone()),
+                None => recall,
+            }
+        });
+        if let Some(mem) = recalled_memory {
             let mut plugin =
                 awaken_ext_memory::MemoryPlugin::from_handle(mem.store(), mem.bounds());
             if let Some(selector) = &self.memory_selector {
@@ -698,6 +705,13 @@ impl SharedHost {
                 self.judge_snapshot
                     .as_ref()
                     .map(|snapshot| &snapshot.resolved_spec),
+            ));
+        let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
+            Arc::new(crate::application::AcpContextAttemptExecutor::new(
+                attempt_executor,
+                skill_registry.clone(),
+                acp_memory_recall,
+                thread,
             ));
         let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
             Arc::new(crate::application::SessionPromptAttemptExecutor::new(

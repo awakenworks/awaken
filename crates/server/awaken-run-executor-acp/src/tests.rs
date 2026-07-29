@@ -257,7 +257,7 @@ pub(crate) fn activation() -> RunActivation {
 #[test]
 fn initial_acp_prompt_projects_frozen_agent_instructions_before_untrusted_input() {
     let activation = activation();
-    let prompt = super::initial_prompt(&activation);
+    let prompt = super::initial_prompt(&activation, &[]);
     let instructions_at = prompt.find("be helpful").unwrap();
     let input_at = prompt.find("do it").unwrap();
     assert!(instructions_at < input_at, "{prompt}");
@@ -265,7 +265,32 @@ fn initial_acp_prompt_projects_frozen_agent_instructions_before_untrusted_input(
 
     let mut blank = activation;
     blank.snapshot.resolved_spec.instructions.clear();
-    assert_eq!(super::initial_prompt(&blank), "do it");
+    assert_eq!(super::initial_prompt(&blank, &[]), "do it");
+}
+
+#[test]
+fn acp_prompt_loads_request_context_without_mixing_it_into_run_input() {
+    // Cause/effect graph: frozen instructions (C1), transient backend context
+    // (C2), and durable user input (C3) must become three ordered prompt
+    // sections; C2 must not mutate the activation input (E2), which is the list
+    // the executor commits. Decision rule R1: C1+C2+C3 -> ordered projection and
+    // byte-identical durable input.
+    let mut activation = activation();
+    activation.snapshot.resolved_spec.instructions = "follow policy".into();
+    let original = activation.input.clone();
+    let context = vec![Message::text(
+        MessageId("request-memory".into()),
+        Role::System,
+        "remember the user's preference",
+    )];
+
+    let prompt = super::initial_prompt(&activation, &context);
+
+    let instructions = prompt.find("follow policy").expect("C1");
+    let recalled = prompt.find("remember the user's preference").expect("C2");
+    let input = prompt.find("do it").expect("C3");
+    assert!(instructions < recalled && recalled < input, "R1: {prompt}");
+    assert_eq!(activation.input, original, "E2");
 }
 
 fn exec(frames: Vec<String>) -> AcpRunExecutor {
