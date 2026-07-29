@@ -9,6 +9,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -16,12 +17,32 @@ use thiserror::Error;
 pub use crate::llm::ToolCall;
 
 tokio::task_local! {
-    /// Runtime-owned identity of the current durable tool invocation.
+    /// Runtime-owned context of the current durable tool invocation.
     ///
     /// A provider `ToolCall::call_id` only correlates model tool-use/result blocks and
     /// may be synthesized with response-local scope. Business tools that need an
     /// idempotency key must use this run/step-scoped identity instead.
-    static TOOL_OPERATION_ID: String;
+    static TOOL_OPERATION_CONTEXT: ToolOperationContext;
+}
+
+/// Stable runtime coordinates for one tool invocation.
+///
+/// This is execution context rather than tool input: providers and models cannot
+/// author either value. Infrastructure adapters may use the run id to request a
+/// run-bound capability and the operation id for idempotent side effects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolOperationContext {
+    /// Absent only for direct adapter/unit invocations outside the runtime. A
+    /// capability broker must fail closed when it requires run-bound authority.
+    pub run_id: Option<RunId>,
+    pub operation_id: String,
+}
+
+/// Return the runtime-owned context of the tool invocation currently entering an
+/// executor. Direct unit invocations have no runtime scope.
+#[must_use]
+pub fn current_tool_operation_context() -> Option<ToolOperationContext> {
+    TOOL_OPERATION_CONTEXT.try_with(Clone::clone).ok()
 }
 
 /// Return the runtime-scoped identity of the tool invocation currently entering an
@@ -29,16 +50,34 @@ tokio::task_local! {
 /// `None`; tools may use their call id as a test/legacy fallback in that case.
 #[must_use]
 pub fn current_tool_operation_id() -> Option<String> {
-    TOOL_OPERATION_ID.try_with(Clone::clone).ok()
+    current_tool_operation_context().map(|context| context.operation_id)
 }
 
-/// Run one executor future with a durable, runtime-owned operation identity visible
-/// to the called tool. This keeps execution context out of provider protocol ids.
+/// Run one executor future with its durable runtime coordinates visible to the
+/// called tool. This keeps execution authority out of provider protocol ids and
+/// model-authored arguments.
+pub async fn with_tool_operation_context<T>(
+    context: ToolOperationContext,
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    TOOL_OPERATION_CONTEXT.scope(context, future).await
+}
+
+/// Compatibility helper for direct callers that only need durable operation
+/// identity. Runtime execution uses [`with_tool_operation_context`] and always
+/// supplies a run id.
 pub async fn with_tool_operation_id<T>(
     operation_id: String,
     future: impl std::future::Future<Output = T>,
 ) -> T {
-    TOOL_OPERATION_ID.scope(operation_id, future).await
+    with_tool_operation_context(
+        ToolOperationContext {
+            run_id: None,
+            operation_id,
+        },
+        future,
+    )
+    .await
 }
 
 /// What an implementation can safely do after the owner died while an invocation
@@ -371,14 +410,28 @@ mod recovery_tests {
     }
 
     #[tokio::test]
-    async fn operation_identity_is_scoped_to_one_executor_future() {
-        assert_eq!(current_tool_operation_id(), None);
-        let seen = with_tool_operation_id("tool-batch:run-7:3:c1".into(), async {
-            current_tool_operation_id()
+    async fn operation_context_is_scoped_to_one_executor_future() {
+        // Cause-effect graph:
+        // runtime scope present -> expose exact run + operation coordinates;
+        // nested future completes -> scope is removed; no runtime scope -> None.
+        // Decision table: R1(outside)=None, R2(inside)=exact context,
+        // R3(after completion)=None. This also proves there is one context source
+        // rather than independent run-id and operation-id task locals.
+        assert_eq!(current_tool_operation_context(), None);
+        let expected = ToolOperationContext {
+            run_id: Some(RunId("run-7".into())),
+            operation_id: "tool-batch:run-7:3:c1".into(),
+        };
+        let seen = with_tool_operation_context(expected.clone(), async {
+            (
+                current_tool_operation_context(),
+                current_tool_operation_id(),
+            )
         })
         .await;
-        assert_eq!(seen.as_deref(), Some("tool-batch:run-7:3:c1"));
-        assert_eq!(current_tool_operation_id(), None);
+        assert_eq!(seen.0, Some(expected.clone()));
+        assert_eq!(seen.1.as_deref(), Some(expected.operation_id.as_str()));
+        assert_eq!(current_tool_operation_context(), None);
     }
 
     #[test]
