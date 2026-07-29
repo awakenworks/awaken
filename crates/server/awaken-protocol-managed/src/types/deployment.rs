@@ -11,6 +11,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use serde::{Deserialize, Serialize};
 
 use crate::types::agent::AgentReference;
+use crate::types::initial_event::{InitialEventClass, InitialEventSpec};
 use crate::types::resource::ResourceInput;
 use crate::types::session::{AgentRef, InboundEvent, OutcomeRubric};
 
@@ -28,6 +29,20 @@ pub enum DeploymentInitialEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_iterations: Option<u32>,
     },
+}
+
+impl InitialEventSpec for DeploymentInitialEvent {
+    fn initial_event_class(&self) -> InitialEventClass {
+        match self {
+            Self::UserMessage { .. } => InitialEventClass::UserMessage,
+            Self::SystemMessage { .. } => InitialEventClass::SystemMessage,
+            Self::UserDefineOutcome { max_iterations, .. } => {
+                InitialEventClass::UserDefineOutcome {
+                    max_iterations: *max_iterations,
+                }
+            }
+        }
+    }
 }
 
 impl From<DeploymentInitialEvent> for InboundEvent {

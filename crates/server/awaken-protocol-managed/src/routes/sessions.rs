@@ -275,10 +275,17 @@ async fn create_session(
     // Session preparation (MCP provisioning, ADR-0043 Phase 3) can fail; map the
     // RunError to the envelope exactly like a turn's failure, so a failed create
     // is loud rather than a half-provisioned session.
-    let session = state
+    let initial_events = req.initial_events.clone();
+    let mut session = state
         .create_session(req, workspace.map(|w| w.0.0.clone()))
         .await
         .map_err(error_response)?;
+    if !initial_events.is_empty() {
+        state
+            .start_initial_events(&session.id, initial_events)
+            .map_err(error_response)?;
+        session.status = "running";
+    }
     versioned_session_response(&state, session, None).await
 }
 

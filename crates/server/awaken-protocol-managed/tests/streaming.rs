@@ -365,8 +365,9 @@ async fn http_create(app: &Router) -> String {
 // === 1(a) LIVE broadcast ordering ===========================================
 
 /// A subscriber open BEFORE a turn runs receives that turn's committed events on
-/// the live broadcast, in turn order (`running` → `agent.message` → `idle`) — the
-/// live path, distinct from the send-then-stream backfill the adapter suite covers.
+/// the live broadcast, in turn order (`user.message` → `running` →
+/// `agent.message` → `idle`) — the live path, distinct from the send-then-stream
+/// backfill the adapter suite covers.
 #[tokio::test]
 async fn live_broadcast_delivers_a_turns_committed_frames_in_order() {
     let state = ManagedState::new(EchoFake);
@@ -384,6 +385,7 @@ async fn live_broadcast_delivers_a_turns_committed_frames_in_order() {
     assert_eq!(
         committed_types(&frames),
         vec![
+            "user.message",
             "session.status_running",
             "agent.message",
             "session.status_idle"
@@ -408,9 +410,11 @@ async fn live_broadcast_preserves_order_across_two_turns() {
     assert_eq!(
         committed_types(&frames),
         vec![
+            "user.message",
             "session.status_running",
             "agent.message",
             "session.status_idle",
+            "user.message",
             "session.status_running",
             "agent.message",
             "session.status_idle",

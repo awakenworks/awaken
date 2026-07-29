@@ -21,6 +21,15 @@ async function agentTexts(client, sessionId) {
     .map((m) => (m.content ?? []).map((c) => c.text ?? '').join('').trim());
 }
 
+async function waitForAgentText(client, sessionId, predicate) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const texts = await agentTexts(client, sessionId);
+    if (texts.some(predicate)) return texts;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return agentTexts(client, sessionId);
+}
+
 async function send(client, sessionId, text) {
   await client.beta.sessions.events.send(sessionId, {
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
@@ -36,15 +45,26 @@ async function main() {
     await withScenarioServer('acp', 'echo', 38185, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
-      // R3/R4: the published ACP Agent runs on the external CLI. Request metadata
-      // is not a backend selector.
+      // Cause graph / decision rules shared with the native case below:
+      // selected backend (ACP/native) + valid create-time user.message -> create
+      // returns running -> the common Session event executor persists the input ->
+      // the selected runtime emits its own reply -> Session idles.
+      //
+      // | Rule | Backend | Trigger | Expected reply |
+      // | A1 | acp:claude | initial_events | ACP fixture |
+      // | A2 | native | initial_events | built-in echo |
+      // | A3 | acp:claude | later events.send | fresh ACP process |
+      //
+      // R3/R4/A1: the published ACP Agent runs on the external CLI. Request
+      // metadata is not a backend selector.
       const acp = await client.beta.sessions.create({
         agent: 'acp-agent',
         environment_id: 'env_local',
+        initial_events: [{ type: 'user.message', content: [{ type: 'text', text: 'hello' }] }],
         betas: BETAS,
       });
-      await send(client, acp.id, 'hello');
-      let texts = await agentTexts(client, acp.id);
+      assert.equal(acp.status, 'running', 'A1 create-time ACP event starts immediately');
+      let texts = await waitForAgentText(client, acp.id, (text) => text.includes('acp-runtime reply'));
       assert.ok(
         texts.some((t) => t.includes('acp-runtime reply')),
         `R3/R4: acp session ran on the ACP CLI, got ${JSON.stringify(texts)}`,
@@ -55,10 +75,11 @@ async function main() {
       const native = await client.beta.sessions.create({
         agent: 'assistant',
         environment_id: 'env_local',
+        initial_events: [{ type: 'user.message', content: [{ type: 'text', text: 'hello' }] }],
         betas: BETAS,
       });
-      await send(client, native.id, 'hello');
-      texts = await agentTexts(client, native.id);
+      assert.equal(native.status, 'running', 'A2 create-time native event starts immediately');
+      texts = await waitForAgentText(client, native.id, (text) => text.startsWith('Echo:'));
       assert.ok(
         texts.some((t) => t.startsWith('Echo:')),
         `native session ran the built-in model, got ${JSON.stringify(texts)}`,

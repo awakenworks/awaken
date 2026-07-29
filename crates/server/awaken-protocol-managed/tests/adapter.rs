@@ -28,6 +28,17 @@ async fn json_call(
     uri: &str,
     body: serde_json::Value,
 ) -> serde_json::Value {
+    let (status, json) = json_response(app, method, uri, body).await;
+    assert_eq!(status, StatusCode::OK, "{method} {uri}");
+    json
+}
+
+async fn json_response(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    body: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
     let req = Request::builder()
         .method(method)
         .uri(uri)
@@ -39,9 +50,10 @@ async fn json_call(
         })
         .unwrap();
     let resp = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "{method} {uri}");
+    let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    serde_json::from_slice(&bytes).unwrap()
+    let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, json)
 }
 
 fn types(list: &serde_json::Value) -> Vec<String> {
@@ -205,6 +217,7 @@ async fn failed_first_turn_still_persists_the_materialized_environment() {
     ));
     let id = create(&app).await;
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -224,6 +237,26 @@ async fn failed_first_turn_still_persists_the_materialized_environment() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    // Failure rule: admission persisted the user event, Runtime processing failed,
+    // and the same event still transitions from queued to processed before the
+    // HTTP error is returned; the failure bracket remains observable afterward.
+    let events = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(
+        types(&events),
+        vec![
+            "user.message",
+            "session.status_running",
+            "session.error",
+            "session.status_idle"
+        ]
+    );
+    assert!(events["data"][0]["processed_at"].is_string());
     assert_eq!(
         repo.get(&id)
             .await
@@ -461,6 +494,162 @@ async fn clearing_the_model_on_a_session_override_is_rejected() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
+/// Session-create `initial_events` is derived from the documentation's complete
+/// cause graph for this field:
+///
+/// omitted/empty ───────────────────────────────────────────────> create idle
+/// 1..=50 message/outcome + <=1 outcome + valid rubric/limits ──> create running,
+///                                                                persist in order
+/// unsupported type OR invalid member OR >50 OR >1 outcome ─────> reject atomically
+///
+/// | Rule | Count | Members | Outcomes | Effect |
+/// |---|---:|---|---:|---|
+/// | C1 | 0 | - | 0 | 200 idle; no execution |
+/// | C2 | 1..=50 | message/outcome valid | 0..=1 | 200 running; shared executor |
+/// | C3 | valid | unsupported | any | 400; no Session |
+/// | C4 | valid | one invalid in mixed batch | any | 400; no partial Session/event |
+/// | C5 | 51 | otherwise valid | 0 | 400 |
+/// | C6 | valid | outcome missing rubric or two outcomes | >1/invalid | 400 |
+#[tokio::test]
+async fn session_initial_events_follow_the_atomic_decision_table() {
+    let idle_app = router(Arc::new(ManagedState::new(EchoFake)));
+    for (rule, body) in [
+        ("C1 omitted", serde_json::json!({"agent": "coder"})),
+        (
+            "C1 empty",
+            serde_json::json!({"agent": "coder", "initial_events": []}),
+        ),
+    ] {
+        let (status, session) = json_response(&idle_app, "POST", "/v1/sessions", body).await;
+        assert_eq!(status, StatusCode::OK, "{rule}");
+        assert_eq!(session["status"], "idle", "{rule}");
+    }
+
+    let running_app = router(Arc::new(ManagedState::new(EchoFake)));
+    let (status, session) = json_response(
+        &running_app,
+        "POST",
+        "/v1/sessions",
+        serde_json::json!({
+            "agent": "coder",
+            "initial_events": [{
+                "type": "user.message",
+                "content": [{"type": "text", "text": "start"}]
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "C2 message admitted");
+    assert_eq!(session["status"], "running", "C2 starts immediately");
+    let id = session["id"].as_str().unwrap();
+    let mut completed = None;
+    for _ in 0..100 {
+        let events = json_call(
+            &running_app,
+            "GET",
+            &format!("/v1/sessions/{id}/events"),
+            serde_json::Value::Null,
+        )
+        .await;
+        if types(&events).last().map(String::as_str) == Some("session.status_idle") {
+            completed = Some(events);
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    let completed = completed.expect("C2 initial event completes through shared executor");
+    assert_eq!(
+        types(&completed),
+        vec![
+            "user.message",
+            "session.status_running",
+            "agent.message",
+            "session.status_idle"
+        ],
+        "C2 preserves inbound-before-output ordering"
+    );
+    assert!(completed["data"][0]["processed_at"].is_string());
+
+    let outcome_app = router(Arc::new(ManagedState::new(OutcomeFake)));
+    let (status, session) = json_response(
+        &outcome_app,
+        "POST",
+        "/v1/sessions",
+        serde_json::json!({
+            "agent": "coder",
+            "initial_events": [{
+                "type": "user.define_outcome",
+                "description": "finish",
+                "rubric": {"type": "text", "content": "done"},
+                "max_iterations": 20
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "C2 single outcome admitted");
+    assert_eq!(
+        session["status"], "running",
+        "C2 outcome starts immediately"
+    );
+
+    let rejected_app = router(Arc::new(ManagedState::new(EchoFake)));
+    let message = serde_json::json!({
+        "type": "user.message",
+        "content": [{"type": "text", "text": "must not run"}]
+    });
+    let outcome = serde_json::json!({
+        "type": "user.define_outcome",
+        "description": "finish",
+        "rubric": {"type": "text", "content": "done"}
+    });
+    let invalid_cases = [
+        (
+            "C3 unsupported",
+            serde_json::json!({"agent":"coder", "initial_events":[{
+                "type":"system.message", "content":[{"type":"text", "text":"x"}]
+            }]}),
+        ),
+        (
+            "C4 mixed atomic",
+            serde_json::json!({"agent":"coder", "initial_events":[
+                message.clone(), {"type":"user.interrupt"}
+            ]}),
+        ),
+        (
+            "C5 over maximum",
+            serde_json::json!({
+                "agent":"coder",
+                "initial_events": vec![message.clone(); 51]
+            }),
+        ),
+        (
+            "C6 two outcomes",
+            serde_json::json!({
+                "agent":"coder",
+                "initial_events":[outcome.clone(), outcome]
+            }),
+        ),
+        (
+            "C6 missing rubric",
+            serde_json::json!({"agent":"coder", "initial_events":[{
+                "type":"user.define_outcome", "description":"finish"
+            }]}),
+        ),
+    ];
+    for (rule, body) in invalid_cases {
+        let (status, _) = json_response(&rejected_app, "POST", "/v1/sessions", body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{rule}");
+    }
+    let sessions = json_call(
+        &rejected_app,
+        "GET",
+        "/v1/sessions",
+        serde_json::Value::Null,
+    )
+    .await;
+    assert!(sessions["data"].as_array().unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn happy_path_projects_message_and_idle() {
     let app = router(Arc::new(ManagedState::new(EchoFake)));
@@ -482,6 +671,7 @@ async fn happy_path_projects_message_and_idle() {
     assert_eq!(
         types(&list),
         vec![
+            "user.message",
             "session.status_running",
             "agent.message",
             "session.status_idle"
@@ -817,6 +1007,7 @@ async fn outcome_loop_projects_evaluations() {
     assert_eq!(
         types(&list),
         vec![
+            "user.define_outcome",
             "session.status_running",
             "span.outcome_evaluation_start",
             "span.outcome_evaluation_ongoing",
@@ -902,6 +1093,7 @@ async fn hitl_await_confirm_resume() {
     assert_eq!(
         types(&list),
         vec![
+            "user.message",
             "session.status_running",
             "agent.tool_use",
             "session.status_idle"
@@ -943,9 +1135,11 @@ async fn hitl_await_confirm_resume() {
     assert_eq!(
         types(&list),
         vec![
+            "user.message",
             "session.status_running",
             "agent.tool_use",
             "session.status_idle",
+            "user.tool_confirmation",
             "session.status_running",
             "agent.tool_result",
             "agent.message",
@@ -1055,6 +1249,7 @@ async fn custom_tool_use_await_and_result() {
     assert_eq!(
         types(&list),
         vec![
+            "user.message",
             "session.status_running",
             "agent.custom_tool_use",
             "session.status_idle"
@@ -1109,9 +1304,9 @@ async fn custom_tool_use_await_and_result() {
 
 #[tokio::test]
 async fn accept_only_events_are_acknowledged() {
-    // `system.message` is buffered; `user.interrupt` is acknowledged with a receipt
-    // but drives no projected event in the single-machine model (there is no
-    // in-flight turn between requests).
+    // Causal rule: every accepted inbound event owns the receipt id, is persisted
+    // in request order, and eventually receives `processed_at`; accept-only events
+    // produce no additional agent/session projection in this single-machine case.
     let app = router(Arc::new(ManagedState::new(EchoFake)));
     let id = create(&app).await;
 
@@ -1140,10 +1335,17 @@ async fn accept_only_events_are_acknowledged() {
         serde_json::Value::Null,
     )
     .await;
+    assert_eq!(types(&list), vec!["system.message", "user.interrupt"]);
     assert!(
-        list["data"].as_array().unwrap().is_empty(),
-        "accept-only events project nothing"
+        list["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|event| event["processed_at"].is_string()),
+        "accepted inbound events become processed"
     );
+    assert_eq!(receipts["data"][0]["id"], list["data"][0]["id"]);
+    assert_eq!(receipts["data"][1]["id"], list["data"][1]["id"]);
 }
 
 /// A generic `user.tool_result` (keyed by `tool_use_id`) resumes an awaiting run just
@@ -1707,7 +1909,7 @@ async fn the_collection_route_is_never_fenced() {
 async fn events_are_paged_by_cursor() {
     let app = router(Arc::new(ManagedState::new(EchoFake)));
     let id = create(&app).await;
-    // Two turns → 6 events (running/message/idle × 2).
+    // Two turns → 8 events (user/running/message/idle × 2).
     for text in ["one", "two"] {
         json_call(
             &app,
@@ -1735,7 +1937,7 @@ async fn events_are_paged_by_cursor() {
     )
     .await;
     let full_ids = ids(&full);
-    assert_eq!(full_ids.len(), 6, "two turns produced six events");
+    assert_eq!(full_ids.len(), 8, "two turns produced eight events");
     assert_eq!(full["has_more"], serde_json::json!(false));
     assert_eq!(full["next_page"], serde_json::Value::Null);
 

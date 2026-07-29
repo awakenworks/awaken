@@ -163,6 +163,11 @@ impl AgentRef {
 #[derive(Debug, Clone, Deserialize)]
 pub struct SessionCreateParams {
     pub agent: AgentRef,
+    /// Events admitted atomically with Session creation. The state layer validates
+    /// the entire collection before minting an id, then drives them through the
+    /// same event command used by `POST .../events`.
+    #[serde(default)]
+    pub initial_events: Vec<InboundEvent>,
     /// Awaken extension: leave the Session creation intent in `Preparing`
     /// until the registered Worker application contributes its claim-fenced
     /// plan. The contribution is consumed by the one baseline compiler; this
@@ -535,7 +540,7 @@ pub struct OutcomeEvaluation {
 }
 
 /// A client's `user.tool_confirmation` decision.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfirmResult {
     Allow,
@@ -620,6 +625,37 @@ impl InboundEvent {
             InboundEvent::UserDefineOutcome { .. } => "user.define_outcome",
             InboundEvent::UserInterrupt { .. } => "user.interrupt",
         }
+    }
+}
+
+impl super::initial_event::InitialEventSpec for InboundEvent {
+    fn initial_event_class(&self) -> super::initial_event::InitialEventClass {
+        use super::initial_event::InitialEventClass;
+        match self {
+            InboundEvent::UserMessage { .. } => InitialEventClass::UserMessage,
+            InboundEvent::SystemMessage { .. } => InitialEventClass::SystemMessage,
+            InboundEvent::UserDefineOutcome { max_iterations, .. } => {
+                InitialEventClass::UserDefineOutcome {
+                    max_iterations: *max_iterations,
+                }
+            }
+            other => InitialEventClass::Other(other.type_str()),
+        }
+    }
+}
+
+impl SessionCreateParams {
+    pub(crate) fn validate_initial_events(&self) -> Result<(), String> {
+        super::initial_event::validate_initial_events(
+            &self.initial_events,
+            &super::initial_event::InitialEventPolicy {
+                min_count: 0,
+                max_count: 50,
+                allow_system_message: false,
+                max_outcomes: Some(1),
+                outcome_iterations: Some(1..=20),
+            },
+        )
     }
 }
 
@@ -735,6 +771,49 @@ fn code_message_server_name(code: &str, message: &str) -> Option<String> {
     reason = "the enum mirrors the fixed Managed Agents event wire; boxing one variant would add an internal ownership shape without changing the serialized protocol"
 )]
 pub enum OutboundKind {
+    #[serde(rename = "user.message")]
+    UserMessage {
+        content: Vec<ContentBlock>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_thread_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+    },
+    #[serde(rename = "system.message")]
+    SystemMessage { content: Vec<ContentBlock> },
+    #[serde(rename = "user.tool_confirmation")]
+    UserToolConfirmation {
+        tool_use_id: String,
+        result: ConfirmResult,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        deny_message: Option<String>,
+    },
+    #[serde(rename = "user.custom_tool_result")]
+    UserCustomToolResult {
+        custom_tool_use_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content: Option<Vec<ContentBlock>>,
+        is_error: bool,
+    },
+    #[serde(rename = "user.tool_result")]
+    UserToolResult {
+        tool_use_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content: Option<Vec<ContentBlock>>,
+        is_error: bool,
+    },
+    #[serde(rename = "user.define_outcome")]
+    UserDefineOutcome {
+        description: String,
+        rubric: OutcomeRubric,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        max_iterations: Option<u32>,
+    },
+    #[serde(rename = "user.interrupt")]
+    UserInterrupt {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_thread_id: Option<String>,
+    },
     #[serde(rename = "agent.message")]
     AgentMessage { content: Vec<ContentBlock> },
     /// The agent's extended-thinking block (`agent.thinking`) — `{id, type,
@@ -918,6 +997,13 @@ impl OutboundKind {
     /// The public `type` string — also the SSE `event:` name the SDK dispatches on.
     pub fn type_str(&self) -> &'static str {
         match self {
+            OutboundKind::UserMessage { .. } => "user.message",
+            OutboundKind::SystemMessage { .. } => "system.message",
+            OutboundKind::UserToolConfirmation { .. } => "user.tool_confirmation",
+            OutboundKind::UserCustomToolResult { .. } => "user.custom_tool_result",
+            OutboundKind::UserToolResult { .. } => "user.tool_result",
+            OutboundKind::UserDefineOutcome { .. } => "user.define_outcome",
+            OutboundKind::UserInterrupt { .. } => "user.interrupt",
             OutboundKind::AgentMessage { .. } => "agent.message",
             OutboundKind::AgentThinking {} => "agent.thinking",
             OutboundKind::AgentToolUse { .. } => "agent.tool_use",

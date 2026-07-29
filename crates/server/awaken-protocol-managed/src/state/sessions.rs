@@ -438,6 +438,11 @@ impl ManagedState {
         workspace_id: Option<String>,
         explicit_id: Option<String>,
     ) -> Result<Session, StateError> {
+        // Initial-event admission is atomic with Session creation: validate the
+        // complete batch before bind checks, identity allocation, persistence, or
+        // Runtime preparation. The shared validator is also used by Deployments.
+        req.validate_initial_events()
+            .map_err(|message| StateError::Run(RunError::bad_request(message)))?;
         self.check_bind(&req)?;
         // Mint an id no durable thread already owns: a fresh process restarts
         // the sequence at 0, but the store dir may hold committed truth from a

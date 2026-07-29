@@ -491,21 +491,17 @@ fn validate_deployment(record: &DeploymentRecord) -> Result<(), WireError> {
     if record.name.trim().is_empty() {
         return Err(invalid("deployment name must be non-empty"));
     }
-    if !(1..=50).contains(&record.initial_events.len()) {
-        return Err(invalid(
-            "initial_events must contain between 1 and 50 events",
-        ));
-    }
-    for event in &record.initial_events {
-        if let DeploymentInitialEvent::UserDefineOutcome {
-            max_iterations: Some(iterations),
-            ..
-        } = event
-            && !(1..=20).contains(iterations)
-        {
-            return Err(invalid("max_iterations must be between 1 and 20"));
-        }
-    }
+    crate::types::initial_event::validate_initial_events(
+        &record.initial_events,
+        &crate::types::initial_event::InitialEventPolicy {
+            min_count: 1,
+            max_count: 50,
+            allow_system_message: true,
+            max_outcomes: None,
+            outcome_iterations: Some(1..=20),
+        },
+    )
+    .map_err(invalid)?;
     if record.metadata.len() > 16
         || record
             .metadata
@@ -845,6 +841,7 @@ impl DeploymentSessionLauncher for crate::ManagedState {
                 skills: None,
                 model: None,
             }),
+            initial_events: Vec::new(),
             application_contribution_required: false,
             environment_id: Some(request.environment_id),
             title: None,
