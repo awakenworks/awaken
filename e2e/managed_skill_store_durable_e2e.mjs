@@ -25,6 +25,7 @@ import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEn
 
 const PORT = Number(process.env.E2E_PORT ?? 38215);
 const BETAS = ['managed-agents-2026-04-01'];
+const SKILLS_HEADERS = { 'anthropic-beta': 'skills-2025-10-02' };
 const STORE_DIR = `/tmp/awaken-skillstore-durable-e2e-${process.pid}`;
 const MARKER = 'DURABLE_SKILL_MARKER_5501';
 const SKILL_MD = `---\ndescription: greet durably\n---\n${MARKER}`;
@@ -56,7 +57,7 @@ async function useSkill() {
 }
 
 async function skillIds() {
-  const res = await client.get('/v1/skills');
+  const res = await client.get('/v1/skills', { headers: SKILLS_HEADERS });
   return (res?.data ?? []).map((s) => s.id);
 }
 
@@ -82,7 +83,9 @@ async function main() {
     servers.push(a.server);
     await waitForPort(PORT);
 
-    const created = await client.post('/v1/skills', { body: { id: 'greet', content: SKILL_MD } });
+    const created = await client.post('/v1/skills', {
+      body: { id: 'greet', content: SKILL_MD }, headers: SKILLS_HEADERS,
+    });
     assert.equal(created.id, 'greet', 'POST /v1/skills stored the skill under its id');
     assert.deepEqual(await skillIds(), ['greet'], 'GET /v1/skills lists the uploaded skill');
     assert.ok((await useSkill()).includes(MARKER), 'the model activated the durable skill (pre-restart)');
@@ -90,7 +93,7 @@ async function main() {
 
     // A malformed upload (missing `content`) is rejected, not silently dropped.
     await expectStatus(
-      client.post('/v1/skills', { body: { id: 'incomplete' } }),
+      client.post('/v1/skills', { body: { id: 'incomplete' }, headers: SKILLS_HEADERS }),
       400,
       'POST /v1/skills without content',
     );
@@ -120,7 +123,9 @@ async function main() {
     await waitForPort(PORT);
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
     await expectStatus(
-      client.post('/v1/skills', { body: { id: 'greet', content: SKILL_MD } }),
+      client.post('/v1/skills', {
+        body: { id: 'greet', content: SKILL_MD }, headers: SKILLS_HEADERS,
+      }),
       409,
       'POST /v1/skills on a server with no durable store',
     );

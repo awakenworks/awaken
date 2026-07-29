@@ -228,17 +228,42 @@ pub(crate) fn error_response(err: StateError) -> (StatusCode, Json<ErrorResponse
 /// `crate::…::WorkspaceScope` paths keep working.
 pub use awaken_tenancy::WorkspaceScope;
 
+/// The endpoint-specific beta required by the standalone Skills resource API.
+pub const SKILLS_BETA: &str = "skills-2025-10-02";
+
+fn has_beta(req: &Request, expected: &str) -> bool {
+    req.headers()
+        .get_all("anthropic-beta")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|beta| beta.trim() == expected)
+}
+
 /// Axum middleware enforcing the `anthropic-beta: managed-agents-2026-04-01` opt-in
 /// on every ordinary Managed Agents endpoint. Applied by each executable
 /// composition root, NOT baked into [`router`], so router-level tests remain focused
 /// on domain behavior. Endpoint families with their own beta (Memory, User Profiles,
-/// Files) are deliberately left to their family-specific gate.
+/// Files) are deliberately left to their family-specific gate. Skills is gated
+/// here with its own `skills-2025-10-02` beta rather than the Managed beta.
 pub async fn enforce_managed_beta(
     req: Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     let path = req.uri().path();
     let is_family = |family: &str| path == family || path.starts_with(&format!("{family}/"));
+    if is_family("/v1/skills") && !has_beta(&req, SKILLS_BETA) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                "invalid_request_error",
+                format!(
+                    "the {SKILLS_BETA} beta is required: send the `anthropic-beta: {SKILLS_BETA}` header"
+                ),
+            )),
+        )
+            .into_response();
+    }
     let is_managed = [
         "/v1/sessions",
         "/v1/agents",
@@ -246,31 +271,21 @@ pub async fn enforce_managed_beta(
         "/v1/deployments",
         "/v1/deployment_runs",
         "/v1/vaults",
-        "/v1/skills",
     ]
     .into_iter()
     .any(is_family);
-    if is_managed {
-        let opted_in = req
-            .headers()
-            .get_all("anthropic-beta")
-            .iter()
-            .filter_map(|v| v.to_str().ok())
-            .flat_map(|v| v.split(','))
-            .any(|b| b.trim() == awaken_managed_bridge::MANAGED_BETA);
-        if !opted_in {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse::new(
-                    "invalid_request_error",
-                    format!(
-                        "the {beta} beta is required: send the `anthropic-beta: {beta}` header",
-                        beta = awaken_managed_bridge::MANAGED_BETA,
-                    ),
-                )),
-            )
-                .into_response();
-        }
+    if is_managed && !has_beta(&req, awaken_managed_bridge::MANAGED_BETA) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                "invalid_request_error",
+                format!(
+                    "the {beta} beta is required: send the `anthropic-beta: {beta}` header",
+                    beta = awaken_managed_bridge::MANAGED_BETA,
+                ),
+            )),
+        )
+            .into_response();
     }
     next.run(req).await
 }

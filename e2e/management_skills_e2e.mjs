@@ -18,7 +18,8 @@ import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import { withScenarioServer, pass } from './harness.mjs';
 
-const BETAS = ['managed-agents-2026-04-01'];
+const BETAS = [];
+const SKILLS_BETA = 'skills-2025-10-02';
 const SKILL_MD_V1 = '---\nname: greeter\ndescription: says hi\n---\nSay hi to the user.';
 const SKILL_MD_V2 = '---\nname: greeter\ndescription: says hi (v2)\n---\nSay a warm hi.';
 
@@ -37,13 +38,29 @@ async function uploadRaw(baseUrl, files) {
   for (const [name, bytes] of files) {
     form.append('files[]', new Blob([bytes]), name);
   }
-  return fetch(`${baseUrl}/v1/skills`, { method: 'POST', body: form });
+  return fetch(`${baseUrl}/v1/skills`, {
+    method: 'POST',
+    headers: { 'anthropic-beta': SKILLS_BETA },
+    body: form,
+  });
 }
 
 async function main() {
   try {
     await withScenarioServer('management', 'mcp', 38142, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
+
+      // Causes: Skills collection request with no beta, the ordinary Managed
+      // beta only, or the endpoint-specific Skills beta. Constraint: the Skills
+      // family has one independent beta and extra unrelated betas do not replace
+      // it. Effects: wrong/missing headers reject before mutation; the official
+      // SDK's automatically injected Skills beta reaches the domain. Rule A7.
+      for (const beta of [null, 'managed-agents-2026-04-01']) {
+        const rejected = await fetch(`${baseUrl}/v1/skills`, {
+          headers: beta ? { 'anthropic-beta': beta } : {},
+        });
+        assert.equal(rejected.status, 400);
+      }
 
       // Create a skill via a multipart SKILL.md upload.
       const skill = await client.beta.skills.create({
@@ -148,10 +165,12 @@ async function main() {
 
       const missingFile = await fetch(
         `${baseUrl}/v1/skills/${skill.id}/versions/2/files/references/missing.md`,
+        { headers: { 'anthropic-beta': SKILLS_BETA } },
       );
       assert.equal(missingFile.status, 404);
       const missingVersionFile = await fetch(
         `${baseUrl}/v1/skills/${skill.id}/versions/404/files/references/missing.md`,
+        { headers: { 'anthropic-beta': SKILLS_BETA } },
       );
       assert.equal(missingVersionFile.status, 404);
       await expectStatus(

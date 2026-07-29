@@ -66,6 +66,7 @@ Effects:
 | A4 | memory-store endpoint | Managed + memory beta | any | 400, no mutation |
 | A5 | non-memory Managed endpoint | memory beta only | any | reject before mutation |
 | A6 | any endpoint | correct beta | malformed/oversized body | 400/413, no mutation |
+| A7 | Skills endpoint | `skills-2025-10-02` | missing or Managed beta only | continue / reject before mutation |
 
 ### Decision table B — Agent update
 
@@ -272,7 +273,7 @@ non-regression and second-turn relaunch coverage.
 | Inbound events persist under their receipt id and converge `processed_at` according to the documented immediate/queued classes | events-and-streaming / reference | existing adapter tests + `managed_system_message_e2e.mjs` | decision H9; no receipt-only shadow path |
 | `system.message` content bounds, primary-model capability, and `requires_action` ordering | events-and-streaming | existing adapter/HITL tests + native/ACP SDK E2E | decision H1-H7; whole-batch rejection precedes mutation |
 | Event-delta admission at 100/101 and start-only thinking reconciliation | events-and-streaming | existing streaming suite | decision E3/E4; thinking content never crosses the wire and committed ids equal preview ids |
-| Managed beta gate covers ordinary Session/Agent/Environment/Deployment/Vault/Skill families | overview / reference | existing contract-guard E2E | decision A1/A2/A5; family-specific Memory header remains a separate open phase |
+| Managed beta gate covers ordinary Session/Agent/Environment/Deployment/Vault families; Skills uses its own beta | overview / skills / reference | existing contract-guard + Skills E2E | decision A1/A2/A5/A7; family-specific Memory header remains a separate open phase |
 
 Verified against source before writing: `deployments.rs` (`projected_schedule`/`active_cron` +
 write-time `Cron::parse` 400), `cron.rs` (dependency-free 5-field evaluator),

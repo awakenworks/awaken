@@ -14,6 +14,7 @@ import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38237);
 const BETAS = ['managed-agents-2026-04-01'];
+const SKILLS_BETA = 'skills-2025-10-02';
 const SEAL_KEY = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
 const AGENT = 'skill-pin-agent';
 const V1 = 'PINNED_SKILL_V1_7119';
@@ -25,9 +26,15 @@ function skillMarkdown(marker) {
 }
 
 async function request(baseUrl, method, route, body) {
+  const skillHeaders = route === '/v1/skills' || route.startsWith('/v1/skills/')
+    ? { 'anthropic-beta': SKILLS_BETA }
+    : {};
   const response = await fetch(`${baseUrl}${route}`, {
     method,
-    headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+    headers: {
+      ...skillHeaders,
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const bytes = new Uint8Array(await response.arrayBuffer());
@@ -43,7 +50,9 @@ async function uploadBundle(baseUrl, route, marker, binary = undefined) {
   if (binary !== undefined) {
     form.append('file', new Blob([binary], { type: 'application/octet-stream' }), 'assets/data.bin');
   }
-  const response = await fetch(`${baseUrl}${route}`, { method: 'POST', body: form });
+  const response = await fetch(`${baseUrl}${route}`, {
+    method: 'POST', headers: { 'anthropic-beta': SKILLS_BETA }, body: form,
+  });
   const body = await response.json().catch(() => ({}));
   assert.equal(response.status, 200, `${route}: ${JSON.stringify(body)}`);
   return body;
@@ -125,6 +134,7 @@ async function main() {
   fs.writeFileSync(path.join(configDir, 'config.toml'), [
     `data_dir = ${JSON.stringify(managementDir)}`,
     `control_seal_key = ${JSON.stringify(SEAL_KEY)}`,
+    'identity_mode = "no-login"',
     'sandbox_tier = "local"',
     '',
   ].join('\n'));
