@@ -2,7 +2,9 @@
 
 This doc covers the downstream `managed-agents-runtime-protocol` adapter. It is
 intentionally not the runtime architecture and it does not include Managed Agents
-management APIs.
+management APIs. The concrete Dream management API and its Memory Consolidation
+orchestration are owned separately by
+[Managed Dream Memory Consolidation](managed-dream-memory-consolidation.md).
 
 ## Protocol Naming
 
@@ -138,8 +140,8 @@ For a Managed Agents-compatible product slice:
 - No Anthropic DTOs in runtime crates.
 - No product session model as runtime truth.
 - No public event emitted before the runtime commit.
-- No broad Managed Agents product crate family unless a concrete adapter slice
-  exists.
+- No broad Managed Agents product crate family beyond concrete adapter slices;
+  Dream is one such product slice and retains its own owner document.
 
 ## Guardrails
 

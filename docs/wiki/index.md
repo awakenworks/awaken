@@ -14,6 +14,7 @@ code or long-form design.
 - [Runtime behavior](../design/runtime-behavior.md) - run lifecycle, live state apply, durable commit, effects, and events
 - [Runtime scenario validation](../design/runtime-scenario-validation.md) - GWT scenario ids, test mapping, and scenario organization
 - [Recoverable remote Worker protocol](../design/remote-worker-protocol.md) - current gaps and the P0/P1/P2 coordinator, recovery, commit, Worker assembly, and active-active contract
+- [Managed Dream Memory Consolidation](../design/managed-dream-memory-consolidation.md) - Dream API, frozen JSONL evidence, read-only source Memory, write-through result Memory, and auxiliary Agent lifecycle
 - [Invariants](../INVARIANTS.md) - enforceable guardrails
 
 ## Ownership
