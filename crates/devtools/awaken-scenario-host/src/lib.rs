@@ -7,12 +7,14 @@
 mod acp_gateway;
 mod attempt_credential;
 mod composition;
+mod delegation;
 mod deployment;
 mod model_publication;
 mod models;
 pub use crate::models::*;
 pub use acp_gateway::build_acp_gateway_router;
 pub use composition::build_unscoped_resource_router;
+pub use delegation::build_delegation_router;
 pub use deployment::scenario_deployment;
 
 mod scenario_shell;
@@ -1368,33 +1370,6 @@ pub fn build_remote_hand_router() -> Router {
     let host = resource_host(model, model_ref)
         .with_gate_override(Arc::new(AllowAllGate))
         .with_tool_executor_provider(provider);
-    mount(Arc::new(host))
-}
-
-/// Auto-allows every tool call, so an action tool (`bash`) runs without a HITL
-/// pause — the remote-hand e2e asserts the hand's execution, not the gate.
-pub fn build_delegation_router() -> Router {
-    let (model, model_ref) = scenario_model(Arc::new(DelegatingModel), "delegate");
-    let snapshot = |agent_id: &str, delegates: Vec<AgentId>| {
-        let mut tools = awaken_runtime_host::authorable_tools();
-        if delegates.is_empty() {
-            tools.retain(|tool| tool.kind != ToolKind::AgentDelegation);
-        }
-        ExecutableAgentSnapshot::builder(agent_id)
-            .model(ModelBinding::new("default", &model_ref, "default"))
-            .tools(tools)
-            .agent_bindings(AgentBindings {
-                delegate_ids: delegates,
-                ..Default::default()
-            })
-            .build()
-    };
-    let publications = StaticPublishedAgentSnapshots::try_new([
-        snapshot("assistant", vec![AgentId("researcher".into())]),
-        snapshot("researcher", Vec::new()),
-    ])
-    .expect("valid scenario Agent publications");
-    let host = resource_host(model, model_ref).with_agent_publications(Arc::new(publications));
     mount(Arc::new(host))
 }
 

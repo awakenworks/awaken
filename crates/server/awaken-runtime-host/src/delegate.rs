@@ -41,6 +41,9 @@ pub(crate) struct HostRunDelegationService {
     sandbox: Arc<crate::session_environment::SessionEnvironment>,
     /// Exact targets frozen into the snapshot of the Run using this service.
     allowed_targets: HashSet<AgentId>,
+    /// Exact owner publication used by an explicit `self` roster edge. It is the
+    /// Session's frozen snapshot, never a later current-catalog lookup.
+    self_snapshot: Option<ExecutableAgentSnapshot>,
     adapters: crate::agent_runner::ChildExecutionAdapters,
     publications: Option<Arc<dyn PublishedAgentSnapshotSource>>,
     workspace: String,
@@ -58,6 +61,7 @@ impl HostRunDelegationService {
             llm,
             sandbox,
             allowed_targets,
+            self_snapshot: None,
             adapters,
             publications: None,
             workspace: String::new(),
@@ -77,6 +81,11 @@ impl HostRunDelegationService {
 
     pub(crate) fn with_scheduler(mut self, scheduler: Option<RunScheduler>) -> Self {
         self.scheduler = scheduler;
+        self
+    }
+
+    pub(crate) fn with_self_snapshot(mut self, snapshot: Option<ExecutableAgentSnapshot>) -> Self {
+        self.self_snapshot = snapshot;
         self
     }
 
@@ -132,11 +141,18 @@ impl HostRunDelegationService {
             .iter()
             .cloned()
             .collect();
+        let child_self_snapshot = snapshot
+            .resolved_spec
+            .plugin_config
+            .agent
+            .recursive_self
+            .then(|| snapshot.clone());
         let run_delegation = if allowed_targets.is_empty() {
             None
         } else {
             let mut child_service = self.clone();
             child_service.allowed_targets = allowed_targets;
+            child_service.self_snapshot = child_self_snapshot;
             Some(Arc::new(child_service) as Arc<dyn RunDelegationService>)
         };
         let boundary = crate::agent_runner::run_configured_agent_until_boundary(
@@ -189,6 +205,12 @@ impl RunDelegationService for HostRunDelegationService {
         false
     }
 
+    fn allows_recursive_target(&self, agent_id: &AgentId) -> bool {
+        self.self_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.root_agent_id == *agent_id)
+    }
+
     fn target_agent_id(&self, arguments: &Value) -> Result<AgentId, DelegationExecutionError> {
         Ok(DelegationToolInput::try_from(arguments)?.agent_id)
     }
@@ -211,7 +233,12 @@ impl RunDelegationService for HostRunDelegationService {
                 agent_id.0
             )));
         }
-        let snapshot = self.current_snapshot(&agent_id)?;
+        let snapshot = self
+            .self_snapshot
+            .as_ref()
+            .filter(|snapshot| snapshot.root_agent_id == agent_id)
+            .cloned()
+            .map_or_else(|| self.current_snapshot(&agent_id), Ok)?;
         if snapshot.root_agent_id != agent_id {
             return Err(DelegationExecutionError::new(
                 "published delegate snapshot identity does not match its target",

@@ -10,7 +10,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use awaken_agent_contract::AgentSkillBinding;
 use awaken_config_service::{ConfigPlane, RESERVED_ADMIN_SCOPE};
 use awaken_config_store::{
-    AgentConfig, AgentConfigRevision, AgentLifecycle, ConfigWrite, ModelSelection, MultiagentConfig,
+    AgentConfig, AgentConfigRevision, AgentLifecycle, ConfigWrite, ModelSelection,
+    MultiagentConfig, MultiagentTarget,
 };
 use awaken_protocol_managed::types::agent::{
     Agent, AgentCreateParams, AgentListParams, AgentSkill, AgentStatus, AgentTool,
@@ -127,6 +128,59 @@ impl ConfigPlaneManagedAgentRepository {
             Err(error) => Err(ManagedAgentError::Storage(error.to_string())),
         }
     }
+
+    async fn resolve_multiagent_references(
+        &self,
+        workspace_id: &str,
+        config: &mut AgentConfig,
+    ) -> Result<(), ManagedAgentError> {
+        let Some(multiagent) = config.multiagent.as_mut() else {
+            return Ok(());
+        };
+        multiagent
+            .validate(&config.id)
+            .map_err(ManagedAgentError::Invalid)?;
+        for target in &mut multiagent.agents {
+            let MultiagentTarget::Agent { id, version } = target else {
+                continue;
+            };
+            let current = self
+                .versioned_for_read(workspace_id, id)
+                .await?
+                .ok_or_else(|| {
+                    ManagedAgentError::Invalid(format!(
+                        "multiagent references unknown Agent `{id}`"
+                    ))
+                })?;
+            if current.config.lifecycle() != AgentLifecycle::Published {
+                return Err(ManagedAgentError::Invalid(format!(
+                    "multiagent Agent `{id}` is disabled or archived"
+                )));
+            }
+            let selected = match *version {
+                None => current,
+                Some(expected) => self
+                    .plane
+                    .list_revisions(&Self::scope(workspace_id), id)
+                    .await
+                    .map_err(ManagedAgentError::Storage)?
+                    .into_iter()
+                    .find(|revision| revision.revision == expected)
+                    .ok_or_else(|| {
+                        ManagedAgentError::Invalid(format!(
+                            "multiagent Agent `{id}` has no version {expected}"
+                        ))
+                    })?,
+            };
+            if selected.config.multiagent.is_some() {
+                return Err(ManagedAgentError::Invalid(format!(
+                    "multiagent Agent `{id}` is itself a coordinator; delegation depth is limited to one referenced level"
+                )));
+            }
+            *version = Some(selected.revision);
+        }
+        Ok(())
+    }
 }
 
 fn client_tools(tools: &[AgentTool]) -> Vec<ToolDescriptor> {
@@ -162,15 +216,18 @@ fn typed_skills(values: Vec<AgentSkill>) -> Vec<AgentSkillBinding> {
     values.into_iter().map(AgentSkill::into_binding).collect()
 }
 
-fn typed_multiagent(owner_id: &str, value: WireMultiagent) -> MultiagentConfig {
+fn typed_multiagent(value: WireMultiagent) -> MultiagentConfig {
     let WireMultiagent::Coordinator { agents } = value;
     MultiagentConfig {
-        agent_ids: agents
+        agents: agents
             .into_iter()
             .map(|entry| match entry {
-                MultiagentRosterEntry::Id(id) => id,
-                MultiagentRosterEntry::Reference(reference) => reference.id,
-                MultiagentRosterEntry::SelfReference(_) => owner_id.to_string(),
+                MultiagentRosterEntry::Id(id) => MultiagentTarget::Agent { id, version: None },
+                MultiagentRosterEntry::Reference(reference) => MultiagentTarget::Agent {
+                    id: reference.id,
+                    version: reference.version,
+                },
+                MultiagentRosterEntry::SelfReference(_) => MultiagentTarget::SelfReference,
             })
             .collect(),
     }
@@ -182,7 +239,7 @@ fn config_from_create(
 ) -> Result<AgentConfig, ManagedAgentError> {
     let model = params.model.into_config();
     let inference = inference_from_wire(model.speed, model.effort.map(|value| value.resolved()));
-    let multiagent = params.multiagent.map(|value| typed_multiagent(&id, value));
+    let multiagent = params.multiagent.map(typed_multiagent);
     let config = AgentConfig {
         id,
         instructions: params.system.unwrap_or_default(),
@@ -294,6 +351,11 @@ fn validate_managed_agent_config(config: &AgentConfig) -> Result<(), ManagedAgen
     }
     awaken_agent_contract::validate_agent_skills(&config.skills)
         .map_err(ManagedAgentError::Invalid)?;
+    if let Some(multiagent) = &config.multiagent {
+        multiagent
+            .validate(&config.id)
+            .map_err(ManagedAgentError::Invalid)?;
+    }
     let declared_count = config.client_tools.len()
         + config
             .toolsets
@@ -370,6 +432,7 @@ fn wire_tools(toolsets: &[ToolsetPolicy], client_tools: &[ToolDescriptor]) -> Ve
 }
 
 fn project(revision: AgentConfigRevision) -> Agent {
+    let revision_number = revision.revision;
     let config = revision.config;
     let id = config.id.clone();
     let model = config
@@ -391,7 +454,7 @@ fn project(revision: AgentConfigRevision) -> Agent {
         status,
         created_at: OBJECT_AT.to_string(),
         updated_at: OBJECT_AT.to_string(),
-        name: config.name.unwrap_or(id),
+        name: config.name.unwrap_or_else(|| id.clone()),
         description: config.description,
         model: model_config(model, config.inference),
         system: (!config.instructions.is_empty()).then_some(config.instructions),
@@ -413,9 +476,26 @@ fn project(revision: AgentConfigRevision) -> Agent {
         tools,
         multiagent: config.multiagent.map(|value| WireMultiagent::Coordinator {
             agents: value
-                .agent_ids
+                .agents
                 .into_iter()
-                .map(MultiagentRosterEntry::Id)
+                .map(|target| match target {
+                    MultiagentTarget::Agent { id, version } => {
+                        MultiagentRosterEntry::Reference(
+                            awaken_protocol_managed::types::agent::AgentRosterReference {
+                                id,
+                                kind: awaken_protocol_managed::types::agent::AgentRosterReferenceKind::Agent,
+                                version: Some(version.unwrap_or(1)),
+                            },
+                        )
+                    }
+                    MultiagentTarget::SelfReference => MultiagentRosterEntry::Reference(
+                        awaken_protocol_managed::types::agent::AgentRosterReference {
+                            id: id.clone(),
+                            kind: awaken_protocol_managed::types::agent::AgentRosterReferenceKind::Agent,
+                            version: Some(revision_number),
+                        },
+                    ),
+                })
                 .collect(),
         }),
         version: revision.revision,
@@ -436,7 +516,9 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         }
         let scope = Self::scope(workspace_id);
         let id = new_agent_id(workspace_id);
-        let config = config_from_create(id.clone(), params)?;
+        let mut config = config_from_create(id.clone(), params)?;
+        self.resolve_multiagent_references(workspace_id, &mut config)
+            .await?;
         match self
             .plane
             .put_if_revision(&scope, &config, 0)
@@ -607,9 +689,11 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             config.client_tools = client_tools(&tools);
         }
         if let Some(multiagent) = params.multiagent {
-            config.multiagent = multiagent.map(|multiagent| typed_multiagent(id, multiagent));
+            config.multiagent = multiagent.map(typed_multiagent);
         }
         validate_managed_agent_config(&config)?;
+        self.resolve_multiagent_references(workspace_id, &mut config)
+            .await?;
         if config == current.config {
             return Ok(project(current));
         }

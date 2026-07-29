@@ -76,6 +76,11 @@ pub struct AgentBindings {
     /// Published Agent ids this Agent may invoke through `agent_run`.
     #[serde(default)]
     pub delegate_ids: Vec<AgentId>,
+    /// Whether the owner's id came from the explicit recursive-self sentinel.
+    /// Frozen beside the roster so runtime admission can distinguish intentional
+    /// recursive copies from an accidental A→…→A topology.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub recursive_self: bool,
     /// Exact tool availability/confirmation policy compiled from authoring.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub toolsets: Vec<ToolsetPolicy>,

@@ -81,12 +81,14 @@ pub(super) fn stage_delegation_requests(
         let target_agent_id = executor
             .target_agent_id(&call.arguments)
             .map_err(|error| Error::Execution(error.to_string()))?;
+        let recursive_self = executor.allows_recursive_target(&target_agent_id);
         let child_run_id = origin.child_run_id();
         registry
             .request(RequestDelegation {
                 id: origin.delegation_id,
                 parent_call_id: call.call_id.clone(),
                 target_agent_id: target_agent_id.0,
+                recursive_self,
                 child_run_id,
             })
             .map_err(|error| Error::Execution(error.to_string()))?;

@@ -927,6 +927,7 @@ async fn durable_delegation_crash_recovery_reuses_the_child_relationship() {
             id: origin.delegation_id.clone(),
             parent_call_id: call.call_id.clone(),
             target_agent_id: "researcher".to_string(),
+            recursive_self: false,
             child_run_id: origin.child_run_id(),
         })
         .expect("seed durable delegation relationship");
@@ -1016,6 +1017,7 @@ async fn child_result_survives_crash_and_is_consumed_without_reinvocation() {
             id: origin.delegation_id.clone(),
             parent_call_id: call.call_id.clone(),
             target_agent_id: "researcher".to_string(),
+            recursive_self: false,
             child_run_id: origin.child_run_id(),
         })
         .expect("seed durable delegation relationship");

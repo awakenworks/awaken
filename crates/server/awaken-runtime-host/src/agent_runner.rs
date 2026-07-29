@@ -30,8 +30,9 @@ use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::delegation::RunDelegationService;
-use awaken_runtime_contract::execution::{AttemptExecutorRegistry, RunAttemptExecutor};
+use awaken_runtime_contract::execution::RunAttemptExecutor;
 use awaken_runtime_contract::llm::{LlmExecutor, ThreadUsage};
+use awaken_runtime_contract::resolved::Backend;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::tool::RawTool;
@@ -97,9 +98,16 @@ pub(crate) struct RunScheduler {
 /// second target directory or backend-selection rule.
 #[derive(Clone, Default)]
 pub(crate) struct ChildExecutionAdapters {
+    pub(crate) acp: Option<ChildAcpExecutorFactory>,
     pub(crate) remote: Option<Arc<dyn RunAttemptExecutor>>,
     pub(crate) remote_credentials: awaken_runtime_contract::CredentialRealizationCapabilities,
 }
+
+/// Materializes the already-selected ACP execution edge for a child snapshot.
+/// Selection stays in the immutable `backend_ref`; the factory only binds that
+/// exact backend to the Session-owned sandbox and permission context.
+pub(crate) type ChildAcpExecutorFactory =
+    Arc<dyn Fn(Backend) -> Result<Arc<dyn RunAttemptExecutor>, String> + Send + Sync>;
 
 struct ChildCredentialRecorder {
     ownership: Arc<dyn awaken_runtime_contract::AttemptOwnershipVerifier>,
@@ -127,28 +135,45 @@ fn child_attempt_executor(
     snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
     adapters: &ChildExecutionAdapters,
 ) -> Result<Arc<dyn RunAttemptExecutor>, AgentRunError> {
-    let mut registry = AttemptExecutorRegistry::new();
-    registry
-        .register_native(runtime)
-        .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
-    for candidate in snapshot.resolved_spec.candidate_bindings() {
-        if matches!(
-            awaken_runtime_contract::resolved::Backend::from_ref(&candidate.backend_ref),
-            awaken_runtime_contract::resolved::Backend::Remote { .. }
-        ) && !registry.supports(&candidate.backend_ref)
-        {
-            let remote = adapters.remote.clone().ok_or_else(|| {
+    let backends = snapshot
+        .resolved_spec
+        .candidate_bindings()
+        .into_iter()
+        .map(|candidate| Backend::from_ref(&candidate.backend_ref))
+        .collect::<Vec<_>>();
+    let acp = backends
+        .iter()
+        .find(|backend| matches!(backend, Backend::Acp { .. }))
+        .cloned()
+        .map(|backend| {
+            adapters.acp.as_ref().ok_or_else(|| {
                 AgentRunError::Configuration(format!(
-                    "delegate publication requires unavailable remote backend {:?}",
-                    candidate.backend_ref
+                    "delegate publication requires unavailable ACP backend {backend:?}"
                 ))
-            })?;
-            registry
-                .register(candidate.backend_ref.clone(), remote)
-                .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
-        }
-    }
-    Ok(Arc::new(registry))
+            })?(backend)
+            .map_err(AgentRunError::Configuration)
+        })
+        .transpose()?;
+    let remote = if backends
+        .iter()
+        .any(|backend| matches!(backend, Backend::Remote { .. }))
+    {
+        Some(adapters.remote.clone().ok_or_else(|| {
+            AgentRunError::Configuration(
+                "delegate publication requires an unavailable remote backend".to_string(),
+            )
+        })?)
+    } else {
+        None
+    };
+    Ok(Arc::new(
+        crate::run_exec::SessionAttemptExecutor::from_executors(
+            runtime,
+            acp,
+            remote,
+            &[&snapshot.resolved_spec],
+        ),
+    ))
 }
 
 fn bind_direct_child_credentials(
@@ -833,6 +858,7 @@ mod tests {
     use awaken_agent_contract::agent::awaiting::ResumeTicket;
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+    use awaken_agent_contract::agent::run::EndCause;
     use awaken_runtime_contract::llm::{
         AssistantOutput, ChatRequest, ChatResponse, Result as LlmResult,
     };
@@ -977,6 +1003,110 @@ mod tests {
             role: Role::User,
             content: vec![ContentBlock::text(text)],
         }
+    }
+
+    struct AcpChildRecorder {
+        executions: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_runtime_contract::execution::RunExecutor for AcpChildRecorder {
+        async fn execute(
+            &self,
+            _activation: RunActivation,
+            _context: RuntimeRunContext,
+        ) -> awaken_runtime_contract::execution::Result<RunState> {
+            self.executions.fetch_add(1, Ordering::SeqCst);
+            Ok(RunState::Ended(EndCause::Stopped("acp-child".into())))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RunAttemptExecutor for AcpChildRecorder {
+        async fn resume(
+            &self,
+            _activation: RunActivation,
+            _command: ResumeCommand,
+            _context: RuntimeRunContext,
+        ) -> awaken_runtime_contract::execution::Result<RunState> {
+            unreachable!("this test exercises a fresh delegated attempt")
+        }
+
+        async fn cancel(
+            &self,
+            _activation: RunActivation,
+            _context: RuntimeRunContext,
+        ) -> awaken_runtime_contract::execution::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn delegated_attempt_uses_the_canonical_backend_router_for_acp() {
+        // Cause graph: C1=the frozen child publication names ACP; C2=the Host
+        // installed an ACP materializer. C1+C2 causes E1=materialize the exact
+        // selected backend and E2=route the child attempt to ACP. C1+!C2 causes
+        // E3=fail closed before execution. !C1 causes E4=do not consult ACP.
+        //
+        // | Rule | C1 ACP | C2 adapter | Effect |
+        // | A1 | yes | yes | E1 + E2 |
+        // | A2 | yes | no | E3 |
+        // | A3 | no | either | E4 |
+        let mut acp_snapshot = agent("acp-child", "child");
+        acp_snapshot.resolved_spec.model_binding.binding.backend_ref = "acp:claude".to_string();
+        let materializations = Arc::new(AtomicUsize::new(0));
+        let executions = Arc::new(AtomicUsize::new(0));
+        let adapters = ChildExecutionAdapters {
+            acp: Some({
+                let materializations = materializations.clone();
+                let executions = executions.clone();
+                Arc::new(move |backend| {
+                    assert_eq!(
+                        backend,
+                        Backend::Acp {
+                            cli: "claude".into()
+                        }
+                    );
+                    materializations.fetch_add(1, Ordering::SeqCst);
+                    Ok(Arc::new(AcpChildRecorder {
+                        executions: executions.clone(),
+                    }) as Arc<dyn RunAttemptExecutor>)
+                })
+            }),
+            ..Default::default()
+        };
+        let runtime = Arc::new(awaken_runtime::Runtime::new());
+        let router = child_attempt_executor(runtime.clone(), &acp_snapshot, &adapters)
+            .expect("A1 installs the selected ACP adapter");
+        let (_, activation) = runtime.prepare(
+            &acp_snapshot,
+            "acp-child-thread".to_string(),
+            RunInput::from(vec![user("go")]),
+        );
+        assert_eq!(
+            router
+                .execute(activation, RuntimeRunContext::new())
+                .await
+                .unwrap(),
+            RunState::Ended(EndCause::Stopped("acp-child".into()))
+        );
+        assert_eq!(materializations.load(Ordering::SeqCst), 1, "A1/E1");
+        assert_eq!(executions.load(Ordering::SeqCst), 1, "A1/E2");
+
+        let error = match child_attempt_executor(
+            Arc::new(awaken_runtime::Runtime::new()),
+            &acp_snapshot,
+            &ChildExecutionAdapters::default(),
+        ) {
+            Ok(_) => panic!("A2 missing ACP adapter must fail closed"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("ACP backend"), "A2/E3");
+
+        let native_snapshot = agent("native-child", "child");
+        child_attempt_executor(runtime, &native_snapshot, &adapters)
+            .expect("A3 native remains available");
+        assert_eq!(materializations.load(Ordering::SeqCst), 1, "A3/E4");
     }
 
     #[test]

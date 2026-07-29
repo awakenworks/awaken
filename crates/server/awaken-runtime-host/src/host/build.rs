@@ -914,8 +914,10 @@ impl SharedHost {
         &self,
         thread: &str,
         sandbox: Arc<crate::session_environment::SessionEnvironment>,
+        permission: Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>,
         commit: Arc<crate::store::HostCommit>,
         allowed_targets: HashSet<awaken_runtime_contract::snapshot::AgentId>,
+        self_snapshot: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
     ) -> Result<Option<Arc<dyn RunDelegationService>>, HostError> {
         if allowed_targets.is_empty() {
             return Ok(None);
@@ -939,15 +941,27 @@ impl SharedHost {
         } else {
             None
         };
+        let acp = self.acp.clone().map(|acp| {
+            let sandbox = sandbox.clone();
+            let permission = permission.clone();
+            Arc::new(move |backend| {
+                Ok(
+                    acp.executor_for(sandbox.clone(), permission.clone(), backend, Vec::new())
+                        as Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
+                )
+            }) as crate::agent_runner::ChildAcpExecutorFactory
+        });
         let service = HostRunDelegationService::new(
             self.llm.clone(),
             sandbox,
             allowed_targets,
             crate::agent_runner::ChildExecutionAdapters {
+                acp,
                 remote: self.remote_attempt_executor.clone(),
                 remote_credentials: self.remote_credential_realization.clone(),
             },
         )
+        .with_self_snapshot(self_snapshot)
         .with_publications(
             self.agent_publications.clone(),
             self.thread_workspace(thread),

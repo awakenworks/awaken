@@ -376,16 +376,27 @@ export const BEHAVIORS = {
   adminTypedEdges(parsed) {
     return adminTypedEdgesReply(parsed);
   },
-  // DelegatingModel: with `agent_run` it delegates (to `researcher`, or `ghost` if
-  // asked) and reports the delegate's result; without it, it answers plainly (so the
-  // same behavior serves as the delegate sub-agent).
+  // DelegatingModel: with `agent_run` it delegates to Native `researcher`, ACP
+  // `acp-worker`, its explicit self copy, or `ghost`, then reports the result. The self-copy task answers
+  // directly so this fixture exercises one recursive edge deterministically.
   delegating(parsed) {
     if (!hasTool(parsed, 'agent_run')) return text('researched: 42');
     const results = toolResults(parsed);
     if (results.length === 0) {
       const requested = firstUserText(parsed);
-      const agentId = requested.includes('ghost') ? 'ghost' : 'researcher';
-      const input = requested.includes('delegate lifecycle:') ? requested : 'do the research';
+      if (requested.includes('self-copy task')) return text('self copy: 42');
+      const agentId = requested.includes('ghost')
+        ? 'ghost'
+        : requested.includes('acp agent')
+          ? 'acp-worker'
+        : requested.includes('self agent')
+          ? 'assistant'
+          : 'researcher';
+      const input = agentId === 'assistant'
+        ? 'self-copy task'
+        : requested.includes('delegate lifecycle:')
+          ? requested
+          : 'do the research';
       return tool('d1', 'agent_run', { agent_id: agentId, input });
     }
     return text(`delegate said: ${toolResultText(results[results.length - 1])}`);

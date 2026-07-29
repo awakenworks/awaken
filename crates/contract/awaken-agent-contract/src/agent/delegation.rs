@@ -246,6 +246,10 @@ pub struct Delegation {
     pub parent_run_id: RunId,
     pub parent_call_id: String,
     pub target_agent_id: String,
+    /// This immediate same-Agent edge was admitted by an explicit `self`
+    /// sentinel. Legacy relationships and ordinary Agent references are false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub recursive_self: bool,
     pub child_run_id: RunId,
     pub depth: u16,
     pub status: DelegationStatus,
@@ -274,6 +278,7 @@ pub struct RequestDelegation {
     pub id: DelegationId,
     pub parent_call_id: String,
     pub target_agent_id: String,
+    pub recursive_self: bool,
     pub child_run_id: RunId,
 }
 
@@ -420,6 +425,7 @@ impl DelegationRegistry {
             })?;
             return if existing.id == request.id
                 && existing.target_agent_id == request.target_agent_id
+                && existing.recursive_self == request.recursive_self
                 && existing.child_run_id == request.child_run_id
             {
                 Ok(TransitionResult::Duplicate)
@@ -437,7 +443,8 @@ impl DelegationRegistry {
         {
             return Err(DelegationError::ChildRunConflict);
         }
-        let creates_cycle = self.lineage.contains(&request.target_agent_id);
+        let creates_cycle = self.lineage.contains(&request.target_agent_id)
+            && !(request.recursive_self && self.parent_agent_id == request.target_agent_id);
         let depth = admit_new_delegation(
             self.parent_ended,
             self.parent_depth,
@@ -468,6 +475,7 @@ impl DelegationRegistry {
                 parent_run_id: self.parent_run_id.clone(),
                 parent_call_id: request.parent_call_id,
                 target_agent_id: request.target_agent_id,
+                recursive_self: request.recursive_self,
                 child_run_id: request.child_run_id,
                 depth,
                 status: DelegationStatus::Open,
@@ -613,7 +621,10 @@ impl DelegationRegistry {
                     "relationship identity or call index mismatch".into(),
                 ));
             }
-            if self.lineage.contains(&delegation.target_agent_id) {
+            if self.lineage.contains(&delegation.target_agent_id)
+                && !(delegation.recursive_self
+                    && self.parent_agent_id == delegation.target_agent_id)
+            {
                 return Err(DelegationError::InvalidPersistedState(
                     "persisted relationship creates an Agent cycle".into(),
                 ));
@@ -654,6 +665,7 @@ mod tests {
             id: DelegationId(format!("d{n}")),
             parent_call_id: format!("c{n}"),
             target_agent_id: target.into(),
+            recursive_self: false,
             child_run_id: RunId(format!("r{n}")),
         }
     }
@@ -691,6 +703,45 @@ mod tests {
             Err(DelegationError::Cycle {
                 agent_id: "root".into()
             })
+        );
+    }
+
+    /// Cause/effect graph: target is already in lineage -> ordinary edge is a
+    /// cycle; the exact immediate parent plus an explicit published `self` bit is
+    /// a recursive copy. The exemption must not legalize an ancestor cycle.
+    ///
+    /// | rule | target | recursive_self | relation to parent | result |
+    /// |---|---|---|---|---|
+    /// | S1 | lineage member | false | any | Cycle |
+    /// | S2 | coordinator | true | immediate parent | admitted + validates |
+    /// | S3 | root | true | ancestor, not parent | Cycle |
+    #[test]
+    fn explicit_self_exempts_only_the_immediate_same_agent_edge() {
+        let mut direct = registry(2, 2);
+        let mut self_request = request(1, "coordinator");
+        self_request.recursive_self = true;
+        assert_eq!(
+            direct.request(self_request),
+            Ok(TransitionResult::Applied),
+            "S2"
+        );
+        direct.validate().expect("S2 persists as a valid relation");
+
+        let mut ancestor = DelegationRegistry::new(
+            RunId("parent".into()),
+            "researcher",
+            vec!["root".into()],
+            1,
+            DelegationLimits::new(3, 2, 2),
+        );
+        let mut ancestor_request = request(1, "root");
+        ancestor_request.recursive_self = true;
+        assert_eq!(
+            ancestor.request(ancestor_request),
+            Err(DelegationError::Cycle {
+                agent_id: "root".into()
+            }),
+            "S3"
         );
     }
 

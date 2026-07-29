@@ -198,7 +198,7 @@ fn compile_with_models(
     let has_delegation_targets = config
         .multiagent
         .as_ref()
-        .is_some_and(|multiagent| !multiagent.agent_ids.is_empty());
+        .is_some_and(|multiagent| !multiagent.agents.is_empty());
     if has_delegation_targets {
         let mut delegation = tools
             .iter()
@@ -435,29 +435,10 @@ fn normalize_agent_bindings(
 
     awaken_agent_contract::validate_agent_skills(&config.skills)
         .map_err(|reason| invalid("skills", reason))?;
-    let mut seen_delegates = std::collections::BTreeSet::new();
     if let Some(multiagent) = &config.multiagent {
-        for (index, id) in multiagent.agent_ids.iter().enumerate() {
-            let id = id.trim();
-            if id.is_empty() {
-                return Err(invalid(
-                    "multiagent",
-                    format!("entry {index} must be a non-empty Agent id"),
-                ));
-            }
-            if id == config.id {
-                return Err(invalid(
-                    "multiagent",
-                    "an Agent cannot delegate to itself".to_string(),
-                ));
-            }
-            if !seen_delegates.insert(id.to_string()) {
-                return Err(invalid(
-                    "multiagent",
-                    format!("Agent id {id:?} is duplicated"),
-                ));
-            }
-        }
+        multiagent
+            .validate(&config.id)
+            .map_err(|reason| invalid("multiagent", reason))?;
     }
     Ok(AgentBindings {
         mcp_servers: config.mcp_servers.clone(),
@@ -467,13 +448,19 @@ fn normalize_agent_bindings(
             .as_ref()
             .map(|multiagent| {
                 multiagent
-                    .agent_ids
+                    .agents
                     .iter()
-                    .cloned()
+                    .map(|target| target.resolved_id(&config.id).to_string())
                     .map(awaken_runtime_contract::snapshot::AgentId)
                     .collect()
             })
             .unwrap_or_default(),
+        recursive_self: config.multiagent.as_ref().is_some_and(|multiagent| {
+            multiagent
+                .agents
+                .iter()
+                .any(crate::config::MultiagentTarget::is_self_reference)
+        }),
         toolsets,
     })
 }
@@ -1408,7 +1395,16 @@ mod tests {
             awaken_agent_contract::AgentSkillBinding::custom("skill_release"),
         ];
         cfg.multiagent = Some(crate::config::MultiagentConfig {
-            agent_ids: vec!["researcher".into(), "reviewer".into()],
+            agents: vec![
+                crate::config::MultiagentTarget::Agent {
+                    id: "researcher".into(),
+                    version: None,
+                },
+                crate::config::MultiagentTarget::Agent {
+                    id: "reviewer".into(),
+                    version: None,
+                },
+            ],
         });
         let delegation = tool("agent_run")
             .with_kind(awaken_runtime_contract::resolved::ToolKind::AgentDelegation);
@@ -1457,7 +1453,10 @@ mod tests {
 
         cfg.skills.clear();
         cfg.multiagent = Some(crate::config::MultiagentConfig {
-            agent_ids: vec!["agent-1".into()],
+            agents: vec![crate::config::MultiagentTarget::Agent {
+                id: "agent-1".into(),
+                version: None,
+            }],
         });
         let error = compile(&cfg, &[]).unwrap_err();
         assert!(matches!(
@@ -1467,6 +1466,82 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// Cause/effect graph: public roster target form -> canonical config target
+    /// -> compiled delegate id and recursive-self admission bit. Only the sentinel
+    /// may resolve to the owner; empty/duplicate/out-of-range rosters fail before
+    /// an executable snapshot exists.
+    ///
+    /// | rule | roster | compile effect |
+    /// |---|---|---|
+    /// | M1 | one `self` | owner id + recursive_self=true |
+    /// | M2 | ordinary target | target id + recursive_self=false |
+    /// | M3 | explicit owner id | reject |
+    /// | M4 | empty / 21 / duplicate-resolved | reject |
+    #[test]
+    fn multiagent_self_and_cardinality_use_one_canonical_validation_table() {
+        use crate::config::{MultiagentConfig, MultiagentTarget};
+
+        let delegation = tool("agent_run")
+            .with_kind(awaken_runtime_contract::resolved::ToolKind::AgentDelegation);
+        let mut cfg = config(&[]);
+        cfg.multiagent = Some(MultiagentConfig {
+            agents: vec![MultiagentTarget::SelfReference],
+        });
+        let snapshot = compile(&cfg, std::slice::from_ref(&delegation)).expect("M1");
+        assert_eq!(
+            snapshot.resolved_spec.plugin_config.agent.delegate_ids,
+            vec![awaken_runtime_contract::snapshot::AgentId(cfg.id.clone())],
+            "M1"
+        );
+        assert!(
+            snapshot.resolved_spec.plugin_config.agent.recursive_self,
+            "M1"
+        );
+
+        cfg.multiagent = Some(MultiagentConfig {
+            agents: vec![MultiagentTarget::Agent {
+                id: "worker".into(),
+                version: Some(2),
+            }],
+        });
+        let ordinary = compile(&cfg, std::slice::from_ref(&delegation)).expect("M2");
+        assert!(
+            !ordinary.resolved_spec.plugin_config.agent.recursive_self,
+            "M2"
+        );
+
+        let invalid_rosters = [
+            Vec::new(),
+            vec![MultiagentTarget::Agent {
+                id: cfg.id.clone(),
+                version: Some(1),
+            }],
+            vec![
+                MultiagentTarget::SelfReference,
+                MultiagentTarget::SelfReference,
+            ],
+            (0..21)
+                .map(|index| MultiagentTarget::Agent {
+                    id: format!("worker-{index}"),
+                    version: Some(1),
+                })
+                .collect(),
+        ];
+        for agents in invalid_rosters {
+            cfg.multiagent = Some(MultiagentConfig { agents });
+            assert!(
+                matches!(
+                    compile(&cfg, std::slice::from_ref(&delegation)),
+                    Err(CompileError::InvalidBinding {
+                        axis: "multiagent",
+                        ..
+                    })
+                ),
+                "M3/M4"
+            );
+        }
     }
 
     // --- CEG 03 / B2 (glob_match) --------------------------------------------

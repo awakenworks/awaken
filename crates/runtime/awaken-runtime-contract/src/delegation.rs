@@ -273,6 +273,13 @@ pub trait RunDelegationService: Send + Sync {
         Ok(DelegationToolInput::try_from(arguments)?.agent_id)
     }
 
+    /// True only when this exact published roster admitted its owner through the
+    /// explicit recursive-self sentinel. Other repeated ids keep the fail-closed
+    /// cycle behavior.
+    fn allows_recursive_target(&self, _agent_id: &AgentId) -> bool {
+        false
+    }
+
     /// Whether this request is guaranteed to run to a terminal child boundary
     /// without asking the parent for input. Such calls from one model batch may
     /// execute concurrently while retaining an ordered publication barrier.

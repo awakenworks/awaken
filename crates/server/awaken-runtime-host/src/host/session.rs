@@ -482,11 +482,21 @@ impl SharedHost {
                     .collect()
             })
             .unwrap_or_default();
+        let self_snapshot = installed.as_ref().and_then(|snapshot| {
+            snapshot
+                .resolved_spec
+                .plugin_config
+                .agent
+                .recursive_self
+                .then(|| snapshot.clone())
+        });
         if let Some(service) = self.run_delegation(
             thread,
             env.clone(),
+            permission.clone(),
             commit.clone(),
             published_delegate_targets,
+            self_snapshot,
         )? {
             runtime = runtime.with_run_delegation(service);
         }

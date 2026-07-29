@@ -663,6 +663,7 @@ pub async fn delegation_and_tool_state_commit_atomically<S: Coordinator + Checkp
             id: delegation_id.clone(),
             parent_call_id: "agent-call".to_string(),
             target_agent_id: "researcher".to_string(),
+            recursive_self: false,
             child_run_id: child,
         })
         .expect("register child");

@@ -596,9 +596,11 @@ impl LlmExecutor for McpToolModel {
 }
 
 /// A deterministic model for the delegation e2e. When it holds `agent_run` it
-/// delegates (to `researcher`, or to `ghost` if the user asks for it) and then
-/// reports the delegate's result; without `agent_run` it answers plainly, so the
-/// same model serves as the delegate sub-agent.
+/// delegates (to Native `researcher`, ACP `acp-worker`, its explicit `self`
+/// copy, or `ghost`) and then
+/// reports the delegate's result. The self-copy task answers directly so the
+/// deterministic fixture proves one recursive edge without manufacturing an
+/// unrelated deeper orchestration tree.
 pub struct DelegatingModel;
 
 #[async_trait::async_trait]
@@ -627,15 +629,31 @@ impl LlmExecutor for DelegatingModel {
                 .find(|m| m.role == Role::User)
                 .map(|m| block_text(&m.content))
                 .unwrap_or_default();
+            if user.contains("self-copy task") {
+                return Ok(ChatResponse {
+                    output: AssistantOutput::text("self copy: 42"),
+                    usage: None,
+                    stop_reason: None,
+                });
+            }
             let agent_id = if user.contains("ghost") {
                 "ghost"
+            } else if user.contains("acp agent") {
+                "acp-worker"
+            } else if user.contains("self agent") {
+                "assistant"
             } else {
                 "researcher"
+            };
+            let input = if agent_id == "assistant" {
+                "self-copy task"
+            } else {
+                "do the research"
             };
             AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "d1".into(),
                 tool_id: "agent_run".into(),
-                arguments: serde_json::json!({ "agent_id": agent_id, "input": "do the research" }),
+                arguments: serde_json::json!({ "agent_id": agent_id, "input": input }),
             }])
         } else {
             let result = request

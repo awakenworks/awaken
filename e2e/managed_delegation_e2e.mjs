@@ -1,6 +1,6 @@
 // Multi-agent delegation end-to-end with the official Anthropic TS SDK: the main
 // agent calls the built-in `agent_run` tool, which the server backs with an
-// in-process sub-run (a `researcher` delegate). The delegate's result flows back
+// child Run (a Native `researcher` or ACP `acp-worker`). The delegate's result flows back
 // and the main agent reports it — all within one turn (agent_run runs inline).
 //
 // Uses the delegation server (AWAKEN_MODEL_MODE=delegate): roster = {researcher};
@@ -19,6 +19,8 @@
 // |---|---|---|---|---|
 // | roster member | new exact Run | complete | no | one idle child + two directional messages |
 // | live child | exact thread selector | idle | no | interrupt only that child + child-stream receipt |
+// | explicit self | exact owner Native snapshot | complete | no | isolated child runs the frozen coordinator copy |
+// | ACP roster member | exact ACP snapshot | complete | no | child uses the external ACP executor, not Native inference |
 // | roster member | existing exact Run | complete | yes | same child terminated + terminal event |
 // | absent member | none | none | n/a | no child and no delegate inference usage |
 
@@ -208,6 +210,54 @@ async function main() {
     assert.ok(streamedChildTypes.includes('session.thread_status_terminated'));
     assert.ok(!streamedChildTypes.some((type) => type.startsWith('session.status_')));
     assert.ok(!streamedChildTypes.includes('agent.message'));
+
+    // `{type:"self"}` is compiled as an explicit recursive edge, not an ordinary
+    // owner-id cycle. The child executes the same frozen Native Agent snapshot and
+    // remains context-isolated in its own Thread.
+    const selfSession = await client.beta.sessions.create({
+      agent: 'assistant',
+      environment_id: 'env_local',
+      betas: BETAS,
+    });
+    const selfEvents = await turn(client, selfSession.id, 'use the self agent');
+    assert.ok(
+      messages(selfEvents).some((message) => message.includes('delegate said: self copy: 42')),
+      `self copy result reached the coordinator: ${messages(selfEvents)}`,
+    );
+    const selfCreated = selfEvents.find(
+      (event) => event.type === 'session.thread_created' && event.agent_name === 'assistant',
+    );
+    assert.ok(selfCreated, 'the self copy owns an isolated child Thread');
+    const selfChild = await client.beta.sessions.threads.retrieve(selfCreated.session_thread_id, {
+      session_id: selfSession.id,
+      betas: BETAS,
+    });
+    assert.equal(selfChild.agent.id, 'assistant');
+    assert.equal(selfChild.parent_thread_id, `${selfSession.id}:primary`);
+
+    // The same parent-mediated child lifecycle routes an ACP roster member by
+    // its frozen backend_ref. The Native coordinator still owns agent_run and
+    // receives the external ACP process's committed result.
+    const acpSession = await client.beta.sessions.create({
+      agent: 'assistant',
+      environment_id: 'env_local',
+      betas: BETAS,
+    });
+    const acpEvents = await turn(client, acpSession.id, 'use the acp agent');
+    assert.ok(
+      messages(acpEvents).some((message) => message.includes('delegate said: acp-runtime reply')),
+      `ACP child result reached the Native coordinator: ${messages(acpEvents)}`,
+    );
+    const acpCreated = acpEvents.find(
+      (event) => event.type === 'session.thread_created' && event.agent_name === 'acp-worker',
+    );
+    assert.ok(acpCreated, 'the ACP Agent owns an ordinary child Thread');
+    const acpChild = await client.beta.sessions.threads.retrieve(acpCreated.session_thread_id, {
+      session_id: acpSession.id,
+      betas: BETAS,
+    });
+    assert.equal(acpChild.agent.id, 'acp-worker');
+    assert.equal(acpChild.parent_thread_id, `${acpSession.id}:primary`);
 
     // Fail closed: `ghost` is not in the roster; no sub-run runs.
     const bad = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });

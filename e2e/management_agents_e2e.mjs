@@ -170,6 +170,11 @@ async function main() {
       // | changed model + effort omitted          | reset model default     |
       // | MCP/Skill at/over documented boundary   | accept / reject atomic  |
       // | list archived/time partition            | filter before paging   |
+      const rosterWorker = await client.beta.agents.create({
+        name: 'roster-worker',
+        model: 'claude-sonnet-5',
+        betas: BETAS,
+      });
       const rich = await json(baseUrl, 'POST', '/v1/agents', {
         name: 'rich-agent',
         model: { id: 'claude-sonnet-5', speed: 'fast', effort: 'xhigh' },
@@ -203,7 +208,7 @@ async function main() {
             input_schema: { type: 'object', properties: {} },
           })),
         ],
-        multiagent: { type: 'coordinator', agents: ['researcher'] },
+        multiagent: { type: 'coordinator', agents: [rosterWorker.id] },
       });
       assert.equal(rich.status, 200, JSON.stringify(rich.body));
       assert.deepEqual(rich.body.model, {
@@ -238,11 +243,107 @@ async function main() {
         ],
         'create preserves the complete client-tool behavior contract',
       );
-      assert.deepEqual(rich.body.multiagent, { type: 'coordinator', agents: ['researcher'] });
+      assert.deepEqual(rich.body.multiagent, {
+        type: 'coordinator',
+        agents: [{ type: 'agent', id: rosterWorker.id, version: 1 }],
+      });
       assert.deepEqual(rich.body.skills, [
         { type: 'anthropic', skill_id: 'xlsx', version: '1' },
         { type: 'custom', skill_id: 'skill-a', version: '2' },
       ], 'prebuilt source and exact custom selector survive the Agent projection');
+
+      // Multiagent cause/effect graph:
+      // roster union + current Agent lifecycle/version -> one resolved immutable
+      // roster snapshot. `self` resolves to the owner revision; short-form Agent
+      // ids resolve once to current; malformed, duplicate, missing, archived, or
+      // nested-coordinator targets fail before an Agent is persisted.
+      //
+      // | rule | roster cause | effect |
+      // | R1 | one self | owner reference pinned to each owner revision |
+      // | R2 | short id / exact old version | current pinned / exact preserved |
+      // | R3 | empty / 21 / duplicate / version 0 | 400, no Agent |
+      // | R4 | missing version/id or archived target | 400, no Agent |
+      // | R5 | referenced coordinator | 400 depth-limit violation |
+      const selfCoordinator = await client.beta.agents.create({
+        name: 'self-coordinator',
+        model: 'claude-sonnet-5',
+        multiagent: { type: 'coordinator', agents: [{ type: 'self' }] },
+        betas: BETAS,
+      });
+      assert.deepEqual(selfCoordinator.multiagent, {
+        type: 'coordinator',
+        agents: [{ type: 'agent', id: selfCoordinator.id, version: 1 }],
+      }, 'R1 create resolves self to owner revision 1');
+      const selfV2 = await client.beta.agents.update(selfCoordinator.id, {
+        version: 1,
+        name: 'self-coordinator-v2',
+        betas: BETAS,
+      });
+      assert.deepEqual(selfV2.multiagent.agents, [
+        { type: 'agent', id: selfCoordinator.id, version: 2 },
+      ], 'R1 update snapshots the self copy at owner revision 2');
+      assert.deepEqual((await client.beta.agents.retrieve(selfCoordinator.id, {
+        version: 1,
+        betas: BETAS,
+      })).multiagent.agents, [
+        { type: 'agent', id: selfCoordinator.id, version: 1 },
+      ], 'R1 immutable history retains the former self snapshot');
+      const explicitOwner = await json(baseUrl, 'POST', `/v1/agents/${selfCoordinator.id}`, {
+        version: 2,
+        multiagent: {
+          type: 'coordinator',
+          agents: [{ type: 'agent', id: selfCoordinator.id, version: 2 }],
+        },
+      });
+      assert.equal(explicitOwner.status, 400, 'R3 an owner cycle must use the explicit self variant');
+
+      const workerV2 = await client.beta.agents.update(rosterWorker.id, {
+        version: 1,
+        name: 'roster-worker-v2',
+        betas: BETAS,
+      });
+      assert.equal(workerV2.version, 2);
+      assert.deepEqual((await client.beta.agents.retrieve(rich.body.id, {
+        betas: BETAS,
+      })).multiagent.agents, [
+        { type: 'agent', id: rosterWorker.id, version: 1 },
+      ], 'R2 short-form target stays pinned after the target updates');
+      const exactOld = await client.beta.agents.create({
+        name: 'exact-old-coordinator',
+        model: 'claude-sonnet-5',
+        multiagent: {
+          type: 'coordinator',
+          agents: [{ type: 'agent', id: rosterWorker.id, version: 1 }],
+        },
+        betas: BETAS,
+      });
+      assert.deepEqual(exactOld.multiagent.agents, [
+        { type: 'agent', id: rosterWorker.id, version: 1 },
+      ], 'R2 exact historical target is preserved');
+
+      const archivedTarget = await client.beta.agents.create({
+        name: 'archived-roster-target', model: 'claude-sonnet-5', betas: BETAS,
+      });
+      await client.beta.agents.archive(archivedTarget.id, { betas: BETAS });
+      const invalidRosters = [
+        [],
+        Array.from({ length: 21 }, (_, index) => `missing-${index}`),
+        [rosterWorker.id, rosterWorker.id],
+        [{ type: 'self' }, { type: 'self' }],
+        [{ type: 'agent', id: rosterWorker.id, version: 0 }],
+        [{ type: 'agent', id: rosterWorker.id, version: 999 }],
+        ['agent_missing'],
+        [archivedTarget.id],
+        [selfCoordinator.id],
+      ];
+      for (const agents of invalidRosters) {
+        const rejected = await json(baseUrl, 'POST', '/v1/agents', {
+          name: 'invalid-roster',
+          model: 'claude-sonnet-5',
+          multiagent: { type: 'coordinator', agents },
+        });
+        assert.equal(rejected.status, 400, `R3/R4/R5: ${JSON.stringify(agents)} -> ${JSON.stringify(rejected.body)}`);
+      }
 
       // Causes: matching or stale CAS revision, same/different model id, and
       // omitted effort. Constraints: stale rejection precedes no-op detection;

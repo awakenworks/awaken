@@ -328,13 +328,128 @@ impl schemars::JsonSchema for ModelSelection {
     }
 }
 
+/// One authored coordinator-roster target. This is the config domain's one
+/// canonical representation of the public string / versioned-agent / `self`
+/// union; execution resolves it to Agent ids during compilation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MultiagentTarget {
+    Agent { id: String, version: Option<u64> },
+    SelfReference,
+}
+
+impl MultiagentTarget {
+    #[must_use]
+    pub fn resolved_id<'a>(&'a self, owner_id: &'a str) -> &'a str {
+        match self {
+            Self::Agent { id, .. } => id,
+            Self::SelfReference => owner_id,
+        }
+    }
+
+    #[must_use]
+    pub fn version(&self) -> Option<u64> {
+        match self {
+            Self::Agent { version, .. } => *version,
+            Self::SelfReference => None,
+        }
+    }
+
+    #[must_use]
+    pub fn is_self_reference(&self) -> bool {
+        matches!(self, Self::SelfReference)
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum MultiagentTargetWire {
+    Id(String),
+    Tagged(MultiagentTaggedTarget),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum MultiagentTaggedTarget {
+    Agent {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<u64>,
+    },
+    #[serde(rename = "self")]
+    SelfReference,
+}
+
+impl Serialize for MultiagentTarget {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let wire = match self {
+            Self::Agent { id, version: None } => MultiagentTargetWire::Id(id.clone()),
+            Self::Agent { id, version } => {
+                MultiagentTargetWire::Tagged(MultiagentTaggedTarget::Agent {
+                    id: id.clone(),
+                    version: *version,
+                })
+            }
+            Self::SelfReference => {
+                MultiagentTargetWire::Tagged(MultiagentTaggedTarget::SelfReference)
+            }
+        };
+        wire.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for MultiagentTarget {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(match MultiagentTargetWire::deserialize(deserializer)? {
+            MultiagentTargetWire::Id(id) => Self::Agent { id, version: None },
+            MultiagentTargetWire::Tagged(MultiagentTaggedTarget::Agent { id, version }) => {
+                Self::Agent { id, version }
+            }
+            MultiagentTargetWire::Tagged(MultiagentTaggedTarget::SelfReference) => {
+                Self::SelfReference
+            }
+        })
+    }
+}
+
 /// The delegation roster authored for one Agent.
-///
-/// Managed Agents keeps the public union as JSON, but the authoring aggregate
-/// stores only the executable coordinator form.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MultiagentConfig {
-    pub agent_ids: Vec<String>,
+    pub agents: Vec<MultiagentTarget>,
+}
+
+impl MultiagentConfig {
+    /// Validate the roster's representation-independent invariants once. Managed
+    /// admission and publication compilation both call this owner so malformed
+    /// generic-config writes cannot bypass the HTTP edge without duplicating the
+    /// rules in two bounded contexts.
+    pub fn validate(&self, owner_id: &str) -> Result<(), String> {
+        if !(1..=20).contains(&self.agents.len()) {
+            return Err("agents must contain between 1 and 20 entries".into());
+        }
+        let mut saw_self = false;
+        let mut seen = std::collections::BTreeSet::new();
+        for (index, target) in self.agents.iter().enumerate() {
+            let id = target.resolved_id(owner_id).trim();
+            if id.is_empty() {
+                return Err(format!("entry {index} must be a non-empty Agent id"));
+            }
+            if target.is_self_reference() {
+                if saw_self {
+                    return Err("at most one `self` entry is allowed".into());
+                }
+                saw_self = true;
+            } else if id == owner_id {
+                return Err("recursive invocation must use the `self` roster entry".into());
+            }
+            if target.version() == Some(0) {
+                return Err(format!("entry {index} version must be at least 1"));
+            }
+            if !seen.insert(id.to_string()) {
+                return Err(format!("Agent id {id:?} is duplicated"));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Serialize for MultiagentConfig {
@@ -343,7 +458,7 @@ impl Serialize for MultiagentConfig {
 
         let mut state = serializer.serialize_struct("MultiagentConfig", 2)?;
         state.serialize_field("type", "coordinator")?;
-        state.serialize_field("agents", &self.agent_ids)?;
+        state.serialize_field("agents", &self.agents)?;
         state.end()
     }
 }
@@ -352,7 +467,7 @@ impl Serialize for MultiagentConfig {
 struct MultiagentConfigWire {
     #[serde(rename = "type")]
     kind: String,
-    agents: Vec<String>,
+    agents: Vec<MultiagentTarget>,
 }
 
 impl<'de> Deserialize<'de> for MultiagentConfig {
@@ -364,7 +479,7 @@ impl<'de> Deserialize<'de> for MultiagentConfig {
             ));
         }
         Ok(Self {
-            agent_ids: wire.agents,
+            agents: wire.agents,
         })
     }
 }
