@@ -1268,7 +1268,7 @@ impl DispatchOperationalFeed for PostgresDispatchStore {
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let prefix = NS;
         let rows = sqlx::query(&format!(
-            "SELECT sequence, operation FROM {prefix}_dispatch_operation \
+            "SELECT sequence, recorded_at_ms, operation FROM {prefix}_dispatch_operation \
              WHERE sequence > $1 ORDER BY sequence LIMIT $2"
         ))
         .bind(after)
@@ -1280,6 +1280,16 @@ impl DispatchOperationalFeed for PostgresDispatchStore {
             .into_iter()
             .map(|row| {
                 let sequence = row.try_get::<i64, _>("sequence").map_err(reject)?;
+                let recorded_at_ms = row
+                    .try_get::<Option<i64>, _>("recorded_at_ms")
+                    .map_err(reject)?
+                    .map(u64::try_from)
+                    .transpose()
+                    .map_err(|_| {
+                        DispatchError::Rejected(
+                            "persisted dispatch operation time is negative".to_string(),
+                        )
+                    })?;
                 let Json(operation): Json<DispatchOperation> =
                     row.try_get("operation").map_err(reject)?;
                 Ok(DispatchOperationalEvent {
@@ -1288,6 +1298,7 @@ impl DispatchOperationalFeed for PostgresDispatchStore {
                             "persisted dispatch operation sequence is negative".to_string(),
                         )
                     })?),
+                    recorded_at_ms,
                     operation,
                 })
             })
@@ -1483,11 +1494,14 @@ async fn insert_operation(
     operation: &DispatchOperation,
 ) -> Result<(), DispatchError> {
     let prefix = NS;
+    let recorded_at_ms = i64::try_from(crate::clock::system_now_ms()).unwrap_or(i64::MAX);
     sqlx::query(&format!(
-        "INSERT INTO {prefix}_dispatch_operation (run_id, operation) VALUES ($1, $2)"
+        "INSERT INTO {prefix}_dispatch_operation (run_id, operation, recorded_at_ms) \
+         VALUES ($1, $2, $3)"
     ))
     .bind(&operation.run_id().0)
     .bind(Json(operation))
+    .bind(recorded_at_ms)
     .execute(&mut **tx)
     .await
     .map_err(reject)?;

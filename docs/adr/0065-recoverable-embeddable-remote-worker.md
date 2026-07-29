@@ -159,7 +159,11 @@ bounded formal model.
 P1 adds a public exact-match `AttemptExecutorRegistry` used by the authoritative
 Session router, production Worker identity, registered application decoration,
 neutral current-attempt ownership checks, and durable lifecycle feeds split
-between committed Run truth and dispatch operations.
+between committed Run truth and dispatch operations. Dispatch operation rows
+carry their store-assigned durable wall-clock time so downstream audit and
+elapsed-time projections reuse the claim/settle authority instead of creating
+a parallel Worker lifecycle. Timestamp-free legacy rows remain readable for
+state reconstruction but cannot authorize a fabricated duration.
 
 P2 permits PostgreSQL active-active Control Nodes and makes their asynchronous
 recovery and lifecycle reads authoritative. Versioned recovery caches/deltas,
