@@ -573,7 +573,7 @@ async fn test_and_save_provider_connection(
     enum ConnectionCredential {
         ApiKey(RedactedString),
         OAuth(OAuthHelper),
-        Existing(CredentialSource),
+        Existing(Box<CredentialSource>),
     }
 
     let connection_credential = if let Some(secret) = body.secret {
@@ -617,7 +617,7 @@ async fn test_and_save_provider_connection(
                 &rid,
             )));
         }
-        ConnectionCredential::Existing(credential)
+        ConnectionCredential::Existing(Box::new(credential))
     };
 
     let models = match &connection_credential {
@@ -635,6 +635,7 @@ async fn test_and_save_provider_connection(
                 provider_id: Some(body.provider_id.clone()),
                 env_key: None,
                 material_ref: None,
+                auxiliary_material_refs: Default::default(),
                 oauth_command: Some(helper.command()),
                 worker_local_binding: None,
                 status: CredentialStatus::Active,
@@ -643,7 +644,7 @@ async fn test_and_save_provider_connection(
             discovery.discover(&endpoint, &probe_source).await
         }
         ConnectionCredential::Existing(credential) => {
-            discovery.discover(&endpoint, credential).await
+            discovery.discover(&endpoint, credential.as_ref()).await
         }
     }
     .map_err(|error| model_discovery_problem(&error, &rid))?;
@@ -658,7 +659,7 @@ async fn test_and_save_provider_connection(
     }
 
     let (mut staged, created) = match connection_credential {
-        ConnectionCredential::Existing(source) => (source, false),
+        ConnectionCredential::Existing(source) => (*source, false),
         ConnectionCredential::ApiKey(secret) => (
             enter_credential(
                 CredentialCreateParams {
@@ -699,13 +700,13 @@ async fn test_and_save_provider_connection(
         // Stage fail-closed: a newly entered source is disabled before catalog
         // publication. Reused credentials remain active and are never mutated by
         // a connection refresh.
-        staged.status = CredentialStatus::Disabled;
-        staged.version += 1;
-        state
-            .credentials
-            .put(staged.clone())
-            .await
-            .map_err(|error| cred_problem(&error, &rid))?;
+        staged = awaken_credential_vault::repo::transition_credential_status(
+            &staged.id,
+            CredentialStatus::Disabled,
+            state.credentials.as_ref(),
+        )
+        .await
+        .map_err(|error| cred_problem(&error, &rid))?;
     }
 
     let sync = match state
@@ -717,13 +718,13 @@ async fn test_and_save_provider_connection(
         Err(error) => return Err(repo_problem(&error, &rid)),
     };
     if created {
-        staged.status = CredentialStatus::Active;
-        staged.version += 1;
-        state
-            .credentials
-            .put(staged.clone())
-            .await
-            .map_err(|error| cred_problem(&error, &rid))?;
+        staged = awaken_credential_vault::repo::transition_credential_status(
+            &staged.id,
+            CredentialStatus::Active,
+            state.credentials.as_ref(),
+        )
+        .await
+        .map_err(|error| cred_problem(&error, &rid))?;
     }
     Ok((
         StatusCode::CREATED,
@@ -1383,15 +1384,15 @@ async fn archive_credential(
     headers: HeaderMap,
 ) -> Result<Json<CredentialSourceView>, Problem> {
     let rid = req_id(&headers);
-    let mut source =
-        credential_in_scope(&state, &CredentialSourceId(id), scope.as_ref(), &rid).await?;
-    source.status = CredentialStatus::Disabled;
-    source.version += 1;
-    state
-        .credentials
-        .put(source.clone())
-        .await
-        .map_err(|e| cred_problem(&e, &rid))?;
+    let source = credential_in_scope(&state, &CredentialSourceId(id), scope.as_ref(), &rid).await?;
+    let source = awaken_credential_vault::repo::revoke_credential(
+        &source.id,
+        awaken_credential_vault::repo::CredentialRetirement::Disable,
+        state.secrets.as_ref(),
+        state.credentials.as_ref(),
+    )
+    .await
+    .map_err(|e| cred_problem(&e, &rid))?;
     Ok(Json(source.into()))
 }
 
@@ -1507,7 +1508,7 @@ impl CredentialMaterialInput {
                 .map(|(name, value)| (name, RedactedString::new(value)))
                 .collect(),
         };
-        material.encode()
+        awaken_credential_vault::encode_structured_material(material)
     }
 }
 

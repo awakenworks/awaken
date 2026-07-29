@@ -740,6 +740,10 @@ internal config version remains an awaken governance detail.
 - `RepoStage` and LocalSandbox-specific orchestration are replaced by
   `RepositoryActivation { plan, credential }` plus the neutral, secret-free
   `RepositoryRealizationPlan` / `RepositoryRealizer` environment port;
+- Repository credentials use the canonical `HttpBasicAuth` consumption contract
+  over typed `awaken.http-basic/v1` Vault material. Runtime translates it at the
+  target boundary into a non-serializable `RepositoryHttpBasicCredential`; no
+  scalar token or preformatted Authorization header remains as a second path;
 - Repository Vault bindings are compiled before Session persistence into one
   exact secret-free `ResolvedRepositoryCredential`; Model, MCP, and Repository
   now share `CredentialMaterialResolver`, and the bare-source Runtime

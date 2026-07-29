@@ -383,7 +383,7 @@ pub(crate) fn jailed_at(root: &IsolatedRoot, logical: &str) -> Result<PathBuf, S
 }
 
 /// Clone a git repository into `<root>/<logical>` **host-side** (ADR-0038). The
-/// credential never enters the jail: git runs as a host process, the token is used
+/// credential never enters the jail: git runs as a host process, Basic auth is used
 /// only for the clone transport, and the persisted `origin` is rewritten tokenless.
 /// Fail-closed: a bad `logical` or non-zero git exit is an error. Shared by the
 /// legacy `Environment` and the `pc::Sandbox` Workdir tier.
@@ -393,7 +393,7 @@ pub(crate) fn provision_repo_at(
     url: &str,
     initial_branch: Option<&str>,
     initial_commit: Option<&str>,
-    token: Option<&str>,
+    credential: Option<&awaken_provisioning_contract::RepositoryHttpBasicCredential>,
 ) -> Result<(), SandboxError> {
     let dest = jailed_at(root, logical)?;
     if let Some(parent) = dest.parent() {
@@ -404,14 +404,14 @@ pub(crate) fn provision_repo_at(
         args.push("--branch".into());
         args.push(branch.to_string());
     }
-    args.push(authed_url(url, token));
+    args.push(authed_url(url, credential)?);
     args.push(dest.to_string_lossy().into_owned());
     run_git(None, &args)?;
     if let Some(commit) = initial_commit {
         run_git(Some(&dest), &["checkout", "--detach", commit])?;
     }
-    if token.is_some() {
-        // Scrub the token from the jail's origin: the agent inside never sees the credential
+    if credential.is_some() {
+        // Scrub the credential from the jail's origin: the agent inside never sees it
         // (the host re-injects it only on the harvest push transport).
         run_git(Some(&dest), &["remote", "set-url", "origin", url])?;
     }
@@ -440,7 +440,7 @@ pub(crate) fn provision_repo_at(
 pub(crate) fn push_repo_at(
     root: &IsolatedRoot,
     logical: &str,
-    token: Option<&str>,
+    credential: Option<&awaken_provisioning_contract::RepositoryHttpBasicCredential>,
 ) -> Result<bool, SandboxError> {
     let dest = jailed_at(root, logical)?;
     // Push only when the agent's branch has commits ahead of its upstream — so an agent that
@@ -455,10 +455,11 @@ pub(crate) fn push_repo_at(
     let url = git_stdout(Some(&dest), &["remote", "get-url", "origin"])?;
     run_git(
         Some(&dest),
-        &["push", &authed_url(url.trim(), token), "HEAD"],
+        &["push", &authed_url(url.trim(), credential)?, "HEAD"],
     )?;
     // Advance the remote-tracking ref ourselves: the push targets origin's URL (not the named
-    // remote — so the token can ride the transport), which does NOT move `refs/remotes/origin/*`.
+    // remote — so the credential can ride the transport), which does NOT move
+    // `refs/remotes/origin/*`.
     // Syncing it makes a re-harvest of an already-pushed branch a true no-op (`@{u}..HEAD` == 0).
     let branch =
         git_stdout(Some(&dest), &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
@@ -482,7 +483,7 @@ pub(crate) fn push_repo_to_at(
     root: &IsolatedRoot,
     logical: &str,
     remote_url: &str,
-    token: Option<&str>,
+    credential: Option<&awaken_provisioning_contract::RepositoryHttpBasicCredential>,
 ) -> Result<bool, SandboxError> {
     let dest = jailed_at(root, logical)?;
     let branch = git_stdout(Some(&dest), &["rev-parse", "--abbrev-ref", "HEAD"])?;
@@ -494,7 +495,7 @@ pub(crate) fn push_repo_to_at(
     }
     let head = git_stdout(Some(&dest), &["rev-parse", "HEAD"])?;
     let remote_ref = format!("refs/heads/{branch}");
-    let authed = authed_url(remote_url, token);
+    let authed = authed_url(remote_url, credential)?;
     let remote = git_stdout(None, &["ls-remote", &authed, &remote_ref])?;
     if remote.split_whitespace().next() == Some(head.trim()) {
         return Ok(false);
@@ -613,18 +614,50 @@ pub struct DiscoveredSkillFile {
 #[error("sandbox provisioning failed: {0}")]
 pub struct SandboxError(pub String);
 
-/// Splice a bearer token into an `https://` URL for a single git transport op,
-/// so it lands in the process's transient argv and never in `.git/config`. Only
-/// `https://` is rewritten (GitHub uses the `x-access-token` username convention);
-/// a local path, `file://`, or an already-authed URL passes through unchanged, and
-/// an absent token is a no-op — the tokenless path used by local remotes and tests.
-fn authed_url(url: &str, token: Option<&str>) -> String {
-    match token {
-        Some(t) if url.starts_with("https://") && !url.contains('@') => {
-            format!("https://x-access-token:{t}@{}", &url["https://".len()..])
-        }
-        _ => url.to_string(),
+/// Inject typed Basic credentials into one transient HTTPS Git URL. Every byte
+/// outside the RFC 3986 unreserved set is percent-encoded; malformed, non-HTTPS,
+/// or already-authenticated targets fail closed instead of dropping or combining
+/// credentials.
+fn authed_url(
+    url: &str,
+    credential: Option<&awaken_provisioning_contract::RepositoryHttpBasicCredential>,
+) -> Result<String, SandboxError> {
+    let Some(credential) = credential else {
+        return Ok(url.to_string());
+    };
+    let Some(target) = url.strip_prefix("https://") else {
+        return Err(SandboxError(
+            "credentialed repository URL must be HTTPS without embedded user info".into(),
+        ));
+    };
+    let authority_end = target.find(['/', '?', '#']).unwrap_or(target.len());
+    let authority = &target[..authority_end];
+    if authority.is_empty()
+        || authority.contains('@')
+        || authority.bytes().any(|byte| byte.is_ascii_whitespace())
+    {
+        return Err(SandboxError(
+            "credentialed repository URL must be HTTPS without embedded user info".into(),
+        ));
     }
+    Ok(format!(
+        "https://{}:{}@{target}",
+        percent_encode_userinfo(credential.expose_username()),
+        percent_encode_userinfo(credential.expose_password()),
+    ))
+}
+
+fn percent_encode_userinfo(value: &str) -> String {
+    use std::fmt::Write as _;
+
+    value.bytes().fold(String::new(), |mut encoded, byte| {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            write!(encoded, "%{byte:02X}").expect("write to String");
+        }
+        encoded
+    })
 }
 
 /// Run `git <args>` (optionally in `cwd`) with prompts disabled, returning its
@@ -683,6 +716,42 @@ fn git_bytes(cwd: Option<&Path>, args: &[&str]) -> Result<Vec<u8>, SandboxError>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repository_basic_auth_url_follows_the_transport_decision_table() {
+        // Cause/effect decision table:
+        // R1 no credential                     -> target is unchanged;
+        // R2 typed credential + clean HTTPS    -> escaped transient user info;
+        // R3 typed credential + non-HTTPS      -> fail closed;
+        // R4 typed credential + existing login -> fail closed, never combine.
+        let credential = awaken_provisioning_contract::RepositoryHttpBasicCredential::new(
+            "git user".to_string(),
+            "p@ss".to_string(),
+        );
+        assert_eq!(
+            authed_url("file:///repo", None).expect("R1"),
+            "file:///repo",
+            "R1"
+        );
+        let injected = authed_url("https://example.test/repo.git", Some(&credential))
+            .expect("R2 valid Basic transport");
+        assert!(
+            injected.starts_with("https://git%20user:p%40ss@example.test/"),
+            "R2"
+        );
+        assert!(
+            !injected.contains("p@ss"),
+            "R2 escapes delimiter characters"
+        );
+        assert!(
+            authed_url("http://example.test/repo.git", Some(&credential)).is_err(),
+            "R3"
+        );
+        assert!(
+            authed_url("https://already@example.test/repo.git", Some(&credential)).is_err(),
+            "R4"
+        );
+    }
 
     #[test]
     fn content_fingerprint_is_blake3_and_matches_file_store() {

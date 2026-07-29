@@ -35,16 +35,22 @@ pub use sealed::{SealedAeadSecretStore, generate_seal_key_hex, parse_seal_key};
 #[cfg(feature = "sqlite")]
 pub use sqlite::{SqliteCredentialRepo, SqliteSealedBlobStore};
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 
 use awaken_agent_contract::RedactedString;
+pub use awaken_agent_contract::StructuredCredentialMaterial;
 
 /// Opaque handle into a [`SecretStore`]. Never the secret itself.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(transparent)]
 pub struct SecretRef(pub String);
+
+/// Conventional slots used by OAuth refresh consumers. They are ordinary
+/// extension-defined slots and receive no special lifecycle treatment.
+pub const OAUTH_REFRESH_TOKEN_SLOT: &str = "oauth_refresh_token";
+pub const OAUTH_CLIENT_SECRET_SLOT: &str = "oauth_client_secret";
 
 /// Stable id of a [`CredentialSource`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -121,67 +127,62 @@ pub const CLAUDE_CODE_SETUP_TOKEN_ENV: &str = "CLAUDE_CODE_OAUTH_TOKEN";
 
 const STRUCTURED_MATERIAL_PREFIX: &str = "awaken-credential-material-v1:";
 
-/// Structured plaintext accepted at the one Vault write seam. The value is
-/// encoded as one versioned sealed document, never flattened into
-/// `username:password` or an ad-hoc PEM concatenation.
-#[derive(Debug)]
-pub struct StructuredCredentialMaterial {
-    pub type_id: String,
-    pub fields: std::collections::BTreeMap<String, RedactedString>,
-}
-
 #[derive(serde::Serialize, serde::Deserialize)]
 struct StructuredCredentialMaterialWire {
     type_id: String,
     fields: std::collections::BTreeMap<String, String>,
 }
 
-impl StructuredCredentialMaterial {
-    /// Encode a typed document for sealing by the existing [`SecretStore`].
-    pub fn encode(self) -> Result<RedactedString, CredentialError> {
-        if self.type_id.trim().is_empty() || self.fields.is_empty() {
-            return Err(CredentialError::InvalidSource(
-                "structured credential requires a type_id and fields".into(),
-            ));
-        };
-        let wire = StructuredCredentialMaterialWire {
-            type_id: self.type_id,
-            fields: self
-                .fields
-                .into_iter()
-                .map(|(name, value)| (name, value.expose_secret().to_string()))
-                .collect(),
-        };
-        serde_json::to_string(&wire)
-            .map(|json| RedactedString::new(format!("{STRUCTURED_MATERIAL_PREFIX}{json}")))
-            .map_err(|error| CredentialError::InvalidSource(error.to_string()))
-    }
+/// Encode canonical typed material as one versioned document for sealing by the
+/// existing [`SecretStore`]. The codec is a Vault concern; the material type is
+/// owned only by `awaken-credential-contract`.
+pub fn encode_structured_material(
+    material: StructuredCredentialMaterial,
+) -> Result<RedactedString, CredentialError> {
+    if material.type_id.trim().is_empty() || material.fields.is_empty() {
+        return Err(CredentialError::InvalidSource(
+            "structured credential requires a type_id and fields".into(),
+        ));
+    };
+    let wire = StructuredCredentialMaterialWire {
+        type_id: material.type_id,
+        fields: material
+            .fields
+            .into_iter()
+            .map(|(name, value)| (name, value.expose_secret().to_string()))
+            .collect(),
+    };
+    serde_json::to_string(&wire)
+        .map(|json| RedactedString::new(format!("{STRUCTURED_MATERIAL_PREFIX}{json}")))
+        .map_err(|error| CredentialError::InvalidSource(error.to_string()))
+}
 
-    /// Decode only the reserved versioned envelope. Ordinary legacy secrets are
-    /// returned unchanged; malformed reserved documents fail closed.
-    pub fn decode(value: RedactedString) -> Result<Result<Self, RedactedString>, CredentialError> {
-        let Some(json) = value
-            .expose_secret()
-            .strip_prefix(STRUCTURED_MATERIAL_PREFIX)
-        else {
-            return Ok(Err(value));
-        };
-        let wire: StructuredCredentialMaterialWire = serde_json::from_str(json)
-            .map_err(|error| CredentialError::InvalidSource(error.to_string()))?;
-        if wire.type_id.trim().is_empty() || wire.fields.is_empty() {
-            return Err(CredentialError::InvalidSource(
-                "structured credential requires a type_id and fields".into(),
-            ));
-        }
-        Ok(Ok(Self {
-            type_id: wire.type_id,
-            fields: wire
-                .fields
-                .into_iter()
-                .map(|(name, value)| (name, RedactedString::new(value)))
-                .collect(),
-        }))
+/// Decode only the reserved versioned envelope. Ordinary legacy secrets are
+/// returned unchanged; malformed reserved documents fail closed.
+pub fn decode_structured_material(
+    value: RedactedString,
+) -> Result<Result<StructuredCredentialMaterial, RedactedString>, CredentialError> {
+    let Some(json) = value
+        .expose_secret()
+        .strip_prefix(STRUCTURED_MATERIAL_PREFIX)
+    else {
+        return Ok(Err(value));
+    };
+    let wire: StructuredCredentialMaterialWire = serde_json::from_str(json)
+        .map_err(|error| CredentialError::InvalidSource(error.to_string()))?;
+    if wire.type_id.trim().is_empty() || wire.fields.is_empty() {
+        return Err(CredentialError::InvalidSource(
+            "structured credential requires a type_id and fields".into(),
+        ));
     }
+    Ok(Ok(StructuredCredentialMaterial {
+        type_id: wire.type_id,
+        fields: wire
+            .fields
+            .into_iter()
+            .map(|(name, value)| (name, RedactedString::new(value)))
+            .collect(),
+    }))
 }
 
 /// Server-owned OAuth token helper. The API carries this allowlisted id, never
@@ -240,6 +241,11 @@ pub struct CredentialSource {
     /// Vault reference; `None` for `Env` (the secret never crosses the control plane).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub material_ref: Option<SecretRef>,
+    /// Additional, named material owned by the same credential revision. Slot
+    /// names are extension-defined; the credential domain owns only their
+    /// lifecycle and never interprets their contents.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub auxiliary_material_refs: BTreeMap<String, SecretRef>,
     /// The refresh helper for a [`CredentialKind::Oauth`] source: `[program,
     /// args…]`, whose trimmed stdout is a fresh access token. `None` for every
     /// other kind. Only a *reference to a command* travels — never a token.
@@ -254,6 +260,21 @@ pub struct CredentialSource {
 }
 
 impl CredentialSource {
+    /// Every sealed-material reference owned by this aggregate, including the
+    /// compatibility primary slot and open extension-defined auxiliary slots.
+    pub fn material_refs(&self) -> impl Iterator<Item = &SecretRef> {
+        self.material_ref
+            .iter()
+            .chain(self.auxiliary_material_refs.values())
+    }
+
+    /// Resolve one extension-defined material slot without exposing storage
+    /// layout to its consumer.
+    #[must_use]
+    pub fn auxiliary_material_ref(&self, slot: &str) -> Option<&SecretRef> {
+        self.auxiliary_material_refs.get(slot)
+    }
+
     /// Normalize the retained storage discriminator into one material-origin
     /// fact. This is the sole mapping from legacy `CredentialKind` semantics.
     #[must_use]
@@ -563,6 +584,8 @@ pub enum CredentialError {
     WorkerLocalSourceUnsupported(String),
     #[error("invalid credential source: {0}")]
     InvalidSource(String),
+    #[error("credential mutation conflict: {0}")]
+    MutationConflict(String),
     #[error("secret seal/open failed (wrong key or corrupt ciphertext)")]
     Seal,
     #[error("oauth token refresh failed: {0}")]
@@ -779,6 +802,7 @@ pub(crate) fn prepare_source(
             provider_id: params.provider_id,
             env_key: params.env_key,
             material_ref,
+            auxiliary_material_refs: BTreeMap::new(),
             oauth_command: params.oauth_command,
             worker_local_binding: None,
             status: CredentialStatus::Active,
@@ -945,6 +969,7 @@ mod tests {
             provider_id: None,
             env_key: None,
             material_ref: None,
+            auxiliary_material_refs: Default::default(),
             oauth_command: None,
             worker_local_binding: None,
             status: CredentialStatus::Active,
@@ -1013,29 +1038,28 @@ mod tests {
     /// | T3 | reserved malformed document | InvalidSource |
     #[test]
     fn structured_material_codec_is_open_versioned_and_fail_closed() {
-        let encoded = StructuredCredentialMaterial {
+        let material = StructuredCredentialMaterial {
             type_id: "acme.ssh-key/v1".into(),
             fields: std::collections::BTreeMap::from([
                 ("private_key".into(), RedactedString::new("pem")),
                 ("known_hosts".into(), RedactedString::new("host-key")),
             ]),
-        }
-        .encode()
-        .expect("T1 encode");
-        let Ok(decoded) = StructuredCredentialMaterial::decode(encoded).expect("T1 decode") else {
+        };
+        let encoded = encode_structured_material(material).expect("T1 encode");
+        let Ok(decoded) = decode_structured_material(encoded).expect("T1 decode") else {
             panic!("T1 must remain typed")
         };
         assert_eq!(decoded.type_id, "acme.ssh-key/v1", "T1");
         assert_eq!(decoded.fields["private_key"].expose_secret(), "pem", "T1");
 
         let scalar = RedactedString::new("legacy-api-key");
-        let Err(scalar) = StructuredCredentialMaterial::decode(scalar).expect("T2 decode") else {
+        let Err(scalar) = decode_structured_material(scalar).expect("T2 decode") else {
             panic!("T2 must remain scalar")
         };
         assert_eq!(scalar.expose_secret(), "legacy-api-key", "T2");
 
         assert!(matches!(
-            StructuredCredentialMaterial::decode(RedactedString::new(format!(
+            decode_structured_material(RedactedString::new(format!(
                 "{STRUCTURED_MATERIAL_PREFIX}not-json"
             ))),
             Err(CredentialError::InvalidSource(_))

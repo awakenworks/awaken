@@ -31,11 +31,16 @@
 //! header and OMITS `client_id` from the form; `client_secret_post` puts
 //! `client_id=…&client_secret=…` in the form.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::RedactedString;
 use awaken_cli::build_management_router_with_model;
-use awaken_credential_vault::{InMemorySecretStore, SecretRef, SecretStore};
+use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo};
+use awaken_credential_vault::{
+    CredentialKind, CredentialSource, CredentialSourceId, CredentialStatus, InMemorySecretStore,
+    OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT, SecretRef, SecretStore,
+};
 use awaken_ext_mcp::{AuthChallenge, Credential, CredentialRefresher};
 use awaken_protocol_managed::{McpProbe, McpProbeStatus};
 use awaken_runtime_contract::{CredentialRefreshAccess, TokenEndpointAuth};
@@ -48,6 +53,40 @@ use awaken_scenario_host::McpToolModel;
 // `NoModelConfiguredExecutor`; the mock never ships in the management assembly.
 async fn build_management_router() -> Router {
     build_management_router_with_model(Arc::new(McpToolModel), "management").await
+}
+
+async fn exact_vault_refresher(
+    access: CredentialRefreshAccess,
+    secrets: Arc<dyn SecretStore>,
+) -> (VaultRefresher, Arc<InMemoryCredentialRepo>) {
+    let id = CredentialSourceId("cred:1".into());
+    let mut auxiliary_material_refs = BTreeMap::from([(
+        OAUTH_REFRESH_TOKEN_SLOT.to_string(),
+        SecretRef(access.refresh_token_ref.clone()),
+    )]);
+    if let Some(reference) = &access.client_secret_ref {
+        auxiliary_material_refs.insert(
+            OAUTH_CLIENT_SECRET_SLOT.to_string(),
+            SecretRef(reference.clone()),
+        );
+    }
+    let repo = Arc::new(InMemoryCredentialRepo::new());
+    repo.put(CredentialSource {
+        id: id.clone(),
+        workspace_id: "ws".into(),
+        kind: CredentialKind::Vault,
+        provider_id: Some("mcp".into()),
+        env_key: None,
+        material_ref: Some(SecretRef(access.access_token_ref.clone())),
+        auxiliary_material_refs,
+        oauth_command: None,
+        worker_local_binding: None,
+        status: CredentialStatus::Active,
+        version: i64::try_from(access.credential_revision).unwrap(),
+    })
+    .await
+    .unwrap();
+    (VaultRefresher::new(id, access, repo.clone(), secrets), repo)
 }
 use axum::Router;
 use axum::body::Body;
@@ -859,7 +898,7 @@ async fn vault_refresher_fails_closed_when_the_client_secret_is_missing() {
         .await
         .unwrap();
 
-    let refresher = VaultRefresher::new(
+    let (refresher, _) = exact_vault_refresher(
         CredentialRefreshAccess::new(
             1,
             format!("{url}token"),
@@ -872,7 +911,8 @@ async fn vault_refresher_fails_closed_when_the_client_secret_is_missing() {
             None,
         ),
         secrets.clone(),
-    );
+    )
+    .await;
     let fresh = refresher
         .refresh(&AuthChallenge {
             status: 401,
@@ -916,7 +956,7 @@ async fn vault_refresher_reseals_the_access_token_and_a_rotated_refresh_token() 
         .await
         .unwrap();
 
-    let refresher = VaultRefresher::new(
+    let (refresher, repo) = exact_vault_refresher(
         CredentialRefreshAccess::new(
             1,
             format!("{url}token"),
@@ -929,7 +969,8 @@ async fn vault_refresher_reseals_the_access_token_and_a_rotated_refresh_token() 
             Some("https://mcp.example.com".to_string()),
         ),
         secrets.clone(),
-    );
+    )
+    .await;
     let fresh = refresher
         .refresh(&AuthChallenge {
             status: 401,
@@ -938,16 +979,35 @@ async fn vault_refresher_reseals_the_access_token_and_a_rotated_refresh_token() 
         .await;
     assert_eq!(fresh, Some(Credential::Bearer("new-token".to_string())));
 
-    // BOTH secrets were resealed, so later sessions/validations get the fresh
-    // pair; the grant carried the optional `resource` parameter form-encoded.
+    // BOTH secrets moved to one higher exact revision, so later
+    // sessions/validations get the fresh pair and old refs are reclaimed; the
+    // grant carried the optional `resource` parameter form-encoded.
+    let current = repo
+        .get(&CredentialSourceId("cred:1".into()))
+        .await
+        .unwrap();
     assert_eq!(
-        secrets.get(&access_ref).await.unwrap().expose_secret(),
+        secrets
+            .get(current.material_ref.as_ref().unwrap())
+            .await
+            .unwrap()
+            .expose_secret(),
         "new-token"
     );
     assert_eq!(
-        secrets.get(&refresh_ref).await.unwrap().expose_secret(),
+        secrets
+            .get(
+                current
+                    .auxiliary_material_ref(OAUTH_REFRESH_TOKEN_SLOT)
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .expose_secret(),
         "rt-rotated"
     );
+    assert!(secrets.get(&access_ref).await.is_err());
+    assert!(secrets.get(&refresh_ref).await.is_err());
     let m = mock.lock().unwrap();
     assert_eq!(m.grants.len(), 1);
     assert!(
@@ -981,7 +1041,7 @@ async fn vault_refresher_fails_closed_and_reseals_nothing_on_a_rejected_grant() 
         .await
         .unwrap();
 
-    let refresher = VaultRefresher::new(
+    let (refresher, _) = exact_vault_refresher(
         CredentialRefreshAccess::new(
             1,
             format!("{url}token"),
@@ -994,7 +1054,8 @@ async fn vault_refresher_fails_closed_and_reseals_nothing_on_a_rejected_grant() 
             None,
         ),
         secrets.clone(),
-    );
+    )
+    .await;
     let fresh = refresher
         .refresh(&AuthChallenge {
             status: 401,
