@@ -27,6 +27,14 @@ impl Clock for SystemClock {
     }
 }
 
+/// Store-owned wall-clock time for durable authority facts.
+///
+/// Keeping this edge clock here prevents each storage backend from inventing a
+/// subtly different timestamp implementation.
+pub(crate) fn system_now_ms() -> u64 {
+    SystemClock.now_ms()
+}
+
 /// A hand-driven clock for deterministic tests.
 #[derive(Debug, Default)]
 pub struct ManualClock {

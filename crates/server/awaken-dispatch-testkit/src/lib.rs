@@ -550,11 +550,30 @@ where
         .events_after(cursor, 100)
         .await
         .expect("read operational transitions");
+    // Cause-effect graph / decision table:
+    // C1=an authority mutation is applied; C2=the mutation is fenced/rejected.
+    // R1 (C1,!C2) => one event with a store timestamp; R2 (!C1,C2) => no event.
+    // For a sequence of R1 mutations, cursors and store timestamps must both be
+    // monotonic. The operation assertions below cover claim, recovery, settle,
+    // dead-letter, cancellation, and the fenced-settle R2 case for every store.
     assert!(
         page.events
             .windows(2)
             .all(|pair| pair[0].cursor < pair[1].cursor),
         "dispatch cursors are strictly increasing"
+    );
+    assert!(
+        page.events
+            .iter()
+            .all(|event| event.recorded_at_ms.is_some()),
+        "new durable authority facts always carry store time"
+    );
+    assert!(
+        page.events.windows(2).all(|pair| {
+            pair[0].recorded_at_ms.expect("checked above")
+                <= pair[1].recorded_at_ms.expect("checked above")
+        }),
+        "store timestamps are nondecreasing in cursor order"
     );
     let operations = page
         .events

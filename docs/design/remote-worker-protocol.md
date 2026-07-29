@@ -615,6 +615,13 @@ hint; it never replaces the durable cursor.
 `DispatchOperationalFeed` is implemented by the memory, SQLite, and PostgreSQL
 dispatch stores. Its `DispatchOperation` payload is a tagged product type:
 
+Every dispatch event also carries `recorded_at_ms`, the store-assigned wall
+clock time at which the authority mutation was durably appended. The timestamp
+is metadata for elapsed-time projections and audit; cursor order and the
+operation product type remain the authority for state. Legacy rows may expose
+no timestamp and consumers that require elapsed time must fail closed or park
+them rather than inventing a duration.
+
 | Applied dispatch mutation | Durable operation facts |
 |---|---|
 | fresh or awaiting claim | `claimed { claim }` |
