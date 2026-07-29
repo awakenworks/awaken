@@ -13,6 +13,172 @@ struct DelegateCall {
 }
 
 impl ManagedState {
+    /// Resolve the public optional Thread selector onto the runtime's canonical
+    /// thread keys. The primary Thread is projected with a public suffix, while
+    /// the runtime has always keyed it by the Session id; child Thread ids are
+    /// already the child Run keys. Keeping that translation here prevents the
+    /// event handler and Thread routes from growing competing identity rules.
+    fn interrupt_targets(
+        &self,
+        session_id: &str,
+        requested_thread_id: Option<&str>,
+    ) -> Result<Vec<String>, StateError> {
+        let sessions = self.sessions.lock().unwrap();
+        let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
+        let primary_id = format!("{session_id}:primary");
+        if let Some(thread_id) = requested_thread_id {
+            if thread_id == primary_id {
+                return Ok(vec![session_id.to_string()]);
+            }
+            let child = record
+                .child_threads
+                .iter()
+                .find(|thread| thread.id == thread_id)
+                .ok_or_else(|| {
+                    StateError::Run(RunError::bad_request(
+                        "session_thread_id does not name a thread in this session",
+                    ))
+                })?;
+            if child.status == SessionThreadStatus::Terminated {
+                return Err(StateError::Run(RunError::bad_request(
+                    "an archived or terminated session thread cannot be interrupted",
+                )));
+            }
+            return Ok(vec![child.id.clone()]);
+        }
+
+        Ok(std::iter::once(session_id.to_string())
+            .chain(
+                record
+                    .child_threads
+                    .iter()
+                    .filter(|thread| thread.status != SessionThreadStatus::Terminated)
+                    .map(|thread| thread.id.clone()),
+            )
+            .collect())
+    }
+
+    fn public_inbound_kind(event: &InboundEvent) -> OutboundKind {
+        match event {
+            InboundEvent::UserMessage {
+                content,
+                session_thread_id,
+                model,
+            } => OutboundKind::UserMessage {
+                content: content.clone(),
+                session_thread_id: session_thread_id.clone(),
+                model: model.clone(),
+            },
+            InboundEvent::SystemMessage { content } => OutboundKind::SystemMessage {
+                content: content.clone(),
+            },
+            InboundEvent::UserToolConfirmation {
+                tool_use_id,
+                result,
+                deny_message,
+            } => OutboundKind::UserToolConfirmation {
+                tool_use_id: tool_use_id.clone(),
+                result: *result,
+                deny_message: deny_message.clone(),
+            },
+            InboundEvent::UserCustomToolResult {
+                custom_tool_use_id,
+                content,
+                is_error,
+            } => OutboundKind::UserCustomToolResult {
+                custom_tool_use_id: custom_tool_use_id.clone(),
+                content: content.clone(),
+                is_error: *is_error,
+            },
+            InboundEvent::UserToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => OutboundKind::UserToolResult {
+                tool_use_id: tool_use_id.clone(),
+                content: content.clone(),
+                is_error: *is_error,
+            },
+            InboundEvent::UserDefineOutcome {
+                description,
+                rubric,
+                max_iterations,
+            } => OutboundKind::UserDefineOutcome {
+                description: description.clone(),
+                rubric: rubric.clone(),
+                max_iterations: *max_iterations,
+            },
+            InboundEvent::UserInterrupt { session_thread_id } => OutboundKind::UserInterrupt {
+                session_thread_id: session_thread_id.clone(),
+            },
+        }
+    }
+
+    fn append_inbound_event(
+        &self,
+        session_id: &str,
+        inbound: &InboundEvent,
+    ) -> Result<String, StateError> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
+        let start = record.events.len();
+        let id = self.next_event_id();
+        record.events.push(Event {
+            id: id.clone(),
+            kind: Self::public_inbound_kind(inbound),
+            processed_at: None,
+        });
+        self.broadcast_committed_from(session_id, record, start);
+        Ok(id)
+    }
+
+    fn mark_inbound_processed(&self, session_id: &str, event_id: &str) {
+        if let Some(event) = self
+            .sessions
+            .lock()
+            .unwrap()
+            .get_mut(session_id)
+            .and_then(|record| record.events.iter_mut().find(|event| event.id == event_id))
+        {
+            event.processed_at = Some(PROCESSED_AT.to_string());
+        }
+    }
+
+    /// Start a create-time event batch without inventing a second executor. The
+    /// create response is made `running` before this returns; the detached task
+    /// then uses the exact `send_events` command used by the public events route.
+    pub(crate) fn start_initial_events(
+        self: &Arc<Self>,
+        session_id: &str,
+        events: Vec<InboundEvent>,
+    ) -> Result<(), StateError> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        {
+            let mut sessions = self.sessions.lock().unwrap();
+            let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
+            record.session.status = "running";
+        }
+        let state = Arc::clone(self);
+        let session_id = session_id.to_string();
+        tokio::spawn(async move {
+            if let Err(error) = state
+                .send_events(
+                    &session_id,
+                    SendEventsRequest {
+                        events,
+                        user_profile_id: None,
+                    },
+                )
+                .await
+            {
+                tracing::warn!(%session_id, %error, "create-time initial events failed");
+            }
+        });
+        Ok(())
+    }
+
     fn delegate_calls(delegations: &[DelegatedRun], events: &[Event]) -> Vec<DelegateCall> {
         delegations
             .iter()
@@ -116,16 +282,14 @@ impl ManagedState {
 
     /// Append one step's projected events to the session, minting ids where the
     /// projection did not supply one.
-    /// Project a committed turn into events and append them. `preview_ids` are the
-    /// ids the turn's [`PreviewSink`] minted for each previewed `agent.message`, in
-    /// order — the buffered `agent.message` events reuse them so a client reconciles
-    /// preview → committed by id (empty for resume/non-streamed paths). Every newly
-    /// appended event is republished on the live broadcast.
+    /// Project a committed turn into events and append them. Preview allocations
+    /// carry the ids minted for message and thinking starts; their corresponding
+    /// buffered events reuse them so a client reconciles by id.
     fn append_step(
         &self,
         session_id: &str,
         outcome: StepOutcome,
-        preview_ids: Vec<String>,
+        mut preview_ids: PreviewAllocations,
     ) -> Result<(), StateError> {
         let pending = outcome
             .pending()
@@ -153,7 +317,6 @@ impl ManagedState {
         let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
         // Everything appended from here is republished on the live broadcast at the end.
         let start = record.events.len();
-        let mut preview_ids = preview_ids.into_iter();
         // Each processing segment is bracketed `running` … `idle`; the running
         // marker leads before any fold or message.
         record.events.push(Event {
@@ -198,12 +361,14 @@ impl ManagedState {
             // announced, so `event_start.event.id == agent.message.id` and the SDK
             // discards the accumulated preview on the buffered event. Other events, and
             // any message beyond the previewed count, mint a fresh id as before.
-            let id = event.id.unwrap_or_else(|| {
-                if matches!(event.kind, OutboundKind::AgentMessage { .. }) {
-                    preview_ids.next().unwrap_or_else(|| self.next_event_id())
-                } else {
-                    self.next_event_id()
-                }
+            let id = event.id.unwrap_or_else(|| match &event.kind {
+                OutboundKind::AgentMessage { .. } => preview_ids
+                    .next_message()
+                    .unwrap_or_else(|| self.next_event_id()),
+                OutboundKind::AgentThinking {} => preview_ids
+                    .next_thinking()
+                    .unwrap_or_else(|| self.next_event_id()),
+                _ => self.next_event_id(),
             });
             record.events.push(Event {
                 id,
@@ -212,6 +377,7 @@ impl ManagedState {
             });
         }
         self.append_delegation_projections(record, &delegated_runs);
+        record.session.status = "idle";
         self.broadcast_committed_from(session_id, record, start);
         Ok(())
     }
@@ -286,6 +452,7 @@ impl ManagedState {
                 record.session.outcome_evaluations.push(evaluation);
             }
         }
+        record.session.status = "idle";
         self.broadcast_committed_from(session_id, record, start);
         Ok(())
     }
@@ -354,6 +521,194 @@ impl ManagedState {
         Ok(self.runtime.live_inbox_reorder(session_id, order).await?)
     }
 
+    async fn process_inbound_event(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        user_profile_id: Option<String>,
+        inbound: &InboundEvent,
+    ) -> Result<(), StateError> {
+        match inbound {
+            InboundEvent::UserMessage { content, model, .. } => {
+                if let Some(model) = model {
+                    self.runtime.rebind_model(session_id, model).await?;
+                }
+                let sink = Arc::new(PreviewSink::new(
+                    self.live_sender(session_id),
+                    self.event_seq.clone(),
+                ));
+                let outcome = self
+                    .runtime
+                    .run_streaming_attributed(
+                        agent_id,
+                        session_id,
+                        content.clone(),
+                        user_profile_id,
+                        sink.clone(),
+                    )
+                    .await;
+                self.persist_session_environment_binding(session_id).await?;
+                let outcome = match outcome {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        self.append_runtime_failure(session_id, &error)?;
+                        return Err(StateError::Run(error));
+                    }
+                };
+                self.append_step(session_id, outcome, sink.take_allocations())?;
+            }
+            InboundEvent::UserToolConfirmation {
+                tool_use_id,
+                result,
+                deny_message,
+            } => {
+                let decision = ToolPermissionDecision {
+                    allow: matches!(result, ConfirmResult::Allow),
+                    note: deny_message.clone(),
+                };
+                let outcome = self
+                    .runtime
+                    .resume(session_id, tool_use_id, decision)
+                    .await?;
+                self.append_step(session_id, outcome, PreviewAllocations::default())?;
+            }
+            InboundEvent::UserCustomToolResult {
+                custom_tool_use_id,
+                content,
+                is_error,
+            } => {
+                let text = content.as_deref().map(content_text).unwrap_or_default();
+                let outcome = self
+                    .runtime
+                    .resume_custom(session_id, custom_tool_use_id, &text, *is_error)
+                    .await?;
+                self.append_step(session_id, outcome, PreviewAllocations::default())?;
+            }
+            InboundEvent::UserToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                let text = content.as_deref().map(content_text).unwrap_or_default();
+                let outcome = self
+                    .runtime
+                    .resume_custom(session_id, tool_use_id, &text, *is_error)
+                    .await?;
+                self.append_step(session_id, outcome, PreviewAllocations::default())?;
+            }
+            InboundEvent::UserDefineOutcome {
+                description,
+                rubric,
+                max_iterations,
+            } => {
+                let rubric = rubric_text(rubric);
+                let report = self
+                    .runtime
+                    .define_outcome(
+                        session_id,
+                        description,
+                        &rubric,
+                        max_iterations.unwrap_or(3),
+                    )
+                    .await?;
+                self.append_outcome(session_id, report)?;
+            }
+            InboundEvent::SystemMessage { content } => {
+                let text = content_text(content);
+                self.runtime.add_system(session_id, &text).await?;
+            }
+            InboundEvent::UserInterrupt { session_thread_id } => {
+                for thread in self.interrupt_targets(session_id, session_thread_id.as_deref())? {
+                    self.runtime.interrupt(&thread).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn validate_event_batch(
+        &self,
+        session_id: &str,
+        events: &[InboundEvent],
+    ) -> Result<(), StateError> {
+        let pending = self.runtime.pending_tool(session_id).await;
+        let mut pending_resolved = pending.is_none();
+        let mut resolution_seen = false;
+        for event in events {
+            let resolution = match event {
+                InboundEvent::UserToolConfirmation { tool_use_id, .. } => {
+                    Some((tool_use_id.as_str(), false))
+                }
+                InboundEvent::UserCustomToolResult {
+                    custom_tool_use_id, ..
+                } => Some((custom_tool_use_id.as_str(), true)),
+                InboundEvent::UserToolResult { tool_use_id, .. } => {
+                    Some((tool_use_id.as_str(), true))
+                }
+                _ => None,
+            };
+            if let Some((tool_use_id, requires_client_execution)) = resolution {
+                let matches_pending = !resolution_seen
+                    && pending.as_ref().is_some_and(|pending| {
+                        pending.tool_use_id == tool_use_id
+                            && pending.client_executed == requires_client_execution
+                    });
+                if !matches_pending {
+                    return Err(StateError::Run(RunError::bad_request(
+                        "tool result does not match the pending tool event",
+                    )));
+                }
+                resolution_seen = true;
+                pending_resolved = true;
+                continue;
+            }
+            match event {
+                InboundEvent::UserInterrupt { session_thread_id } => {
+                    // Validate every selector before the first receipt is persisted.
+                    // The same canonical resolver is called again during execution;
+                    // Session Thread topology cannot change inside this synchronous
+                    // batch, so validation and effect address the same target set.
+                    self.interrupt_targets(session_id, session_thread_id.as_deref())?;
+                }
+                InboundEvent::SystemMessage { content } if !(1..=1000).contains(&content.len()) => {
+                    return Err(StateError::Run(RunError::bad_request(
+                        "system.message content must contain between 1 and 1000 items",
+                    )));
+                }
+                InboundEvent::SystemMessage { .. }
+                    if !self
+                        .runtime
+                        .supports_mid_conversation_system(session_id)
+                        .await =>
+                {
+                    return Err(StateError::Run(RunError::bad_request(
+                        "model_does_not_support_mid_conversation_system",
+                    )));
+                }
+                InboundEvent::SystemMessage { .. } if !pending_resolved => {
+                    return Err(StateError::Run(RunError::bad_request(
+                        "system.message must trail the pending tool result in the same request",
+                    )));
+                }
+                InboundEvent::UserMessage { .. } if !pending_resolved => {
+                    return Err(StateError::Run(RunError::bad_request(
+                        "pending tool events must be resolved before user.message",
+                    )));
+                }
+                InboundEvent::UserDefineOutcome {
+                    max_iterations: Some(iterations),
+                    ..
+                } if !(1..=20).contains(iterations) => {
+                    return Err(StateError::Run(RunError::bad_request(
+                        "max_iterations must be between 1 and 20",
+                    )));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     #[tracing::instrument(
         name = "sessions.events.send",
         skip_all,
@@ -391,123 +746,38 @@ impl ManagedState {
                 "agent_unavailable: agent `{agent_id}` cannot admit a new event"
             ))));
         }
+        // Batch admission precedes the first receipt/event append. One invalid
+        // member therefore cannot leave a partial public history.
+        self.validate_event_batch(session_id, &req.events).await?;
 
         let mut receipts = Vec::new();
         for inbound in &req.events {
+            let event_id = self.append_inbound_event(session_id, inbound)?;
             receipts.push(EventReceipt {
-                id: self.next_event_id(),
+                id: event_id.clone(),
                 kind: inbound.type_str(),
                 processed_at: None,
             });
 
-            match inbound {
-                InboundEvent::UserMessage { content, model, .. } => {
-                    // R5: a per-turn model override rebinds the thread before the turn.
-                    if let Some(model) = model {
-                        self.runtime.rebind_model(session_id, model).await?;
-                    }
-                    // Install a preview sink so a concurrently-open SSE stream (opted
-                    // in via `event_deltas[]`) sees this turn's `agent.message` text as
-                    // live `event_start`/`event_delta` frames. The committed outcome is
-                    // identical; the sink only mirrors in-flight text and hands back the
-                    // ids it minted so the buffered messages reuse them.
-                    let sink = Arc::new(PreviewSink::new(
-                        self.live_sender(session_id),
-                        self.event_seq.clone(),
-                    ));
-                    let outcome = self
-                        .runtime
-                        .run_streaming_attributed(
-                            &agent_id,
-                            session_id,
-                            content.clone(),
-                            req.user_profile_id.clone(),
-                            sink.clone(),
-                        )
-                        .await;
-                    // Context creation precedes execution, so even a failed first
-                    // turn may own a live environment. Persist that identity before
-                    // propagating the run error; otherwise retry after a process
-                    // crash could provision over the surviving workspace.
-                    self.persist_session_environment_binding(session_id).await?;
-                    let outcome = match outcome {
-                        Ok(outcome) => outcome,
-                        Err(error) => {
-                            self.append_runtime_failure(session_id, &error)?;
-                            return Err(StateError::Run(error));
-                        }
-                    };
-                    self.append_step(session_id, outcome, sink.take_allocated_ids())?;
-                }
-                InboundEvent::UserToolConfirmation {
-                    tool_use_id,
-                    result,
-                    deny_message,
-                } => {
-                    let decision = ToolPermissionDecision {
-                        allow: matches!(result, ConfirmResult::Allow),
-                        note: deny_message.clone(),
-                    };
-                    let outcome = self
-                        .runtime
-                        .resume(session_id, tool_use_id, decision)
-                        .await?;
-                    self.append_step(session_id, outcome, Vec::new())?;
-                }
-                InboundEvent::UserCustomToolResult {
-                    custom_tool_use_id,
-                    content,
-                    is_error,
-                } => {
-                    let text = content.as_deref().map(content_text).unwrap_or_default();
-                    let outcome = self
-                        .runtime
-                        .resume_custom(session_id, custom_tool_use_id, &text, *is_error)
-                        .await?;
-                    self.append_step(session_id, outcome, Vec::new())?;
-                }
-                // The generic `user.tool_result`: a client-provided result for a
-                // awaiting tool, keyed by `tool_use_id`. Same delivery as a custom
-                // tool result (the id addresses the awaiting tool either way).
-                InboundEvent::UserToolResult {
-                    tool_use_id,
-                    content,
-                    is_error,
-                } => {
-                    let text = content.as_deref().map(content_text).unwrap_or_default();
-                    let outcome = self
-                        .runtime
-                        .resume_custom(session_id, tool_use_id, &text, *is_error)
-                        .await?;
-                    self.append_step(session_id, outcome, Vec::new())?;
-                }
-                InboundEvent::UserDefineOutcome {
-                    description,
-                    rubric,
-                    max_iterations,
-                } => {
-                    let rubric = rubric_text(rubric);
-                    let report = self
-                        .runtime
-                        .define_outcome(
-                            session_id,
-                            description,
-                            &rubric,
-                            max_iterations.unwrap_or(3),
-                        )
-                        .await?;
-                    self.append_outcome(session_id, report)?;
-                }
-                InboundEvent::SystemMessage { content } => {
-                    let text = content_text(content);
-                    self.runtime.add_system(session_id, &text).await?;
-                }
-                // `user.interrupt`: cancel the run in flight on this thread (from a
-                // concurrent request), so an in-progress outcome ends `interrupted`.
-                InboundEvent::UserInterrupt { .. } => {
-                    self.runtime.interrupt(session_id).await?;
-                }
+            let processing = self
+                .process_inbound_event(session_id, &agent_id, req.user_profile_id.clone(), inbound)
+                .await;
+            self.mark_inbound_processed(session_id, &event_id);
+            if matches!(
+                inbound,
+                InboundEvent::UserCustomToolResult { .. }
+                    | InboundEvent::UserToolResult { .. }
+                    | InboundEvent::UserDefineOutcome { .. }
+            ) && let Some(receipt) = receipts.last_mut()
+            {
+                receipt.processed_at = Some(PROCESSED_AT.to_string());
             }
+            if processing.is_err()
+                && let Some(record) = self.sessions.lock().unwrap().get_mut(session_id)
+            {
+                record.session.status = "idle";
+            }
+            processing?;
             // A first execution may have materialized the Session-owned sandbox.
             // Commit its opaque identity before the API acknowledges this event,
             // so a later process adopts instead of provisioning over its workspace.
@@ -550,6 +820,7 @@ impl ManagedState {
             },
             processed_at,
         });
+        record.session.status = "idle";
         self.broadcast_committed_from(session_id, record, start);
         Ok(())
     }

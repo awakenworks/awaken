@@ -44,7 +44,7 @@ async function main() {
     assert.ok(transcript.includes('ADMIN-TYPED-EDGES-DONE'));
     assert.ok(transcript.includes('expected struct AgentMcpServerBinding'));
     assert.ok(transcript.includes('invalid type: integer'));
-    assert.ok(transcript.includes('data did not match any variant of untagged enum SkillSelection'));
+    assert.ok(transcript.includes('data did not match any variant of untagged enum AgentSkillBindingInput'));
     assert.ok(transcript.includes('multiagent.type must be `coordinator`'));
     assert.equal(
       (transcript.match(/admin_draft_agent/g) ?? []).length >= 5,

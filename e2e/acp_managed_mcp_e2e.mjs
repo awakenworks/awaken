@@ -26,6 +26,7 @@ async function main() {
   // pre-authorization), so it must be reachable even though the ACP CLI has its own
   // MCP client; the vault-materialized bearer remains in the host-owned relay.
   const fixture = await startCalcFixture(CALC_TOKEN, { allowAnonymous: true });
+  const replacementFixture = await startCalcFixture(undefined, { allowAnonymous: true });
   try {
     await withServer('acp-managed-mcp', 38196, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
@@ -50,10 +51,14 @@ async function main() {
       // C2 + C3 provider proves no-bypass -> E1 realize relay
       // C2 + !C3 -> E2 reject before materialization
       // !C1 -> E3 project direct route with no ACP auth
+      // C4 idle Session replaces active generation -> E4 next ACP launch receives only replacement
+      // C5 idle Session removes active generation -> E5 next ACP launch receives an empty MCP set
       //
-      // | Rule | C1 credential | C3 no-bypass | Result |
-      // | A1   | yes           | no           | reject |
-      // | A2   | no            | -            | route-only session/new |
+      // | Rule | desired set | credential | no-bypass | Result |
+      // | A1 | calc | yes | no | reject |
+      // | A2 | calc | no | - | initial session/new contains calc |
+      // | A3 | search replaces calc | no | - | relaunched ACP contains search, not calc |
+      // | A4 | empty replaces search | no | - | relaunched ACP contains neither server |
       // A provider-backed success rule is covered by the provider conformance slice;
       // this composition intentionally installs the Workdir provider.
       await assert.rejects(
@@ -85,7 +90,33 @@ async function main() {
         `A2: session/new carried the anonymous route without auth, got ${JSON.stringify(texts)}`,
       );
       assert.ok(!reply.includes(CALC_TOKEN), 'the raw vault token never reached the CLI');
-      pass('authenticated ACP MCP fails closed; anonymous MCP reaches session/new without auth');
+
+      const search = { name: 'search', type: 'url', url: replacementFixture.url };
+      const replaced = await client.beta.sessions.update(anonymous.id, {
+        agent: { mcp_servers: [search] },
+        betas: BETAS,
+      });
+      assert.deepEqual(replaced.agent.mcp_servers, [search], 'A3 projects only replacement');
+      await client.beta.sessions.events.send(anonymous.id, {
+        events: [{ type: 'user.message', content: [{ type: 'text', text: 'after replace' }] }],
+        betas: BETAS,
+      });
+      const afterReplace = await agentTexts(client, anonymous.id);
+      assert.equal(afterReplace.at(-1), 'mcp saw-search noref', `A3: ${JSON.stringify(afterReplace)}`);
+      assert.ok(!afterReplace.at(-1).includes('saw-calc'), 'A3 old generation is absent');
+
+      const removed = await client.beta.sessions.update(anonymous.id, {
+        agent: { mcp_servers: [] },
+        betas: BETAS,
+      });
+      assert.deepEqual(removed.agent.mcp_servers, [], 'A4 projects the drained set');
+      await client.beta.sessions.events.send(anonymous.id, {
+        events: [{ type: 'user.message', content: [{ type: 'text', text: 'after remove' }] }],
+        betas: BETAS,
+      });
+      const afterRemove = await agentTexts(client, anonymous.id);
+      assert.equal(afterRemove.at(-1), 'mcp noname noref', `A4: ${JSON.stringify(afterRemove)}`);
+      pass('A1-A4 ACP MCP create, replace, and remove consume only the active generation');
     });
 
     // Compose the real-CLI twin through the same external API without launching the
@@ -116,6 +147,7 @@ async function main() {
     process.exitCode = 1;
   } finally {
     await fixture.close();
+    await replacementFixture.close();
   }
 }
 

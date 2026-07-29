@@ -3912,6 +3912,7 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
     let managed = managed_with_resource_source(host.clone());
     let mut init = bare_session("a", &workspace);
     init.resources.skills = Some(vec![awaken_protocol_managed::ResolvedSkillBinding {
+        kind: awaken_agent_contract::AgentSkillKind::Custom,
         skill_id: "governed".into(),
         version: 1,
         bundle_sha256: hash,

@@ -219,6 +219,7 @@ async fn a_terminal_run_fault_projects_session_error_before_idle() {
     assert_eq!(
         types(&list),
         vec![
+            "user.message",
             "session.status_running",
             "session.error",
             "agent.message",
@@ -288,6 +289,7 @@ async fn a_rescheduled_turn_projects_the_rescheduled_status() {
     assert_eq!(
         types(&list),
         vec![
+            "user.message",
             "session.status_running",
             "session.status_rescheduled",
             "agent.message",
@@ -312,6 +314,7 @@ async fn a_compacted_turn_projects_the_compaction_marker() {
     assert_eq!(
         types(&list),
         vec![
+            "user.message",
             "session.status_running",
             "agent.thread_context_compacted",
             "agent.message",
@@ -375,7 +378,8 @@ async fn session_usage_reflects_the_runtime_tally() {
 
 /// The shared agent-contract projection drops an all-empty-text assistant message
 /// (no visible text, no tool calls). The managed projection inherits that fold, so
-/// such a turn commits *no* `agent.message` — only the running/idle bracket.
+/// such a turn commits *no* `agent.message` — only the persisted user input and
+/// running/idle bracket.
 #[tokio::test]
 async fn an_all_empty_text_assistant_message_is_dropped() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
@@ -386,7 +390,11 @@ async fn an_all_empty_text_assistant_message_is_dropped() {
     let list = list_events(&app, &id).await;
     assert_eq!(
         types(&list),
-        vec!["session.status_running", "session.status_idle"],
+        vec![
+            "user.message",
+            "session.status_running",
+            "session.status_idle"
+        ],
         "an empty assistant message projects no agent.message"
     );
     assert!(
@@ -432,6 +440,7 @@ async fn an_mcp_tool_call_projects_mcp_events() {
     assert_eq!(
         types(&list),
         vec![
+            "user.message",
             "session.status_running",
             "agent.message",
             "agent.mcp_tool_use",
@@ -538,6 +547,7 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
     assert_eq!(
         types(&list),
         vec![
+            "user.message",
             "session.status_running",
             "agent.message",
             "agent.tool_use",

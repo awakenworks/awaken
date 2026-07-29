@@ -28,6 +28,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const PORT = Number(process.env.E2E_PORT ?? 38211);
 const BASE = `http://127.0.0.1:${PORT}`;
 const BETAS = ['managed-agents-2026-04-01'];
+const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
 const FILE = `/tmp/awaken-trace-capture-${process.pid}.jsonl`;
 
 // A fixed inbound W3C trace context for the propagation probe.
@@ -89,7 +90,7 @@ async function captureTurn(mode, port, file, text, { extraEnv = {}, settleMs = 0
     if (mode === 'memory') {
       const created = await fetch(`${base}/v1/memory_stores`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', ...MEMORY_HEADERS },
         body: JSON.stringify({ name: 'trace-memory' }),
       });
       assert.equal(created.status, 200, 'trace memory store created');
@@ -100,7 +101,9 @@ async function captureTurn(mode, port, file, text, { extraEnv = {}, settleMs = 0
     if (memoryStore) {
       let extracted = false;
       for (let i = 0; i < 30; i += 1) {
-        const response = await fetch(`${base}/v1/memory_stores/${memoryStore.id}/memories`);
+        const response = await fetch(`${base}/v1/memory_stores/${memoryStore.id}/memories`, {
+          headers: MEMORY_HEADERS,
+        });
         assert.equal(response.status, 200, 'trace memory store remains readable');
         const page = await response.json();
         if ((page.data ?? []).length > 0) {

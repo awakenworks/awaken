@@ -109,6 +109,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             )
             .await
         }
+        Ok("management-agents") => {
+            awaken_cli::build_management_router_with_scenario_model(
+                std::sync::Arc::new(awaken_scenario_host::RegistryDelegatingModel),
+                "management-agents".to_string(),
+            )
+            .await
+        }
         // Production model composition for provider/BYOK/brokered e2e: no
         // deterministic Host executor is installed, so publications resolve from
         // the authored catalog and execute through the real materializer.
@@ -134,7 +141,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok("vision") => awaken_scenario_host::build_vision_router(),
         Ok("model-route") => awaken_scenario_host::build_model_route_router(),
         Ok("acp") => awaken_scenario_host::build_acp_router(),
-        Ok("acp-jsonrpc") => awaken_scenario_host::build_acp_jsonrpc_router(),
+        Ok("acp-jsonrpc") => awaken_scenario_host::build_acp_jsonrpc_router().await,
         Ok("acp-permission") => awaken_scenario_host::build_acp_permission_router(),
         Ok("acp-control") => awaken_scenario_host::build_acp_control_router(),
         Ok("acp-relaunch-failure") => awaken_scenario_host::build_acp_relaunch_failure_router(),
@@ -171,8 +178,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Root every request span in the ingress middleware (extracts the inbound
     // `traceparent`); the whole direct request→inference path nests under it.
     let app = app.layer(axum::middleware::from_fn(awaken_observability::trace_http));
-    // Enforce the managed-agents beta opt-in on session creation, exactly as the
-    // real API (the bare `router()` unit tests build carries no such layer).
+    // Enforce the managed-agents beta opt-in across ordinary Managed endpoint
+    // families (bare router-level tests intentionally carry no such layer).
     let app = app.layer(axum::middleware::from_fn(
         awaken_protocol_managed::enforce_managed_beta,
     ));
@@ -320,7 +327,7 @@ mod dispatch_tests {
             ("vision", sh::build_vision_router()),
             ("model-route", sh::build_model_route_router()),
             ("acp", sh::build_acp_router()),
-            ("acp-jsonrpc", sh::build_acp_jsonrpc_router()),
+            ("acp-jsonrpc", sh::build_acp_jsonrpc_router().await),
             ("acp-permission", sh::build_acp_permission_router()),
             ("acp-sandboxed", sh::build_acp_sandboxed_router().await),
             ("acp-gateway", sh::build_acp_gateway_router()),

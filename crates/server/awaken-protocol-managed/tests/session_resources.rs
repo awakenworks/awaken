@@ -116,7 +116,7 @@ fn empty_agent_view(backend_ref: &str) -> AgentConfigView {
         toolsets: Vec::new(),
         client_tools: Vec::new(),
         mcp_servers: Vec::new(),
-        skill_ids: Vec::new(),
+        skills: Vec::new(),
         delegate_ids: Vec::new(),
         resources: Vec::new(),
     }
@@ -138,6 +138,40 @@ impl AgentConfigSource for AgentWithResources {
 
 struct AgentWithIntegrations;
 
+struct SkillGraphAgent {
+    root_count: usize,
+    child_count: usize,
+}
+
+impl AgentConfigSource for SkillGraphAgent {
+    fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
+        let (prefix, count, delegate) = match agent_id {
+            "root" => ("root", self.root_count, "child"),
+            "child" => ("child", self.child_count, "root"),
+            _ => return None,
+        };
+        Some(AgentConfigView {
+            skills: skill_bindings(prefix, count),
+            // A legacy cycle must not count either Agent twice.
+            delegate_ids: vec![delegate.into()],
+            ..empty_agent_view("genai")
+        })
+    }
+}
+
+fn skill_bindings(prefix: &str, count: usize) -> Vec<awaken_agent_contract::AgentSkillBinding> {
+    (0..count)
+        .map(|index| awaken_agent_contract::AgentSkillBinding::custom(format!("{prefix}-{index}")))
+        .collect()
+}
+
+fn skill_graph_source(root_count: usize, child_count: usize) -> SkillGraphAgent {
+    SkillGraphAgent {
+        root_count,
+        child_count,
+    }
+}
+
 impl AgentConfigSource for AgentWithIntegrations {
     fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
         (agent_id == "integrated").then(|| AgentConfigView {
@@ -155,10 +189,68 @@ impl AgentConfigSource for AgentWithIntegrations {
                     credential_revision: None,
                 },
             ],
-            skill_ids: vec!["skill_release".into()],
+            skills: vec![awaken_agent_contract::AgentSkillBinding::custom(
+                "skill_release",
+            )],
             delegate_ids: vec!["researcher".into()],
             ..empty_agent_view("genai")
         })
+    }
+}
+
+#[tokio::test]
+async fn session_skill_limit_counts_the_effective_unique_agent_graph() {
+    // Cause graph: C1 root effective selection; C2 recursively reachable Agent
+    // selections; C3 repeated/cyclic Agent identity; C4 create-time root replace.
+    // Constraints: one Agent identity contributes once and the composed Session
+    // supports <=500 Skills. Effects: E1 exact boundary creates and prepares;
+    // E2 overflow rejects before persistence/runtime; E3 an override replaces,
+    // rather than adds to, the published root selection.
+    // Decision table: G1 250+250+cycle => E1; G2 251+250 => E2;
+    // G3 published 500 replaced by empty + child 1 => E3/E1.
+    for (rule, root_count, child_count, request, expected) in [
+        ("G1", 250, 250, json!({"agent": "root"}), StatusCode::OK),
+        (
+            "G2",
+            251,
+            250,
+            json!({"agent": "root"}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "G3",
+            500,
+            1,
+            json!({
+                "agent": {
+                    "id": "root",
+                    "type": "agent_with_overrides",
+                    "skills": []
+                }
+            }),
+            StatusCode::OK,
+        ),
+    ] {
+        let runtime = AcceptingFake::default();
+        let prepared = runtime.prepared.clone();
+        let repo = std::sync::Arc::new(
+            SqliteManagedSessionRepository::open_in_memory().expect("session repository"),
+        );
+        let state = ManagedState::new(runtime)
+            .with_config_source(std::sync::Arc::new(skill_graph_source(
+                root_count,
+                child_count,
+            )))
+            .with_session_repo(repo.clone());
+        let app = router(std::sync::Arc::new(state));
+        let (status, _) = call(&app, "POST", "/v1/sessions", Some(request)).await;
+        assert_eq!(status, expected, "{rule}");
+        if expected == StatusCode::BAD_REQUEST {
+            assert!(prepared.lock().unwrap().is_empty(), "{rule}");
+            assert!(repo.get("sesn_0").await.is_none(), "{rule}");
+        } else {
+            assert_eq!(prepared.lock().unwrap().len(), 1, "{rule}");
+        }
     }
 }
 
@@ -426,14 +518,15 @@ impl SessionRuntime for AcceptingFake {
     async fn resolve_session_skills(
         &self,
         _workspace_id: &str,
-        skill_ids: &[String],
+        skills: &[awaken_agent_contract::AgentSkillBinding],
     ) -> Result<Vec<awaken_session_contract::ResolvedSkillBinding>, RunError> {
-        Ok(skill_ids
+        Ok(skills
             .iter()
-            .map(|skill_id| awaken_session_contract::ResolvedSkillBinding {
-                skill_id: skill_id.clone(),
+            .map(|skill| awaken_session_contract::ResolvedSkillBinding {
+                kind: skill.kind,
+                skill_id: skill.skill_id.clone(),
                 version: 1,
-                bundle_sha256: format!("sha256:{skill_id}"),
+                bundle_sha256: format!("sha256:{}", skill.skill_id),
             })
             .collect())
     }

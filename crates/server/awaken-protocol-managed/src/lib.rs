@@ -28,6 +28,7 @@
 pub mod ext;
 /// Conversion/projection: committed `Message`s and engine events → public wire events.
 pub mod project;
+mod rate_limit;
 /// Routing: the axum routers and handlers for every surface, over [`state::ManagedState`]
 /// and the resource stores.
 mod routes;
@@ -47,6 +48,7 @@ mod state;
 pub mod work_queue;
 
 pub use env_registry::{EnvItem, EnvRegistry, EnvUpdate, InMemoryEnvRegistry};
+pub use rate_limit::{ManagedRateLimiter, ManagedRateLimits, enforce_managed_rate_limit};
 pub use routes::agents_registry::{
     AgentClientToolView, AgentConfigSource, AgentConfigView, AgentMcpServerView,
     AgentRegistryState, ManagedAgentError, ManagedAgentRepository, agents_router,
@@ -58,7 +60,7 @@ pub use routes::deployments::{
 pub use routes::environments::{EnvironmentState, environments_router};
 pub use routes::user_profiles::{UserProfileState, user_profiles_router};
 pub use routes::vaults::{McpProbe, McpProbeStatus, VaultState, vault_router};
-pub use routes::{WorkspaceScope, enforce_managed_beta, router};
+pub use routes::{MEMORY_BETA, SKILLS_BETA, WorkspaceScope, enforce_managed_beta, router};
 // The session-repository port family now lives in `awaken-session-contract`;
 // re-exported so existing `awaken_protocol_managed::…` paths keep resolving.
 pub use awaken_ext_memory::{

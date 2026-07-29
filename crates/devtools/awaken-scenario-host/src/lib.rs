@@ -7,12 +7,14 @@
 mod acp_gateway;
 mod attempt_credential;
 mod composition;
+mod delegation;
 mod deployment;
 mod model_publication;
 mod models;
 pub use crate::models::*;
 pub use acp_gateway::build_acp_gateway_router;
 pub use composition::build_unscoped_resource_router;
+pub use delegation::build_delegation_router;
 pub use deployment::scenario_deployment;
 
 mod scenario_shell;
@@ -26,12 +28,12 @@ use scenario_shell::{scenario_argv, scenario_host_acp_cli, scenario_shell_argv};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::content::extract_text;
 use awaken_agent_contract::agent::message::Role;
 use awaken_protocol_managed::ManagedState;
 use awaken_provider_genai::{AdapterKind, GenaiExecutor};
 use awaken_runtime_contract::StaticPublishedAgentSnapshots;
-use awaken_runtime_contract::agent_bindings::AgentBindings;
+use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
@@ -362,7 +364,18 @@ const FAKE_ACP_JSONRPC_SCRIPT: &str = "while IFS= read -r line; do \
         *'\"id\":2'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s1\"}}';; \
         *'\"id\":3'*) \
           printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"tool_call\",\"toolCallId\":\"c1\",\"title\":\"read\",\"rawInput\":{\"path\":\"a.txt\"}}}}'; \
-          printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"tool_call_update\",\"toolCallId\":\"c1\",\"status\":\"completed\",\"content\":[{\"type\":\"content\",\"content\":{\"type\":\"text\",\"text\":\"file body\"}}]}}}'; \
+          payload=$(/usr/bin/head -c 100001 /dev/zero | /usr/bin/tr '\\000' x); \
+          printf '%s%s%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"tool_call_update\",\"toolCallId\":\"c1\",\"status\":\"completed\",\"content\":[{\"type\":\"content\",\"content\":{\"type\":\"text\",\"text\":\"file body ' \"$payload\" '\"}}]}}}'; \
+          spill=''; attempts=0; \
+          while [ \"$attempts\" -lt 100 ] && [ -z \"$spill\" ]; do \
+            for candidate in \"$AWAKEN_PROJECT_DIR\"/.awaken/tool-results/*.txt; do \
+              if [ -f \"$candidate\" ]; then spill=\"$candidate\"; break; fi; \
+            done; \
+            attempts=$((attempts + 1)); \
+            if [ -z \"$spill\" ]; then /usr/bin/sleep 0.01; fi; \
+          done; \
+          bytes=''; if [ -n \"$spill\" ]; then bytes=$(/usr/bin/wc -c < \"$spill\"); fi; \
+          printf '%s%s%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"acp-spill-readable=' \"$bytes\" '\"}}}}'; \
           printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"acp-jsonrpc reply\"}}}}'; \
           printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'; \
           exit 0;; \
@@ -454,21 +467,21 @@ pub fn build_acp_relaunch_failure_router() -> Router {
 /// [`build_acp_router`]'s official-wire twin: `acp:*` sessions drive the fake agent
 /// over real ACP JSON-RPC (the [`awaken_run_executor_acp::Codec::Acp`] driver),
 /// proving the production codec end-to-end. `AWAKEN_MODEL_MODE=acp-jsonrpc`.
-pub fn build_acp_jsonrpc_router() -> Router {
+pub async fn build_acp_jsonrpc_router() -> Router {
     let launch = awaken_run_executor_acp::AcpLaunch::custom(
         scenario_shell_argv(FAKE_ACP_JSONRPC_SCRIPT),
         vec![],
     );
-    let source = Arc::new(
-        awaken_run_executor_acp::SubprocessChannelSource::new(launch)
-            .with_codec(awaken_run_executor_acp::Codec::Acp),
-    );
-    let acp = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
-    mount_with_host_backend_publication(
-        resource_host(Arc::new(EchoModel), "awaken").with_acp(acp),
-        "acp-agent",
-        "acp:claude",
-    )
+    let mut deployment = scenario_deployment();
+    deployment.sandbox_tier = awaken_session_executor::SandboxTier::Local;
+    let host = resource_host_with_deployment(Arc::new(OversizedToolModel), "awaken", deployment)
+        .with_gate_override(Arc::new(AllowAllGate))
+        .with_acp_launch_source(
+            awaken_server::relay_hand_executor_factory(),
+            awaken_session_executor::LaunchSource::FixedAcp(Box::new(launch)),
+        )
+        .await;
+    mount_with_host_backend_publication(host, "acp-agent", "acp:claude")
 }
 
 /// Durable allow/deny coverage for ACP `session/request_permission`, through the
@@ -588,8 +601,9 @@ const FAKE_ACP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_acp::A
 /// `session/new` request it received carried the session's MCP server and, if so,
 /// whether the endpoint is the host-owned loopback relay rather than a provider endpoint
 /// carrying a raw vault token. It captures the `session/new` line (`id:2`) and, on the
-/// prompt (`id:3`), classifies it into its agent message: `saw-calc` if the `calc` server
-/// name crossed, `host-relay` if the URL points at the per-session loopback relay. The
+/// prompt (`id:3`), classifies it into its agent message: `saw-calc`/`saw-search`
+/// when that exact server name crossed, `host-relay` if the URL points at the
+/// per-session loopback relay. The
 /// managed-API e2e can therefore assert the whole D6→D5 chain (session `mcp_servers` →
 /// staged → host relay → `session/new`) without exposing authorization material to the
 /// external ACP process. Any retained `session-mcp:` credential marker is classified as
@@ -599,7 +613,7 @@ const FAKE_ACP_MCP_ECHO_SCRIPT: &str = "while IFS= read -r line; do \
         *'\"id\":1'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}';; \
         *'\"id\":2'*) SN=\"$line\"; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s1\"}}';; \
         *'\"id\":3'*) \
-          N=noname; case \"$SN\" in *calc*) N=saw-calc;; esac; \
+          N=noname; case \"$SN\" in *search*) N=saw-search;; *calc*) N=saw-calc;; esac; \
           A=noref; case \"$SN\" in *'/sesn_'*) A=host-relay;; *'session-mcp:'*) A=credential-leaked;; esac; \
           printf '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"mcp %s %s\"}}}}\\n' \"$N\" \"$A\"; \
           printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'; \
@@ -809,7 +823,9 @@ pub async fn build_acp_container_router() -> Router {
     let publication = fixed_host_backend_publication(
         "namespace-agent",
         "acp:custom",
-        vec![delivered_skill.into()],
+        vec![awaken_agent_contract::AgentSkillBinding::custom(
+            delivered_skill,
+        )],
     );
     let host = resource_host_with_deployment(Arc::new(EchoModel), "awaken", deployment)
         .with_agent_publications(publication.clone());
@@ -1369,33 +1385,6 @@ pub fn build_remote_hand_router() -> Router {
     mount(Arc::new(host))
 }
 
-/// Auto-allows every tool call, so an action tool (`bash`) runs without a HITL
-/// pause — the remote-hand e2e asserts the hand's execution, not the gate.
-pub fn build_delegation_router() -> Router {
-    let (model, model_ref) = scenario_model(Arc::new(DelegatingModel), "delegate");
-    let snapshot = |agent_id: &str, delegates: Vec<AgentId>| {
-        let mut tools = awaken_session_executor::authorable_tools();
-        if delegates.is_empty() {
-            tools.retain(|tool| tool.kind != ToolKind::AgentDelegation);
-        }
-        ExecutableAgentSnapshot::builder(agent_id)
-            .model(ModelBinding::new("default", &model_ref, "default"))
-            .tools(tools)
-            .agent_bindings(AgentBindings {
-                delegate_ids: delegates,
-                ..Default::default()
-            })
-            .build()
-    };
-    let publications = StaticPublishedAgentSnapshots::try_new([
-        snapshot("assistant", vec![AgentId("researcher".into())]),
-        snapshot("researcher", Vec::new()),
-    ])
-    .expect("valid scenario Agent publications");
-    let host = resource_host(model, model_ref).with_agent_publications(Arc::new(publications));
-    mount(Arc::new(host))
-}
-
 /// A router whose agent activates the tool state machine (the state-machine e2e).
 /// The machine defines `glob` as a single transition out of the initial state, so
 /// the driving model's first `glob` advances it (emitting a context message) and
@@ -1606,7 +1595,11 @@ pub fn build_remote_delegation_router() -> Router {
         .model(ModelBinding::new("default", &model_ref, "default"))
         .tools(tools)
         .agent_bindings(AgentBindings {
-            delegate_ids: vec![AgentId("researcher".into())],
+            delegates: vec![AgentDelegateBinding {
+                agent_id: AgentId("researcher".into()),
+                source_revision: None,
+                recursive_self: false,
+            }],
             ..Default::default()
         })
         .build();
@@ -1639,24 +1632,7 @@ impl LlmExecutor for SkillDrivingModel {
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         let last = request.messages.last().expect("a message");
-        // A tool result carries its text in nested blocks, which `block_text` skips;
-        // read those too so the catalog (a tool result) is visible to the model.
-        let last_text: String = last
-            .content
-            .iter()
-            .flat_map(|b| match b {
-                ContentBlock::Text { text } => vec![text.clone()],
-                ContentBlock::ToolResult { content, .. } => content
-                    .iter()
-                    .filter_map(|inner| match inner {
-                        ContentBlock::Text { text } => Some(text.clone()),
-                        _ => None,
-                    })
-                    .collect(),
-                _ => vec![],
-            })
-            .collect::<Vec<_>>()
-            .join("");
+        let last_text = extract_text(&last.content);
         let output = match last.role {
             Role::User => AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "l".into(),

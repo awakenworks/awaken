@@ -9,6 +9,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { withScenarioServer, pass } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
+const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
 
 async function reply(client, sessionId) {
   const events = [];
@@ -30,7 +31,10 @@ async function turn(client, sessionId, text) {
 async function main() {
   await withScenarioServer('memory', 'memory', 38197, async (baseUrl) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
-    const store = await client.post('/v1/memory_stores', { body: { name: 'cross-session-memory' } });
+    const store = await client.post('/v1/memory_stores', {
+      body: { name: 'cross-session-memory' },
+      headers: MEMORY_HEADERS,
+    });
     const session = () => client.beta.sessions.create({
       agent: 'assistant',
       betas: BETAS,

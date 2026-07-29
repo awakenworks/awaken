@@ -16,6 +16,8 @@
 // | S3 | valid | archived | preview clears |
 // | S4 | invalid expression/timezone | any | 400 before persistence |
 // | S5 | due + archived Environment | active | failed run then exact auto-pause |
+// | S6 | primary Agent archived | any | Deployment archives in same operation; no run |
+// | S7 | Deployment archived | terminal | mutation/manual run reject |
 //
 // Run: (from e2e/)  node management_deployment_schedule_e2e.mjs
 
@@ -111,6 +113,34 @@ async function main() {
     }));
     assert.equal(badTimezone, 400, `unknown IANA timezone should be 400, got ${badTimezone}`);
     pass('unknown IANA timezone -> 400');
+
+    // S6/S7 use the real shared Agent repository + DeploymentState assembled by
+    // the management composition. Archiving the primary Agent cascades before
+    // the Agent request returns; no scheduler race may create a run afterward.
+    const primary = await client.beta.agents.create({
+      name: 'scheduled-primary', model: 'claude-opus-4-8', betas: BETAS,
+    });
+    const primaryDeployment = await client.beta.deployments.create({
+      agent: primary.id,
+      environment_id: 'env_1',
+      name: 'primary-archive-cascade',
+      initial_events: [{ type: 'user.message', content: [{ type: 'text', text: 'go' }] }],
+      schedule: { type: 'cron', expression: '* * * * *', timezone: 'UTC' },
+      betas: BETAS,
+    });
+    await client.beta.agents.archive(primary.id, { betas: BETAS });
+    const cascaded = await client.beta.deployments.retrieve(primaryDeployment.id, { betas: BETAS });
+    assert.ok(cascaded.archived_at, 'S6 primary Agent archive cascades synchronously');
+    const cascadeRuns = await drain(client.beta.deploymentRuns.list({
+      deployment_id: primaryDeployment.id, betas: BETAS,
+    }));
+    assert.equal(cascadeRuns.length, 0, 'S6 cascade creates no deployment run');
+    await assert.rejects(
+      () => client.beta.deployments.run(primaryDeployment.id, { betas: BETAS }),
+      (error) => error.status === 409,
+      'S7 archived Deployment cannot run manually',
+    );
+    pass('primary Agent archive cascades to terminal Deployment without a run');
 
     const archived = await client.beta.deployments.archive(dep.id, { betas: BETAS });
     assert.deepEqual(archived.schedule?.upcoming_runs_at ?? [], [], 'S3 archived schedule has no future fires');

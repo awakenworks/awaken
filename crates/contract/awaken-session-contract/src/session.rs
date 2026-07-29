@@ -410,7 +410,7 @@ pub trait SessionRuntime: Send + Sync {
     async fn resolve_session_skills(
         &self,
         _workspace_id: &str,
-        _skill_ids: &[String],
+        _skills: &[awaken_agent_contract::AgentSkillBinding],
     ) -> Result<Vec<crate::ResolvedSkillBinding>, RunError> {
         Ok(Vec::new())
     }
@@ -457,6 +457,20 @@ pub trait SessionRuntime: Send + Sync {
     /// (the deterministic in-process models).
     async fn session_usage(&self, _thread: &str) -> SessionUsage {
         SessionUsage::default()
+    }
+
+    /// Whether the thread's selected model accepts a system message after the
+    /// conversation has started. Runtimes whose models do not support this can
+    /// fail admission before the Managed adapter persists the inbound event.
+    async fn supports_mid_conversation_system(&self, _thread: &str) -> bool {
+        true
+    }
+
+    /// The tool currently blocking `thread`, if any. Admission uses this
+    /// read-only projection to reject events that cannot legally precede the
+    /// matching result; resume remains the sole mutating authority.
+    async fn pending_tool(&self, _thread: &str) -> Option<Pending> {
+        None
     }
 
     /// Buffer a system message; it is prepended to the next turn's input.

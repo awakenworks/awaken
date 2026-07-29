@@ -46,6 +46,43 @@ pub enum AgentSkill {
     },
 }
 
+impl AgentSkill {
+    #[must_use]
+    pub fn into_binding(self) -> awaken_agent_contract::AgentSkillBinding {
+        let (kind, skill_id, version) = match self {
+            Self::Anthropic { skill_id, version } => (
+                awaken_agent_contract::AgentSkillKind::Anthropic,
+                skill_id,
+                version,
+            ),
+            Self::Custom { skill_id, version } => (
+                awaken_agent_contract::AgentSkillKind::Custom,
+                skill_id,
+                version,
+            ),
+        };
+        awaken_agent_contract::AgentSkillBinding {
+            kind,
+            skill_id,
+            version: version.unwrap_or_else(|| "latest".into()),
+        }
+    }
+
+    #[must_use]
+    pub fn from_binding(binding: awaken_agent_contract::AgentSkillBinding) -> Self {
+        match binding.kind {
+            awaken_agent_contract::AgentSkillKind::Anthropic => Self::Anthropic {
+                skill_id: binding.skill_id,
+                version: Some(binding.version),
+            },
+            awaken_agent_contract::AgentSkillKind::Custom => Self::Custom {
+                skill_id: binding.skill_id,
+                version: Some(binding.version),
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum MultiagentRosterEntry {

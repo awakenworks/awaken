@@ -109,6 +109,11 @@ pub struct RuntimeRunContext {
     /// present routes every already-gated call through this port — e.g. a remote
     /// hand. The kernel never learns placement; it calls the port either way.
     pub tool_executor: Option<Arc<dyn crate::tool::ToolExecutor>>,
+    /// Host-owned materializer for model-visible tool results. Native and ACP
+    /// executors both consult this after execution/projection and before commit,
+    /// so oversized content has one sandbox-backed policy rather than per-tool
+    /// truncation paths.
+    pub tool_output_spiller: Option<Arc<dyn crate::tool::ToolOutputSpiller>>,
     /// Optional per-Run narrowing of the backend's tool permission authority.
     /// External runtimes use this for purpose-specific fail-closed overlays; it
     /// may restrict the configured policy but is never a capability grant.
@@ -278,6 +283,16 @@ impl RuntimeRunContext {
     #[must_use]
     pub fn with_tool_executor(mut self, executor: Arc<dyn crate::tool::ToolExecutor>) -> Self {
         self.tool_executor = Some(executor);
+        self
+    }
+
+    /// Bind the Session's one tool-output materialization policy.
+    #[must_use]
+    pub fn with_tool_output_spiller(
+        mut self,
+        spiller: Arc<dyn crate::tool::ToolOutputSpiller>,
+    ) -> Self {
+        self.tool_output_spiller = Some(spiller);
         self
     }
 

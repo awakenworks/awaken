@@ -857,21 +857,6 @@ impl RawTool for GetPlatformCapabilities {
 /// The flattened full-config input for [`CREATE_DRAFT_TOOL`]. Every field but `id`
 /// and `instructions` is optional; `model` pins a model id (omit → `Auto`).
 #[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum SkillSelection {
-    Id(String),
-    Reference { id: String },
-}
-
-impl SkillSelection {
-    fn into_id(self) -> String {
-        match self {
-            Self::Id(id) | Self::Reference { id } => id,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DraftArgs {
     id: String,
@@ -897,7 +882,7 @@ struct DraftArgs {
     #[serde(default)]
     mcp_servers: Vec<AgentMcpServerBinding>,
     #[serde(default)]
-    skills: Vec<SkillSelection>,
+    skills: Vec<awaken_config_store::AgentSkillBinding>,
     #[serde(default)]
     multiagent: Option<MultiagentConfig>,
     #[serde(default)]
@@ -943,11 +928,7 @@ impl RawTool for DraftAgent {
         let plugin_ids = plugin_ids_of(&args.plugin_config);
         let resources = args.resources;
         let mcp_servers = args.mcp_servers;
-        let skill_ids = args
-            .skills
-            .into_iter()
-            .map(SkillSelection::into_id)
-            .collect();
+        let skills = args.skills;
         let config = AgentConfig {
             id: args.id,
             instructions: args.instructions,
@@ -968,7 +949,7 @@ impl RawTool for DraftAgent {
             tool_overrides: args.tool_overrides,
             recovery_policies: Default::default(),
             mcp_servers,
-            skill_ids,
+            skills,
             multiagent: args.multiagent,
             hand: None,
             disabled_at: None,
@@ -1028,7 +1009,7 @@ struct PatchFields {
     #[serde(default)]
     mcp_servers: Option<Vec<AgentMcpServerBinding>>,
     #[serde(default)]
-    skills: Option<Vec<SkillSelection>>,
+    skills: Option<Vec<awaken_config_store::AgentSkillBinding>>,
     #[serde(default)]
     multiagent: Option<MultiagentConfig>,
     #[serde(default)]
@@ -1114,7 +1095,7 @@ impl RawTool for PatchAgent {
             config.mcp_servers = v;
         }
         if let Some(v) = patch.skills {
-            config.skill_ids = v.into_iter().map(SkillSelection::into_id).collect();
+            config.skills = v;
         }
         if let Some(v) = patch.multiagent {
             config.multiagent = Some(v);

@@ -25,7 +25,9 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_runtime_contract::tool::{RawTool, ToolError, ToolExecutor, ToolOutput};
+use awaken_runtime_contract::tool::{
+    RawTool, ToolError, ToolExecutor, ToolOutput, ToolOutputSpiller,
+};
 
 /// First inference asks for a tool call; the second ends with text.
 struct ToolThenText {
@@ -71,6 +73,31 @@ struct EchoTool {
 
 struct OperationProbe {
     seen: Arc<Mutex<Option<String>>>,
+}
+
+struct SpillProbe {
+    fail: bool,
+    seen: Arc<Mutex<Vec<(String, String, String)>>>,
+}
+
+#[async_trait::async_trait]
+impl ToolOutputSpiller for SpillProbe {
+    async fn spill(
+        &self,
+        run_id: &RunId,
+        call_id: &str,
+        content: String,
+    ) -> Result<String, ToolError> {
+        self.seen
+            .lock()
+            .unwrap()
+            .push((run_id.0.clone(), call_id.to_string(), content.clone()));
+        if self.fail {
+            Err(ToolError::Execution("spill unavailable".into()))
+        } else {
+            Ok(format!("preview: {content}"))
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -186,6 +213,76 @@ async fn allowed_tool_call_executes_and_feeds_result_back() {
         .collect();
     assert_eq!(tool_results.len(), 1);
     assert!(tool_results[0].text_content().contains("echoed"));
+}
+
+#[tokio::test]
+async fn native_tool_results_use_the_bound_spiller_and_fail_closed() {
+    // Cause-effect graph:
+    // C1=Native executor produced a result; C2=spiller succeeds; C3=spiller fails.
+    // C1+C2 -> transformed content is the only durable/model-visible result.
+    // C1+C3 -> Run errors before a Tool result or completed payload commits.
+    //
+    // | Rule | Native result | spill | Expected effect |
+    // | N1 | yes | success | one call with stable run/call; preview committed |
+    // | N2 | yes | failure | execution error; no Tool-role result committed |
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(ToolThenText::new()))
+        .with_tool(Arc::new(EchoTool {
+            ran: Arc::new(AtomicUsize::new(0)),
+        }));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    runtime
+        .execute(
+            activation(),
+            RuntimeRunContext::new()
+                .with_commit(commit.clone())
+                .with_tool_output_spiller(Arc::new(SpillProbe {
+                    fail: false,
+                    seen: seen.clone(),
+                })),
+        )
+        .await
+        .expect("N1");
+    assert_eq!(seen.lock().unwrap().len(), 1, "N1");
+    assert_eq!(seen.lock().unwrap()[0].0, "run-1", "N1 stable run id");
+    assert_eq!(seen.lock().unwrap()[0].1, "call-1", "N1 stable call id");
+    assert!(
+        commit
+            .committed()
+            .messages
+            .iter()
+            .any(|message| message.role == Role::Tool
+                && message.text_content().starts_with("preview: echoed:")),
+        "N1"
+    );
+
+    let failed_commit = Arc::new(MemoryCommitCoordinator::new());
+    let failed = Runtime::new()
+        .with_llm(Arc::new(ToolThenText::new()))
+        .with_tool(Arc::new(EchoTool {
+            ran: Arc::new(AtomicUsize::new(0)),
+        }))
+        .execute(
+            activation(),
+            RuntimeRunContext::new()
+                .with_commit(failed_commit.clone())
+                .with_tool_output_spiller(Arc::new(SpillProbe {
+                    fail: true,
+                    seen: Arc::new(Mutex::new(Vec::new())),
+                })),
+        )
+        .await
+        .expect_err("N2");
+    assert!(failed.to_string().contains("spill unavailable"), "N2");
+    assert!(
+        failed_commit
+            .committed()
+            .messages
+            .iter()
+            .all(|message| message.role != Role::Tool),
+        "N2"
+    );
 }
 
 #[tokio::test]

@@ -25,7 +25,7 @@ fs.rmSync(E2E_HOME_ROOT, { recursive: true, force: true });
 fs.mkdirSync(`${E2E_HOME}/.awaken`, { recursive: true });
 fs.writeFileSync(
   `${E2E_HOME}/.awaken/config.toml`,
-  `data_dir = ${JSON.stringify(`${E2E_HOME_ROOT}/data`)}\n`,
+  `data_dir = ${JSON.stringify(`${E2E_HOME_ROOT}/data`)}\nidentity_mode = "no-login"\n`,
 );
 process.on('exit', () => fs.rmSync(E2E_HOME_ROOT, { recursive: true, force: true }));
 

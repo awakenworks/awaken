@@ -22,10 +22,14 @@ import Anthropic from '@anthropic-ai/sdk';
 import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38513);
-const BETAS = ['managed-agents-2026-04-01'];
+const BETAS = ['agent-memory-2026-07-22'];
 const STORE_DIR = path.join(os.tmpdir(), `awaken-memory-repository-durable-e2e-${process.pid}`);
 
-const client = () => new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
+const client = () => new Anthropic({
+  apiKey: 'e2e-dummy',
+  baseURL: `http://127.0.0.1:${PORT}`,
+  defaultHeaders: { 'anthropic-beta': BETAS[0] },
+});
 const drain = async (p) => {
   const out = [];
   for await (const x of p) out.push(x);

@@ -870,6 +870,13 @@ impl SharedHost {
         self.model_ref.clone()
     }
 
+    /// The primary model currently selected for `thread`, including a Managed
+    /// per-session/per-turn override. This is a read-only projection of the same
+    /// inference-routing source that execution consumes.
+    pub fn model_for_thread(&self, thread: &str) -> String {
+        self.inference_routing.model_ref(thread, &self.model_ref)
+    }
+
     /// The set of client-executed tool ids (model-visible, host-unregistered).
     pub fn client_tools(&self) -> &HashSet<String> {
         &self.client_tools
@@ -907,10 +914,20 @@ impl SharedHost {
         &self,
         thread: &str,
         sandbox: Arc<crate::session_environment::SessionEnvironment>,
+        permission: Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>,
         commit: Arc<crate::store::HostCommit>,
-        allowed_targets: HashSet<awaken_runtime_contract::snapshot::AgentId>,
+        parent_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
     ) -> Result<Option<Arc<dyn RunDelegationService>>, HostError> {
-        if allowed_targets.is_empty() {
+        let Some(parent_snapshot) = parent_snapshot else {
+            return Ok(None);
+        };
+        if parent_snapshot
+            .resolved_spec
+            .plugin_config
+            .agent
+            .delegates
+            .is_empty()
+        {
             return Ok(None);
         }
         let scheduler = if self.deployment.durable {
@@ -932,19 +949,29 @@ impl SharedHost {
         } else {
             None
         };
+        let acp = self.acp.clone().map(|acp| {
+            let sandbox = sandbox.clone();
+            let permission = permission.clone();
+            Arc::new(move |backend| {
+                Ok(
+                    acp.executor_for(sandbox.clone(), permission.clone(), backend, Vec::new())
+                        as Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
+                )
+            }) as crate::agent_runner::ChildAcpExecutorFactory
+        });
         let service = HostRunDelegationService::new(
             self.llm.clone(),
             sandbox,
-            allowed_targets,
+            parent_snapshot,
             crate::agent_runner::ChildExecutionAdapters {
+                acp,
                 remote: self.remote_attempt_executor.clone(),
                 remote_credentials: self.remote_credential_realization.clone(),
             },
-        )
-        .with_publications(
             self.agent_publications.clone(),
             self.thread_workspace(thread),
         )
+        .map_err(|error| HostError::bad_request(error.to_string()))?
         .with_scheduler(scheduler);
         Ok(Some(Arc::new(service)))
     }

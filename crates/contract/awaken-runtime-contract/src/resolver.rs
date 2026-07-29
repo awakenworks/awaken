@@ -44,6 +44,19 @@ pub trait PublishedAgentSnapshotSource: Send + Sync {
         workspace: &str,
         fingerprint: &crate::resolved::CatalogFingerprint,
     ) -> Option<crate::snapshot::ExecutableAgentSnapshot>;
+
+    /// Resolve the publication compiled from one exact authoring revision.
+    /// Embedded sources without revision history may leave this unsupported;
+    /// their bindings use `source_revision: None` and resolve current once when
+    /// the parent Session is constructed.
+    fn at_revision(
+        &self,
+        _workspace: &str,
+        _agent_id: &crate::snapshot::AgentId,
+        _source_revision: u64,
+    ) -> Option<crate::snapshot::ExecutableAgentSnapshot> {
+        None
+    }
 }
 
 /// Immutable publication source for embedded hosts and tests that do not run the

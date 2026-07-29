@@ -26,7 +26,7 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
+use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput, ToolOutputSpiller};
 
 /// Calls `echo` once, then ends with text on the next inference.
 struct ToolThenText {
@@ -73,6 +73,20 @@ impl RawTool for EchoTool {
 }
 
 struct SuspendGate;
+
+struct PrefixSpiller;
+
+#[async_trait::async_trait]
+impl ToolOutputSpiller for PrefixSpiller {
+    async fn spill(
+        &self,
+        _run_id: &RunId,
+        _call_id: &str,
+        content: String,
+    ) -> Result<String, ToolError> {
+        Ok(format!("preview: {content}"))
+    }
+}
 
 #[async_trait::async_trait]
 impl ToolGateHook for SuspendGate {
@@ -356,12 +370,17 @@ async fn second_resume_after_completion_is_not_awaiting() {
 
 #[tokio::test]
 async fn resume_with_a_client_tool_result_is_used_directly() {
+    // Cause-effect rule R-EXT: an External/permission wait resumed with a client
+    // ToolResult must pass through the same spiller as a freshly executed result;
+    // the client payload is never a bypass around the oversized-output boundary.
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(ran.clone());
     let commit = Arc::new(MemoryCommitCoordinator::new());
     suspend(&commit, &runtime).await;
 
-    let context = RuntimeRunContext::new().with_commit(commit.clone());
+    let context = RuntimeRunContext::new()
+        .with_commit(commit.clone())
+        .with_tool_output_spiller(Arc::new(PrefixSpiller));
     let outcome = runtime
         .resume(
             resume_command(ResumeResult::ToolResult(ToolOutput::ok(
@@ -374,14 +393,14 @@ async fn resume_with_a_client_tool_result_is_used_directly() {
         .await
         .expect("resume runs");
     assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
-    // The client's result is fed back verbatim; the host tool never ran.
+    // The client's result is materialized directly; the host tool never ran.
     assert_eq!(ran.load(Ordering::SeqCst), 0);
     assert!(
         commit
             .committed()
             .messages
             .iter()
-            .any(|m| m.role == Role::Tool && m.text_content() == "client-computed")
+            .any(|m| m.role == Role::Tool && m.text_content() == "preview: client-computed")
     );
 }
 

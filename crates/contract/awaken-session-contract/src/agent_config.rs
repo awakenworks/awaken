@@ -267,7 +267,7 @@ pub struct AgentConfigView {
     pub mcp_servers: Vec<AgentMcpServerView>,
     /// The delivered Skills selected by this Agent. Empty is an intentional empty
     /// selection for newly published configs, not "all global skills".
-    pub skill_ids: Vec<String>,
+    pub skills: Vec<awaken_agent_contract::AgentSkillBinding>,
     /// Published Agent ids this Agent may invoke through `agent_run`.
     pub delegate_ids: Vec<String>,
     /// Resources bound to the published Agent. The runtime mounts these at Session
@@ -298,5 +298,62 @@ pub trait AgentConfigSource: Send + Sync {
     /// compatibility id, so lifecycle denial needs a distinct signal.
     fn agent_unavailable_in(&self, _workspace_id: &str, _agent_id: &str) -> bool {
         false
+    }
+
+    /// One direct delegated Agent whose current aggregate is unavailable. The
+    /// coordinator publication freezes executable revisions, but scheduled
+    /// deployment admission must still honor a later subagent archive.
+    fn unavailable_delegate_in(&self, workspace_id: &str, agent_id: &str) -> Option<String> {
+        self.agent_view_in(workspace_id, agent_id)?
+            .delegate_ids
+            .into_iter()
+            .find(|delegate| self.agent_unavailable_in(workspace_id, delegate))
+    }
+}
+
+#[cfg(test)]
+mod agent_config_source_tests {
+    use super::*;
+
+    struct Source;
+
+    impl AgentConfigSource for Source {
+        fn agent_view_in(&self, workspace: &str, agent: &str) -> Option<AgentConfigView> {
+            (workspace == "workspace" && agent == "coordinator").then(|| AgentConfigView {
+                model: None,
+                backend_ref: "native".into(),
+                system: None,
+                tool_ids: Vec::new(),
+                toolsets: Vec::new(),
+                client_tools: Vec::new(),
+                mcp_servers: Vec::new(),
+                skills: Vec::new(),
+                delegate_ids: vec!["live".into(), "archived".into()],
+                resources: Vec::new(),
+                environment: None,
+            })
+        }
+
+        fn agent_unavailable_in(&self, workspace: &str, agent: &str) -> bool {
+            workspace == "workspace" && agent == "archived"
+        }
+    }
+
+    #[test]
+    fn scheduled_delegate_admission_follows_the_current_lifecycle_table() {
+        // Delegate lifecycle table: D1 no coordinator view -> none; D2 all live
+        // delegates are skipped; D3 first archived direct delegate is returned.
+        // Exact executable revision pinning remains unchanged; this is only the
+        // go-forward scheduled-launch lifecycle fence.
+        assert_eq!(
+            Source.unavailable_delegate_in("other", "coordinator"),
+            None,
+            "D1"
+        );
+        assert_eq!(
+            Source.unavailable_delegate_in("workspace", "coordinator"),
+            Some("archived".into()),
+            "D2/D3"
+        );
     }
 }

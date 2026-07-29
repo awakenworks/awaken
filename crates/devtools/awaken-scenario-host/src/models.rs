@@ -38,6 +38,77 @@ impl LlmExecutor for EchoModel {
     }
 }
 
+/// Echoes ordinary turns, but drives a real Native builtin-tool loop for the
+/// oversized-output e2e. It then uses the returned relative path in another real
+/// builtin tool call, proving the model can access the complete sandbox file.
+pub struct OversizedToolModel;
+
+fn materialized_tool_output_path(text: &str) -> Option<&str> {
+    text.rsplit_once("complete output was written to ")?
+        .1
+        .split_once(". Read that file")
+        .map(|(path, _)| path)
+}
+
+#[async_trait::async_trait]
+impl LlmExecutor for OversizedToolModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let last_user = request
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.role == Role::User)
+            .map(|message| block_text(&message.content))
+            .unwrap_or_default();
+        if !last_user.contains("oversized-tool-output") {
+            return EchoModel.infer(request).await;
+        }
+        if let Some(result) = request
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.role == Role::Tool)
+        {
+            let text = block_text(&result.content);
+            if let Some(path) = materialized_tool_output_path(&text) {
+                return Ok(ChatResponse {
+                    output: AssistantOutput::from_tool_calls(vec![ToolCall {
+                        call_id: "verify-native-spill-1".into(),
+                        tool_id: "bash".into(),
+                        arguments: serde_json::json!({
+                            "command": format!("/usr/bin/wc -c < {path}")
+                        }),
+                    }]),
+                    usage: None,
+                    stop_reason: None,
+                });
+            }
+            return Ok(ChatResponse {
+                output: AssistantOutput::text(format!(
+                    "native oversized tool spill readable bytes={}",
+                    text.trim()
+                )),
+                usage: None,
+                stop_reason: None,
+            });
+        }
+        Ok(ChatResponse {
+            output: AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "oversized-native-1".into(),
+                tool_id: "bash".into(),
+                arguments: serde_json::json!({
+                    "command": "/usr/bin/head -c 100001 /dev/zero | /usr/bin/tr '\\000' x"
+                }),
+            }]),
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
 /// A deterministic model that fails a turn on demand, so an e2e can observe the
 /// `session.error` projection. A user message containing `BOOM` returns a
 /// permanent (non-retryable) provider failure — surfaced as an internal
@@ -363,12 +434,12 @@ impl LlmExecutor for RemoteHandModel {
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         // The most recent tool result the (remote) hand returned, if any.
-        let hand_said = request.messages.iter().rev().find_map(|m| {
-            m.content.iter().find_map(|b| match b {
-                ContentBlock::ToolResult { content, .. } => Some(block_text(content)),
-                _ => None,
-            })
-        });
+        let hand_said = request
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.role == Role::Tool)
+            .map(|message| block_text(&message.content));
         let output = match hand_said {
             None => AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "bash-1".into(),
@@ -444,6 +515,66 @@ impl LlmExecutor for InstructionEchoModel {
     }
 }
 
+/// Registry-backed coordinator fixture: a coordinator delegates to the Agent id
+/// named after `delegate to `; a tool-free worker returns its frozen instructions.
+/// This makes an authored roster's source-revision pin observable end to end.
+pub struct RegistryDelegatingModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for RegistryDelegatingModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let has_delegation = request.tools.iter().any(|tool| tool.id == "agent_run");
+        if !has_delegation {
+            let system = request
+                .messages
+                .iter()
+                .rev()
+                .find(|message| message.role == Role::System)
+                .map(|message| block_text(&message.content))
+                .unwrap_or_default();
+            return Ok(ChatResponse {
+                output: AssistantOutput::text(format!("worker instructions: {system}")),
+                usage: None,
+                stop_reason: None,
+            });
+        }
+        let result = request
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.role == Role::Tool)
+            .map(|message| block_text(&message.content));
+        let output = match result {
+            Some(result) => AssistantOutput::text(format!("delegate said: {result}")),
+            None => {
+                let user = request
+                    .messages
+                    .iter()
+                    .find(|message| message.role == Role::User)
+                    .map(|message| block_text(&message.content))
+                    .unwrap_or_default();
+                let agent_id = user.strip_prefix("delegate to ").unwrap_or_default().trim();
+                AssistantOutput::from_tool_calls(vec![ToolCall {
+                    call_id: "registry-delegate".into(),
+                    tool_id: "agent_run".into(),
+                    arguments: serde_json::json!({
+                        "agent_id": agent_id,
+                        "input": "report your frozen instructions"
+                    }),
+                }])
+            }
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
 /// A deterministic model for the Outcome E2E. It acts as both the Worker and
 /// the default tool-free Judge, making the production Agent-Grader path
 /// observable without provider credentials.
@@ -509,16 +640,8 @@ impl LlmExecutor for CustomToolModel {
                 .messages
                 .iter()
                 .rev()
-                .find(|m| m.role == Role::Tool)
-                .map(|m| {
-                    m.content
-                        .iter()
-                        .filter_map(|b| match b {
-                            ContentBlock::ToolResult { content, .. } => Some(block_text(content)),
-                            _ => None,
-                        })
-                        .collect::<String>()
-                })
+                .find(|message| message.role == Role::Tool)
+                .map(|message| block_text(&message.content))
                 .unwrap_or_default();
             AssistantOutput::text(format!("got: {result}"))
         };
@@ -550,14 +673,7 @@ impl LlmExecutor for McpToolModel {
         if let Some(last) = request.messages.last()
             && last.role == Role::Tool
         {
-            let result: String = last
-                .content
-                .iter()
-                .filter_map(|b| match b {
-                    ContentBlock::ToolResult { content, .. } => Some(block_text(content)),
-                    _ => None,
-                })
-                .collect();
+            let result = block_text(&last.content);
             return Ok(ChatResponse {
                 output: AssistantOutput::text(format!("result: {result}")),
                 usage: None,
@@ -596,9 +712,11 @@ impl LlmExecutor for McpToolModel {
 }
 
 /// A deterministic model for the delegation e2e. When it holds `agent_run` it
-/// delegates (to `researcher`, or to `ghost` if the user asks for it) and then
-/// reports the delegate's result; without `agent_run` it answers plainly, so the
-/// same model serves as the delegate sub-agent.
+/// delegates (to Native `researcher`, ACP `acp-worker`, its explicit `self`
+/// copy, or `ghost`) and then
+/// reports the delegate's result. The self-copy task answers directly so the
+/// deterministic fixture proves one recursive edge without manufacturing an
+/// unrelated deeper orchestration tree.
 pub struct DelegatingModel;
 
 #[async_trait::async_trait]
@@ -627,31 +745,39 @@ impl LlmExecutor for DelegatingModel {
                 .find(|m| m.role == Role::User)
                 .map(|m| block_text(&m.content))
                 .unwrap_or_default();
+            if user.contains("self-copy task") {
+                return Ok(ChatResponse {
+                    output: AssistantOutput::text("self copy: 42"),
+                    usage: None,
+                    stop_reason: None,
+                });
+            }
             let agent_id = if user.contains("ghost") {
                 "ghost"
+            } else if user.contains("acp agent") {
+                "acp-worker"
+            } else if user.contains("self agent") {
+                "assistant"
             } else {
                 "researcher"
+            };
+            let input = if agent_id == "assistant" {
+                "self-copy task"
+            } else {
+                "do the research"
             };
             AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "d1".into(),
                 tool_id: "agent_run".into(),
-                arguments: serde_json::json!({ "agent_id": agent_id, "input": "do the research" }),
+                arguments: serde_json::json!({ "agent_id": agent_id, "input": input }),
             }])
         } else {
             let result = request
                 .messages
                 .iter()
                 .rev()
-                .find(|m| m.role == Role::Tool)
-                .map(|m| {
-                    m.content
-                        .iter()
-                        .filter_map(|b| match b {
-                            ContentBlock::ToolResult { content, .. } => Some(block_text(content)),
-                            _ => None,
-                        })
-                        .collect::<String>()
-                })
+                .find(|message| message.role == Role::Tool)
+                .map(|message| block_text(&message.content))
                 .unwrap_or_default();
             AssistantOutput::text(format!("delegate said: {result}"))
         };

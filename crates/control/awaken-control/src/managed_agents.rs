@@ -7,9 +7,11 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use awaken_agent_contract::AgentSkillBinding;
 use awaken_config_service::{ConfigPlane, RESERVED_ADMIN_SCOPE};
 use awaken_config_store::{
-    AgentConfig, AgentConfigRevision, AgentLifecycle, ConfigWrite, ModelSelection, MultiagentConfig,
+    AgentConfig, AgentConfigRevision, AgentLifecycle, ConfigWrite, ModelSelection,
+    MultiagentConfig, MultiagentTarget,
 };
 use awaken_protocol_managed::types::agent::{
     Agent, AgentCreateParams, AgentListParams, AgentSkill, AgentStatus, AgentTool,
@@ -126,6 +128,59 @@ impl ConfigPlaneManagedAgentRepository {
             Err(error) => Err(ManagedAgentError::Storage(error.to_string())),
         }
     }
+
+    async fn resolve_multiagent_references(
+        &self,
+        workspace_id: &str,
+        config: &mut AgentConfig,
+    ) -> Result<(), ManagedAgentError> {
+        let Some(multiagent) = config.multiagent.as_mut() else {
+            return Ok(());
+        };
+        multiagent
+            .validate(&config.id)
+            .map_err(ManagedAgentError::Invalid)?;
+        for target in &mut multiagent.agents {
+            let MultiagentTarget::Agent { id, version } = target else {
+                continue;
+            };
+            let current = self
+                .versioned_for_read(workspace_id, id)
+                .await?
+                .ok_or_else(|| {
+                    ManagedAgentError::Invalid(format!(
+                        "multiagent references unknown Agent `{id}`"
+                    ))
+                })?;
+            if current.config.lifecycle() != AgentLifecycle::Published {
+                return Err(ManagedAgentError::Invalid(format!(
+                    "multiagent Agent `{id}` is disabled or archived"
+                )));
+            }
+            let selected = match *version {
+                None => current,
+                Some(expected) => self
+                    .plane
+                    .list_revisions(&Self::scope(workspace_id), id)
+                    .await
+                    .map_err(ManagedAgentError::Storage)?
+                    .into_iter()
+                    .find(|revision| revision.revision == expected)
+                    .ok_or_else(|| {
+                        ManagedAgentError::Invalid(format!(
+                            "multiagent Agent `{id}` has no version {expected}"
+                        ))
+                    })?,
+            };
+            if selected.config.multiagent.is_some() {
+                return Err(ManagedAgentError::Invalid(format!(
+                    "multiagent Agent `{id}` is itself a coordinator; delegation depth is limited to one referenced level"
+                )));
+            }
+            *version = Some(selected.revision);
+        }
+        Ok(())
+    }
 }
 
 fn client_tools(tools: &[AgentTool]) -> Vec<ToolDescriptor> {
@@ -157,26 +212,22 @@ fn typed_mcp_servers(values: Vec<UrlMcpServer>) -> Vec<AgentMcpServerBinding> {
         .collect()
 }
 
-fn typed_skill_ids(values: Vec<AgentSkill>) -> Vec<String> {
-    values
-        .into_iter()
-        .map(|skill| match skill {
-            AgentSkill::Anthropic { skill_id, .. } | AgentSkill::Custom { skill_id, .. } => {
-                skill_id
-            }
-        })
-        .collect()
+fn typed_skills(values: Vec<AgentSkill>) -> Vec<AgentSkillBinding> {
+    values.into_iter().map(AgentSkill::into_binding).collect()
 }
 
-fn typed_multiagent(owner_id: &str, value: WireMultiagent) -> MultiagentConfig {
+fn typed_multiagent(value: WireMultiagent) -> MultiagentConfig {
     let WireMultiagent::Coordinator { agents } = value;
     MultiagentConfig {
-        agent_ids: agents
+        agents: agents
             .into_iter()
             .map(|entry| match entry {
-                MultiagentRosterEntry::Id(id) => id,
-                MultiagentRosterEntry::Reference(reference) => reference.id,
-                MultiagentRosterEntry::SelfReference(_) => owner_id.to_string(),
+                MultiagentRosterEntry::Id(id) => MultiagentTarget::Agent { id, version: None },
+                MultiagentRosterEntry::Reference(reference) => MultiagentTarget::Agent {
+                    id: reference.id,
+                    version: reference.version,
+                },
+                MultiagentRosterEntry::SelfReference(_) => MultiagentTarget::SelfReference,
             })
             .collect(),
     }
@@ -188,7 +239,7 @@ fn config_from_create(
 ) -> Result<AgentConfig, ManagedAgentError> {
     let model = params.model.into_config();
     let inference = inference_from_wire(model.speed, model.effort.map(|value| value.resolved()));
-    let multiagent = params.multiagent.map(|value| typed_multiagent(&id, value));
+    let multiagent = params.multiagent.map(typed_multiagent);
     let config = AgentConfig {
         id,
         instructions: params.system.unwrap_or_default(),
@@ -208,7 +259,7 @@ fn config_from_create(
         description: params.description,
         metadata: params.metadata,
         mcp_servers: typed_mcp_servers(params.mcp_servers),
-        skill_ids: typed_skill_ids(params.skills),
+        skills: typed_skills(params.skills),
         multiagent,
         hand: None,
         disabled_at: None,
@@ -217,11 +268,11 @@ fn config_from_create(
         recovery_policies: BTreeMap::new(),
         compaction: None,
     };
-    validate_managed_tool_bindings(&config)?;
+    validate_managed_agent_config(&config)?;
     Ok(config)
 }
 
-fn validate_managed_tool_bindings(config: &AgentConfig) -> Result<(), ManagedAgentError> {
+fn validate_managed_agent_config(config: &AgentConfig) -> Result<(), ManagedAgentError> {
     if config.mcp_servers.len() > 20 {
         return Err(ManagedAgentError::Invalid(
             "mcp_servers supports at most 20 entries".into(),
@@ -232,6 +283,20 @@ fn validate_managed_tool_bindings(config: &AgentConfig) -> Result<(), ManagedAge
         .iter()
         .map(|server| server.name.as_str())
         .collect::<std::collections::BTreeSet<_>>();
+    for server in &config.mcp_servers {
+        if !(1..=255).contains(&server.name.chars().count()) {
+            return Err(ManagedAgentError::Invalid(
+                "mcp_server name must be 1-255 characters".into(),
+            ));
+        }
+        if server.url.chars().count() > 2048
+            || awaken_agent_contract::McpTarget::identity(&server.url).is_err()
+        {
+            return Err(ManagedAgentError::Invalid(
+                "mcp_server url must be an HTTP(S) URL of at most 2048 characters".into(),
+            ));
+        }
+    }
     if server_names.len() != config.mcp_servers.len() {
         return Err(ManagedAgentError::Invalid(
             "mcp_servers names must be unique".into(),
@@ -283,6 +348,13 @@ fn validate_managed_tool_bindings(config: &AgentConfig) -> Result<(), ManagedAge
         return Err(ManagedAgentError::Invalid(format!(
             "every MCP server must have one mcp_toolset; missing {missing:?}"
         )));
+    }
+    awaken_agent_contract::validate_agent_skills(&config.skills)
+        .map_err(ManagedAgentError::Invalid)?;
+    if let Some(multiagent) = &config.multiagent {
+        multiagent
+            .validate(&config.id)
+            .map_err(ManagedAgentError::Invalid)?;
     }
     let declared_count = config.client_tools.len()
         + config
@@ -360,6 +432,7 @@ fn wire_tools(toolsets: &[ToolsetPolicy], client_tools: &[ToolDescriptor]) -> Ve
 }
 
 fn project(revision: AgentConfigRevision) -> Agent {
+    let revision_number = revision.revision;
     let config = revision.config;
     let id = config.id.clone();
     let model = config
@@ -381,7 +454,7 @@ fn project(revision: AgentConfigRevision) -> Agent {
         status,
         created_at: OBJECT_AT.to_string(),
         updated_at: OBJECT_AT.to_string(),
-        name: config.name.unwrap_or(id),
+        name: config.name.unwrap_or_else(|| id.clone()),
         description: config.description,
         model: model_config(model, config.inference),
         system: (!config.instructions.is_empty()).then_some(config.instructions),
@@ -396,19 +469,33 @@ fn project(revision: AgentConfigRevision) -> Agent {
             })
             .collect(),
         skills: config
-            .skill_ids
+            .skills
             .into_iter()
-            .map(|skill_id| AgentSkill::Custom {
-                skill_id,
-                version: Some("latest".into()),
-            })
+            .map(AgentSkill::from_binding)
             .collect(),
         tools,
         multiagent: config.multiagent.map(|value| WireMultiagent::Coordinator {
             agents: value
-                .agent_ids
+                .agents
                 .into_iter()
-                .map(MultiagentRosterEntry::Id)
+                .map(|target| match target {
+                    MultiagentTarget::Agent { id, version } => {
+                        MultiagentRosterEntry::Reference(
+                            awaken_protocol_managed::types::agent::AgentRosterReference {
+                                id,
+                                kind: awaken_protocol_managed::types::agent::AgentRosterReferenceKind::Agent,
+                                version: Some(version.unwrap_or(1)),
+                            },
+                        )
+                    }
+                    MultiagentTarget::SelfReference => MultiagentRosterEntry::Reference(
+                        awaken_protocol_managed::types::agent::AgentRosterReference {
+                            id: id.clone(),
+                            kind: awaken_protocol_managed::types::agent::AgentRosterReferenceKind::Agent,
+                            version: Some(revision_number),
+                        },
+                    ),
+                })
                 .collect(),
         }),
         version: revision.revision,
@@ -429,7 +516,9 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         }
         let scope = Self::scope(workspace_id);
         let id = new_agent_id(workspace_id);
-        let config = config_from_create(id.clone(), params)?;
+        let mut config = config_from_create(id.clone(), params)?;
+        self.resolve_multiagent_references(workspace_id, &mut config)
+            .await?;
         match self
             .plane
             .put_if_revision(&scope, &config, 0)
@@ -524,6 +613,11 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             .await
             .map_err(ManagedAgentError::Storage)?
             .ok_or(ManagedAgentError::NotFound)?;
+        if params.version == Some(0) {
+            return Err(ManagedAgentError::Invalid(
+                "version must be greater than or equal to 1".into(),
+            ));
+        }
         if params
             .version
             .is_some_and(|version| current.revision != version)
@@ -539,14 +633,24 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
                 "disabled or archived Agent cannot be updated".into(),
             ));
         }
-        let mut config = current.config;
+        let mut config = current.config.clone();
         if let Some(name) = params.name {
             config.name = Some(name);
         }
         if let Some(model) = params.model {
             let model = model.into_config();
+            let current_model = config
+                .model_binding
+                .resolved()
+                .map(|binding| binding.model_ref.as_str());
+            let preserve_effort =
+                current_model == Some(model.id.as_str()) && model.effort.is_none();
+            let prior_effort = config.inference.effort;
             config.inference =
                 inference_from_wire(model.speed, model.effort.map(|value| value.resolved()));
+            if preserve_effort {
+                config.inference.effort = prior_effort;
+            }
             config.model_binding = ModelSelection::pinned("", model.id, "");
         }
         if let Some(description) = params.description {
@@ -576,7 +680,7 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             config.mcp_servers = typed_mcp_servers(mcp_servers.unwrap_or_default());
         }
         if let Some(skills) = params.skills {
-            config.skill_ids = typed_skill_ids(skills.unwrap_or_default());
+            config.skills = typed_skills(skills.unwrap_or_default());
         }
         if let Some(tools) = params.tools {
             let tools = tools.unwrap_or_default();
@@ -585,9 +689,14 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             config.client_tools = client_tools(&tools);
         }
         if let Some(multiagent) = params.multiagent {
-            config.multiagent = multiagent.map(|multiagent| typed_multiagent(id, multiagent));
+            config.multiagent = multiagent.map(typed_multiagent);
         }
-        validate_managed_tool_bindings(&config)?;
+        validate_managed_agent_config(&config)?;
+        self.resolve_multiagent_references(workspace_id, &mut config)
+            .await?;
+        if config == current.config {
+            return Ok(project(current));
+        }
         match self
             .plane
             .put_if_revision(&scope, &config, current.revision)

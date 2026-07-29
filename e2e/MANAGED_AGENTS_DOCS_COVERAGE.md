@@ -11,6 +11,174 @@ static gate (`npm run test:conformance`) already pins awaken's event catalog +
 `MANAGED_BETA` + the serde golden to that SDK — the audit below is about *behavioral*
 coverage on top of that structural conformance.
 
+## Exhaustive contract baseline (2026-07-29)
+
+The current English sitemap contains 26 Managed Agents pages. This document is the
+single docs-driven coverage owner for all of them. `PROTOCOL_COMPATIBILITY_TEST_DESIGN.md`
+continues to own only the cross-protocol normalization method; tests must not duplicate
+the Managed state machine there or create one suite per documentation page.
+
+Files and Dreams are explicitly excluded from the implementation initiative that added
+this baseline. File behavior remains recorded in the traceability table so its existing
+coverage is visible, but it creates no new work. Dreams remains an explicit absent
+research-preview surface and likewise creates no implementation work.
+
+### Complete cause and effect inventory
+
+Every concrete test added under this initiative must carry a comment naming one rule
+from the decision tables below. The comment is the durable test-design record; a second
+case catalog must not be introduced.
+
+Causes:
+
+1. endpoint family and endpoint-specific beta-header set;
+2. caller identity, Workspace ownership, resource existence and lifecycle state;
+3. request schema, required fields, discriminators, counts, byte sizes and references;
+4. effective Agent version and create-time override composition;
+5. current Session/thread/deployment/environment status;
+6. tool kind, enabled state, permission policy and client decision/result;
+7. model, MCP, credential, network, package, Worker and sandbox availability;
+8. revision/CAS/idempotency key, concurrent mutation, retry and process-failure point;
+9. stream opt-in, connection timing, reconnect point and thread scope;
+10. cron instant/timezone/DST, webhook response and asynchronous job state;
+11. access mode, secret-injection location, retention and deletion/archival state.
+
+Effects:
+
+1. HTTP/SSE status and official DTO/error union;
+2. atomic rejection with no row, event, work item, sandbox or external side effect;
+3. version, metadata, configuration, credential and resource mutation;
+4. Session/thread/deployment/job state transition and stop reason;
+5. event type, identity, ordering, `processed_at`, usage and durable history;
+6. tool/network/package/repository/memory side effect or its denial;
+7. retry/reschedule/reclaim/auto-disable behavior;
+8. list/stream/reconnect completeness and deduplication;
+9. secret non-disclosure, egress scoping and Workspace isolation;
+10. idle/terminated/completed/failed/canceled terminal outcome.
+
+### Decision table A — request admission and endpoint headers
+
+| Rule | Endpoint | Required beta set | Other condition | Effect |
+|---|---|---|---|---|
+| A1 | ordinary Managed endpoint | `managed-agents-2026-04-01` | valid request | continue to domain validation |
+| A2 | ordinary Managed endpoint | missing Managed beta | any | reject before mutation |
+| A3 | memory-store endpoint | `agent-memory-2026-07-22` only | valid request | continue to memory validation |
+| A4 | memory-store endpoint | Managed + memory beta | any | 400, no mutation |
+| A5 | non-memory Managed endpoint | memory beta only | any | reject before mutation |
+| A6 | any endpoint | correct beta | malformed/oversized body | 400/413, no mutation |
+| A7 | Skills endpoint | `skills-2025-10-02` | missing or Managed beta only | continue / reject before mutation |
+
+### Decision table B — Agent update
+
+| Rule | Archived | Version supplied | Matches current | Effective change | Effect |
+|---|---:|---:|---:|---:|---|
+| B1 | yes | any | any | any | reject; no version/event |
+| B2 | no | yes | no | any | 409, including a semantic no-op |
+| B3 | no | yes | yes | no | return current version; no update webhook |
+| B4 | no | yes | yes | yes | increment once; publish update |
+| B5 | no | no | n/a | no | return current version |
+| B6 | no | no | n/a | yes | last-write-wins; increment once |
+
+Scalar fields replace; list fields replace in full and clear on `null`/`[]`;
+metadata merges by key and deletes a key on `null`; `multiagent` replaces as a
+whole. An unchanged model id preserves omitted effort, while a changed model id
+resets omitted effort to that model's default.
+
+### Decision table C — Session creation and initial events
+
+| Rule | `initial_events` | Effective overrides/limits | Effect |
+|---|---|---|---|
+| C1 | omitted or empty | valid | create idle; no execution |
+| C2 | 1..=50 message/outcome events | valid | validate/persist in order; create running |
+| C3 | contains any other event type | any | reject whole create; no Session |
+| C4 | any event invalid | any | reject whole create; no partial events/Session |
+| C5 | >50 | any | 400 |
+| C6 | >1 outcome or missing rubric | any | 400 |
+| C7 | valid | `model:null` | 400 `agent_model_required` |
+| C8 | valid | tools cleared while skills remain | 400 |
+| C9 | valid | MCP servers cleared while a toolset dangles | 400 |
+| C10 | valid | list override supplied | replace in full, never merge |
+
+### Decision table D — tool execution
+
+| Rule | Tool kind | Enabled | Policy | Client response | Effect |
+|---|---|---:|---|---|---|
+| D1 | built-in/MCP | no | any | n/a | tool unavailable; no use event |
+| D2 | built-in/MCP | yes | `always_allow` | n/a | execute automatically |
+| D3 | built-in/MCP | yes | `always_ask` | missing | idle/requires_action indefinitely |
+| D4 | built-in/MCP | yes | `always_ask` | allow all blockers | execute and resume |
+| D5 | built-in/MCP | yes | `always_ask` | deny | do not execute; rejected result reaches model |
+| D6 | custom | yes | ignored | missing | idle/requires_action |
+| D7 | custom | yes | ignored | success/error result | route to originating thread and resume |
+
+### Decision table E — live preview and reconnect
+
+| Rule | Opt-in | Event/connection | Effect |
+|---|---|---|---|
+| E1 | none | message | buffered event only |
+| E2 | `agent.message` | online | start, zero-or-more deltas, authoritative buffered event; ids agree |
+| E3 | `agent.thinking` | online | start only; no delta |
+| E4 | invalid value or >100 values | any | 400 |
+| E5 | valid | server sheds deltas | preview is a contiguous prefix; buffered event remains complete |
+| E6 | valid | disconnect/reconnect | deltas never replay; list history supplies buffered events |
+| E7 | valid | child activity on primary stream | no child preview; use the child stream |
+
+### Decision table F — environment and egress credential
+
+| Rule | Environment reaches host | Credential allows host | Injection location enabled | Client sends placeholder verbatim | Effect |
+|---|---:|---:|---:|---:|---|
+| F1 | no | any | any | any | network request denied |
+| F2 | yes | no | any | yes | request may leave, literal placeholder remains |
+| F3 | yes | yes | no | yes | literal placeholder remains in disabled location |
+| F4 | yes | yes | yes | yes | substitute only at egress; sandbox never sees secret |
+| F5 | yes | yes | yes | no | local validation/signature fails; no hidden fallback |
+| F6 | self-hosted | n/a | environment-variable credential | any | reject unsupported binding |
+
+### Decision table G — outcomes, deployment and webhook
+
+| Rule | Cause | Effect |
+|---|---|---|
+| G1 | outcome satisfied | idle |
+| G2 | outcome needs revision | next contiguous iteration |
+| G3 | max iterations | final acknowledgment, then idle |
+| G4 | outcome failed/interrupted | terminal evaluation, then idle |
+| G5 | scheduled transient/rate-limit failure | failed run; deployment remains active |
+| G6 | archived environment/vault/subagent | failed run; deployment auto-pauses with same error |
+| G7 | primary Agent archived/deleted | deployment archives; no run row |
+| G8 | manual run while paused | run is allowed |
+| G9 | webhook 2xx | acknowledge and reset failure window |
+| G10 | webhook 3xx | never follow/retry; disable immediately |
+| G11 | webhook 4xx/5xx/transport failure | at most three jittered-backoff attempts; drop after final failure |
+| G12 | endpoint resolves non-public | disable immediately |
+| G13 | duplicate/late/out-of-order webhook | stable event id; consumer dedupes and fetches current resource |
+| G14 | scheduled deployment count reaches 1,000 in one organization | reject the next scheduled create/update atomically; unscheduled and archived rows do not consume capacity |
+| G15 | exact cron occurrence reaches its bounded jitter due time | one run; `scheduled_at` and previews retain the exact unjittered occurrence |
+| G16 | deployment is unpaused after missed occurrences | resume from the next future occurrence; never backfill missed runs |
+| G17 | deployment is archived | archive is idempotent and terminal; update/pause/unpause/manual run reject |
+
+### Decision table H — event-batch admission and processing
+
+| Rule | Cause | Constraint/state | Effect |
+|---|---|---|---|
+| H1 | `system.message` has 1 text item | supported primary model; no pending tool | accept and persist |
+| H2 | `system.message` has 1000 text items | same as H1 | accept inclusive maximum |
+| H3 | `system.message` has 0 or 1001 items | any | 400; reject whole batch before persistence |
+| H4 | `system.message` has valid content | unsupported primary Claude model | 400 `model_does_not_support_mid_conversation_system`; no event |
+| H5 | system alone or with user message | idle `requires_action` | 400; pending tool and history unchanged |
+| H6 | matching tool result/confirmation precedes system | idle `requires_action` | resume, then accept system in request order |
+| H7 | result id or built-in/custom kind mismatches pending tool | idle `requires_action` | 400; no result/system event and pending remains resumable |
+| H8 | outcome `max_iterations` is 1..=20 / outside range | valid outcome body | accept inclusive bounds / 400 without persistence |
+| H9 | accepted inbound event | queued / result-or-outcome immediate class | receipt id equals durable id; durable `processed_at` populated, immediate receipt populated only for documented classes |
+
+### Required test-comment form
+
+```rust
+/// Causes: <inputs, state, dependency and failure trigger>.
+/// Constraints: <invalid combinations or ordering rule>.
+/// Effects: <response, state, events, side effects and terminal outcome>.
+/// Decision rule: <table>/<rule>.
+```
+
 ## Method
 
 Every documented page was decomposed into concrete testable behaviors, then
@@ -77,7 +245,7 @@ This pass closed the following local contract cases against that Anthropic oracl
 | Case | Local coverage | Verification |
 |---|---|---|
 | Session `agent.tools` full replacement | implemented and asserted | `management_sessions_family_e2e.mjs` |
-| Session `agent.mcp_servers` full replacement | **target gap**: the handler currently accepts and rewrites only the wire/event projection; it does not mutate durable Runtime MCP and therefore must not be counted as implemented or covered | ADR-0066 Slice 0/2 must replace this with attachment diff + real Runtime update E2E; `management_sessions_family_e2e.mjs` currently proves only `agent.tools` and immutable-field rejection |
+| Session `agent.mcp_servers` full replacement | implemented and asserted through the one durable attachment lifecycle | `managed_mcp_hot_swap_e2e.ts` calls only the newly active Native generation across add/replace/remove; `managed_mcp_recovery_e2e.ts` proves restart; `acp_managed_mcp_e2e.mjs` proves a relaunched ACP receives only the replacement generation and then the empty set after removal |
 | Create-time null/empty overrides | `system`, `tools`, `mcp_servers`, `skills`; `model:null` remains 400 | `managed_model_override_e2e.mjs` |
 | MCP server ↔ `mcp_toolset` references | dangling server rejected; declared toolset projects | `managed_model_override_e2e.mjs` |
 | MCP `always_ask` confirmation | permission policy parks and resumes MCP calls | `management_mcp_e2e.mjs` |
@@ -105,6 +273,12 @@ non-regression and second-turn relaunch coverage.
 | Session-list cursor pagination (`?limit=&page=`, `{data,has_more,next_page}`, after-id) | session-operations | `managed_session_pagination_e2e.mjs` | boundary (`limit=1` vs all) + state-transition on the cursor + error-guess (fabricated cursor → empty terminal page) |
 | Outcome evaluation lifecycle spans (`span.outcome_evaluation_start`/`_end` bracket every iteration; stable `outcome_id`; monotonic `iteration`) | define-outcomes / reference | `managed_outcome_lifecycle_e2e.mjs` | state-transition: each `_start(outcome_id,iteration)` pairs with one `_end` at the same key; iterations contiguous ascending |
 | Scheduled deployments (cron `schedule` echo/persist, pause retains, write-time cron validation) | scheduled-deployments | `management_deployment_schedule_e2e.mjs` | equivalence partition on cron expr (valid / garbage / missing → 400) + state-transition pause→unpause preserves schedule |
+| Session `initial_events` executes through the canonical event executor (0/1/50/51, allowed kinds, at-most-one outcome) and returns `running` while queued | start-a-session / reference | existing adapter tests + `acp_e2e.mjs` | decision table C; native and ACP initial turns share the same executor |
+| Inbound events persist under their receipt id and converge `processed_at` according to the documented immediate/queued classes | events-and-streaming / reference | existing adapter tests + `managed_system_message_e2e.mjs` | decision H9; no receipt-only shadow path |
+| `system.message` content bounds, primary-model capability, and `requires_action` ordering | events-and-streaming | existing adapter/HITL tests + native/ACP SDK E2E | decision H1-H7; whole-batch rejection precedes mutation |
+| Event-delta admission at 100/101 and start-only thinking reconciliation | events-and-streaming | existing streaming suite | decision E3/E4; thinking content never crosses the wire and committed ids equal preview ids |
+| Managed beta gate covers ordinary Session/Agent/Environment/Deployment/Vault families; Skills uses its own beta | overview / skills / reference | existing contract-guard + Skills E2E | decision A1/A2/A5/A7; Memory follows the exclusive A3/A4 rule below |
+| Memory Store endpoints require only `agent-memory-2026-07-22`; missing, Managed-only, or both headers reject before domain work | using-agent-memory / beta-headers / reference | existing `managed_contract_guard_e2e.mjs` + Memory family/lifecycle suites | decision A3/A4; one prefix gate covers the collection and every subresource |
 
 Verified against source before writing: `deployments.rs` (`projected_schedule`/`active_cron` +
 write-time `Cron::parse` 400), `cron.rs` (dependency-free 5-field evaluator),
@@ -112,9 +286,9 @@ write-time `Cron::parse` 400), `cron.rs` (dependency-free 5-field evaluator),
 (`SpanOutcomeEvaluationStart{outcome_id,iteration}`). All three suites are registered in
 `package.json` (`test` + `test:extended`) and pass.
 
-## Implemented, untested (backlog — ranked)
+## Former implemented test gaps
 
-These are real coverage gaps: awaken implements the behavior, no e2e asserts it.
+All non-excluded behavior in this former backlog now has executable coverage.
 
 1. ~~**MCP tool confirmation (`always_ask`) approve/deny**~~ — closed in `management_mcp_e2e.mjs`.
 2. ~~**MCP `session.error` classification**~~ — closed in
@@ -123,10 +297,13 @@ These are real coverage gaps: awaken implements the behavior, no e2e asserts it.
 3. ~~**Mid-run interrupt + steer**~~ — closed in `managed_error_recovery_e2e.mjs`.
 4. ~~**Session agent-update gate**~~ — closed in `management_sessions_family_e2e.mjs`.
 5. ~~**Overrides clearing rules**~~ — closed in `managed_model_override_e2e.mjs`.
-6. **`agent.thinking` start-only preview + no-replay-on-reconnect** — marker/content
-   ordering is covered by `managed_real_thinking_e2e.mjs` with a thinking-capable
-   provider; generic reconnect/replay is covered by `managed_reconnect_real_e2e.mjs`.
-   The combined thinking-specific no-replay assertion remains provider-gated.
+6. ~~**`agent.thinking` start-only preview + no-replay-on-reconnect**~~ — closed in
+   `managed_real_thinking_e2e.mjs`: a thinking-capable live provider produces one
+   start-only preview; the durable contentless marker reuses its id; the client drops
+   that SSE connection, immediately reopens with the same opt-in, observes no replayed
+   `event_start`/`event_delta`, and recovers the complete answer plus idle from the
+   reopened stream and authoritative history. The deterministic Rust streaming suite
+   independently covers private-content suppression and preview reconciliation.
 7. ~~**Deployment run failure taxonomy + auto-pause**~~ — closed across
    `management_deployments_e2e.mjs` and `management_deployment_schedule_e2e.mjs`:
    the exact tagged run-error union replaces the former free-form/fixed-null field;
@@ -153,11 +330,22 @@ These are real coverage gaps: awaken implements the behavior, no e2e asserts it.
 11. ~~**`mcp_toolset` declaration + tool filtering**~~ — declaration/reference validation
     is covered in `managed_model_override_e2e.mjs`; confirmation policy is covered in
     `management_mcp_e2e.mjs`.
-12. **Multiagent thread control** — delegation lifecycle, child enumeration/retrieval,
-    fail-closed roster handling, and idle-child archive are covered by
-    `managed_delegation_e2e.mjs`. `{type:"self"}` copy and interrupting a
-    `requires_action` child are not implemented by the current thread contract and
-    are recorded as explicit negative/out-of-scope cases.
+12. ~~**Multiagent roster and thread control**~~ — delegation lifecycle, child
+    enumeration/retrieval, fail-closed roster handling, and idle-child archive are
+    covered by `managed_delegation_e2e.mjs`. Its Native coordinator exercises a
+    Native member, an isolated frozen `{type:"self"}` copy, and a roster member whose
+    frozen backend routes the child through the external ACP executor. The management
+    API suite covers the 1..=20 cardinality, duplicate/self constraints, missing,
+    archived, nested-coordinator and exact/current version-reference partitions. The
+    same suite executes coordinators created before and after a worker update: the old
+    coordinator runs the worker's exact v1 publication while the new coordinator runs
+    v2, proving execution consumes the frozen revision rather than current catalog state.
+    The protocol cause/decision-table test
+    `interrupt_selector_targets_one_thread_or_all_non_terminal_threads` covers the
+    documented optional `user.interrupt.session_thread_id`: a named
+    `requires_action`/idle child targets only that child Run, omission targets the
+    primary plus every non-terminal child, and unknown/terminal selectors fail
+    before receipt persistence.
 13. **Files negatives** — filename validation and download authorization are covered
     by `managed_resources_api_e2e.mjs`; `downloadable:false` upload metadata and
     `document`/`image` `file_id` blocks are absent from awaken's file-upload contract,
@@ -165,20 +353,19 @@ These are real coverage gaps: awaken implements the behavior, no e2e asserts it.
 14. ~~**`session.status_rescheduled` / `rescheduling`**~~ — closed in
     `managed_error_recovery_e2e.mjs` with a deterministic transient-503 scenario.
 
-## Not implemented / out-of-scope — *why the code is uncovered*
+## Former gaps and explicit exclusions
 
-These doc behaviors have **no awaken implementation**, verified by source search. That is
-the reason they are uncovered; they are not dead or redundant code, and adding tests would
-assert against absent features.
+This table records the audited closure state of documentation gaps. Implemented
+rows name their executable evidence; exclusions explain why no implementation is
+expected in this parity scope.
 
 | Doc surface | Status in awaken | Evidence |
 |---|---|---|
 | **Dreams** (`/v1/dreams`, `dreaming-2026-04-21` header, create/poll/cancel/archive) | Not implemented — research preview | no `dreams`/`Dream` route or type in `crates/` |
-| **`agent-memory-2026-07-22` endpoint header + two-header 400 conflict** | Not implemented — awaken keys memory-store endpoints off the same managed beta | no `agent-memory-2026-07-22` string in `crates/` |
-| **`system.message` 1–1000 content-item boundary + `model_does_not_support_mid_conversation_system` 400** | Not implemented — accept/reject-before-first-turn is covered; no item-count or model-capability gate | no count validation in `routes/`/`types/session.rs` |
 | **Cloud env `packages` provisioning** (pip/npm/apt/cargo/gem/go, version pinning) | Implemented through the one neutral Sandbox provisioning seam. Podman resolves the selected base image to its exact local ID, builds/reuses a content-addressed derived image, and the real workload observes the installed effect. Providers without package provisioning reject before workload creation; there is no fallback. | Admission/update semantics: `management_environments_e2e.mjs`; real success/fail-closed behavior: `managed_container_agent_e2e.mjs`; provider/cache side effects: `awaken-sandbox-container` cause-table tests |
-| **Rate limits** (300 create/min, 1200 read/min; 1,000-scheduled-deployment cap; 10s jitter) | Out of scope — org/infra-level policy, not modeled in the core wire | no per-org rate-limit middleware in `protocol-managed` |
-| **100k tool-output / oversized-block spill to file (preview + path)** | Partial / deferred — tracked open item **C11**; compaction covers token/message windows, not single-block spill | 6 compaction suites are window-only |
+| **Managed request rate limits** (300 Create/min, 1,200 Read/min, organization-scoped token buckets) | Implemented at the one merged Managed composition edge; flat and Workspace-addressed requests, Native Sessions and ACP Sessions share the same organization buckets. Files, Dreams, non-Managed routes and non-Create mutations are not charged. | `rate_limit` cause/decision-table tests in `awaken-protocol-managed`; `management_surface::flat_and_workspace_paths_share_one_organization_create_bucket` |
+| **Scheduled-deployment capacity and execution jitter** (1,000 scheduled deployments/organization; up to 15% interval jitter, bounded 5 seconds–9 minutes) | Implemented in the existing `DeploymentState`: capacity is atomic across create/update/archive; previews and trigger contexts retain exact cron instants; execution uses stable bounded jitter. Unpause skips missed occurrences, archive is terminal, internal Session creation shares the organization Create bucket, and primary-Agent archive cascades without a run. | `routes::deployments::tests` cause/decision-table cases; `management_deployment_schedule_e2e.mjs` |
+| **100k tool-output / oversized-block spill to file (preview + path)** | Implemented once at the Session sandbox boundary for Native local/MCP/remote-hand/delegated/recovered/client results and external ACP result projections. `<=100,000` characters remain inline; larger content is stored whole at a stable jailed path and only a bounded preview + readable path is committed. Storage failure is fail-closed. This internal result file is not the excluded Files API. | `tool_output_spill` cause/decision-table test; Native `tools`/`awaiting`/`formal_refinement` rules; ACP executor cause table; `acp_jsonrpc_e2e.mjs` reads and verifies complete files produced by both Native and ACP runs |
 
 ## Redundancy / dead-code assessment
 
@@ -191,7 +378,8 @@ The goal's cleanup clause ("is the uncovered code redundant/duplicate — if so,
   the multi-backend content-addressed store (`awaken-file-store`: e2e drives only its in-mem
   backend; Fs/Pg/S3 have their own Rust tests). This is separation of test tiers, not
   redundancy.
-- The uncovered *doc-feature* code is the ▲ table above — absent features, not dead code.
+- Remaining excluded doc surfaces are Dreams and the explicitly excluded Files
+  behavior above; the implemented rows in the table carry direct test evidence.
 - Structural duplication that *did* exist (durable store backends inlined in the
   `awaken-session-executor` god-hub) was removed by the Step-3b re-layout: `awaken-env-store`,
   `awaken-work-store`, `awaken-session-store`, `awaken-session-contract`, and
@@ -235,8 +423,9 @@ KIMI's raw `/messages` returns `thinking` blocks, and awaken now surfaces them a
    content**, so the reasoning text stays off the answer wire. AI-SDK / AG-UI drop the marker
    (not in their vocabulary).
 
-Validated live: `managed_real_thinking_e2e` (KIMI) asserts the contentless marker precedes
-the answer and no reasoning text leaks. **No regression**: echo mode produces no reasoning →
+Validated live: `managed_real_thinking_e2e` (KIMI) asserts the start-only preview,
+contentless durable marker, disconnect/reconnect no-replay rule, answer recovery, and
+that no reasoning text leaks. **No regression**: echo mode produces no reasoning →
 no marker → the serde golden and all deterministic suites are unchanged. Blast radius was
 small (base-enum additions rippled to only a handful of `_`-less matches). This moves
 `agent.thinking` from ▲ to ✅.

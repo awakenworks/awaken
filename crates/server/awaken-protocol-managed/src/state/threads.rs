@@ -34,6 +34,13 @@ impl ManagedState {
         if is_own_status {
             return Some(event);
         }
+        if matches!(
+            &event.kind,
+            OutboundKind::UserInterrupt { session_thread_id }
+                if session_thread_id.as_deref().is_none_or(|id| id == thread_id)
+        ) {
+            return Some(event);
+        }
         event.kind = match event.kind {
             OutboundKind::AgentThreadMessageSent {
                 to_session_thread_id,

@@ -789,7 +789,7 @@ impl NamespaceSandbox {
     /// in bwrap; path tools remain rooted through the shared lexical jail.
     pub fn rooted_tools(&self) -> Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>> {
         namespace_raw_tools(
-            self.root.clone(),
+            self.workspace_root(),
             matches!(self.network, pc::NetworkPolicy::None),
         )
     }
@@ -1327,6 +1327,52 @@ mod tests {
             std::os::unix::fs::symlink(outputs.join("result.txt"), &projection).unwrap();
             sandbox.clear_resource_projection().unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn native_tools_and_runtime_projections_share_the_workspace_root() {
+        // Cause-effect graph: C1=runtime projects a workspace-relative file;
+        // C2=Native path tool reads the same relative path; C3=a same-named path
+        // does not exist at the outer namespace root. E1=projected bytes are
+        // readable; E2=the outer root cannot become a competing tool workspace.
+        //
+        // | Rule | C1 | C2 | C3 | Effects |
+        // | W1   | yes | yes | yes | E1,E2 |
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = NamespaceProvider::new(tmp.path());
+        let sandbox = provider
+            .create_sandbox(&ns_spec("t-ns-tool-workspace", Vec::new()))
+            .await
+            .unwrap();
+        sandbox
+            .materialize_inline(".awaken/tool-results/result.txt", b"complete")
+            .unwrap();
+
+        let read = sandbox
+            .rooted_tools()
+            .into_iter()
+            .find(|tool| tool.id() == "read")
+            .expect("read tool");
+        let output = read
+            .invoke(awaken_runtime_contract::llm::ToolCall {
+                call_id: "read-projection".into(),
+                tool_id: "read".into(),
+                arguments: serde_json::json!({
+                    "path": ".awaken/tool-results/result.txt"
+                }),
+            })
+            .await
+            .unwrap();
+
+        assert!(output.content.contains("complete"), "W1/E1");
+        assert!(
+            !sandbox
+                .root
+                .resolve(".awaken/tool-results/result.txt")
+                .unwrap()
+                .exists(),
+            "W1/E2"
+        );
     }
 
     async fn bwrap_usable() -> bool {

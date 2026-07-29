@@ -22,7 +22,16 @@ import {
 import { sqliteExec, sqliteRows } from './sqlite.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38641);
-const BETAS = ['managed-agents-2026-04-01'];
+const MEMORY_BETAS = ['agent-memory-2026-07-22'];
+const SKILL_HEADERS = { 'anthropic-beta': 'skills-2025-10-02' };
+
+function resourceHeaders(pathname) {
+  return {
+    'anthropic-beta': pathname.startsWith('/v1/memory_stores')
+      ? MEMORY_BETAS[0]
+      : 'skills-2025-10-02',
+  };
+}
 
 function sqlQuote(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
@@ -137,7 +146,7 @@ function client() {
 
 async function raw(pathname) {
   return fetch(`http://127.0.0.1:${PORT}${pathname}`, {
-    headers: { 'x-api-key': 'e2e-dummy' },
+    headers: { 'x-api-key': 'e2e-dummy', ...resourceHeaders(pathname) },
   });
 }
 
@@ -147,6 +156,7 @@ async function rawJson(method, pathname, body) {
     headers: {
       'content-type': 'application/json',
       'x-api-key': 'e2e-dummy',
+      ...resourceHeaders(pathname),
     },
     body: JSON.stringify(body),
   });
@@ -155,7 +165,7 @@ async function rawJson(method, pathname, body) {
 
 async function assertImportedSkill() {
   const c = client();
-  const list = await c.get('/v1/skills');
+  const list = await c.get('/v1/skills', { headers: SKILL_HEADERS });
   assert.deepEqual(
     list.data.map((entry) => entry.id),
     ['legacy-file', 'legacy-skill'],
@@ -167,12 +177,12 @@ async function assertImportedSkill() {
 
   // A second call in the same process exercises the one-shot Workspace guard and
   // must not duplicate versions.
-  const versions = await c.get('/v1/skills/legacy-skill/versions');
+  const versions = await c.get('/v1/skills/legacy-skill/versions', { headers: SKILL_HEADERS });
   assert.deepEqual(
     versions.data.map((entry) => entry.version),
     ['1', '2'],
   );
-  const latest = await c.get('/v1/skills/legacy-skill/versions/latest');
+  const latest = await c.get('/v1/skills/legacy-skill/versions/latest', { headers: SKILL_HEADERS });
   assert.equal(latest.id, 'skver_legacy_2');
 
   const content = await raw('/v1/skills/legacy-skill/versions/2/content');
@@ -191,7 +201,7 @@ async function assertImportedSkill() {
 
 async function createMemory(publishConfig = false) {
   const c = client();
-  const store = await c.beta.memoryStores.create({ betas: BETAS });
+  const store = await c.beta.memoryStores.create({ betas: MEMORY_BETAS });
   if (publishConfig) {
     const published = await rawJson('POST', `/v1/memory_stores/${store.id}/config`, {
       expected_config_version: 1,
@@ -204,7 +214,7 @@ async function createMemory(publishConfig = false) {
   const memory = await c.beta.memoryStores.memories.create(store.id, {
     path: '/new.md',
     content: 'new-memory',
-    betas: BETAS,
+    betas: MEMORY_BETAS,
   });
   assert.match(memory.memory_version_id, /^memver_mem_/);
   return store.id;

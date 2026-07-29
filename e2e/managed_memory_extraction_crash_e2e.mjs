@@ -19,6 +19,7 @@ import {
 
 const PORT = Number(process.env.E2E_PORT ?? 38243);
 const BETAS = ['managed-agents-2026-04-01'];
+const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
 const STORE_DIR = `/tmp/awaken-mem-extract-crash-e2e-${process.pid}`;
 const MARKER = 'fact-otter9crash';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -73,7 +74,10 @@ async function main() {
     servers.push(a.server);
     await waitForPort(PORT);
 
-    const store = await client.post('/v1/memory_stores', { body: { name: 'crash-extraction' } });
+    const store = await client.post('/v1/memory_stores', {
+      body: { name: 'crash-extraction' },
+      headers: MEMORY_HEADERS,
+    });
     const session = await client.beta.sessions.create({
       agent: 'assistant',
       betas: BETAS,
@@ -100,11 +104,15 @@ async function main() {
     await client.beta.sessions.events.send(session.id, { betas: BETAS, events: [] });
     assert.ok((await reply(session.id)).includes(MARKER), 'committed Session rehydrated');
     await waitUntil(async () => {
-      const page = await client.get(`/v1/memory_stores/${store.id}/memories`);
+      const page = await client.get(`/v1/memory_stores/${store.id}/memories`, {
+        headers: MEMORY_HEADERS,
+      });
       return JSON.stringify(page).includes(MARKER);
     }, 'restarted process did not recover and store the extraction', 140);
 
-    const versions = await client.get(`/v1/memory_stores/${store.id}/memory_versions`);
+    const versions = await client.get(`/v1/memory_stores/${store.id}/memory_versions`, {
+      headers: MEMORY_HEADERS,
+    });
     assert.equal(versions.data.length, 1, 'recovery commits exactly one logical Memory version');
 
     const recall = await client.beta.sessions.create({
