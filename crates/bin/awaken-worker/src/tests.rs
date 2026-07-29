@@ -154,6 +154,25 @@ fn credential_support() -> CredentialMaterializerSupport {
     }
 }
 
+#[test]
+fn worker_uses_the_injected_web_search_registry_as_its_only_catalog() {
+    // Cause-effect graph / decision table:
+    // R1 no injection -> open built-ins; R2 one injected deployment registry ->
+    // exactly that catalog (the empty catalog is the minimal observable
+    // replacement). This proves Cloud does not append a second provider path
+    // beside the Worker's default registry.
+    let registry = awaken_runtime_host::WebSearchProviderRegistry::default();
+    let worker = WorkerNodeBuilder::new(awaken_runtime_host::WorkerUpstream::new(
+        "https://control.test",
+    ))
+    .with_standard_manifest(Default::default())
+    .with_web_search_provider_registry(registry)
+    .build()
+    .unwrap();
+    let descriptors = worker.web_search_providers.descriptors();
+    assert!(descriptors.is_empty());
+}
+
 #[tokio::test]
 async fn worker_manifest_derives_materialization_capabilities_from_the_adapter() {
     let materializer = SchemeMaterializer;

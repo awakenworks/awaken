@@ -118,6 +118,7 @@ pub struct WorkerNodeBuilder {
     credential_inference_derived: bool,
     session_container_provider: Option<InstalledSessionContainerProvider>,
     mcp_attachment_realizer: Option<Arc<dyn awaken_runtime_host::McpAttachmentRealizer>>,
+    web_search_providers: awaken_runtime_host::WebSearchProviderRegistry,
     resources: Option<WorkerResourcePlane>,
     admin_listen: Option<String>,
     graceful_drain: std::time::Duration,
@@ -143,6 +144,7 @@ impl WorkerNodeBuilder {
             credential_inference_derived: false,
             session_container_provider: None,
             mcp_attachment_realizer: None,
+            web_search_providers: awaken_runtime_host::WebSearchProviderRegistry::builtins(),
             resources: None,
             admin_listen: Some("0.0.0.0:9090".to_string()),
             graceful_drain: std::time::Duration::from_secs(20),
@@ -227,6 +229,19 @@ impl WorkerNodeBuilder {
     ) -> Self {
         self.materializer = Some(materializer);
         self.credential_inference_derived = false;
+        self
+    }
+
+    /// Replace the deployment's WebSearch provider catalog. Management
+    /// publication and Worker execution must receive registries assembled from
+    /// the same provider definitions; the immutable snapshot remains the
+    /// selection authority for each run.
+    #[must_use]
+    pub fn with_web_search_provider_registry(
+        mut self,
+        providers: awaken_runtime_host::WebSearchProviderRegistry,
+    ) -> Self {
+        self.web_search_providers = providers;
         self
     }
 
@@ -465,6 +480,7 @@ impl WorkerNodeBuilder {
             acp_capability_observation_source: self.acp_capability_observation_source,
             session_container_provider: self.session_container_provider,
             mcp_attachment_realizer: self.mcp_attachment_realizer,
+            web_search_providers: self.web_search_providers,
             resources: self.resources,
             admin_listen: self.admin_listen,
             graceful_drain: self.graceful_drain,
@@ -511,6 +527,7 @@ pub struct WorkerNode {
         Option<Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>>,
     session_container_provider: Option<InstalledSessionContainerProvider>,
     mcp_attachment_realizer: Option<Arc<dyn awaken_runtime_host::McpAttachmentRealizer>>,
+    web_search_providers: awaken_runtime_host::WebSearchProviderRegistry,
     resources: Option<WorkerResourcePlane>,
     admin_listen: Option<String>,
     graceful_drain: std::time::Duration,
@@ -812,6 +829,7 @@ impl WorkerNode {
         let mut host = host
             .with_worker_upstream(upstream)
             .with_dispatch_store(dispatch_store)
+            .with_web_search_provider_registry(self.web_search_providers)
             .with_remote_attempt_executor(awaken_server::a2a_attempt_executor(
                 managed_credential_materializer.clone(),
             ));
