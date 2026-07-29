@@ -10,14 +10,14 @@ pub(crate) fn finish(
     mcp_export: Router,
     reconciler: Arc<dyn awaken_runtime_host::PublicationBindingReconciler>,
     platform_workspace: String,
-    organization_id: String,
+    managed_rate_limiter: Arc<awaken_protocol_managed::ManagedRateLimiter>,
 ) -> Router {
     flat = flat.merge(mcp_export);
     // One composition serves one resolved Organization. Install one shared
     // limiter before workspace-path dispatch so flat and rewritten Workspace
     // routes draw from the same organization buckets.
     flat = flat.layer(axum::middleware::from_fn_with_state(
-        Arc::new(awaken_protocol_managed::ManagedRateLimiter::for_organization(organization_id)),
+        managed_rate_limiter,
         awaken_protocol_managed::enforce_managed_rate_limit,
     ));
     let worker_observation_gate =
@@ -100,7 +100,7 @@ mod tests {
             Router::new(),
             reconciler.clone(),
             "platform".into(),
-            "org_test".into(),
+            Arc::new(awaken_protocol_managed::ManagedRateLimiter::for_organization("org_test")),
         );
         for (rule, path) in [("H1", "/v1/worker/heartbeat"), ("H2", "/unrelated")] {
             let response = app
@@ -127,7 +127,7 @@ mod tests {
             Router::new(),
             Arc::new(RecordingReconciler::default()),
             "platform".into(),
-            "org_shared".into(),
+            Arc::new(awaken_protocol_managed::ManagedRateLimiter::for_organization("org_shared")),
         );
         for ordinal in 0..300 {
             let path = if ordinal % 2 == 0 {

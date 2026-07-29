@@ -127,6 +127,13 @@ impl ManagedRateLimiter {
         self.check_at(operation, self.started_at.elapsed())
     }
 
+    /// Admit a Session created internally by a Deployment. Scheduled/manual
+    /// deployment launches bypass HTTP but consume the same organization Create
+    /// bucket as `POST /v1/sessions`.
+    pub(crate) fn admit_internal_session_create(&self) -> bool {
+        self.check(ManagedOperation::Create).allowed
+    }
+
     fn check_at(&self, operation: ManagedOperation, now: Duration) -> RateDecision {
         let mut buckets = self.buckets.lock().unwrap();
         match operation {

@@ -311,7 +311,7 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
     // The user-profiles front door (`/v1/user_profiles`) over its own in-mem store.
     let user_profiles = user_profiles_router(Arc::new(UserProfileState::new()));
     // Deployments + deployment runs (`/v1/deployments`, `/v1/deployment_runs`).
-    let deployments = deployments_router(deployment_state);
+    let deployments = deployments_router(deployment_state.clone());
     // Environments + work queue (`/v1/environments`, single-worker open cap). Shared
     // with the session state so `POST /v1/sessions` resolves an environment's
     // networking policy (egress on/off) at creation.
@@ -323,12 +323,15 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
     // `/v1/agents` projects the config plane it hosts: an agent published via
     // `/v1/config/agents` is retrievable as a managed-wire projection of that single
     // truth (no second store), which is how the console probes the assistant.
-    let agents = agents_router(Arc::new(AgentRegistryState::from_repository(Arc::new(
-        managed_agents::ConfigPlaneManagedAgentRepository::new(
-            audit_plane.clone(),
-            platform_workspace.clone(),
-        ),
-    ))));
+    let agents = agents_router(Arc::new(
+        AgentRegistryState::from_repository(Arc::new(
+            managed_agents::ConfigPlaneManagedAgentRepository::new(
+                audit_plane.clone(),
+                platform_workspace.clone(),
+            ),
+        ))
+        .with_deployments(deployment_state.clone()),
+    ));
     // Capability snapshot (`GET /v1/capabilities`): the host's tool descriptors +
     // installable plugins (with config schema) so the console authors data-driven.
     let capabilities =

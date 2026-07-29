@@ -236,6 +236,16 @@ impl ManagedState {
             .is_some_and(|source| source.agent_unavailable_in(workspace_id, agent_id))
     }
 
+    pub(crate) fn deployment_unavailable_delegate(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> Option<String> {
+        self.config_source
+            .as_ref()
+            .and_then(|source| source.unavailable_delegate_in(workspace_id, agent_id))
+    }
+
     pub fn new(runtime: impl SessionRuntime + 'static) -> Self {
         Self::from_ports(
             Arc::new(runtime),

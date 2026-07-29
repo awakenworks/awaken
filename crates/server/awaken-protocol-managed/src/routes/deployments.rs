@@ -20,6 +20,7 @@ use chrono::{DateTime, FixedOffset};
 use chrono_tz::Tz;
 use serde::Deserialize;
 
+use crate::ManagedRateLimiter;
 use crate::routes::{ManagedJson, WorkspaceScope};
 use crate::types::agent::AgentReference;
 use crate::types::deployment::{
@@ -62,6 +63,30 @@ fn upcoming_occurrences(schedule: &Schedule, after_ms: u64) -> Vec<String> {
 fn next_occurrence(schedule: &Schedule, after_ms: u64) -> Option<u64> {
     let (cron, timezone) = parsed_schedule(schedule)?;
     cron.next_after_in(after_ms, timezone)
+}
+
+const MAX_SCHEDULED_DEPLOYMENTS: usize = 1_000;
+const MIN_JITTER_MS: u64 = 5_000;
+const MAX_JITTER_MS: u64 = 9 * 60_000;
+
+/// Stable execution delay for one exact cron occurrence. The window is 15% of
+/// the interval, bounded to the documented 5 seconds–9 minutes. Stability avoids
+/// changing a pending fire's due instant when a process restarts.
+fn execution_jitter_ms(deployment_id: &str, scheduled_ms: u64, interval_ms: u64) -> u64 {
+    let window = interval_ms
+        .saturating_mul(15)
+        .checked_div(100)
+        .unwrap_or_default()
+        .clamp(MIN_JITTER_MS, MAX_JITTER_MS);
+    if window == MIN_JITTER_MS {
+        return window;
+    }
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in deployment_id.bytes().chain(scheduled_ms.to_le_bytes()) {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    MIN_JITTER_MS + hash % (window - MIN_JITTER_MS + 1)
 }
 
 #[derive(Clone)]
@@ -174,13 +199,28 @@ impl RunRecord {
 }
 
 /// The deployments + deployment-runs state.
-#[derive(Default)]
 pub struct DeploymentState {
     deployments: Mutex<BTreeMap<String, DeploymentRecord>>,
     runs: Mutex<BTreeMap<String, RunRecord>>,
     dep_seq: AtomicU64,
     run_seq: AtomicU64,
     launcher: Mutex<Option<Arc<dyn DeploymentSessionLauncher>>>,
+    rate_limiter: Mutex<Option<Arc<ManagedRateLimiter>>>,
+    scheduled_limit: usize,
+}
+
+impl Default for DeploymentState {
+    fn default() -> Self {
+        Self {
+            deployments: Mutex::new(BTreeMap::new()),
+            runs: Mutex::new(BTreeMap::new()),
+            dep_seq: AtomicU64::new(0),
+            run_seq: AtomicU64::new(0),
+            launcher: Mutex::new(None),
+            rate_limiter: Mutex::new(None),
+            scheduled_limit: MAX_SCHEDULED_DEPLOYMENTS,
+        }
+    }
 }
 
 /// Input passed from the deployment application service to the Session boundary.
@@ -222,15 +262,62 @@ impl DeploymentState {
         *self.launcher.lock().unwrap() = Some(launcher);
     }
 
+    /// Bind the composition root's one organization limiter. Deployment-created
+    /// Sessions then share the ordinary Managed Create bucket.
+    pub fn bind_rate_limiter(&self, limiter: Arc<ManagedRateLimiter>) {
+        *self.rate_limiter.lock().unwrap() = Some(limiter);
+    }
+
+    /// Archive every live Deployment whose primary Agent was archived. The Agent
+    /// archive handler invokes this before returning, so no later schedule can
+    /// mint a run for that primary Agent.
+    pub fn archive_for_agent(&self, workspace_id: &str, agent_id: &str) -> usize {
+        let now = crate::cron::to_rfc3339(now_ms());
+        let mut archived = 0;
+        for record in self.deployments.lock().unwrap().values_mut() {
+            if record.archived_at.is_none()
+                && record.workspace_id == workspace_id
+                && record.agent.id == agent_id
+            {
+                record.archived_at = Some(now.clone());
+                record.updated_at = now.clone();
+                archived += 1;
+            }
+        }
+        archived
+    }
+
+    #[cfg(test)]
+    fn with_scheduled_limit(limit: usize) -> Self {
+        Self {
+            scheduled_limit: limit,
+            ..Self::default()
+        }
+    }
+
     async fn launch_run(&self, run_id: &str, launch: DeploymentLaunch) -> DeploymentRun {
-        let launcher = self.launcher.lock().unwrap().clone();
-        let outcome = match launcher {
-            Some(launcher) => launcher.launch(launch).await,
-            None => DeploymentLaunchOutcome::Failed {
-                error: RunError::UnknownError {
-                    message: "deployment Session launcher is not bound".to_string(),
+        let admitted = self
+            .rate_limiter
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_none_or(|limiter| limiter.admit_internal_session_create());
+        let outcome = if admitted {
+            let launcher = self.launcher.lock().unwrap().clone();
+            match launcher {
+                Some(launcher) => launcher.launch(launch).await,
+                None => DeploymentLaunchOutcome::Failed {
+                    error: RunError::UnknownError {
+                        message: "deployment Session launcher is not bound".to_string(),
+                    },
                 },
-            },
+            }
+        } else {
+            DeploymentLaunchOutcome::Failed {
+                error: RunError::SessionRateLimitedError {
+                    message: "organization Session creation rate limit exceeded".to_string(),
+                },
+            }
         };
         let (deployment_id, trigger, error) = {
             let mut runs = self.runs.lock().unwrap();
@@ -292,12 +379,10 @@ impl DeploymentState {
         completed
     }
 
-    /// Advance every active schedule to `now_ms`, minting a `deployment_run` (with a
-    /// `Schedule` trigger context) for each occurrence that has come due since the
-    /// last tick. The cursor is seeded to the first occurrence *after* the first tick
-    /// so a freshly created deployment never fires retroactively; a slow tick that
-    /// spans several occurrences fires each of them (catch-up). Returns the ids
-    /// fired. This is the timed-trigger driver a background loop calls on an interval.
+    /// Advance every active schedule to `now_ms`. Exact cron instants remain the
+    /// trigger context, while execution waits for the stable bounded jitter delay.
+    /// The cursor is seeded after the first tick, so new deployments never fire
+    /// retroactively. Returns the run ids fired.
     pub fn tick(&self, now_ms: u64) -> Vec<String> {
         let mut fired = Vec::new();
         let mut deployments = self.deployments.lock().unwrap();
@@ -314,7 +399,16 @@ impl DeploymentState {
                     None => continue,
                 },
             };
-            while cursor <= now_ms {
+            loop {
+                let next = cron.next_after_in(cursor, timezone);
+                let interval_ms = next
+                    .map(|next| next.saturating_sub(cursor))
+                    .unwrap_or(60_000);
+                let due_ms =
+                    cursor.saturating_add(execution_jitter_ms(dep_id, cursor, interval_ms));
+                if due_ms > now_ms {
+                    break;
+                }
                 let n = self.run_seq.fetch_add(1, Ordering::SeqCst);
                 let run_id = format!("drun_{n:016}");
                 let scheduled_at = crate::cron::to_rfc3339(cursor);
@@ -333,7 +427,7 @@ impl DeploymentState {
                 );
                 record.last_run_at = Some(scheduled_at);
                 fired.push(run_id);
-                cursor = match cron.next_after_in(cursor, timezone) {
+                cursor = match next {
                     Some(c) => c,
                     None => break,
                 };
@@ -473,6 +567,45 @@ fn invalid(message: impl Into<String>) -> WireError {
     )
 }
 
+fn terminal() -> WireError {
+    (
+        StatusCode::CONFLICT,
+        Json(ErrorResponse::new(
+            "invalid_request_error",
+            "archived deployment is terminal and cannot be modified",
+        )),
+    )
+}
+
+fn scheduled_count(store: &BTreeMap<String, DeploymentRecord>) -> usize {
+    store
+        .values()
+        .filter(|record| record.archived_at.is_none() && record.schedule.is_some())
+        .count()
+}
+
+fn ensure_scheduled_capacity(
+    store: &BTreeMap<String, DeploymentRecord>,
+    limit: usize,
+) -> Result<(), WireError> {
+    if scheduled_count(store) >= limit {
+        return Err(invalid(format!(
+            "an organization supports at most {limit} scheduled deployments"
+        )));
+    }
+    Ok(())
+}
+
+fn resume_schedule(record: &mut DeploymentRecord, now_ms: u64) {
+    record.status = "active";
+    record.paused_reason = None;
+    record.next_fire_ms = record
+        .schedule
+        .as_ref()
+        .and_then(|schedule| next_occurrence(schedule, now_ms));
+    record.updated_at = crate::cron::to_rfc3339(now_ms);
+}
+
 fn deployment_page(query: &PageQuery) -> Result<PageQuery, WireError> {
     let limit = query.limit.unwrap_or(20);
     if !(1..=100).contains(&limit) {
@@ -556,7 +689,11 @@ async fn create_deployment(
     let n = state.dep_seq.fetch_add(1, Ordering::SeqCst);
     let id = format!("depl_{n:016}");
     let projected = record.project(&id);
-    state.deployments.lock().unwrap().insert(id, record);
+    let mut store = state.deployments.lock().unwrap();
+    if record.schedule.is_some() {
+        ensure_scheduled_capacity(&store, state.scheduled_limit)?;
+    }
+    store.insert(id, record);
     Ok(Json(projected))
 }
 
@@ -617,8 +754,14 @@ async fn update_deployment(
         validate_schedule(Some(schedule))?;
     }
     let mut store = state.deployments.lock().unwrap();
-    let record = store.get_mut(&id).ok_or_else(|| not_found("deployment"))?;
-    let mut candidate = record.clone();
+    let current = store
+        .get(&id)
+        .ok_or_else(|| not_found("deployment"))?
+        .clone();
+    if current.archived_at.is_some() {
+        return Err(terminal());
+    }
+    let mut candidate = current.clone();
     if let Some(agent) = &params.agent {
         candidate.agent = AgentReference::from_input(agent);
     }
@@ -665,9 +808,13 @@ async fn update_deployment(
         candidate.vault_ids = vault_ids.unwrap_or_default();
     }
     validate_deployment(&candidate)?;
+    if current.schedule.is_none() && candidate.schedule.is_some() {
+        ensure_scheduled_capacity(&store, state.scheduled_limit)?;
+    }
     candidate.updated_at = crate::cron::to_rfc3339(now_ms());
-    *record = candidate;
-    Ok(Json(record.project(&id)))
+    let projected = candidate.project(&id);
+    store.insert(id, candidate);
+    Ok(Json(projected))
 }
 
 async fn archive_deployment(
@@ -676,6 +823,9 @@ async fn archive_deployment(
 ) -> Result<Json<Deployment>, WireError> {
     let mut store = state.deployments.lock().unwrap();
     let record = store.get_mut(&id).ok_or_else(|| not_found("deployment"))?;
+    if record.archived_at.is_some() {
+        return Ok(Json(record.project(&id)));
+    }
     record.archived_at = Some(crate::cron::to_rfc3339(now_ms()));
     record.updated_at = crate::cron::to_rfc3339(now_ms());
     Ok(Json(record.project(&id)))
@@ -687,6 +837,9 @@ async fn pause_deployment(
 ) -> Result<Json<Deployment>, WireError> {
     let mut store = state.deployments.lock().unwrap();
     let record = store.get_mut(&id).ok_or_else(|| not_found("deployment"))?;
+    if record.archived_at.is_some() {
+        return Err(terminal());
+    }
     record.status = "paused";
     record.paused_reason = Some(PausedReason::Manual);
     record.updated_at = crate::cron::to_rfc3339(now_ms());
@@ -699,9 +852,11 @@ async fn unpause_deployment(
 ) -> Result<Json<Deployment>, WireError> {
     let mut store = state.deployments.lock().unwrap();
     let record = store.get_mut(&id).ok_or_else(|| not_found("deployment"))?;
-    record.status = "active";
-    record.paused_reason = None;
-    record.updated_at = crate::cron::to_rfc3339(now_ms());
+    if record.archived_at.is_some() {
+        return Err(terminal());
+    }
+    let now = now_ms();
+    resume_schedule(record, now);
     Ok(Json(record.project(&id)))
 }
 
@@ -714,6 +869,9 @@ async fn run_deployment(
     let launch = {
         let store = state.deployments.lock().unwrap();
         let record = store.get(&id).ok_or_else(|| not_found("deployment"))?;
+        if record.archived_at.is_some() {
+            return Err(terminal());
+        }
         record.launch(&id)
     };
     let n = state.run_seq.fetch_add(1, Ordering::SeqCst);
@@ -816,6 +974,15 @@ impl DeploymentSessionLauncher for crate::ManagedState {
             return DeploymentLaunchOutcome::Failed {
                 error: RunError::AgentArchivedError {
                     message: format!("agent `{}` is archived", request.agent.id),
+                },
+            };
+        }
+        if let Some(delegate) =
+            self.deployment_unavailable_delegate(&request.workspace_id, &request.agent.id)
+        {
+            return DeploymentLaunchOutcome::Failed {
+                error: RunError::AgentArchivedError {
+                    message: format!("subagent `{delegate}` is archived"),
                 },
             };
         }
@@ -923,6 +1090,28 @@ mod tests {
         }
     }
 
+    fn jitter_due(deployment_id: &str, scheduled_ms: u64, interval_ms: u64) -> u64 {
+        scheduled_ms + execution_jitter_ms(deployment_id, scheduled_ms, interval_ms)
+    }
+
+    fn create_params(schedule: bool) -> DeploymentCreateParams {
+        let mut value = serde_json::json!({
+            "agent": "coder",
+            "environment_id": "env_a",
+            "name": "scheduled",
+            "initial_events": [{
+                "type": "user.message",
+                "content": [{"type": "text", "text": "go"}]
+            }]
+        });
+        if schedule {
+            value["schedule"] = serde_json::json!({
+                "type": "cron", "expression": "*/15 * * * *", "timezone": "UTC"
+            });
+        }
+        serde_json::from_value(value).unwrap()
+    }
+
     #[test]
     fn validate_schedule_rejects_a_malformed_cron() {
         // schedule JSON -> typed union -> cron semantic validation -> store/no store
@@ -948,6 +1137,194 @@ mod tests {
     }
 
     #[test]
+    fn execution_jitter_is_stable_and_obeys_all_interval_bounds() {
+        // Jitter cause/effect decision table:
+        // J1 15% interval <5s -> 5s; J2 between bounds -> [5s,15%];
+        // J3 15% >9m -> <=9m; J4 same deployment/occurrence -> same delay.
+        let short = execution_jitter_ms("dep", MON_0900, 1_000);
+        assert_eq!(short, MIN_JITTER_MS, "J1");
+        let minute = execution_jitter_ms("dep", MON_0900, 60_000);
+        assert!((MIN_JITTER_MS..=9_000).contains(&minute), "J2");
+        let daily = execution_jitter_ms("dep", MON_0900, 24 * 60 * 60_000);
+        assert!((MIN_JITTER_MS..=MAX_JITTER_MS).contains(&daily), "J3");
+        assert_eq!(
+            daily,
+            execution_jitter_ms("dep", MON_0900, 24 * 60 * 60_000),
+            "J4"
+        );
+    }
+
+    #[tokio::test]
+    async fn scheduled_capacity_is_atomic_across_create_update_and_archive() {
+        // Scheduled-capacity graph (test cap=1; production cap=1,000):
+        // C1 unscheduled never consumes; C2 first scheduled create consumes;
+        // C3 scheduled create or unscheduled->scheduled update at cap rejects
+        // atomically; C4 archive frees one slot; C5 scheduled->scheduled update
+        // does not consume a second slot.
+        let state = Arc::new(DeploymentState::with_scheduled_limit(1));
+        let first = create_deployment(State(state.clone()), None, ManagedJson(create_params(true)))
+            .await
+            .expect("C2")
+            .0;
+        let unscheduled = create_deployment(
+            State(state.clone()),
+            None,
+            ManagedJson(create_params(false)),
+        )
+        .await
+        .expect("C1")
+        .0;
+        let rejected =
+            create_deployment(State(state.clone()), None, ManagedJson(create_params(true)))
+                .await
+                .expect_err("C3");
+        assert_eq!(rejected.0, StatusCode::BAD_REQUEST, "C3");
+        assert_eq!(state.deployments.lock().unwrap().len(), 2, "C3 atomic");
+
+        let add_schedule: DeploymentUpdateParams = serde_json::from_value(serde_json::json!({
+            "schedule": {"type":"cron", "expression":"*/15 * * * *", "timezone":"UTC"}
+        }))
+        .unwrap();
+        assert_eq!(
+            update_deployment(
+                State(state.clone()),
+                Path(unscheduled.id.clone()),
+                ManagedJson(add_schedule.clone()),
+            )
+            .await
+            .expect_err("C3")
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert!(
+            state.deployments.lock().unwrap()[&unscheduled.id]
+                .schedule
+                .is_none(),
+            "C3 update atomic"
+        );
+        let _ = archive_deployment(State(state.clone()), Path(first.id))
+            .await
+            .expect("C4");
+        let scheduled = update_deployment(
+            State(state.clone()),
+            Path(unscheduled.id.clone()),
+            ManagedJson(add_schedule.clone()),
+        )
+        .await
+        .expect("C4")
+        .0;
+        assert!(scheduled.schedule.is_some(), "C4");
+        assert!(
+            update_deployment(
+                State(state),
+                Path(unscheduled.id),
+                ManagedJson(add_schedule),
+            )
+            .await
+            .is_ok(),
+            "C5"
+        );
+    }
+
+    #[test]
+    fn unpause_skips_missed_occurrences_and_resumes_from_the_next_one() {
+        // U1 paused with an old cursor -> no execution; U2 unpause at 09:31 ->
+        // cursor becomes exact 09:45, so 09:15/09:30 are never backfilled.
+        let mut record = deployment(Some(cron_schedule("*/15 * * * *")));
+        record.status = "paused";
+        record.paused_reason = Some(PausedReason::Manual);
+        record.next_fire_ms = Some(MON_0900 + 15 * 60_000);
+        resume_schedule(&mut record, MON_0900 + 31 * 60_000);
+        assert_eq!(record.status, "active", "U2");
+        assert_eq!(record.next_fire_ms, Some(MON_0900 + 45 * 60_000), "U2");
+    }
+
+    #[tokio::test]
+    async fn archived_deployment_is_an_idempotent_terminal_state() {
+        // Terminal table: A1 first archive succeeds; A2 repeated archive is
+        // idempotent; A3 update/pause/unpause/manual-run after archive reject and
+        // create no run or launcher side effect.
+        let state = Arc::new(DeploymentState::new());
+        let created =
+            create_deployment(State(state.clone()), None, ManagedJson(create_params(true)))
+                .await
+                .unwrap()
+                .0;
+        let _ = archive_deployment(State(state.clone()), Path(created.id.clone()))
+            .await
+            .expect("A1");
+        let _ = archive_deployment(State(state.clone()), Path(created.id.clone()))
+            .await
+            .expect("A2");
+        let update: DeploymentUpdateParams =
+            serde_json::from_value(serde_json::json!({"name":"no"})).unwrap();
+        assert_eq!(
+            update_deployment(
+                State(state.clone()),
+                Path(created.id.clone()),
+                ManagedJson(update),
+            )
+            .await
+            .expect_err("A3")
+            .0,
+            StatusCode::CONFLICT
+        );
+        assert!(
+            pause_deployment(State(state.clone()), Path(created.id.clone()))
+                .await
+                .is_err()
+        );
+        assert!(
+            unpause_deployment(State(state.clone()), Path(created.id.clone()))
+                .await
+                .is_err()
+        );
+        assert!(
+            run_deployment(State(state.clone()), Path(created.id))
+                .await
+                .is_err()
+        );
+        assert!(state.runs.lock().unwrap().is_empty(), "A3");
+    }
+
+    #[test]
+    fn primary_agent_archive_cascades_only_to_its_owned_deployments() {
+        // Agent/deployment cascade table: P1 same Workspace + primary Agent ->
+        // archive immediately and create no run; P2 another Agent or P3 another
+        // Workspace -> unchanged; P4 repeated notification -> zero new archives.
+        let state = DeploymentState::new();
+        let mut same = deployment(Some(cron_schedule("*/15 * * * *")));
+        same.workspace_id = "workspace_a".into();
+        same.agent = AgentReference::new("agent_primary", 1);
+        let mut other_agent = same.clone();
+        other_agent.agent = AgentReference::new("agent_other", 1);
+        let mut other_workspace = same.clone();
+        other_workspace.workspace_id = "workspace_b".into();
+        let mut store = state.deployments.lock().unwrap();
+        store.insert("same".into(), same);
+        store.insert("other_agent".into(), other_agent);
+        store.insert("other_workspace".into(), other_workspace);
+        drop(store);
+
+        assert_eq!(
+            state.archive_for_agent("workspace_a", "agent_primary"),
+            1,
+            "P1"
+        );
+        let store = state.deployments.lock().unwrap();
+        assert!(store["same"].archived_at.is_some(), "P1");
+        assert!(store["other_agent"].archived_at.is_none(), "P2");
+        assert!(store["other_workspace"].archived_at.is_none(), "P3");
+        drop(store);
+        assert_eq!(
+            state.archive_for_agent("workspace_a", "agent_primary"),
+            0,
+            "P4"
+        );
+        assert!(state.runs.lock().unwrap().is_empty(), "P1");
+    }
+
+    #[test]
     fn tick_fires_due_occurrences_with_a_schedule_trigger() {
         let state = DeploymentState::new();
         state.deployments.lock().unwrap().insert(
@@ -958,9 +1335,13 @@ mod tests {
         // First tick seeds the cursor to the next occurrence AFTER now — no
         // retroactive fire.
         assert!(state.tick(MON_0900).is_empty(), "no retroactive fire");
-        // A later tick spanning two 15-minute occurrences fires both (catch-up).
-        let fired = state.tick(MON_0900 + 31 * 60_000);
-        assert_eq!(fired.len(), 2, "09:15 and 09:30 both come due");
+        // Jitter rule J1: the exact 09:15 occurrence stays pending until its stable
+        // bounded delay, then creates exactly one run whose scheduled_at remains
+        // the unjittered cron instant. J2 applies independently to 09:30.
+        let first_due = jitter_due("deploy_x", MON_0900 + 15 * 60_000, 15 * 60_000);
+        assert!(state.tick(first_due - 1).is_empty(), "J1 not early");
+        let fired = state.tick(first_due);
+        assert_eq!(fired.len(), 1, "J1 fires once at its jittered due time");
 
         let runs = state.runs.lock().unwrap();
         let run = runs.get(&fired[0]).expect("run recorded");
@@ -971,8 +1352,10 @@ mod tests {
             TriggerContext::Manual => panic!("a scheduled fire must carry a Schedule trigger"),
         }
         assert_eq!(run.deployment_id, "deploy_x");
-        // A paused deployment stops firing.
         drop(runs);
+        let second_due = jitter_due("deploy_x", MON_0900 + 30 * 60_000, 15 * 60_000);
+        assert_eq!(state.tick(second_due).len(), 1, "J2");
+        // A paused deployment stops firing.
         state
             .deployments
             .lock()
@@ -1005,7 +1388,8 @@ mod tests {
             deployment(Some(cron_schedule("*/15 * * * *"))),
         );
         assert!(state.tick_and_launch(MON_0900).await.is_empty());
-        let completed = state.tick_and_launch(MON_0900 + 16 * 60_000).await;
+        let due = jitter_due("deploy_schedule", MON_0900 + 15 * 60_000, 15 * 60_000);
+        let completed = state.tick_and_launch(due).await;
         assert_eq!(completed.len(), 1);
         assert_eq!(
             completed[0].session_id.as_deref(),
@@ -1118,6 +1502,72 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn rate_limited_deployment_run_is_recorded_without_launch_or_retry() {
+        use std::sync::atomic::AtomicUsize;
+
+        struct CountingLauncher(Arc<AtomicUsize>);
+        #[async_trait::async_trait]
+        impl DeploymentSessionLauncher for CountingLauncher {
+            async fn launch(&self, _request: DeploymentLaunch) -> DeploymentLaunchOutcome {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                DeploymentLaunchOutcome::Created {
+                    session_id: "unexpected".into(),
+                }
+            }
+        }
+
+        // Rate-limit table: R1 the shared Create bucket is exhausted -> one
+        // session_rate_limited_error run, zero launcher calls/retries, active
+        // schedule; R2 is runtime-axis independent because Native/ACP selection
+        // occurs only inside the launcher that admission never invokes.
+        let limiter = Arc::new(ManagedRateLimiter::with_limits(
+            "org_rate",
+            crate::ManagedRateLimits {
+                create_per_minute: 1,
+                read_per_minute: 1,
+            },
+        ));
+        assert!(limiter.admit_internal_session_create(), "exhaust bucket");
+        let launches = Arc::new(AtomicUsize::new(0));
+        let state = DeploymentState::new();
+        state.bind_rate_limiter(limiter);
+        state.bind_launcher(Arc::new(CountingLauncher(launches.clone())));
+        let record = deployment(Some(cron_schedule("*/15 * * * *")));
+        let launch = record.launch("deploy_rate");
+        state
+            .deployments
+            .lock()
+            .unwrap()
+            .insert("deploy_rate".into(), record);
+        state.runs.lock().unwrap().insert(
+            "run_rate".into(),
+            RunRecord {
+                created_at: OBJECT_AT.into(),
+                deployment_id: "deploy_rate".into(),
+                agent: AgentReference::new("coder", 1),
+                trigger: TriggerContext::Schedule {
+                    scheduled_at: OBJECT_AT.into(),
+                },
+                session_id: None,
+                error: None,
+            },
+        );
+        let run = state.launch_run("run_rate", launch).await;
+        assert!(
+            matches!(run.error, Some(RunError::SessionRateLimitedError { .. })),
+            "R1"
+        );
+        assert!(run.session_id.is_none(), "R1 terminal XOR");
+        assert_eq!(launches.load(Ordering::SeqCst), 0, "R1/R2 no retry");
+        let deployment = state.deployments.lock().unwrap()["deploy_rate"].clone();
+        assert_eq!(
+            deployment.status, "active",
+            "R1 next occurrence remains eligible"
+        );
+        assert!(deployment.paused_reason.is_none(), "R1");
+    }
+
     #[test]
     fn last_run_at_is_echoed_into_the_projected_schedule() {
         let state = DeploymentState::new();
@@ -1126,7 +1576,8 @@ mod tests {
             deployment(Some(cron_schedule("*/15 * * * *"))),
         );
         state.tick(MON_0900);
-        state.tick(MON_0900 + 16 * 60_000);
+        let due = jitter_due("deploy_y", MON_0900 + 15 * 60_000, 15 * 60_000);
+        state.tick(due);
         let store = state.deployments.lock().unwrap();
         let projected = store.get("deploy_y").unwrap().project("deploy_y");
         let Schedule::Cron { last_run_at, .. } = projected.schedule.expect("schedule present");

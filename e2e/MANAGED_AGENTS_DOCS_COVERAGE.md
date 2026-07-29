@@ -151,6 +151,10 @@ resets omitted effort to that model's default.
 | G11 | webhook 4xx/5xx/transport failure | at most three jittered-backoff attempts; drop after final failure |
 | G12 | endpoint resolves non-public | disable immediately |
 | G13 | duplicate/late/out-of-order webhook | stable event id; consumer dedupes and fetches current resource |
+| G14 | scheduled deployment count reaches 1,000 in one organization | reject the next scheduled create/update atomically; unscheduled and archived rows do not consume capacity |
+| G15 | exact cron occurrence reaches its bounded jitter due time | one run; `scheduled_at` and previews retain the exact unjittered occurrence |
+| G16 | deployment is unpaused after missed occurrences | resume from the next future occurrence; never backfill missed runs |
+| G17 | deployment is archived | archive is idempotent and terminal; update/pause/unpause/manual run reject |
 
 ### Decision table H — event-batch admission and processing
 
@@ -359,7 +363,7 @@ assert against absent features.
 | **Dreams** (`/v1/dreams`, `dreaming-2026-04-21` header, create/poll/cancel/archive) | Not implemented — research preview | no `dreams`/`Dream` route or type in `crates/` |
 | **Cloud env `packages` provisioning** (pip/npm/apt/cargo/gem/go, version pinning) | Implemented through the one neutral Sandbox provisioning seam. Podman resolves the selected base image to its exact local ID, builds/reuses a content-addressed derived image, and the real workload observes the installed effect. Providers without package provisioning reject before workload creation; there is no fallback. | Admission/update semantics: `management_environments_e2e.mjs`; real success/fail-closed behavior: `managed_container_agent_e2e.mjs`; provider/cache side effects: `awaken-sandbox-container` cause-table tests |
 | **Managed request rate limits** (300 Create/min, 1,200 Read/min, organization-scoped token buckets) | Implemented at the one merged Managed composition edge; flat and Workspace-addressed requests, Native Sessions and ACP Sessions share the same organization buckets. Files, Dreams, non-Managed routes and non-Create mutations are not charged. | `rate_limit` cause/decision-table tests in `awaken-protocol-managed`; `management_surface::flat_and_workspace_paths_share_one_organization_create_bucket` |
-| **Scheduled-deployment capacity and execution jitter** (1,000 scheduled deployments/organization; up to 15% interval jitter, bounded 5 seconds–9 minutes) | Not implemented yet | `DeploymentState` has schedule parsing/firing but no organization capacity admission or jittered execution instant |
+| **Scheduled-deployment capacity and execution jitter** (1,000 scheduled deployments/organization; up to 15% interval jitter, bounded 5 seconds–9 minutes) | Implemented in the existing `DeploymentState`: capacity is atomic across create/update/archive; previews and trigger contexts retain exact cron instants; execution uses stable bounded jitter. Unpause skips missed occurrences, archive is terminal, internal Session creation shares the organization Create bucket, and primary-Agent archive cascades without a run. | `routes::deployments::tests` cause/decision-table cases; `management_deployment_schedule_e2e.mjs` |
 | **100k tool-output / oversized-block spill to file (preview + path)** | Partial / deferred — tracked open item **C11**; compaction covers token/message windows, not single-block spill | 6 compaction suites are window-only |
 
 ## Redundancy / dead-code assessment
