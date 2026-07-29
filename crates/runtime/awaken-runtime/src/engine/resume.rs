@@ -203,7 +203,7 @@ pub(super) async fn drive_resumed(
         result
     };
     let (resumed, mut seed_state, resumed_output) =
-        resume_into_messages(runtime, env, run_id, ticket, result, &store, context).await;
+        resume_into_messages(runtime, env, run_id, ticket, result, &store, context).await?;
     seed_state.splice(0..0, delegation_state);
     let seed_audit = if decision_precommitted {
         Vec::new()

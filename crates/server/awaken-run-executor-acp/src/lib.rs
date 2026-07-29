@@ -601,7 +601,8 @@ impl AcpRunExecutor {
             .map(|decision| ResumedPermissionResolver::new(base_permission, decision));
 
         loop {
-            let mut appender = CollectingAppender::default();
+            let mut appender =
+                CollectingAppender::new(run_id.clone(), context.tool_output_spiller.clone());
             // ADR-0052 owner control channel. Retain the sender and forward a run
             // cancellation into it as an `Injection::Interrupt`, so the supervisor
             // reaps the turn through the same interrupt path a protocol interrupt
@@ -1179,8 +1180,9 @@ impl PermissionResolver for ResumedPermissionResolver<'_> {
 /// external agent's turn (a tool call is an assistant `ToolUse`; its result is a
 /// `Role::Tool` `ToolResult` addressed to that call). `TurnEnd` carries no message —
 /// it is returned as the turn's reason.
-#[derive(Default)]
 struct CollectingAppender {
+    run_id: RunId,
+    spiller: Option<Arc<dyn awaken_runtime_contract::tool::ToolOutputSpiller>>,
     last: u64,
     messages: Vec<Message>,
     /// Index of the assistant message receiving the current contiguous ACP text
@@ -1190,6 +1192,22 @@ struct CollectingAppender {
     /// The turn's token usage, accumulated from any `Usage` events (kept out of the
     /// committed messages — it lands as thread state, matching the native engine).
     usage: TokenUsage,
+}
+
+impl CollectingAppender {
+    fn new(
+        run_id: RunId,
+        spiller: Option<Arc<dyn awaken_runtime_contract::tool::ToolOutputSpiller>>,
+    ) -> Self {
+        Self {
+            run_id,
+            spiller,
+            last: 0,
+            messages: Vec::new(),
+            open_text_message: None,
+            usage: TokenUsage::default(),
+        }
+    }
 }
 
 #[async_trait]
@@ -1248,11 +1266,19 @@ impl RunFactAppender for CollectingAppender {
                 } else {
                     content.clone()
                 };
+                let result_id = tool_use_id(id, seq);
+                let body = match &self.spiller {
+                    Some(spiller) => spiller
+                        .spill(&self.run_id, &result_id, body)
+                        .await
+                        .map_err(|error| AppendError::Append(error.to_string()))?,
+                    None => body,
+                };
                 self.messages.push(Message {
                     id: MessageId(format!("acp-{seq}")),
                     role: Role::Tool,
                     content: vec![ContentBlock::tool_result(
-                        tool_use_id(id, seq),
+                        result_id,
                         vec![ContentBlock::text(body)],
                     )],
                 });

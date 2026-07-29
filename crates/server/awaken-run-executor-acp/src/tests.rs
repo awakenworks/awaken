@@ -19,11 +19,37 @@ use awaken_runtime_contract::snapshot::{
 use awaken_runtime_contract::terminal::{
     CommittedTerminalRun, RunTerminalObserver, RunTerminalObserverError,
 };
+use awaken_runtime_contract::tool::{ToolError, ToolOutputSpiller};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use super::*;
 
 struct FakeProcess;
+
+struct SpillProbe {
+    fail: bool,
+    seen: Arc<Mutex<Vec<(String, String, String)>>>,
+}
+
+#[async_trait]
+impl ToolOutputSpiller for SpillProbe {
+    async fn spill(
+        &self,
+        run_id: &RunId,
+        call_id: &str,
+        content: String,
+    ) -> std::result::Result<String, ToolError> {
+        self.seen
+            .lock()
+            .unwrap()
+            .push((run_id.0.clone(), call_id.to_string(), content.clone()));
+        if self.fail {
+            Err(ToolError::Execution("ACP spill unavailable".into()))
+        } else {
+            Ok(format!("preview: {content}"))
+        }
+    }
+}
 
 #[async_trait]
 impl ProcessHandle for FakeProcess {
@@ -1405,6 +1431,77 @@ async fn a_tool_call_and_its_result_commit_as_neutral_messages() {
         }
         other => panic!("expected a ToolResult, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn acp_tool_results_use_the_bound_spiller_and_fail_closed() {
+    // Cause-effect graph:
+    // C1=ACP projects ToolResult; C2=spiller succeeds; C3=spiller fails.
+    // C1+C2 -> transformed result alone enters the neutral transcript.
+    // C1+C3 -> appender rejects the fact, turn ends as an error, and no Tool
+    // result carrying the unmaterialized payload commits.
+    //
+    // | Rule | ACP result | spill | Expected effect |
+    // | A1 | yes | success | stable run/call sent once; preview committed |
+    // | A2 | yes | failure | terminal error; no Tool-role result committed |
+    let frames = || {
+        vec![
+            r#"{"type":"tool_call","id":"c1","name":"read","input":{"path":"a.txt"}}"#.into(),
+            r#"{"type":"tool_result","id":"c1","content":"file body","is_error":false}"#.into(),
+            r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
+        ]
+    };
+
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let committed = Arc::new(RecordingCoordinator::default());
+    let state = exec(frames())
+        .execute(
+            activation(),
+            RuntimeRunContext::new()
+                .with_commit(committed.clone())
+                .with_tool_output_spiller(Arc::new(SpillProbe {
+                    fail: false,
+                    seen: seen.clone(),
+                })),
+        )
+        .await
+        .expect("A1");
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd), "A1");
+    assert_eq!(
+        seen.lock().unwrap().as_slice(),
+        &[("run-1".into(), "c1".into(), "file body".into())],
+        "A1"
+    );
+    assert!(
+        committed.commits.lock().unwrap()[0]
+            .messages
+            .iter()
+            .any(|message| message.role == Role::Tool
+                && message.text_content() == "preview: file body"),
+        "A1"
+    );
+
+    let failed = Arc::new(RecordingCoordinator::default());
+    let state = exec(frames())
+        .execute(
+            activation(),
+            RuntimeRunContext::new()
+                .with_commit(failed.clone())
+                .with_tool_output_spiller(Arc::new(SpillProbe {
+                    fail: true,
+                    seen: Arc::new(Mutex::new(Vec::new())),
+                })),
+        )
+        .await
+        .expect("A2 is a classified terminal backend failure");
+    assert!(matches!(state, RunState::Ended(EndCause::Error(_))), "A2");
+    assert!(
+        failed.commits.lock().unwrap()[0]
+            .messages
+            .iter()
+            .all(|message| message.role != Role::Tool),
+        "A2"
+    );
 }
 
 #[tokio::test]

@@ -127,6 +127,9 @@ impl SessionCtx {
             .with_stream_checkpoint(self.stream_checkpoint.clone())
             .with_cancellation(token)
             .with_reschedules(reschedule)
+            .with_tool_output_spiller(Arc::new(
+                crate::tool_output_spill::SandboxToolOutputSpiller::new(self.env.clone()),
+            ))
             // ADR-0050 D5: resolve the content-capture decision for this turn.
             // Open/single-machine reads the env default; managed overrides with
             // the ceiling × request × consent meet.

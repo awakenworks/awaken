@@ -46,7 +46,8 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_runtime_contract::tool::{
-    RawTool, ToolError, ToolOutput, ToolRecoveryCapability, ToolRecoveryMode, ToolRecoveryPolicy,
+    RawTool, ToolError, ToolOutput, ToolOutputSpiller, ToolRecoveryCapability, ToolRecoveryMode,
+    ToolRecoveryPolicy,
 };
 use awaken_runtime_contract::tool_batch::{
     ActiveToolBatch, ToolBatch, ToolBatchId, ToolBatchPhase, ToolCallPhase,
@@ -227,6 +228,20 @@ impl LlmExecutor for CallsThenText {
 }
 
 struct TextOnly;
+
+struct RecoverySpiller;
+
+#[async_trait::async_trait]
+impl ToolOutputSpiller for RecoverySpiller {
+    async fn spill(
+        &self,
+        _run_id: &RunId,
+        _call_id: &str,
+        content: String,
+    ) -> Result<String, ToolError> {
+        Ok(format!("recovered-preview: {content}"))
+    }
+}
 
 #[async_trait::async_trait]
 impl LlmExecutor for TextOnly {
@@ -845,6 +860,9 @@ async fn delegated_child_cancel_produces_a_refinement_trace() {
 
 #[tokio::test]
 async fn replay_safe_crash_recovery_produces_a_refinement_trace() {
+    // Recovery cause/effect rule R-REC: an Executing replay-safe call is invoked
+    // again, but its new result must pass the same spiller before Completed state
+    // and transcript publication; crash recovery is not an oversized-output bypass.
     let trace = TracingCoordinator::default();
     let policy = ToolRecoveryPolicy {
         mode: ToolRecoveryMode::ReplaySafe,
@@ -867,7 +885,8 @@ async fn replay_safe_crash_recovery_produces_a_refinement_trace() {
             activation(snapshot),
             RuntimeRunContext::new()
                 .with_commit(Arc::new(trace.clone()))
-                .with_reader(Arc::new(trace.inner.clone())),
+                .with_reader(Arc::new(trace.inner.clone()))
+                .with_tool_output_spiller(Arc::new(RecoverySpiller)),
         )
         .await
         .expect("replay-safe recovery runs");
@@ -876,7 +895,10 @@ async fn replay_safe_crash_recovery_produces_a_refinement_trace() {
     let batch = trace
         .latest_batch()
         .expect("recovered batch remains durable");
-    assert!(matches!(batch.calls[0].phase, ToolCallPhase::Completed(_)));
+    assert!(matches!(
+        &batch.calls[0].phase,
+        ToolCallPhase::Completed(output) if output.content == "recovered-preview: ok"
+    ));
     emit_trace("replay_safe_recovery", &trace);
 }
 

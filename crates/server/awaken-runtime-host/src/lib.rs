@@ -63,6 +63,7 @@ mod skills_api;
 mod store;
 #[cfg(test)]
 mod test_mcp;
+mod tool_output_spill;
 mod web_search;
 mod worker_http;
 mod worker_security;

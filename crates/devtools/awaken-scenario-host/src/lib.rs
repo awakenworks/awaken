@@ -28,7 +28,7 @@ use scenario_shell::{scenario_argv, scenario_host_acp_cli, scenario_shell_argv};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::content::extract_text;
 use awaken_agent_contract::agent::message::Role;
 use awaken_protocol_managed::ManagedState;
 use awaken_provider_genai::{AdapterKind, GenaiExecutor};
@@ -364,7 +364,18 @@ const FAKE_ACP_JSONRPC_SCRIPT: &str = "while IFS= read -r line; do \
         *'\"id\":2'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s1\"}}';; \
         *'\"id\":3'*) \
           printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"tool_call\",\"toolCallId\":\"c1\",\"title\":\"read\",\"rawInput\":{\"path\":\"a.txt\"}}}}'; \
-          printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"tool_call_update\",\"toolCallId\":\"c1\",\"status\":\"completed\",\"content\":[{\"type\":\"content\",\"content\":{\"type\":\"text\",\"text\":\"file body\"}}]}}}'; \
+          payload=$(/usr/bin/head -c 100001 /dev/zero | /usr/bin/tr '\\000' x); \
+          printf '%s%s%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"tool_call_update\",\"toolCallId\":\"c1\",\"status\":\"completed\",\"content\":[{\"type\":\"content\",\"content\":{\"type\":\"text\",\"text\":\"file body ' \"$payload\" '\"}}]}}}'; \
+          spill=''; attempts=0; \
+          while [ \"$attempts\" -lt 100 ] && [ -z \"$spill\" ]; do \
+            for candidate in \"$AWAKEN_PROJECT_DIR\"/.awaken/tool-results/*.txt; do \
+              if [ -f \"$candidate\" ]; then spill=\"$candidate\"; break; fi; \
+            done; \
+            attempts=$((attempts + 1)); \
+            if [ -z \"$spill\" ]; then /usr/bin/sleep 0.01; fi; \
+          done; \
+          bytes=''; if [ -n \"$spill\" ]; then bytes=$(/usr/bin/wc -c < \"$spill\"); fi; \
+          printf '%s%s%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"acp-spill-readable=' \"$bytes\" '\"}}}}'; \
           printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"acp-jsonrpc reply\"}}}}'; \
           printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'; \
           exit 0;; \
@@ -456,21 +467,21 @@ pub fn build_acp_relaunch_failure_router() -> Router {
 /// [`build_acp_router`]'s official-wire twin: `acp:*` sessions drive the fake agent
 /// over real ACP JSON-RPC (the [`awaken_run_executor_acp::Codec::Acp`] driver),
 /// proving the production codec end-to-end. `AWAKEN_MODEL_MODE=acp-jsonrpc`.
-pub fn build_acp_jsonrpc_router() -> Router {
+pub async fn build_acp_jsonrpc_router() -> Router {
     let launch = awaken_run_executor_acp::AcpLaunch::custom(
         scenario_shell_argv(FAKE_ACP_JSONRPC_SCRIPT),
         vec![],
     );
-    let source = Arc::new(
-        awaken_run_executor_acp::SubprocessChannelSource::new(launch)
-            .with_codec(awaken_run_executor_acp::Codec::Acp),
-    );
-    let acp = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
-    mount_with_host_backend_publication(
-        resource_host(Arc::new(EchoModel), "awaken").with_acp(acp),
-        "acp-agent",
-        "acp:claude",
-    )
+    let mut deployment = scenario_deployment();
+    deployment.sandbox_tier = awaken_runtime_host::SandboxTier::Local;
+    let host = resource_host_with_deployment(Arc::new(OversizedToolModel), "awaken", deployment)
+        .with_gate_override(Arc::new(AllowAllGate))
+        .with_acp_launch_source(
+            awaken_server::relay_hand_executor_factory(),
+            awaken_runtime_host::LaunchSource::FixedAcp(Box::new(launch)),
+        )
+        .await;
+    mount_with_host_backend_publication(host, "acp-agent", "acp:claude")
 }
 
 /// Durable allow/deny coverage for ACP `session/request_permission`, through the
@@ -1621,24 +1632,7 @@ impl LlmExecutor for SkillDrivingModel {
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         let last = request.messages.last().expect("a message");
-        // A tool result carries its text in nested blocks, which `block_text` skips;
-        // read those too so the catalog (a tool result) is visible to the model.
-        let last_text: String = last
-            .content
-            .iter()
-            .flat_map(|b| match b {
-                ContentBlock::Text { text } => vec![text.clone()],
-                ContentBlock::ToolResult { content, .. } => content
-                    .iter()
-                    .filter_map(|inner| match inner {
-                        ContentBlock::Text { text } => Some(text.clone()),
-                        _ => None,
-                    })
-                    .collect(),
-                _ => vec![],
-            })
-            .collect::<Vec<_>>()
-            .join("");
+        let last_text = extract_text(&last.content);
         let output = match last.role {
             Role::User => AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "l".into(),

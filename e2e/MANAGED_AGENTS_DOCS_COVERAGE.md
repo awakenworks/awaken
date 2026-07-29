@@ -352,11 +352,11 @@ These are real coverage gaps: awaken implements the behavior, no e2e asserts it.
 14. ~~**`session.status_rescheduled` / `rescheduling`**~~ — closed in
     `managed_error_recovery_e2e.mjs` with a deterministic transient-503 scenario.
 
-## Not implemented / out-of-scope — *why the code is uncovered*
+## Former gaps and explicit exclusions
 
-These doc behaviors have **no awaken implementation**, verified by source search. That is
-the reason they are uncovered; they are not dead or redundant code, and adding tests would
-assert against absent features.
+This table records the audited closure state of documentation gaps. Implemented
+rows name their executable evidence; exclusions explain why no implementation is
+expected in this parity scope.
 
 | Doc surface | Status in awaken | Evidence |
 |---|---|---|
@@ -364,7 +364,7 @@ assert against absent features.
 | **Cloud env `packages` provisioning** (pip/npm/apt/cargo/gem/go, version pinning) | Implemented through the one neutral Sandbox provisioning seam. Podman resolves the selected base image to its exact local ID, builds/reuses a content-addressed derived image, and the real workload observes the installed effect. Providers without package provisioning reject before workload creation; there is no fallback. | Admission/update semantics: `management_environments_e2e.mjs`; real success/fail-closed behavior: `managed_container_agent_e2e.mjs`; provider/cache side effects: `awaken-sandbox-container` cause-table tests |
 | **Managed request rate limits** (300 Create/min, 1,200 Read/min, organization-scoped token buckets) | Implemented at the one merged Managed composition edge; flat and Workspace-addressed requests, Native Sessions and ACP Sessions share the same organization buckets. Files, Dreams, non-Managed routes and non-Create mutations are not charged. | `rate_limit` cause/decision-table tests in `awaken-protocol-managed`; `management_surface::flat_and_workspace_paths_share_one_organization_create_bucket` |
 | **Scheduled-deployment capacity and execution jitter** (1,000 scheduled deployments/organization; up to 15% interval jitter, bounded 5 seconds–9 minutes) | Implemented in the existing `DeploymentState`: capacity is atomic across create/update/archive; previews and trigger contexts retain exact cron instants; execution uses stable bounded jitter. Unpause skips missed occurrences, archive is terminal, internal Session creation shares the organization Create bucket, and primary-Agent archive cascades without a run. | `routes::deployments::tests` cause/decision-table cases; `management_deployment_schedule_e2e.mjs` |
-| **100k tool-output / oversized-block spill to file (preview + path)** | Partial / deferred — tracked open item **C11**; compaction covers token/message windows, not single-block spill | 6 compaction suites are window-only |
+| **100k tool-output / oversized-block spill to file (preview + path)** | Implemented once at the Session sandbox boundary for Native local/MCP/remote-hand/delegated/recovered/client results and external ACP result projections. `<=100,000` characters remain inline; larger content is stored whole at a stable jailed path and only a bounded preview + readable path is committed. Storage failure is fail-closed. This internal result file is not the excluded Files API. | `tool_output_spill` cause/decision-table test; Native `tools`/`awaiting`/`formal_refinement` rules; ACP executor cause table; `acp_jsonrpc_e2e.mjs` reads and verifies complete files produced by both Native and ACP runs |
 
 ## Redundancy / dead-code assessment
 
@@ -377,7 +377,8 @@ The goal's cleanup clause ("is the uncovered code redundant/duplicate — if so,
   the multi-backend content-addressed store (`awaken-file-store`: e2e drives only its in-mem
   backend; Fs/Pg/S3 have their own Rust tests). This is separation of test tiers, not
   redundancy.
-- The uncovered *doc-feature* code is the ▲ table above — absent features, not dead code.
+- Remaining excluded doc surfaces are Dreams and the explicitly excluded Files
+  behavior above; the implemented rows in the table carry direct test evidence.
 - Structural duplication that *did* exist (durable store backends inlined in the
   `awaken-runtime-host` god-hub) was removed by the Step-3b re-layout: `awaken-env-store`,
   `awaken-work-store`, `awaken-session-store`, `awaken-session-contract`, and

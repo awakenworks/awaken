@@ -232,6 +232,24 @@ pub enum ToolError {
     Execution(String),
 }
 
+/// Materializes a model-visible tool result when the host needs to move a large
+/// payload out of the transcript. The execution backends call this one neutral
+/// port after a tool result exists and before it becomes durable; the host owns
+/// the sandbox path, size policy, and preview format.
+///
+/// Implementations must be idempotent for the same `(run_id, call_id)`: recovery
+/// may execute a replay-safe tool again, and both the Native and ACP executors
+/// use the stable result address supplied here.
+#[async_trait]
+pub trait ToolOutputSpiller: Send + Sync {
+    async fn spill(
+        &self,
+        run_id: &RunId,
+        call_id: &str,
+        content: String,
+    ) -> Result<String, ToolError>;
+}
+
 /// Failure to select the executor that will own a run's tool side effects.
 /// This is distinct from an invocation failure: selection happens before the
 /// runtime starts the run, so a required remote placement must fail closed

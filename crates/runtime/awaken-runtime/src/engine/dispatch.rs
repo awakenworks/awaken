@@ -524,6 +524,7 @@ async fn record_fresh_output(
     ledger: &mut StepLedger,
     store: &mut Store,
 ) -> Result<()> {
+    let output = spill_tool_output(context, run_id, output).await?;
     if delegation_started {
         stage_delegation_completed(runtime, run_id, call, store, &mut ledger.staged_state)?;
     }
@@ -867,6 +868,7 @@ async fn record_recovered_output(
     context: &RuntimeRunContext,
     thread_id: &ThreadId,
 ) -> Result<()> {
+    let output = spill_tool_output(context, run_id, output).await?;
     if entered_executor {
         batch
             .complete(output.clone())
