@@ -1223,6 +1223,17 @@ impl DeltaSink for StreamDeltaSink<'_> {
         .await;
     }
 
+    async fn on_reasoning(&self, chunk: &str) {
+        emit(
+            self.context,
+            self.run_id,
+            AgentEvent::Delta(Delta::ReasoningDelta {
+                delta: chunk.to_string(),
+            }),
+        )
+        .await;
+    }
+
     async fn on_tool_call_delta(&self, call_id: &str, tool_id: &str, args_delta: &str) {
         emit(
             self.context,
@@ -1297,6 +1308,10 @@ impl DeltaSink for ContinuationSink<'_> {
             .expect("continuation buffer")
             .push_str(chunk);
         self.inner.on_text(chunk).await;
+    }
+
+    async fn on_reasoning(&self, chunk: &str) {
+        self.inner.on_reasoning(chunk).await;
     }
 
     async fn on_tool_call_delta(&self, call_id: &str, tool_id: &str, args_delta: &str) {

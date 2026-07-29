@@ -102,6 +102,7 @@ impl SessionRuntime for EchoFake {
 /// same full text. Proves the preview → committed reconciliation: the committed
 /// message must reuse the id the preview `event_start` announced.
 struct StreamingFake {
+    reasoning: Vec<&'static str>,
     chunks: Vec<&'static str>,
 }
 
@@ -115,10 +116,15 @@ impl SessionRuntime for StreamingFake {
     ) -> Result<StepOutcome, RunError> {
         // send_events always drives `run_streaming`; `run` is only the non-streaming
         // fallback and is unused here.
-        Ok(end_turn(vec![Message::text(
+        let mut content = Vec::new();
+        if !self.reasoning.is_empty() {
+            content.push(ContentBlock::thinking(self.reasoning.concat()));
+        }
+        content.push(ContentBlock::text(self.chunks.concat()));
+        Ok(end_turn(vec![Message::new(
             Id("a".into()),
             Role::Assistant,
-            self.chunks.concat(),
+            content,
         )]))
     }
     async fn run_streaming(
@@ -128,7 +134,16 @@ impl SessionRuntime for StreamingFake {
         _c: Vec<ContentBlock>,
         sink: Arc<dyn Sink>,
     ) -> Result<StepOutcome, RunError> {
-        // Mirror the reply as live text deltas before committing it.
+        // Mirror reasoning first, then the reply, as the provider stream does.
+        for chunk in &self.reasoning {
+            let ev = StreamEvent {
+                run_id: RunId("r1".into()),
+                kind: AgentEvent::Delta(Delta::ReasoningDelta {
+                    delta: (*chunk).into(),
+                }),
+            };
+            sink.send(ev).await.expect("best-effort sink send");
+        }
         for chunk in &self.chunks {
             let ev = StreamEvent {
                 run_id: awaken_agent_contract::agent::run::Id("r1".into()),
@@ -138,10 +153,15 @@ impl SessionRuntime for StreamingFake {
             };
             sink.send(ev).await.expect("best-effort sink send");
         }
-        Ok(end_turn(vec![Message::text(
+        let mut content = Vec::new();
+        if !self.reasoning.is_empty() {
+            content.push(ContentBlock::thinking(self.reasoning.concat()));
+        }
+        content.push(ContentBlock::text(self.chunks.concat()));
+        Ok(end_turn(vec![Message::new(
             Id("a".into()),
             Role::Assistant,
-            self.chunks.concat(),
+            content,
         )]))
     }
     async fn resume(
@@ -433,6 +453,7 @@ async fn live_broadcast_preserves_order_across_two_turns() {
 #[tokio::test]
 async fn preview_frames_reconcile_to_the_committed_agent_message_by_id() {
     let state = ManagedState::new(StreamingFake {
+        reasoning: vec![],
         chunks: vec!["Hel", "lo ", "world"],
     });
     let id = state_create(&state).await;
@@ -499,6 +520,65 @@ async fn preview_frames_reconcile_to_the_committed_agent_message_by_id() {
     );
 }
 
+/// Cause-effect graph and decision rule E3:
+/// C1 provider emits one or more contiguous reasoning chunks, then C2 visible text;
+/// C1 -> E1 exactly one start-only `agent.thinking` preview (reasoning stays private),
+/// C2 -> E2 a distinct `agent.message` start plus deltas, and committed facts -> E3
+/// both buffered events reuse their preview ids in the same order. Constraint: no
+/// thinking delta or content may cross the Managed wire.
+#[tokio::test]
+async fn thinking_preview_is_start_only_and_reconciles_with_committed_thinking() {
+    let state = ManagedState::new(StreamingFake {
+        reasoning: vec!["private", " chain"],
+        chunks: vec!["public", " answer"],
+    });
+    let id = state_create(&state).await;
+    let (_snap, mut rx) = state.stream_subscribe(&id).expect("subscribe");
+
+    state_send_user(&state, &id, "hi").await;
+    let (frames, _) = drain(&mut rx);
+
+    let starts: Vec<(String, String)> = frames
+        .iter()
+        .filter_map(|frame| match frame {
+            StreamFrame::Preview(PreviewFrame::EventStart { event }) => {
+                Some((event.event_type.clone(), event.id.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(starts.len(), 2);
+    assert_eq!(starts[0].0, "agent.thinking");
+    assert_eq!(starts[1].0, "agent.message");
+    assert!(
+        frames.iter().all(|frame| !matches!(
+            frame,
+            StreamFrame::Preview(PreviewFrame::EventDelta { event_id, .. })
+                if event_id == &starts[0].1
+        )),
+        "reasoning is represented only by its start marker"
+    );
+
+    let committed: Vec<(String, &str)> = frames
+        .iter()
+        .filter_map(|frame| match frame {
+            StreamFrame::Committed(event) => match event.kind {
+                OutboundKind::AgentThinking {} => Some((event.id.clone(), "agent.thinking")),
+                OutboundKind::AgentMessage { .. } => Some((event.id.clone(), "agent.message")),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        committed,
+        vec![
+            (starts[0].1.clone(), "agent.thinking"),
+            (starts[1].1.clone(), "agent.message"),
+        ]
+    );
+}
+
 /// The same streaming turn observed over HTTP with `event_deltas[]=agent.message`
 /// (send-then-stream): the preview frames are stream-only and gone by the time the
 /// connection opens, but the committed `agent.message` in the backfill still carries
@@ -507,6 +587,7 @@ async fn preview_frames_reconcile_to_the_committed_agent_message_by_id() {
 #[tokio::test]
 async fn a_streamed_turns_committed_message_id_is_preview_minted() {
     let state = Arc::new(ManagedState::new(StreamingFake {
+        reasoning: vec![],
         chunks: vec!["a", "b"],
     }));
     let app = router(state);
@@ -739,22 +820,54 @@ async fn stream_thread_events_unknown_thread_is_404() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
-/// The session-level stream's `event_deltas[]` parser rejects an unsupported value
-/// with a 400 `invalid_request_error` (only `agent.message` / `agent.thinking` are
-/// accepted), matching the official wire.
+/// Causes: an `event_deltas[]` member may be supported/unsupported and its repeated
+/// count may be at/beyond 100.
+/// Constraints: only message/thinking are valid and the inclusive maximum is 100.
+/// Effects: 100 values streams normally; an invalid value or 101 values is a 400
+/// `invalid_request_error` before opening a stream.
+/// Decision rule: E4.
 #[tokio::test]
-async fn session_stream_rejects_an_unsupported_event_deltas_value() {
+async fn session_stream_event_deltas_follow_the_boundary_decision_rule() {
     let app = router(Arc::new(ManagedState::new(EchoFake)));
     let id = http_create(&app).await;
-    let (status, body) = http_sse(
+    http_json(
         &app,
-        &format!("/v1/sessions/{id}/events/stream?event_deltas[]=agent.tool_use"),
+        "POST",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": "hi" }] }] }),
+    )
+    .await;
+
+    let repeated = |count: usize| {
+        std::iter::repeat_n("event_deltas[]=agent.message", count)
+            .collect::<Vec<_>>()
+            .join("&")
+    };
+    let (status, _) = http_sse(
+        &app,
+        &format!("/v1/sessions/{id}/events/stream?{}", repeated(100)),
         &[],
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(json["error"]["type"], "invalid_request_error");
+    assert_eq!(status, StatusCode::OK, "E4 inclusive maximum");
+
+    for (rule, query) in [
+        (
+            "E4 unsupported value",
+            "event_deltas[]=agent.tool_use".to_string(),
+        ),
+        ("E4 over maximum", repeated(101)),
+    ] {
+        let (status, body) = http_sse(
+            &app,
+            &format!("/v1/sessions/{id}/events/stream?{query}"),
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{rule}");
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["error"]["type"], "invalid_request_error", "{rule}");
+    }
 }
 
 // === 1(b) Full-replay + dedupe-by-id contract ===============================

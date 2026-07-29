@@ -171,8 +171,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Root every request span in the ingress middleware (extracts the inbound
     // `traceparent`); the whole direct request→inference path nests under it.
     let app = app.layer(axum::middleware::from_fn(awaken_observability::trace_http));
-    // Enforce the managed-agents beta opt-in on session creation, exactly as the
-    // real API (the bare `router()` unit tests build carries no such layer).
+    // Enforce the managed-agents beta opt-in across ordinary Managed endpoint
+    // families (bare router-level tests intentionally carry no such layer).
     let app = app.layer(axum::middleware::from_fn(
         awaken_protocol_managed::enforce_managed_beta,
     ));

@@ -870,6 +870,13 @@ impl SharedHost {
         self.model_ref.clone()
     }
 
+    /// The primary model currently selected for `thread`, including a Managed
+    /// per-session/per-turn override. This is a read-only projection of the same
+    /// inference-routing source that execution consumes.
+    pub fn model_for_thread(&self, thread: &str) -> String {
+        self.inference_routing.model_ref(thread, &self.model_ref)
+    }
+
     /// The set of client-executed tool ids (model-visible, host-unregistered).
     pub fn client_tools(&self) -> &HashSet<String> {
         &self.client_tools

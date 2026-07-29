@@ -151,6 +151,20 @@ resets omitted effort to that model's default.
 | G12 | endpoint resolves non-public | disable immediately |
 | G13 | duplicate/late/out-of-order webhook | stable event id; consumer dedupes and fetches current resource |
 
+### Decision table H — event-batch admission and processing
+
+| Rule | Cause | Constraint/state | Effect |
+|---|---|---|---|
+| H1 | `system.message` has 1 text item | supported primary model; no pending tool | accept and persist |
+| H2 | `system.message` has 1000 text items | same as H1 | accept inclusive maximum |
+| H3 | `system.message` has 0 or 1001 items | any | 400; reject whole batch before persistence |
+| H4 | `system.message` has valid content | unsupported primary Claude model | 400 `model_does_not_support_mid_conversation_system`; no event |
+| H5 | system alone or with user message | idle `requires_action` | 400; pending tool and history unchanged |
+| H6 | matching tool result/confirmation precedes system | idle `requires_action` | resume, then accept system in request order |
+| H7 | result id or built-in/custom kind mismatches pending tool | idle `requires_action` | 400; no result/system event and pending remains resumable |
+| H8 | outcome `max_iterations` is 1..=20 / outside range | valid outcome body | accept inclusive bounds / 400 without persistence |
+| H9 | accepted inbound event | queued / result-or-outcome immediate class | receipt id equals durable id; durable `processed_at` populated, immediate receipt populated only for documented classes |
+
 ### Required test-comment form
 
 ```rust
@@ -254,6 +268,11 @@ non-regression and second-turn relaunch coverage.
 | Session-list cursor pagination (`?limit=&page=`, `{data,has_more,next_page}`, after-id) | session-operations | `managed_session_pagination_e2e.mjs` | boundary (`limit=1` vs all) + state-transition on the cursor + error-guess (fabricated cursor → empty terminal page) |
 | Outcome evaluation lifecycle spans (`span.outcome_evaluation_start`/`_end` bracket every iteration; stable `outcome_id`; monotonic `iteration`) | define-outcomes / reference | `managed_outcome_lifecycle_e2e.mjs` | state-transition: each `_start(outcome_id,iteration)` pairs with one `_end` at the same key; iterations contiguous ascending |
 | Scheduled deployments (cron `schedule` echo/persist, pause retains, write-time cron validation) | scheduled-deployments | `management_deployment_schedule_e2e.mjs` | equivalence partition on cron expr (valid / garbage / missing → 400) + state-transition pause→unpause preserves schedule |
+| Session `initial_events` executes through the canonical event executor (0/1/50/51, allowed kinds, at-most-one outcome) and returns `running` while queued | start-a-session / reference | existing adapter tests + `acp_e2e.mjs` | decision table C; native and ACP initial turns share the same executor |
+| Inbound events persist under their receipt id and converge `processed_at` according to the documented immediate/queued classes | events-and-streaming / reference | existing adapter tests + `managed_system_message_e2e.mjs` | decision H9; no receipt-only shadow path |
+| `system.message` content bounds, primary-model capability, and `requires_action` ordering | events-and-streaming | existing adapter/HITL tests + native/ACP SDK E2E | decision H1-H7; whole-batch rejection precedes mutation |
+| Event-delta admission at 100/101 and start-only thinking reconciliation | events-and-streaming | existing streaming suite | decision E3/E4; thinking content never crosses the wire and committed ids equal preview ids |
+| Managed beta gate covers ordinary Session/Agent/Environment/Deployment/Vault/Skill families | overview / reference | existing contract-guard E2E | decision A1/A2/A5; family-specific Memory header remains a separate open phase |
 
 Verified against source before writing: `deployments.rs` (`projected_schedule`/`active_cron` +
 write-time `Cron::parse` 400), `cron.rs` (dependency-free 5-field evaluator),
@@ -272,10 +291,12 @@ These are real coverage gaps: awaken implements the behavior, no e2e asserts it.
 3. ~~**Mid-run interrupt + steer**~~ — closed in `managed_error_recovery_e2e.mjs`.
 4. ~~**Session agent-update gate**~~ — closed in `management_sessions_family_e2e.mjs`.
 5. ~~**Overrides clearing rules**~~ — closed in `managed_model_override_e2e.mjs`.
-6. **`agent.thinking` start-only preview + no-replay-on-reconnect** — marker/content
-   ordering is covered by `managed_real_thinking_e2e.mjs` with a thinking-capable
-   provider; generic reconnect/replay is covered by `managed_reconnect_real_e2e.mjs`.
-   The combined thinking-specific no-replay assertion remains provider-gated.
+6. **`agent.thinking` start-only preview + no-replay-on-reconnect** — start-only,
+   private-content suppression, and preview-to-buffered id reconciliation are now
+   deterministic in the existing Rust streaming suite; marker/content ordering is also
+   covered by `managed_real_thinking_e2e.mjs` with a thinking-capable provider. Generic
+   reconnect/replay is covered by `managed_reconnect_real_e2e.mjs`; the combined
+   thinking-specific no-replay assertion remains provider-gated.
 7. ~~**Deployment run failure taxonomy + auto-pause**~~ — closed across
    `management_deployments_e2e.mjs` and `management_deployment_schedule_e2e.mjs`:
    the exact tagged run-error union replaces the former free-form/fixed-null field;
@@ -324,7 +345,6 @@ assert against absent features.
 |---|---|---|
 | **Dreams** (`/v1/dreams`, `dreaming-2026-04-21` header, create/poll/cancel/archive) | Not implemented — research preview | no `dreams`/`Dream` route or type in `crates/` |
 | **`agent-memory-2026-07-22` endpoint header + two-header 400 conflict** | Not implemented — awaken keys memory-store endpoints off the same managed beta | no `agent-memory-2026-07-22` string in `crates/` |
-| **`system.message` 1–1000 content-item boundary + `model_does_not_support_mid_conversation_system` 400** | Not implemented — accept/reject-before-first-turn is covered; no item-count or model-capability gate | no count validation in `routes/`/`types/session.rs` |
 | **Cloud env `packages` provisioning** (pip/npm/apt/cargo/gem/go, version pinning) | Implemented through the one neutral Sandbox provisioning seam. Podman resolves the selected base image to its exact local ID, builds/reuses a content-addressed derived image, and the real workload observes the installed effect. Providers without package provisioning reject before workload creation; there is no fallback. | Admission/update semantics: `management_environments_e2e.mjs`; real success/fail-closed behavior: `managed_container_agent_e2e.mjs`; provider/cache side effects: `awaken-sandbox-container` cause-table tests |
 | **Rate limits** (300 create/min, 1200 read/min; 1,000-scheduled-deployment cap; 10s jitter) | Out of scope — org/infra-level policy, not modeled in the core wire | no per-org rate-limit middleware in `protocol-managed` |
 | **100k tool-output / oversized-block spill to file (preview + path)** | Partial / deferred — tracked open item **C11**; compaction covers token/message windows, not single-block spill | 6 compaction suites are window-only |

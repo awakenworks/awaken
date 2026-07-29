@@ -38,6 +38,7 @@ mod hub;
 mod inference_routing;
 mod judge;
 mod live_inbox;
+mod managed_model_capability;
 mod managed_resource_projection;
 mod mcp;
 mod mcp_relay;
@@ -1163,6 +1164,16 @@ impl SessionRuntime for ManagedHost {
             .add_system(thread, text)
             .await
             .map_err(to_run_error)
+    }
+
+    async fn supports_mid_conversation_system(&self, thread: &str) -> bool {
+        managed_model_capability::supports_mid_conversation_system(
+            &self.host.model_for_thread(thread),
+        )
+    }
+
+    async fn pending_tool(&self, thread: &str) -> Option<Pending> {
+        to_pending(self.host.pending_tool(thread).await)
     }
 
     async fn interrupt(&self, thread: &str) -> Result<(), RunError> {

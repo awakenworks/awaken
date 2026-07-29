@@ -259,7 +259,12 @@ async fn serve_resolved(
         awaken_cli::build_management_assembly_with_deployment(&deployment, &seal_key).await?
     };
     let local_setup = assembly.local_setup;
-    let app = assembly.router;
+    // The beta gate is a composition-edge concern: it wraps both Session and
+    // control-plane Managed families while leaving AI SDK/A2A and family-specific
+    // betas untouched. Router-level domain tests intentionally remain headerless.
+    let app = assembly.router.layer(axum::middleware::from_fn(
+        awaken_protocol_managed::enforce_managed_beta,
+    ));
     if let Some(lock) = migration_lock {
         lock.release()
             .await

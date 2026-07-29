@@ -228,36 +228,44 @@ pub(crate) fn error_response(err: StateError) -> (StatusCode, Json<ErrorResponse
 /// `crate::…::WorkspaceScope` paths keep working.
 pub use awaken_tenancy::WorkspaceScope;
 
-/// The Managed Agents beta this wire surface requires to start a session (mirrors
-/// `awaken_managed_bridge::MANAGED_BETA`).
-const REQUIRED_BETA: &str = "managed-agents-2026-04-01";
-
 /// Axum middleware enforcing the `anthropic-beta: managed-agents-2026-04-01` opt-in
-/// on session creation (`POST /v1/sessions`), exactly as the real Managed API does —
-/// a beta endpoint rejects a create that never opted in. Applied by the server
-/// assembly, NOT baked into [`router`], so the router-level unit tests (which build
-/// header-less requests) are unaffected. Every route other than session-create
-/// passes through untouched; the header may be a comma-separated list.
+/// on every ordinary Managed Agents endpoint. Applied by each executable
+/// composition root, NOT baked into [`router`], so router-level tests remain focused
+/// on domain behavior. Endpoint families with their own beta (Memory, User Profiles,
+/// Files) are deliberately left to their family-specific gate.
 pub async fn enforce_managed_beta(
     req: Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    let is_create = req.method() == axum::http::Method::POST && req.uri().path() == "/v1/sessions";
-    if is_create {
+    let path = req.uri().path();
+    let is_family = |family: &str| path == family || path.starts_with(&format!("{family}/"));
+    let is_managed = [
+        "/v1/sessions",
+        "/v1/agents",
+        "/v1/environments",
+        "/v1/deployments",
+        "/v1/deployment_runs",
+        "/v1/vaults",
+        "/v1/skills",
+    ]
+    .into_iter()
+    .any(is_family);
+    if is_managed {
         let opted_in = req
             .headers()
             .get_all("anthropic-beta")
             .iter()
             .filter_map(|v| v.to_str().ok())
             .flat_map(|v| v.split(','))
-            .any(|b| b.trim() == REQUIRED_BETA);
+            .any(|b| b.trim() == awaken_managed_bridge::MANAGED_BETA);
         if !opted_in {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse::new(
                     "invalid_request_error",
                     format!(
-                        "the {REQUIRED_BETA} beta is required: send the `anthropic-beta: {REQUIRED_BETA}` header"
+                        "the {beta} beta is required: send the `anthropic-beta: {beta}` header",
+                        beta = awaken_managed_bridge::MANAGED_BETA,
                     ),
                 )),
             )
@@ -517,9 +525,16 @@ async fn list_thread_events(
 /// (awaken's live stream carries no thinking channel).
 fn parse_event_deltas(raw: Option<&str>) -> Result<bool, WireErr> {
     let mut requested = false;
+    let mut count = 0usize;
     if let Some(q) = raw {
         for (k, v) in form_urlencoded::parse(q.as_bytes()) {
             if k == "event_deltas[]" || k == "event_deltas" {
+                count += 1;
+                if count > 100 {
+                    return Err(error_response(
+                        RunError::bad_request("event_deltas allows at most 100 values").into(),
+                    ));
+                }
                 match v.as_ref() {
                     "agent.message" | "agent.thinking" => requested = true,
                     other => {

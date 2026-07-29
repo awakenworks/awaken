@@ -53,7 +53,7 @@ async function main() {
       // | Rule | Backend | Trigger | Expected reply |
       // | A1 | acp:claude | initial_events | ACP fixture |
       // | A2 | native | initial_events | built-in echo |
-      // | A3 | acp:claude | later events.send | fresh ACP process |
+      // | A3 | acp:claude | system.message + later events.send | fresh ACP process |
       //
       // R3/R4/A1: the published ACP Agent runs on the external CLI. Request
       // metadata is not a backend selector.
@@ -90,11 +90,25 @@ async function main() {
       );
       pass('a native session on the same server runs the built-in runtime (selection)');
 
-      // R7: a second turn re-launches the ACP CLI (a fresh process per turn).
+      // A3/R7: the ACP adapter accepts the same mid-conversation system event,
+      // persists it, and a second user turn re-launches the CLI (fresh per turn).
+      const systemReceipt = await client.beta.sessions.events.send(acp.id, {
+        events: [{ type: 'system.message', content: [{ type: 'text', text: 'be concise' }] }],
+        betas: BETAS,
+      });
+      assert.equal(systemReceipt.data[0].type, 'system.message', 'A3 ACP system event admitted');
       await send(client, acp.id, 'again');
       texts = await agentTexts(client, acp.id);
       const acpReplies = texts.filter((t) => t.includes('acp-runtime reply')).length;
       assert.ok(acpReplies >= 2, `R7: each turn relaunches the CLI, got ${acpReplies} acp replies`);
+      const acpEvents = [];
+      for await (const event of client.beta.sessions.events.list(acp.id, { betas: BETAS })) {
+        acpEvents.push(event);
+      }
+      assert.ok(
+        acpEvents.some((event) => event.type === 'system.message' && event.id === systemReceipt.data[0].id),
+        'A3 ACP history persists the same-id system event',
+      );
       pass('a second turn relaunches the ACP CLI (R7)');
 
       // Driver-error paths reachable through the fake CLI: a malformed frame

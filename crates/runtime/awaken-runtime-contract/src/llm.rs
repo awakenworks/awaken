@@ -437,6 +437,11 @@ pub trait DeltaSink: Send + Sync {
     /// never indexes into a chunk by byte.
     async fn on_text(&self, chunk: &str);
 
+    /// A live reasoning fragment. Consumers may expose only the existence of the
+    /// reasoning stream; the committed response remains the sole owner of its
+    /// content. The default preserves adapters that do not expose reasoning.
+    async fn on_reasoning(&self, _chunk: &str) {}
+
     /// A live increment of a tool call's input — `args_delta` is the NEW fragment
     /// as the model streams it. The provider adapter de-accumulates its own
     /// cumulative snapshots, so this is already a suffix and a sink forwards it with

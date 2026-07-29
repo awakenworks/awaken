@@ -459,6 +459,20 @@ pub trait SessionRuntime: Send + Sync {
         SessionUsage::default()
     }
 
+    /// Whether the thread's selected model accepts a system message after the
+    /// conversation has started. Runtimes whose models do not support this can
+    /// fail admission before the Managed adapter persists the inbound event.
+    async fn supports_mid_conversation_system(&self, _thread: &str) -> bool {
+        true
+    }
+
+    /// The tool currently blocking `thread`, if any. Admission uses this
+    /// read-only projection to reject events that cannot legally precede the
+    /// matching result; resume remains the sole mutating authority.
+    async fn pending_tool(&self, _thread: &str) -> Option<Pending> {
+        None
+    }
+
     /// Buffer a system message; it is prepended to the next turn's input.
     async fn add_system(&self, thread: &str, text: &str) -> Result<(), RunError>;
 

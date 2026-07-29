@@ -37,6 +37,35 @@ async function main() {
     await withRealServer('echo', PORT, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
+      // Causes: ordinary Managed collection/write with correct, missing, or
+      // memory-only beta header. Constraint: the dated Managed beta is required on
+      // every verb, before domain handling. Effects: missing/wrong header returns
+      // 400 and creates nothing; the SDK's correct header proceeds below. Rules A1/A2/A5.
+      for (const [rule, path, method, beta] of [
+        ['A2 collection missing', '/v1/sessions', 'GET', null],
+        ['A2 create missing', '/v1/sessions', 'POST', null],
+        ['A5 memory-only', '/v1/sessions', 'GET', 'agent-memory-2026-07-22'],
+      ]) {
+        const response = await fetch(`${baseUrl}${path}`, {
+          method,
+          headers: {
+            'content-type': 'application/json',
+            'x-api-key': 'e2e-dummy',
+            ...(beta ? { 'anthropic-beta': beta } : {}),
+          },
+          ...(method === 'POST' ? { body: JSON.stringify({ agent: 'assistant' }) } : {}),
+        });
+        assert.equal(response.status, 400, rule);
+        const error = await response.json();
+        assert.equal(error.error.type, 'invalid_request_error', rule);
+      }
+      const afterHeaderRejects = [];
+      for await (const session of client.beta.sessions.list({ betas: BETAS })) {
+        afterHeaderRejects.push(session);
+      }
+      assert.equal(afterHeaderRejects.length, 0, 'A2 rejected create has no mutation');
+      pass('Managed beta header decision rules A1/A2/A5 reject before mutation');
+
       // --- retrieve unknown session -> 404 + not_found_error envelope ---
       await assert.rejects(
         () => client.beta.sessions.retrieve('sesn_does_not_exist', { betas: BETAS }),

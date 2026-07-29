@@ -237,16 +237,14 @@ impl ManagedState {
 
     /// Append one step's projected events to the session, minting ids where the
     /// projection did not supply one.
-    /// Project a committed turn into events and append them. `preview_ids` are the
-    /// ids the turn's [`PreviewSink`] minted for each previewed `agent.message`, in
-    /// order — the buffered `agent.message` events reuse them so a client reconciles
-    /// preview → committed by id (empty for resume/non-streamed paths). Every newly
-    /// appended event is republished on the live broadcast.
+    /// Project a committed turn into events and append them. Preview allocations
+    /// carry the ids minted for message and thinking starts; their corresponding
+    /// buffered events reuse them so a client reconciles by id.
     fn append_step(
         &self,
         session_id: &str,
         outcome: StepOutcome,
-        preview_ids: Vec<String>,
+        mut preview_ids: PreviewAllocations,
     ) -> Result<(), StateError> {
         let pending = outcome
             .pending()
@@ -274,7 +272,6 @@ impl ManagedState {
         let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
         // Everything appended from here is republished on the live broadcast at the end.
         let start = record.events.len();
-        let mut preview_ids = preview_ids.into_iter();
         // Each processing segment is bracketed `running` … `idle`; the running
         // marker leads before any fold or message.
         record.events.push(Event {
@@ -319,12 +316,14 @@ impl ManagedState {
             // announced, so `event_start.event.id == agent.message.id` and the SDK
             // discards the accumulated preview on the buffered event. Other events, and
             // any message beyond the previewed count, mint a fresh id as before.
-            let id = event.id.unwrap_or_else(|| {
-                if matches!(event.kind, OutboundKind::AgentMessage { .. }) {
-                    preview_ids.next().unwrap_or_else(|| self.next_event_id())
-                } else {
-                    self.next_event_id()
-                }
+            let id = event.id.unwrap_or_else(|| match &event.kind {
+                OutboundKind::AgentMessage { .. } => preview_ids
+                    .next_message()
+                    .unwrap_or_else(|| self.next_event_id()),
+                OutboundKind::AgentThinking {} => preview_ids
+                    .next_thinking()
+                    .unwrap_or_else(|| self.next_event_id()),
+                _ => self.next_event_id(),
             });
             record.events.push(Event {
                 id,
@@ -511,7 +510,7 @@ impl ManagedState {
                         return Err(StateError::Run(error));
                     }
                 };
-                self.append_step(session_id, outcome, sink.take_allocated_ids())?;
+                self.append_step(session_id, outcome, sink.take_allocations())?;
             }
             InboundEvent::UserToolConfirmation {
                 tool_use_id,
@@ -526,7 +525,7 @@ impl ManagedState {
                     .runtime
                     .resume(session_id, tool_use_id, decision)
                     .await?;
-                self.append_step(session_id, outcome, Vec::new())?;
+                self.append_step(session_id, outcome, PreviewAllocations::default())?;
             }
             InboundEvent::UserCustomToolResult {
                 custom_tool_use_id,
@@ -538,7 +537,7 @@ impl ManagedState {
                     .runtime
                     .resume_custom(session_id, custom_tool_use_id, &text, *is_error)
                     .await?;
-                self.append_step(session_id, outcome, Vec::new())?;
+                self.append_step(session_id, outcome, PreviewAllocations::default())?;
             }
             InboundEvent::UserToolResult {
                 tool_use_id,
@@ -550,7 +549,7 @@ impl ManagedState {
                     .runtime
                     .resume_custom(session_id, tool_use_id, &text, *is_error)
                     .await?;
-                self.append_step(session_id, outcome, Vec::new())?;
+                self.append_step(session_id, outcome, PreviewAllocations::default())?;
             }
             InboundEvent::UserDefineOutcome {
                 description,
@@ -575,6 +574,82 @@ impl ManagedState {
             }
             InboundEvent::UserInterrupt { .. } => {
                 self.runtime.interrupt(session_id).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn validate_event_batch(
+        &self,
+        session_id: &str,
+        events: &[InboundEvent],
+    ) -> Result<(), StateError> {
+        let pending = self.runtime.pending_tool(session_id).await;
+        let mut pending_resolved = pending.is_none();
+        let mut resolution_seen = false;
+        for event in events {
+            let resolution = match event {
+                InboundEvent::UserToolConfirmation { tool_use_id, .. } => {
+                    Some((tool_use_id.as_str(), false))
+                }
+                InboundEvent::UserCustomToolResult {
+                    custom_tool_use_id, ..
+                } => Some((custom_tool_use_id.as_str(), true)),
+                InboundEvent::UserToolResult { tool_use_id, .. } => {
+                    Some((tool_use_id.as_str(), true))
+                }
+                _ => None,
+            };
+            if let Some((tool_use_id, requires_client_execution)) = resolution {
+                let matches_pending = !resolution_seen
+                    && pending.as_ref().is_some_and(|pending| {
+                        pending.tool_use_id == tool_use_id
+                            && pending.client_executed == requires_client_execution
+                    });
+                if !matches_pending {
+                    return Err(StateError::Run(RunError::bad_request(
+                        "tool result does not match the pending tool event",
+                    )));
+                }
+                resolution_seen = true;
+                pending_resolved = true;
+                continue;
+            }
+            match event {
+                InboundEvent::SystemMessage { content } if !(1..=1000).contains(&content.len()) => {
+                    return Err(StateError::Run(RunError::bad_request(
+                        "system.message content must contain between 1 and 1000 items",
+                    )));
+                }
+                InboundEvent::SystemMessage { .. }
+                    if !self
+                        .runtime
+                        .supports_mid_conversation_system(session_id)
+                        .await =>
+                {
+                    return Err(StateError::Run(RunError::bad_request(
+                        "model_does_not_support_mid_conversation_system",
+                    )));
+                }
+                InboundEvent::SystemMessage { .. } if !pending_resolved => {
+                    return Err(StateError::Run(RunError::bad_request(
+                        "system.message must trail the pending tool result in the same request",
+                    )));
+                }
+                InboundEvent::UserMessage { .. } if !pending_resolved => {
+                    return Err(StateError::Run(RunError::bad_request(
+                        "pending tool events must be resolved before user.message",
+                    )));
+                }
+                InboundEvent::UserDefineOutcome {
+                    max_iterations: Some(iterations),
+                    ..
+                } if !(1..=20).contains(iterations) => {
+                    return Err(StateError::Run(RunError::bad_request(
+                        "max_iterations must be between 1 and 20",
+                    )));
+                }
+                _ => {}
             }
         }
         Ok(())
@@ -617,6 +692,9 @@ impl ManagedState {
                 "agent_unavailable: agent `{agent_id}` cannot admit a new event"
             ))));
         }
+        // Batch admission precedes the first receipt/event append. One invalid
+        // member therefore cannot leave a partial public history.
+        self.validate_event_batch(session_id, &req.events).await?;
 
         let mut receipts = Vec::new();
         for inbound in &req.events {

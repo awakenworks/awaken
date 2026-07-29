@@ -3,8 +3,8 @@
 //! `event_delta` preview frames, published to a session's live broadcast as a run
 //! streams.
 //!
-//! It previews **agent.message text only** — awaken's live stream carries no
-//! thinking or tool-input channel, and the official wire never previews tool use.
+//! It previews `agent.message` text and announces `agent.thinking` with a start-only
+//! marker — thinking content and tool input are never exposed.
 //! Each contiguous text run opens one previewed `agent.message`: the sink mints
 //! that message's committed id up front (from the shared event-id counter) so
 //! `event_start.event.id` equals the id the buffered `agent.message` will carry,
@@ -22,9 +22,9 @@ use tokio::sync::broadcast;
 
 use crate::types::{PreviewContent, PreviewDelta, PreviewFrame, PreviewTarget, StreamFrame};
 
-/// Per-run sink: projects the live `AgentEvent` channel into `agent.message`
-/// previews on the session's broadcast, and remembers the ids it minted for the
-/// committed log.
+/// Per-run sink: projects the live `AgentEvent` channel into `agent.message` and
+/// start-only `agent.thinking` previews on the session's broadcast, and remembers
+/// the ids it minted for the committed log.
 pub struct PreviewSink {
     live: broadcast::Sender<StreamFrame>,
     event_seq: Arc<AtomicU64>,
@@ -32,14 +32,28 @@ pub struct PreviewSink {
 }
 
 #[derive(Default)]
+pub(crate) struct PreviewAllocations {
+    messages: std::collections::VecDeque<String>,
+    thinking: std::collections::VecDeque<String>,
+}
+
+impl PreviewAllocations {
+    pub(crate) fn next_message(&mut self) -> Option<String> {
+        self.messages.pop_front()
+    }
+
+    pub(crate) fn next_thinking(&mut self) -> Option<String> {
+        self.thinking.pop_front()
+    }
+}
+
+#[derive(Default)]
 struct Inner {
-    /// The id of the currently open previewed `agent.message`, if a text run is
-    /// streaming. `None` between runs — before the first text, or after a tool
-    /// call / terminal kind closes the run.
+    /// The id and type of the currently open preview run. A reasoning run emits
+    /// only its start; a message run also emits content deltas.
     open_id: Option<String>,
-    /// The ids minted for each previewed message, in order — consumed by
-    /// `append_step` so the committed `agent.message` events reuse them.
-    allocated: Vec<String>,
+    open_type: Option<&'static str>,
+    allocated: PreviewAllocations,
 }
 
 impl PreviewSink {
@@ -51,10 +65,10 @@ impl PreviewSink {
         }
     }
 
-    /// The ids minted for previewed `agent.message` events, in emission order,
-    /// draining the record. `append_step` assigns these to the buffered messages
-    /// so a preview and its committed event share an id.
-    pub fn take_allocated_ids(&self) -> Vec<String> {
+    /// The ids minted for previewed message/thinking events, in emission order,
+    /// draining the record. `append_step` assigns them to the matching buffered
+    /// events so a preview and its committed event share an id.
+    pub(crate) fn take_allocations(&self) -> PreviewAllocations {
         std::mem::take(&mut self.inner.lock().unwrap().allocated)
     }
 
@@ -77,12 +91,13 @@ impl Sink for PreviewSink {
             AgentEvent::Delta(Delta::TextDelta { delta: text }) => {
                 let id = {
                     let mut inner = self.inner.lock().unwrap();
-                    if let Some(id) = inner.open_id.clone() {
-                        id
+                    if inner.open_type == Some("agent.message") {
+                        inner.open_id.clone().expect("open type owns an id")
                     } else {
                         let id = self.next_id();
                         inner.open_id = Some(id.clone());
-                        inner.allocated.push(id.clone());
+                        inner.open_type = Some("agent.message");
+                        inner.allocated.messages.push_back(id.clone());
                         drop(inner);
                         self.publish(PreviewFrame::EventStart {
                             event: PreviewTarget {
@@ -101,13 +116,28 @@ impl Sink for PreviewSink {
                     },
                 });
             }
-            // A tool call, reasoning, or any committed lifecycle event closes the
-            // current text run; the next text opens a fresh previewed message. Tool
-            // use and reasoning are never previewed (matches the official wire).
-            AgentEvent::Delta(Delta::ToolCallDelta { .. })
-            | AgentEvent::Delta(Delta::ReasoningDelta { .. })
-            | AgentEvent::Fact(_) => {
-                self.inner.lock().unwrap().open_id = None;
+            AgentEvent::Delta(Delta::ReasoningDelta { .. }) => {
+                let mut inner = self.inner.lock().unwrap();
+                if inner.open_type != Some("agent.thinking") {
+                    let id = self.next_id();
+                    inner.open_id = Some(id.clone());
+                    inner.open_type = Some("agent.thinking");
+                    inner.allocated.thinking.push_back(id.clone());
+                    drop(inner);
+                    self.publish(PreviewFrame::EventStart {
+                        event: PreviewTarget {
+                            event_type: "agent.thinking".into(),
+                            id,
+                        },
+                    });
+                }
+            }
+            // A tool call or committed lifecycle event closes the current preview
+            // run. Tool use is never previewed.
+            AgentEvent::Delta(Delta::ToolCallDelta { .. }) | AgentEvent::Fact(_) => {
+                let mut inner = self.inner.lock().unwrap();
+                inner.open_id = None;
+                inner.open_type = None;
             }
         }
         Ok(())
@@ -129,6 +159,9 @@ mod tests {
     fn text(t: &str) -> AgentEvent {
         AgentEvent::Delta(Delta::TextDelta { delta: t.into() })
     }
+    fn reasoning(t: &str) -> AgentEvent {
+        AgentEvent::Delta(Delta::ReasoningDelta { delta: t.into() })
+    }
     fn tool(id: &str, name: &str, args: &str) -> AgentEvent {
         AgentEvent::Delta(Delta::ToolCallDelta {
             id: id.into(),
@@ -144,7 +177,7 @@ mod tests {
         }
     }
 
-    async fn drive(seq: &[AgentEvent]) -> (Vec<StreamFrame>, Vec<String>) {
+    async fn drive(seq: &[AgentEvent]) -> (Vec<StreamFrame>, PreviewAllocations) {
         let (tx, mut rx) = broadcast::channel(256);
         let sink = PreviewSink::new(tx.clone(), Arc::new(AtomicU64::new(0)));
         for k in seq {
@@ -155,7 +188,7 @@ mod tests {
         while let Ok(f) = rx.try_recv() {
             frames.push(f);
         }
-        (frames, sink.take_allocated_ids())
+        (frames, sink.take_allocations())
     }
 
     fn preview(frames: &[StreamFrame]) -> Vec<&PreviewFrame> {
@@ -173,7 +206,7 @@ mod tests {
         let (frames, ids) = drive(&[run_started(), text("Hel"), text("lo"), run_finished()]).await;
         let p = preview(&frames);
         // One event_start (id evt_0) then two content_delta frames on it.
-        assert_eq!(ids, vec!["evt_0".to_string()]);
+        assert_eq!(ids.messages, vec!["evt_0".to_string()]);
         assert!(matches!(
             p[0],
             PreviewFrame::EventStart { event } if event.event_type == "agent.message" && event.id == "evt_0"
@@ -200,7 +233,7 @@ mod tests {
     async fn a_tool_call_closes_the_run_and_the_next_text_opens_a_fresh_message() {
         let (frames, ids) = drive(&[text("before"), tool("c1", "read", "{}"), text("after")]).await;
         // Two distinct messages: evt_0 (before the tool) and evt_1 (after).
-        assert_eq!(ids, vec!["evt_0".to_string(), "evt_1".to_string()]);
+        assert_eq!(ids.messages, vec!["evt_0".to_string(), "evt_1".to_string()]);
         let starts: Vec<&str> = preview(&frames)
             .iter()
             .filter_map(|p| match p {
@@ -215,6 +248,31 @@ mod tests {
     async fn tool_use_is_never_previewed() {
         let (frames, ids) = drive(&[tool("c1", "read", "{\"path\":\"x\"}")]).await;
         assert!(preview(&frames).is_empty(), "no preview for a tool call");
-        assert!(ids.is_empty());
+        assert!(ids.messages.is_empty());
+        assert!(ids.thinking.is_empty());
+    }
+
+    /// Causes: one or more contiguous reasoning chunks, followed by text.
+    /// Constraints: thinking content is private and therefore has no delta frame.
+    /// Effects: one thinking start, a distinct message start/delta, and ids reserved
+    /// for the corresponding committed events. Decision rule: E3.
+    #[tokio::test]
+    async fn reasoning_emits_one_start_only_before_the_message_preview() {
+        let (frames, ids) =
+            drive(&[reasoning("secret"), reasoning(" chain"), text("answer")]).await;
+        let previews = preview(&frames);
+        assert_eq!(ids.thinking, vec!["evt_0".to_string()]);
+        assert_eq!(ids.messages, vec!["evt_1".to_string()]);
+        assert!(matches!(
+            previews[0],
+            PreviewFrame::EventStart { event }
+                if event.event_type == "agent.thinking" && event.id == "evt_0"
+        ));
+        assert!(matches!(
+            previews[1],
+            PreviewFrame::EventStart { event }
+                if event.event_type == "agent.message" && event.id == "evt_1"
+        ));
+        assert_eq!(previews.len(), 3, "thinking contributes no event_delta");
     }
 }

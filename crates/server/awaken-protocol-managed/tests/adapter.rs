@@ -840,7 +840,10 @@ async fn session_capability_objects_match_wire_contract() {
 }
 
 /// A runtime that awaits on a tool needing approval, then completes on resume.
-struct AwaitingFake;
+#[derive(Default)]
+struct AwaitingFake {
+    awaiting: Mutex<bool>,
+}
 
 #[async_trait::async_trait]
 impl SessionRuntime for AwaitingFake {
@@ -850,6 +853,7 @@ impl SessionRuntime for AwaitingFake {
         _thread: &str,
         _content: Vec<ContentBlock>,
     ) -> Result<StepOutcome, RunError> {
+        *self.awaiting.lock().unwrap() = true;
         // The assistant asked to run a tool; the run awaiting before executing it.
         Ok(StepOutcome::awaiting(
             vec![Message {
@@ -878,6 +882,7 @@ impl SessionRuntime for AwaitingFake {
         decision: ToolPermissionDecision,
     ) -> Result<StepOutcome, RunError> {
         assert!(decision.allow);
+        *self.awaiting.lock().unwrap() = false;
         Ok(ended(vec![
             Message {
                 id: Id("t1".into()),
@@ -892,6 +897,17 @@ impl SessionRuntime for AwaitingFake {
     }
     async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
         Ok(())
+    }
+    async fn pending_tool(&self, _thread: &str) -> Option<Pending> {
+        if !*self.awaiting.lock().unwrap() {
+            return None;
+        }
+        Some(Pending {
+            tool_use_id: "call-1".into(),
+            name: "write".into(),
+            input: serde_json::json!({"path": "x.txt"}),
+            client_executed: false,
+        })
     }
     async fn define_outcome(
         &self,
@@ -988,6 +1004,45 @@ impl SessionRuntime for OutcomeFake {
 
 #[tokio::test]
 async fn outcome_loop_projects_evaluations() {
+    // Causes: explicit max_iterations is the inclusive minimum/maximum or one
+    // outside either edge. Constraint: 1..=20. Effects: H8 admits 1/20 and rejects
+    // 0/21 before the inbound event is persisted.
+    for (iterations, expected) in [
+        (0, StatusCode::BAD_REQUEST),
+        (1, StatusCode::OK),
+        (20, StatusCode::OK),
+        (21, StatusCode::BAD_REQUEST),
+    ] {
+        let boundary_app = router(Arc::new(ManagedState::new(OutcomeFake)));
+        let boundary_id = create(&boundary_app).await;
+        let (status, _) = json_response(
+            &boundary_app,
+            "POST",
+            &format!("/v1/sessions/{boundary_id}/events"),
+            serde_json::json!({ "events": [{
+                "type": "user.define_outcome",
+                "description": "finish",
+                "rubric": { "type": "text", "content": "FINAL" },
+                "max_iterations": iterations
+            }] }),
+        )
+        .await;
+        assert_eq!(status, expected, "H8 max_iterations={iterations}");
+        if expected == StatusCode::BAD_REQUEST {
+            let events = json_call(
+                &boundary_app,
+                "GET",
+                &format!("/v1/sessions/{boundary_id}/events"),
+                serde_json::Value::Null,
+            )
+            .await;
+            assert!(
+                events["data"].as_array().unwrap().is_empty(),
+                "H8 invalid boundary is atomic"
+            );
+        }
+    }
+
     let app = router(Arc::new(ManagedState::new(OutcomeFake)));
     let id = create(&app).await;
     json_call(
@@ -1072,7 +1127,7 @@ async fn session_records_outcome_evaluations() {
 
 #[tokio::test]
 async fn hitl_await_confirm_resume() {
-    let app = router(Arc::new(ManagedState::new(AwaitingFake)));
+    let app = router(Arc::new(ManagedState::new(AwaitingFake::default())));
     let id = create(&app).await;
 
     // 1. A message -> the run awaits with requires_action.
@@ -1117,12 +1172,71 @@ async fn hitl_await_confirm_resume() {
     assert_eq!(idle["stop_reason"]["type"], "requires_action");
     assert_eq!(idle["stop_reason"]["event_ids"][0], "call-1");
 
-    // 2. Confirm the tool -> the run resumes and completes.
+    // Causes/constraints while requires_action: system alone or paired only with
+    // user.message has no preceding result; a result with the wrong id or wrong
+    // built-in/custom kind cannot resolve the pending tool; a matching confirmation
+    // followed by system in the same batch is accepted. Effect: every invalid batch
+    // is rejected before persistence, then the valid resume completes before the
+    // system event is appended. Decision rules: H5-H7.
+    for (rule, events) in [
+        (
+            "H5 system alone",
+            serde_json::json!([{
+                "type":"system.message",
+                "content":[{"type":"text", "text":"after tool"}]
+            }]),
+        ),
+        (
+            "H5 system plus user message",
+            serde_json::json!([
+                {"type":"system.message", "content":[{"type":"text", "text":"after tool"}]},
+                {"type":"user.message", "content":[{"type":"text", "text":"continue"}]}
+            ]),
+        ),
+        (
+            "H7 wrong tool id",
+            serde_json::json!([{
+                "type":"user.tool_confirmation",
+                "tool_use_id":"call-wrong",
+                "result":"allow"
+            }]),
+        ),
+        (
+            "H7 wrong resolution kind",
+            serde_json::json!([{
+                "type":"user.custom_tool_result",
+                "custom_tool_use_id":"call-1",
+                "content":[{"type":"text", "text":"forged"}]
+            }]),
+        ),
+    ] {
+        let (status, _) = json_response(
+            &app,
+            "POST",
+            &format!("/v1/sessions/{id}/events"),
+            serde_json::json!({"events": events}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{rule}");
+    }
+    let unchanged = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(types(&unchanged), types(&list), "H5/H7 no partial events");
+
+    // 2. H6: confirm the tool, then append system context in the same request.
     json_call(
         &app,
         "POST",
         &format!("/v1/sessions/{id}/events"),
-        serde_json::json!({ "events": [{ "type": "user.tool_confirmation", "tool_use_id": "call-1", "result": "allow" }] }),
+        serde_json::json!({ "events": [
+            { "type": "user.tool_confirmation", "tool_use_id": "call-1", "result": "allow" },
+            { "type": "system.message", "content": [{"type":"text", "text":"after tool"}] }
+        ] }),
     )
     .await;
     let list = json_call(
@@ -1143,16 +1257,26 @@ async fn hitl_await_confirm_resume() {
             "session.status_running",
             "agent.tool_result",
             "agent.message",
-            "session.status_idle"
+            "session.status_idle",
+            "system.message"
         ]
     );
-    let last_idle = list["data"].as_array().unwrap().last().unwrap();
+    let last_idle = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|event| event["type"] == "session.status_idle")
+        .unwrap();
     assert_eq!(last_idle["stop_reason"]["type"], "end_turn");
 }
 
 /// A runtime that awaits on a *client-executed* tool, then completes on the
 /// client's result.
-struct CustomToolFake;
+#[derive(Default)]
+struct CustomToolFake {
+    awaiting: Mutex<bool>,
+}
 
 #[async_trait::async_trait]
 impl SessionRuntime for CustomToolFake {
@@ -1162,6 +1286,7 @@ impl SessionRuntime for CustomToolFake {
         _t: &str,
         _c: Vec<ContentBlock>,
     ) -> Result<StepOutcome, RunError> {
+        *self.awaiting.lock().unwrap() = true;
         Ok(StepOutcome::awaiting(
             vec![Message {
                 id: Id("a1".into()),
@@ -1197,6 +1322,7 @@ impl SessionRuntime for CustomToolFake {
         content: &str,
         _e: bool,
     ) -> Result<StepOutcome, RunError> {
+        *self.awaiting.lock().unwrap() = false;
         Ok(ended(vec![
             Message {
                 id: Id("tr".into()),
@@ -1211,6 +1337,14 @@ impl SessionRuntime for CustomToolFake {
     }
     async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
         Ok(())
+    }
+    async fn pending_tool(&self, _thread: &str) -> Option<Pending> {
+        (*self.awaiting.lock().unwrap()).then(|| Pending {
+            tool_use_id: "cc1".into(),
+            name: "submit_answer".into(),
+            input: serde_json::json!({"question": "6x7"}),
+            client_executed: true,
+        })
     }
     async fn define_outcome(
         &self,
@@ -1228,7 +1362,7 @@ impl SessionRuntime for CustomToolFake {
 
 #[tokio::test]
 async fn custom_tool_use_await_and_result() {
-    let app = router(Arc::new(ManagedState::new(CustomToolFake)));
+    let app = router(Arc::new(ManagedState::new(CustomToolFake::default())));
     let id = create(&app).await;
 
     // A message -> the client tool awaits as agent.custom_tool_use.
@@ -1355,7 +1489,7 @@ async fn accept_only_events_are_acknowledged() {
 /// unchanged because it awaits a client tool and completes in `resume_custom`.
 #[tokio::test]
 async fn generic_tool_result_resumes_an_awaiting_run() {
-    let app = router(Arc::new(ManagedState::new(CustomToolFake)));
+    let app = router(Arc::new(ManagedState::new(CustomToolFake::default())));
     let id = create(&app).await;
 
     // A message awaits the client tool (asserted by the custom-tool test); here we
@@ -1407,6 +1541,7 @@ struct RecordingFake {
     systems: Arc<Mutex<Vec<String>>>,
     interrupts: Arc<Mutex<Vec<String>>>,
     subjects: Arc<Mutex<Vec<Option<String>>>>,
+    supports_mid_conversation_system: bool,
 }
 
 #[async_trait::async_trait]
@@ -1451,6 +1586,9 @@ impl SessionRuntime for RecordingFake {
         self.systems.lock().unwrap().push(text.to_string());
         Ok(())
     }
+    async fn supports_mid_conversation_system(&self, _thread: &str) -> bool {
+        self.supports_mid_conversation_system
+    }
     async fn interrupt(&self, thread: &str) -> Result<(), RunError> {
         self.interrupts.lock().unwrap().push(thread.to_string());
         Ok(())
@@ -1469,13 +1607,16 @@ impl SessionRuntime for RecordingFake {
     }
 }
 
-/// `system.message` reaches `runtime.add_system` and `user.interrupt` reaches
-/// `runtime.interrupt` — upgrading the receipt-only coverage to a behavioral
-/// assertion that the inbound verbs cross the runtime seam. (Neither projects a
-/// stream event in the single-machine model, so the recording fake is the only
-/// observation point.)
+/// Causes: system content count is 0, 1, 1000, or 1001 and the selected model
+/// supports/does not support mid-conversation system input; an interrupt may share
+/// a valid batch.
+/// Constraints: system content is 1..=1000 and every batch member is validated
+/// before persistence.
+/// Effects: valid boundaries reach `add_system` and persist; interrupt reaches its
+/// runtime port; invalid count/capability returns 400 with no partial event.
+/// Decision rules: H1-H4.
 #[tokio::test]
-async fn system_message_and_interrupt_reach_the_runtime() {
+async fn system_message_and_interrupt_follow_the_admission_decision_table() {
     let systems = Arc::new(Mutex::new(Vec::new()));
     let interrupts = Arc::new(Mutex::new(Vec::new()));
     let subjects = Arc::new(Mutex::new(Vec::new()));
@@ -1483,6 +1624,7 @@ async fn system_message_and_interrupt_reach_the_runtime() {
         systems: systems.clone(),
         interrupts: interrupts.clone(),
         subjects,
+        supports_mid_conversation_system: true,
     })));
     let id = create(&app).await;
 
@@ -1497,22 +1639,94 @@ async fn system_message_and_interrupt_reach_the_runtime() {
     )
     .await;
 
+    let thousand = vec![serde_json::json!({"type": "text", "text": "x"}); 1000];
+    let (status, _) = json_response(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({"events": [{"type": "system.message", "content": thousand}]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "H2 inclusive maximum");
+
     assert_eq!(
         *systems.lock().unwrap(),
-        vec!["be terse".to_string()],
-        "system.message text reached runtime.add_system"
+        vec!["be terse".to_string(), "x".repeat(1000)],
+        "H1/H2 system.message text reached runtime.add_system"
     );
     assert_eq!(
         *interrupts.lock().unwrap(),
         vec![id.clone()],
         "user.interrupt reached runtime.interrupt with the session thread"
     );
+
+    for (rule, content) in [
+        ("H3 empty", Vec::new()),
+        (
+            "H3 over maximum",
+            vec![serde_json::json!({"type": "text", "text": "x"}); 1001],
+        ),
+    ] {
+        let (status, _) = json_response(
+            &app,
+            "POST",
+            &format!("/v1/sessions/{id}/events"),
+            serde_json::json!({"events": [{"type": "system.message", "content": content}]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{rule}");
+    }
+    let events = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(
+        types(&events),
+        vec!["system.message", "user.interrupt", "system.message"],
+        "H3 rejects before persistence"
+    );
+
+    let unsupported = router(Arc::new(ManagedState::new(RecordingFake {
+        systems: Arc::new(Mutex::new(Vec::new())),
+        interrupts: Arc::new(Mutex::new(Vec::new())),
+        subjects: Arc::new(Mutex::new(Vec::new())),
+        supports_mid_conversation_system: false,
+    })));
+    let unsupported_id = create(&unsupported).await;
+    let (status, body) = json_response(
+        &unsupported,
+        "POST",
+        &format!("/v1/sessions/{unsupported_id}/events"),
+        serde_json::json!({"events": [{
+            "type": "system.message",
+            "content": [{"type": "text", "text": "x"}]
+        }]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "H4 unsupported model");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("model_does_not_support_mid_conversation_system")
+    );
+    let events = json_call(
+        &unsupported,
+        "GET",
+        &format!("/v1/sessions/{unsupported_id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert!(events["data"].as_array().unwrap().is_empty(), "H4 no event");
 }
 
 /// Cause/effect decision table for Managed attribution projection:
 /// R1 user_profile_id=present + user.message -> the exact opaque id reaches the
 /// attributed runtime port; R2 absent -> `None`; non-message events never invoke
-/// the run port (covered by `system_message_and_interrupt_reach_the_runtime`).
+/// the run port (covered by `system_message_and_interrupt_follow_the_admission_decision_table`).
 #[tokio::test]
 async fn user_profile_is_projected_at_request_grain() {
     let subjects = Arc::new(Mutex::new(Vec::new()));
@@ -1520,6 +1734,7 @@ async fn user_profile_is_projected_at_request_grain() {
         systems: Arc::new(Mutex::new(Vec::new())),
         interrupts: Arc::new(Mutex::new(Vec::new())),
         subjects: subjects.clone(),
+        supports_mid_conversation_system: true,
     })));
     let id = create(&app).await;
     for (profile, text) in [(Some("user_alice"), "attributed"), (None, "unattributed")] {

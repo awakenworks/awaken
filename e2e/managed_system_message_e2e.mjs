@@ -5,8 +5,8 @@
 // turns. This locks the inbound path: it is accepted (a receipt with processed_at:
 // null, no error), it does NOT change the session's status or emit an agent turn on
 // its own, and the session keeps working — a following user.message still runs
-// normally. It is a mid-conversation event, so it is rejected before the first user
-// turn (must follow a user message).
+// normally. The requires_action ordering partitions live in the existing Rust HITL
+// decision table, where a system event must trail the resolving tool result.
 //
 // Run: (from e2e/)  node managed_system_message_e2e.mjs
 
@@ -51,13 +51,17 @@ async function main() {
       assert.equal(receipt.data[0].processed_at, null, 'system.message is queued (processed_at: null)');
       pass('system.message accepted + acknowledged (receipt, no error)');
 
-      // It emits no agent turn of its own and leaves the session idle.
+      // It persists exactly one same-id inbound event, emits no agent/status event
+      // of its own, and leaves the session idle.
       events = await listTypes(client, session.id);
       assert.equal(
         events.length,
-        beforeCount,
-        'system.message adds no outbound agent/status event on its own',
+        beforeCount + 1,
+        'system.message adds only its persisted inbound event',
       );
+      const persistedSystem = events.find((event) => event.type === 'system.message');
+      assert.equal(persistedSystem?.id, receipt.data[0].id, 'receipt and history share system id');
+      assert.ok(persistedSystem?.processed_at, 'persisted system event is processed');
       const status = (await client.beta.sessions.retrieve(session.id, { betas: BETAS })).status;
       assert.equal(status, 'idle', 'the session stays idle after a system.message');
       pass('system.message emits no agent turn and keeps the session idle');

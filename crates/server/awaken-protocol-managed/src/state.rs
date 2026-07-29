@@ -15,7 +15,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::page::paginate_by_id;
 
 use crate::ext::AwakenModelSelection;
-use crate::preview::PreviewSink;
+use crate::preview::{PreviewAllocations, PreviewSink};
 use crate::project::{self, project_messages, project_step};
 use crate::routes::vaults::VaultState;
 use crate::types::{
