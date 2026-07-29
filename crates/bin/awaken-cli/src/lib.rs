@@ -46,6 +46,7 @@ pub use console_assets::mount as mount_console;
 pub use hosted_control::{
     build_control_assembly_with_deployment, build_control_router_with_deployment,
     build_control_router_with_publication_resolver,
+    build_control_router_with_publication_resolver_and_web_search,
 };
 use identity::identity_wiring;
 // Embedded management-plane IAM (ADR-0042/0043 P1) + the mint spec and bootstrap
@@ -245,6 +246,9 @@ struct AssemblyOverrides {
     cloud_models_enabled: bool,
     local_acp_observations: Vec<awaken_acp_application::AcpHostObservation>,
     hand_executors: BTreeMap<String, Arc<dyn awaken_runtime_contract::tool::ToolExecutor>>,
+    web_search_providers: Option<awaken_session_executor::WebSearchProviderRegistry>,
+    web_search_publication_resolver:
+        Option<Arc<dyn awaken_session_executor::PluginPublicationResolver>>,
 }
 
 struct ConfigDeclaredHandSource(Arc<ConfigService>);
@@ -840,6 +844,8 @@ pub async fn build_management_assembly_with_deployment(
             cloud_models_enabled: deployment.cloud_models.is_enabled(),
             local_acp_observations: deployment.local_acp_observations.clone(),
             hand_executors,
+            web_search_providers: None,
+            web_search_publication_resolver: None,
         },
         None,
     )
@@ -940,6 +946,8 @@ async fn build_management_router_with_composition(
             cloud_models_enabled: deployment.cloud_models.is_enabled(),
             local_acp_observations: deployment.local_acp_observations,
             hand_executors,
+            web_search_providers: None,
+            web_search_publication_resolver: None,
         },
         None,
     )
@@ -1197,7 +1205,9 @@ async fn management_router_over(
         credentials.clone(),
         secrets.clone(),
     );
-    let web_search_providers = awaken_session_executor::WebSearchProviderRegistry::builtins();
+    let web_search_providers = assembly
+        .web_search_providers
+        .unwrap_or_else(awaken_session_executor::WebSearchProviderRegistry::builtins);
     let model_wiring = match model_composition {
         ManagementModelComposition::PublishedProviders => ManagementModelWiring {
             executor: Arc::new(awaken_server::no_model::NoModelConfiguredExecutor),
@@ -1245,16 +1255,18 @@ async fn management_router_over(
     // model an operator adds AFTER startup is visible when we re-publish the
     // reserved-scope assistant. The resolver is mandatory: no config service can
     // be constructed with an implicit model fallback.
+    let web_search_publication_resolver =
+        assembly.web_search_publication_resolver.unwrap_or_else(|| {
+            Arc::new(awaken_session_executor::WebSearchPublicationResolver::new(
+                web_search_providers.clone(),
+            ))
+        });
     let config_service = Arc::new(
         ConfigService::new(model_wiring.publication_resolver)
             .with_credential_reference_validator(Arc::new(
                 awaken_control::CredentialRevisionValidator::new(credentials.clone()),
             ))
-            .with_plugin_configuration_validator(Arc::new(
-                awaken_session_executor::WebSearchConfigurationValidator::new(
-                    web_search_providers.clone(),
-                ),
-            ))
+            .with_plugin_publication_resolver(web_search_publication_resolver)
             .with_resources(resource_store.clone()),
     );
     // Warm-load the installed catalog from the durable config store BEFORE the plane
