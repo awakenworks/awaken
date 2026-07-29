@@ -820,6 +820,33 @@ mod tests {
         assert!(repo.reconcilable_sessions().await.is_empty());
     }
 
+    #[tokio::test]
+    async fn session_create_enforces_the_500_file_boundary() {
+        // Cause/effect rules for the Managed file-count limit:
+        // R1: C1=file_count=500 → E1=create succeeds.
+        // R2: C2=file_count=501 → E2=bad request before any Session persists.
+        let request = |count: usize| {
+            let resources = (0..count)
+                .map(|index| {
+                    serde_json::json!({
+                        "type": "file",
+                        "file_id": format!("file_{index}"),
+                        "mount_path": format!("/input-{index}.txt")
+                    })
+                })
+                .collect::<Vec<_>>();
+            serde_json::from_value(serde_json::json!({
+                "agent": "assistant",
+                "resources": resources
+            }))
+            .unwrap()
+        };
+        let state = ManagedState::new(EndSessionRecorder::default());
+        assert!(state.create_session(request(500), None).await.is_ok());
+        let error = state.create_session(request(501), None).await.unwrap_err();
+        assert!(error.to_string().contains("at most 500 files"), "{error}");
+    }
+
     /// A runtime whose sandbox teardown always fails — to prove the terminal edges
     /// are BEST-EFFORT: a dispose failure is logged, never propagated, so it cannot
     /// resurrect a deleted session.

@@ -12,11 +12,38 @@ use async_trait::async_trait;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::schema::{NS, file_store_bundle};
-use crate::{FileStore, FileStoreError, content_id};
+use crate::{
+    CreateFileRecordOutcome, FileCatalog, FileCatalogError, FileRecord, FileStore, FileStoreError,
+    content_id,
+};
 
 fn e(x: impl ToString) -> FileStoreError {
     FileStoreError(x.to_string())
 }
+
+fn ce(x: impl ToString) -> FileCatalogError {
+    FileCatalogError::Storage(x.to_string())
+}
+
+fn row_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileRecord> {
+    Ok(FileRecord {
+        id: row.get(0)?,
+        workspace_id: row.get(1)?,
+        blob_id: row.get(2)?,
+        filename: row.get(3)?,
+        mime_type: row.get(4)?,
+        size_bytes: row.get::<_, i64>(5)? as u64,
+        created_at: row.get(6)?,
+        downloadable: row.get::<_, i64>(7)? != 0,
+        scope_id: row.get(8)?,
+        logical_path: row.get(9)?,
+        harvest_key: row.get(10)?,
+        deleted: row.get::<_, i64>(11)? != 0,
+    })
+}
+
+const FILE_COLUMNS: &str = "id, workspace_id, blob_id, filename, mime_type, \
+size_bytes, created_at, downloadable, scope_id, logical_path, harvest_key, deleted";
 
 /// A SQLite-backed [`FileStore`] over a `file_store_blob(id, bytes, size, created_at)` table.
 pub struct SqliteFileStore {
@@ -138,6 +165,158 @@ impl FileStore for SqliteFileStore {
             Ok(affected > 0)
         })
         .await
+    }
+}
+
+#[async_trait]
+impl FileCatalog for SqliteFileStore {
+    async fn create_file(
+        &self,
+        record: FileRecord,
+    ) -> Result<CreateFileRecordOutcome, FileCatalogError> {
+        crate::validate_record(&record)?;
+        self.with_conn(move |conn| {
+            let inserted = conn
+                .execute(
+                    &format!(
+                        "INSERT OR IGNORE INTO {NS}_file ({FILE_COLUMNS}) \
+                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)"
+                    ),
+                    params![
+                        record.id,
+                        record.workspace_id,
+                        record.blob_id,
+                        record.filename,
+                        record.mime_type,
+                        record.size_bytes as i64,
+                        record.created_at,
+                        i64::from(record.downloadable),
+                        record.scope_id,
+                        record.logical_path,
+                        record.harvest_key,
+                        i64::from(record.deleted),
+                    ],
+                )
+                .map_err(e)?;
+            let lookup = if inserted > 0 {
+                conn.query_row(
+                    &format!("SELECT {FILE_COLUMNS} FROM {NS}_file WHERE id=?1"),
+                    params![record.id],
+                    row_record,
+                )
+                .map_err(e)?
+            } else if let Some(key) = record.harvest_key.as_deref() {
+                conn.query_row(
+                    &format!(
+                        "SELECT {FILE_COLUMNS} FROM {NS}_file \
+                         WHERE workspace_id=?1 AND harvest_key=?2 AND deleted=0"
+                    ),
+                    params![record.workspace_id, key],
+                    row_record,
+                )
+                .map_err(e)?
+            } else {
+                return Err(e(format!("file id `{}` already exists", record.id)));
+            };
+            Ok(if inserted > 0 {
+                CreateFileRecordOutcome::Inserted(lookup)
+            } else {
+                CreateFileRecordOutcome::Existing(lookup)
+            })
+        })
+        .await
+        .map_err(ce)
+    }
+
+    async fn get_file(
+        &self,
+        workspace_id: &str,
+        file_id: &str,
+        include_deleted: bool,
+    ) -> Result<Option<FileRecord>, FileCatalogError> {
+        let workspace = workspace_id.to_string();
+        let id = file_id.to_string();
+        self.with_conn(move |conn| {
+            conn.query_row(
+                &format!(
+                    "SELECT {FILE_COLUMNS} FROM {NS}_file \
+                     WHERE id=?1 AND workspace_id=?2 AND (?3=1 OR deleted=0)"
+                ),
+                params![id, workspace, i64::from(include_deleted)],
+                row_record,
+            )
+            .optional()
+            .map_err(e)
+        })
+        .await
+        .map_err(ce)
+    }
+
+    async fn list_files(
+        &self,
+        workspace_id: &str,
+        scope_id: Option<&str>,
+    ) -> Result<Vec<FileRecord>, FileCatalogError> {
+        let workspace = workspace_id.to_string();
+        let scope = scope_id.map(str::to_string);
+        self.with_conn(move |conn| {
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT {FILE_COLUMNS} FROM {NS}_file \
+                     WHERE workspace_id=?1 AND deleted=0 \
+                     AND (?2 IS NULL OR scope_id=?2) ORDER BY created_at DESC, id DESC"
+                ))
+                .map_err(e)?;
+            let rows = stmt
+                .query_map(params![workspace, scope], row_record)
+                .map_err(e)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(e)
+        })
+        .await
+        .map_err(ce)
+    }
+
+    async fn mark_file_deleted(
+        &self,
+        workspace_id: &str,
+        file_id: &str,
+    ) -> Result<Option<FileRecord>, FileCatalogError> {
+        let workspace = workspace_id.to_string();
+        let id = file_id.to_string();
+        self.with_conn(move |conn| {
+            conn.execute(
+                &format!("UPDATE {NS}_file SET deleted=1 WHERE id=?1 AND workspace_id=?2"),
+                params![id, workspace],
+            )
+            .map_err(e)?;
+            conn.query_row(
+                &format!("SELECT {FILE_COLUMNS} FROM {NS}_file WHERE id=?1 AND workspace_id=?2"),
+                params![id, workspace],
+                row_record,
+            )
+            .optional()
+            .map_err(e)
+        })
+        .await
+        .map_err(ce)
+    }
+
+    async fn active_size_bytes(&self, workspace_id: &str) -> Result<u64, FileCatalogError> {
+        let workspace = workspace_id.to_string();
+        self.with_conn(move |conn| {
+            conn.query_row(
+                &format!(
+                    "SELECT COALESCE(SUM(size_bytes),0) FROM {NS}_file \
+                     WHERE workspace_id=?1 AND deleted=0"
+                ),
+                params![workspace],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|value| value as u64)
+            .map_err(e)
+        })
+        .await
+        .map_err(ce)
     }
 }
 

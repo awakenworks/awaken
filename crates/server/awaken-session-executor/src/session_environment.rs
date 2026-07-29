@@ -174,6 +174,48 @@ impl SessionEnvironment {
         }
     }
 
+    /// Enumerate Agent-authored outputs through the provisioning contract's
+    /// canonical Artifact port. Container backends expose the same contract over
+    /// their output-file transport instead of creating a second host-side scanner.
+    pub(crate) async fn artifacts(&self) -> Result<Vec<pc::Artifact>, pc::SandboxError> {
+        match self {
+            Self::Workdir(sandbox) => pc::Sandbox::artifacts(sandbox.as_ref()).await,
+            Self::Namespace(sandbox) => pc::Sandbox::artifacts(sandbox.as_ref()).await,
+            Self::Container { sandbox, .. } => sandbox
+                .read_files(sandbox.outputs_path())
+                .await
+                .map(|files| {
+                    files
+                        .into_iter()
+                        .map(|file| {
+                            let id = awaken_file_store::content_id(&file.bytes);
+                            pc::Artifact {
+                                id: id.clone(),
+                                path: file.path,
+                                size_bytes: file.bytes.len() as u64,
+                                content_hash: id,
+                            }
+                        })
+                        .collect()
+                }),
+        }
+    }
+
+    pub(crate) async fn read_artifact(&self, id: &str) -> Result<Vec<u8>, pc::SandboxError> {
+        match self {
+            Self::Workdir(sandbox) => pc::Sandbox::read_artifact(sandbox.as_ref(), id).await,
+            Self::Namespace(sandbox) => pc::Sandbox::read_artifact(sandbox.as_ref(), id).await,
+            Self::Container { sandbox, .. } => sandbox
+                .read_files(sandbox.outputs_path())
+                .await?
+                .into_iter()
+                .find_map(|file| {
+                    (awaken_file_store::content_id(&file.bytes) == id).then_some(file.bytes)
+                })
+                .ok_or_else(|| pc::SandboxError::new(format!("artifact `{id}` not found"))),
+        }
+    }
+
     pub(crate) async fn list_files(
         &self,
         subdir: &str,
@@ -1117,9 +1159,15 @@ mod tests {
                 .await
                 .unwrap()
         );
+        // Artifact cause/effect rule: one regular output file → one canonical
+        // content-addressed Artifact and binary-safe read through the same port.
+        let artifacts = environment.artifacts().await.unwrap();
+        assert_eq!(artifacts.len(), 1);
+        assert!(artifacts[0].path.ends_with("nested/result.bin"));
+        assert_eq!(artifacts[0].id, artifacts[0].content_hash);
         assert_eq!(
-            environment.list_files("outputs").await.unwrap(),
-            vec![("nested/result.bin".into(), vec![0, 0xff])]
+            environment.read_artifact(&artifacts[0].id).await.unwrap(),
+            vec![0, 0xff]
         );
         environment.dispose().await.unwrap();
 

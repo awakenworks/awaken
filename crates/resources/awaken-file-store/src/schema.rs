@@ -16,20 +16,46 @@ pub const NS: &str = "file_store";
 /// component's migrations in the same database.
 pub const BUNDLE_ID: &str = "awaken.file_store";
 
-/// The versioned schema bundle. One migration: the content-addressed
-/// `file_store_blob` table (id = BLAKE3 content hash, immutable `bytes`).
+/// The versioned schema bundle. Blob bytes and logical Files-API records are
+/// deliberately separate tables: physical deduplication never merges public File
+/// identity or metadata.
 pub fn file_store_bundle() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(
         BUNDLE_ID,
-        vec![Migration::new(
-            1,
-            "content-addressed blobs: one row per BLAKE3 content id",
-            "CREATE TABLE {prefix}_blob (\
+        vec![
+            Migration::new(
+                1,
+                "content-addressed blobs: one row per BLAKE3 content id",
+                "CREATE TABLE {prefix}_blob (\
                  id TEXT PRIMARY KEY, \
                  bytes {blob} NOT NULL, \
                  size BIGINT NOT NULL, \
                  created_at {timestamptz} NOT NULL DEFAULT {now})",
-        )?],
+            )?,
+            Migration::new(
+                2,
+                "logical Files API records with durable scope and harvest identity",
+                "CREATE TABLE {prefix}_file (\
+                 id TEXT PRIMARY KEY, \
+                 workspace_id TEXT NOT NULL, \
+                 blob_id TEXT NOT NULL, \
+                 filename TEXT NOT NULL, \
+                 mime_type TEXT NOT NULL, \
+                 size_bytes BIGINT NOT NULL, \
+                 created_at TEXT NOT NULL, \
+                 downloadable INTEGER NOT NULL, \
+                 scope_id TEXT, \
+                 logical_path TEXT, \
+                 harvest_key TEXT, \
+                 deleted INTEGER NOT NULL DEFAULT 0); \
+                 CREATE UNIQUE INDEX {prefix}_file_workspace_harvest \
+                 ON {prefix}_file(workspace_id, harvest_key) WHERE deleted=0; \
+                 CREATE INDEX {prefix}_file_workspace_created \
+                 ON {prefix}_file(workspace_id, created_at, id); \
+                 CREATE INDEX {prefix}_file_scope \
+                 ON {prefix}_file(workspace_id, scope_id, created_at, id)",
+            )?,
+        ],
     )
 }
 
