@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use awaken_config_resolver::AgentInputBindingRepository;
 
-use crate::{ConfigService, CredentialReferenceValidator, PluginConfigurationValidator};
+use crate::{ConfigService, CredentialReferenceValidator, PluginPublicationResolver};
 
 impl ConfigService {
     /// Wire the per-Agent input binding repository used by Session projections.
@@ -33,11 +33,11 @@ impl ConfigService {
     /// Install the extension-owned semantic configuration catalog used by both
     /// validate and publish. JSON Schema remains discovery-only.
     #[must_use]
-    pub fn with_plugin_configuration_validator(
+    pub fn with_plugin_publication_resolver(
         mut self,
-        validator: Arc<dyn PluginConfigurationValidator>,
+        resolver: Arc<dyn PluginPublicationResolver>,
     ) -> Self {
-        self.plugin_configuration_validators.push(validator);
+        self.plugin_publication_resolvers.push(resolver);
         self
     }
 }

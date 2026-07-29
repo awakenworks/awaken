@@ -14,26 +14,34 @@ use awaken_runtime_contract::{
 use crate::credential_materializer::PinnedCredentialMaterializer;
 
 /// Config-plane adapter over the same provider registry Session execution uses.
-pub struct WebSearchConfigurationValidator {
+pub struct WebSearchPublicationResolver {
     providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
 }
 
-impl WebSearchConfigurationValidator {
+impl WebSearchPublicationResolver {
     #[must_use]
     pub fn new(providers: awaken_ext_builtin_tools::WebSearchProviderRegistry) -> Self {
         Self { providers }
     }
 }
 
-impl awaken_config_service::PluginConfigurationValidator for WebSearchConfigurationValidator {
+#[async_trait::async_trait]
+impl awaken_config_service::PluginPublicationResolver for WebSearchPublicationResolver {
     fn plugin_id(&self) -> &str {
         awaken_ext_builtin_tools::WEB_SEARCH_PLUGIN_ID
     }
 
-    fn validate(&self, config: Option<&serde_json::Value>) -> Result<(), String> {
+    async fn resolve(
+        &self,
+        _workspace: &awaken_tenancy::ScopeId,
+        config: Option<&serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
         awaken_ext_builtin_tools::WebSearchPlugin::new(self.providers.clone(), None)
             .validate_config(config)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        Ok(config
+            .cloned()
+            .expect("validated WebSearch config is present"))
     }
 }
 
@@ -90,7 +98,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use awaken_config_service::PluginConfigurationValidator;
+    use awaken_config_service::PluginPublicationResolver;
     use awaken_runtime_contract::tool::{ToolCall, ToolError};
 
     struct PaidProbe;
@@ -131,29 +139,34 @@ mod tests {
         }
     }
 
-    #[test]
-    fn publication_validator_reuses_provider_semantics() {
+    #[tokio::test]
+    async fn publication_resolver_reuses_provider_semantics() {
         // Cause/effect: owned free config succeeds; owned paid config without an
         // exact pin fails; another plugin id is outside this catalog. No network
         // or credential materialization occurs during publication validation.
-        let validator = WebSearchConfigurationValidator::new(
+        let resolver = WebSearchPublicationResolver::new(
             awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins(),
         );
         assert_eq!(
-            validator.validate(Some(
-                &serde_json::json!({ "provider_id": "duckduckgo", "options": {} }),
-            )),
-            Ok(())
+            resolver
+                .resolve(
+                    &awaken_tenancy::ScopeId::from("workspace-a"),
+                    Some(&serde_json::json!({ "provider_id": "duckduckgo", "options": {} })),
+                )
+                .await,
+            Ok(serde_json::json!({ "provider_id": "duckduckgo", "options": {} }))
         );
         assert!(
-            validator
-                .validate(Some(
-                    &serde_json::json!({ "provider_id": "brave", "options": {} }),
-                ))
+            resolver
+                .resolve(
+                    &awaken_tenancy::ScopeId::from("workspace-a"),
+                    Some(&serde_json::json!({ "provider_id": "brave", "options": {} })),
+                )
+                .await
                 .is_err()
         );
         assert_eq!(
-            validator.plugin_id(),
+            resolver.plugin_id(),
             awaken_ext_builtin_tools::WEB_SEARCH_PLUGIN_ID
         );
     }

@@ -33,6 +33,7 @@ pub async fn build_control_assembly_with_deployment(
         deployment,
         key,
         ManagementModelComposition::PublishedProviders,
+        None,
     )
     .await
 }
@@ -49,10 +50,29 @@ pub async fn build_control_router_with_publication_resolver(
     key: &[u8; 32],
     resolver: Arc<dyn awaken_runtime_host::ModelPublicationResolver>,
 ) -> Result<Router, String> {
+    build_control_router_with_publication_resolver_and_web_search(
+        deployment,
+        key,
+        resolver,
+        awaken_runtime_host::WebSearchProviderRegistry::builtins(),
+    )
+    .await
+}
+
+/// Hosted control assembly with deployment-owned model and WebSearch
+/// publication adapters. This remains the same canonical Management assembly;
+/// the closed composition supplies only existing open ports and provider facts.
+pub async fn build_control_router_with_publication_resolver_and_web_search(
+    deployment: &config::ResolvedDeployment,
+    key: &[u8; 32],
+    resolver: Arc<dyn awaken_runtime_host::ModelPublicationResolver>,
+    web_search_providers: awaken_runtime_host::WebSearchProviderRegistry,
+) -> Result<Router, String> {
     build_control_assembly_with_model_composition(
         deployment,
         key,
         ManagementModelComposition::HostedPublication { resolver },
+        Some(web_search_providers),
     )
     .await
     .map(|assembly| assembly.router)
@@ -62,6 +82,7 @@ async fn build_control_assembly_with_model_composition(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
     model_composition: ManagementModelComposition,
+    web_search_providers: Option<awaken_runtime_host::WebSearchProviderRegistry>,
 ) -> Result<ManagementAssembly, String> {
     let identity = identity_wiring(
         deployment.identity_mode,
@@ -96,6 +117,7 @@ async fn build_control_assembly_with_model_composition(
             cloud_models_enabled: deployment.cloud_models.is_enabled(),
             local_acp_observations: Vec::new(),
             hand_executors: BTreeMap::new(),
+            web_search_providers,
         },
         None,
     )
