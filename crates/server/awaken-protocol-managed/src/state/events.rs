@@ -13,6 +13,51 @@ struct DelegateCall {
 }
 
 impl ManagedState {
+    /// Resolve the public optional Thread selector onto the runtime's canonical
+    /// thread keys. The primary Thread is projected with a public suffix, while
+    /// the runtime has always keyed it by the Session id; child Thread ids are
+    /// already the child Run keys. Keeping that translation here prevents the
+    /// event handler and Thread routes from growing competing identity rules.
+    fn interrupt_targets(
+        &self,
+        session_id: &str,
+        requested_thread_id: Option<&str>,
+    ) -> Result<Vec<String>, StateError> {
+        let sessions = self.sessions.lock().unwrap();
+        let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
+        let primary_id = format!("{session_id}:primary");
+        if let Some(thread_id) = requested_thread_id {
+            if thread_id == primary_id {
+                return Ok(vec![session_id.to_string()]);
+            }
+            let child = record
+                .child_threads
+                .iter()
+                .find(|thread| thread.id == thread_id)
+                .ok_or_else(|| {
+                    StateError::Run(RunError::bad_request(
+                        "session_thread_id does not name a thread in this session",
+                    ))
+                })?;
+            if child.status == SessionThreadStatus::Terminated {
+                return Err(StateError::Run(RunError::bad_request(
+                    "an archived or terminated session thread cannot be interrupted",
+                )));
+            }
+            return Ok(vec![child.id.clone()]);
+        }
+
+        Ok(std::iter::once(session_id.to_string())
+            .chain(
+                record
+                    .child_threads
+                    .iter()
+                    .filter(|thread| thread.status != SessionThreadStatus::Terminated)
+                    .map(|thread| thread.id.clone()),
+            )
+            .collect())
+    }
+
     fn public_inbound_kind(event: &InboundEvent) -> OutboundKind {
         match event {
             InboundEvent::UserMessage {
@@ -572,8 +617,10 @@ impl ManagedState {
                 let text = content_text(content);
                 self.runtime.add_system(session_id, &text).await?;
             }
-            InboundEvent::UserInterrupt { .. } => {
-                self.runtime.interrupt(session_id).await?;
+            InboundEvent::UserInterrupt { session_thread_id } => {
+                for thread in self.interrupt_targets(session_id, session_thread_id.as_deref())? {
+                    self.runtime.interrupt(&thread).await?;
+                }
             }
         }
         Ok(())
@@ -616,6 +663,13 @@ impl ManagedState {
                 continue;
             }
             match event {
+                InboundEvent::UserInterrupt { session_thread_id } => {
+                    // Validate every selector before the first receipt is persisted.
+                    // The same canonical resolver is called again during execution;
+                    // Session Thread topology cannot change inside this synchronous
+                    // batch, so validation and effect address the same target set.
+                    self.interrupt_targets(session_id, session_thread_id.as_deref())?;
+                }
                 InboundEvent::SystemMessage { content } if !(1..=1000).contains(&content.len()) => {
                     return Err(StateError::Run(RunError::bad_request(
                         "system.message content must contain between 1 and 1000 items",

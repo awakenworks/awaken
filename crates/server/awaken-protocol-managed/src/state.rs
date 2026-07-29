@@ -617,6 +617,7 @@ mod tests {
     #[derive(Clone, Default)]
     struct EndSessionRecorder {
         ended: Arc<std::sync::Mutex<Vec<String>>>,
+        interrupted: Arc<std::sync::Mutex<Vec<String>>>,
     }
 
     #[async_trait]
@@ -660,6 +661,10 @@ mod tests {
         }
         async fn end_session(&self, thread: &str) -> Result<(), RunError> {
             self.ended.lock().unwrap().push(thread.to_string());
+            Ok(())
+        }
+        async fn interrupt(&self, thread: &str) -> Result<(), RunError> {
+            self.interrupted.lock().unwrap().push(thread.to_string());
             Ok(())
         }
         fn model(&self) -> String {
@@ -718,6 +723,142 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    /// Cause/effect graph: optional `session_thread_id` -> canonical runtime
+    /// Thread selection -> interrupt side effects. A named live Thread selects
+    /// exactly itself; an absent selector fans out to the primary and every
+    /// non-terminal child; an unknown or terminal selector fails admission before
+    /// the receipt/event log or runtime changes.
+    ///
+    /// Decision table:
+    /// | rule | selector | target state | runtime keys | persisted receipt |
+    /// |---|---|---|---|---|
+    /// | I1 | child id | idle/requires-action | child only | yes |
+    /// | I2 | primary id | live | Session id only | yes |
+    /// | I3 | absent | mixed | primary + non-terminal children | yes |
+    /// | I4 | child id | terminated/unknown | none | no |
+    #[tokio::test]
+    async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
+        let runtime = EndSessionRecorder::default();
+        let interrupted = runtime.interrupted.clone();
+        let state = ManagedState::new(runtime);
+        let request = serde_json::from_value(serde_json::json!({ "agent": "assistant" })).unwrap();
+        let session = state.create_session(request, None).await.unwrap();
+        {
+            let mut sessions = state.sessions.lock().unwrap();
+            let record = sessions.get_mut(&session.id).unwrap();
+            let mut idle = ManagedState::child_thread(&record.session, "child-idle", "researcher");
+            idle.status = SessionThreadStatus::Idle;
+            record.child_threads.push(idle);
+            let mut terminated =
+                ManagedState::child_thread(&record.session, "child-ended", "reviewer");
+            terminated.status = SessionThreadStatus::Terminated;
+            terminated.archived_at = Some(PROCESSED_AT.to_string());
+            record.child_threads.push(terminated);
+        }
+
+        let send = |event| SendEventsRequest {
+            events: vec![event],
+            user_profile_id: None,
+        };
+        state
+            .send_events(
+                &session.id,
+                send(InboundEvent::UserInterrupt {
+                    session_thread_id: Some("child-idle".into()),
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            interrupted.lock().unwrap().as_slice(),
+            &["child-idle"],
+            "I1"
+        );
+        assert_eq!(
+            state
+                .list_thread_events(&session.id, "child-idle", None, None)
+                .unwrap()
+                .data
+                .iter()
+                .filter(|event| event.type_str() == "user.interrupt")
+                .count(),
+            1,
+            "I1 is visible on the selected child Thread stream"
+        );
+
+        interrupted.lock().unwrap().clear();
+        state
+            .send_events(
+                &session.id,
+                send(InboundEvent::UserInterrupt {
+                    session_thread_id: Some(format!("{}:primary", session.id)),
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            interrupted.lock().unwrap().as_slice(),
+            &[session.id.as_str()],
+            "I2"
+        );
+
+        interrupted.lock().unwrap().clear();
+        state
+            .send_events(
+                &session.id,
+                send(InboundEvent::UserInterrupt {
+                    session_thread_id: None,
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            interrupted.lock().unwrap().as_slice(),
+            &[session.id.as_str(), "child-idle"],
+            "I3 excludes the terminal child"
+        );
+        assert_eq!(
+            state
+                .list_thread_events(&session.id, "child-idle", None, None)
+                .unwrap()
+                .data
+                .iter()
+                .filter(|event| event.type_str() == "user.interrupt")
+                .count(),
+            2,
+            "I3's selector-free interrupt is visible on every live child stream"
+        );
+
+        for rejected in ["child-ended", "child-unknown"] {
+            interrupted.lock().unwrap().clear();
+            let event_count = state
+                .list_events(&session.id, None, None)
+                .unwrap()
+                .data
+                .len();
+            let error = state
+                .send_events(
+                    &session.id,
+                    send(InboundEvent::UserInterrupt {
+                        session_thread_id: Some(rejected.into()),
+                    }),
+                )
+                .await
+                .expect_err("I4 rejects a non-live selector");
+            assert!(matches!(error, StateError::Run(_)), "I4: {error}");
+            assert!(interrupted.lock().unwrap().is_empty(), "I4");
+            assert_eq!(
+                state
+                    .list_events(&session.id, None, None)
+                    .unwrap()
+                    .data
+                    .len(),
+                event_count,
+                "I4 admission is atomic"
+            );
+        }
     }
 
     // Delete finalization tests are generated from this causal graph:

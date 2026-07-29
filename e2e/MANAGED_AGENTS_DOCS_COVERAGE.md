@@ -327,9 +327,12 @@ These are real coverage gaps: awaken implements the behavior, no e2e asserts it.
     `management_mcp_e2e.mjs`.
 12. **Multiagent thread control** — delegation lifecycle, child enumeration/retrieval,
     fail-closed roster handling, and idle-child archive are covered by
-    `managed_delegation_e2e.mjs`. `{type:"self"}` copy and interrupting a
-    `requires_action` child are not implemented by the current thread contract and
-    are recorded as explicit negative/out-of-scope cases.
+    `managed_delegation_e2e.mjs`. The protocol cause/decision-table test
+    `interrupt_selector_targets_one_thread_or_all_non_terminal_threads` covers the
+    documented optional `user.interrupt.session_thread_id`: a named
+    `requires_action`/idle child targets only that child Run, omission targets the
+    primary plus every non-terminal child, and unknown/terminal selectors fail
+    before receipt persistence. `{type:"self"}` copy remains the open roster gap.
 13. **Files negatives** — filename validation and download authorization are covered
     by `managed_resources_api_e2e.mjs`; `downloadable:false` upload metadata and
     `document`/`image` `file_id` blocks are absent from awaken's file-upload contract,

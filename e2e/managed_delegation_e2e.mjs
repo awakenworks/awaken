@@ -10,13 +10,15 @@
 //
 // Cause graph:
 //   admitted delegation -> durable child Run relationship -> child Thread projection
-//   -> primary cross-posts + child-perspective event projection -> archive termination
+//   -> primary cross-posts + child-perspective event projection -> targeted interrupt
+//   -> archive termination
 //   unlisted target -X-> child Run / child Thread / usage side effects
 //
 // Decision table:
 // | target | relationship | child result | archive | observable behavior |
 // |---|---|---|---|---|
 // | roster member | new exact Run | complete | no | one idle child + two directional messages |
+// | live child | exact thread selector | idle | no | interrupt only that child + child-stream receipt |
 // | roster member | existing exact Run | complete | yes | same child terminated + terminal event |
 // | absent member | none | none | n/a | no child and no delegate inference usage |
 
@@ -152,6 +154,23 @@ async function main() {
     assert.equal(ownChildEvents[1].from_agent_name, undefined);
     assert.equal(ownChildEvents[2].to_session_thread_id, primary.id);
     assert.equal(ownChildEvents[2].to_agent_name, undefined);
+
+    // The optional selector is part of `user.interrupt`, not a parallel Thread
+    // endpoint. It addresses only this child Run and the receipt projects onto
+    // the selected child's stream (an omitted selector fans out; covered by the
+    // protocol cause-table test with a recording runtime).
+    const interruptReceipt = await client.beta.sessions.events.send(ok.id, {
+      events: [{ type: 'user.interrupt', session_thread_id: child.id }],
+      betas: BETAS,
+    });
+    assert.equal(interruptReceipt.data[0].type, 'user.interrupt');
+    const afterInterrupt = [];
+    for await (const event of client.beta.sessions.threads.events.list(child.id, {
+      session_id: ok.id,
+      betas: BETAS,
+    })) afterInterrupt.push(event);
+    assert.equal(afterInterrupt.at(-1).type, 'user.interrupt');
+    assert.equal(afterInterrupt.at(-1).session_thread_id, child.id);
 
     // Archiving the child thread terminates it (session.thread_status_terminated).
     const archived = await client.beta.sessions.threads.archive(child.id, {
