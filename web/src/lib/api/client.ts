@@ -3,17 +3,11 @@
 // RFC 9457 problem+json (admin plane) and the managed error envelope
 // { type: "error", error: { type, message } } (sessions/vaults).
 
-const TOKEN_KEY = "awaken.console.token";
 const CLOUD_SESSION_TOKEN_KEY = "awaken.product.session-bearer";
 
 export function getToken(): string {
   return globalThis.sessionStorage?.getItem(CLOUD_SESSION_TOKEN_KEY)
-    ?? globalThis.localStorage?.getItem(TOKEN_KEY)
     ?? "";
-}
-export function setToken(token: string): void {
-  if (token) globalThis.localStorage?.setItem(TOKEN_KEY, token);
-  else globalThis.localStorage?.removeItem(TOKEN_KEY);
 }
 
 // ---- workspace scope seam (ADR-0048 path addressing / ADR-0051 tenancy) ----
@@ -90,6 +84,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   const res = await fetch(path, {
     method,
     headers,
+    credentials: "same-origin",
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (!res.ok) throw await toError(res);
@@ -106,7 +101,7 @@ async function upload<T>(path: string, file: File, fields?: Record<string, strin
   const form = new FormData();
   form.append("file", file);
   for (const [k, v] of Object.entries(fields ?? {})) form.append(k, v);
-  const res = await fetch(path, { method: "POST", headers, body: form });
+  const res = await fetch(path, { method: "POST", headers, body: form, credentials: "same-origin" });
   if (!res.ok) throw await toError(res);
   return (await res.json()) as T;
 }
@@ -118,7 +113,7 @@ async function download(path: string, filename: string): Promise<void> {
   const headers: Record<string, string> = {};
   const token = getToken();
   if (token) headers.authorization = `Bearer ${token}`;
-  const res = await fetch(path, { headers });
+  const res = await fetch(path, { headers, credentials: "same-origin" });
   if (!res.ok) throw await toError(res);
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);

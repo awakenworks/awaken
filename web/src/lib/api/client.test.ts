@@ -1,10 +1,10 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { getToken, setToken } from "./client";
+import { getToken } from "./client";
 
 describe("cloud product session bearer", () => {
-  // Cause graph: cloud session -> use cloud token; otherwise manual token ->
-  // use manual token; otherwise remain anonymous.  The first case also proves
-  // cloud precedence, so this is the minimized decision table.
+  // Cause/effect decision table:
+  // cloud session bearer -> Authorization header; no bearer -> cookie-only.
+  // A localStorage management token is never consulted.
   beforeAll(() => {
     const storage = () => {
       const values = new Map<string, string>();
@@ -24,18 +24,13 @@ describe("cloud product session bearer", () => {
     globalThis.localStorage.clear();
   });
 
-  it("prefers the short-lived IAM product token over a local manual token", () => {
-    setToken("local-token");
+  it("uses the short-lived IAM product token", () => {
     globalThis.sessionStorage.setItem("awaken.product.session-bearer", "cloud-token");
     expect(getToken()).toBe("cloud-token");
   });
 
-  it("retains the local manual-token path when no cloud session exists", () => {
-    setToken("local-token");
-    expect(getToken()).toBe("local-token");
-  });
-
-  it("remains anonymous when neither credential source exists", () => {
+  it("does not read a management bearer from local storage", () => {
+    globalThis.localStorage.setItem("awaken.console.token", "legacy-token");
     expect(getToken()).toBe("");
   });
 });
