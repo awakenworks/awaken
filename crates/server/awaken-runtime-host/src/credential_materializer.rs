@@ -727,6 +727,38 @@ impl PinnedCredentialMaterializer {
         .await
     }
 
+    /// Resolve one exact credential for a provider-owned adapter. This is the
+    /// provider-bound sibling of [`Self::resolve_for_workspace`]: a credential
+    /// explicitly namespaced to another provider is rejected before material is
+    /// returned. Sources without a provider hint remain valid for open external
+    /// providers whose namespace is carried only by plugin configuration.
+    pub(crate) async fn resolve_for_workspace_and_provider(
+        &self,
+        access: &CredentialAccess,
+        selected_holder: &PlaintextHolder,
+        realization: CredentialRealizationKind,
+        workspace: &str,
+        provider: &str,
+        target: &impl serde::Serialize,
+    ) -> Result<ResolvedCredentialMaterial, CredentialMaterialError> {
+        let (material_sources, recipient_bound_envelopes) = self.material_source_capabilities();
+        admit_exact_adapter(
+            access,
+            selected_holder,
+            realization,
+            material_sources,
+            recipient_bound_envelopes,
+        )
+        .map_err(|_| CredentialMaterialError::Unavailable)?;
+        self.resolve_validated(
+            access,
+            selected_holder,
+            CredentialMaterialBinding::for_target(workspace, target, &access.usage),
+            Some(provider),
+        )
+        .await
+    }
+
     async fn load_active_source(
         &self,
         reference: &str,
