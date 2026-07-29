@@ -92,6 +92,7 @@ async fn spawn_transport_server() -> (String, Arc<MemoryDispatchStore>, Arc<Atom
             .into_iter()
             .collect(),
             recipient_bound_envelopes: false,
+            extension_consumers: Default::default(),
             alternatives: Vec::new(),
         },
     });

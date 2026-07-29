@@ -1587,6 +1587,7 @@ impl awaken_protocol_managed::McpAttachmentRealizer for ManagedHost {
                                 CredentialRealizationKind::WorkerRelay,
                             ]),
                             recipient_bound_envelopes,
+                            extension_consumers: Default::default(),
                             alternatives: Vec::new(),
                         },
                         now_unix_ms,

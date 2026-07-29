@@ -5,7 +5,7 @@
 //! kernel shared by model, MCP and resource adapters; adapters realize an exact
 //! admitted plan and never choose a different holder after failure.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use async_trait::async_trait;
 use awaken_agent_contract::RedactedString;
@@ -76,10 +76,18 @@ pub enum CredentialUsage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scheme: Option<String>,
     },
-    /// RFC 7617 HTTP Basic authentication. This usage accepts only structured
-    /// [`CredentialMaterial::UsernamePassword`] material; callers must never
-    /// pre-encode `username:password` into an opaque secret.
+    /// RFC 7617 HTTP Basic authentication. This consumes the built-in typed
+    /// material id [`HTTP_BASIC_MATERIAL_TYPE`].
     HttpBasicAuth,
+    /// An externally owned consumer. Core transports never interpret `public_config`;
+    /// the exact target adapter named by `consumer_id` validates it and consumes
+    /// only material whose type matches `material_type`.
+    Extension {
+        consumer_id: String,
+        material_type: String,
+        #[serde(default)]
+        public_config: serde_json::Value,
+    },
     QueryParameter {
         name: String,
     },
@@ -570,6 +578,15 @@ impl CredentialAccess {
         {
             return Err(CredentialAdmissionError::HolderNotAllowed);
         }
+        if let CredentialUsage::Extension {
+            consumer_id,
+            material_type,
+            ..
+        } = &self.usage
+            && !capabilities.supports_extension(consumer_id, material_type)
+        {
+            return Err(CredentialAdmissionError::ExtensionConsumerUnsupported);
+        }
         if !capabilities.supports(
             requested_holder,
             self.material_source,
@@ -670,6 +687,10 @@ pub struct CredentialRealizationCapabilities {
     pub realization_kinds: BTreeSet<CredentialRealizationKind>,
     #[serde(default)]
     pub recipient_bound_envelopes: bool,
+    /// Installed external consumers and the namespaced material types each one
+    /// accepts. This is execution evidence, not an extension preference.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub extension_consumers: BTreeMap<String, BTreeSet<String>>,
     /// Independent adapter profiles installed in one process/Worker.
     ///
     /// Keeping profiles separate is security-significant: flattening a Native
@@ -697,6 +718,12 @@ impl CredentialRealizationCapabilities {
         self.realization_kinds
             .extend(other.realization_kinds.iter().copied());
         self.recipient_bound_envelopes |= other.recipient_bound_envelopes;
+        for (consumer, material_types) in &other.extension_consumers {
+            self.extension_consumers
+                .entry(consumer.clone())
+                .or_default()
+                .extend(material_types.iter().cloned());
+        }
     }
 
     /// Whether this adapter/provider advertises no credential realization at all.
@@ -706,6 +733,7 @@ impl CredentialRealizationCapabilities {
             && self.material_sources.is_empty()
             && self.realization_kinds.is_empty()
             && !self.recipient_bound_envelopes
+            && self.extension_consumers.is_empty()
             && self.alternatives.iter().all(Self::is_empty)
     }
 
@@ -743,6 +771,16 @@ impl CredentialRealizationCapabilities {
                 .alternatives
                 .iter()
                 .any(|profile| profile.supports(holder, source, realization, envelope))
+    }
+
+    fn supports_extension(&self, consumer_id: &str, material_type: &str) -> bool {
+        self.extension_consumers
+            .get(consumer_id)
+            .is_some_and(|types| types.contains(material_type))
+            || self
+                .alternatives
+                .iter()
+                .any(|profile| profile.supports_extension(consumer_id, material_type))
     }
 
     /// Encode this evidence as one canonical Worker capability. Empty evidence
@@ -794,6 +832,8 @@ pub enum CredentialAdmissionError {
     HolderUnsupported,
     #[error("credential material source is unsupported")]
     MaterialSourceUnsupported,
+    #[error("credential extension consumer or material type is unsupported")]
+    ExtensionConsumerUnsupported,
     #[error("recipient-bound credential envelopes are unsupported")]
     EnvelopeUnsupported,
     #[error("sealed credential envelope reference is empty")]
@@ -825,19 +865,60 @@ pub struct OAuthCredentialMaterial {
     pub account_plan: Option<String>,
 }
 
+pub const HTTP_BASIC_MATERIAL_TYPE: &str = "awaken.http-basic/v1";
+
+/// Open structured material shared with external credential extensions. Field
+/// names are owned by `type_id`; every value remains redacted in Debug output.
+#[derive(Debug)]
+pub struct StructuredCredentialMaterial {
+    pub type_id: String,
+    pub fields: BTreeMap<String, RedactedString>,
+}
+
+/// Capability-discovery record published by an external last-mile consumer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CredentialExtensionDescriptor {
+    pub consumer_id: String,
+    pub material_types: BTreeSet<String>,
+}
+
+/// Exact, already-admitted input to an external credential consumer. The
+/// consumer cannot select another credential, holder, usage, or target.
+pub struct CredentialExtensionRequest<'a> {
+    pub access: &'a CredentialAccess,
+    pub material: &'a StructuredCredentialMaterial,
+    pub binding: &'a CredentialMaterialBinding,
+}
+
+/// Secret-free proof that one extension consumed the exact material type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CredentialExtensionReceipt {
+    pub consumer_id: String,
+    pub material_type: String,
+    pub target_use_fingerprint: String,
+}
+
+/// Open last-mile port for SSH agents, database drivers, signing services, and
+/// other externally supplied consumers. Built-in environment/file delivery
+/// remains owned by the provisioning SecretBroker and does not pass this port.
+#[async_trait]
+pub trait CredentialExtensionConsumer: Send + Sync {
+    fn descriptor(&self) -> CredentialExtensionDescriptor;
+
+    async fn consume(
+        &self,
+        request: CredentialExtensionRequest<'_>,
+    ) -> Result<CredentialExtensionReceipt, CredentialMaterialError>;
+}
+
 /// Material shape returned by the sole exact resolver port. Provider drivers
-/// consume OAuth as a bundle; legacy bearer consumers can only accept `Bearer`.
+/// consume OAuth as a bundle; extension-owned schemas remain typed and opaque.
 #[derive(Debug)]
 pub enum CredentialMaterial {
     /// One opaque secret. Whether it becomes an API-key header, a Bearer header,
     /// or a process secret is decided exclusively by [`CredentialUsage`].
     Secret(RedactedString),
-    /// Structured HTTP credentials. Keeping both fields distinct preserves
-    /// validation and independent rotation until the last-mile HTTP adapter.
-    UsernamePassword {
-        username: RedactedString,
-        password: RedactedString,
-    },
+    Structured(StructuredCredentialMaterial),
     OAuth(OAuthCredentialMaterial),
 }
 
@@ -851,14 +932,14 @@ impl CredentialMaterial {
         match self {
             Self::Secret(value) => Ok(value),
             Self::OAuth(bundle) => Ok(&bundle.access_token),
-            Self::UsernamePassword { .. } => Err(CredentialMaterialError::MaterialKindMismatch),
+            Self::Structured(_) => Err(CredentialMaterialError::MaterialKindMismatch),
         }
     }
 
     pub fn into_secret(self) -> Result<RedactedString, CredentialMaterialError> {
         match self {
             Self::Secret(value) => Ok(value),
-            Self::UsernamePassword { .. } | Self::OAuth(_) => {
+            Self::Structured(_) | Self::OAuth(_) => {
                 Err(CredentialMaterialError::MaterialKindMismatch)
             }
         }
@@ -867,20 +948,35 @@ impl CredentialMaterial {
     /// Enforce the one material/application compatibility table before a
     /// last-mile adapter can observe plaintext.
     pub fn validate_usage(&self, usage: &CredentialUsage) -> Result<(), CredentialMaterialError> {
-        let valid = matches!(
-            (self, usage),
+        let valid = match (self, usage) {
+            (Self::Structured(material), CredentialUsage::HttpBasicAuth) => {
+                material.type_id == HTTP_BASIC_MATERIAL_TYPE
+                    && material.fields.contains_key("username")
+                    && material.fields.contains_key("password")
+            }
             (
-                Self::UsernamePassword { .. },
-                CredentialUsage::HttpBasicAuth
-            ) | (
+                Self::Structured(material),
+                CredentialUsage::Extension {
+                    material_type,
+                    consumer_id,
+                    ..
+                },
+            ) => {
+                !consumer_id.trim().is_empty()
+                    && !material_type.trim().is_empty()
+                    && material.type_id == *material_type
+            }
+            (
                 Self::Secret(_),
                 CredentialUsage::ProviderAdapter
-                    | CredentialUsage::HttpHeader { .. }
-                    | CredentialUsage::QueryParameter { .. }
-                    | CredentialUsage::EnvironmentVariable { .. }
-                    | CredentialUsage::File { .. }
-            ) | (Self::OAuth(_), CredentialUsage::ProviderAdapter)
-        );
+                | CredentialUsage::HttpHeader { .. }
+                | CredentialUsage::QueryParameter { .. }
+                | CredentialUsage::EnvironmentVariable { .. }
+                | CredentialUsage::File { .. },
+            )
+            | (Self::OAuth(_), CredentialUsage::ProviderAdapter) => true,
+            _ => false,
+        };
         valid
             .then_some(())
             .ok_or(CredentialMaterialError::MaterialKindMismatch)
@@ -1045,6 +1141,7 @@ mod tests {
             material_sources: BTreeSet::from([CredentialMaterialSource::WorkerReference]),
             realization_kinds: BTreeSet::from([CredentialRealizationKind::WorkerProviderAdapter]),
             recipient_bound_envelopes: true,
+            extension_consumers: BTreeMap::new(),
             alternatives: Vec::new(),
         };
         let encoded = exact
@@ -1234,6 +1331,7 @@ mod tests {
             material_sources: BTreeSet::from([CredentialMaterialSource::ControlPlaneReference]),
             realization_kinds: BTreeSet::from([CredentialRealizationKind::WorkerProviderAdapter]),
             recipient_bound_envelopes: true,
+            extension_consumers: BTreeMap::new(),
             alternatives: Vec::new(),
         }
     }
@@ -1696,23 +1794,29 @@ mod tests {
 
     /// Cause-effect graph: material shape and application usage are independent
     /// inputs; only an explicitly supported pair may reach a last-mile adapter.
-    /// A username/password pair must never degrade to one opaque secret, while an
-    /// OAuth bundle must remain provider-owned.
+    /// Typed material must never degrade to one opaque secret, while external
+    /// consumers are admitted only for an exact namespaced material type.
     ///
     /// | Rule | material | usage | effect |
     /// |---|---|---|---|
     /// | M1 | Secret | HTTP header | admitted |
-    /// | M2 | UsernamePassword | HTTP Basic | admitted |
-    /// | M3 | UsernamePassword | HTTP header | rejected |
+    /// | M2 | http-basic typed | HTTP Basic | admitted |
+    /// | M3 | http-basic typed | HTTP header | rejected |
     /// | M4 | Secret | HTTP Basic | rejected |
     /// | M5 | OAuth | Provider adapter | admitted |
-    /// | M6 | OAuth | HTTP Basic | rejected |
+    /// | M6 | external type A | extension expecting A | admitted |
+    /// | M7 | external type A | extension expecting B | rejected |
     #[test]
     fn material_usage_compatibility_is_explicit_and_fail_closed() {
         let secret = || CredentialMaterial::secret(RedactedString::new("secret"));
-        let pair = || CredentialMaterial::UsernamePassword {
-            username: RedactedString::new("user"),
-            password: RedactedString::new("password"),
+        let typed = |type_id: &str| {
+            CredentialMaterial::Structured(StructuredCredentialMaterial {
+                type_id: type_id.into(),
+                fields: BTreeMap::from([
+                    ("username".into(), RedactedString::new("user")),
+                    ("password".into(), RedactedString::new("password")),
+                ]),
+            })
         };
         let oauth = || {
             CredentialMaterial::OAuth(OAuthCredentialMaterial {
@@ -1731,10 +1835,14 @@ mod tests {
             ("M1", secret().validate_usage(&header), true),
             (
                 "M2",
-                pair().validate_usage(&CredentialUsage::HttpBasicAuth),
+                typed(HTTP_BASIC_MATERIAL_TYPE).validate_usage(&CredentialUsage::HttpBasicAuth),
                 true,
             ),
-            ("M3", pair().validate_usage(&header), false),
+            (
+                "M3",
+                typed(HTTP_BASIC_MATERIAL_TYPE).validate_usage(&header),
+                false,
+            ),
             (
                 "M4",
                 secret().validate_usage(&CredentialUsage::HttpBasicAuth),
@@ -1747,7 +1855,20 @@ mod tests {
             ),
             (
                 "M6",
-                oauth().validate_usage(&CredentialUsage::HttpBasicAuth),
+                typed("acme.ssh-key/v1").validate_usage(&CredentialUsage::Extension {
+                    consumer_id: "acme.ssh-agent/v1".into(),
+                    material_type: "acme.ssh-key/v1".into(),
+                    public_config: serde_json::json!({"identity_path":"/run/secrets/id"}),
+                }),
+                true,
+            ),
+            (
+                "M7",
+                typed("acme.ssh-key/v1").validate_usage(&CredentialUsage::Extension {
+                    consumer_id: "acme.ssh-agent/v1".into(),
+                    material_type: "acme.other/v1".into(),
+                    public_config: serde_json::Value::Null,
+                }),
                 false,
             ),
         ];
@@ -1761,13 +1882,85 @@ mod tests {
     /// the password as an API key or Bearer token.
     #[test]
     fn structured_credentials_cannot_be_downgraded_to_one_secret() {
-        let material = CredentialMaterial::UsernamePassword {
-            username: RedactedString::new("user"),
-            password: RedactedString::new("password"),
-        };
+        let material = CredentialMaterial::Structured(StructuredCredentialMaterial {
+            type_id: "acme.ssh-key/v1".into(),
+            fields: BTreeMap::from([("private_key".into(), RedactedString::new("pem"))]),
+        });
         assert_eq!(
             material.single_secret().unwrap_err(),
             CredentialMaterialError::MaterialKindMismatch
+        );
+    }
+
+    /// Cause-effect graph: an extension usage is executable only when the
+    /// installed capability names the exact consumer/material pair. Holder and
+    /// material-source capability alone must not authorize an unknown plugin.
+    ///
+    /// | Rule | consumer installed | material type installed | effect |
+    /// |---|---|---|---|
+    /// | X1 | yes | exact | admitted |
+    /// | X2 | yes | different | ExtensionConsumerUnsupported |
+    /// | X3 | no | - | ExtensionConsumerUnsupported |
+    #[test]
+    fn extension_admission_requires_exact_discovered_capability() {
+        let selected = holder(PlaintextBoundary::Worker, "worker-a");
+        let access = CredentialAccess::new(
+            CredentialRef {
+                id: "credential-1".into(),
+                revision: 7,
+            },
+            CredentialMaterialSource::ControlPlaneReference,
+            CredentialUsage::Extension {
+                consumer_id: "acme.ssh-agent/v1".into(),
+                material_type: "acme.ssh-key/v1".into(),
+                public_config: serde_json::Value::Null,
+            },
+            CredentialExecutionPolicy::exact(selected.clone(), ModelExposurePolicy::Forbidden),
+        );
+        let mut installed = capabilities(&selected);
+        installed.extension_consumers.insert(
+            "acme.ssh-agent/v1".into(),
+            BTreeSet::from(["acme.ssh-key/v1".into()]),
+        );
+        assert!(
+            access
+                .admit(
+                    &selected,
+                    CredentialRealizationKind::WorkerProviderAdapter,
+                    &installed,
+                    10,
+                )
+                .is_ok(),
+            "X1"
+        );
+        installed.extension_consumers.insert(
+            "acme.ssh-agent/v1".into(),
+            BTreeSet::from(["acme.other/v1".into()]),
+        );
+        assert_eq!(
+            access
+                .admit(
+                    &selected,
+                    CredentialRealizationKind::WorkerProviderAdapter,
+                    &installed,
+                    10,
+                )
+                .unwrap_err(),
+            CredentialAdmissionError::ExtensionConsumerUnsupported,
+            "X2"
+        );
+        installed.extension_consumers.clear();
+        assert_eq!(
+            access
+                .admit(
+                    &selected,
+                    CredentialRealizationKind::WorkerProviderAdapter,
+                    &installed,
+                    10,
+                )
+                .unwrap_err(),
+            CredentialAdmissionError::ExtensionConsumerUnsupported,
+            "X3"
         );
     }
 }

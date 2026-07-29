@@ -1476,10 +1476,39 @@ pub struct EnterCredentialRequest {
     /// are not accepted; environment discovery is exposed only as proposals.
     #[serde(default)]
     secret: Option<String>,
+    /// Structured material sealed as one versioned Vault document. Mutually
+    /// exclusive with the legacy `secret` field.
+    #[serde(default)]
+    material: Option<CredentialMaterialInput>,
     /// A server-owned OAuth refresh helper. This is an allowlisted identifier,
     /// never an operator-supplied command line.
     #[serde(default)]
     oauth_helper: Option<OAuthHelper>,
+}
+
+#[derive(serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+struct CredentialMaterialInput {
+    /// Namespaced, versioned type owned by the installed consumer extension,
+    /// for example `acme.ssh-key/v1`.
+    type_id: String,
+    /// Opaque named secret fields. Core stores and transports them but never
+    /// assign protocol meaning; the matching consumer owns validation.
+    fields: std::collections::BTreeMap<String, String>,
+}
+
+impl CredentialMaterialInput {
+    fn encode(self) -> Result<RedactedString, CredentialError> {
+        let material = awaken_credential_vault::StructuredCredentialMaterial {
+            type_id: self.type_id,
+            fields: self
+                .fields
+                .into_iter()
+                .map(|(name, value)| (name, RedactedString::new(value)))
+                .collect(),
+        };
+        material.encode()
+    }
 }
 
 /// Secret-free credential projection. Internal token-source argv and vault refs
@@ -1525,18 +1554,37 @@ async fn post_credential(
     headers: HeaderMap,
     Json(body): Json<EnterCredentialRequest>,
 ) -> Result<(StatusCode, Json<CredentialSourceView>), Problem> {
+    let rid = req_id(&headers);
+    let legacy_secret = body.secret.filter(|secret| !secret.is_empty());
+    let secret = match (legacy_secret, body.material) {
+        (Some(_), Some(_)) => {
+            return Err(cred_problem(
+                &CredentialError::InvalidSource(
+                    "secret and structured material are mutually exclusive".into(),
+                ),
+                &rid,
+            ));
+        }
+        (Some(secret), None) => Some(RedactedString::new(secret)),
+        (None, Some(material)) => Some(
+            material
+                .encode()
+                .map_err(|error| cred_problem(&error, &rid))?,
+        ),
+        (None, None) => None,
+    };
     let oauth_command = match (body.kind, body.oauth_helper) {
         (CredentialKind::Oauth, Some(helper)) => Some(helper.command()),
         (CredentialKind::Oauth, None) => {
             return Err(cred_problem(
                 &CredentialError::OAuth("oauth credentials require oauth_helper".into()),
-                &req_id(&headers),
+                &rid,
             ));
         }
         (_, Some(_)) => {
             return Err(cred_problem(
                 &CredentialError::OAuth("oauth_helper is only valid for oauth credentials".into()),
-                &req_id(&headers),
+                &rid,
             ));
         }
         (_, None) => None,
@@ -1546,15 +1594,12 @@ async fn post_credential(
         kind: body.kind,
         provider_id: body.provider_id,
         env_key: body.env_key,
-        secret: body
-            .secret
-            .filter(|secret| !secret.is_empty())
-            .map(RedactedString::new),
+        secret,
         oauth_command,
     };
     let source = enter_credential(params, &*state.secrets, &*state.credentials)
         .await
-        .map_err(|e| cred_problem(&e, &req_id(&headers)))?;
+        .map_err(|e| cred_problem(&e, &rid))?;
     Ok((StatusCode::CREATED, Json(source.into())))
 }
 

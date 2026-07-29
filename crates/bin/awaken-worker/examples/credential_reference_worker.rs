@@ -61,6 +61,7 @@ impl InferenceExecutorMaterializer for ReferenceMaterializer {
                 awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
             ]),
             recipient_bound_envelopes: false,
+            extension_consumers: Default::default(),
             alternatives: Vec::new(),
         }
     }
