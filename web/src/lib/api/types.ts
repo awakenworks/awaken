@@ -70,8 +70,6 @@ export interface Session {
   type: "session";
   agent: SessionAgent;
   usage?: SessionUsage;
-  /** Extension: the project ingress the session was created through. */
-  project_id?: string | null;
   environment_id?: string | null;
   created_at: string;
   updated_at: string;

@@ -33,8 +33,8 @@ function DraftCard({ id, wsId }: { id: string; wsId: string }) {
   const app = useApp();
   const nav = useNavigate();
   const cfg = useQuery({
-    queryKey: ["draft-card", id],
-    queryFn: () => api.get<AgentConfig>(`/v1/config/agents/${id}`),
+    queryKey: ["draft-card", wsId, id],
+    queryFn: () => api.get<AgentConfig>(ws(`/v1/config/agents/${id}`)),
     refetchInterval: 4000,
     retry: false,
   });
@@ -170,6 +170,18 @@ export function AssistantPanel({
           <Skeleton height={80} />
         ) : (
           <>
+            <div className="assistant-context">
+              <span className="readiness-icon ready">✓</span>
+              <span>
+                <strong>{app.t("Using existing Workspace configuration", "正在使用现有工作区配置")}</strong>
+                <small>
+                  {app.t(
+                    `${models.ready.length} runnable model choices are available. The Assistant selects from published, ready capabilities and never copies credentials.`,
+                    `已有 ${models.ready.length} 个可运行模型。助手只从已发布且就绪的能力中选择，绝不复制凭证。`,
+                  )}
+                </small>
+              </span>
+            </div>
             {targetAgentId && (
               <div className="row" style={{ gap: 6, marginBottom: 6 }}>
                 <span className="mut" style={{ fontSize: 12 }}>{app.t("Refining", "正在修改")}</span>

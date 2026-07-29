@@ -21,7 +21,7 @@ export interface Models {
 export function useModels(): Models {
   const workspace = useApp().workspaceId;
   const catalog = useQuery({
-    queryKey: ["catalog"],
+    queryKey: ["catalog", workspace],
     queryFn: () => api.get<ProviderCatalog>(ws("/v1/config/catalog")),
   });
   const credentials = useQuery({

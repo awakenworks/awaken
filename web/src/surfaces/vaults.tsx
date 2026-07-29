@@ -1,5 +1,6 @@
-// Project · Vaults: the single home for runtime/tool credentials (design/web-ui.md
-// §1, option B) — MCP OAuth (auto-refreshed), static bearer, and env-var secrets,
+// Workspace · Runtime secrets: tool/integration credentials only. Inference
+// credentials have one separate authority in the model supply domain.
+// MCP OAuth (auto-refreshed), static bearer, and env-var secrets,
 // self-managed on the managed wire and injected at egress (the sandbox never sees
 // them). Consumed via `vault_ids` at session create, matched to MCP servers by url.
 // Real list endpoints: GET /v1/vaults and GET /v1/vaults/:id/credentials.
@@ -9,7 +10,7 @@ import { useState } from "react";
 import { useConfirm } from "../components/ui/Confirm";
 import { useToast } from "../components/ui/Toast";
 import { Button, Card, Modal, Pill, TextAreaField } from "../components/ui";
-import { api } from "../lib/api/client";
+import { api, ws } from "../lib/api/client";
 import type { Page, Vault, VaultCredential } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 
@@ -42,7 +43,7 @@ function CredentialRow({ vaultId, cred }: { vaultId: string; cred: VaultCredenti
   const app = useApp();
   const validate = useMutation({
     mutationFn: () =>
-      api.post<{ status?: string }>(`/v1/vaults/${vaultId}/credentials/${cred.id}/mcp_oauth_validate`),
+      api.post<{ status?: string }>(ws(`/v1/vaults/${vaultId}/credentials/${cred.id}/mcp_oauth_validate`)),
   });
   const kind = cred.auth?.type ?? "?";
   const target = cred.auth?.mcp_server_url ?? cred.auth?.secret_name ?? "—";
@@ -80,20 +81,20 @@ function VaultCard({ id, name }: { id: string; name?: string }) {
   const toast = useToast();
   const creds = useQuery({
     queryKey: ["vault-credentials", id],
-    queryFn: () => api.get<Page<VaultCredential>>(`/v1/vaults/${id}/credentials`),
+    queryFn: () => api.get<Page<VaultCredential>>(ws(`/v1/vaults/${id}/credentials`)),
   });
   const [adding, setAdding] = useState(false);
   const [type, setType] = useState("static_bearer");
   const [body, setBody] = useState(CRED_TEMPLATES.static_bearer);
   const create = useMutation({
-    mutationFn: (payload: unknown) => api.post(`/v1/vaults/${id}/credentials`, payload),
+    mutationFn: (payload: unknown) => api.post(ws(`/v1/vaults/${id}/credentials`), payload),
     onSuccess: () => {
       setAdding(false);
       void qc.invalidateQueries({ queryKey: ["vault-credentials", id] });
     },
   });
   const del = useMutation({
-    mutationFn: () => api.del(`/v1/vaults/${id}`),
+    mutationFn: () => api.del(ws(`/v1/vaults/${id}`)),
     onSuccess: () => {
       toast.ok(app.t("Vault deleted.", "Vault 已删除。"));
       void qc.invalidateQueries({ queryKey: ["vaults"] });
@@ -183,16 +184,17 @@ function VaultCard({ id, name }: { id: string; name?: string }) {
 
 export default function VaultsSurface() {
   const app = useApp();
+  const workspace = app.workspaceId;
   const qc = useQueryClient();
   const [vaultName, setVaultName] = useState("runtime");
   const vaults = useQuery({
-    queryKey: ["vaults"],
-    queryFn: () => api.get<Page<Vault>>("/v1/vaults"),
+    queryKey: ["vaults", workspace],
+    queryFn: () => api.get<Page<Vault>>(ws("/v1/vaults")),
     refetchInterval: 30_000,
   });
   const create = useMutation({
-    mutationFn: () => api.post<Vault>("/v1/vaults", { display_name: vaultName || "vault" }),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["vaults"] }),
+    mutationFn: () => api.post<Vault>(ws("/v1/vaults"), { display_name: vaultName || "vault" }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["vaults", workspace] }),
   });
   const rows = (vaults.data?.data ?? []).filter((v) => !v.archived_at);
   return (

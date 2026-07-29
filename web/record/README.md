@@ -47,20 +47,31 @@ Recommended release order (see `VIDEO_STRATEGY.md` for the user-value map):
 1. `00-platform-overview` — the short promise and capability-contract proof.
 2. `01`–`06` — model supply, agent authoring, policy, resources/trace, AI
    authoring, and State Machine runtime enforcement.
-3. `07-runtime-sandbox` — Native/ACP portability plus a persisted sandbox policy.
-4. `08-agent-control-plane` — context, compaction, Memory prompts, reminders, and
-   completion constraints configured together.
-5. `09-protocol-composition` — Managed Agents sessions compose ACP, Vault, and
-   direct inline MCP without changing the Agent.
-6. `10-skill-optimized-agent` and `11-resource-provenance` — prove that a concise
+3. `10-skill-optimized-agent` and `11-resource-provenance` — prove that a concise
    request can inherit a Skill and that every delivered Memory/file/Skill remains
    inspectable in the Session.
-7. `12-deployment-control` through `14-session-control` — standing Deployment,
+4. `12-deployment-control` through `14-session-control` — standing Deployment,
    direct Managed Agents API ingress, and an enforced Session archive boundary.
-8. `15-a2a-discovery` and `16-access-boundary` — remote Agent Card discovery and
+5. `15-a2a-discovery` and `16-access-boundary` — remote Agent Card discovery and
    scoped-token issue/use/revoke proof.
-9. `17`–`19` — frontend protocol continuity, MCP server export, and a real Codex
+6. `17`–`19` — frontend protocol continuity, MCP server export, and a real Codex
    ACP Agent run whose complete reply returns to the Managed Session transcript.
+
+There are intentionally no standalone `08` or `09` release videos. Both ended
+at configuration or metadata rather than an executed user effect. Behavior is
+proven by the Memory and State Machine runtime stories; protocol composition is
+proven by the MCP runtime and real Codex ACP stories.
+
+Provider API credentials and ACP CLI credentials remain separate:
+
+- Models are connected once on **Providers & models**. Verification stores or
+  reuses one credential and imports the catalog for Agent pickers and Assistant.
+  There is no Workspace-default model step.
+- Claude Code does not run an OAuth login inside ACP. Add its write-only
+  `claude setup-token` from **Inference credentials**; it is materialized only
+  for `acp:claude`.
+- Codex ACP uses its native operator-selected `auth.json`; it is not a Provider
+  API key and does not make catalog models ready.
 
 Release gates are intentionally strict:
 

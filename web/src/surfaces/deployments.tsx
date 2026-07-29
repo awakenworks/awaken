@@ -1,4 +1,4 @@
-// Project · Deployments: schedule an agent to run on a cron
+// Workspace · Deployments: schedule an Agent to run on a cron
 // (Managed Agents `/v1/deployments`). Each firing creates a session from the
 // deployment's initial_events, running the agent in its environment.
 
@@ -6,12 +6,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link, useParams } from "react-router";
 import { Button, Card, Modal, Pill, SelectField, TextAreaField, TextField } from "../components/ui";
-import { api } from "../lib/api/client";
+import { api, ws } from "../lib/api/client";
 import type { AgentConfigList, Deployment, DeploymentRun, Environment, Page } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 
 function CreateModal({ onClose }: { onClose: () => void }) {
   const app = useApp();
+  const workspace = app.workspaceId;
   const qc = useQueryClient();
   const [name, setName] = useState("");
   const [agentId, setAgentId] = useState("");
@@ -23,17 +24,17 @@ function CreateModal({ onClose }: { onClose: () => void }) {
   // Published config agents are the deployable set — the same source the console
   // authors against (/v1/config/agents), not the managed registry projection.
   const agents = useQuery({
-    queryKey: ["config-agents"],
-    queryFn: () => api.get<AgentConfigList>("/v1/config/agents"),
+    queryKey: ["config-agents", workspace],
+    queryFn: () => api.get<AgentConfigList>(ws("/v1/config/agents")),
   });
   const envs = useQuery({
-    queryKey: ["environments"],
-    queryFn: () => api.get<Page<Environment>>("/v1/environments"),
+    queryKey: ["environments", workspace],
+    queryFn: () => api.get<Page<Environment>>(ws("/v1/environments")),
   });
 
   const create = useMutation({
     mutationFn: () =>
-      api.post<Deployment>("/v1/deployments", {
+      api.post<Deployment>(ws("/v1/deployments"), {
         name: name || "deployment",
         agent: agentId,
         environment_id: envId,
@@ -41,7 +42,7 @@ function CreateModal({ onClose }: { onClose: () => void }) {
         initial_events: [{ type: "user.message", content: [{ type: "text", text: message }] }],
       }),
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["deployments"] });
+      void qc.invalidateQueries({ queryKey: ["deployments", workspace] });
       onClose();
     },
   });
@@ -105,21 +106,21 @@ function CreateModal({ onClose }: { onClose: () => void }) {
 
 export default function DeploymentsSurface() {
   const app = useApp();
-  const { ws = "default" } = useParams();
+  const { ws: wsId = "default" } = useParams();
   const qc = useQueryClient();
   const [creating, setCreating] = useState(false);
   const [lastRun, setLastRun] = useState<DeploymentRun | null>(null);
   const deployments = useQuery({
-    queryKey: ["deployments"],
-    queryFn: () => api.get<Page<Deployment>>("/v1/deployments"),
+    queryKey: ["deployments", wsId],
+    queryFn: () => api.get<Page<Deployment>>(ws("/v1/deployments")),
     refetchInterval: 30_000,
   });
   const act = useMutation({
     mutationFn: ({ id, action }: { id: string; action: string }) =>
-      api.post<Deployment | DeploymentRun>(`/v1/deployments/${id}/${action}`),
+      api.post<Deployment | DeploymentRun>(ws(`/v1/deployments/${id}/${action}`)),
     onSuccess: (result, variables) => {
       if (variables.action === "run") setLastRun(result as DeploymentRun);
-      void qc.invalidateQueries({ queryKey: ["deployments"] });
+      void qc.invalidateQueries({ queryKey: ["deployments", wsId] });
     },
   });
   const rows = deployments.data?.data ?? [];
@@ -145,7 +146,7 @@ export default function DeploymentsSurface() {
             {app.t("Deployment run created", "Deployment run 已创建")} · <code>{lastRun.id}</code>
             {lastRun.session_id ? <>
               {" · session "}
-              <Link to={`/w/${ws}/sessions/${lastRun.session_id}`}><code>{lastRun.session_id}</code></Link>
+              <Link to={`/w/${wsId}/sessions/${lastRun.session_id}`}><code>{lastRun.session_id}</code></Link>
             </> : null}
             {lastRun.error ? <span className="err"> · {lastRun.error.message ?? lastRun.error.type}</span> : null}
           </span>

@@ -399,7 +399,7 @@ function JsonObjectField<T extends Record<string, unknown>>({
 }
 
 function Labeled({ label, children }: { label: string; children: ReactNode }) {
-  return <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 10, color: "var(--fg3)" }}>{label}{children}</label>;
+  return <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 12, color: "var(--fg2)" }}>{label}{children}</label>;
 }
 
 function compactUpdate(update: SmTransition["update"]): SmTransition["update"] {

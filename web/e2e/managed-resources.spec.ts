@@ -75,7 +75,7 @@ test("Agent Resources: bind a memory store to an agent and persist it", async ({
   const path = `/mnt/${store}`;
   await page.getByPlaceholder("/mnt/…").fill(path);
   await page.getByRole("button", { name: /Save resources/ }).click();
-  await expect(page.locator(".toast").filter({ hasText: /Resources saved|资源已保存/ })).toBeVisible();
+  await expect(page.locator(".ui-toast").filter({ hasText: /Resources saved|资源已保存/ })).toBeVisible();
 
   // Reload → the binding rehydrates from the stored resource config.
   await page.reload();
@@ -99,7 +99,7 @@ test("Agent Resources: attach a file to an agent and persist it", async ({ page,
   await (await chooser).setFiles({ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("the port is 8080") });
   await expect(page.getByRole("button", { name: "notes.txt" })).toBeVisible(); // filename shown after upload
   await page.getByRole("button", { name: /Save resources/ }).click();
-  await expect(page.locator(".toast").filter({ hasText: /Resources saved|资源已保存/ })).toBeVisible();
+  await expect(page.locator(".ui-toast").filter({ hasText: /Resources saved|资源已保存/ })).toBeVisible();
 
   // Reload → the file binding rehydrates (label is client-only; the mount path persists).
   await page.reload();
@@ -117,7 +117,7 @@ test("Agent Resources: connect a GitHub repo to an agent and persist it", async 
   await page.getByRole("button", { name: /connect a repo/ }).click();
   await page.getByPlaceholder("https://github.com/owner/repo.git").fill(url);
   await page.getByRole("button", { name: /Save resources/ }).click();
-  await expect(page.locator(".toast").filter({ hasText: /Resources saved|资源已保存/ })).toBeVisible();
+  await expect(page.locator(".ui-toast").filter({ hasText: /Resources saved|资源已保存/ })).toBeVisible();
 
   await page.reload();
   await page.getByRole("tab", { name: "Resources" }).click();
@@ -139,7 +139,7 @@ test("Agent Resources: add a skill to an agent and persist it", async ({ page, r
   // A skill row: [kind][skill][mount][access] — pick the seeded skill (2nd select).
   await page.locator("select").nth(1).selectOption({ index: 0 });
   await page.getByRole("button", { name: /Save resources/ }).click();
-  await expect(page.locator(".toast").filter({ hasText: /Resources saved|资源已保存/ })).toBeVisible();
+  await expect(page.locator(".ui-toast").filter({ hasText: /Resources saved|资源已保存/ })).toBeVisible();
 
   await page.reload();
   await page.getByRole("tab", { name: "Resources" }).click();
@@ -158,7 +158,7 @@ test("Tool presentation: alias a tool in the editor and persist it", async ({ pa
   await page.getByPlaceholder("rename").fill("open_file");
   await page.getByPlaceholder("override description").fill("Read a file.");
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(page.locator(".toast").filter({ hasText: /Saved|已保存/ })).toBeVisible();
+  await expect(page.locator(".ui-toast").filter({ hasText: /Saved|已保存/ })).toBeVisible();
 
   // Reload → the override rehydrates from the stored config.
   await page.reload();

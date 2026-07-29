@@ -77,16 +77,20 @@ test("Agent configuration exposes every controllable capability by user intent",
   await expect(page.getByText(/Save the agent first, then bind resources/)).toBeVisible();
 
   await page.getByRole("button", { name: /Try it/ }).click();
-  await expect(page.getByText(/Publish to test in the Sandbox/)).toBeVisible();
+  await expect(page.getByText(/Publish to test in Live Preview/)).toBeVisible();
 });
 
+// Cause/effect inventory: each authoritative aggregate exposes exactly one primary
+// creation/setup entry and its complete pre-commit form. Provider setup owns model
+// connection; inference credentials owns Claude setup-token; no MCP catalog parallel
+// path is expected.
 test("Primary create flows disclose their required configuration before commit", async ({ page }) => {
   const flows = [
     { path: "/w/default/environments", button: /New environment/, heading: /New environment/ },
     { path: "/w/default/memory", button: /New memory store/, heading: /New memory store/ },
     { path: "/w/default/sessions", button: /New session/, heading: /New session/ },
     { path: "/w/default/deployments", button: /New deployment/, heading: /New deployment/ },
-    { path: "/w/default/credentials", button: /Enter credential/, heading: /Enter credential/ },
+    { path: "/w/default/credentials", button: /Claude Code setup token/, heading: /Add Claude Code setup token/ },
   ];
   for (const flow of flows) {
     await page.goto(flow.path);
@@ -97,9 +101,7 @@ test("Primary create flows disclose their required configuration before commit",
   }
 
   await page.goto("/w/default/models");
-  await expect(page.getByRole("heading", { name: /Author provider/ })).toBeVisible();
-  await page.goto("/w/default/mcp-servers");
-  await expect(page.getByRole("heading", { name: /Author MCP server/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Provider connections/ })).toBeVisible();
   await page.goto("/w/default/access");
   const mint = page.getByRole("heading", { name: /Mint token/ });
   const gate = page.getByText(/embedded IAM|嵌入式 IAM/).first();

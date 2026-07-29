@@ -67,11 +67,11 @@ test("Sandbox answers for real via config-plane credential (no env)", async ({ p
   await page.locator("select").first().selectOption("gemini-2.5-flash");
   await page.locator("textarea").first().fill("You are a terse assistant. Answer in one short sentence.");
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(page.locator(".toast").filter({ hasText: /Saved|已保存/ })).toBeVisible();
+  await expect(page.locator(".ui-toast").filter({ hasText: /Saved|已保存/ })).toBeVisible();
   await expect(page).toHaveURL(new RegExp(`/agents/${id}$`));
   await page.getByRole("button", { name: /Publish/ }).click();
   await page.locator(".modal").getByRole("button", { name: /Publish/ }).click(); // confirm in the diff modal
-  await expect(page.locator(".toast").filter({ hasText: /Published|已发布/ })).toBeVisible();
+  await expect(page.locator(".ui-toast").filter({ hasText: /Published|已发布/ })).toBeVisible();
 
   // Sandbox: the runtime resolves the model to a REAL Gemini executor from the
   // configured credential (no env), and a real reply lands on screen.
@@ -125,7 +125,7 @@ test("Agent reads/writes its bound memory store across sessions (real model)", a
   await page.getByRole("button", { name: /bind a store/ }).click();
   await page.locator("select").nth(1).selectOption({ label: store.name }); // 0=kind, 1=store
   await page.getByRole("button", { name: /Save resources/ }).click();
-  await expect(page.locator(".toast").filter({ hasText: /Resources saved|资源已保存/ })).toBeVisible();
+  await expect(page.locator(".ui-toast").filter({ hasText: /Resources saved|资源已保存/ })).toBeVisible();
   await request.post(`/v1/config/agents/${agent}/publish`);
 
   // Session 1: the agent writes the secret into its bound memory.
