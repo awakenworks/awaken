@@ -14,7 +14,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::repo::{CredentialMutationIntent, CredentialRepo};
 use crate::schema::credential_bundle;
@@ -275,7 +275,15 @@ impl CredentialRepo for SqliteCredentialRepo {
     ) -> Result<(), CredentialError> {
         let intent = intent.clone();
         with_conn(&self.conn, move |conn, p| {
-            let tx = conn.transaction().map_err(storage)?;
+            // This mutation reads its durable intent/current revision before it
+            // writes. In WAL mode a deferred transaction cannot upgrade an old
+            // read snapshot after a sibling adapter commits; SQLite returns BUSY
+            // immediately instead of honoring the configured busy timeout. Take
+            // the write reservation up front so bounded sibling contention waits
+            // at transaction start and the read-to-write snapshot stays valid.
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(storage)?;
             let intent_data: Option<String> = tx
                 .query_row(
                     &format!("SELECT data FROM {p}_creation_intent WHERE source_id = ?1"),
@@ -588,6 +596,7 @@ mod tests {
         // | R2 | metadata | short-lived | waits, then writes without leaking SQLITE_BUSY |
         // | R3 | sealed blob | short-lived | waits, then writes without leaking SQLITE_BUSY |
         // | R4 | metadata read | long-lived | WAL snapshot reads without waiting for the writer |
+        // | R5 | mutation read-to-write | short-lived | reserves the writer first, waits, then commits without SQLITE_BUSY |
         // A lock held longer than the bounded timeout still fails closed; this test
         // covers the transient write contention and concurrent provisioning reads
         // produced by sibling adapters in one host.
@@ -618,6 +627,43 @@ mod tests {
             }
             blocker.join().unwrap();
         }
+
+        let mut contended = source("cred:mutation-contended");
+        contended.provider_id = Some("provider-before".into());
+        repo.put(contended.clone()).await.unwrap();
+        let mut updated = contended.clone();
+        updated.provider_id = Some("provider-after".into());
+        updated.version += 1;
+        let intent = CredentialMutationIntent {
+            before: Some(contended),
+            after: updated.clone(),
+        };
+        repo.begin_mutation(intent.clone()).await.unwrap();
+        let blocker_path = path.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let blocker = std::thread::spawn(move || {
+            let connection = Connection::open(blocker_path).unwrap();
+            connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+            connection
+                .execute(
+                    "INSERT INTO credential_secret (secret_ref, sealed) VALUES (?1, ?2)",
+                    params!["sec:mutation-writer", b"sealed"],
+                )
+                .unwrap();
+            ready_tx.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+            connection.execute_batch("COMMIT").unwrap();
+        });
+        ready_rx.recv().unwrap();
+        repo.apply_mutation(&intent).await.unwrap();
+        blocker.join().unwrap();
+        assert_eq!(
+            repo.get(&CredentialSourceId("cred:mutation-contended".into()))
+                .await
+                .unwrap(),
+            updated,
+            "R5"
+        );
 
         repo.put(source("cred:read-during-write")).await.unwrap();
         let blocker_path = path.clone();
