@@ -12,12 +12,19 @@ pub fn clone_repo_bundle(
     url: &str,
     initial_branch: Option<&str>,
     initial_commit: Option<&str>,
-    token: Option<&str>,
+    credential: Option<&pc::RepositoryHttpBasicCredential>,
 ) -> Result<Vec<u8>, pc::SandboxError> {
     let temp = tempfile::tempdir().map_err(|error| pc::SandboxError::new(error.to_string()))?;
     let root = IsolatedRoot::new(temp.path());
-    provision_repo_at(&root, "repo", url, initial_branch, initial_commit, token)
-        .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+    provision_repo_at(
+        &root,
+        "repo",
+        url,
+        initial_branch,
+        initial_commit,
+        credential,
+    )
+    .map_err(|error| pc::SandboxError::new(error.to_string()))?;
     git_bytes(
         Some(&temp.path().join("repo")),
         &["bundle", "create", "-", "--all"],
@@ -30,7 +37,7 @@ pub fn clone_repo_bundle(
 pub fn push_repo_bundle(
     bundle: &[u8],
     remote_url: &str,
-    token: Option<&str>,
+    credential: Option<&pc::RepositoryHttpBasicCredential>,
 ) -> Result<bool, pc::SandboxError> {
     let temp = tempfile::tempdir().map_err(|error| pc::SandboxError::new(error.to_string()))?;
     let bundle_path = temp.path().join("repo.bundle");
@@ -46,7 +53,7 @@ pub fn push_repo_bundle(
     run_git(Some(&repo), &["remote", "set-url", "origin", remote_url])
         .map_err(|error| pc::SandboxError::new(error.to_string()))?;
     let root = IsolatedRoot::new(temp.path());
-    push_repo_to_at(&root, "repo", remote_url, token)
+    push_repo_to_at(&root, "repo", remote_url, credential)
         .map_err(|error| pc::SandboxError::new(error.to_string()))
 }
 

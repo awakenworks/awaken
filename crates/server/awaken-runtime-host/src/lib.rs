@@ -467,6 +467,26 @@ fn resolved_resource_prompt(input: &awaken_protocol_managed::ResolvedInput) -> S
     }
 }
 
+fn repository_http_basic_credential(
+    material: awaken_runtime_contract::CredentialMaterial,
+) -> Result<awaken_provisioning_contract::RepositoryHttpBasicCredential, &'static str> {
+    let awaken_runtime_contract::CredentialMaterial::Structured(mut material) = material else {
+        return Err("HTTP Basic requires structured credential material");
+    };
+    if material.type_id != awaken_runtime_contract::credential::HTTP_BASIC_MATERIAL_TYPE {
+        return Err("HTTP Basic credential material has the wrong type");
+    }
+    let username = material
+        .fields
+        .remove("username")
+        .ok_or("HTTP Basic credential material has no username")?;
+    let password = material
+        .fields
+        .remove("password")
+        .ok_or("HTTP Basic credential material has no password")?;
+    Ok(awaken_provisioning_contract::RepositoryHttpBasicCredential::new(username, password))
+}
+
 impl ManagedHost {
     pub fn new(host: Arc<SharedHost>) -> Self {
         let managed = Self {
@@ -648,29 +668,26 @@ impl ManagedHost {
                                 "repository credential requires a configured credential vault",
                             )
                         })?;
-                        Some(
-                            credentials
-                                .resolve_for_workspace(
-                                    &pin.access,
-                                    &pin.selected_plaintext_holder,
-                                    awaken_runtime_contract::CredentialRealizationKind::WorkerRelay,
-                                    workspace,
-                                    &(repository_id, config.version),
-                                )
-                                .await
-                                .map_err(|error| {
-                                    RunError::bad_request(format!(
-                                        "repository `{repository_id}` credential: {error}"
-                                    ))
-                                })?
-                                .material
-                                .into_secret()
-                                .map_err(|error| {
-                                    RunError::bad_request(format!(
-                                        "repository `{repository_id}` credential: {error}"
-                                    ))
-                                })?,
-                        )
+                        let material = credentials
+                            .resolve_for_workspace(
+                                &pin.access,
+                                &pin.selected_plaintext_holder,
+                                awaken_runtime_contract::CredentialRealizationKind::WorkerRelay,
+                                workspace,
+                                &(repository_id, config.version),
+                            )
+                            .await
+                            .map_err(|error| {
+                                RunError::bad_request(format!(
+                                    "repository `{repository_id}` credential: {error}"
+                                ))
+                            })?
+                            .material;
+                        Some(repository_http_basic_credential(material).map_err(|error| {
+                            RunError::bad_request(format!(
+                                "repository `{repository_id}` credential: {error}"
+                            ))
+                        })?)
                     }
                     (None, None) => None,
                     (Some(_), None) => {
@@ -1322,10 +1339,7 @@ impl SessionRuntime for ManagedHost {
                     awaken_provisioning_contract::RepositoryRealizer::realize_repository(
                         environment.as_ref(),
                         &repository.plan,
-                        repository
-                            .credential
-                            .as_ref()
-                            .map(|credential| credential.expose_secret()),
+                        repository.credential.as_ref(),
                     )
                     .await
                     .map_err(|error| RunError::internal(error.to_string()))?;

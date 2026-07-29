@@ -800,7 +800,7 @@ impl NamespaceSandbox {
         url: &str,
         initial_branch: Option<&str>,
         initial_commit: Option<&str>,
-        token: Option<&str>,
+        credential: Option<&pc::RepositoryHttpBasicCredential>,
     ) -> Result<(), pc::SandboxError> {
         provision_repo_at(
             &self.workspace_root(),
@@ -808,13 +808,22 @@ impl NamespaceSandbox {
             url,
             initial_branch,
             initial_commit,
-            token,
+            credential,
         )
         .map_err(err)
     }
 
-    pub fn push_repo(&self, logical: &str, token: Option<&str>) -> Result<bool, pc::SandboxError> {
-        push_repo_at(&self.workspace_root(), workspace_relative(logical), token).map_err(err)
+    pub fn push_repo(
+        &self,
+        logical: &str,
+        credential: Option<&pc::RepositoryHttpBasicCredential>,
+    ) -> Result<bool, pc::SandboxError> {
+        push_repo_at(
+            &self.workspace_root(),
+            workspace_relative(logical),
+            credential,
+        )
+        .map_err(err)
     }
 
     pub fn list_files(&self, subdir: &str) -> Vec<(String, Vec<u8>)> {

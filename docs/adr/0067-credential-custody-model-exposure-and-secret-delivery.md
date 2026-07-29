@@ -233,14 +233,17 @@ cannot be washed into an apparently valid unsealed Control reference before
 admission. Every later claim and execution boundary continues to reject it.
 
 `CredentialUsage` remains authoritative for `ProviderAdapter`, HTTP header/query,
-client certificate, environment variable, and file semantics. MCP, Model, and
-Resource adapters must not invent protocol-specific credential-usage fields.
+typed HTTP Basic, client certificate, environment variable, and file semantics.
+MCP, Model, and Resource adapters must not invent protocol-specific
+credential-usage fields.
 
 A Repository configuration remains authoritative for its Vault source binding.
 Before the resolved input enters the Session aggregate, the Session application
 compiles that binding into one `ResolvedRepositoryCredential`: exact
-`CredentialAccess`, canonical HTTP transport usage, `Forbidden` model exposure,
-and the Environment profile's exact `resource_holder`. Runtime receives this pin
+`CredentialAccess`, canonical `HttpBasicAuth` usage, `Forbidden` model exposure,
+and the Environment profile's exact `resource_holder`. The Vault material is the
+typed `awaken.http-basic/v1` document with `username` and `password` fields.
+Runtime receives this pin
 instead of a bare source id. It validates the binding, revision, usage, policy,
 and holder before using the same `CredentialMaterialResolver` as Model and MCP.
 This reuses credential execution mechanics without turning Repository into an
@@ -605,7 +608,9 @@ join `SessionMcpAttachmentSet` and does not create a common Service authority.
    Repository, source/usage/holder mismatch, or stale source revision before a
    Git side effect. It admits `WorkerRelay` and calls the common exact material
    resolver; there is no Runtime API that opens a bare Vault source id.
-4. The Worker-held material is used only by the host-mediated Git transport.
+4. The Worker translates the admitted typed document once into the
+   non-serializable `RepositoryHttpBasicCredential` accepted by the Repository
+   realizer. The material is used only by the host-mediated Git transport.
    The persisted Session manifest, prompts, events, and sandbox-origin metadata
    remain secret-free. Replacing the Repository binding creates and commits a
    new config version and exact pin; it never mutates the old pin in place.

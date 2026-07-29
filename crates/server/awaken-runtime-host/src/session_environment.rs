@@ -313,7 +313,7 @@ impl pc::RepositoryRealizer for SessionEnvironment {
     async fn realize_repository(
         &self,
         plan: &pc::RepositoryRealizationPlan,
-        credential: Option<&str>,
+        credential: Option<&pc::RepositoryHttpBasicCredential>,
     ) -> Result<(), pc::SandboxError> {
         match self {
             Self::Workdir(sandbox) => {
@@ -343,7 +343,7 @@ impl pc::RepositoryRealizer for SessionEnvironment {
     async fn publish_repository(
         &self,
         plan: &pc::RepositoryRealizationPlan,
-        credential: Option<&str>,
+        credential: Option<&pc::RepositoryHttpBasicCredential>,
     ) -> Result<bool, pc::SandboxError> {
         match self {
             Self::Workdir(sandbox) => {
