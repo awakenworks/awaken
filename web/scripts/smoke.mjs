@@ -90,6 +90,7 @@ const reusableCredential = existingCredentials.find(
     source.env_key !== "CLAUDE_CODE_OAUTH_TOKEN",
 );
 const connection = await step("verify and save provider connection", "POST", "/v1/config/provider-connections", {
+  idempotency_key: "smoke-anthropic",
   workspace_id: "wrkspc_default",
   provider_id: "anthropic",
   display_name: "Anthropic",

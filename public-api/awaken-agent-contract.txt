@@ -18,6 +18,7 @@ pub struct awaken_agent_contract::agent::awaiting::ResumeTicket
 pub awaken_agent_contract::agent::awaiting::ResumeTicket::call_id: core::option::Option<alloc::string::String>
 pub awaken_agent_contract::agent::awaiting::ResumeTicket::catalog_fingerprint: alloc::string::String
 pub awaken_agent_contract::agent::awaiting::ResumeTicket::correlation_id: alloc::string::String
+pub awaken_agent_contract::agent::awaiting::ResumeTicket::data_subject_id: core::option::Option<alloc::string::String>
 pub awaken_agent_contract::agent::awaiting::ResumeTicket::deadline_ms: core::option::Option<u64>
 pub awaken_agent_contract::agent::awaiting::ResumeTicket::delegation_origin: core::option::Option<awaken_agent_contract::agent::delegation::DelegationOrigin>
 pub awaken_agent_contract::agent::awaiting::ResumeTicket::pending_tool: core::option::Option<awaken_agent_contract::agent::awaiting::PendingTool>
@@ -497,6 +498,9 @@ impl core::fmt::Display for awaken_agent_contract::secret::RedactedString
 pub fn awaken_agent_contract::secret::RedactedString::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::ops::drop::Drop for awaken_agent_contract::secret::RedactedString
 pub fn awaken_agent_contract::secret::RedactedString::drop(&mut self)
+pub struct awaken_agent_contract::secret::StructuredCredentialMaterial
+pub awaken_agent_contract::secret::StructuredCredentialMaterial::fields: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_agent_contract::secret::RedactedString>
+pub awaken_agent_contract::secret::StructuredCredentialMaterial::type_id: alloc::string::String
 pub mod awaken_agent_contract::stream
 pub mod awaken_agent_contract::stream::checkpoint
 pub struct awaken_agent_contract::stream::checkpoint::PartialToolCall
@@ -879,6 +883,9 @@ pub struct awaken_agent_contract::StateKey(pub alloc::string::String)
 pub struct awaken_agent_contract::StreamEvent
 pub awaken_agent_contract::StreamEvent::kind: awaken_agent_contract::event::agent::AgentEvent
 pub awaken_agent_contract::StreamEvent::run_id: awaken_agent_contract::agent::run::Id
+pub struct awaken_agent_contract::StructuredCredentialMaterial
+pub awaken_agent_contract::StructuredCredentialMaterial::fields: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_agent_contract::secret::RedactedString>
+pub awaken_agent_contract::StructuredCredentialMaterial::type_id: alloc::string::String
 pub struct awaken_agent_contract::ThreadCommit
 pub awaken_agent_contract::ThreadCommit::events: alloc::vec::Vec<awaken_agent_contract::audit::draft::Draft>
 pub awaken_agent_contract::ThreadCommit::messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>

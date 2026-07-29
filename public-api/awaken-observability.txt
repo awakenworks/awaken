@@ -1,4 +1,7 @@
 pub mod awaken_observability
+pub enum awaken_observability::LogFormat
+pub awaken_observability::LogFormat::Json
+pub awaken_observability::LogFormat::Text
 pub enum awaken_observability::OtelProtocol
 pub awaken_observability::OtelProtocol::Grpc
 pub awaken_observability::OtelProtocol::HttpJson
@@ -6,9 +9,17 @@ pub awaken_observability::OtelProtocol::HttpProtobuf
 impl core::str::traits::FromStr for awaken_observability::OtelProtocol
 pub type awaken_observability::OtelProtocol::Err = core::convert::Infallible
 pub fn awaken_observability::OtelProtocol::from_str(&str) -> core::result::Result<Self, Self::Err>
+pub struct awaken_observability::ObservabilityConfig
+pub awaken_observability::ObservabilityConfig::filter: alloc::string::String
+pub awaken_observability::ObservabilityConfig::log_format: awaken_observability::LogFormat
+pub awaken_observability::ObservabilityConfig::otel: awaken_observability::OtelConfig
+pub awaken_observability::ObservabilityConfig::trace_file: core::option::Option<std::path::PathBuf>
+impl core::default::Default for awaken_observability::ObservabilityConfig
+pub fn awaken_observability::ObservabilityConfig::default() -> Self
 pub struct awaken_observability::OtelConfig
 pub awaken_observability::OtelConfig::endpoint: core::option::Option<alloc::string::String>
 pub awaken_observability::OtelConfig::headers: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub awaken_observability::OtelConfig::metric_export_interval: core::time::Duration
 pub awaken_observability::OtelConfig::protocol: awaken_observability::OtelProtocol
 pub awaken_observability::OtelConfig::service_name: core::option::Option<alloc::string::String>
 pub awaken_observability::OtelConfig::service_version: core::option::Option<alloc::string::String>
@@ -19,7 +30,6 @@ impl awaken_observability::OtelConfig
 pub fn awaken_observability::OtelConfig::builder() -> awaken_observability::OtelConfigBuilder
 pub fn awaken_observability::OtelConfig::effective_traces_endpoint(&self) -> core::option::Option<&str>
 pub fn awaken_observability::OtelConfig::effective_traces_protocol(&self) -> &awaken_observability::OtelProtocol
-pub fn awaken_observability::OtelConfig::from_env() -> Self
 pub fn awaken_observability::OtelConfig::is_configured(&self) -> bool
 impl core::default::Default for awaken_observability::OtelConfig
 pub fn awaken_observability::OtelConfig::default() -> Self
@@ -49,7 +59,7 @@ impl core::default::Default for awaken_observability::OtelMetricsRecorder
 pub fn awaken_observability::OtelMetricsRecorder::default() -> Self
 pub fn awaken_observability::current_traceparent() -> core::option::Option<alloc::string::String>
 pub fn awaken_observability::dispatch_span(core::option::Option<&str>) -> tracing::span::Span
-pub fn awaken_observability::init()
+pub fn awaken_observability::init(&awaken_observability::ObservabilityConfig)
 pub fn awaken_observability::init_meters(&awaken_observability::OtelConfig) -> core::result::Result<opentelemetry_sdk::metrics::meter_provider::SdkMeterProvider, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
 pub fn awaken_observability::init_otlp_tracer(&awaken_observability::OtelConfig) -> core::result::Result<(opentelemetry_sdk::trace::provider::SdkTracerProvider, opentelemetry_sdk::trace::tracer::SdkTracer), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
 pub fn awaken_observability::render_prometheus() -> alloc::string::String
