@@ -1407,7 +1407,7 @@ async fn management_router_over(
             credentials: credentials.clone(),
             workspace: platform_workspace.clone(),
         }),
-        org_id: Some(org_id),
+        org_id: Some(org_id.clone()),
         iam,
         remote_iam,
         local_browser_auth,
@@ -1415,7 +1415,13 @@ async fn management_router_over(
     });
 
     if management_only {
-        return management_surface::finish(mgmt, mcp_export, reconciler, platform_workspace);
+        return management_surface::finish(
+            mgmt,
+            mcp_export,
+            reconciler,
+            platform_workspace,
+            org_id,
+        );
     }
 
     // The data plane: the host runs the server model, resolves a session's agent to
@@ -1587,7 +1593,7 @@ async fn management_router_over(
         ));
     }
     let flat = data.merge(mgmt);
-    management_surface::finish(flat, mcp_export, reconciler, platform_workspace)
+    management_surface::finish(flat, mcp_export, reconciler, platform_workspace, org_id)
 }
 
 /// Resolve the hidden local Org from one composition-root seam. Self-managed

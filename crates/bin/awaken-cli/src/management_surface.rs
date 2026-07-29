@@ -10,8 +10,16 @@ pub(crate) fn finish(
     mcp_export: Router,
     reconciler: Arc<dyn awaken_runtime_host::PublicationBindingReconciler>,
     platform_workspace: String,
+    organization_id: String,
 ) -> Router {
     flat = flat.merge(mcp_export);
+    // One composition serves one resolved Organization. Install one shared
+    // limiter before workspace-path dispatch so flat and rewritten Workspace
+    // routes draw from the same organization buckets.
+    flat = flat.layer(axum::middleware::from_fn_with_state(
+        Arc::new(awaken_protocol_managed::ManagedRateLimiter::for_organization(organization_id)),
+        awaken_protocol_managed::enforce_managed_rate_limit,
+    ));
     let worker_observation_gate =
         Arc::new(crate::observation_reconcile::WorkerObservationReconcileGate::default());
     let reconcile_on_authority_change = axum::middleware::from_fn(
@@ -92,6 +100,7 @@ mod tests {
             Router::new(),
             reconciler.clone(),
             "platform".into(),
+            "org_test".into(),
         );
         for (rule, path) in [("H1", "/v1/worker/heartbeat"), ("H2", "/unrelated")] {
             let response = app
@@ -103,5 +112,45 @@ mod tests {
         }
         assert_eq!(reconciler.all.load(Ordering::SeqCst), 1, "H1+H2");
         assert_eq!(reconciler.fixed.load(Ordering::SeqCst), 0, "H2");
+    }
+
+    #[tokio::test]
+    async fn flat_and_workspace_paths_share_one_organization_create_bucket() {
+        // Organization/Workspace cause graph:
+        // O1 flat Managed create and O2 workspace-addressed Managed create both
+        // enter the same post-rewrite flat router; Organization is fixed by the
+        // composition, while Workspace is only a resource scope. Therefore the
+        // first 300 mixed creates are admitted and O3 create 301 is one 429 — no
+        // per-Workspace bucket and no double charge during the rewrite.
+        let app = finish(
+            Router::new().route("/v1/sessions", post(|| async { StatusCode::OK })),
+            Router::new(),
+            Arc::new(RecordingReconciler::default()),
+            "platform".into(),
+            "org_shared".into(),
+        );
+        for ordinal in 0..300 {
+            let path = if ordinal % 2 == 0 {
+                "/v1/sessions"
+            } else {
+                "/v1/workspaces/workspace_b/sessions"
+            };
+            let response = app
+                .clone()
+                .oneshot(Request::post(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "O1/O2 #{ordinal}");
+        }
+        let rejected = app
+            .oneshot(
+                Request::post("/v1/workspaces/workspace_c/sessions")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), StatusCode::TOO_MANY_REQUESTS, "O3");
+        assert!(rejected.headers().contains_key("retry-after"), "O3");
     }
 }
