@@ -9,9 +9,39 @@
 
 use std::sync::{Arc, Mutex};
 
+use awaken_agent_contract::{AgentSkillBinding, AgentSkillKind};
 use awaken_ext_skills::SkillSpec;
 use awaken_protocol_managed::ResolvedSkillBinding;
 use awaken_skill_store::{SkillDefinition, SkillStore, SkillStoreError, SkillVersion};
+
+fn anthropic_skill(id: &str) -> Option<SkillVersion> {
+    let description = match id {
+        "pptx" => "Create, inspect, and modify PowerPoint presentations",
+        "xlsx" => "Create, inspect, and modify Excel workbooks",
+        "docx" => "Create, inspect, and modify Word documents",
+        "pdf" => "Create, inspect, and modify PDF documents",
+        _ => return None,
+    };
+    let body = format!(
+        "---\nname: {id}\ndescription: {description}\n---\nUse the available sandbox tools and libraries to {description}. Validate the generated artifact before returning it."
+    );
+    let files = vec![awaken_skill_store::SkillBundleFile {
+        path: "SKILL.md".into(),
+        content: body.into_bytes(),
+        executable: false,
+    }];
+    Some(SkillVersion {
+        id: format!("anthropic-{id}-1").into(),
+        skill_id: id.into(),
+        version: 1,
+        name: id.into(),
+        description: description.into(),
+        directory: format!("/skills/{id}"),
+        bundle_sha256: awaken_skill_store::bundle_sha256(&files),
+        files,
+        created_unix_nanos: 0,
+    })
+}
 
 /// Skills offered on every thread, plus the durable delivered-catalog and its
 /// synchronous read cache. See the module docs for the coherence invariant.
@@ -204,27 +234,42 @@ impl SkillCatalog {
         }
     }
 
-    pub(crate) async fn resolve_latest(
+    pub(crate) async fn resolve(
         &self,
         workspace: &str,
-        ids: &[String],
+        selections: &[AgentSkillBinding],
     ) -> Result<Vec<ResolvedSkillBinding>, SkillStoreError> {
-        let store = self
-            .store
-            .as_ref()
-            .ok_or_else(|| SkillStoreError::Storage("no durable Skill repository".into()))?;
-        let mut bindings = Vec::with_capacity(ids.len());
-        for id in ids {
-            let definition = store
-                .definition(workspace, id)
-                .await?
-                .ok_or_else(|| SkillStoreError::NotFound(id.clone()))?;
-            let version = store
-                .version(workspace, id, definition.latest_version)
-                .await?
-                .ok_or_else(|| SkillStoreError::NotFound(id.clone()))?;
+        awaken_agent_contract::validate_agent_skills(selections)
+            .map_err(SkillStoreError::Invalid)?;
+        let mut bindings = Vec::with_capacity(selections.len());
+        for selection in selections {
+            let version = match selection.kind {
+                AgentSkillKind::Anthropic => anthropic_skill(&selection.skill_id)
+                    .ok_or_else(|| SkillStoreError::NotFound(selection.skill_id.clone()))?,
+                AgentSkillKind::Custom => {
+                    let store = self.store.as_ref().ok_or_else(|| {
+                        SkillStoreError::Storage("no durable Skill repository".into())
+                    })?;
+                    let ordinal = if selection.version == "latest" {
+                        store
+                            .definition(workspace, &selection.skill_id)
+                            .await?
+                            .ok_or_else(|| SkillStoreError::NotFound(selection.skill_id.clone()))?
+                            .latest_version
+                    } else {
+                        selection.version.parse::<u64>().map_err(|_| {
+                            SkillStoreError::Invalid("invalid Skill version selector".into())
+                        })?
+                    };
+                    store
+                        .version(workspace, &selection.skill_id, ordinal)
+                        .await?
+                        .ok_or_else(|| SkillStoreError::NotFound(selection.skill_id.clone()))?
+                }
+            };
             bindings.push(ResolvedSkillBinding {
-                skill_id: id.clone(),
+                kind: selection.kind,
+                skill_id: selection.skill_id.clone(),
                 version: version.version,
                 bundle_sha256: version.bundle_sha256,
             });
@@ -240,16 +285,20 @@ impl SkillCatalog {
         if bindings.is_empty() {
             return Ok(Vec::new());
         }
-        let store = self
-            .store
-            .as_ref()
-            .ok_or_else(|| SkillStoreError::Storage("no durable Skill repository".into()))?;
         let mut versions = Vec::with_capacity(bindings.len());
         for binding in bindings {
-            let version = store
-                .version(workspace, &binding.skill_id, binding.version)
-                .await?
-                .ok_or_else(|| SkillStoreError::NotFound(binding.skill_id.clone()))?;
+            let version = match binding.kind {
+                AgentSkillKind::Anthropic => anthropic_skill(&binding.skill_id)
+                    .filter(|version| version.version == binding.version)
+                    .ok_or_else(|| SkillStoreError::NotFound(binding.skill_id.clone()))?,
+                AgentSkillKind::Custom => self
+                    .store
+                    .as_ref()
+                    .ok_or_else(|| SkillStoreError::Storage("no durable Skill repository".into()))?
+                    .version(workspace, &binding.skill_id, binding.version)
+                    .await?
+                    .ok_or_else(|| SkillStoreError::NotFound(binding.skill_id.clone()))?,
+            };
             if version.bundle_sha256 != binding.bundle_sha256 {
                 return Err(SkillStoreError::Invalid(format!(
                     "Skill {} version {} hash changed",
@@ -372,7 +421,7 @@ mod tests {
         assert!(catalog.load_pinned("ws-a", &[]).await.unwrap().is_empty());
         assert!(
             catalog
-                .resolve_latest("ws-a", &["missing".into()])
+                .resolve("ws-a", &[AgentSkillBinding::custom("missing")])
                 .await
                 .is_err()
         );
@@ -381,6 +430,7 @@ mod tests {
                 .load_pinned(
                     "ws-a",
                     &[ResolvedSkillBinding {
+                        kind: AgentSkillKind::Custom,
                         skill_id: "missing".into(),
                         version: 1,
                         bundle_sha256: "sha256".into(),
@@ -412,7 +462,7 @@ mod tests {
             .unwrap();
 
         let frozen = catalog
-            .resolve_latest("ws-a", &["greet".into()])
+            .resolve("ws-a", &[AgentSkillBinding::custom("greet")])
             .await
             .unwrap();
         catalog
@@ -429,5 +479,83 @@ mod tests {
         assert_eq!(loaded[0].version, 1);
         assert!(loaded[0].skill_md().unwrap().ends_with(b"ONE"));
         assert!(catalog.load_pinned("ws-b", &frozen).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn prebuilt_and_custom_selectors_follow_one_resolution_table() {
+        // Causes: prebuilt/custom source, latest/exact selector, repository
+        // presence, and Workspace. Constraints: prebuilt v1 is runtime-owned;
+        // custom bytes are Workspace-owned. Effects: both freeze exact hashes,
+        // prebuilt needs no store, and custom exact selection never drifts.
+        // Decision rules: S8 prebuilt latest/1 -> bundled v1; S9 prebuilt v2 ->
+        // reject; S10 custom latest/exact -> selected store version.
+        let mut catalog = SkillCatalog::new();
+        for selector in ["latest", "1"] {
+            let selection = AgentSkillBinding {
+                kind: AgentSkillKind::Anthropic,
+                skill_id: "xlsx".into(),
+                version: selector.into(),
+            };
+            let frozen = catalog.resolve("ws-a", &[selection]).await.unwrap();
+            assert_eq!(frozen[0].kind, AgentSkillKind::Anthropic, "S8");
+            assert_eq!(
+                catalog.load_pinned("ws-a", &frozen).await.unwrap()[0].version,
+                1
+            );
+        }
+        assert!(
+            catalog
+                .resolve(
+                    "ws-a",
+                    &[AgentSkillBinding {
+                        kind: AgentSkillKind::Anthropic,
+                        skill_id: "xlsx".into(),
+                        version: "2".into(),
+                    }],
+                )
+                .await
+                .is_err(),
+            "S9"
+        );
+
+        catalog.set_store(Arc::new(InMemorySkillStore::new()));
+        catalog
+            .create(
+                SkillDefinition {
+                    id: "greet".into(),
+                    workspace_id: "ws-a".into(),
+                    display_title: None,
+                    latest_version: 1,
+                    last_version: 1,
+                    timestamps: Default::default(),
+                },
+                version("greet", 1, "---\ndescription: v1\n---\nONE"),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        catalog
+            .append_version(
+                "ws-a",
+                "greet",
+                version("greet", 2, "---\ndescription: v2\n---\nTWO"),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        for (selector, expected) in [("latest", 2), ("1", 1)] {
+            let frozen = catalog
+                .resolve(
+                    "ws-a",
+                    &[AgentSkillBinding {
+                        kind: AgentSkillKind::Custom,
+                        skill_id: "greet".into(),
+                        version: selector.into(),
+                    }],
+                )
+                .await
+                .unwrap();
+            assert_eq!(frozen[0].version, expected, "S10");
+        }
     }
 }

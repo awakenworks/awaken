@@ -112,6 +112,8 @@ pub struct ResolvedInput {
 /// the resource repository; this durable pin is secret-free and retry-safe.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedSkillBinding {
+    #[serde(default)]
+    pub kind: awaken_agent_contract::AgentSkillKind,
     pub skill_id: String,
     pub version: u64,
     pub bundle_sha256: String,

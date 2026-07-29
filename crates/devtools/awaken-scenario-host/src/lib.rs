@@ -809,7 +809,9 @@ pub async fn build_acp_container_router() -> Router {
     let publication = fixed_host_backend_publication(
         "namespace-agent",
         "acp:custom",
-        vec![delivered_skill.into()],
+        vec![awaken_agent_contract::AgentSkillBinding::custom(
+            delivered_skill,
+        )],
     );
     let host = resource_host_with_deployment(Arc::new(EchoModel), "awaken", deployment)
         .with_agent_publications(publication.clone());

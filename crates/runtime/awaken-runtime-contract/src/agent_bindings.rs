@@ -71,8 +71,8 @@ pub struct AgentMcpServerBinding {
 pub struct AgentBindings {
     #[serde(default)]
     pub mcp_servers: Vec<AgentMcpServerBinding>,
-    #[serde(default)]
-    pub skill_ids: Vec<String>,
+    #[serde(default, alias = "skill_ids")]
+    pub skills: Vec<awaken_agent_contract::AgentSkillBinding>,
     /// Published Agent ids this Agent may invoke through `agent_run`.
     #[serde(default)]
     pub delegate_ids: Vec<AgentId>,

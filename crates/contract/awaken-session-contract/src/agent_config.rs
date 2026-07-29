@@ -267,7 +267,7 @@ pub struct AgentConfigView {
     pub mcp_servers: Vec<AgentMcpServerView>,
     /// The delivered Skills selected by this Agent. Empty is an intentional empty
     /// selection for newly published configs, not "all global skills".
-    pub skill_ids: Vec<String>,
+    pub skills: Vec<awaken_agent_contract::AgentSkillBinding>,
     /// Published Agent ids this Agent may invoke through `agent_run`.
     pub delegate_ids: Vec<String>,
     /// Resources bound to the published Agent. The runtime mounts these at Session

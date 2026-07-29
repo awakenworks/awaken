@@ -76,9 +76,13 @@ async function publishAgent(baseUrl, skillId) {
   assert.equal(published.body.installed, true, 'agent publication installed');
 }
 
-async function createSession(client) {
+async function createSession(client, skillSelection = undefined) {
   return client.beta.sessions.create({
-    agent: AGENT,
+    agent: skillSelection === undefined ? AGENT : {
+      id: AGENT,
+      type: 'agent_with_overrides',
+      skills: skillSelection,
+    },
     environment_id: 'env_local',
     betas: BETAS,
   });
@@ -173,6 +177,19 @@ async function main() {
       V2,
     );
     assert.equal(version2.version, '2', 'v2 appended monotonically');
+
+    // Causes: the published Agent selects `latest`, while a create-time override
+    // selects exact v1 after v2 exists. Constraint: the override replaces the
+    // root Agent list and resolution occurs once before preparation. Effects:
+    // P1 latest -> v2; P2 exact "1" -> v1; both persist immutable pins.
+    const exactV1 = await createSession(client, [{
+      type: 'custom', skill_id: skillId, version: '1',
+    }]);
+    const exactReply = await runAndReadLastReply(client, exactV1.id, 'use exact version one');
+    assert.ok(exactReply.includes(V1), `P2 exact selector resolved v1 after v2 existed: ${exactReply}`);
+    assert.ok(!exactReply.includes(V2), 'P2 exact selector did not drift to latest');
+    pass('create-time exact custom Skill selector replaces latest and pins v1');
+
     const retired = await request(
       first.baseUrl,
       'DELETE',

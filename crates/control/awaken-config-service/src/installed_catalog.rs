@@ -130,7 +130,12 @@ impl InstalledAgentCatalog {
             .filter_map(|((workspace, agent_id), entry)| {
                 (workspace == workspace_id)
                     .then_some(&entry.snapshot.resolved_spec.plugin_config.agent)
-                    .filter(|bindings| bindings.skill_ids.iter().any(|id| id == skill_id))
+                    .filter(|bindings| {
+                        bindings
+                            .skills
+                            .iter()
+                            .any(|skill| skill.skill_id == skill_id)
+                    })
                     .map(|_| agent_id.clone())
             })
             .collect();

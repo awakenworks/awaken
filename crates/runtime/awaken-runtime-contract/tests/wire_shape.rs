@@ -94,7 +94,7 @@ fn resolved_spec_field_names_are_pinned() {
             "agent": {
                 "delegate_ids": [],
                 "mcp_servers": [],
-                "skill_ids": [],
+                "skills": [],
             },
             "plugins": {},
         })

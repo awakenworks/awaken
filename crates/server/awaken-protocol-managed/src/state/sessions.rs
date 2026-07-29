@@ -18,6 +18,48 @@ pub(super) fn typed_mcp_servers(
 }
 use crate::types::AgentRef;
 
+fn validate_session_skill_total(
+    source: Option<&dyn awaken_session_contract::AgentConfigSource>,
+    workspace_id: &str,
+    root_agent_id: &str,
+    root_view: Option<&awaken_session_contract::AgentConfigView>,
+    root_skills: &[awaken_agent_contract::AgentSkillBinding],
+) -> Result<(), RunError> {
+    const MAX_SESSION_SKILLS: usize = 500;
+
+    let mut total = root_skills.len();
+    if total > MAX_SESSION_SKILLS {
+        return Err(RunError::bad_request(
+            "a session supports at most 500 skills across all agents",
+        ));
+    }
+
+    // Agent identity, rather than roster-edge count, owns one mounted Skill set.
+    // This also closes cycles in malformed/legacy published topologies.
+    let mut seen = std::collections::BTreeSet::from([root_agent_id.to_string()]);
+    let mut pending = root_view
+        .into_iter()
+        .flat_map(|view| view.delegate_ids.iter().cloned())
+        .collect::<std::collections::VecDeque<_>>();
+    while let Some(agent_id) = pending.pop_front() {
+        if !seen.insert(agent_id.clone()) {
+            continue;
+        }
+        let Some(view) = source.and_then(|source| source.agent_view_in(workspace_id, &agent_id))
+        else {
+            continue;
+        };
+        total = total.saturating_add(view.skills.len());
+        if total > MAX_SESSION_SKILLS {
+            return Err(RunError::bad_request(
+                "a session supports at most 500 skills across all agents",
+            ));
+        }
+        pending.extend(view.delegate_ids);
+    }
+    Ok(())
+}
+
 pub(super) fn mcp_generation_ref(
     session_id: &str,
     attachment: &awaken_session_contract::SessionMcpAttachment,
@@ -708,10 +750,30 @@ impl ManagedState {
         .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
         let environment = compiled_defaults.environment;
         let mut resolved_resources = compiled_defaults.resources;
-        if let Some(view) = &config_view {
+        let effective_skills = match &req.agent {
+            AgentRef::Object(override_ref) => override_ref.skills.as_ref().map(|skills| {
+                skills
+                    .clone()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(crate::types::agent::AgentSkill::into_binding)
+                    .collect::<Vec<_>>()
+            }),
+            AgentRef::Id(_) => None,
+        }
+        .or_else(|| config_view.as_ref().map(|view| view.skills.clone()));
+        validate_session_skill_total(
+            self.config_source.as_deref(),
+            &owner_scope,
+            &agent_id,
+            config_view.as_ref(),
+            effective_skills.as_deref().unwrap_or_default(),
+        )
+        .map_err(StateError::Run)?;
+        if let Some(skills) = &effective_skills {
             resolved_resources.skills = Some(
                 self.runtime
-                    .resolve_session_skills(&owner_scope, &view.skill_ids)
+                    .resolve_session_skills(&owner_scope, skills)
                     .await
                     .map_err(StateError::Run)?,
             );
@@ -854,15 +916,13 @@ impl ManagedState {
                 tools: session_tools,
                 // Echo the accepted servers in the SDK's `{name, type:"url", url}` shape.
                 mcp_servers: typed_mcp_servers(persisted.visible_mcp_servers()),
-                skills: config_view.as_ref().map_or_else(
+                skills: effective_skills.as_ref().map_or_else(
                     || project::agent_skills(&caps),
-                    |view| {
-                        view.skill_ids
+                    |skills| {
+                        skills
                             .iter()
-                            .map(|id| crate::types::agent::AgentSkill::Custom {
-                                skill_id: id.clone(),
-                                version: Some("latest".into()),
-                            })
+                            .cloned()
+                            .map(crate::types::agent::AgentSkill::from_binding)
                             .collect()
                     },
                 ),
@@ -905,9 +965,6 @@ impl ManagedState {
                     )));
                 }
                 session.agent.tools = project::resolved_tools(tools.as_deref().unwrap_or_default());
-            }
-            if let Some(skills) = &override_ref.skills {
-                session.agent.skills = skills.clone().unwrap_or_default();
             }
         }
         persisted.agent_tools = session.agent.tools.clone();

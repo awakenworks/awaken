@@ -405,7 +405,7 @@ async fn draft_agent_round_trips_mcp_skills_multiagent_and_metadata() {
             }
         ]
     );
-    assert_eq!(stored.skill_ids, vec!["greet"]);
+    assert_eq!(stored.skills[0].skill_id, "greet");
     assert_eq!(
         stored
             .multiagent

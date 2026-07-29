@@ -447,16 +447,16 @@ pub struct AgentConfig {
     pub metadata: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcp_servers: Vec<awaken_runtime_contract::agent_bindings::AgentMcpServerBinding>,
-    /// Workspace Skill resource ids selected by this authoring revision. The
-    /// external SDK's string/object union is normalized by its HTTP adapter.
+    /// Typed Skill resources selected by this authoring revision. Legacy string
+    /// ids deserialize as `custom/latest`; serialization always emits one exact
+    /// official object form.
     #[serde(
         default,
         rename = "skills",
         alias = "skill_ids",
-        deserialize_with = "deserialize_skill_ids",
         skip_serializing_if = "Vec::is_empty"
     )]
-    pub skill_ids: Vec<String>,
+    pub skills: Vec<awaken_agent_contract::AgentSkillBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multiagent: Option<MultiagentConfig>,
     /// Logical Hand deployment id for Native tool placement. The compiled
@@ -529,30 +529,6 @@ impl AgentConfig {
             .map(AgentKind::from_backend_ref)
             .unwrap_or(AgentKind::Native)
     }
-}
-
-fn deserialize_skill_ids<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let values = Vec::<serde_json::Value>::deserialize(deserializer)?;
-    values
-        .into_iter()
-        .enumerate()
-        .map(|(index, value)| {
-            value
-                .as_str()
-                .or_else(|| value.get("id").and_then(serde_json::Value::as_str))
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
-                .map(str::to_string)
-                .ok_or_else(|| {
-                    serde::de::Error::custom(format!(
-                        "skills entry {index} must be a non-empty id or object with `id`"
-                    ))
-                })
-        })
-        .collect()
 }
 
 fn delegation_limits_are_default(limits: &DelegationLimits) -> bool {

@@ -567,13 +567,18 @@ impl SharedHost {
             records.push(reference(target));
         }
         if let Some(skills) = &resources.skills {
-            records.extend(skills.iter().map(|skill| {
-                reference(ResourceTarget::new(
-                    workspace,
-                    ResourceKind::Skill,
-                    &skill.skill_id,
-                ))
-            }));
+            records.extend(
+                skills
+                    .iter()
+                    .filter(|skill| skill.kind == awaken_agent_contract::AgentSkillKind::Custom)
+                    .map(|skill| {
+                        reference(ResourceTarget::new(
+                            workspace,
+                            ResourceKind::Skill,
+                            &skill.skill_id,
+                        ))
+                    }),
+            );
         }
         if records.is_empty() && self.resource_lifecycle.is_none() {
             return Ok(());

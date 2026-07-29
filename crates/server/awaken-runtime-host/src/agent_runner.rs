@@ -998,6 +998,7 @@ mod tests {
             awaken_protocol_managed::ResolvedSessionResources {
                 inputs: Vec::new(),
                 skills: Some(vec![awaken_protocol_managed::ResolvedSkillBinding {
+                    kind: awaken_agent_contract::AgentSkillKind::Custom,
                     skill_id: "skill-a".into(),
                     version: 3,
                     bundle_sha256: "sha256:skill-a-v3".into(),

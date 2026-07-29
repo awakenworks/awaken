@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 awaken-runtime-contract.workspace = true
+awaken-agent-contract.workspace = true
 # Tenancy edge aspect (ADR-0051 D4): the opaque `ScopeId` the `ScopedConfig`
 # decorator binds so the authoring aggregate is tenant-isolable.
 awaken-tenancy.workspace = true
@@ -22,7 +23,6 @@ awaken-scoped-migration = { workspace = true, features = ["postgres"] }
 awaken-scoped-migration-sqlite.workspace = true
 
 [dev-dependencies]
-awaken-agent-contract.workspace = true
 awaken-runtime = { workspace = true }
 awaken-store-sqlite = { workspace = true }
 

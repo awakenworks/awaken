@@ -520,9 +520,9 @@ impl SharedHost {
                 .resolved_spec
                 .plugin_config
                 .agent
-                .skill_ids
+                .skills
                 .iter()
-                .cloned()
+                .map(|skill| skill.skill_id.clone())
                 .collect::<std::collections::BTreeSet<_>>()
         });
         let filtered_specs: Vec<SkillSpec> = match &selected_skills {

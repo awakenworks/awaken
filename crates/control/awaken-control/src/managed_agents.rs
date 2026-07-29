@@ -7,6 +7,7 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use awaken_agent_contract::AgentSkillBinding;
 use awaken_config_service::{ConfigPlane, RESERVED_ADMIN_SCOPE};
 use awaken_config_store::{
     AgentConfig, AgentConfigRevision, AgentLifecycle, ConfigWrite, ModelSelection, MultiagentConfig,
@@ -157,15 +158,8 @@ fn typed_mcp_servers(values: Vec<UrlMcpServer>) -> Vec<AgentMcpServerBinding> {
         .collect()
 }
 
-fn typed_skill_ids(values: Vec<AgentSkill>) -> Vec<String> {
-    values
-        .into_iter()
-        .map(|skill| match skill {
-            AgentSkill::Anthropic { skill_id, .. } | AgentSkill::Custom { skill_id, .. } => {
-                skill_id
-            }
-        })
-        .collect()
+fn typed_skills(values: Vec<AgentSkill>) -> Vec<AgentSkillBinding> {
+    values.into_iter().map(AgentSkill::into_binding).collect()
 }
 
 fn typed_multiagent(owner_id: &str, value: WireMultiagent) -> MultiagentConfig {
@@ -208,7 +202,7 @@ fn config_from_create(
         description: params.description,
         metadata: params.metadata,
         mcp_servers: typed_mcp_servers(params.mcp_servers),
-        skill_ids: typed_skill_ids(params.skills),
+        skills: typed_skills(params.skills),
         multiagent,
         hand: None,
         disabled_at: None,
@@ -298,19 +292,8 @@ fn validate_managed_agent_config(config: &AgentConfig) -> Result<(), ManagedAgen
             "every MCP server must have one mcp_toolset; missing {missing:?}"
         )));
     }
-    if config.skill_ids.len() > 500 {
-        return Err(ManagedAgentError::Invalid(
-            "skills supports at most 500 entries".into(),
-        ));
-    }
-    let mut skill_ids = std::collections::BTreeSet::new();
-    for skill_id in &config.skill_ids {
-        if skill_id.trim().is_empty() || !skill_ids.insert(skill_id.as_str()) {
-            return Err(ManagedAgentError::Invalid(
-                "skill ids must be non-empty and unique".into(),
-            ));
-        }
-    }
+    awaken_agent_contract::validate_agent_skills(&config.skills)
+        .map_err(ManagedAgentError::Invalid)?;
     let declared_count = config.client_tools.len()
         + config
             .toolsets
@@ -423,12 +406,9 @@ fn project(revision: AgentConfigRevision) -> Agent {
             })
             .collect(),
         skills: config
-            .skill_ids
+            .skills
             .into_iter()
-            .map(|skill_id| AgentSkill::Custom {
-                skill_id,
-                version: Some("latest".into()),
-            })
+            .map(AgentSkill::from_binding)
             .collect(),
         tools,
         multiagent: config.multiagent.map(|value| WireMultiagent::Coordinator {
@@ -618,7 +598,7 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             config.mcp_servers = typed_mcp_servers(mcp_servers.unwrap_or_default());
         }
         if let Some(skills) = params.skills {
-            config.skill_ids = typed_skill_ids(skills.unwrap_or_default());
+            config.skills = typed_skills(skills.unwrap_or_default());
         }
         if let Some(tools) = params.tools {
             let tools = tools.unwrap_or_default();

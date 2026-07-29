@@ -410,7 +410,7 @@ pub trait SessionRuntime: Send + Sync {
     async fn resolve_session_skills(
         &self,
         _workspace_id: &str,
-        _skill_ids: &[String],
+        _skills: &[awaken_agent_contract::AgentSkillBinding],
     ) -> Result<Vec<crate::ResolvedSkillBinding>, RunError> {
         Ok(Vec::new())
     }

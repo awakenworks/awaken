@@ -664,7 +664,7 @@ mod tests {
                 agent_server("same-name", "https://agent.example", None),
                 agent_server("agent-alias", "https://same.example", None),
             ],
-            skill_ids: Vec::new(),
+            skills: Vec::new(),
             delegate_ids: Vec::new(),
             resources: Vec::new(),
         };

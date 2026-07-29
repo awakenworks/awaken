@@ -1222,14 +1222,14 @@ impl SessionRuntime for ManagedHost {
     async fn resolve_session_skills(
         &self,
         workspace_id: &str,
-        skill_ids: &[String],
+        skills: &[awaken_agent_contract::AgentSkillBinding],
     ) -> Result<Vec<awaken_protocol_managed::ResolvedSkillBinding>, RunError> {
-        if skill_ids.is_empty() {
+        if skills.is_empty() {
             return Ok(Vec::new());
         }
         self.host
             .skills
-            .resolve_latest(workspace_id, skill_ids)
+            .resolve(workspace_id, skills)
             .await
             .map_err(|error| RunError::bad_request(error.to_string()))
     }

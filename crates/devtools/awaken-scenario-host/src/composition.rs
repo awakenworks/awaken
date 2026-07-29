@@ -78,7 +78,11 @@ pub(super) struct FixedAgentPublication {
 }
 
 impl FixedAgentPublication {
-    fn host_backend(id: &str, backend_ref: &str, skill_ids: Vec<String>) -> Self {
+    fn host_backend(
+        id: &str,
+        backend_ref: &str,
+        skills: Vec<awaken_agent_contract::AgentSkillBinding>,
+    ) -> Self {
         // Cause graph: deterministic scenario launch -> host-installed executor ->
         // HostExecutor placement. BackendOwned instead implies a discovered,
         // revision-pinned WorkerLocal identity, which these fake CLIs do not own.
@@ -93,7 +97,7 @@ impl FixedAgentPublication {
                 backend_ref,
             )))
             .agent_bindings(AgentBindings {
-                skill_ids,
+                skills,
                 ..Default::default()
             })
             .build();
@@ -107,13 +111,9 @@ impl FixedAgentPublication {
 pub(super) fn fixed_host_backend_publication(
     id: &str,
     backend_ref: &str,
-    skill_ids: Vec<String>,
+    skills: Vec<awaken_agent_contract::AgentSkillBinding>,
 ) -> Arc<FixedAgentPublication> {
-    Arc::new(FixedAgentPublication::host_backend(
-        id,
-        backend_ref,
-        skill_ids,
-    ))
+    Arc::new(FixedAgentPublication::host_backend(id, backend_ref, skills))
 }
 
 /// Install one immutable Agent as the sole backend authority for deterministic
@@ -158,7 +158,7 @@ impl awaken_protocol_managed::AgentConfigSource for FixedAgentPublication {
             toolsets: Vec::new(),
             client_tools: Vec::new(),
             mcp_servers: Vec::new(),
-            skill_ids: snapshot.resolved_spec.plugin_config.agent.skill_ids.clone(),
+            skills: snapshot.resolved_spec.plugin_config.agent.skills.clone(),
             delegate_ids: Vec::new(),
             resources: Vec::new(),
             environment: None,

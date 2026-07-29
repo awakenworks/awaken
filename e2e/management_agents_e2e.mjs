@@ -157,7 +157,7 @@ async function main() {
       // Decision table:
       // | composite input                         | result |
       // | model speed + bare/tagged effort        | exact revision + execution controls |
-      // | URL MCP/custom skill/custom tools       | 200 + typed projection |
+      // | URL MCP/prebuilt+custom skills/tools    | 200 + typed projection |
       // | unknown/misspelled union member         | 400, no Agent created  |
       // | MCP declaration/toolset not bijective   | 400, no revision       |
       // | duplicate/unknown toolset member        | 400, no revision       |
@@ -177,7 +177,10 @@ async function main() {
         system: 'rich system',
         metadata: { team: 'platform' },
         mcp_servers: [{ name: 'docs', type: 'url', url: 'https://example.invalid/mcp' }],
-        skills: [{ type: 'custom', skill_id: 'skill-a' }],
+        skills: [
+          { type: 'anthropic', skill_id: 'xlsx', version: '1' },
+          { type: 'custom', skill_id: 'skill-a', version: '2' },
+        ],
         tools: [
           {
             type: 'agent_toolset_20260401',
@@ -236,6 +239,10 @@ async function main() {
         'create preserves the complete client-tool behavior contract',
       );
       assert.deepEqual(rich.body.multiagent, { type: 'coordinator', agents: ['researcher'] });
+      assert.deepEqual(rich.body.skills, [
+        { type: 'anthropic', skill_id: 'xlsx', version: '1' },
+        { type: 'custom', skill_id: 'skill-a', version: '2' },
+      ], 'prebuilt source and exact custom selector survive the Agent projection');
 
       // Causes: matching or stale CAS revision, same/different model id, and
       // omitted effort. Constraints: stale rejection precedes no-op detection;
@@ -419,6 +426,18 @@ async function main() {
           tools: [{ type: 'mcp_toolset', mcp_server_name: 'docs' }],
         }],
         ['empty-skill-id', { skills: [{ type: 'custom', skill_id: '' }] }],
+        ['unknown-anthropic-skill', {
+          skills: [{ type: 'anthropic', skill_id: 'unknown', version: 'latest' }],
+        }],
+        ['unavailable-anthropic-version', {
+          skills: [{ type: 'anthropic', skill_id: 'xlsx', version: '2' }],
+        }],
+        ['zero-custom-skill-version', {
+          skills: [{ type: 'custom', skill_id: 'skill-a', version: '0' }],
+        }],
+        ['non-numeric-custom-skill-version', {
+          skills: [{ type: 'custom', skill_id: 'skill-a', version: 'current' }],
+        }],
         ['duplicate-skill-id', { skills: [
           { type: 'custom', skill_id: 'skill-a' },
           { type: 'custom', skill_id: 'skill-a' },

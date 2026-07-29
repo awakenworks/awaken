@@ -98,17 +98,9 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
                 .map_err(|error| error.to_string())
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let skill_ids = array("skills")
+    let skills = array("skills")
         .into_iter()
-        .map(|value| {
-            value
-                .as_str()
-                .or_else(|| value.get("id").and_then(Value::as_str))
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
-                .map(str::to_string)
-                .ok_or_else(|| "Skill must be a non-empty id or object with `id`".to_string())
-        })
+        .map(|value| serde_json::from_value(value).map_err(|error| error.to_string()))
         .collect::<Result<Vec<_>, _>>()?;
     let multiagent = body
         .get("multiagent")
@@ -163,7 +155,7 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
         description: string("description"),
         metadata,
         mcp_servers,
-        skill_ids,
+        skills,
         multiagent,
         hand: string("hand"),
         // Lifecycle commands are owned by ManagedAgentRepository. Generic
@@ -343,7 +335,7 @@ pub fn managed_from_agent_config(config: &AgentConfig, published: bool) -> Value
         "tools": tools,
         "recovery_policies": config.recovery_policies,
         "mcp_servers": config.mcp_servers,
-        "skills": config.skill_ids,
+        "skills": config.skills,
         "multiagent": config.multiagent,
         "hand": config.hand,
         "disabled_at": config.disabled_at,

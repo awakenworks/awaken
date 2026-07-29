@@ -114,7 +114,7 @@ impl ConfigServiceAgentSource {
                         .map(|credential| credential.revision),
                 })
                 .collect(),
-            skill_ids: bindings.skill_ids,
+            skills: bindings.skills,
             delegate_ids: bindings.delegate_ids.into_iter().map(|id| id.0).collect(),
             resources: defaults.inputs,
             environment: defaults.environment.map(|binding| {

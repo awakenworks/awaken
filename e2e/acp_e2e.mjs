@@ -10,6 +10,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { withScenarioServer, pass } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
+const XLSX_SKILL = [{ type: 'anthropic', skill_id: 'xlsx', version: '1' }];
 
 async function agentTexts(client, sessionId) {
   const events = [];
@@ -50,20 +51,25 @@ async function main() {
       // returns running -> the common Session event executor persists the input ->
       // the selected runtime emits its own reply -> Session idles.
       //
-      // | Rule | Backend | Trigger | Expected reply |
-      // | A1 | acp:claude | initial_events | ACP fixture |
-      // | A2 | native | initial_events | built-in echo |
+      // | Rule | Backend | Skill source | Trigger | Expected reply/pin |
+      // | A1 | acp:claude | Anthropic xlsx@1 | initial_events | ACP fixture + exact selection |
+      // | A2 | native | Anthropic xlsx@1 | initial_events | built-in echo + exact selection |
       // | A3 | acp:claude | system.message + later events.send | fresh ACP process |
       //
       // R3/R4/A1: the published ACP Agent runs on the external CLI. Request
       // metadata is not a backend selector.
       const acp = await client.beta.sessions.create({
-        agent: 'acp-agent',
+        agent: {
+          id: 'acp-agent',
+          type: 'agent_with_overrides',
+          skills: XLSX_SKILL,
+        },
         environment_id: 'env_local',
         initial_events: [{ type: 'user.message', content: [{ type: 'text', text: 'hello' }] }],
         betas: BETAS,
       });
       assert.equal(acp.status, 'running', 'A1 create-time ACP event starts immediately');
+      assert.deepEqual(acp.agent.skills, XLSX_SKILL, 'A1 ACP Session accepts the prebuilt pin');
       let texts = await waitForAgentText(client, acp.id, (text) => text.includes('acp-runtime reply'));
       assert.ok(
         texts.some((t) => t.includes('acp-runtime reply')),
@@ -73,12 +79,17 @@ async function main() {
 
       // Selection: a native session on the same server runs the built-in model.
       const native = await client.beta.sessions.create({
-        agent: 'assistant',
+        agent: {
+          id: 'assistant',
+          type: 'agent_with_overrides',
+          skills: XLSX_SKILL,
+        },
         environment_id: 'env_local',
         initial_events: [{ type: 'user.message', content: [{ type: 'text', text: 'hello' }] }],
         betas: BETAS,
       });
       assert.equal(native.status, 'running', 'A2 create-time native event starts immediately');
+      assert.deepEqual(native.agent.skills, XLSX_SKILL, 'A2 native Session accepts the same pin');
       texts = await waitForAgentText(client, native.id, (text) => text.startsWith('Echo:'));
       assert.ok(
         texts.some((t) => t.startsWith('Echo:')),
