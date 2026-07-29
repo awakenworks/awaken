@@ -25,7 +25,8 @@ pub mod tool;
 pub const RECALL_MESSAGE_ID_PREFIX: &str = "mem-recall";
 
 pub use plugin::{
-    MEMORY_PLUGIN_ID, MemoryConfig, MemoryPlugin, config_schema as memory_config_schema,
+    MEMORY_PLUGIN_ID, MemoryConfig, MemoryPlugin, MemoryRecall,
+    config_schema as memory_config_schema,
 };
 
 pub use agent::{

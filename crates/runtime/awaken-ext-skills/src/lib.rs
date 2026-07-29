@@ -36,5 +36,6 @@ pub use spec::{SkillContext, SkillProvenance, SkillSpec, parse_skill_md};
 pub use tool::{
     ActiveSkillTools, ListSkillsTool, PathActivations, RecordingGate, SKILL_LIST_TOOL_ID,
     SKILL_TOOL_ID, SkillAllowedToolsGate, SkillTool, expand_slash_commands,
-    list_skills_tool_descriptor, render_user_invocation, skill_tool_descriptor,
+    list_skills_tool_descriptor, render_backend_context, render_user_invocation,
+    skill_tool_descriptor,
 };

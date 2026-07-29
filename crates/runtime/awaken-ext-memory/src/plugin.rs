@@ -64,6 +64,58 @@ pub struct MemoryPlugin {
     selector: Option<Arc<dyn RecallSelector>>,
 }
 
+/// Canonical bounded-recall service shared by the native phase hook and
+/// external backend adapters.
+pub struct MemoryRecall {
+    store: Arc<dyn MemoryStoreHandle>,
+    bounds: RecallBounds,
+    selector: Option<Arc<dyn RecallSelector>>,
+}
+
+impl MemoryRecall {
+    pub fn new(store: Arc<dyn MemoryStoreHandle>, bounds: RecallBounds) -> Self {
+        Self {
+            store,
+            bounds,
+            selector: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_selector(mut self, selector: Arc<dyn RecallSelector>) -> Self {
+        self.selector = Some(selector);
+        self
+    }
+
+    /// Compute request-only recall. Store failures remain fail-soft, matching
+    /// the established native hook behavior.
+    pub async fn context(&self, run_input: &[Message]) -> Option<String> {
+        let entries = self.store.entries().await.unwrap_or_default();
+        if entries.is_empty() {
+            return None;
+        }
+        let use_selection = entries.len() > self.bounds.select_over && self.selector.is_some();
+        if !use_selection {
+            return render(&entries, &self.bounds);
+        }
+        let picked = self
+            .selector
+            .as_ref()
+            .expect("checked above")
+            .select(
+                &query_from(run_input),
+                &manifest(&entries),
+                self.bounds.max_entries,
+            )
+            .await;
+        let selected: Vec<_> = picked
+            .into_iter()
+            .filter_map(|index| entries.get(index).cloned())
+            .collect();
+        render(&selected, &self.bounds)
+    }
+}
+
 impl MemoryPlugin {
     pub fn new(store: MemoryDir, bounds: RecallBounds) -> Self {
         Self {
@@ -94,9 +146,11 @@ impl MemoryPlugin {
         let mut contributions = Contributions::new(MEMORY_PLUGIN_ID);
         contributions.declare_state_key(ContextMessages::KEY);
         contributions.register_hook(Arc::new(RecallHook {
-            store: self.store.clone(),
-            bounds,
-            selector: self.selector.clone(),
+            recall: MemoryRecall {
+                store: self.store.clone(),
+                bounds,
+                selector: self.selector.clone(),
+            },
         }));
         contributions
     }
@@ -217,9 +271,7 @@ mod config_tests {
 /// hook fires every step), gated on the run-scoped [`ContextMessages`] state so the
 /// block replays across steps and a resumed run rather than recomputing.
 struct RecallHook {
-    store: Arc<dyn MemoryStoreHandle>,
-    bounds: RecallBounds,
-    selector: Option<Arc<dyn RecallSelector>>,
+    recall: MemoryRecall,
 }
 
 impl RecallHook {
@@ -232,35 +284,9 @@ impl RecallHook {
     }
 
     async fn compute(&self, run_input: &[Message]) -> Vec<Message> {
-        let entries = self.store.entries().await.unwrap_or_default();
-        if entries.is_empty() {
-            return Vec::new();
-        }
-        // Small store, or no selector: inject the newest memories bounded (①).
-        let use_selection = entries.len() > self.bounds.select_over && self.selector.is_some();
-        if !use_selection {
-            return render(&entries, &self.bounds)
-                .map(Self::message)
-                .unwrap_or_default();
-        }
-        // Large store: pick the relevant memories for the user's message (③), via a
-        // single `memory-selector` sub-agent call.
-        let selector = self.selector.as_ref().expect("checked above");
-        let picked = selector
-            .select(
-                &query_from(run_input),
-                &manifest(&entries),
-                self.bounds.max_entries,
-            )
-            .await;
-        if picked.is_empty() {
-            return Vec::new();
-        }
-        let selected: Vec<_> = picked
-            .into_iter()
-            .filter_map(|i| entries.get(i).cloned())
-            .collect();
-        render(&selected, &self.bounds)
+        self.recall
+            .context(run_input)
+            .await
             .map(Self::message)
             .unwrap_or_default()
     }
