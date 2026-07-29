@@ -112,11 +112,11 @@ pub use crate::host::{
     SharedHost, remote_worker_placement, self_hosted_inference_holder,
 };
 pub use crate::postgres_migration_lock::PostgresMigrationLock;
-pub use crate::web_search::WebSearchConfigurationValidator;
+pub use crate::web_search::WebSearchPublicationResolver;
 pub use crate::worker_control_client::WorkerControlClient;
 pub use awaken_ext_builtin_tools::{
-    WebSearchProvider, WebSearchProviderDescriptor, WebSearchProviderRegistry,
-    WebSearchRegistryError,
+    WebSearchCredentialRequirement, WebSearchProvider, WebSearchProviderDescriptor,
+    WebSearchProviderRegistry, WebSearchRegistryError, WebSearchRequest, WebSearchResult,
 };
 pub use awaken_protocol_managed::McpAttachmentRealizer;
 pub use awaken_sandbox_container::{ContainerEnvironment, ContainerEnvironmentProvider};
