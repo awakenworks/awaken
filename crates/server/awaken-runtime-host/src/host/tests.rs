@@ -277,7 +277,7 @@ fn managed_with_resource_source(host: Arc<SharedHost>) -> crate::ManagedHost {
 }
 
 fn http_basic_material(username: &str, password: &str) -> awaken_agent_contract::RedactedString {
-    awaken_credential_vault::StructuredCredentialMaterial {
+    let material = awaken_credential_vault::StructuredCredentialMaterial {
         type_id: awaken_runtime_contract::credential::HTTP_BASIC_MATERIAL_TYPE.into(),
         fields: std::collections::BTreeMap::from([
             (
@@ -289,9 +289,9 @@ fn http_basic_material(username: &str, password: &str) -> awaken_agent_contract:
                 awaken_agent_contract::RedactedString::new(password),
             ),
         ]),
-    }
-    .encode()
-    .expect("encode HTTP Basic test material")
+    };
+    awaken_credential_vault::encode_structured_material(material)
+        .expect("encode HTTP Basic test material")
 }
 
 fn effective_resources(

@@ -699,13 +699,13 @@ async fn test_and_save_provider_connection(
         // Stage fail-closed: a newly entered source is disabled before catalog
         // publication. Reused credentials remain active and are never mutated by
         // a connection refresh.
-        staged.status = CredentialStatus::Disabled;
-        staged.version += 1;
-        state
-            .credentials
-            .put(staged.clone())
-            .await
-            .map_err(|error| cred_problem(&error, &rid))?;
+        staged = awaken_credential_vault::repo::transition_credential_status(
+            &staged.id,
+            CredentialStatus::Disabled,
+            state.credentials.as_ref(),
+        )
+        .await
+        .map_err(|error| cred_problem(&error, &rid))?;
     }
 
     let sync = match state
@@ -717,13 +717,13 @@ async fn test_and_save_provider_connection(
         Err(error) => return Err(repo_problem(&error, &rid)),
     };
     if created {
-        staged.status = CredentialStatus::Active;
-        staged.version += 1;
-        state
-            .credentials
-            .put(staged.clone())
-            .await
-            .map_err(|error| cred_problem(&error, &rid))?;
+        staged = awaken_credential_vault::repo::transition_credential_status(
+            &staged.id,
+            CredentialStatus::Active,
+            state.credentials.as_ref(),
+        )
+        .await
+        .map_err(|error| cred_problem(&error, &rid))?;
     }
     Ok((
         StatusCode::CREATED,
@@ -1383,15 +1383,15 @@ async fn archive_credential(
     headers: HeaderMap,
 ) -> Result<Json<CredentialSourceView>, Problem> {
     let rid = req_id(&headers);
-    let mut source =
-        credential_in_scope(&state, &CredentialSourceId(id), scope.as_ref(), &rid).await?;
-    source.status = CredentialStatus::Disabled;
-    source.version += 1;
-    state
-        .credentials
-        .put(source.clone())
-        .await
-        .map_err(|e| cred_problem(&e, &rid))?;
+    let source = credential_in_scope(&state, &CredentialSourceId(id), scope.as_ref(), &rid).await?;
+    let source = awaken_credential_vault::repo::revoke_credential(
+        &source.id,
+        awaken_credential_vault::repo::CredentialRetirement::Disable,
+        state.secrets.as_ref(),
+        state.credentials.as_ref(),
+    )
+    .await
+    .map_err(|e| cred_problem(&e, &rid))?;
     Ok(Json(source.into()))
 }
 
@@ -1507,7 +1507,7 @@ impl CredentialMaterialInput {
                 .map(|(name, value)| (name, RedactedString::new(value)))
                 .collect(),
         };
-        material.encode()
+        awaken_credential_vault::encode_structured_material(material)
     }
 }
 

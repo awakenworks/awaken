@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::repo::{CredentialCreationIntent, CredentialRepo};
+use crate::repo::{CredentialMutationIntent, CredentialRepo};
 use crate::schema::credential_bundle;
 use crate::{
     CredentialError, CredentialPool, CredentialPoolId, CredentialSource, CredentialSourceId,
@@ -211,11 +211,11 @@ impl CredentialRepo for SqliteCredentialRepo {
         .await
     }
 
-    async fn begin_creation(
+    async fn begin_mutation(
         &self,
-        intent: CredentialCreationIntent,
+        intent: CredentialMutationIntent,
     ) -> Result<(), CredentialError> {
-        let id = intent.source.id.0.clone();
+        let id = intent.after.id.0.clone();
         let data = serde_json::to_string(&intent).map_err(storage)?;
         with_conn(&self.conn, move |conn, p| {
             conn.execute(
@@ -225,17 +225,73 @@ impl CredentialRepo for SqliteCredentialRepo {
                 params![id, data],
             )
             .map_err(storage)?;
+            let durable: CredentialMutationIntent = get_row(
+                conn,
+                &format!("SELECT data FROM {p}_creation_intent WHERE source_id = ?1"),
+                &id,
+                CredentialError::SourceNotFound,
+            )?;
+            if durable != intent {
+                return Err(CredentialError::MutationConflict(
+                    "another credential mutation is pending".into(),
+                ));
+            }
             Ok(())
         })
         .await
     }
 
-    async fn commit_creation(&self, source: CredentialSource) -> Result<(), CredentialError> {
-        let id = source.id.0.clone();
-        let workspace_id = source.workspace_id.clone();
-        let data = serde_json::to_string(&source).map_err(storage)?;
+    async fn apply_mutation(
+        &self,
+        intent: &CredentialMutationIntent,
+    ) -> Result<(), CredentialError> {
+        let intent = intent.clone();
         with_conn(&self.conn, move |conn, p| {
             let tx = conn.transaction().map_err(storage)?;
+            let intent_data: Option<String> = tx
+                .query_row(
+                    &format!("SELECT data FROM {p}_creation_intent WHERE source_id = ?1"),
+                    params![intent.after.id.0],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(storage)?;
+            let durable: CredentialMutationIntent = intent_data
+                .map(|data| serde_json::from_str(&data).map_err(storage))
+                .transpose()?
+                .ok_or_else(|| {
+                    CredentialError::MutationConflict(
+                        "credential mutation has no matching durable intent".into(),
+                    )
+                })?;
+            if durable != intent {
+                return Err(CredentialError::MutationConflict(
+                    "credential mutation does not match durable intent".into(),
+                ));
+            }
+            let current_data: Option<String> = tx
+                .query_row(
+                    &format!("SELECT data FROM {p}_source WHERE id = ?1"),
+                    params![intent.after.id.0],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(storage)?;
+            let current: Option<CredentialSource> = current_data
+                .map(|data| serde_json::from_str(&data).map_err(storage))
+                .transpose()?;
+            if current.as_ref() == Some(&intent.after) {
+                tx.commit().map_err(storage)?;
+                return Ok(());
+            }
+            if current != intent.before {
+                return Err(CredentialError::MutationConflict(
+                    "credential revision changed during mutation".into(),
+                ));
+            }
+            let id = intent.after.id.0.clone();
+            let workspace_id = intent.after.workspace_id.clone();
+            let data = serde_json::to_string(&intent.after).map_err(storage)?;
             tx.execute(
                 &format!(
                     "INSERT INTO {p}_source (id, workspace_id, data) VALUES (?1, ?2, ?3) \
@@ -244,17 +300,12 @@ impl CredentialRepo for SqliteCredentialRepo {
                 params![id, workspace_id, data],
             )
             .map_err(storage)?;
-            tx.execute(
-                &format!("DELETE FROM {p}_creation_intent WHERE source_id = ?1"),
-                params![id],
-            )
-            .map_err(storage)?;
             tx.commit().map_err(storage)
         })
         .await
     }
 
-    async fn pending_creations(&self) -> Result<Vec<CredentialCreationIntent>, CredentialError> {
+    async fn pending_mutations(&self) -> Result<Vec<CredentialMutationIntent>, CredentialError> {
         with_conn(&self.conn, move |conn, p| {
             let mut statement = conn
                 .prepare(&format!(
@@ -270,7 +321,7 @@ impl CredentialRepo for SqliteCredentialRepo {
         .await
     }
 
-    async fn abort_creation(&self, id: &CredentialSourceId) -> Result<(), CredentialError> {
+    async fn complete_mutation(&self, id: &CredentialSourceId) -> Result<(), CredentialError> {
         let id = id.0.clone();
         with_conn(&self.conn, move |conn, p| {
             conn.execute(
