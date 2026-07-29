@@ -168,6 +168,7 @@ fn lock(state: &Mutex<State>) -> Result<std::sync::MutexGuard<'_, State>, Dispat
 fn push_operation(state: &mut State, operation: DispatchOperation) {
     state.operations.push(DispatchOperationalEvent {
         cursor: DispatchCursor(state.operations.len() as u64 + 1),
+        recorded_at_ms: Some(crate::clock::system_now_ms()),
         operation,
     });
 }
