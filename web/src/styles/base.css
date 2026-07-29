@@ -1098,3 +1098,25 @@ textarea.input {
 @media (max-width: 760px) {
   .assistant-fab-panel { right: 12px; left: 12px; width: auto; bottom: 78px; }
 }
+.local-setup-page,
+.local-setup-loading {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--surface-canvas);
+}
+
+.local-setup-page > * {
+  width: min(440px, 100%);
+}
+
+.local-setup-page form {
+  display: grid;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.local-setup-page input {
+  width: 100%;
+}
