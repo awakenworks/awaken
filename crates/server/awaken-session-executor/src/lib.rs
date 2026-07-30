@@ -1487,14 +1487,25 @@ impl awaken_protocol_managed::McpAttachmentRealizer for ManagedHost {
                             error.to_string(),
                         )
                     })?;
-                let refresh = access.refresh.as_ref().map(|refresh| {
-                    crate::mcp::McpRefreshMaterial::new(
-                        awaken_credential_vault::CredentialSourceId(access.credential.id.clone()),
-                        refresh.clone(),
-                        injector.credential_repo(),
-                        injector.secret_store(),
-                    )
-                });
+                let refresh = match access.refresh.as_ref() {
+                    Some(refresh) => {
+                        let (credentials, secrets) = injector.local_stores().ok_or_else(|| {
+                            RunError::classified(
+                                "mcp_credential_refresh_unavailable",
+                                "MCP credential refresh requires a local credential authority",
+                            )
+                        })?;
+                        Some(crate::mcp::McpRefreshMaterial::new(
+                            awaken_credential_vault::CredentialSourceId(
+                                access.credential.id.clone(),
+                            ),
+                            refresh.clone(),
+                            credentials,
+                            secrets,
+                        ))
+                    }
+                    None => None,
+                };
                 (
                     Some(bearer),
                     refresh,

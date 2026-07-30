@@ -544,7 +544,7 @@ workflow created it. `AgentId` remains a domain identifier, but
 > `Runtime::run` installs and executes it in one call. The snapshot stays the
 > configuration identity — `RunnableConfig` carries it with the catalog it was
 > built against. See
-> [config-to-run-execution-flow.md](config-to-run-execution-flow.md#implemented-run-input-runnableconfig-adr-0032).
+> [config-to-run-execution-flow.md](config-to-run-execution-flow.md#implemented-run-input-executableagentsnapshot).
 
 ---
 

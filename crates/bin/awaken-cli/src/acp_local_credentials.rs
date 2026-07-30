@@ -200,7 +200,7 @@ async fn prepare_local_acp_with(
 }
 
 impl PreparedLocalAcp {
-    /// Build the canonical database-less Worker against this process's control
+    /// Build the canonical registered Worker against this process's control
     /// URL. The Runtime Host selects trusted Workdir only for BackendOwned
     /// Sessions and retains this deployment's isolation tier for Provider runs.
     pub fn build_worker(

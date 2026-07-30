@@ -52,8 +52,8 @@ pub use awaken_config_service::{
 };
 pub use awaken_iam_contract::AccountId;
 pub use awaken_iam_host::{LocalBrowserAuth, LocalSetupHandoff};
-// The database-less worker's materialization subset (Stage C): only the credential
-// vault + secret store needed by snapshot-pinned inference access.
+// Transitional shared-store Worker materialization: only the credential vault +
+// secret store needed by snapshot-pinned inference access.
 pub use crate::worker_stores::{
     InferenceMaterializationStores, open_inference_materialization_stores,
     open_shared_resource_validator,
