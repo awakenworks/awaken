@@ -24,7 +24,7 @@ interface ProviderConnectionPanelProps {
 
 interface ProviderDraft {
   provider: string;
-  endpoint: string;
+  endpointName: string;
   baseUrl: string;
   dialect: string;
 }
@@ -33,7 +33,7 @@ export function providerDraftDefaults(descriptor: ProviderDriverDescriptor) {
   const endpoint = descriptor.default_endpoints[0];
   return {
     provider: descriptor.provider_kind,
-    endpoint: `${descriptor.provider_kind}-${endpoint?.id_suffix ?? "endpoint"}`,
+    endpointName: "",
     baseUrl: endpoint?.base_url ?? "",
     dialect: endpoint?.dialect ?? descriptor.supported_dialects[0],
   };
@@ -57,7 +57,7 @@ export default function ProviderConnectionPanel({
   const qc = useQueryClient();
   const [draft, setDraft] = useState<ProviderDraft>({
     provider: "anthropic",
-    endpoint: "anthropic-messages",
+    endpointName: "",
     baseUrl: "",
     dialect: "anthropic_messages",
   });
@@ -97,8 +97,8 @@ export default function ProviderConnectionPanel({
           workspace_id: workspace,
           provider_id: draft.provider,
           display_name: selectedDescriptor?.display_name ?? draft.provider,
-          endpoint_id: draft.endpoint,
           dialect: draft.dialect,
+          ...(draft.endpointName ? { endpoint_name: draft.endpointName } : {}),
           base_url: draft.baseUrl || null,
           configuration,
           timeout_secs: 60,
@@ -140,7 +140,6 @@ export default function ProviderConnectionPanel({
     authMode === "oauth" || (authMode === "api_key" && !!apiKey);
   const connectionReady =
     !!selectedDescriptor &&
-    !!draft.endpoint &&
     !requiredConfigurationMissing &&
     (authMode === "existing" ? !!syncCredential : newAuthenticationReady);
 
@@ -273,11 +272,15 @@ export default function ProviderConnectionPanel({
           </summary>
           <div className="row" style={{ marginTop: 10, alignItems: "flex-end" }}>
             <TextField
-              label="Endpoint id"
+              label={app.t("Endpoint name (optional)", "端点名称（可选）")}
               mono
-              value={draft.endpoint}
+              placeholder={app.t(
+                "Only for a second endpoint using this dialect",
+                "仅用于同一方言的第二个端点",
+              )}
+              value={draft.endpointName}
               onChange={(event) =>
-                setDraft({ ...draft, endpoint: event.target.value })
+                setDraft({ ...draft, endpointName: event.target.value })
               }
             />
             <SelectField

@@ -418,7 +418,6 @@ async function publishAgent(endpoint: string): Promise<void> {
     workspace_id: WORKSPACE,
     provider_id: 'anthropic',
     display_name: 'Resource E2E',
-    endpoint_id: 'resource-e2e',
     dialect: 'anthropic_messages',
     base_url: `${endpoint}/v1/`,
     timeout_secs: 10,

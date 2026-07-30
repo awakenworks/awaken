@@ -55,7 +55,6 @@ async function main() {
         workspace_id: WS,
         provider_id: 'anthropic',
         display_name: 'Anthropic',
-        endpoint_id: 'ep-kimi',
         dialect: 'anthropic_messages',
         base_url: BASE,
         timeout_secs: 300,

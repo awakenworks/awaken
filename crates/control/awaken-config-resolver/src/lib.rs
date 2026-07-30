@@ -13,6 +13,7 @@
 
 #![forbid(unsafe_code)]
 
+pub use awaken_agent_contract::ModelTarget;
 use awaken_agent_contract::RedactedString;
 use awaken_credential_vault::{
     AvailabilityLedger, CredentialBinding, CredentialError, CredentialSource, SecretRef,
@@ -27,7 +28,7 @@ mod credential_selection;
 mod reference_stores;
 pub use credential_selection::{
     CredentialCandidateSet, can_consume, credential_can_supply, credential_candidates,
-    derive_vendor_pool, expected_acp_dialect, validate_acp_dialect,
+    derive_vendor_pool,
 };
 /// Read ports for authored aggregates. The runtime host reads through these
 /// application contracts without depending on the authoring HTTP crate.
@@ -52,29 +53,6 @@ pub struct InferenceTriple {
     pub provider_id: String,
     pub protocol_endpoint_id: String,
     pub dialect: ApiDialect,
-}
-
-/// Stable, secret-free identity used to select one catalog offering. Qualifiers
-/// may be omitted when `model_id` identifies exactly one active offering.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct ModelTarget {
-    pub model_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub protocol_endpoint_id: Option<String>,
-}
-
-impl ModelTarget {
-    #[must_use]
-    pub fn unqualified(model_id: impl Into<String>) -> Self {
-        Self {
-            model_id: model_id.into(),
-            provider_id: None,
-            protocol_endpoint_id: None,
-        }
-    }
 }
 
 /// What the resolver hands the run loop: the concrete target + wire + an
@@ -103,16 +81,6 @@ pub enum ResolveError {
     ModelAmbiguous {
         model_id: String,
         candidates: Vec<String>,
-    },
-    #[error("ACP backend `{0}` has no resolver-owned model API dialect mapping")]
-    AcpDialectUnknown(String),
-    #[error(
-        "ACP backend `{backend_ref}` expects model API dialect `{expected}` but the offering uses `{actual}`"
-    )]
-    DialectIncompatible {
-        backend_ref: String,
-        expected: &'static str,
-        actual: &'static str,
     },
     #[error("endpoint `{0}` missing from catalog")]
     EndpointMissing(String),
@@ -146,6 +114,211 @@ pub enum ResolveError {
     },
     #[error(transparent)]
     Credential(#[from] CredentialError),
+}
+
+/// Pure catalog-selection failures shared by preview, publication, and model
+/// directory projections. No caller is allowed to implement its own `.find()`
+/// precedence for Offerings.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum OfferingSelectionError {
+    #[error("model `{model_id}` has no active matching offering")]
+    NotFound { model_id: String },
+    #[error("model `{model_id}` matches multiple offerings ({candidates:?})")]
+    Ambiguous {
+        model_id: String,
+        candidates: Vec<String>,
+    },
+    #[error("model target cannot combine endpoint_name and protocol_endpoint_id")]
+    ConflictingEndpointQualifiers,
+}
+
+/// Select exactly one active Offering for a target.
+///
+/// Endpoint names match the suffix of the canonical
+/// `<provider>.<dialect>.<name>` endpoint id. An exact endpoint id always stays
+/// exact. A zero or multi-match result fails closed.
+pub fn select_offering<'a>(
+    catalog: &'a ProviderCatalog,
+    target: &ModelTarget,
+    disabled_endpoints: &[String],
+) -> Result<&'a awaken_model_catalog::Offering, OfferingSelectionError> {
+    if target.protocol_endpoint_id.is_some() && target.endpoint_name.is_some() {
+        return Err(OfferingSelectionError::ConflictingEndpointQualifiers);
+    }
+    let matches = catalog
+        .offerings
+        .iter()
+        .filter(|offering| {
+            offering.status == awaken_model_catalog::OfferingStatus::Active
+                && offering.model_id == target.model_id
+                && target
+                    .provider_id
+                    .as_deref()
+                    .is_none_or(|provider| offering.provider_id.as_str() == provider)
+                && target
+                    .protocol_endpoint_id
+                    .as_deref()
+                    .is_none_or(|endpoint| offering.protocol_endpoint_id.as_str() == endpoint)
+                && target.endpoint_name.as_deref().is_none_or(|name| {
+                    offering.protocol_endpoint_id.as_str() == name
+                        || offering
+                            .protocol_endpoint_id
+                            .as_str()
+                            .strip_suffix(name)
+                            .is_some_and(|prefix| prefix.ends_with('.'))
+                })
+                && !disabled_endpoints.contains(&offering.protocol_endpoint_id.0)
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [offering] => Ok(*offering),
+        [] => Err(OfferingSelectionError::NotFound {
+            model_id: target.model_id.clone(),
+        }),
+        offerings => Err(OfferingSelectionError::Ambiguous {
+            model_id: target.model_id.clone(),
+            candidates: offerings
+                .iter()
+                .map(|offering| {
+                    format!("{}/{}", offering.provider_id, offering.protocol_endpoint_id)
+                })
+                .collect(),
+        }),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutableModelReadiness {
+    Ready,
+    OfferingUnavailable,
+    CredentialUnavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ExecutableModelOption {
+    pub provider_id: String,
+    pub model_id: String,
+    pub endpoint_id: String,
+    pub readiness: ExecutableModelReadiness,
+}
+
+/// Pure Catalog × Credential evaluator shared by config reads and Managed
+/// model-directory projection. Publication performs the stateful credential
+/// choice and revision fence after this side-effect-free readiness check.
+#[must_use]
+pub fn project_executable_models(
+    catalog: &ProviderCatalog,
+    credentials: &[CredentialSource],
+    backend_ref: &str,
+) -> Vec<ExecutableModelOption> {
+    let mut options = catalog
+        .offerings
+        .iter()
+        .map(|offering| {
+            let readiness = if offering.status != awaken_model_catalog::OfferingStatus::Active {
+                ExecutableModelReadiness::OfferingUnavailable
+            } else if credentials.iter().any(|credential| {
+                credential.status == awaken_credential_vault::CredentialStatus::Active
+                    && credential.is_executable_origin()
+                    && credential_can_supply(offering.provider_id.as_str(), backend_ref, credential)
+            }) {
+                ExecutableModelReadiness::Ready
+            } else {
+                ExecutableModelReadiness::CredentialUnavailable
+            };
+            ExecutableModelOption {
+                provider_id: offering.provider_id.0.clone(),
+                model_id: offering.model_id.clone(),
+                endpoint_id: offering.protocol_endpoint_id.0.clone(),
+                readiness,
+            }
+        })
+        .collect::<Vec<_>>();
+    options.sort_by(|left, right| {
+        (&left.model_id, &left.provider_id, &left.endpoint_id).cmp(&(
+            &right.model_id,
+            &right.provider_id,
+            &right.endpoint_id,
+        ))
+    });
+    options
+}
+
+#[cfg(test)]
+mod offering_selection_tests {
+    use super::*;
+    use awaken_model_catalog::{
+        ApiDialect, Offering, OfferingSource, OfferingStatus, ProtocolEndpointId, ProviderId,
+    };
+
+    fn offering(provider: &str, endpoint: &str) -> Offering {
+        Offering {
+            model_id: "shared/model".into(),
+            provider_id: ProviderId::new(provider),
+            protocol_endpoint_id: ProtocolEndpointId::new(endpoint),
+            dialect: ApiDialect::OpenAiChat,
+            upstream_model: None,
+            source: OfferingSource::Manual,
+            status: OfferingStatus::Active,
+            last_seen_at_unix_ms: None,
+        }
+    }
+
+    #[test]
+    fn catalog_selector_fails_closed_and_honors_each_qualifier() {
+        // Causes: C1 model exists; C2 provider qualifier; C3 endpoint-name
+        // qualifier; C4 exact endpoint qualifier; C5 multiple active matches.
+        // Effects: E1 one Offering; E2 not-found; E3 ambiguous; E4 invalid.
+        // Rules: no qualifier+C5 -> E3; provider narrows to one -> E1;
+        // provider+name -> E1; exact endpoint -> E1; both endpoint forms -> E4.
+        let catalog = ProviderCatalog {
+            offerings: vec![
+                offering("anyrouter", "anyrouter.open_ai_chat.primary"),
+                offering("qwen", "qwen.open_ai_chat"),
+            ],
+            ..ProviderCatalog::default()
+        };
+        assert!(matches!(
+            select_offering(&catalog, &ModelTarget::unqualified("shared/model"), &[]),
+            Err(OfferingSelectionError::Ambiguous { .. })
+        ));
+        let provider = ModelTarget {
+            model_id: "shared/model".into(),
+            provider_id: Some("qwen".into()),
+            protocol_endpoint_id: None,
+            endpoint_name: None,
+        };
+        assert_eq!(
+            select_offering(&catalog, &provider, &[])
+                .unwrap()
+                .provider_id
+                .as_str(),
+            "qwen"
+        );
+        let named = ModelTarget {
+            provider_id: Some("anyrouter".into()),
+            endpoint_name: Some("primary".into()),
+            ..ModelTarget::unqualified("shared/model")
+        };
+        assert_eq!(
+            select_offering(&catalog, &named, &[])
+                .unwrap()
+                .protocol_endpoint_id
+                .as_str(),
+            "anyrouter.open_ai_chat.primary"
+        );
+        let conflicting = ModelTarget {
+            protocol_endpoint_id: Some("anyrouter.open_ai_chat.primary".into()),
+            ..named
+        };
+        assert_eq!(
+            select_offering(&catalog, &conflicting, &[]),
+            Err(OfferingSelectionError::ConflictingEndpointQualifiers)
+        );
+    }
 }
 
 /// A credential lookup the assembly provides: individual sources by id, and pools
@@ -201,38 +374,22 @@ pub async fn resolve_inference_target(
     sources: &dyn SourceLookup,
     secret_store: &dyn SecretStore,
 ) -> Result<ResolvedInference, ResolveError> {
-    let candidates = catalog
-        .offerings
-        .iter()
-        .filter(|o| {
-            o.status == awaken_model_catalog::OfferingStatus::Active
-                && o.model_id == target.model_id
-                && target
-                    .provider_id
-                    .as_deref()
-                    .is_none_or(|provider| o.provider_id.as_str() == provider)
-                && target
-                    .protocol_endpoint_id
-                    .as_deref()
-                    .is_none_or(|endpoint| o.protocol_endpoint_id.as_str() == endpoint)
-                && !disabled_endpoints.contains(&o.protocol_endpoint_id.0)
-        })
-        .collect::<Vec<_>>();
-    let offering = match candidates.as_slice() {
-        [offering] => *offering,
-        [] => return Err(ResolveError::ModelUnresolved(target.model_id.clone())),
-        candidates => {
-            return Err(ResolveError::ModelAmbiguous {
-                model_id: target.model_id.clone(),
-                candidates: candidates
-                    .iter()
-                    .map(|offering| {
-                        format!("{}/{}", offering.provider_id, offering.protocol_endpoint_id)
-                    })
-                    .collect(),
-            });
-        }
-    };
+    let offering =
+        select_offering(catalog, target, disabled_endpoints).map_err(|error| match error {
+            OfferingSelectionError::NotFound { model_id } => {
+                ResolveError::ModelUnresolved(model_id)
+            }
+            OfferingSelectionError::ConflictingEndpointQualifiers => {
+                ResolveError::ModelUnresolved(target.model_id.clone())
+            }
+            OfferingSelectionError::Ambiguous {
+                model_id,
+                candidates,
+            } => ResolveError::ModelAmbiguous {
+                model_id,
+                candidates,
+            },
+        })?;
 
     let endpoint = catalog
         .endpoints
@@ -876,6 +1033,7 @@ mod tests {
                 model_id: "claude-opus-4-8".into(),
                 provider_id: Some("anthropic".into()),
                 protocol_endpoint_id: Some("ep2".into()),
+                endpoint_name: None,
             },
             &[],
             &CredentialBinding::None,

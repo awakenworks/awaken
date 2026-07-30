@@ -94,7 +94,6 @@ const connection = await step("verify and save provider connection", "POST", "/v
   workspace_id: "wrkspc_default",
   provider_id: "anthropic",
   display_name: "Anthropic",
-  endpoint_id: "anthropic-messages",
   dialect: "anthropic_messages",
   base_url: `http://127.0.0.1:${directoryAddress.port}/v1`,
   timeout_secs: 60,

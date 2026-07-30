@@ -51,6 +51,14 @@ impl ConfigService {
         self.installed.snapshot_in(workspace, agent)
     }
 
+    pub(crate) fn installed_projection_in(
+        &self,
+        workspace: &str,
+        agent: &str,
+    ) -> Option<crate::installed_catalog::InstalledAgentProjection> {
+        self.installed.projection_in(workspace, agent)
+    }
+
     #[must_use]
     pub fn agent_unavailable_in(&self, workspace: &str, agent: &str) -> bool {
         self.installed.is_unavailable(workspace, agent)

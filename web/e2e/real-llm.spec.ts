@@ -24,7 +24,6 @@ async function configureGemini(request: APIRequestContext) {
       workspace_id: "wrkspc_default",
       provider_id: "gemini",
       display_name: "Google AI Studio",
-      endpoint_id: "gemini-ep",
       dialect: "gemini",
       secret: KEY,
     },

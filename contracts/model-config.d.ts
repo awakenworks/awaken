@@ -918,9 +918,8 @@ export interface ConfigurationFieldElement {
 export type ConfigurationFieldKind = "secret" | "text" | "url";
 
 export interface DefaultEndpointElement {
-    base_url:  string;
-    dialect:   APIDialect;
-    id_suffix: string;
+    base_url: string;
+    dialect:  APIDialect;
     [property: string]: unknown;
 }
 
@@ -1037,8 +1036,11 @@ export interface SaveProviderConnectionRequest {
     credential_source_id?: null | string;
     dialect:               APIDialect;
     display_name:          string;
-    endpoint_id:           string;
-    idempotency_key:       string;
+    /**
+     * Optional stable qualifier for a second endpoint using the same dialect.
+     */
+    endpoint_name?:  null | string;
+    idempotency_key: string;
     /**
      * Server-owned OAuth helper used to mint a short-lived token for both the
      * pre-save discovery and the persisted credential source.

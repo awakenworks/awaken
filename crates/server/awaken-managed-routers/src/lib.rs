@@ -14,4 +14,7 @@ mod files;
 mod models;
 
 pub use files::files_router;
-pub use models::{ModelEntry, default_models, models_router};
+pub use models::{
+    ModelDirectory, ModelDirectoryFuture, ModelEntry, default_models, models_router,
+    models_router_with_directory,
+};

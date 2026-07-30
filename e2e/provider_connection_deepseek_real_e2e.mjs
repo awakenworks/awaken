@@ -42,7 +42,6 @@ async function main() {
       workspace_id: workspace,
       provider_id: 'deepseek',
       display_name: 'DeepSeek',
-      endpoint_id: 'deepseek-live-chat',
       dialect: 'open_ai_chat',
       base_url: 'https://api.deepseek.com',
       timeout_secs: 90,

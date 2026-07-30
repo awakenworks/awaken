@@ -7,13 +7,20 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
-use awaken_config_store::ExecutableAgentSnapshot;
+use awaken_config_store::{ExecutableAgentSnapshot, ModelSelection};
 
 #[derive(Clone)]
 struct InstalledEntry {
     source_revision: u64,
     snapshot: ExecutableAgentSnapshot,
+    authored_model_selection: ModelSelection,
     declared_hand: Option<String>,
+}
+
+#[derive(Clone)]
+pub(crate) struct InstalledAgentProjection {
+    pub(crate) snapshot: ExecutableAgentSnapshot,
+    pub(crate) authored_model_selection: ModelSelection,
 }
 
 #[derive(Default)]
@@ -31,6 +38,7 @@ impl InstalledAgentCatalog {
         agent_id: &str,
         source_revision: u64,
         snapshot: ExecutableAgentSnapshot,
+        authored_model_selection: ModelSelection,
         declared_hand: Option<String>,
     ) {
         let key = (workspace.to_string(), agent_id.to_string());
@@ -62,6 +70,7 @@ impl InstalledAgentCatalog {
                 InstalledEntry {
                     source_revision,
                     snapshot,
+                    authored_model_selection,
                     declared_hand,
                 },
             );
@@ -90,6 +99,21 @@ impl InstalledAgentCatalog {
             .expect("installed Agent catalog")
             .get(&(workspace.to_string(), agent_id.to_string()))
             .map(|entry| entry.snapshot.clone())
+    }
+
+    pub(crate) fn projection_in(
+        &self,
+        workspace: &str,
+        agent_id: &str,
+    ) -> Option<InstalledAgentProjection> {
+        self.entries
+            .lock()
+            .expect("installed Agent catalog")
+            .get(&(workspace.to_string(), agent_id.to_string()))
+            .map(|entry| InstalledAgentProjection {
+                snapshot: entry.snapshot.clone(),
+                authored_model_selection: entry.authored_model_selection.clone(),
+            })
     }
 
     pub(crate) fn snapshot_at_revision(
@@ -183,8 +207,22 @@ mod tests {
             .fingerprint("fp-2")
             .build();
 
-        catalog.install("workspace", "researcher", 1, first.clone(), None);
-        catalog.install("workspace", "researcher", 2, second.clone(), None);
+        catalog.install(
+            "workspace",
+            "researcher",
+            1,
+            first.clone(),
+            ModelSelection::Auto,
+            None,
+        );
+        catalog.install(
+            "workspace",
+            "researcher",
+            2,
+            second.clone(),
+            ModelSelection::Auto,
+            None,
+        );
 
         assert_eq!(catalog.snapshot_in("workspace", "researcher"), Some(second));
         assert_eq!(
@@ -221,7 +259,14 @@ mod tests {
             .fingerprint("fp")
             .build();
 
-        catalog.install("a", "researcher", 1, snapshot.clone(), None);
+        catalog.install(
+            "a",
+            "researcher",
+            1,
+            snapshot.clone(),
+            ModelSelection::Auto,
+            None,
+        );
         assert_eq!(catalog.declared_hand_for_agent("researcher").unwrap(), None);
 
         catalog.install(
@@ -229,6 +274,7 @@ mod tests {
             "researcher",
             2,
             snapshot.clone(),
+            ModelSelection::Auto,
             Some("hand-a".to_owned()),
         );
         catalog.install(
@@ -236,6 +282,7 @@ mod tests {
             "researcher",
             1,
             snapshot.clone(),
+            ModelSelection::Auto,
             Some("hand-a".to_owned()),
         );
         assert_eq!(
@@ -243,7 +290,14 @@ mod tests {
             Some("hand-a".to_owned())
         );
 
-        catalog.install("c", "researcher", 1, snapshot, Some("hand-b".to_owned()));
+        catalog.install(
+            "c",
+            "researcher",
+            1,
+            snapshot,
+            ModelSelection::Auto,
+            Some("hand-b".to_owned()),
+        );
         assert!(catalog.declared_hand_for_agent("researcher").is_err());
 
         catalog.uninstall("c", "researcher");

@@ -18,16 +18,14 @@ schemars = { version = "1", optional = true }
 default = []
 # Emit JSON Schema for the authored DTOs (e.g. `InferenceProfile`) so the admin
 # API can include them in the generated TS contract.
-schema = ["dep:schemars", "awaken-credential-vault/schema"]
+schema = ["dep:schemars", "awaken-agent-contract/schema", "awaken-credential-vault/schema"]
 
 [dev-dependencies]
 tokio.workspace = true
 serde_json.workspace = true
-# P0/E2E acceptance: full chain through the production APIs (admin repos →
-# credential entry → managed model-decode → resolve → provider seam). Real model
-# call is env-gated.
+# P0/E2E acceptance: catalog + credential + resolve → provider seam. Managed
+# model-id ACL coverage lives with awaken-config-service, its sole owner.
 awaken-provider-genai.workspace = true
-awaken-managed-bridge.workspace = true
 
 [lints]
 workspace = true
