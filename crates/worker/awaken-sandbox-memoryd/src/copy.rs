@@ -82,20 +82,16 @@ pub async fn materialize(
     store: &str,
     root: &Path,
 ) -> Result<CopySnapshot, FuseError> {
-    let entries = fs.list(store, "/").await?;
     let mut snapshot = CopySnapshot::default();
-    for entry in &entries {
-        let Some(memory) = fs.get_by_path(store, &entry.path).await? else {
-            continue;
-        };
-        let dest = root.join(entry.path.trim_start_matches('/'));
+    for memory in fs.snapshot_heads(store).await? {
+        let dest = root.join(memory.path.trim_start_matches('/'));
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).map_err(|e| FuseError::Internal(e.to_string()))?;
         }
         std::fs::write(&dest, memory.content.unwrap_or_default())
             .map_err(|e| FuseError::Internal(e.to_string()))?;
         snapshot.heads.insert(
-            entry.path.clone(),
+            memory.path,
             CopyHead {
                 id: memory.id,
                 sha256: memory.content_sha256,
@@ -109,14 +105,10 @@ pub async fn materialize(
 /// this after reading the surviving sandbox copy so the subsequent harvest keeps
 /// the same compare-and-swap and concurrent-writer behavior as a live guard.
 pub async fn snapshot(fs: &dyn MemoryRepository, store: &str) -> Result<CopySnapshot, FuseError> {
-    let entries = fs.list(store, "/").await?;
     let mut snapshot = CopySnapshot::default();
-    for entry in entries {
-        let Some(memory) = fs.get_by_path(store, &entry.path).await? else {
-            continue;
-        };
+    for memory in fs.snapshot_heads(store).await? {
         snapshot.heads.insert(
-            entry.path,
+            memory.path,
             CopyHead {
                 id: memory.id,
                 sha256: memory.content_sha256,
@@ -259,6 +251,7 @@ fn collect_files(root: &Path, base: &Path, out: &mut Vec<(String, PathBuf)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_memory_store::{MemErr, Memory, MemoryPurgeSummary, MemoryVersion};
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -277,6 +270,136 @@ mod tests {
 
     fn rt() -> tokio::runtime::Runtime {
         tokio::runtime::Runtime::new().unwrap()
+    }
+
+    struct SnapshotOnlyRepository {
+        heads: Vec<Memory>,
+    }
+
+    #[async_trait::async_trait]
+    impl MemoryRepository for SnapshotOnlyRepository {
+        async fn snapshot_heads(&self, _store: &str) -> Result<Vec<Memory>, MemErr> {
+            Ok(self.heads.clone())
+        }
+
+        async fn list(
+            &self,
+            _store: &str,
+            _prefix: &str,
+        ) -> Result<Vec<awaken_memory_store::MemoryEntry>, MemErr> {
+            panic!("the copy snapshot must not emulate an atomic snapshot with list")
+        }
+
+        async fn get_by_path(&self, _store: &str, _path: &str) -> Result<Option<Memory>, MemErr> {
+            panic!("the copy snapshot must not emulate an atomic snapshot with per-path reads")
+        }
+
+        async fn create(
+            &self,
+            _store: &str,
+            _path: &str,
+            _content: &str,
+        ) -> Result<Memory, MemErr> {
+            unreachable!("snapshot test performs no writes")
+        }
+
+        async fn update_head(
+            &self,
+            _store: &str,
+            _id: &str,
+            _content: &str,
+            _base_sha: &str,
+            _target_path: Option<&str>,
+        ) -> Result<Memory, MemErr> {
+            unreachable!("snapshot test performs no writes")
+        }
+
+        async fn rename(&self, _store: &str, _from: &str, _to: &str) -> Result<Memory, MemErr> {
+            unreachable!("snapshot test performs no writes")
+        }
+
+        async fn delete_by_path(&self, _store: &str, _path: &str) -> Result<(), MemErr> {
+            unreachable!("snapshot test performs no writes")
+        }
+
+        async fn delete_if_match(
+            &self,
+            _store: &str,
+            _path: &str,
+            _base_id: &str,
+            _base_sha: &str,
+        ) -> Result<bool, MemErr> {
+            unreachable!("snapshot test performs no writes")
+        }
+
+        async fn list_versions(&self, _store: &str) -> Result<Vec<MemoryVersion>, MemErr> {
+            unreachable!("snapshot test performs no history reads")
+        }
+
+        async fn redact_version(
+            &self,
+            _store: &str,
+            _version_id: &str,
+        ) -> Result<Option<MemoryVersion>, MemErr> {
+            unreachable!("snapshot test performs no history writes")
+        }
+
+        async fn purge_store(&self, _store: &str) -> Result<MemoryPurgeSummary, MemErr> {
+            unreachable!("snapshot test performs no lifecycle writes")
+        }
+    }
+
+    /// Cause/effect decision table for frozen copy inputs:
+    /// | Rule | atomic heads result | legacy list/get availability | Effect |
+    /// |---|---|---|---|
+    /// | S1 | two path-ordered heads | panic if called | materialize both files and capture both CAS bases |
+    /// | S2 | two path-ordered heads | panic if called | recovery snapshot captures both CAS bases without writing files |
+    #[test]
+    fn copy_inputs_use_the_one_atomic_snapshot_primitive() {
+        let rt = rt();
+        let heads = vec![
+            Memory {
+                id: "memory-a".into(),
+                path: "/a.md".into(),
+                content_sha256: awaken_memory_store::sha256_hex("a"),
+                content_size: 1,
+                version: 1,
+                created_unix_nanos: 1,
+                updated_unix_nanos: 1,
+                content: Some("a".into()),
+            },
+            Memory {
+                id: "memory-b".into(),
+                path: "/nested/b.md".into(),
+                content_sha256: awaken_memory_store::sha256_hex("b"),
+                content_size: 1,
+                version: 2,
+                created_unix_nanos: 1,
+                updated_unix_nanos: 2,
+                content: Some("b".into()),
+            },
+        ];
+        let fs = SnapshotOnlyRepository {
+            heads: heads.clone(),
+        };
+        let dir = temp("atomic-snapshot");
+
+        let materialized = rt.block_on(materialize(&fs, "s", &dir)).expect("S1");
+        assert_eq!(materialized.len(), 2, "S1");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.md")).unwrap(),
+            "a",
+            "S1"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("nested/b.md")).unwrap(),
+            "b",
+            "S1"
+        );
+
+        let recovered = rt.block_on(snapshot(&fs, "s")).expect("S2");
+        assert_eq!(recovered.len(), 2, "S2");
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
