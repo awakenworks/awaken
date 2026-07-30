@@ -14,13 +14,13 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
+source "$REPO_ROOT/e2e/k3d/harness.sh"
 CLUSTER="awaken-failover"
 IMAGE="awaken-topology:latest"
 NS="awaken-failover"
 LOCAL_PORT="${FAILOVER_LOCAL_PORT:-38611}"
 THREAD="failover-thread-1"
 DEPLOY_DIR="$REPO_ROOT/deploy/k3d"
-NODE="k3d-$CLUSTER-server-0"
 PF_PID=""
 
 log() { echo -e "\n\033[1;36m== $* ==\033[0m"; }
@@ -32,7 +32,7 @@ cleanup() {
   [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null || true
   [ -n "$CORDONED" ] && kubectl uncordon "$CORDONED" >/dev/null 2>&1 || true
   log "teardown: deleting k3d cluster $CLUSTER"
-  k3d cluster delete "$CLUSTER" >/dev/null 2>&1 || true
+  k3d_delete_cluster "$CLUSTER"
   rm -f "$DEPLOY_DIR/awaken-server"
 }
 trap cleanup EXIT
@@ -45,8 +45,7 @@ pf_pod() {
   # A fresh port each call: a killed port-forward can leave the old local port in
   # TIME_WAIT, and reusing it races the new tunnel.
   LOCAL_PORT=$((LOCAL_PORT + 1))
-  kubectl -n "$NS" port-forward "pod/$pod" "$LOCAL_PORT":3000 >/tmp/failover_pf.log 2>&1 &
-  PF_PID=$!
+  PF_PID=$(k3d_start_port_forward "$NS" "pod/$pod" "$LOCAL_PORT" 3000 /tmp/failover_pf.log)
   # Wait for a real HTTP 200 from the durable surface, not just a TCP accept: the
   # kubectl local listener accepts before the pod tunnel is ready, so an early fetch
   # would ECONNRESET. Polling an actual request proves the tunnel end-to-end.
@@ -69,14 +68,7 @@ drive() {
 }
 
 log "1/5 build the server binary on the host (rustc 1.96)"
-RUSTUP_TOOLCHAIN=1.96.0 cargo build -q -p awaken-scenario-host --bin awaken-scenario-host
-BIN=$(RUSTUP_TOOLCHAIN=1.96.0 cargo build -p awaken-scenario-host --bin awaken-scenario-host --message-format=json 2>/dev/null \
-  | python3 -c "import sys,json
-for l in sys.stdin:
- try:
-  m=json.loads(l)
-  if m.get('executable') and m.get('target',{}).get('name')=='awaken-scenario-host': print(m['executable'])
- except Exception: pass" | tail -1)
+BIN=$(resolve_cargo_executable awaken-scenario-host awaken-scenario-host)
 [ -n "$BIN" ] || { echo 'could not resolve binary'; exit 1; }
 cp "$BIN" "$DEPLOY_DIR/awaken-server"
 
@@ -84,43 +76,15 @@ log "2/5 build the topology image (copy-in, no in-container rust build)"
 docker build --load -q -t "$IMAGE" -f "$DEPLOY_DIR/Dockerfile.server" "$DEPLOY_DIR" >/dev/null
 
 log "3/5 create MULTI-node k3d cluster $CLUSTER (server + 2 agents)"
-k3d cluster delete "$CLUSTER" >/dev/null 2>&1 || true
 # 2 agents so the two anti-affinity'd brain replicas land on distinct nodes.
-k3d cluster create "$CLUSTER" --agents 2 --wait --timeout 180s \
-  --runtime-ulimit "nofile=65536:65536" >/dev/null
+k3d_create_cluster "$CLUSTER" 2 2
 
 log "4/5 side-load images into the cluster (k3d image import → all nodes)"
-# k3d image import handles the docker-save → containerd format across every node in
-# one call (robust under docker's containerd image store, where a hand-rolled
-# `docker save | ctr import` trips on unresolved config digests). The app image is
-# never pullable (imagePullPolicy: Never); postgres/coredns/pause are pre-pulled to
-# the host so an offline cluster node need not reach a registry.
-PAUSE_IMG=$(docker exec "$NODE" sh -c 'grep -hoE "sandbox_image = \"[^\"]+\"" /var/lib/rancher/k3s/agent/etc/containerd/config.toml* 2>/dev/null | head -1 | cut -d\" -f2' 2>/dev/null)
-PAUSE_IMG=${PAUSE_IMG:-rancher/mirrored-pause:3.6}
-COREDNS_IMG=$(kubectl -n kube-system get deploy coredns -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)
-COREDNS_IMG=${COREDNS_IMG:-rancher/mirrored-coredns-coredns:1.10.1}
-# docker's containerd image store keeps the full multi-arch INDEX under a tag even
-# after a --platform pull, and `docker save <tag>` exports that index — whose other
-# platforms' (windows, unknown) config blobs are absent locally, so k3s's ctr fails
-# with "content digest not found". `docker save --platform linux/amd64 -o file.tar`
-# exports a single clean manifest; k3d then imports the tar into every node. The app
-# image is local-only (never pullable); the rest are pre-pulled for an offline node.
-for img in "$PAUSE_IMG" "$COREDNS_IMG" postgres:16; do
-  docker image inspect "$img" >/dev/null 2>&1 || docker pull -q "$img" >/dev/null
-done
-TARDIR=$(mktemp -d)
-docker save --platform linux/amd64 -o "$TARDIR/app.tar"     "$IMAGE"
-docker save --platform linux/amd64 -o "$TARDIR/pause.tar"   "$PAUSE_IMG"
-docker save --platform linux/amd64 -o "$TARDIR/coredns.tar" "$COREDNS_IMG"
-docker save --platform linux/amd64 -o "$TARDIR/pg.tar"      postgres:16
-k3d image import "$TARDIR"/app.tar "$TARDIR"/pause.tar "$TARDIR"/coredns.tar "$TARDIR"/pg.tar -c "$CLUSTER" >/dev/null
-rm -rf "$TARDIR"
-kubectl -n kube-system delete pod -l k8s-app=kube-dns >/dev/null 2>&1 || true
-kubectl -n kube-system rollout status deploy/coredns --timeout=90s
+k3d_import_images "$CLUSTER" "$IMAGE" postgres:16
 kubectl create namespace "$NS" >/dev/null 2>&1 || true
 
 log "5/5 apply the fleet and drive the cross-node failover scenario"
-kubectl -n "$NS" apply -f "$DEPLOY_DIR/failover-postgres.yaml" >/dev/null
+kubectl -n "$NS" apply -k "$DEPLOY_DIR/failover" >/dev/null
 echo "waiting for postgres..."
 kubectl -n "$NS" rollout status deploy/postgres --timeout=120s
 echo "waiting for the brain owner (readiness proves the shared PG backend is up)..."

@@ -15,11 +15,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // itself has no ambient compatibility path.
     let observability = scenario_observability();
     awaken_observability::init(&observability);
-    // The single role axis (`AWAKEN_ROLE`, with backward-compatible inference from
-    // the historic `AWAKEN_UPSTREAM_URL`). Worker is an execution endpoint that never
-    // starts the HTTP surface; Serve is the default — single-machine all-in-one, or a
-    // coordinator when the local pool is disabled. (The hand is now the separate
-    // `awaken-sandbox hand` execution-plane binary, not a server role.)
+    // The scenario-only role axis (`AWAKEN_SCENARIO_ROLE`). Worker is an execution
+    // endpoint that never starts the HTTP surface; Serve is the default —
+    // single-machine all-in-one, or a coordinator when the local pool is disabled.
+    // The hand is the separate `awaken-sandbox hand` execution-plane binary.
     if std::env::var("AWAKEN_SCENARIO_ROLE").as_deref() == Ok("worker") {
         let upstream = std::env::var("AWAKEN_UPSTREAM_URL").unwrap_or_default();
         // Test-only echo-draining worker (the worker-pool e2e). The production

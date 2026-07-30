@@ -307,7 +307,7 @@ pub fn build_error_router() -> Router {
 /// way a self-hosted worker executes the session's tool calls. Heartbeats the lease
 /// and stops the work on completion. `AWAKEN_MODEL_MODE=worker`.
 /// Run this process as a database-less **echo worker** of the cell server at
-/// `upstream` — the test-only drain the worker-pool e2e spawns (`AWAKEN_ROLE=worker`
+/// `upstream` — the test-only drain the worker-pool e2e spawns (`AWAKEN_SCENARIO_ROLE=worker`
 /// on this scenario host). Its dispatch pool claims/settles runs over the server's
 /// dispatch transport and posts committed facts back over the commit ingest
 /// (`with_upstream`); it holds no store and serves no HTTP. A deterministic

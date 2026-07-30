@@ -20,6 +20,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
+source "$REPO_ROOT/e2e/k3d/harness.sh"
 CLUSTER="awaken-scaling"
 IMAGE="awaken-topology:latest"
 NS="awaken-scaling"
@@ -28,7 +29,6 @@ KEEP_CLUSTER="${AWAKEN_K3D_KEEP:-0}"
 LOCAL_PORT="${SCALING_LOCAL_PORT:-38631}"
 M="${1:-15}"
 DEPLOY_DIR="$REPO_ROOT/deploy/k3d"
-NODE="k3d-$CLUSTER-server-0"
 DRIVER="$REPO_ROOT/e2e/k3d/scaling_driver.ts"
 PF_PID=""
 
@@ -49,7 +49,7 @@ cleanup() {
     return
   fi
   log "teardown: deleting k3d cluster $CLUSTER"
-  k3d cluster delete "$CLUSTER" >/dev/null 2>&1 || true
+  k3d_delete_cluster "$CLUSTER"
   rm -f "$DEPLOY_DIR/awaken-server"
 }
 trap cleanup EXIT
@@ -60,14 +60,7 @@ psql_scalar() { kubectl -n "$NS" exec deploy/postgres -- env PGPASSWORD=test psq
 psql_scalar_quiet() { psql_scalar "$1" 2>/dev/null; }
 
 log "1/5 build the server binary on the host (rustc 1.96)"
-RUSTUP_TOOLCHAIN=1.96.0 cargo build -q -p awaken-scenario-host --bin awaken-scenario-host
-BIN=$(RUSTUP_TOOLCHAIN=1.96.0 cargo build -p awaken-scenario-host --bin awaken-scenario-host --message-format=json 2>/dev/null \
-  | python3 -c "import sys,json
-for l in sys.stdin:
- try:
-  m=json.loads(l)
-  if m.get('executable') and m.get('target',{}).get('name')=='awaken-scenario-host': print(m['executable'])
- except Exception: pass" | tail -1)
+BIN=$(resolve_cargo_executable awaken-scenario-host awaken-scenario-host)
 [ -n "$BIN" ] || { echo 'could not resolve binary'; exit 1; }
 cp "$BIN" "$DEPLOY_DIR/awaken-server"
 
@@ -75,38 +68,18 @@ log "2/5 build the topology image (copy-in, no in-container rust build)"
 docker build --load -q -t "$IMAGE" -f "$DEPLOY_DIR/Dockerfile.server" "$DEPLOY_DIR" >/dev/null
 
 log "3/5 create MULTI-node k3d cluster $CLUSTER (server + $AGENTS agent(s))"
-k3d cluster delete "$CLUSTER" >/dev/null 2>&1 || true
 # Relax the kubelet disk-eviction thresholds: on a busy dev host (docker images +
 # Rust target dir) the shared disk can sit past k3s's default nodefs/imagefs<10%,
 # which taints the node DiskPressure and refuses to schedule the postgres pod. This
 # is a test box, not a capacity test, so push eviction to ~2%.
-EVICT="eviction-hard=imagefs.available<2%,nodefs.available<2%"
-k3d cluster create "$CLUSTER" --agents "$AGENTS" --wait --timeout 180s \
-  --runtime-ulimit "nofile=65536:65536" \
-  --k3s-arg "--kubelet-arg=$EVICT@server:*" \
-  --k3s-arg "--kubelet-arg=$EVICT@agent:*" >/dev/null
+k3d_create_cluster "$CLUSTER" "$AGENTS" 2
 
 log "4/5 side-load images into the cluster (single-platform tars → all nodes)"
-PAUSE_IMG=$(docker exec "$NODE" sh -c 'grep -hoE "sandbox_image = \"[^\"]+\"" /var/lib/rancher/k3s/agent/etc/containerd/config.toml* 2>/dev/null | head -1 | cut -d\" -f2' 2>/dev/null)
-PAUSE_IMG=${PAUSE_IMG:-rancher/mirrored-pause:3.6}
-COREDNS_IMG=$(kubectl -n kube-system get deploy coredns -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)
-COREDNS_IMG=${COREDNS_IMG:-rancher/mirrored-coredns-coredns:1.10.1}
-for img in "$PAUSE_IMG" "$COREDNS_IMG" postgres:16; do
-  docker image inspect "$img" >/dev/null 2>&1 || docker pull -q "$img" >/dev/null
-done
-TARDIR=$(mktemp -d)
-docker save --platform linux/amd64 -o "$TARDIR/app.tar"     "$IMAGE"
-docker save --platform linux/amd64 -o "$TARDIR/pause.tar"   "$PAUSE_IMG"
-docker save --platform linux/amd64 -o "$TARDIR/coredns.tar" "$COREDNS_IMG"
-docker save --platform linux/amd64 -o "$TARDIR/pg.tar"      postgres:16
-k3d image import "$TARDIR"/app.tar "$TARDIR"/pause.tar "$TARDIR"/coredns.tar "$TARDIR"/pg.tar -c "$CLUSTER" >/dev/null
-rm -rf "$TARDIR"
-kubectl -n kube-system delete pod -l k8s-app=kube-dns >/dev/null 2>&1 || true
-kubectl -n kube-system rollout status deploy/coredns --timeout=90s
+k3d_import_images "$CLUSTER" "$IMAGE" postgres:16
 kubectl create namespace "$NS" >/dev/null 2>&1 || true
 
 log "5/5 apply the fleet and drive the scaling + consistency scenario (M=$M)"
-kubectl -n "$NS" apply -f "$DEPLOY_DIR/scaling-postgres.yaml" >/dev/null
+kubectl -n "$NS" apply -k "$DEPLOY_DIR/scaling" >/dev/null
 echo "waiting for postgres..."
 kubectl -n "$NS" rollout status deploy/postgres --timeout=120s
 echo "waiting for the concurrently starting brain fleet (3 replicas)..."
@@ -119,8 +92,7 @@ kubectl -n "$NS" get pods -l app=brain -o custom-columns=POD:.metadata.name,NODE
 
 # Port-forward the load-balanced Service so submissions fan out across the fleet.
 LOCAL_PORT=$((LOCAL_PORT + 1))
-kubectl -n "$NS" port-forward svc/brain "$LOCAL_PORT":3000 >/tmp/scaling_pf.log 2>&1 &
-PF_PID=$!
+PF_PID=$(k3d_start_port_forward "$NS" svc/brain "$LOCAL_PORT" 3000 /tmp/scaling_pf.log)
 for _ in $(seq 1 60); do
   curl -fsS -o /dev/null "http://127.0.0.1:$LOCAL_PORT/v1/durable/threads/probe/messages" 2>/dev/null && break
   sleep 1

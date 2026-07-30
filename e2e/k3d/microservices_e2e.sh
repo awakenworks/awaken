@@ -19,6 +19,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
+source "$REPO_ROOT/e2e/k3d/harness.sh"
 CLUSTER="awaken-micro"
 IMAGE="awaken-topology:latest"
 NS="awaken-micro"
@@ -26,7 +27,6 @@ LOCAL_PORT="${MICRO_LOCAL_PORT:-38651}"
 THREAD="micro-1"
 MARKER="REMOTE-HAND-OK-9f31"
 DEPLOY_DIR="$REPO_ROOT/deploy/k3d"
-NODE="k3d-$CLUSTER-server-0"
 DRIVER="$REPO_ROOT/e2e/k3d/microservices_driver.ts"
 export CARGO_CACHE_AUTOCLEAN=0
 PF_PID=""
@@ -38,65 +38,53 @@ err() { echo -e "\033[1;31m$*\033[0m"; }
 cleanup() {
   [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null || true
   log "teardown: deleting k3d cluster $CLUSTER"
-  k3d cluster delete "$CLUSTER" >/dev/null 2>&1 || true
-  rm -f "$DEPLOY_DIR/awaken-server"
+  k3d_delete_cluster "$CLUSTER"
+  rm -f "$DEPLOY_DIR/awaken-server" "$DEPLOY_DIR/awaken-sandbox"
 }
 trap cleanup EXIT
 
 # psql on the postgres pod (authoritative source of truth); -tA = bare scalar.
 psql_scalar() { kubectl -n "$NS" exec deploy/postgres -- env PGPASSWORD=test psql -U postgres -d awaken -tAc "$1" 2>/dev/null | tr -d '[:space:]'; }
 
-log "1/5 build the server binary on the host (rustc 1.96)"
-RUSTUP_TOOLCHAIN=1.96.0 cargo build -q -p awaken-scenario-host --bin awaken-scenario-host
-BIN=$(RUSTUP_TOOLCHAIN=1.96.0 cargo build -p awaken-scenario-host --bin awaken-scenario-host --message-format=json 2>/dev/null \
-  | python3 -c "import sys,json
-for l in sys.stdin:
- try:
-  m=json.loads(l)
-  if m.get('executable') and m.get('target',{}).get('name')=='awaken-scenario-host': print(m['executable'])
- except Exception: pass" | tail -1)
-[ -n "$BIN" ] || { echo 'could not resolve binary'; exit 1; }
-cp "$BIN" "$DEPLOY_DIR/awaken-server"
+log "1/5 build the brain + canonical hand binaries on the host (rustc 1.96)"
+BRAIN_BIN=$(resolve_cargo_executable awaken-scenario-host awaken-scenario-host)
+HAND_BIN=$(resolve_cargo_executable awaken-sandbox awaken-sandbox --features hand)
+[ -n "$BRAIN_BIN" ] && [ -n "$HAND_BIN" ] || { echo 'could not resolve binaries'; exit 1; }
+cp "$BRAIN_BIN" "$DEPLOY_DIR/awaken-server"
+cp "$HAND_BIN" "$DEPLOY_DIR/awaken-sandbox"
 
 log "2/5 build the topology image (copy-in, no in-container rust build)"
-docker build --load -q -t "$IMAGE" -f "$DEPLOY_DIR/Dockerfile.server" "$DEPLOY_DIR" >/dev/null
+docker build --load -q -t "$IMAGE" -f "$DEPLOY_DIR/Dockerfile" "$DEPLOY_DIR" >/dev/null
 
 log "3/5 create k3d cluster $CLUSTER (single node; 3 pods on one box)"
-k3d cluster delete "$CLUSTER" >/dev/null 2>&1 || true
 # Relax the kubelet disk-eviction thresholds: on a busy dev host (docker images +
 # Rust target dir) the shared disk can sit past k3s's default nodefs/imagefs<10%,
 # which taints the node DiskPressure and refuses to schedule pods. Test box, not a
 # capacity test, so push eviction to ~2%.
-EVICT="eviction-hard=imagefs.available<2%,nodefs.available<2%"
-k3d cluster create "$CLUSTER" --agents 0 --wait --timeout 180s \
-  --runtime-ulimit "nofile=65536:65536" \
-  --k3s-arg "--kubelet-arg=$EVICT@server:*" >/dev/null
+k3d_create_cluster "$CLUSTER" 0 2
 
 log "4/5 side-load images into the cluster (single-platform tars → all nodes)"
-PAUSE_IMG=$(docker exec "$NODE" sh -c 'grep -hoE "sandbox_image = \"[^\"]+\"" /var/lib/rancher/k3s/agent/etc/containerd/config.toml* 2>/dev/null | head -1 | cut -d\" -f2' 2>/dev/null)
-PAUSE_IMG=${PAUSE_IMG:-rancher/mirrored-pause:3.6}
-COREDNS_IMG=$(kubectl -n kube-system get deploy coredns -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)
-COREDNS_IMG=${COREDNS_IMG:-rancher/mirrored-coredns-coredns:1.10.1}
-for img in "$PAUSE_IMG" "$COREDNS_IMG" postgres:16; do
-  docker image inspect "$img" >/dev/null 2>&1 || docker pull -q "$img" >/dev/null
-done
-TARDIR=$(mktemp -d)
-docker save --platform linux/amd64 -o "$TARDIR/app.tar"     "$IMAGE"
-docker save --platform linux/amd64 -o "$TARDIR/pause.tar"   "$PAUSE_IMG"
-docker save --platform linux/amd64 -o "$TARDIR/coredns.tar" "$COREDNS_IMG"
-docker save --platform linux/amd64 -o "$TARDIR/pg.tar"      postgres:16
-k3d image import "$TARDIR"/app.tar "$TARDIR"/pause.tar "$TARDIR"/coredns.tar "$TARDIR"/pg.tar -c "$CLUSTER" >/dev/null
-rm -rf "$TARDIR"
-kubectl -n kube-system delete pod -l k8s-app=kube-dns >/dev/null 2>&1 || true
-kubectl -n kube-system rollout status deploy/coredns --timeout=90s
+k3d_import_images "$CLUSTER" "$IMAGE" postgres:16
 kubectl create namespace "$NS" >/dev/null 2>&1 || true
 
 log "5/5 apply the microservices split (postgres + hand + brain) and drive one durable run"
-kubectl -n "$NS" apply -f "$DEPLOY_DIR/microservices-postgres.yaml" >/dev/null
+# Cause/effect decision table for this composed scenario:
+# M1 Postgres + canonical Direct topology + durable brain patch -> three Ready
+# services and one exactly-once remote-hand commit; M2 hand cannot listen -> hand
+# and then brain readiness fail with diagnostics; M3 Postgres cannot serve -> the
+# brain cannot become Ready; M4 execution/commit fails -> authoritative SQL counts
+# or the remote-hand marker assertion fails. These are terminal hard failures.
+kubectl -n "$NS" apply -k "$DEPLOY_DIR/microservices" >/dev/null
 echo "waiting for postgres..."
 kubectl -n "$NS" rollout status deploy/postgres --timeout=120s
 echo "waiting for the hand pod (its listen port proves the executor channel is up)..."
-kubectl -n "$NS" rollout status deploy/hand --timeout=120s
+if ! kubectl -n "$NS" rollout status deploy/hand --timeout=120s; then
+  err "hand never became ready"
+  kubectl -n "$NS" get pods -o wide || true
+  kubectl -n "$NS" get events --sort-by=.lastTimestamp | tail -30 || true
+  kubectl -n "$NS" logs deploy/hand --tail=30 || true
+  exit 1
+fi
 echo "waiting for the brain pod (readiness proves postgres + hand links are up)..."
 if ! kubectl -n "$NS" rollout status deploy/brain --timeout=150s; then
   err "brain never became ready"; kubectl -n "$NS" get pods -o wide || true
@@ -108,8 +96,7 @@ kubectl -n "$NS" get pods -o custom-columns=POD:.metadata.name,APP:.metadata.lab
 
 # Port-forward the brain's durable HTTP surface; poll a REAL 200 before driving.
 LOCAL_PORT=$((LOCAL_PORT + 1))
-kubectl -n "$NS" port-forward svc/brain "$LOCAL_PORT":3000 >/tmp/micro_pf.log 2>&1 &
-PF_PID=$!
+PF_PID=$(k3d_start_port_forward "$NS" svc/brain "$LOCAL_PORT" 3000 /tmp/micro_pf.log)
 READY=0
 for _ in $(seq 1 60); do
   if curl -fsS -o /dev/null "http://127.0.0.1:$LOCAL_PORT/v1/durable/threads/probe/messages" 2>/dev/null; then READY=1; break; fi

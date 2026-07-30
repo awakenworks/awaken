@@ -1,0 +1,32 @@
+# Two database-less scenario Workers drain the canonical Coordinator over HTTP.
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: worker, labels: { app: worker } }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: worker } }
+  template:
+    metadata: { labels: { app: worker } }
+    spec:
+      terminationGracePeriodSeconds: 1
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector: { matchLabels: { app: worker } }
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: worker
+          image: awaken-topology:latest
+          imagePullPolicy: Never
+          env:
+            - { name: AWAKEN_SCENARIO_ROLE, value: worker }
+            - name: AWAKEN_WORKER_ID
+              valueFrom:
+                fieldRef: { fieldPath: metadata.name }
+            - { name: AWAKEN_UPSTREAM_URL, value: "http://brain:3000" }
+            - { name: AWAKEN_WORKER_ADMIN_LISTEN, value: "0.0.0.0:9090" }
+          ports: [ { containerPort: 9090 } ]
+          readinessProbe:
+            tcpSocket: { port: 9090 }
+            initialDelaySeconds: 2
+            periodSeconds: 2

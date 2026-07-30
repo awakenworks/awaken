@@ -1,0 +1,20 @@
+# Three brain replicas use NATS instead of pg_notify for wake hints.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: brain
+spec:
+  replicas: 3
+  template:
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app: brain }
+      containers:
+        - name: brain
+          env:
+            - { name: SESSION_DEPLOYMENT_WAKE, value: nats }
+            - { name: SESSION_DEPLOYMENT_NATS_URL, value: "nats://nats:4222" }

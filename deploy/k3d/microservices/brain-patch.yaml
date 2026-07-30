@@ -1,0 +1,23 @@
+# Durable-runtime extension for the canonical Direct-topology brain Deployment.
+# Kubernetes strategic merge keys the container and environment entries by name,
+# preserving the Direct model/hand/HTTP settings owned by the topology-direct base.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: brain
+spec:
+  template:
+    spec:
+      containers:
+        - name: brain
+          env:
+            - { name: SESSION_DEPLOYMENT_INGRESS, value: durable }
+            - { name: SESSION_DEPLOYMENT_STORE, value: postgres }
+            - { name: SESSION_DEPLOYMENT_DISPATCH_BACKEND, value: postgres }
+            - { name: SESSION_DEPLOYMENT_DATABASE_URL, value: "postgres://postgres:test@postgres:5432/awaken" }
+            - { name: SESSION_DEPLOYMENT_WAKE, value: pg-notify }
+            - { name: SESSION_DEPLOYMENT_POSTGRES_MAX_CONNECTIONS, value: "8" }
+            - { name: SESSION_DEPLOYMENT_STORAGE_DIR, value: "/tmp/awaken" }
+            - name: SESSION_DEPLOYMENT_DISPATCH_OWNER
+              valueFrom:
+                fieldRef: { fieldPath: metadata.name }

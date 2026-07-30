@@ -378,6 +378,12 @@ cite the rule they cover.
 | E9 | preview loss or client reconnect | committed snapshot backfills the complete terminal response |
 | E10 | Memory CAS conflict | no silent overwrite; typed conflict/recovery outcome |
 
+The concrete multi-process topology, cluster lifecycle, and fault-injection
+entry points are owned by the
+[K3D distributed test topology guide](../../deploy/k3d/README.md). Kustomize
+overlays reuse one Postgres fixture and one Direct brain/hand fixture so these
+verification rules cannot pass through a stale parallel deployment path.
+
 ## Guardrails
 
 G1, G2, G3, G4, G5, G6, G8, G9, G10, G13, G18, G23, G28, G29,

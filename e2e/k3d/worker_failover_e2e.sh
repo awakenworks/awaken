@@ -27,12 +27,12 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
+source "$REPO_ROOT/e2e/k3d/harness.sh"
 CLUSTER="awaken-wfailover"
 IMAGE="awaken-topology:latest"
 NS="awaken-wfailover"
 LOCAL_PORT="${WFAILOVER_LOCAL_PORT:-38711}"
 DEPLOY_DIR="$REPO_ROOT/deploy/k3d"
-NODE="k3d-$CLUSTER-server-0"
 BATCH="${WFAILOVER_BATCH:-12}"
 PF_PID=""
 
@@ -43,12 +43,12 @@ err() { echo -e "\033[1;31m$*\033[0m"; }
 cleanup() {
   [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null || true
   log "teardown: deleting k3d cluster $CLUSTER"
-  k3d cluster delete "$CLUSTER" >/dev/null 2>&1 || true
+  k3d_delete_cluster "$CLUSTER"
   rm -f "$DEPLOY_DIR/awaken-server"
 }
 trap cleanup EXIT
 
-if ! command -v k3d >/dev/null 2>&1 || ! command -v kubectl >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+if ! k3d_require_tools; then
   echo "k3d/kubectl/docker unavailable; skipping worker-failover e2e"
   exit 0
 fi
@@ -58,8 +58,7 @@ fi
 pf_brain() {
   [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null || true
   LOCAL_PORT=$((LOCAL_PORT + 1))
-  kubectl -n "$NS" port-forward svc/brain "$LOCAL_PORT":3000 >/tmp/wfailover_pf.log 2>&1 &
-  PF_PID=$!
+  PF_PID=$(k3d_start_port_forward "$NS" svc/brain "$LOCAL_PORT" 3000 /tmp/wfailover_pf.log)
   for _ in $(seq 1 60); do
     if curl -fsS -o /dev/null "http://127.0.0.1:$LOCAL_PORT/v1/durable/threads/probe/messages" 2>/dev/null; then
       return 0
@@ -87,14 +86,7 @@ reply_count() {
 }
 
 log "1/6 build the scenario-host binary on the host (rustc 1.96)"
-RUSTUP_TOOLCHAIN=1.96.0 cargo build -q -p awaken-scenario-host --bin awaken-scenario-host
-BIN=$(RUSTUP_TOOLCHAIN=1.96.0 cargo build -p awaken-scenario-host --bin awaken-scenario-host --message-format=json 2>/dev/null \
-  | python3 -c "import sys,json
-for l in sys.stdin:
- try:
-  m=json.loads(l)
-  if m.get('executable') and m.get('target',{}).get('name')=='awaken-scenario-host': print(m['executable'])
- except Exception: pass" | tail -1)
+BIN=$(resolve_cargo_executable awaken-scenario-host awaken-scenario-host)
 [ -n "$BIN" ] || { err 'could not resolve binary'; exit 1; }
 cp "$BIN" "$DEPLOY_DIR/awaken-server"
 
@@ -102,45 +94,20 @@ log "2/6 build the topology image (copy-in, no in-container rust build)"
 docker build --load -q -t "$IMAGE" -f "$DEPLOY_DIR/Dockerfile.server" "$DEPLOY_DIR" >/dev/null
 
 log "3/6 create MULTI-node k3d cluster $CLUSTER (server + agent)"
-k3d cluster delete "$CLUSTER" >/dev/null 2>&1 || true
 # The server is schedulable, so one server plus one agent is the smallest topology
 # that still proves cross-node worker replacement. Keeping this fixture minimal also
 # avoids consuming a third k3s node's inotify/cAdvisor budget on shared CI hosts.
 # This is a correctness gate rather than a capacity test. Busy developer hosts can
 # have ample absolute space while falling below kubelet's default percentage-based
 # eviction threshold, so use a conservative 1% floor on both node roles.
-EVICT="eviction-hard=imagefs.available<1%,nodefs.available<1%"
-k3d cluster create "$CLUSTER" --agents 1 --wait --timeout 180s \
-  --runtime-ulimit "nofile=65536:65536" \
-  --k3s-arg "--kubelet-arg=$EVICT@server:*" \
-  --k3s-arg "--kubelet-arg=$EVICT@agent:*" >/dev/null
+k3d_create_cluster "$CLUSTER" 1 1
 
 log "4/6 side-load single-platform images into every node"
-# Reuse the repository's established k3d import path. Docker's containerd image
-# store retains a multi-arch index under pulled tags; importing that tag directly
-# can reference absent configs and fail with "content digest not found". Explicit
-# linux/amd64 archives contain only materialized manifests. Preloading k3s system
-# images also keeps the application phase independent of registry availability.
-PAUSE_IMG=$(docker exec "$NODE" sh -c 'grep -hoE "sandbox_image = \"[^\"]+\"" /var/lib/rancher/k3s/agent/etc/containerd/config.toml* 2>/dev/null | head -1 | cut -d\" -f2' 2>/dev/null)
-PAUSE_IMG=${PAUSE_IMG:-rancher/mirrored-pause:3.6}
-COREDNS_IMG=$(kubectl -n kube-system get deploy coredns -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)
-COREDNS_IMG=${COREDNS_IMG:-rancher/mirrored-coredns-coredns:1.10.1}
-for img in "$PAUSE_IMG" "$COREDNS_IMG" postgres:16; do
-  docker image inspect "$img" >/dev/null 2>&1 || docker pull -q "$img" >/dev/null
-done
-TARDIR=$(mktemp -d)
-docker save --platform linux/amd64 -o "$TARDIR/app.tar" "$IMAGE"
-docker save --platform linux/amd64 -o "$TARDIR/pause.tar" "$PAUSE_IMG"
-docker save --platform linux/amd64 -o "$TARDIR/coredns.tar" "$COREDNS_IMG"
-docker save --platform linux/amd64 -o "$TARDIR/pg.tar" postgres:16
-k3d image import "$TARDIR"/app.tar "$TARDIR"/pause.tar "$TARDIR"/coredns.tar "$TARDIR"/pg.tar -c "$CLUSTER" >/dev/null
-rm -rf "$TARDIR"
-kubectl -n kube-system delete pod -l k8s-app=kube-dns >/dev/null 2>&1 || true
-kubectl -n kube-system rollout status deploy/coredns --timeout=90s
+k3d_import_images "$CLUSTER" "$IMAGE" postgres:16
 
 log "5/6 apply the coordinator + worker fleet"
 kubectl create namespace "$NS" >/dev/null 2>&1 || true
-kubectl -n "$NS" apply -f "$DEPLOY_DIR/worker-failover-postgres.yaml" >/dev/null
+kubectl -n "$NS" apply -k "$DEPLOY_DIR/worker-failover" >/dev/null
 kubectl -n "$NS" rollout status deploy/postgres --timeout=120s
 if ! kubectl -n "$NS" rollout status deploy/brain --timeout=150s; then
   err "brain never became ready"

@@ -13,13 +13,13 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
+source "$REPO_ROOT/e2e/k3d/harness.sh"
 CLUSTER="awaken-topo"
 IMAGE="awaken-topology:latest"
 NS="awaken-topo"
 LOCAL_PORT="${TOPO_LOCAL_PORT:-38601}"
 MARKER="REMOTE-HAND-OK-9f31"
 DEPLOY_DIR="$REPO_ROOT/deploy/k3d"
-NODE="k3d-$CLUSTER-server-0"
 WHICH="${1:-all}"
 PF_PID=""
 
@@ -30,15 +30,10 @@ err() { echo -e "\033[1;31m$*\033[0m"; }
 cleanup() {
   [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null || true
   log "teardown: deleting k3d cluster $CLUSTER"
-  k3d cluster delete "$CLUSTER" >/dev/null 2>&1 || true
+  k3d_delete_cluster "$CLUSTER"
   rm -f "$DEPLOY_DIR/awaken-server" "$DEPLOY_DIR/awaken-sandbox"
 }
 trap cleanup EXIT
-
-load_image() {
-  docker image inspect "$1" >/dev/null 2>&1 || docker pull -q "$1" >/dev/null
-  docker save "$1" | docker exec -i "$NODE" ctr -n k8s.io images import - >/dev/null
-}
 
 # Drive one topology: apply its manifest, wait for the brain (its readiness proves
 # the executor channel is up), port-forward, run a turn, assert the marker.
@@ -50,7 +45,11 @@ run_topology() {
   log "topology '$name': apply $manifest (namespace $NS)"
   kubectl delete namespace "$NS" --wait=true >/dev/null 2>&1 || true
   kubectl create namespace "$NS" >/dev/null
-  kubectl -n "$NS" apply -f "$DEPLOY_DIR/$manifest" >/dev/null
+  if [ -d "$DEPLOY_DIR/$manifest" ]; then
+    kubectl -n "$NS" apply -k "$DEPLOY_DIR/$manifest" >/dev/null
+  else
+    kubectl -n "$NS" apply -f "$DEPLOY_DIR/$manifest" >/dev/null
+  fi
   echo "waiting for rollouts (brain readiness proves the $name channel)..."
   # Relay: the hand has no listening port (it dials the broker), so wait for its
   # pod to be Running and give it a moment to subscribe before the first request.
@@ -67,8 +66,7 @@ run_topology() {
     return 1
   fi
 
-  kubectl -n "$NS" port-forward svc/brain "$LOCAL_PORT":3000 >/tmp/topo_pf.log 2>&1 &
-  PF_PID=$!
+  PF_PID=$(k3d_start_port_forward "$NS" svc/brain "$LOCAL_PORT" 3000 /tmp/topo_pf.log)
   for _ in $(seq 1 30); do
     (exec 3<>"/dev/tcp/127.0.0.1/$LOCAL_PORT") 2>/dev/null && { exec 3>&- 3<&-; break; }
     sleep 1
@@ -101,21 +99,8 @@ run_topology() {
 }
 
 log "1/5 build the brain (scenario-host) + hand (awaken-sandbox --features hand) binaries (rustc 1.96)"
-resolve_executable() { # resolve_executable <pkg> <bin-target-name> [extra cargo args...]
-  local pkg="$1" bin="$2"
-  shift 2
-  RUSTUP_TOOLCHAIN=1.96.0 cargo build -q -p "$pkg" --bin "$bin" "$@"
-  RUSTUP_TOOLCHAIN=1.96.0 cargo build -p "$pkg" --bin "$bin" "$@" --message-format=json 2>/dev/null \
-    | BN="$bin" python3 -c "import sys,json,os
-bn=os.environ['BN']
-for l in sys.stdin:
- try:
-  m=json.loads(l)
-  if m.get('executable') and m.get('target',{}).get('name')==bn: print(m['executable'])
- except Exception: pass" | tail -1
-}
-BRAIN_BIN=$(resolve_executable awaken-scenario-host awaken-scenario-host)
-HAND_BIN=$(resolve_executable awaken-sandbox awaken-sandbox --features hand)
+BRAIN_BIN=$(resolve_cargo_executable awaken-scenario-host awaken-scenario-host)
+HAND_BIN=$(resolve_cargo_executable awaken-sandbox awaken-sandbox --features hand)
 [ -n "$BRAIN_BIN" ] && [ -n "$HAND_BIN" ] || { echo 'could not resolve binaries'; exit 1; }
 cp "$BRAIN_BIN" "$DEPLOY_DIR/awaken-server"
 cp "$HAND_BIN" "$DEPLOY_DIR/awaken-sandbox"
@@ -124,36 +109,21 @@ log "2/5 build the topology image (copy-in, no in-container rust build)"
 docker build --load -q -t "$IMAGE" -f "$DEPLOY_DIR/Dockerfile" "$DEPLOY_DIR" >/dev/null
 
 log "3/5 create k3d cluster $CLUSTER (single node)"
-k3d cluster delete "$CLUSTER" >/dev/null 2>&1 || true
-k3d cluster create "$CLUSTER" --agents 0 --wait --timeout 180s \
-  --runtime-ulimit "nofile=65536:65536" >/dev/null
+k3d_create_cluster "$CLUSTER" 0 2
 
 log "4/5 side-load images into the node's containerd (offline cluster)"
-# The cluster nodes have no outbound internet, so containerd cannot pull ANY image
-# (app, pod-sandbox 'pause', or CoreDNS). The host does, so pull there and stream
-# each image into the node's k8s.io containerd namespace. CoreDNS must be loaded
-# too, else the brain's Service-DNS lookup of the hand hangs.
-PAUSE_IMG=$(docker exec "$NODE" sh -c 'grep -hoE "sandbox_image = \"[^\"]+\"" /var/lib/rancher/k3s/agent/etc/containerd/config.toml* 2>/dev/null | head -1 | cut -d\" -f2' 2>/dev/null)
-PAUSE_IMG=${PAUSE_IMG:-rancher/mirrored-pause:3.6}
-COREDNS_IMG=$(kubectl -n kube-system get deploy coredns -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)
-COREDNS_IMG=${COREDNS_IMG:-rancher/mirrored-coredns-coredns:1.10.1}
-load_image "$PAUSE_IMG"
-load_image "$COREDNS_IMG"
-load_image "$IMAGE"
-load_image nats:2   # the Relay topology's broker
-kubectl -n kube-system delete pod -l k8s-app=kube-dns >/dev/null 2>&1 || true
-kubectl -n kube-system rollout status deploy/coredns --timeout=90s
+k3d_import_images "$CLUSTER" "$IMAGE" nats:2
 kubectl create namespace "$NS" >/dev/null 2>&1 || true
 
 log "5/5 run topologies: $WHICH"
 FAILED=0
 case "$WHICH" in
-  direct)  run_topology direct  topology-direct.yaml  || FAILED=1 ;;
+  direct)  run_topology direct  bases/topology-direct  || FAILED=1 ;;
   reverse) run_topology reverse topology-reverse.yaml || FAILED=1 ;;
   relay)   run_topology relay   topology-relay.yaml   || FAILED=1 ;;
-  both)    run_topology direct  topology-direct.yaml  || FAILED=1
+  both)    run_topology direct  bases/topology-direct  || FAILED=1
            run_topology reverse topology-reverse.yaml || FAILED=1 ;;
-  *)       run_topology direct  topology-direct.yaml  || FAILED=1
+  *)       run_topology direct  bases/topology-direct  || FAILED=1
            run_topology reverse topology-reverse.yaml || FAILED=1
            run_topology relay   topology-relay.yaml   || FAILED=1 ;;
 esac

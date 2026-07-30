@@ -28,7 +28,7 @@
 
 ## 1. 部署轴(D 因)——配置等价类
 
-真实选择器锚定 `crates/bin/awaken-cli/src/{config,main,lib}.rs`、`awaken-runtime-host/src/{deployment_config,dispatch_backend,acp_backend,sandbox_source}.rs`、`awaken-worker`、`awaken-sandbox`、`deploy/k3d/*.yaml`。
+The concrete selectors are anchored in `crates/bin/awaken-cli/src/{config,main,lib}.rs`, `awaken-runtime-host/src/{deployment_config,dispatch_backend,acp_backend,sandbox_source}.rs`, `awaken-worker`, `awaken-sandbox`, and the Kustomize resources under `deploy/k3d/`.
 
 | D# | 轴 | 选择器 | 等价类(值) | 默认 |
 |---|---|---|---|---|
@@ -503,8 +503,8 @@ MCP:           F77/F79 → E4(工具注入) ; F78 → 工具列表 version bump
 **残余范围(需 k8s 活集群 / 重特性构建,机制已被单测覆盖,故文档化而非造 stub):**
 
 - **N7b**(`--features container-k8s` 构建下 k8s tier 缺 `AWAKEN_K8S_AGENT_ADDR` 报错):错误在连集群前返回,无需集群,但需重编 kube 依赖。机制同 N6 模式;k8s pids fail-closed 已由 `awaken-sandbox-container` 的 `a_pids_limit_is_flagged_unenforceable_on_k8s_so_create_fails_closed`(M8/T55)单测覆盖。运行:`cargo test -p awaken-sandbox-container --features container-k8s`。
-- **N10 / F55**(k3d 活集群:封闭 pod 无反向 hand 不可达 / k8s pids create 级 fail-closed):需 `deploy/k3d/*.yaml` + 活集群。正向拓扑已由 `e2e/k3d/topology_e2e.sh`(reverse `--dial`)覆盖;负向为集群测。运行:`bash e2e/k3d/<scenario>_e2e.sh`(需 `k3d cluster create`)。
-- **F35/F34/F41 pg 分布式**、**S5–S9 postgres 场景**:需 typed `database_url` 指向活 Postgres,现有 `durable_pg_*`/`durable_soak_*` + `deploy/k3d/*postgres*.yaml` 覆盖,pg 限的存储/派工单测在无 DSN 时静默早返回(非跳过声明,已在 M10/M11 文档标注)。
+- **N10 / F55** requires a live k3d cluster for the unreachable reverse-hand and Kubernetes pids fail-closed cases. The positive topologies are covered by `e2e/k3d/topology_e2e.sh`; cluster resources are composed from `deploy/k3d/`. Run `bash e2e/k3d/<scenario>_e2e.sh`.
+- **F35/F34/F41 and S5–S9** require a typed `database_url` backed by live Postgres. Existing `durable_pg_*` and `durable_soak_*` tests plus the Postgres-based overlays under `deploy/k3d/` own that coverage; Postgres-only unit tests without a DSN remain documented in M10/M11.
 
 **未发现 fail-open 代码 bug**:所有安全敏感 fail-closed 分支在代码中均存在,仅部分欠测;唯一结构性欠测(M6 `RequireApproval` 因无注入 seam 不可达)已通过抽出 `collapse_session_decision` 纯函数修复并钉住。
 7. **与单模块设计的关系**:本份的 F→E 边在跨越模块;每条 F 内部的分支细节(为何 await、为何 fail-closed)由 `cause-effect-graph-test-design.md` 的 112 因/110 果单测护住。两层合起来 = 单元判定表(内部正确)+ e2e 矩阵(集成 × 部署正确)。

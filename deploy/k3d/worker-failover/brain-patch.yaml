@@ -1,0 +1,13 @@
+# Pool-less Coordinator: only the remote Worker fleet drains dispatches.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: brain
+spec:
+  template:
+    spec:
+      terminationGracePeriodSeconds: 2
+      containers:
+        - name: brain
+          env:
+            - { name: SESSION_DEPLOYMENT_DISABLE_LOCAL_POOL, value: "1" }
