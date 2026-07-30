@@ -111,6 +111,8 @@ async fn build_control_assembly_with_model_composition(
         PostgresSchemaMode::Verify,
     )
     .await?;
+    let executable_agent_wiring =
+        executable_agent_registration::ExecutableAgentWiring::control(deployment)?;
     let router = assemble_process_router(
         stores,
         identity.iam,
@@ -128,6 +130,7 @@ async fn build_control_assembly_with_model_composition(
             hand_executors: BTreeMap::new(),
             web_search_providers: web_search.as_ref().map(|value| value.0.clone()),
             web_search_publication_resolver: web_search.map(|value| value.1),
+            executable_agent_wiring: Some(executable_agent_wiring),
         },
         None,
     )

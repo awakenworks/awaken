@@ -20,7 +20,9 @@ use serde::Deserialize;
 
 mod report;
 mod role;
+mod service_boundary;
 pub use role::Role;
+pub use service_boundary::ExecutableAgentRegistrationConfig;
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8080";
 const DEFAULT_WAKE_CHANNEL: &str = "awaken_dispatch_wake";
@@ -196,6 +198,7 @@ pub struct ResolvedDeployment {
     pub org_id: String,
     pub iam_workspaces: Vec<String>,
     pub cloud_iam: CloudIamConfig,
+    pub executable_agent_registration: ExecutableAgentRegistrationConfig,
     pub mcp_bearer_token: Option<String>,
     pub admin_listen: Option<String>,
     pub runtime: DeploymentConfig,
@@ -317,6 +320,30 @@ impl ResolvedDeployment {
             .role
             .or(file.role.as_deref().map(Role::parse).transpose()?)
             .unwrap_or(Role::AllInOne);
+        service_boundary::enforce_worker_database_isolation(
+            role,
+            &[
+                ("runtime_database_url", file.runtime_database_url.is_some()),
+                (
+                    "resource_database_url",
+                    file.resource_database_url.is_some(),
+                ),
+                (
+                    "management_database_url_file",
+                    file.management_database_url_file.is_some(),
+                ),
+                ("catalog_db", file.catalog_db.is_some()),
+                ("credential_db", file.credential_db.is_some()),
+                ("config_db", file.config_db.is_some()),
+                ("admin_db", file.admin_db.is_some()),
+                ("sessions_db", file.sessions_db.is_some()),
+            ],
+        )?;
+        let executable_agent_registration = ExecutableAgentRegistrationConfig::resolve(
+            role,
+            file.coordinator_internal_url.clone(),
+            file.executable_agent_registration_token_file.clone(),
+        )?;
         let worker_server = overrides.worker_server.or(file.worker_server.clone());
         if role == Role::Worker && worker_server.is_none() {
             return Err(
@@ -745,6 +772,7 @@ impl ResolvedDeployment {
                 .unwrap_or_else(|| awaken_control::DEFAULT_ORG_ID.to_owned()),
             iam_workspaces: file.iam_workspaces.unwrap_or_default(),
             cloud_iam,
+            executable_agent_registration,
             mcp_bearer_token: file.mcp_bearer_token,
             admin_listen: file.admin_listen,
             runtime,
@@ -887,6 +915,8 @@ struct FileConfig {
     cloud_iam_issuer: Option<String>,
     cloud_access_token: Option<String>,
     cloud_iam_service_token: Option<String>,
+    coordinator_internal_url: Option<String>,
+    executable_agent_registration_token_file: Option<PathBuf>,
     mcp_bearer_token: Option<String>,
     cloud_iam_service_token_file: Option<PathBuf>,
     admin_listen: Option<String>,
