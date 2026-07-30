@@ -5,8 +5,9 @@ use std::collections::BTreeSet;
 use awaken_runtime_contract::execution::NATIVE_RUNTIME_CAPABILITY;
 use awaken_session_executor::InferenceExecutorMaterializer;
 use awaken_worker_contract::{
-    REPOSITORY_CREDENTIALS_CAPABILITY, SESSION_RESOURCES_CAPABILITY, VersionRange,
-    WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerCapacity, WorkerManifest,
+    PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, REPOSITORY_CREDENTIALS_CAPABILITY,
+    SESSION_RESOURCES_CAPABILITY, VersionRange, WORKER_LOCAL_CREDENTIALS_CAPABILITY,
+    WorkerCapacity, WorkerManifest,
 };
 
 use crate::WorkerResourcePlane;
@@ -167,6 +168,7 @@ pub(crate) struct StandardManifestInputs<'a> {
 
 #[derive(Clone)]
 pub(crate) struct CredentialMaterializerSupport {
+    pub(crate) provider_adapter: awaken_runtime_contract::CredentialRealizationCapabilities,
     pub(crate) process_secret: awaken_runtime_contract::CredentialRealizationCapabilities,
     pub(crate) worker_relay: awaken_runtime_contract::CredentialRealizationCapabilities,
 }
@@ -174,6 +176,7 @@ pub(crate) struct CredentialMaterializerSupport {
 impl From<&awaken_session_executor::PinnedCredentialMaterializer> for CredentialMaterializerSupport {
     fn from(materializer: &awaken_session_executor::PinnedCredentialMaterializer) -> Self {
         Self {
+            provider_adapter: materializer.provider_adapter_capabilities(),
             process_secret: materializer.process_secret_capabilities(),
             worker_relay: materializer.worker_relay_capabilities(),
         }
@@ -210,12 +213,22 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
         capabilities.extend(profile.cli_ids().map(|cli| format!("acp:{cli}")));
     }
     capabilities.extend(inputs.config.extra_capabilities.iter().cloned());
+    if inputs
+        .credential_materializer
+        .as_ref()
+        .is_some_and(|materializer| !materializer.provider_adapter.material_sources.is_empty())
+    {
+        capabilities.insert(PROVIDER_CREDENTIAL_SOURCE_CAPABILITY.to_string());
+    }
     let mut credential_profiles = Vec::new();
     if let Some(materializer) = inputs.materializer {
         credential_profiles.push(materializer.credential_realization_capabilities());
     }
     if let Some(remote) = inputs.remote_credential_realization {
         credential_profiles.push(remote.clone());
+    }
+    if let Some(materializer) = inputs.credential_materializer.as_ref() {
+        credential_profiles.push(materializer.provider_adapter.clone());
     }
     if let Some(materializer) = inputs
         .credential_materializer
