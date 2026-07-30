@@ -323,6 +323,11 @@ impl DeploymentState {
                 },
             }
         };
+        if let DeploymentLaunchOutcome::Unavailable { message } = outcome {
+            return Err(DeploymentRepositoryError::Storage(format!(
+                "Deployment Session launch remains pending: {message}"
+            )));
+        }
         let (deployment_id, trigger, error) = {
             let mut runs = self.runs.lock().unwrap();
             let record = runs
@@ -337,6 +342,9 @@ impl DeploymentState {
                     record.session_id = None;
                     record.error = Some(error);
                 }
+                DeploymentLaunchOutcome::Unavailable { .. } => unreachable!(
+                    "indeterminate launch outcome returns before terminal run projection"
+                ),
             }
             (
                 record.deployment_id.clone(),
@@ -395,7 +403,7 @@ impl DeploymentState {
                 .filter_map(|run_id| {
                     let deployment_id = runs.get(&run_id)?.deployment_id.clone();
                     let deployment = deployments.get(&deployment_id)?.clone();
-                    let launch = deployment.launch(&deployment_id);
+                    let launch = deployment.launch(&deployment_id, &run_id);
                     Some((
                         run_id.clone(),
                         launch,
