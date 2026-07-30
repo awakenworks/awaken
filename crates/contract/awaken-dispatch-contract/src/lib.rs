@@ -41,6 +41,7 @@ pub use run_dispatch::{
 };
 pub use transport::{
     BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest, ClaimRunRequest, ClaimWorkerRequest,
-    CredentialRealizationRequest, DeliverAndClaimRequest, EnqueueRequest, HeartbeatWorkerRequest,
-    RecoveryRequest, RegisterWorkerRequest, RenewRequest, SettleRequest, WorkerIdentityRequest,
+    ClaimedCommitRequest, CredentialRealizationRequest, DeliverAndClaimRequest, EnqueueRequest,
+    HeartbeatWorkerRequest, RecoveryRequest, RegisterWorkerRequest, RenewRequest, SettleRequest,
+    WorkerIdentityRequest,
 };

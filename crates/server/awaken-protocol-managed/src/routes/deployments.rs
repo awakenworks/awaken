@@ -75,27 +75,18 @@ fn next_occurrence(schedule: &Schedule, after_ms: u64) -> Option<u64> {
 }
 
 const MAX_SCHEDULED_DEPLOYMENTS: usize = 1_000;
-const MIN_JITTER_MS: u64 = 5_000;
-const MAX_JITTER_MS: u64 = 9 * 60_000;
+const MAX_JITTER_MS: u64 = 10_000;
 
-/// Stable execution delay for one exact cron occurrence. The window is 15% of
-/// the interval, bounded to the documented 5 seconds–9 minutes. Stability avoids
-/// changing a pending fire's due instant when a process restarts.
-fn execution_jitter_ms(deployment_id: &str, scheduled_ms: u64, interval_ms: u64) -> u64 {
-    let window = interval_ms
-        .saturating_mul(15)
-        .checked_div(100)
-        .unwrap_or_default()
-        .clamp(MIN_JITTER_MS, MAX_JITTER_MS);
-    if window == MIN_JITTER_MS {
-        return window;
-    }
+/// Stable execution delay for one exact cron occurrence, bounded to the current
+/// documented maximum of ten seconds. Stability avoids changing a pending fire's
+/// due instant when a process restarts.
+fn execution_jitter_ms(deployment_id: &str, scheduled_ms: u64, _interval_ms: u64) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for byte in deployment_id.bytes().chain(scheduled_ms.to_le_bytes()) {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    MIN_JITTER_MS + hash % (window - MIN_JITTER_MS + 1)
+    hash % (MAX_JITTER_MS + 1)
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -1422,15 +1413,18 @@ mod tests {
 
     #[test]
     fn execution_jitter_is_stable_and_obeys_all_interval_bounds() {
-        // Jitter cause/effect decision table:
-        // J1 15% interval <5s -> 5s; J2 between bounds -> [5s,15%];
-        // J3 15% >9m -> <=9m; J4 same deployment/occurrence -> same delay.
+        // Causes: short/minute/daily cron intervals and the same/different exact
+        // occurrence identity. Constraint: official execution jitter is independent
+        // of interval length and never exceeds ten seconds.
+        // Effects: every delay is in 0..=10s; the same identity is stable across a
+        // restart, while interval length cannot widen the bound.
+        // Decision rules: J1 short, J2 minute, J3 daily -> bounded; J4 replay -> stable.
         let short = execution_jitter_ms("dep", MON_0900, 1_000);
-        assert_eq!(short, MIN_JITTER_MS, "J1");
+        assert!(short <= MAX_JITTER_MS, "J1");
         let minute = execution_jitter_ms("dep", MON_0900, 60_000);
-        assert!((MIN_JITTER_MS..=9_000).contains(&minute), "J2");
+        assert!(minute <= MAX_JITTER_MS, "J2");
         let daily = execution_jitter_ms("dep", MON_0900, 24 * 60 * 60_000);
-        assert!((MIN_JITTER_MS..=MAX_JITTER_MS).contains(&daily), "J3");
+        assert!(daily <= MAX_JITTER_MS, "J3");
         assert_eq!(
             daily,
             execution_jitter_ms("dep", MON_0900, 24 * 60 * 60_000),

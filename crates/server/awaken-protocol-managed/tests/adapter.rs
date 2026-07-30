@@ -9,10 +9,10 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
 use awaken_agent_contract::agent::run::EndCause;
 use awaken_protocol_managed::{
-    AgentCapabilities, BuiltinTool, CustomTool, ManagedSessionRepository, ManagedState,
-    OutcomeIteration, OutcomeReport, Pending, RunError, RunErrorKind, SessionRuntime, StepOutcome,
-    ToolPermissionDecision, router,
+    AgentCapabilities, BuiltinTool, CustomTool, ManagedState, OutcomeIteration, OutcomeReport,
+    Pending, RunError, RunErrorKind, SessionRuntime, StepOutcome, ToolPermissionDecision, router,
 };
+use awaken_session_contract::ManagedSessionRepository;
 use awaken_session_store::SqliteManagedSessionRepository;
 use axum::Router;
 use axum::body::Body;

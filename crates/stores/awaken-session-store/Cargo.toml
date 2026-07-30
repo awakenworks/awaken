@@ -18,6 +18,7 @@ serde.workspace = true
 serde_json.workspace = true
 rusqlite = { workspace = true }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+tokio.workspace = true
 # The portable scoped-migration bundle (one `managed_session` schema, both backends).
 awaken-scoped-migration = { workspace = true, features = ["postgres"] }
 awaken-scoped-migration-sqlite.workspace = true

@@ -49,9 +49,9 @@ mod state;
 pub mod work_queue;
 
 pub use dream::{
-    BUILT_IN_DREAM_AGENT_ID, DreamAgentSelection, DreamApiError, DreamCancellation, DreamFailure,
-    DreamPolicy, DreamPolicyConfig, DreamPreparation, DreamRequest, DreamSessionSource, DreamState,
-    DreamWorker,
+    BUILT_IN_DREAM_AGENT_ID, DreamAgentConfiguration, DreamAgentSelection, DreamApiError,
+    DreamCancellation, DreamFailure, DreamPolicy, DreamPolicyConfig, DreamPreparation,
+    DreamRequest, DreamSessionSource, DreamState, DreamWorker,
 };
 pub use env_registry::{EnvItem, EnvRegistry, EnvUpdate, InMemoryEnvRegistry};
 pub use rate_limit::{ManagedRateLimiter, ManagedRateLimits, enforce_managed_rate_limit};
@@ -68,8 +68,8 @@ pub use routes::user_profiles::{UserProfileState, user_profiles_router};
 pub use routes::vaults::{McpProbe, McpProbeStatus, VaultState, vault_router};
 pub use routes::{DREAMING_BETA, dreams_router};
 pub use routes::{MEMORY_BETA, SKILLS_BETA, WorkspaceScope, enforce_managed_beta, router};
-// The session-repository port family now lives in `awaken-session-contract`;
-// re-exported so existing `awaken_protocol_managed::…` paths keep resolving.
+// Managed wire projections remain convenient protocol exports. Persistence ports
+// and adapters are deliberately excluded: callers import those from their owners.
 pub use awaken_deployment_contract::DeploymentRepository;
 pub use awaken_ext_memory::{
     DreamJobRecord, DreamRepository, DreamRepositoryError, MemoryExtractionError,
@@ -86,19 +86,18 @@ pub use awaken_session_contract::{
     ApplicationSessionContributionReceipt, ApplicationSessionControl, ApplicationSessionInput,
     BeginSessionRealization, CompiledSessionCreation, ControlSessionCreationInputs,
     EnvironmentFingerprint, EnvironmentSnapshot, FailSessionRealization, FrozenSessionProjection,
-    IdempotencyRecord, ManagedSessionRepository, McpAttachmentId, McpAttachmentRealizer,
-    McpAttachmentState, McpGeneration, McpGenerationRef, McpRealizationReceipt, McpTarget,
-    PersistedSession, ResolvedInput, ResolvedInputSource, ResolvedRepositoryCredential,
-    ResolvedSessionResources, ResolvedSkillBinding, SessionBaseline, SessionBaselineFingerprint,
-    SessionBaselineInputs, SessionBaselineState, SessionCreationFinalizeError,
-    SessionCreationIntent, SessionNetworkPolicy, SessionProjectionSynchronizer,
-    SessionRealizationAction, SessionRealizationControl, SessionRealizationControlFailure,
-    SessionRealizationDirective, SessionRealizationDriveError, SessionRealizationLease,
-    SessionRealizationTarget, SessionResourceManifest, SessionRevision, StageMcpAttachment,
-    drive_session_realization, realization_lease_is_live_at, repository_transport_credential_usage,
-    resource_plane, stable_fingerprint,
+    IdempotencyRecord, McpAttachmentId, McpAttachmentRealizer, McpAttachmentState, McpGeneration,
+    McpGenerationRef, McpRealizationReceipt, McpTarget, PersistedSession, ResolvedInput,
+    ResolvedInputSource, ResolvedRepositoryCredential, ResolvedSessionResources,
+    ResolvedSkillBinding, SessionBaseline, SessionBaselineFingerprint, SessionBaselineInputs,
+    SessionBaselineState, SessionCreationFinalizeError, SessionCreationIntent,
+    SessionNetworkPolicy, SessionProjectionSynchronizer, SessionRealizationAction,
+    SessionRealizationControl, SessionRealizationControlFailure, SessionRealizationDirective,
+    SessionRealizationDriveError, SessionRealizationLease, SessionRealizationTarget,
+    SessionResourceManifest, SessionRevision, StageMcpAttachment, drive_session_realization,
+    realization_lease_is_live_at, repository_transport_credential_usage, resource_plane,
+    stable_fingerprint,
 };
-pub use awaken_session_store::SqliteManagedSessionRepository;
 pub use state::{
     AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot, ManagedState, OutcomeIteration, OutcomeReport, Pending, RunError,

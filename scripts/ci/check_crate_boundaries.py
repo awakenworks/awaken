@@ -5,6 +5,7 @@ import re
 import sys
 from pathlib import Path
 import _arch_fitness
+import _coordinator_authority_fitness
 import _crate_dependency_fitness
 import _provider_env_fitness
 import _resource_plane_fitness
@@ -1530,6 +1531,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-webhook-managed",
         "awaken-agent-contract",
         "awaken-runtime-contract",
+        "awaken-session-contract",
         "rusqlite",
         "async-trait",
         "serde",
@@ -1560,6 +1562,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-resource-store",
         "awaken-resource-reclaimer",
         "awaken-file-store", "awaken-memory-store", "awaken-resource-contract",
+        "awaken-session-contract", "awaken-session-store",
         "awaken-sandbox-memoryd",
         # The ACP executor: the composition root wires an `acp:*` backend into the Serve
         # host by config (AWAKEN_ACP_ARGV), which the runtime-host plane does not do itself.
@@ -1963,6 +1966,7 @@ def _arch_fitness_specs() -> list[_arch_fitness.CrateSpec]:
 
 def main() -> int:
     _arch_fitness.selftest()
+    _coordinator_authority_fitness.selftest()
     errors = (
         check_dependencies()
         + check_neutral_code_boundaries()
@@ -1973,6 +1977,7 @@ def main() -> int:
         + check_runtime_is_secret_resolution_free()
         + _provider_env_fitness.check_all(REPO_ROOT, CRATES)
         + _arch_fitness.check_all(_arch_fitness_specs())
+        + _coordinator_authority_fitness.check_all(REPO_ROOT, CRATES)
     )
     if errors:
         for error in errors:

@@ -11,11 +11,12 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_credential_vault::InMemorySecretStore;
 use awaken_credential_vault::repo::InMemoryCredentialRepo;
 use awaken_protocol_managed::{
-    ManagedSessionRepository, ManagedState, OutcomeReport, PersistedSession, RunError,
-    RunErrorKind, SessionInit, SessionLifecycleSink, SessionRuntime,
-    SqliteManagedSessionRepository, StepOutcome, ToolPermissionDecision, VaultState, router,
+    ManagedState, OutcomeReport, PersistedSession, RunError, RunErrorKind, SessionInit,
+    SessionLifecycleSink, SessionRuntime, StepOutcome, ToolPermissionDecision, VaultState, router,
     vault_router,
 };
+use awaken_session_contract::ManagedSessionRepository;
+use awaken_session_store::SqliteManagedSessionRepository;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

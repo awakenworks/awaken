@@ -146,7 +146,8 @@ impl IsolatedRoot {
 }
 
 /// Rewrite one tool call's arguments so its paths are jailed under `root`.
-/// Path tools (`read`/`write`/`edit`/`grep`) rebase their `path`; `glob` rebases
+/// Path tools (`read`/`write`/`edit`/`delete`/`grep`) rebase their `path`; `move`
+/// rebases both endpoints; `glob` rebases
 /// its `pattern`; `bash` is prefixed with `cd '<root>'` so relative commands run
 /// in the environment. Unknown tools pass through unchanged.
 fn jail_args(
@@ -165,7 +166,11 @@ fn jail_args(
         Ok(())
     };
     match tool_id {
-        "read" | "write" | "edit" | "grep" => rebase(&mut args, "path", root)?,
+        "read" | "write" | "edit" | "delete" | "grep" => rebase(&mut args, "path", root)?,
+        "move" => {
+            rebase(&mut args, "source", root)?;
+            rebase(&mut args, "destination", root)?;
+        }
         "glob" => rebase(&mut args, "pattern", root)?,
         "bash" => {
             if let Some(Value::String(cmd)) = args.get("command") {
@@ -967,6 +972,34 @@ mod tests {
     }
 
     #[test]
+    fn jail_rebases_both_move_endpoints_and_rejects_move_or_delete_escape() {
+        // Path-boundary decision table: C1 move has two in-root endpoints -> E1
+        // both are rebased; C2 either move endpoint traverses above root -> E2
+        // reject the whole call; C3 delete traverses above root -> E3 reject.
+        // This proves Dream's rename/delete capabilities cannot widen its mount.
+        let root = IsolatedRoot::new("/env");
+        let moved = jail_args(
+            "move",
+            serde_json::json!({"source":"old.md", "destination":"topic/new.md"}),
+            &root,
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(moved["source"], "/env/old.md");
+        assert_eq!(moved["destination"], "/env/topic/new.md");
+        for (tool, arguments) in [
+            (
+                "move",
+                serde_json::json!({"source":"old.md", "destination":"../escape.md"}),
+            ),
+            ("delete", serde_json::json!({"path":"../escape.md"})),
+        ] {
+            assert!(jail_args(tool, arguments, &root, false, false).is_err());
+        }
+    }
+
+    #[test]
     fn deny_egress_bash_is_wrapped_in_a_no_network_bwrap_and_shell_quoted() {
         // The egress-denied bash path: instead of the legacy `cd '<root>' && <cmd>`
         // lexical jail (host network shared), the command must be re-rendered to run
@@ -1079,7 +1112,9 @@ mod tests {
     fn rooted_hand_tools_wraps_every_builtin_hand_tool() {
         let tools = rooted_hand_tools(IsolatedRoot::new("/env"), false);
         let ids: Vec<_> = tools.iter().map(|t| t.id().to_string()).collect();
-        for expected in ["read", "write", "edit", "glob", "grep", "bash"] {
+        for expected in [
+            "read", "write", "edit", "move", "delete", "glob", "grep", "bash",
+        ] {
             assert!(ids.contains(&expected.to_string()), "missing {expected}");
         }
     }

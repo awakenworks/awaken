@@ -1,7 +1,7 @@
 //! Production dream worker composed from existing authorities.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use awaken_memory_store::{Memory, MemoryRepository};
 use awaken_protocol_managed::ResourceCatalog;
@@ -58,13 +58,6 @@ impl SessionTranscriptJsonlExporter {
     }
 }
 
-#[derive(Clone)]
-struct PreparedResources {
-    session_id: String,
-    snapshot_memory_store_id: String,
-    writer_lease: ExclusiveMemoryStoreWriterLease,
-}
-
 struct MemoryStoreContentSnapshot {
     snapshot_memory_store_id: String,
     files: Vec<Memory>,
@@ -91,7 +84,6 @@ pub(crate) struct BuiltInDreamAgent {
     host: Arc<SharedHost>,
     memory: Arc<dyn MemoryRepository>,
     catalog: Arc<dyn ResourceCatalog>,
-    prepared: Mutex<BTreeMap<String, PreparedResources>>,
 }
 
 impl BuiltInDreamAgent {
@@ -106,7 +98,6 @@ impl BuiltInDreamAgent {
             host,
             memory,
             catalog,
-            prepared: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -141,8 +132,9 @@ impl BuiltInDreamAgent {
     async fn export_transcripts(
         &self,
         request: &DreamRequest,
-    ) -> Result<Vec<(String, Vec<u8>)>, DreamFailure> {
+    ) -> Result<(Vec<(String, Vec<u8>)>, Vec<String>), DreamFailure> {
         let mut exports = Vec::with_capacity(request.session_ids.len());
+        let mut file_ids = Vec::with_capacity(request.session_ids.len());
         for session_id in &request.session_ids {
             let messages = self
                 .managed
@@ -157,7 +149,8 @@ impl BuiltInDreamAgent {
             let bytes = SessionTranscriptJsonlExporter::encode(session_id, &messages)
                 .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
             let filename = format!("{session_id}.jsonl");
-            self.host
+            let file = self
+                .host
                 .create_generated_file(
                     &request.workspace_id,
                     filename.clone(),
@@ -168,8 +161,9 @@ impl BuiltInDreamAgent {
                 .await
                 .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
             exports.push((filename, bytes));
+            file_ids.push(file.id);
         }
-        Ok(exports)
+        Ok((exports, file_ids))
     }
 
     async fn make_session(
@@ -196,7 +190,9 @@ impl BuiltInDreamAgent {
                         {"name":"write", "enabled":true, "permission_policy":{"type":"always_allow"}},
                         {"name":"edit", "enabled":true, "permission_policy":{"type":"always_allow"}},
                         {"name":"glob", "enabled":true, "permission_policy":{"type":"always_allow"}},
-                        {"name":"grep", "enabled":true, "permission_policy":{"type":"always_allow"}}
+                        {"name":"grep", "enabled":true, "permission_policy":{"type":"always_allow"}},
+                        {"name":"move", "enabled":true, "permission_policy":{"type":"always_allow"}},
+                        {"name":"delete", "enabled":true, "permission_policy":{"type":"always_allow"}}
                     ]
                 }]
             },
@@ -288,13 +284,33 @@ impl BuiltInDreamAgent {
         Ok(session_id)
     }
 
-    async fn release_result(&self, request: &DreamRequest) {
-        let resources = self.prepared.lock().unwrap().remove(&request.job_id);
-        if let Some(resources) = resources {
-            resources.writer_lease.release(self.catalog.as_ref());
+    async fn release_result(&self, request: &DreamRequest, retain_result: bool) {
+        let result_id = format!("mem_result_{}", request.job_id);
+        if retain_result {
+            ExclusiveMemoryStoreWriterLease {
+                workspace_id: request.workspace_id.clone(),
+                result_memory_store_id: result_id.clone(),
+            }
+            .release(self.catalog.as_ref());
+        } else {
+            let _ = self.catalog.set_memory_state(
+                &request.workspace_id,
+                &result_id,
+                ResourceState::Deleted,
+            );
+            let _ = self.memory.purge_store(&result_id).await;
+        }
+        let _ = self
+            .memory
+            .purge_store(&format!("mem_snapshot_{}", request.job_id))
+            .await;
+    }
+
+    async fn delete_transcript_files(&self, workspace_id: &str, file_ids: &[String]) {
+        for file_id in file_ids {
             let _ = self
-                .memory
-                .purge_store(&resources.snapshot_memory_store_id)
+                .host
+                .delete_file_record(workspace_id, file_id, now_ms())
                 .await;
         }
     }
@@ -339,27 +355,21 @@ impl DreamWorker for BuiltInDreamAgent {
                 .dream_transcript(&request.workspace_id, &expected_session_id)
                 .await
                 .is_ok();
-            let session_id = if session_exists {
-                expected_session_id
-            } else {
-                let transcripts = self.export_transcripts(request).await?;
-                self.make_session(request, &snapshot_id, &result_id, transcripts)
-                    .await?
-            };
-            self.prepared.lock().unwrap().insert(
-                request.job_id.clone(),
-                PreparedResources {
-                    session_id: session_id.clone(),
-                    snapshot_memory_store_id: snapshot_id,
-                    writer_lease: ExclusiveMemoryStoreWriterLease {
-                        workspace_id: request.workspace_id.clone(),
-                        result_memory_store_id: result_id.clone(),
-                    },
-                },
-            );
+            let session_id = expected_session_id;
+            let (transcripts, transcript_file_ids) = self.export_transcripts(request).await?;
+            if !session_exists
+                && let Err(error) = self
+                    .make_session(request, &snapshot_id, &result_id, transcripts)
+                    .await
+            {
+                self.delete_transcript_files(&request.workspace_id, &transcript_file_ids)
+                    .await;
+                return Err(error);
+            }
             return Ok(DreamPreparation {
                 result_memory_store_id: result_id,
                 session_id,
+                transcript_file_ids,
             });
         }
         // A crash before the result catalog record commits may leave a partial
@@ -406,24 +416,22 @@ impl DreamWorker for BuiltInDreamAgent {
             .map_err(|error| {
                 DreamFailure::new("memory_store_org_limit_exceeded", error.to_string())
             })?;
-        let transcripts = self.export_transcripts(request).await?;
-        let session_id = self
+        let (transcripts, transcript_file_ids) = self.export_transcripts(request).await?;
+        let session_id = match self
             .make_session(request, &snapshot_id, &result_id, transcripts)
-            .await?;
-        self.prepared.lock().unwrap().insert(
-            request.job_id.clone(),
-            PreparedResources {
-                session_id: session_id.clone(),
-                snapshot_memory_store_id: snapshot.snapshot_memory_store_id,
-                writer_lease: ExclusiveMemoryStoreWriterLease {
-                    workspace_id: request.workspace_id.clone(),
-                    result_memory_store_id: result_id.clone(),
-                },
-            },
-        );
+            .await
+        {
+            Ok(session_id) => session_id,
+            Err(error) => {
+                self.delete_transcript_files(&request.workspace_id, &transcript_file_ids)
+                    .await;
+                return Err(error);
+            }
+        };
         Ok(DreamPreparation {
             result_memory_store_id: result_id,
             session_id,
+            transcript_file_ids,
         })
     }
 
@@ -434,11 +442,43 @@ impl DreamWorker for BuiltInDreamAgent {
         cancellation: DreamCancellation,
     ) -> Result<DreamUsage, DreamFailure> {
         if cancellation.is_canceled() {
-            self.release_result(request).await;
             return Ok(DreamUsage::default());
         }
+        let trigger = format!(
+            "[dream-job:{}] Consolidate the frozen memory and Session evidence now.",
+            request.job_id
+        );
+        let already_executed = self
+            .managed
+            .dream_transcript(&request.workspace_id, &preparation.session_id)
+            .await
+            .ok()
+            .is_some_and(|messages| {
+                messages.iter().any(|message| {
+                    serde_json::to_string(message)
+                        .is_ok_and(|serialized| serialized.contains(&trigger))
+                })
+            });
+        if already_executed {
+            let session = self
+                .managed
+                .get_session(&preparation.session_id)
+                .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
+            if session.status == "failed" {
+                return Err(DreamFailure::new(
+                    "internal_error",
+                    "the recovered Dream Agent Session failed",
+                ));
+            }
+            return Ok(DreamUsage {
+                cache_creation_input_tokens: session.usage.cache_creation_input_tokens,
+                cache_read_input_tokens: session.usage.cache_read_input_tokens,
+                input_tokens: session.usage.input_tokens,
+                output_tokens: session.usage.output_tokens,
+            });
+        }
         let content = vec![awaken_agent_contract::agent::content::ContentBlock::text(
-            "Consolidate the frozen memory and Session evidence now.",
+            trigger,
         )];
         let run = self
             .managed
@@ -454,10 +494,8 @@ impl DreamWorker for BuiltInDreamAgent {
                 },
             )
             .await;
-        let session = self.managed.get_session(&preparation.session_id).ok();
-        let _ = self.managed.archive_session(&preparation.session_id).await;
-        self.release_result(request).await;
         run.map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
+        let session = self.managed.get_session(&preparation.session_id).ok();
         let usage = session.map(|session| session.usage).unwrap_or_default();
         Ok(DreamUsage {
             cache_creation_input_tokens: usage.cache_creation_input_tokens,
@@ -467,12 +505,37 @@ impl DreamWorker for BuiltInDreamAgent {
         })
     }
 
-    async fn cancel(&self, session_id: Option<&str>) -> Result<(), DreamFailure> {
-        if let Some(session_id) = session_id {
+    async fn cleanup(
+        &self,
+        request: &DreamRequest,
+        preparation: Option<&DreamPreparation>,
+    ) -> Result<(), DreamFailure> {
+        if let Some(preparation) = preparation {
+            self.managed
+                .archive_session(&preparation.session_id)
+                .await
+                .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
+            for file_id in &preparation.transcript_file_ids {
+                self.host
+                    .delete_file_record(&request.workspace_id, file_id, now_ms())
+                    .await
+                    .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
+            }
+        }
+        self.release_result(request, preparation.is_some()).await;
+        Ok(())
+    }
+
+    async fn cancel(
+        &self,
+        request: &DreamRequest,
+        preparation: Option<&DreamPreparation>,
+    ) -> Result<(), DreamFailure> {
+        if let Some(preparation) = preparation {
             let _ = self
                 .managed
                 .send_events(
-                    session_id,
+                    &preparation.session_id,
                     SendEventsRequest {
                         events: vec![InboundEvent::UserInterrupt {
                             session_thread_id: None,
@@ -481,24 +544,24 @@ impl DreamWorker for BuiltInDreamAgent {
                     },
                 )
                 .await;
-            let _ = self.managed.archive_session(session_id).await;
-            let resources = {
-                let mut prepared = self.prepared.lock().unwrap();
-                let job_id = prepared.iter().find_map(|(job_id, resources)| {
-                    (resources.session_id == session_id).then(|| job_id.clone())
-                });
-                job_id.and_then(|job_id| prepared.remove(&job_id))
-            };
-            if let Some(resources) = resources {
-                resources.writer_lease.release(self.catalog.as_ref());
-                let _ = self
-                    .memory
-                    .purge_store(&resources.snapshot_memory_store_id)
-                    .await;
-            }
         }
-        Ok(())
+        self.cleanup(request, preparation).await
     }
+
+    async fn validate_agent(&self, workspace_id: &str, agent_id: &str) -> Result<(), DreamFailure> {
+        self.managed
+            .validate_dream_agent(workspace_id, agent_id)
+            .map_err(|error| DreamFailure::new("invalid_dream_agent", error.to_string()))
+    }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
