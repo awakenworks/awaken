@@ -10,8 +10,15 @@ pub(crate) type SeenMcpRequests = Arc<Mutex<Vec<(String, String)>>>;
 /// protocol emulator here prevents each security test from growing a subtly
 /// different initialize/list/call implementation.
 pub(crate) async fn start(required_bearer: Option<&str>) -> (String, SeenMcpRequests) {
+    start_with_prompts(required_bearer, false).await
+}
+
+pub(crate) async fn start_with_prompts(
+    required_bearer: Option<&str>,
+    prompts: bool,
+) -> (String, SeenMcpRequests) {
     async fn mcp(
-        State((seen, required_bearer)): State<(SeenMcpRequests, Option<String>)>,
+        State((seen, required_bearer, prompts)): State<(SeenMcpRequests, Option<String>, bool)>,
         req: Request,
     ) -> Response {
         let bearer = req
@@ -48,11 +55,18 @@ pub(crate) async fn start(required_bearer: Option<&str>) -> (String, SeenMcpRequ
             return StatusCode::ACCEPTED.into_response();
         };
         let result = match method.as_str() {
-            "initialize" => serde_json::json!({
-                "protocolVersion": "2025-06-18",
-                "capabilities": { "tools": {} },
-                "serverInfo": { "name": "host-test", "version": "1" }
-            }),
+            "initialize" => {
+                let capabilities = if prompts {
+                    serde_json::json!({ "tools": {}, "prompts": {} })
+                } else {
+                    serde_json::json!({ "tools": {} })
+                };
+                serde_json::json!({
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": capabilities,
+                    "serverInfo": { "name": "host-test", "version": "1" }
+                })
+            }
             "tools/list" => serde_json::json!({
                 "tools": [{
                     "name": "echo",
@@ -67,6 +81,29 @@ pub(crate) async fn start(required_bearer: Option<&str>) -> (String, SeenMcpRequ
             "tools/call" => serde_json::json!({
                 "content": [{ "type": "text", "text": value["params"]["arguments"]["value"] }],
                 "isError": false
+            }),
+            "prompts/list" if prompts => serde_json::json!({
+                "prompts": [{
+                    "name": "review",
+                    "title": "Review",
+                    "description": "Review with a named focus",
+                    "arguments": [{ "name": "focus", "required": true }]
+                }]
+            }),
+            "prompts/get" if prompts => serde_json::json!({
+                "description": "Rendered review instructions",
+                "messages": [{
+                    "role": "user",
+                    "content": {
+                        "type": "text",
+                        "text": format!(
+                            "Review focus: {}",
+                            value["params"]["arguments"]["focus"]
+                                .as_str()
+                                .unwrap_or_default()
+                        )
+                    }
+                }]
             }),
             _ => {
                 return axum::Json(serde_json::json!({
@@ -90,7 +127,7 @@ pub(crate) async fn start(required_bearer: Option<&str>) -> (String, SeenMcpRequ
     let address = listener.local_addr().unwrap();
     let app = axum::Router::new()
         .route("/mcp", axum::routing::post(mcp))
-        .with_state((seen.clone(), required_bearer.map(str::to_string)));
+        .with_state((seen.clone(), required_bearer.map(str::to_string), prompts));
     tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });

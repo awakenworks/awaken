@@ -24,15 +24,17 @@
 //! hash-verified bundle before constructing this extension's registry, keeping
 //! this crate independent of repositories, tenancy, and sandbox implementation.
 
+mod mcp;
 mod registry;
 mod spec;
 mod tool;
 
+pub use mcp::McpPromptSkillRegistry;
 pub use registry::{
     CompositeSkillRegistry, InMemorySkillRegistry, SkillFile, SkillRegistry, SkillSource,
     SourceSkillRegistry,
 };
-pub use spec::{SkillContext, SkillProvenance, SkillSpec, parse_skill_md};
+pub use spec::{SkillContext, SkillEnvironment, SkillProvenance, SkillSpec, parse_skill_md};
 pub use tool::{
     ActiveSkillTools, ListSkillsTool, PathActivations, RecordingGate, SKILL_LIST_TOOL_ID,
     SKILL_TOOL_ID, SkillAllowedToolsGate, SkillTool, expand_slash_commands,

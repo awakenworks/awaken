@@ -26,6 +26,7 @@ use awaken_credential_vault::{
     SecretRef, SecretStore,
 };
 use awaken_ext_mcp::{AuthChallenge, Credential, CredentialRefresher, HttpTransportBuilder};
+use awaken_ext_skills::SkillRegistry as _;
 use awaken_protocol_managed::{McpProbe, McpProbeStatus};
 use awaken_runtime_contract::plugin::Plugin;
 use awaken_runtime_contract::{CredentialRefreshAccess, TokenEndpointAuth};
@@ -39,6 +40,7 @@ use crate::host::HostError;
 pub(crate) struct McpTransportMaterial {
     pub name: String,
     pub url: String,
+    pub prompts_as_skills: bool,
     pub bearer: Option<awaken_agent_contract::RedactedString>,
     /// The vault credential's refresh configuration, when it has one: the
     /// connect then registers a [`VaultRefresher`] so an expired access token
@@ -373,6 +375,7 @@ impl McpProbe for ExtMcpProbe {
 pub(crate) struct McpWiring {
     pub plugins: Vec<Arc<dyn Plugin>>,
     pub tool_ids: Vec<String>,
+    pub skill_registries: Vec<Arc<dyn awaken_ext_skills::SkillRegistry>>,
 }
 
 impl crate::SharedHost {
@@ -571,6 +574,7 @@ impl McpWiring {
         Self {
             plugins: Vec::new(),
             tool_ids: Vec::new(),
+            skill_registries: Vec::new(),
         }
     }
 }
@@ -600,9 +604,28 @@ pub(crate) async fn connect_materialized(
                 server.name, server.url
             ))
         })?;
-        let connected = awaken_ext_mcp::McpServer::connect_http(&server.name, transport)
+        let list_changed = transport.subscribe_list_changed();
+        let transport: Arc<dyn awaken_ext_mcp::transport::McpToolTransport> = Arc::new(transport);
+        let connected =
+            awaken_ext_mcp::McpServer::start(&server.name, Arc::clone(&transport), list_changed)
+                .await
+                .map_err(|e| HostError::internal(format!("mcp server `{}`: {e}", server.name)))?;
+        if server.prompts_as_skills {
+            match awaken_ext_skills::McpPromptSkillRegistry::discover(
+                &server.name,
+                Arc::clone(&transport),
+            )
             .await
-            .map_err(|e| HostError::internal(format!("mcp server `{}`: {e}", server.name)))?;
+            {
+                Ok(registry) if !registry.list().is_empty() => {
+                    wiring.skill_registries.push(Arc::new(registry));
+                }
+                Ok(_) => {}
+                // Opting in requires a prompt-capable server. Do not silently
+                // degrade to tools-only when the requested guarantee is absent.
+                Err(error) => return Err(HostError::internal(error)),
+            }
+        }
         let plugin = connected.plugin();
         let contributions = plugin.resolve();
         wiring.tool_ids.extend(
@@ -625,6 +648,7 @@ mod acp_projection_tests {
         McpTransportMaterial {
             name: "gh".into(),
             url: "https://mcp.gh".into(),
+            prompts_as_skills: false,
             bearer: bearer.map(RedactedString::new),
             refresh: None,
         }
@@ -717,5 +741,80 @@ mod acp_projection_tests {
                 .await,
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod prompt_skill_projection_tests {
+    use super::*;
+
+    fn material(url: String, prompts_as_skills: bool) -> McpTransportMaterial {
+        McpTransportMaterial {
+            name: "docs".into(),
+            url,
+            prompts_as_skills,
+            bearer: None,
+            refresh: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn disabled_flag_never_discovers_prompts() {
+        let (url, seen) = crate::test_mcp::start_with_prompts(None, true).await;
+        let wiring = connect_materialized(&[material(url, false)])
+            .await
+            .expect("tools-only wiring succeeds");
+        assert!(wiring.skill_registries.is_empty());
+        assert!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .all(|(method, _)| method != "prompts/list"),
+            "disabled means no prompt discovery side effect"
+        );
+    }
+
+    #[tokio::test]
+    async fn enabled_flag_discovers_and_lazily_activates_one_unified_skill() {
+        let (url, seen) = crate::test_mcp::start_with_prompts(None, true).await;
+        let wiring = connect_materialized(&[material(url, true)])
+            .await
+            .expect("prompt-capable wiring succeeds");
+        assert_eq!(wiring.skill_registries.len(), 1);
+        let registry = &wiring.skill_registries[0];
+        assert_eq!(registry.list()[0].id, "mcp:docs:review");
+        assert!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .all(|(method, _)| method != "prompts/get"),
+            "catalog discovery remains metadata-only"
+        );
+
+        let skill = registry
+            .resolve(
+                "mcp:docs:review",
+                Some(serde_json::json!({ "focus": "security" })),
+            )
+            .await
+            .expect("remote activation succeeds")
+            .expect("skill exists");
+        assert_eq!(skill.body, "Review focus: security");
+        assert!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .any(|(method, _)| method == "prompts/get")
+        );
+    }
+
+    #[tokio::test]
+    async fn enabled_flag_fails_closed_when_server_has_no_prompt_capability() {
+        let (url, _seen) = crate::test_mcp::start(None).await;
+        let error = match connect_materialized(&[material(url, true)]).await {
+            Ok(_) => panic!("unsupported opt-in must fail staging"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("prompts/list"), "{error}");
     }
 }

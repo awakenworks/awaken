@@ -8,10 +8,14 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crate::spec::{SkillProvenance, SkillSpec, parse_skill_md};
+use async_trait::async_trait;
+use serde_json::Value;
+
+use crate::spec::{SkillEnvironment, SkillProvenance, SkillSpec, parse_skill_md};
 
 /// Resolves skills for the `Skill` tool. Implementations are the source of the
 /// catalog and of the body returned on activation.
+#[async_trait]
 pub trait SkillRegistry: Send + Sync {
     /// Look up one skill by its id.
     fn get(&self, id: &str) -> Option<SkillSpec>;
@@ -19,6 +23,16 @@ pub trait SkillRegistry: Send + Sync {
     /// Every skill, in a stable order. The tool filters to model-invocable ones
     /// when it renders the catalog.
     fn list(&self) -> Vec<SkillSpec>;
+
+    /// Resolve the instruction body for one activation. Static/file registries
+    /// return their stored spec; remote registries can fetch the body lazily.
+    async fn resolve(
+        &self,
+        id: &str,
+        _arguments: Option<Value>,
+    ) -> Result<Option<SkillSpec>, String> {
+        Ok(self.get(id))
+    }
 }
 
 /// One `SKILL.md`-bearing directory as neutral file data. The port a registry
@@ -52,6 +66,7 @@ impl SourceSkillRegistry {
     }
 }
 
+#[async_trait]
 impl SkillRegistry for SourceSkillRegistry {
     fn get(&self, id: &str) -> Option<SkillSpec> {
         self.list().into_iter().find(|s| s.id == id)
@@ -64,6 +79,9 @@ impl SkillRegistry for SourceSkillRegistry {
             .map(|file| {
                 let mut spec = parse_skill_md(file.id, &file.content);
                 spec.dir = file.dir;
+                if spec.dir.is_some() {
+                    spec.environment = SkillEnvironment::Filesystem;
+                }
                 spec.provenance = self.provenance;
                 spec
             })
@@ -84,6 +102,7 @@ impl CompositeSkillRegistry {
     }
 }
 
+#[async_trait]
 impl SkillRegistry for CompositeSkillRegistry {
     fn get(&self, id: &str) -> Option<SkillSpec> {
         self.registries.iter().find_map(|r| r.get(id))
@@ -100,6 +119,19 @@ impl SkillRegistry for CompositeSkillRegistry {
             }
         }
         out
+    }
+
+    async fn resolve(
+        &self,
+        id: &str,
+        arguments: Option<Value>,
+    ) -> Result<Option<SkillSpec>, String> {
+        for registry in &self.registries {
+            if registry.get(id).is_some() {
+                return registry.resolve(id, arguments).await;
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -136,6 +168,7 @@ impl InMemorySkillRegistry {
     }
 }
 
+#[async_trait]
 impl SkillRegistry for InMemorySkillRegistry {
     fn get(&self, id: &str) -> Option<SkillSpec> {
         self.skills.get(id).cloned()

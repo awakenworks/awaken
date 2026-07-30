@@ -1,4 +1,4 @@
-# ADR-0036: Skills Are a Runtime Extension — Two Semantic Tools over Materialized Files
+# ADR-0036: Skills Are a Runtime Extension — Two Semantic Tools over Optional Files
 
 - Status: Accepted
 - Date: 2026-07-02
@@ -78,16 +78,33 @@ A skill's `allowed_tools` narrows what the model may call while the skill is
 active; it is enforced at the permission gate (G9/G21), never a grant. Authored
 now in `SkillSpec`; enforcement is a later slice.
 
-### D6: Skills are materialized into the sandbox on two trust roots
+### D6: Skill environment requirements are explicit and minimal
 
-Skills live as files in the sandbox (ADR-0035 D6 two roots):
+Every Skill declares one of two execution substrates:
+
+- **`instruction_only` (default)** — activation only expands instructions into
+  context. It has no `${SKILL_DIR}`, supporting files, scripts, filesystem tools,
+  or Hand requirement. It does not itself require a Sandbox, although another
+  Session capability may. MCP prompts always use this form.
+- **`filesystem`** — activation may use bundled references/scripts/assets through
+  built-in tools. It therefore requires a filesystem-capable Session environment;
+  tool execution may use the local executor or a remote Hand.
+
+For uploaded bundles, any file besides `SKILL.md` objectively upgrades the Skill
+to `filesystem`, even if its frontmatter claims otherwise. A `SKILL.md`-only bundle
+stays instruction-only unless it explicitly declares `environment: filesystem`.
+This inference prevents metadata from hiding a real capability requirement.
+Likewise, a configured filesystem Skill without a materialized directory is
+rejected fail closed instead of being exposed with a broken `${SKILL_DIR}`.
+
+Filesystem Skills live on two trust roots:
 
 - a **delivered** root — read-only, control-owned, trusted;
 - the agent **workspace** — writable, untrusted until promoted.
 
 `list_skills` scans both and tags each entry's **provenance by its root**
 (`delivered` vs `agent-created`) — no authoring tool needed to record it.
-`${SKILL_DIR}` / `${SESSION_ID}` template tokens in `SKILL.md` resolve to the
+`${SKILL_DIR}` / `${SESSION_ID}` template tokens in a filesystem Skill resolve to the
 materialized path so instructions can point at their own references/scripts, run
 via built-in `read` / `bash`. Because materialization is a provisioning-time
 export of *data*, this is placement-agnostic: a remote/container sandbox works
@@ -143,7 +160,8 @@ unchanged; every commit tested):
   `version`).
 - **Live sandbox discovery** — `Environment::scan_skill_dir` (root stays hidden),
   a `SkillSource` port + `SourceSkillRegistry`/`CompositeSkillRegistry`, delivered
-  plus **agent-authored (run-scoped, provenance by root)** skills.
+  plus **agent-authored (run-scoped, provenance by root)** skills. Instruction-only
+  delivered Skills remain in the host snapshot and are not materialized.
 - **tier-3 references/scripts** via built-in `read`/`bash` over materialized files
   (no dedicated tool).
 - **Conditional (`paths`) surfacing** — a `RecordingGate` observes touched paths;
@@ -163,6 +181,19 @@ unchanged; every commit tested):
   the single sandbox root does not yet enforce read-only on the delivered set.
 - **Durable resume of run-scoped skill state** — the touched-path / active-skill
   record is in-memory; a durable resume must rebuild it from committed facts.
+
+### D9: Session environments are lazy and first-use synchronized
+
+Session creation freezes the Environment, Resource, Skill, and MCP projections but
+does not synchronously create a Hand/Sandbox. The first execution that needs the
+Session context acquires the per-Session lifecycle mutex, provisions exactly one
+environment, and blocks until it is ready; concurrent callers join the same
+critical section and reuse the result.
+
+A future background prewarm may call the same creation path, but it must atomically
+persist the resulting opaque environment binding before treating the prewarm as
+successful. Starting an untracked background Sandbox is forbidden because a crash
+would leave an orphan that recovery cannot adopt.
 
 ## References
 

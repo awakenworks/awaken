@@ -52,6 +52,10 @@ pub enum InferenceSpeed {
     Fast,
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// One direct HTTP MCP server inherited by Sessions of the published Agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentMcpServerBinding {
@@ -64,6 +68,10 @@ pub struct AgentMcpServerBinding {
     /// credential. `None` denotes an intentionally unauthenticated server.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<crate::credential::CredentialRef>,
+    /// Explicitly project this server's MCP prompts into the Agent's unified
+    /// Skill catalog. Off by default: ordinary MCP prompts remain prompts.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub prompts_as_skills: bool,
 }
 
 /// One immutable delegation edge compiled into an Agent publication.

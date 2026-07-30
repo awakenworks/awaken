@@ -163,7 +163,7 @@ export interface CreateSessionRequest {
   environment_id?: string;
   title?: string;
   metadata?: Record<string, string>;
-  mcp_servers?: { name: string; url: string }[];
+  mcp_servers?: { name: string; url: string; prompts_as_skills?: boolean }[];
   vault_ids?: string[];
 }
 

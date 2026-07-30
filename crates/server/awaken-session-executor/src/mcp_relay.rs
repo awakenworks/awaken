@@ -288,6 +288,7 @@ mod tests {
         let server = |name: &str| McpTransportMaterial {
             name: name.into(),
             url: "https://example.invalid/mcp".into(),
+            prompts_as_skills: false,
             bearer: None,
             refresh: None,
         };
@@ -315,6 +316,7 @@ mod tests {
             &McpTransportMaterial {
                 name: "github:repo".into(),
                 url: format!("http://{upstream}/"),
+                prompts_as_skills: false,
                 bearer: Some(awaken_agent_contract::RedactedString::from(
                     "ghp_real_secret".to_string(),
                 )),
@@ -359,6 +361,7 @@ mod tests {
         let server = |secret: &str| McpTransportMaterial {
             name: "github".into(),
             url: format!("http://{upstream}/"),
+            prompts_as_skills: false,
             bearer: Some(awaken_agent_contract::RedactedString::from(
                 secret.to_string(),
             )),
@@ -426,6 +429,7 @@ mod tests {
         let server = McpTransportMaterial {
             name: "github".into(),
             url: format!("http://{upstream}/"),
+            prompts_as_skills: false,
             bearer: Some(awaken_agent_contract::RedactedString::from(
                 "route-secret".to_string(),
             )),
@@ -493,6 +497,7 @@ mod tests {
             &McpTransportMaterial {
                 name: "functional".into(),
                 url: upstream,
+                prompts_as_skills: false,
                 bearer: Some(awaken_agent_contract::RedactedString::from(
                     "relay-only-secret".to_string(),
                 )),
@@ -568,6 +573,7 @@ mod tests {
             &McpTransportMaterial {
                 name: "gh".into(),
                 url: format!("http://{addr}/"),
+                prompts_as_skills: false,
                 bearer: Some(awaken_agent_contract::RedactedString::from(
                     "tok".to_string(),
                 )),
@@ -612,6 +618,7 @@ mod tests {
             &McpTransportMaterial {
                 name: "github".into(),
                 url: "https://api.githubcopilot.com/mcp/".into(),
+                prompts_as_skills: false,
                 bearer: Some(awaken_agent_contract::RedactedString::from(token)),
                 refresh: None,
             },

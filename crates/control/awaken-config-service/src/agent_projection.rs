@@ -113,6 +113,7 @@ impl ConfigServiceAgentSource {
                 .map(|server| awaken_session_contract::AgentMcpServerView {
                     name: server.name,
                     url: server.url,
+                    prompts_as_skills: server.prompts_as_skills,
                     credential_source_id: server
                         .credential
                         .as_ref()

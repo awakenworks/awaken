@@ -13,6 +13,7 @@ pub(super) fn typed_mcp_servers(
             name: server.name,
             url: server.url,
             kind: crate::types::agent::UrlMcpServerKind::Url,
+            prompts_as_skills: server.prompts_as_skills,
         })
         .collect()
 }
@@ -94,6 +95,7 @@ pub(super) fn stage_mcp_request(
         stage_idempotency_key: claim.stage_idempotency_key.clone(),
         name: attachment.name.clone(),
         target: attachment.target.clone(),
+        prompts_as_skills: attachment.prompts_as_skills,
         credential: attachment.credential.clone(),
         selected_plaintext_holder: attachment.selected_plaintext_holder.clone(),
     })
@@ -282,6 +284,7 @@ impl ManagedState {
             drafts.push(awaken_session_contract::McpAttachmentDraft {
                 name: server.name,
                 target,
+                prompts_as_skills: server.prompts_as_skills,
                 credential,
                 origin: candidate.origin,
             });
@@ -660,6 +663,7 @@ impl ManagedState {
                     .map(|server| crate::types::McpServer {
                         name: server.name.clone(),
                         url: server.url.clone(),
+                        prompts_as_skills: server.prompts_as_skills,
                     })
                     .collect::<Vec<_>>()
             }),

@@ -194,12 +194,14 @@ impl AgentConfigSource for AgentWithIntegrations {
                     url: "https://mcp.example.test".into(),
                     credential_source_id: Some("cred:workspace:docs".into()),
                     credential_revision: Some(7),
+                    prompts_as_skills: false,
                 },
                 awaken_protocol_managed::AgentMcpServerView {
                     name: "public-docs".into(),
                     url: "https://public.example.test".into(),
                     credential_source_id: None,
                     credential_revision: None,
+                    prompts_as_skills: false,
                 },
             ],
             skills: vec![awaken_agent_contract::AgentSkillBinding::custom(
