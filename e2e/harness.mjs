@@ -139,11 +139,11 @@ export function ensureProductionBuilt() {
 export function spawnProduction(
   dataDir,
   port,
-  { workspace, controlSealKey, databases = {}, extraEnv = {}, stderr = 'inherit' } = {},
+  { workspace, controlSealKey, databases = {}, fields = {}, extraEnv = {}, stderr = 'inherit' } = {},
 ) {
   const env = {
     ...process.env,
-    ...deploymentEnv(dataDir, { controlSealKey, databases }),
+    ...deploymentEnv(dataDir, { controlSealKey, databases, fields }),
     ...extraEnv,
   };
   if (workspace) env.AWAKEN_SCENARIO_WORKSPACE = workspace;
@@ -159,7 +159,7 @@ export const RED_PNG_B64 =
   'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAb0lEQVR4nO3PAQkAAAyEwO9feoshgnABdLep8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3IPanc8OLDQitxAAAAAElFTkSuQmCC';
 export const RED_PNG_DATA_URI = `data:image/png;base64,${RED_PNG_B64}`;
 
-export function waitForPort(port, timeoutMs = 600_000, server = null) {
+export function waitForPort(port, timeoutMs = 900_000, server = null) {
   // Readiness is an elapsed-time deadline. Wall-clock adjustments can jump
   // `Date.now()` past the deadline between retries even though the child has
   // just announced that it is listening; the monotonic clock cannot.
@@ -189,7 +189,7 @@ export function waitForPort(port, timeoutMs = 600_000, server = null) {
 }
 
 function waitForServer(server, port) {
-  return waitForPort(port, 600_000, server);
+  return waitForPort(port, 900_000, server);
 }
 
 export async function availablePort(preferred) {

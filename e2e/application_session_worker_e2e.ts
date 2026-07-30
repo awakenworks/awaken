@@ -201,20 +201,24 @@ async function main(): Promise<void> {
       .withResponse();
     const settledRevision = etagRevision(settled.response.headers.get('etag'));
     assert.ok(settledRevision >= realizedRevision, 'foreground Session writes are monotonic');
-    await new Promise((resolve) => setTimeout(resolve, 22_000));
-    const renewed = await client.beta.sessions
-      .retrieve(session.id, { betas: BETAS })
-      .withResponse();
-    const renewedRevision = etagRevision(renewed.response.headers.get('etag'));
-    assert.equal(renewed.data.status, 'idle', 'renewal does not reopen Session activation');
+    const renewalDeadline = Date.now() + 60_000;
+    let renewedRevision = settledRevision;
+    while (Date.now() < renewalDeadline && renewedRevision < settledRevision + 2) {
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      const renewed = await client.beta.sessions
+        .retrieve(session.id, { betas: BETAS })
+        .withResponse();
+      assert.equal(renewed.data.status, 'idle', 'renewal does not reopen Session activation');
+      renewedRevision = etagRevision(renewed.response.headers.get('etag'));
+    }
     assert.ok(
       renewedRevision >= settledRevision + 2,
-      `C7 the due Session lease advances through the same realization CAS protocol: ${workerOutput}`,
+      `C7 the due Session lease advances through the same realization CAS protocol: settled=${settledRevision} renewed=${renewedRevision} ${workerOutput}`,
     );
 
     await stopServer(cell);
     cellStopped = true;
-    const authorityDeadline = Date.now() + 15_000;
+    const authorityDeadline = Date.now() + 60_000;
     while (
       Date.now() < authorityDeadline
       && !workerOutput.includes('worker heartbeat cannot prove continuing authority')

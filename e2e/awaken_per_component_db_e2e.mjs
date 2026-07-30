@@ -68,6 +68,7 @@ async function main() {
 
   const server = spawnProduction(bundle, PORT, {
     controlSealKey: SEAL_KEY,
+    fields: { acp_clis: ['gemini'] },
     databases: {
       catalog_db: catalogDb,
       credential_db: credentialDb,

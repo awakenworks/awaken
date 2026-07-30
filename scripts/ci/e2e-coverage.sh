@@ -90,6 +90,13 @@ case "$(uname -s)" in
     # shutdown and LLVM flushes counters instead of Node force-terminating it.
     export LLVM_PROFILE_FILE="$CARGO_LLVM_COV_TARGET_DIR/awaken-%p-%12m.profraw"
     ;;
+  Darwin)
+    # Relocated counters must be page-aligned. Mach-O links this workspace's
+    # instrumented binaries at offsets that violate LLVM's 16 KiB requirement,
+    # producing profiles that look runnable but cannot be trusted. Every harness
+    # child is terminated gracefully, so ordinary per-process profiles are safe.
+    export LLVM_PROFILE_FILE="$CARGO_LLVM_COV_TARGET_DIR/awaken-%p-%12m.profraw"
+    ;;
   *)
     export RUSTFLAGS="${RUSTFLAGS:-} -C llvm-args=-runtime-counter-relocation"
     export LLVM_PROFILE_FILE="$CARGO_LLVM_COV_TARGET_DIR/awaken-%p-%12m%c.profraw"

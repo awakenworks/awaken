@@ -143,6 +143,11 @@ async function main() {
   fs.writeFileSync(configPath, [
     `data_dir = ${JSON.stringify(mgmtDir)}`,
     'control_seal_key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"',
+    // Keep this production-composition fixture independent of ACP CLIs installed
+    // on the developer host. The Admin Assistant under test is republished onto
+    // the authored fake provider below; ambient Codex discovery must not replace
+    // that deterministic model with an unverified Worker capability.
+    'acp_clis = ["gemini"]',
   ].join('\n'));
   const serverEnv = {};
   let h = startAwaken(bin, PORT, configPath, serverEnv);
@@ -170,7 +175,7 @@ async function main() {
       max_output_tokens: 1024,
     });
     assert.equal(r.status, 200, `model attributes: ${JSON.stringify(r.json)}`);
-    const credentialId = r.json.id;
+    const credentialId = providerCredentialId;
     console.log('ok: authored provider/endpoint/offering + credential in the console DB');
 
     // The managed projection accepts both SDK-shaped tool objects and string ids,

@@ -205,7 +205,7 @@ async function main() {
     );
     pass('L4 terminal ACP/OAuth legacy bindings decode but cannot resurrect');
 
-    // L2: the first ordinary root command is the one-way write boundary. It
+    // L2: the ordinary title and metadata root commands cross the one-way write boundary. They
     // must not maintain a synchronized second copy in the legacy columns.
     const updated = await c.beta.sessions.update(sessionId, {
       title: 'Canonical title',
@@ -222,10 +222,10 @@ async function main() {
       `SELECT revision, aggregate_json, title, model FROM managed_session WHERE session_id = ${sqlQuote(sessionId)}`,
     );
     assert.equal(rows.length, 1);
-    assert.equal(rows[0].revision, 8);
+    assert.equal(rows[0].revision, 9, 'title and metadata each advance the canonical revision');
     assert.ok(rows[0].aggregate_json, 'root mutation persisted the canonical aggregate');
     assert.equal(rows[0].title, 'Legacy title', 'legacy title column is no longer synchronized');
-    pass('L2 first root mutation writes aggregate_json without a parallel legacy write');
+    pass('L2 root mutations write aggregate_json without a parallel legacy write');
 
     // Simulate stale legacy storage after the migration. If a dual-read path
     // survives, the next process would expose these poisoned values.

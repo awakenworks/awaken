@@ -118,8 +118,8 @@ async function main() {
     stdio: ['ignore', 'ignore', 'inherit'],
   });
   try {
-    await waitForPort(adminPort, 60_000, serve);
-    await waitForPort(httpPort, 60_000, serve);
+    await waitForPort(adminPort, 180_000, serve);
+    await waitForPort(httpPort, 180_000, serve);
     const admin = `http://127.0.0.1:${adminPort}`;
     assert.notEqual(await fetch(`http://127.0.0.1:${httpPort}/readyz`).then((r) => r.status), 200);
     assert.equal((await fetch(`${admin}/readyz`)).status, 200);

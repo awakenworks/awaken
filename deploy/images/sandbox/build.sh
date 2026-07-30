@@ -35,9 +35,14 @@ for line in sys.stdin:
 [ -n "$bin" ] || { echo "could not resolve the awaken-sandbox binary" >&2; exit 1; }
 
 cp "$bin" "$staged"
-build_args=()
 if [[ -n "${AWAKEN_SANDBOX_BUILD_NETWORK:-}" ]]; then
-  build_args+=(--network "$AWAKEN_SANDBOX_BUILD_NETWORK")
+  "$engine" build --network "$AWAKEN_SANDBOX_BUILD_NETWORK" \
+    --build-arg ACP_NPM_PACKAGES="$packages" \
+    -f deploy/images/sandbox/Dockerfile -t "$image" .
+else
+  # macOS still ships Bash 3.2, where expanding an empty array under `set -u`
+  # raises "unbound variable". Keep the zero-argument case explicit so the
+  # hermetic image path works on every supported host shell.
+  "$engine" build --build-arg ACP_NPM_PACKAGES="$packages" \
+    -f deploy/images/sandbox/Dockerfile -t "$image" .
 fi
-"$engine" build "${build_args[@]}" --build-arg ACP_NPM_PACKAGES="$packages" \
-  -f deploy/images/sandbox/Dockerfile -t "$image" .

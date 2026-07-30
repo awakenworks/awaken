@@ -68,7 +68,11 @@ async function main() {
 
   // ---- server A: a turn delivered through the durable dispatch queue ----
   const a = spawnServer('real', PORT, realEnv);
-  await waitForPort(PORT);
+  // An instrumented all-suite build can spend several minutes in loader and
+  // migration work before accepting connections. Tie readiness to the child so
+  // an actual early exit still fails immediately, while slow coverage startup
+  // is not misclassified as a dead server.
+  await waitForPort(PORT, 900_000, a.server);
 
   const session = await client.beta.sessions.create({
     agent: 'assistant',
@@ -88,7 +92,7 @@ async function main() {
   // ---- kill A, start a fresh server B over the SAME storage directory ----
   await stopServer(a.server);
   const b = spawnServer('real', PORT, realEnv);
-  await waitForPort(PORT);
+  await waitForPort(PORT, 900_000, b.server);
   client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
 
   assert.deepEqual(dispatchDbs(STORE_DIR), dbsBefore, 'the durable dispatch queue survived the restart');

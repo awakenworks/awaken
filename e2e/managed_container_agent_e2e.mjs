@@ -21,7 +21,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn, execFileSync, execSync, spawnSync } from 'node:child_process';
+import { spawn, execFileSync as rawExecFileSync, execSync, spawnSync } from 'node:child_process';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import { REPO_ROOT } from './harness.mjs';
 
@@ -34,9 +34,16 @@ const ENGINE = process.env.AWAKEN_E2E_CONTAINER_ENGINE ?? 'docker';
 assert.ok(['docker', 'podman'].includes(ENGINE), `unsupported container engine ${ENGINE}`);
 const IMAGE = process.env.AWAKEN_TEST_SESSION_IMAGE ?? 'awaken-sandbox:session-e2e';
 const PACKAGE_BASE_IMAGE = `${IMAGE}-package-base`;
+const ENGINE_TIMEOUT_MS = 30_000;
 const TMP = path.join(os.tmpdir(), `awaken-container-agent-${ENGINE}-e2e-${process.pid}`);
 const ACP_FIXTURE = `process.stdin.once('data',()=>{fs=require('fs');p='/usr/local/share/awaken-package-proof';pkg=fs.existsSync(p)?'-'+fs.readFileSync(p,'utf8'):'';console.log(JSON.stringify({type:'message',text:'${MARKER}'+pkg}));console.log(JSON.stringify({type:'turn_end',reason:'natural_end'}))})`;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function execFileSync(file, args, options = {}) {
+  return rawExecFileSync(file, args, file === ENGINE
+    ? { ...options, timeout: ENGINE_TIMEOUT_MS }
+    : options);
+}
 
 async function afterPendingActivation(operation) {
   let last;
@@ -229,19 +236,23 @@ function testContainers({ all = false } = {}) {
   const args = ['ps'];
   if (all) args.push('-a');
   args.push('-q', '--filter', 'label=awaken.sandbox=1', '--filter', `ancestor=${IMAGE}`);
-  return execFileSync(ENGINE, args, { encoding: 'utf8' }).trim().split(/\s+/).filter(Boolean);
+  return execFileSync(ENGINE, args, { encoding: 'utf8', timeout: ENGINE_TIMEOUT_MS })
+    .trim().split(/\s+/).filter(Boolean);
 }
 
 function testContainerNames({ all = false } = {}) {
   const args = ['ps'];
   if (all) args.push('-a');
   args.push('--format', '{{.Names}}', '--filter', 'label=awaken.sandbox=1', '--filter', `ancestor=${IMAGE}`);
-  return execFileSync(ENGINE, args, { encoding: 'utf8' }).trim().split(/\s+/).filter(Boolean);
+  return execFileSync(ENGINE, args, { encoding: 'utf8', timeout: ENGINE_TIMEOUT_MS })
+    .trim().split(/\s+/).filter(Boolean);
 }
 
 function cleanupTestContainers() {
   const containers = testContainers({ all: true });
-  if (containers.length > 0) spawnSync(ENGINE, ['rm', '-f', ...containers], { stdio: 'ignore' });
+  if (containers.length > 0) {
+    spawnSync(ENGINE, ['rm', '-f', ...containers], { stdio: 'ignore', timeout: ENGINE_TIMEOUT_MS });
+  }
 }
 
 // Build the canonical production image, but omit network-fetched ACP packages: this
@@ -249,7 +260,9 @@ function cleanupTestContainers() {
 // fixed launch input (read from AWAKEN_ACP_ARGV only by the scenario host).
 // The image still contains the real `awaken-sandbox hand --stdio` binary.
 function ensureSessionImage() {
-  if (spawnSync(ENGINE, ['image', 'inspect', IMAGE], { stdio: 'ignore' }).status === 0) return;
+  if (spawnSync(ENGINE, ['image', 'inspect', IMAGE], {
+    stdio: 'ignore', timeout: ENGINE_TIMEOUT_MS,
+  }).status === 0) return;
   execFileSync('bash', ['deploy/images/sandbox/build.sh', IMAGE, ''], {
     cwd: REPO_ROOT,
     env: { ...process.env, CONTAINER_ENGINE: ENGINE },
@@ -259,7 +272,9 @@ function ensureSessionImage() {
 
 function ensurePackageFixtureImage() {
   if (ENGINE !== 'podman') return;
-  if (spawnSync(ENGINE, ['image', 'inspect', PACKAGE_BASE_IMAGE], { stdio: 'ignore' }).status === 0) return;
+  if (spawnSync(ENGINE, ['image', 'inspect', PACKAGE_BASE_IMAGE], {
+    stdio: 'ignore', timeout: ENGINE_TIMEOUT_MS,
+  }).status === 0) return;
   const installer = [
     '#!/bin/sh',
     'mkdir -p /usr/local/share',
@@ -278,6 +293,7 @@ function ensurePackageFixtureImage() {
   const result = spawnSync(ENGINE, ['build', '--tag', PACKAGE_BASE_IMAGE, '--file', containerfilePath, context], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
+    timeout: ENGINE_TIMEOUT_MS,
   });
   assert.equal(result.status, 0, `package fixture image build failed: ${result.stderr}`);
 }
